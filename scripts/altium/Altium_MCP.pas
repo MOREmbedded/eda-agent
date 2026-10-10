@@ -53191,7 +53191,7 @@ Var
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
     BR : TCoordRect;
-    I, K, PtCount, EL, EB, ER, ET : Integer;
+    I, K, PtCount, EL, EB, ER, ET, Seen : Integer;
     Seg : TPolySegment;
     RespJson : String;
     NameOnFlag, CommentOnFlag, IsHiddenFlag : Boolean;
