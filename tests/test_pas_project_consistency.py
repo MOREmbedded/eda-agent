@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.pascal_source import strip_comments
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts" / "altium"
@@ -421,3 +423,15 @@ def test_disk_pas_files_are_in_build_or_excluded():
         f"build.py (deploys to the bundle), PRJSCR_ONLY (IDE-debug only), "
         f"or EXCLUDED (build output / legacy)."
     )
+
+
+def test_pcb_board_helper_calls_supply_required_argument():
+    """DelphiScript halts the polling loop when this argument is omitted."""
+    offenders = []
+    for name in _build_py_files():
+        source = strip_comments((SCRIPTS_DIR / name).read_text(
+            encoding="utf-8", errors="replace"))
+        for match in re.finditer(r"\bGetPCBBoardAnywhere\s*;", source):
+            line = source.count("\n", 0, match.start()) + 1
+            offenders.append(f"{name}:{line}")
+    assert not offenders, f"missing GetPCBBoardAnywhere(0) argument: {offenders}"

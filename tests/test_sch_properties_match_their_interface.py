@@ -76,6 +76,16 @@ def test_a_port_is_excluded(guard):
         f"reproduced against")
 
 
+def test_generic_name_property_rejects_unnamed_objects():
+    code = _decommented(_source())
+    for routine in ("GetSchProperty", "SetSchProperty"):
+        start = code.index(f"Function {routine}(")
+        end = code.index("\nEnd;", start)
+        body = code[start:end]
+        at = body.index("PropName = 'Name'")
+        assert "SchObjectHasName(Obj)" in body[at:at + 180]
+
+
 def test_the_connection_point_is_pin_only():
     """ConnectionX/ConnectionY read Orientation too.
 

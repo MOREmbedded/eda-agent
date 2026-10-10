@@ -4026,7 +4026,7 @@ Var
     FirstTrack, FirstVia, FirstArc, FirstFill : Boolean;
     TrackCount, ViaCount, ArcCount, FillCount : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4134,7 +4134,7 @@ Var
     First : Boolean;
     Addr : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4206,7 +4206,7 @@ Var
     FilterNet, NetName, Items, X1S, Y1S, X2S, Y2S : String;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4267,7 +4267,7 @@ Var
     Removed : Integer;
     FoundOne : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4341,7 +4341,7 @@ Var
     LayerId : TLayer;
     First, HasMore : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4462,7 +4462,7 @@ Var
     First, Used, Displayed, ReadOk : Boolean;
     Count, Scanned, Unreadable : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4545,7 +4545,7 @@ Var
     I, PairCount, Returned, Unreadable : Integer;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4616,7 +4616,7 @@ Var
     First, Used, Displayed, NetRead : Boolean;
     Count, UnreadableNets : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -4693,7 +4693,7 @@ Var
     Limit, Count, Scanned : Integer;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -7517,7 +7517,7 @@ Var
     SepPos, Requested, Changed, Already, Missing : Integer;
     TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -8557,7 +8557,7 @@ Var
     Board : IPCB_Board;
     Ok : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -9894,7 +9894,7 @@ Var
     Via : IPCB_Via;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -9942,7 +9942,7 @@ Var
     Objects : TInterfaceList;
     Rebound, Seen, I : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -10014,7 +10014,7 @@ Var
     SemiPos, ColonPos, PtCount, K : Integer;
     FoundNet : IPCB_Net;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -17040,7 +17040,7 @@ Var
     AddressText, BoardPath, ParentName : String;
     X1, Y1, X2, Y2 : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     BoardPath := ExtractJsonValue(Params, 'board_path');
     If Board = Nil Then
     Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
@@ -17125,7 +17125,7 @@ Var
     X1, Y1, X2, Y2, I, Found, Changed, Already : Integer;
     Original, Applied, ApplyNow : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     BoardPath := ExtractJsonValue(Params, 'board_path');
     Path := ExtractJsonValue(Params, 'plan_path');
     ApplyNow := ExtractJsonValue(Params, 'apply') = 'true';

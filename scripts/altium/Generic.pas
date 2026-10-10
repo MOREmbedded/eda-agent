@@ -175,6 +175,17 @@ Begin
         Result := False;
 End;
 
+{ Name is present only on named schematic primitives. Reading it from a
+  graphical object such as a wire raises an uncatchable script modal. }
+Function SchObjectHasName(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = ePin)
+        Or (Obj.ObjectId = eParameter);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -549,7 +560,11 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'Name'        Then Result := Obj.Name
+        Else If PropName = 'Name' Then
+        Begin
+            If SchObjectHasName(Obj) Then Result := Obj.Name
+            Else NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
         Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
         Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
@@ -930,7 +945,11 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'Name'        Then Obj.Name := Value
+        Else If PropName = 'Name' Then
+        Begin
+            If SchObjectHasName(Obj) Then Obj.Name := Value
+            Else Matched := False;
+        End
         Else If PropName = 'LibReference'       Then Obj.LibReference := Value
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
@@ -8965,7 +8984,7 @@ Begin
     ConnRebuilt := False;
     If PCBTouched Then
     Begin
-        PCBBoard := GetPCBBoardAnywhere;
+        PCBBoard := GetPCBBoardAnywhere(0);
         If PCBBoard <> Nil Then ConnRebuilt := RebuildPCBConnectivity(PCBBoard);
     End;
 
