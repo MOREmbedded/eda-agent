@@ -16,13 +16,17 @@ TPS54331D, D1 → SS14, R1 → RES 10K, J1 → connector).
 This first slice extracts the component list (designator + lib ref +
 description): the BOM/connectivity spine a headless review needs. Pure
 Python via ``olefile``; no Altium.
+
+Coordinates come back in raw SchDoc units of 10 mil, fractions included
+(see :func:`_coord`).
 """
 
 from __future__ import annotations
 
 import struct
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 _FILEHEADER = "FileHeader"
 
@@ -118,6 +122,31 @@ def _to_int(value: str | None) -> int | None:
         return None
 
 
+# A coordinate is stored as a whole number of 10 mil units, plus an optional
+# "<field>_Frac" in 1/100000ths of a unit that is added to it, negative values
+# included: X=-841 with X_Frac=70000 is -840.3 (the altium_monkey reader adds
+# them the same way). Reading the whole part alone put every off-grid point up
+# to a unit short, and a pin end built from Location plus PinLength up to two,
+# far enough to miss the wire drawn to it.
+_FRAC_PER_UNIT = 100000
+
+# A whole number of units is an int, as before. A fraction is a Decimal: a
+# float cannot hold 840.3 exactly, and the net solver joins points only when
+# their coordinates are equal. An int and an equal Decimal hash the same.
+Coord = Union[int, Decimal]
+
+
+def _coord(rec: dict[str, str], field: str) -> Coord | None:
+    """The value of ``field`` in raw units with its ``_Frac`` added, or None."""
+    whole = _to_int(rec.get(field))
+    if whole is None:
+        return None
+    frac = _to_int(rec.get(field + "_Frac", rec.get(field + "_FRAC"))) or 0
+    if frac == 0:
+        return whole
+    return whole + Decimal(frac) / _FRAC_PER_UNIT
+
+
 def read_schematic_nets(path: str | Path) -> list[dict[str, Any]]:
     """Extract declared net names from a .SchDoc (labels + power ports).
 
@@ -165,8 +194,8 @@ def read_schematic_wires(path: str | Path) -> list[dict[str, Any]]:
         count = _to_int(rec.get("LocationCount")) or 0
         pts = []
         for k in range(1, count + 1):
-            x = _to_int(rec.get(f"X{k}"))
-            y = _to_int(rec.get(f"Y{k}"))
+            x = _coord(rec, f"X{k}")
+            y = _coord(rec, f"Y{k}")
             if x is not None and y is not None:
                 pts.append((x, y))
         for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
@@ -193,9 +222,9 @@ def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
             "owner_index": _to_int(rec.get("OwnerIndex")),
             "designator": rec.get("Designator", ""),
             "name": rec.get("Name", ""),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
-            "length": _to_int(rec.get("PinLength")) or 0,
+            "x": _coord(rec, "Location.X"),
+            "y": _coord(rec, "Location.Y"),
+            "length": _coord(rec, "PinLength") or 0,
             "orientation": _PIN_ORIENT_DEG.get(conglom & 0x3, 0),
         })
     return pins
@@ -217,8 +246,8 @@ def read_schematic_net_label_locations(path: str | Path) -> list[dict[str, Any]]
             continue
         labels.append({
             "name": (rec.get("Text") or "").strip(),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _coord(rec, "Location.X"),
+            "y": _coord(rec, "Location.Y"),
         })
     return labels
 
@@ -236,8 +265,8 @@ def read_schematic_power_ports(path: str | Path) -> list[dict[str, Any]]:
             continue
         ports.append({
             "name": (rec.get("Text") or "").strip(),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _coord(rec, "Location.X"),
+            "y": _coord(rec, "Location.Y"),
             "orientation": _to_int(rec.get("Orientation")) or 0,
         })
     return ports
@@ -254,8 +283,8 @@ def read_schematic_junctions(path: str | Path) -> list[dict[str, Any]]:
         if rec.get("RECORD") != RECORD_JUNCTION:
             continue
         junctions.append({
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _coord(rec, "Location.X"),
+            "y": _coord(rec, "Location.Y"),
         })
     return junctions
 
@@ -301,6 +330,8 @@ def read_schematic_document_info(path: str | Path) -> dict[str, Any]:
     info["company"] = _val("CompanyName") or _val("Organization")
 
     sheet = next((r for r in records if r.get("RECORD") == RECORD_SHEET), None)
+    # Whole units only: this goes into JSON reports as it is, and a Decimal
+    # does not serialise.
     info["sheet"] = {
         "custom_x": _to_int(sheet.get("CustomX")) if sheet else None,
         "custom_y": _to_int(sheet.get("CustomY")) if sheet else None,
@@ -316,7 +347,7 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
     library_path, unique_id, x, y}``: the fields a headless BOM/review
     needs. Designators are joined to components via the OwnerIndex scheme
     (owner index = record position counting from the first post-header
-    record). Coordinates are the raw SchDoc internal units (1/100 mil).
+    record). Coordinates are raw SchDoc units (10 mil).
     """
     records = read_schdoc_records(path)
 
@@ -361,8 +392,8 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
             "description": rec.get("ComponentDescription", ""),
             "library_path": rec.get("LibraryPath", ""),
             "unique_id": rec.get("UniqueID", ""),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _coord(rec, "Location.X"),
+            "y": _coord(rec, "Location.Y"),
             "mpn": _first_present(params, _MPN_NAMES),
             "manufacturer": _first_present(params, _MFR_NAMES),
             "value": _first_present(params, _VALUE_NAMES),

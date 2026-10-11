@@ -1,4 +1,4 @@
-# Release verification: 2026.10.06.1
+# Release verification: 2026.10.11.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -55,6 +55,48 @@ works elsewhere cannot be an undeclared identifier:
 | 26, copied footprint | `MoveByXY` on a footprint's primitives | yes, `Library.pas`, on a 3D body | medium |
 | 27, lengths in mm | `TopXSize`, `TopYSize` on a pad, now from `CoordFromUnits` | yes, `Lib_AddFootprintPads` | low |
 | 27, new document | `ShowDocument` on the new document | yes, `App_SetActiveDocument` | low |
+| 28, simulation run | `AddStringParameter` with `ObjectKind=Simulator` | yes, `Proj_UpdatePCB` | medium, a process run rather than a write |
+| 28, results saved | `SetFileName`, `DoFileSave` on the results document | yes, `App_CreateDocument` | low |
+| 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | no, nowhere | highest, and it can stop the loop |
+| 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | no, nowhere | high, and it can stop the loop |
+| 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `PCB_SetViaSoldermaskRelief`, on a via's cache | medium, a library pad is new |
+| 29, non-plated hole | `Plated` on a library pad | read in `PCB.pas`, written nowhere else | medium |
+| 29, pad paste expansion | `PasteMaskExpansion`, `PasteMaskExpansionValid`, `SetState_Cache` | yes, `PCB_MakePasteGrid` | low, but now on a library pad |
+| 29, paste windows | `SetOutlineContour`, `Replicate` on a region contour | yes, `PCB_PlaceRegion` | medium, a region in a footprint is new |
+| 29, footprint height | `Height` on a footprint | yes, `Lib_SetFootprintHeight` | low |
+| 31, board select | `Selected` on a board primitive, now read back | yes, `SetPCBProperty` | low |
+| 31, sheet select | `Selection` on a schematic object, now read back | yes, `SetSchProperty` | low, the read is the one `Gen_ClearHighlights` makes |
+| 32, DRC report stamp | `FileAge` on the board's .DRC report | yes, `Proj_ExportSTEP` | low |
+| 32, managed loader | `LoadComponent` | yes, `Lib_GetVaultComponent`, also new; the call was recorded working on AD 26.9.1, before this rewrite | high, the whole managed placement depends on it |
+| 32, managed placement | `AddSchObject` with a loaded managed component | yes, `PutLoadedComponent`, which file-library placement now shares | low |
+| 32, dry run | `DestroySchObject` on a loaded component no sheet owns | yes, `Gen_CreateObject`, on objects never added | medium |
+| 32, Workspace name | `LibraryIdentifier`, `LibIdentifierKind`, `VaultGUID` read off placed parts | yes, `VaultNameOnSheet`, also new | low |
+| 32, managed lookups | `FindComponentLibraryPath`, `FindComponentDisplayPath`, `GetLifeCycleState`, `GetOrderedRevisionList`, `GetComponentPlacementParameters` | no, nowhere | low, each in its own Try and reported in `diag` when it raises |
+| 33, plane net | `InternalPlaneNetName` on the board, written and read | no, nowhere | medium, the old layer-object route still runs when it does not read back |
+| 33, net-class members | `IsMember` on a net class | yes, `PCB_AddTestpointsForNetClass` | low, but one call per class and net |
+| 33, DbLib part | `CurrentPartID` on a placed DbLib part | yes, `SetSchProperty` | low |
+| 33, pad designator | `Name` on a pad, through the generic setter | yes, `PCB_RenumberPads` | low |
+| 33, poll timer | `Enabled` on the poll timer, read back after arming | yes, `StartMCPPump` writes it | low |
+| 34, 3D body opacity | `BodyOpacity3D` on a component body | no, nowhere | high, a wrong member name stops the loop; used by several scripts in reference/ |
+| 34, slot rotation | `HoleRotation` written on a library pad | no, nowhere | medium, read on the board side already |
+| 34, pad copper centre | `BoundingRectangle` on a library pad | yes, `BuildViolationJson`, on any primitive | low |
+| 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
+| 34, arc mirror | `StartAngle`, `EndAngle` written on a placed arc | yes, `Lib_AddSymbolArc` | low |
+| 35, footprint switch | `SetState_CurrentComponent` on the library, away from the target and back | yes, `Lib_Link3DModel` | low |
+| 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | no, nowhere | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
+| 35, temporary holder | `GetUniqueCompName`, `DestroyPCBLibComp` on a footprint made for the delete | no, nowhere | low, ran live in a single-footprint library |
+| 36, body layer | `Layer` written on a library 3D body | yes, `PCB_Place3DBody` | low |
+| 36, mechanical check | `IsMechanicalLayer` on LayerUtils | no, nowhere | high, a wrong member stops the loop; ran live, and used by scripts in reference/ |
+| 36, assembly text | `UnderlyingString`, `Size`, `Width` on a new library text | yes, `Lib_AddFootprintText` | low |
+| 36, settle after an add | `SetState_CurrentComponent` on the footprint already current | yes, `Lib_Link3DModel` | low, ran after all eight add kinds and survived save and restart |
+| 36, modify bracket | `BeginModify`, `EndModify` round an obj_modify write and a placed body's move | yes, `PCB_SetTrackWidth` | low |
+| 36, mask sides | `UseSeparateExpansions`, `SolderMaskBottomExpansion` on the pad cache | yes, `Lib_SetPadProperties` | medium, missing from the API reference; read and written live on pads and vias |
+| 36, via hole edge | `SolderMaskExpansionFromHoleEdge` written on a via | no, nowhere | high, the expansion assigned straight onto a via faults (measured again); this member and the cache route did not |
+| 36, mechanical enabled | `MechanicalLayerEnabled` read on a library layer | yes, `Lib_GetMechLayers` | low |
+| 36, rule gap | `Gap` read on a typed clearance rule | yes, `PCB_SetRuleProperties` | low |
+| 36, designator mirror | `Location` written on a placed designator | yes, `SetSchProperty` | low |
+| 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
+| 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -230,7 +272,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.06.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.11.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1611,6 +1653,550 @@ minus 1.27 mm, 0.762 x 1.016 mm, default 1.524 mm, as before); item 5
 to whole mils because the MCP server was still running the previous
 Python; a server restart is part of loading this change.
 
+## 28. A simulation runs, and a dialog press presses what it names
+
+`sim_run` sent `Sim:RunMixedSim`, which AD 26 does not run: nothing
+opened, nothing was written, and the tool reported success. It now runs
+the project's simulator output, the way the schematic's Simulate menu
+does, and succeeds only when a results document appears. Separately,
+`app_press_dialog_button` asked for "Don't Save" on the WPF "Unsaved
+Changes" prompt pressed Save. Item 3 is Python, so it needs the MCP
+server restarted. On scratch documents only.
+
+1. **A simulation runs and reads back.** Copy one sheet of Altium's
+   "Simulation Quick Start" example into a scratch folder, then
+   `proj_create`, `proj_add_document`, `proj_load_sheets`, activate the
+   sheet and call `sim_run`: `ran` true, `results_document` names
+   `Simulation\<project>.sdf`, `results_saved` true with the file on
+   disk and no Save As dialog, `results` holds an Operating Point with
+   v(in) about 2.52 V, and the focused document is the sheet again.
+2. **No run, no success.** With a scratch PcbLib focused and no
+   schematic project, `sim_run` returns `SIM_NOT_RUN` and nothing opens.
+3. **Settings reach the next run.** With the item 1 project still open,
+   `sim_setup_analysis transient={"stop":"2u","step":"10n"}
+   outputs=["v(out)"]`: `reloaded` true and no "Reload?" prompt. Then
+   `sim_run` and `sim_get_results analysis="Transient Analysis"`: the
+   time wave ends at 2 us. Change it to 3u and repeat without closing
+   the project: it ends at 3 us. This is the step where `DoFileLoad`,
+   `SupportsReload` and `UpdateModifiedDate` first run; if the loop stops
+   at it, one of them is not available to scripts.
+4. **Don't Save presses Don't Save.** Close a scratch project whose
+   settings file Altium changed in memory, so that "Unsaved Changes"
+   lists it. Answer with `app_press_dialog_button button_caption="Don't
+   Save" dialog_title="Unsaved Changes"`: `method` is `uia`, the dialog
+   closes, no Save As dialog follows, and nothing is written.
+
+Measured by hand on AD 26.10.1.6 before the change, through
+`obj_run_process`: `Sim:RunMixedSim` left the scratch folder unchanged;
+`WorkspaceManager:GenerateReport` with `ObjectKind=Simulator|Index=1|Action=Run`
+opened `Simulation\SimOne.sdf` with an operating point (V(in) 2.524 V); an
+`.nsx` netlist opened as a document and run with `ADVSIM:RunSimulator`
+produced a transient and an operating point; and the old press sent Enter,
+which opened "Save [project_sim_config.simcfg] As...", cancelled by hand.
+Also measured: a hand-written `.simcfg` added to a project is read at
+open (its transient stop time and AC and DC values were used), but a run
+from a script did an operating point, DC sweep, transient and AC every
+time whatever its on/off flags said; and an edit made while the project
+was open was not used, raised "has been modified ... Reload?", and was
+later overwritten by Altium's own copy. The handlers themselves have not
+run yet.
+
+## 29. Footprints from a package drawing
+
+`lib_create_footprint_from_package` builds a whole footprint from a
+datasheet package description: IPC-7351B lands, paste windows, silkscreen
+with a pin 1 dot, assembly outline and `.Designator`, courtyard and
+height, then reads the pads back and fails on any difference. It needs
+two new handlers (`add_footprint_regions`, `get_mech_layers`) and four
+optional fields on `add_footprint_pads`, so the script must be the new
+build and the MCP server restarted. On a scratch PcbLib only, kept out of
+every project. The package specs below are the datasheet cases the engine
+is tested on; print one as JSON with
+`python -c "import json; from tests.design._landpattern_cases import soic8; print(json.dumps(soic8().to_dict()))"`
+(and `qfn16` for item 3).
+
+1. **Layers by role, or a refusal.** `app_create_document kind=PCBLIB` on
+   a scratch path, then `lib_create_footprint_from_package` with the
+   SOIC-8 spec and no layer arguments. Either `layers` names the
+   assembly and courtyard layers with the rule that chose them (a kind,
+   or a name), or the call refuses, lists the library's mechanical
+   layers, and `lib_get_footprints` shows nothing was created. If it
+   refused, run `lib_set_mech_layers` with Mechanical13 named "Top
+   Assembly", kind "Assembly Top", and Mechanical15 named "Top
+   Courtyard", kind "Courtyard Top", and repeat: `layers.assembly.rule`
+   now names the kind.
+2. **SOIC-8 (TI D0008A).** The repeat of item 1: `ok` true,
+   `readback.ok` true with 8 pads read. `lib_get_pad_geometry` reads pad
+   1 at -2.45, 1.905 mm, every pad 1.95 x 0.6 mm, `roundrectangle` with
+   `corner_pct` 50, within one internal unit, and no manual paste or mask
+   expansion. In the editor: silkscreen on Top Overlay clear of every pad
+   with a filled dot by pad 1, the body outline with its pin 1 chamfer
+   and a `.Designator` on the assembly layer, a rectangle on the
+   courtyard layer enclosing everything, and the footprint height 1.75 mm.
+3. **QFN-16 with an exposed pad (TI RGT0016C).** `ok` true, 17 pads read
+   back. Pad 17 reads `paste_expansion_source` manual and a negative
+   value equal to its larger side. With only Top Paste visible: four
+   windows inside pad 17 and no opening the size of the pad. Every other
+   pad keeps its own rule-driven paste. This is the first region placed
+   in a footprint; if the windows are missing after a save and reload,
+   the registration did not take.
+4. **Slot, non-plated hole and a mask expansion.** A custom spec with a
+   slotted pad and a non-plated hole, and `drafting={"mask_expansion":
+   0.05}`:
+   `{"family": "custom", "name": "SLOT_TEST", "body_x": 6, "body_y": 4,
+   "custom_pads": [{"number": "1", "x": -1.5, "y": 0, "width": 2.4,
+   "height": 1.4, "shape": "oval", "hole": 0.8, "hole_length": 1.6},
+   {"number": "MH", "x": 1.5, "y": 0, "width": 1.0, "height": 1.0,
+   "shape": "circle", "hole": 1.0, "plated": false}]}`.
+   `lib_get_pad_geometry`: pad 1 `hole_type` slot, `hole_mm` 0.8,
+   `hole_w_mm` 1.6; pad MH `plated` false; both `mask_expansion_source`
+   manual at 0.05 mm. This is where `HoleType`, `HoleWidth`, `Plated` and
+   the solder mask cache fields first run; if the loop stops here, one of
+   them is not available to scripts, and the reply's `property_failures`
+   names a write Altium refused without stopping.
+5. **The mils rounding fix.** `lib_create_standard_footprint name=R_FIX
+   family=chip pin_count=2 pitch=59.055 pad_w=31.496 pad_h=39.37
+   body_w=78.74 body_h=49.213`. Select a silkscreen track: its ends sit
+   at x = 39.37 mil either side, not 39. There is no track readback tool,
+   so this one is read in the Properties panel.
+6. **Refusals that write nothing.** Repeat item 2: refused, "already in
+   the library". `lib_add_footprint_regions` with a region that has no
+   layer: refused before sending. With `layer=Mechanical13` and a
+   triangle: `added` 1.
+
+Not run yet: none of these handlers or writes has executed in Altium. The
+EasyEDA and KiCad twins are not part of this step; the KiCad one writes a
+file that its own reply parses back, and the EasyEDA one needs a live
+editor to check whether its footprint canvas is Y up.
+
+## 30. Footprint validation
+
+`lib_audit_footprint_vs_package` audits a footprint that already exists
+against its package description: pad count, numbering, pin 1 and mirror
+images, pitch, span, land sizes, land over terminal, paste, mask, origin,
+and from the footprint's other primitives the courtyard, silkscreen,
+assembly outline and height. It needs one new handler,
+`get_footprint_primitives` in Library.pas, which READS only: the
+footprint's tracks, arcs, regions (bounding box and area), fills and texts
+with their layers, in mm, and its height. Every property it reads is
+already read in shipped code: Track `X1`, `Y1`, `X2`, `Y2`, `Width` and
+Arc `XCenter`, `YCenter`, `Radius`, `StartAngle`, `EndAngle`, `LineWidth`
+(GetPCBProperty, PCBGeneric.pas), `Region.Area` (RegionCopperSqMils,
+PCB.pas), `BoundingRectangle` on a region (Audit.pas) and on a primitive
+(PCB.pas), the text reads of Lib_GetLibraryGeometry with `Rotation`
+(Lib_ProbeDesignator), and the footprint's `X`, `Y` and `Height`. Reading
+does not make it risk-free: an identifier this build rejects still stops
+the loop, so run `app_ping` after item 1. The script must be the new build
+and the MCP server restarted. `datasheet_fetch`, `footprint_check_package`
+and `footprint_render_package` are Python only. On the scratch PcbLib of
+step 29 only, with its SOIC-8 and QFN-16 footprints in it.
+
+1. **The read.** `lib_audit_footprint_vs_package footprint_name="SOIC-8
+   (D)"` with the same SOIC-8 spec as step 29: `ok` true, no findings,
+   `not_examined` empty, and `primitives_read` counting the silkscreen,
+   assembly and courtyard tracks and the pin 1 arc, with `height_mm`
+   1.75. `app_ping` answers. If the loop stops here, one of the reads
+   above is not available on this build: record which footprint was open.
+2. **Paste windows and their area.** The same call on QFN-16 with the
+   `qfn16` spec: `ok` true, and `notes` says 4 paste windows cover about
+   65.8 % of pad 17. A coverage near 0 or near 100 times too large means
+   `Region.Area` is not in internal units squared on this build.
+3. **Defects are seen.** `lib_copy_footprint` the SOIC-8 to SOIC-8-BAD in
+   the same library. On the copy, delete the courtyard tracks with
+   `lib_delete_footprint_primitives`, and draw one Top Overlay track from
+   (-3, 1.905) to (-1.5, 1.905) mm, 0.2 mm wide, with
+   `lib_add_footprint_tracks units=mm`. The audit of SOIC-8-BAD reports a
+   `courtyard` error (no courtyard) and a `silk` error on pad 1, and
+   nothing else. The original still audits clean.
+4. **Height and origin.** `lib_set_footprint_height` the copy to 0: a
+   `height` warning, "no height". Move every primitive of the copy 0.5 mm
+   right in the editor: an `origin` warning of 0.5 mm, `ok` still true.
+5. **A turned footprint.** Rotate a third copy a quarter turn in the
+   editor (select all, then rotate): `ok` true and
+   `alignment.rotation_deg` 90 for a counter-clockwise turn, 270 for a
+   clockwise one.
+6. **Python only.** `footprint_check_package` on the SOIC-8 spec: `ok`
+   true and `cross_check.ok` true. With the spec's `pitch` set to 4.9: a
+   `row_fits_body` error naming the pitch and body_y. `footprint_render_package`
+   writes an SVG (and a PNG where Edge or Chrome is installed) showing the
+   lands with dashed green terminals over them. `datasheet_fetch
+   url=https://www.ti.com/lit/ds/symlink/lm358b.pdf part_number=LM358B`:
+   `ok` true, `cache` miss, a `path` under the workspace's `datasheets`
+   folder that opens as the datasheet, and `pages` close to its page
+   count; the same call again answers `cache` hit at once.
+
+Not run yet: the handler has not executed in Altium. The EasyEDA twin,
+`easyeda_audit_footprint_vs_package`, reads pads only and is not part of
+this step; it needs the same Y-direction check as step 29's EasyEDA tool.
+
+---
+
+## 31. Issue fixes, phase 1 (#41, #39)
+
+Pascal changes, none of which uses an identifier shipped code does not
+already use. Nineteen error paths no longer call `PostProcess` before an
+`Exit` whose `Finally` calls it again (fourteen in PCB.pas,
+`Lib_SetDesignator` three times, `Gen_SetSheetSize` twice), and
+`Proj_Annotate` with `order="none"` no longer closes each sheet twice.
+`Gen_SelectObjects` resets the property notes, selects, then reads the
+selection back with a second query pass; `GetSchProperty` answers
+`Selection` for that (the read `Gen_ClearHighlights` already makes).
+`obj_create` and `obj_copy` refuse with `SchOnlyTypeMessage`, which lists
+schematic types only. `MatchesFilterPCB` compares a length as a number
+(`FilterValueMatchesPCB`: `IsLengthProperty`, `IsFloatStr`,
+`StrToFloatDef`, `Abs`). `App_Ping` lists the open `Altium_API.PrjScr`
+paths (`GetWorkspace`, `DM_Projects`, `DM_ProjectFullPath`, as
+`Proj_GetOpenProjects` does). The script must be the new build and the
+MCP server restarted. Scratch documents only.
+
+1. **Ping.** `app_ping`: `script_projects_open` lists the script project
+   Altium has open, `bundled_script_path` names the Main.pas compared,
+   and on a normal install `script_location_match` is true and
+   `warnings` is empty. If `script_projects_open` is empty while the
+   script project is open, this build does not list script projects in
+   `DM_Projects`: record it; nothing else depends on the field.
+2. **Error paths close once.** On a scratch board,
+   `pcb_create_design_rule name="t" rule_type="bogus"` answers
+   INVALID_PARAM; then save the board. It must save without "A command
+   is currently active". On a scratch sheet, `sch_set_sheet_size
+   style="Q9"` answers INVALID_STYLE; `sch_set_sheet_size
+   orientation="landscape"` alone works; save the sheet. On a scratch
+   project, `proj_annotate order="none"` resets designators and the
+   sheets save. The create-failed paths need a factory returning Nil
+   and cannot be triggered on demand.
+3. **Select reports what it selected.** On the scratch board,
+   `obj_modify object_type=eTrackObject filter="Layer=TopLayer"
+   set="NoSuchProp=1"` (reports `properties.unknown`), then
+   `obj_select object_type=eTrackObject filter="Layer=TopLayer"`: the
+   reply is `matched` N, `selected` N, `success` true, with no
+   `properties`, and the tracks show selected. On the scratch sheet,
+   `obj_select object_type=eNetLabel`: `selected` equals `matched`.
+   `obj_deselect_all` afterwards. If the loop stops on the sheet select,
+   reading `Selection` is not available on that object type: record it.
+4. **obj_create refusal.** `obj_create object_type=eComponentBodyObject
+   properties=""`: INVALID_TYPE, saying obj_create works on schematic
+   objects only and naming `pcb_place_3d_body`, with no PCB type in the
+   list that follows.
+5. **Decimal filters.** On the scratch board, place a track whose end
+   sits on a fraction of a mil, read its `X2` with `obj_query`, then
+   query with `filter="X2=<that value>"`, the same with a trailing zero,
+   and the same with a comma for the point: one track each time, and no
+   script dialog. Repeat on a machine set to a comma decimal separator if
+   one is at hand. If a dialog appears, record its exact text: the filter
+   is not written into script text anywhere, so it comes from elsewhere.
+
+Python only, same session: `pcb_create_design_rule name="t"
+scope="IsPad AND HoleSize > 3"` answers BAD_SCOPE with `suggested_scope`
+"IsPad AND (HoleSize > 3)" and creates nothing; with the suggested scope
+the rule is created and the Rules editor does not call it incorrectly
+defined (delete it after). `app_list_panels` with Properties open answers
+without a KeyError. `app_open_panel name="Properties"` with it open
+answers `opened` false and clicks nothing; with a panel open that
+`app_list_panels` does not list, the panel is still open afterwards and
+the reply carries `toggled_back`. `app_click_menu` on a Tools path ten
+times: any first read that came back empty or wrong shows `retried`. A
+second MCP session started on the same workspace shows up in the first
+session's `app_ping` and `app_get_status` as `other_servers`, and nothing
+is stopped.
+
+Recorded on AD 26.10.1.6 with the previous script build, scratch documents:
+items 1 to 5 as written. The bogus rule type was refused and the board and
+sheet then saved; `orientation="landscape"` alone needed the tool to pass
+`orientation`, which it now does (it had required a style and never sent
+one). The select replies read 3 of 3 tracks and 2 of 2 net labels, and
+`X2=250.5`, `250.50` and `250,5` each found the one track with no dialog.
+The scope refusal and its suggested scope behaved as written, the rule
+was created and deleted again; `app_ping` listed other servers. Not run:
+`proj_annotate order="none"`, the Rules editor's own verdict, the panel
+and menu checks, and a comma-separator machine.
+
+---
+
+## 32. DRC freshness, managed placement, footprint stamp
+
+The script must be the new build and the MCP server restarted.
+Scratch documents only.
+
+1. **DRC confirmed by a fresh report.** `PCB_RunDRC` reads the age of
+   the board's `.DRC` report before and after the run. On a scratch
+   board that already has a `.DRC` beside it, run
+   `pcb_run_drc allow_modal=true` and CANCEL the dialog:
+   `drc_confirmed` false, with the reason naming a cancelled check.
+   Run it again and answer the dialog: `drc_confirmed` true and the
+   report's modified time is now. If the second run reads false, check
+   that Create Report File is ticked in the checker before suspecting
+   the code.
+2. **Managed (Workspace) placement.** Needs a signed-in Workspace and
+   an open sheet that already carries one managed part, since the
+   Workspace name is read off open sheets. `lib_get_vault_name`:
+   `found` true and the name Altium shows. `lib_get_vault_component
+   design_item_id=<a real ID>`: `placeable` true and non-empty
+   `vault_guid` and `item_guid`. Then `sch_place_vault_components` with
+   that ID, three placements, on the scratch sheet with
+   `allow_manual_layout=true`: `placed` 3, `linked` 3, and every item
+   carries non-empty `vault_guid` and `item_guid`. Save, close and
+   reopen the sheet: the parts still show as managed in the Properties
+   panel. Four placements onto an empty sheet WITHOUT
+   `allow_manual_layout` are refused before anything is sent. With
+   every managed sheet closed and no `vault`, both tools answer
+   VAULT_NOT_RESOLVED. Recorded on AD 26.9.1 before this rewrite, on
+   an installation with no file libraries: `LoadComponent(4,
+   <Workspace>, <ID>)` returned a linked component and the link
+   survived a save, while `FindComponentSymbol` said no for every kind,
+   which is why the dry run asks the loader.
+3. **Footprint stamp on a placed part.**
+   `sch_set_components_parameters stamps=[{"designator":"R1",
+   "Footprint":"<another footprint in the same library>"}]` on a
+   scratch sheet: `footprints_applied` 1, and the Properties panel shows
+   the new footprint with the same library. Compile: no "Missing
+   Component Models" for R1. A part with no footprint model lands in
+   `footprints_not_applied`.
+
+Python only: `design_bom_file` on a `.PcbDoc` or a missing path is an
+error, and a project never compiled (no `.PrjPcbStructure`) is an error
+saying so; a sheet with no parts returns an empty BOM with a `warning`.
+`design_review_file` refuses the same three. Under WSL,
+`design_plan_from_sheet` on a Windows sheet path names the sheet by its
+file, so a re-emit lands on the same sheet.
+
+Not run yet: none of this has executed in Altium on this build.
+
+---
+
+## 33. Paging, read-backs, managed lookup, relaunch
+
+The script must be the new build and the MCP server restarted. Scratch
+documents only.
+
+1. **Paged violations.** On a board with more than 200 stored
+   violations, `pcb_get_clearance_violations`: `returned` 200,
+   `has_more` true, `violation_count` the full number. Again with
+   `offset=200`: the next page, no repeats.
+2. **Truncation flags.** `proj_get_nets limit=10` on any project:
+   `limit_hit` true and `count` 10. With the default limit on a small
+   project: `limit_hit` false. `proj_get_bom limit=2` the same.
+   `skipped_nil` 0 on a healthy project.
+3. **Net-class members.** Make a class of two nets with
+   `pcb_create_net_class`, then `pcb_get_net_classes`: that class lists
+   both nets, `member_count` 2, `probe_errors` 0. `members=false`
+   returns names only, faster. Record the time on a large board.
+4. **Plane net.** On a scratch board with an internal plane,
+   `pcb_set_plane_net layer=InternalPlane1 net=GND`: `applied` true,
+   `route` "InternalPlaneNetName", and the Layer Stack Manager shows GND
+   on that plane. If `route` reads "LayerObject.Net", note it: the
+   documented property did not read back on this build.
+5. **DbLib part.** `sch_place_dblib_component` with a multi-part row
+   and `part_id=2`: `part_id` 2, `part_id_applied` true, and the sheet
+   shows part B. `part_id=99`: placed, `part_id_applied` false.
+6. **Pad designator.** `obj_modify` a pad on a scratch board with
+   `Designator=7`: the pad reads 7 under both `Name` and `Designator`.
+   `Name=` (empty) is refused and the pad keeps 7.
+7. **Managed name lookup.** With a sheet open that carries managed
+   parts, `lib_find_vault_components name=<a comment on one of them>`:
+   every part with that comment is listed once per Design Item ID, with
+   a lifecycle state. A name on no open sheet: `count` 0.
+8. **Poll timer.** After StartMCPServer the activity log has
+   `_session_start` and then `_tick_first`. No `_arm_failed`.
+9. **Ctrl+Z while attached.** With the bridge running and a scratch
+   sheet focused, move a part by hand and press Ctrl+Z: the move undoes
+   at once. Press it twice more, then Detach: nothing further undoes on
+   detach. Repeat with the status window minimised. Never measured on
+   this codebase before.
+10. **Relaunch.** Stop the bridge from the status window, then run
+    `eda-agent relaunch --dry-run`: it prints the X2.EXE command. Run
+    `eda-agent relaunch`: the status window comes back and `app_ping`
+    answers. Run it again: "already answers", nothing started. The
+    ProcName form `Dispatcher.pas>StartMCPServer` is the one Altium's own
+    menu files use; if the script does not start, record what Altium
+    showed.
+
+Offline only, already covered by tests: the wheel carries the EasyEDA
+extension source and `eda-agent easyeda-extension path|build` finds or
+builds it; CI compiles everything on Python 3.11 and installs the built
+wheel; `validate_requirement` returns board-intent questions in `notes`
+without failing; SECURITY.md and the templates match the repository.
+
+Recorded on AD 26.10.1.6 with the previous script build, scratch board: item 3
+(class of two nets: both listed, `member_count` 2, `probe_errors` 0, 0.04 s
+either way on a board this small), item 4 (`route` "InternalPlaneNetName",
+read back), item 6 (the pad reads 7 under both names; `Name=` is not
+written and the pad keeps 7, reported under `properties.failed`), item 8
+(`_session_start` then `_tick_first`, no `_arm_failed`) and item 10:
+`eda-agent relaunch` started the loop in a running Altium whose loop had
+stopped, and with the loop answering it started nothing. It cannot start
+one while Altium still counts a halted script as running ("Another script
+executing now"); after a script halt only a restart of Altium clears that.
+Not run: items 1, 2, 5, 7 and 9.
+
+---
+
+## 34. Issue fixes, phase 2 (#36, #46 to #58)
+
+The script must be the new build, deployed with `install-scripts`, and the
+script project closed and reopened. Scratch documents only.
+
+1. **Unit stamps (#47).** `app_ping`: `unit_stamps` lists ten units with
+   12-character values, `stale_units` empty. Edit a comment in a deployed
+   unit, deploy again, re-run StartMCPServer without closing the project,
+   and ping: that unit is named in `stale_units`. Close and reopen the
+   project: empty again.
+2. **Layer names (#46).** On a scratch PcbLib footprint with silkscreen and
+   top copper, `lib_delete_footprint_primitives layer="Top Assembly"` (or
+   any name the stack does not have) is refused with the layer list, and
+   the copper is untouched. A mechanical layer the stack names works.
+   `pcb_place_3d_body layer=<unknown>` is refused before anything is made.
+3. **Pad read (#48, #50, #58).** `lib_get_pad_geometry` on a footprint with a
+   custom pad: `copper_x_mm` is where the copper is and `x_mm` the origin.
+   On a slotted pad `hole_rotation` reads, and `slot_aligned` is false for a
+   slot whose hole crosses its copper. `mask_expansion_state` reads manual
+   on a pad with a manual value.
+4. **Pad setter (#54).** `lib_set_pad_properties` on a scratch pad: `plated`
+   false leaves the shape alone; `mask_expansion` 0.1 (mm) reads back with
+   state manual; `hole_rotation` 90 on a slot reads back 90. Save, reopen:
+   the values held.
+5. **Footprint vias (#55).** A footprint with a via: `lib_get_footprint_primitives`
+   lists it with its diameter and hole.
+6. **Save one document (#56).** Edit a scratch sheet while another open sheet
+   sits in a read-only folder. `app_save_document` on the scratch sheet:
+   `saved` true, and the read-only one is untouched with no dialog.
+7. **Opacity (#57).** `obj_modify` an `eComponentBodyObject` with
+   `BodyOpacity3D=0.5`: the Properties panel shows 50%, and it reads back
+   0.5. `BodyOpacity3D=50` is refused.
+8. **Mirror (#36).** Mirror a part whose body has diagonal lines (an op-amp
+   triangle) and one with an arc bubble: the triangle points the other way
+   and the bubble moves to the other tip, as mirroring by hand does.
+   `primitives_skipped` is 0.
+
+Recorded on AD 26.10.1.6 with the previous script build, scratch documents:
+item 1 (ten 12-character stamps; a comment added to the deployed Utils.pas
+named Utils in `stale_units` with the reload advice), item 2 (both
+refusals, nothing created or removed), items 3 and 4 (a slot across tall
+copper read `slot_aligned` false, and true once `hole_rotation` 90 turned
+it along the copper; mask 0.1 mm read back manual; plated false left the
+shape; all held after save and a restart of Altium), and item 6 in part:
+`saved` true for the one document. `was_modified` read false on a board
+changed only by script, and the file was written all the same. Not run:
+item 5 (no tool adds a via to a footprint), item 7 (needs a STEP model),
+item 8, and the read-only half of item 6.
+
+The three left waiting on a live measurement, the pad cache's separate
+top and bottom mask fields (#59, #61), the via mask write (#60) and text
+that could not be selected after an X/Y move (#39.14), were measured and
+fixed in step 36. Item 7 ran there too, with a real STEP model: 0.5 read
+back and 50 was refused. Item 8 ran there, and found arcs were not moved
+at all.
+
+---
+
+## 35. Footprint delete edits from another footprint (#42, #45, #39.16)
+
+The current footprint's primitives live on the library board, which is
+written back into the footprint whenever another footprint becomes
+current. Measured on AD 26.10.1.6 on a scratch PcbLib:
+`lib_delete_footprint_primitives` on the footprint on screen reported
+`removed` 6 and all six were back after switching away and back;
+`Board.RemovePCBObject` removed nothing from a library board, whether the
+primitive came from a list, a board iterator, or was first removed from
+the footprint. A remove while another footprint was current lasted
+through switches, save and reopen, with the primitive freed, for 25
+cycles each on primitives made in the session and on primitives loaded
+from disk.
+
+The delete now makes another footprint current when the target is on
+screen (a temporary one in a single-footprint library, removed again),
+removes and frees each match while its iterator is still open, and shows
+the target again. `was_current` reports the switch.
+
+1. **Delete on screen.** With a footprint on screen holding tracks on a
+   mechanical layer, `lib_delete_footprint_primitives layer=<that
+   layer> confirm=true`: `removed` N, `was_current` true, the same
+   footprint is on screen afterwards. Switch to another footprint and
+   back: the tracks stay gone. A second run removes 0.
+2. **Single-footprint library.** The same in a library of one footprint:
+   no extra footprint is left in the library, before or after a save.
+3. **Off screen.** The same on a footprint that is not on screen:
+   `was_current` false and the footprint on screen does not change.
+
+Recorded on AD 26.10.1.6 with the previous script build: items 1 to 3, ten
+cycles each, then save and a restart of Altium: the tracks stayed gone and
+the library held only its own footprints. Board deletes (`obj_delete`,
+`pcb_delete_object`) measured the same way on a scratch board, 25 cycles:
+every delete held through save and reopen and sentinel tracks were
+untouched; they are unchanged and do not free what they remove.
+
+
+---
+
+## 36. Library cleanups, footprint adds listed once, mask sides, and five field-report fixes
+
+New: `lib_move_bodies_to_layer` and `lib_redraw_assembly` (#43). The rest
+are fixes found by live measurement on AD 26.10.1.6:
+
+* a footprint add left the footprint on screen listing the new primitive
+  twice until the next footprint switch; every footprint writer now makes
+  the same footprint current again afterwards;
+* `obj_modify` X/Y on a board text, and `pcb_place_3d_body`, moved the
+  object outside its modify bracket, so the spatial index kept the old
+  place and the mouse could not pick it (#39.14);
+* `pcb_set_via_soldermask_relief` refused; it writes through the via's pad
+  cache now, since only the direct `SolderMaskExpansion` assignment faults
+  (#60), and pad and via mask reads report the bottom side and the
+  separate flag (#59, #61);
+* a Board Outline Clearance rule's descriptor says `Gap=0mil` whatever it
+  holds; the rule readers add `gap_mm` from the rule itself (#39.7);
+* the EasyEDA importer read a region's SVG path as a point list and drew
+  per-pad lead outlines as silkscreen (#39.22);
+* `sch_mirror_component` never moved an arc, because a local `EArc` hid the
+  `eArc` kind (names are case-insensitive), and skipped the designator.
+  `lint.py` now flags a local that hides an enum constant.
+
+1. **Bodies to one layer.** In a PcbLib with bodies on different
+   mechanical layers, `lib_move_bodies_to_layer layer=Mechanical13`:
+   `moved` counts each body not already there, and after save and
+   reopen every body is on Mechanical13. `layer=TopLayer` is refused; a
+   mechanical layer the library has not enabled is accepted with
+   `layer_enabled` false and a `warning`.
+2. **Assembly redraw.** `lib_redraw_assembly layer=Mechanical13
+   confirm=true` on footprints with a 3D body: a rectangle the size of the
+   body, `.Designator` centred in it. Run it twice: `cleared` is 5 per
+   footprint the second time and one drawing remains. A body on that
+   layer is not cleared. Without `confirm` it is refused.
+3. **One footprint in the library.** The same redraw in a single-footprint
+   library leaves no extra footprint behind.
+4. **Adds listed once.** Add a track to the footprint on screen:
+   `lib_get_footprint_primitives` lists it once, and so does Altium's own
+   iterator.
+5. **Picking a moved text.** `obj_modify eTextObject X=..|Y=..` on a board
+   text, then click it at its new place in the editor: it selects.
+6. **Via relief.** `pcb_set_via_soldermask_relief expansion_mils=3` on a
+   board with vias: `vias_verified` equals `vias_matched`, Altium stays up,
+   and each via's mask opening is 3 mil from the hole edge after save and
+   reopen.
+7. **Mask sides.** `lib_set_pad_properties mask_expansion=0.2
+   mask_bottom_expansion=0.05 units=mm`: `lib_get_pad_geometry` reads
+   0.2 / 0.05 with `mask_separate` true.
+8. **Outline clearance gap.** A Board Outline Clearance rule set to 3 mm:
+   `pcb_get_rule_properties` reads `gap_mm` 3 while the descriptor still
+   says 0.
+9. **Mirror an arc.** Mirror a placed part with an arc: the arc's centre
+   reflects, a half arc's opening turns the other way,
+   `primitives_skipped` is 0.
+
+Recorded on AD 26.10.1.6 with script 2026.10.11.1, scratch documents:
+items 1 to 4 and 6 to 9. Item 1: two bodies moved and kept their layer
+through save and a restart of Altium, the footprint on screen and one off
+screen alike. Item 2: a 0603 body gave a 1.6 x 0.8 mm outline, three runs
+left one outline and one text each, through save and restart. Item 4:
+Altium's iterator read 11 entries for 11 objects after the add (12 for 11
+before the fix); pads, pads in bulk, tracks, tracks in bulk, an arc, text,
+a region and a 3D body added this way all survived save and restart.
+Item 5 was measured with a spatial iterator rather than the mouse: the
+text and a placed body were found at their new places and not at the
+old. Item 6: two vias, 3 mil both sides from the hole edge, kept through
+save and restart. Item 8: 3 mm and then 2.5 mm read back. Item 9: the
+arc bubble moved from 210 to -210 mil about the part and back, and a
+90..270 degree arc became 270..90. Item 5 by mouse is not run.
+
 ---
 
 ## Still open, and not blocking
@@ -1624,10 +2210,12 @@ Python; a server restart is part of loading this change.
   and left a rule Altium later called incorrectly defined; Board Outline
   Clearance rules read `Gap` 0 while the real value sits in a per-object
   matrix no documented property reaches; and 3D bodies deleted with
-  `lib_delete_footprint_primitives` came back on the next save. The last
-  one means removing a primitive from the library board as well as the
-  footprint, and a wrong removal sequence dangles an object, which takes
-  the loop down where `Try` cannot catch it.
+  `lib_delete_footprint_primitives` came back on the next save. The
+  first is now refused before sending when a comparison sits unbracketed
+  next to And, Or, Xor or Not (step 31), and the last is fixed by step 35.
+  The Gap reading came from the descriptor, which says 0 whatever the rule
+  holds; the readers now add `gap_mm` from the rule (step 36). The
+  per-object table itself is still not exposed to scripts.
 
 
 ## Generic property rejection on Altium 21 (live verified)

@@ -7,6 +7,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 """
 
 import json
+import re
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
@@ -321,6 +322,107 @@ _TERMINATION_DEFAULTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Rule scope queries.
+#
+# A scope reaches Altium as Scope1Expression / Scope2Expression, assigned
+# as a property: it is never written into script text, so there is nothing
+# to escape. Altium's own query engine compiles it. Its precedence puts
+# And, Or, Xor and Not ABOVE the comparisons (Query Language Reference
+# TR0110, "Brackets and Order of Precedence"), so "IsPad AND HoleSize > 3"
+# reads as "(IsPad AND HoleSize) > 3". Reported: that scope raised
+# "; expected at Line:2, Char:76. Continue execution?" on every call, the
+# rule was created anyway, and the Rules editor later said some rules had
+# incorrect definitions. && and || bind after the comparisons.
+# ---------------------------------------------------------------------------
+
+_SCOPE_TOKEN = re.compile(
+    r"'(?:''|[^'])*'|&&|\|\||<>|<=|>=|[=<>()]|[A-Za-z_][A-Za-z0-9_.]*|\S")
+_SCOPE_LOGIC = {"and", "or", "xor", "not"}
+_SCOPE_COMPARE = {"=", "<>", "<", ">", "<=", ">=", "like"}
+
+
+def _scope_wraps(expr: str) -> list[tuple[int, int]]:
+    """Spans of comparisons sharing a bracket level with And/Or/Xor/Not.
+
+    Each span is one operand of the logical operator at that level, as
+    ``(start, end)`` offsets into ``expr``. The And of ``Between a And b``
+    is read as a logical And too, which changes nothing: neither side of
+    it holds a comparison.
+    """
+    def level():
+        return {"logic": False, "segments": [],
+                "current": {"compare": False, "start": None, "end": None}}
+
+    def extend(lev, start, end):
+        seg = lev["current"]
+        if seg["start"] is None:
+            seg["start"] = start
+        seg["end"] = end
+
+    wraps: list[tuple[int, int]] = []
+
+    def close(lev):
+        segments = lev["segments"] + [lev["current"]]
+        if lev["logic"] and any(s["compare"] for s in segments):
+            wraps.extend((s["start"], s["end"]) for s in segments
+                         if s["compare"] and s["start"] is not None)
+
+    stack = [level()]
+    for m in _SCOPE_TOKEN.finditer(expr):
+        tok, start, end = m.group(0), m.start(), m.end()
+        low = tok.lower()
+        lev = stack[-1]
+        if tok == "(":
+            extend(lev, start, end)
+            stack.append(level())
+        elif tok == ")":
+            if len(stack) > 1:
+                close(stack.pop())
+            extend(stack[-1], start, end)
+        elif low in _SCOPE_LOGIC:
+            lev["logic"] = True
+            lev["segments"].append(lev["current"])
+            lev["current"] = {"compare": False, "start": None, "end": None}
+        else:
+            if low in _SCOPE_COMPARE:
+                lev["current"]["compare"] = True
+            extend(lev, start, end)
+    while stack:
+        close(stack.pop())
+    return wraps
+
+
+def scope_problem(expr: str) -> tuple[str, str]:
+    """``(reason, bracketed form)`` when Altium would misread a scope, else ('', '')."""
+    text = str(expr or "")
+    wraps = _scope_wraps(text)
+    if not wraps:
+        return "", ""
+    inserts = sorted([(s, "(") for s, _ in wraps] + [(e, ")") for _, e in wraps],
+                     key=lambda p: p[0], reverse=True)
+    fixed = text
+    for pos, ch in inserts:
+        fixed = fixed[:pos] + ch + fixed[pos:]
+    return (
+        f"The scope {text!r} has a comparison next to And, Or, Xor or Not "
+        f"at the same bracket level. Altium's query language binds And, "
+        f"Or, Xor and Not tighter than =, <>, <, >, <= and >=, so it reads "
+        f"the comparison against the result of the And rather than as "
+        f"written, and the engine raises a script error dialog that stops "
+        f"the bridge. Write it as {fixed!r}, or join the terms with && or "
+        f"||, which bind after comparisons. Nothing was sent."), fixed
+
+
+def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
+    """The reply for a scope Altium would misread, or None to go ahead."""
+    reason, fixed = scope_problem(expr)
+    if not reason:
+        return None
+    return {"success": False, "error": "BAD_SCOPE", "reason": reason,
+            "suggested_scope": fixed, **extra}
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -415,21 +517,28 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
-    async def pcb_get_net_classes() -> dict[str, Any]:
-        """Get all net classes from the active PCB.
+    async def pcb_get_net_classes(members: bool = True) -> dict[str, Any]:
+        """Get all net classes on the active PCB, with the nets in each.
 
-        Only returns class metadata, IPCB_ObjectClass.MemberCount and
-        MemberName[] are not exposed in Altium's DelphiScript host, so
-        per-member enumeration has to be done by iterating eNetObject and
-        grouping by each net's parent class.
+        Altium's script host does not expose a class's member list, so
+        each class is asked about every net in turn. That is one call per
+        class and net, so on a big board ``members=False`` is quicker when
+        only the names are needed.
+
+        Args:
+            members: Read each class's nets (default). False returns the
+                class names only.
 
         Returns:
-            Dictionary with "net_classes" array (each with name, super_class)
-            and "count"
+            Dictionary with "net_classes" (each with name, super_class and,
+            when members are read, "nets", "member_count" and
+            "probe_errors"), "count" and "members_read". A class with
+            probe_errors above 0 may have more nets than listed.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_net_classes", {})
-        return result
+        params = {} if members else {"members": False}
+        return await bridge.send_command_async(
+            "pcb.get_net_classes", params, timeout=90.0)
 
     @mcp.tool()
     async def pcb_create_net_class(
@@ -611,10 +720,18 @@ def register_pcb_tools(mcp):
         ``descriptor`` instead: Altium composes it for display, so it
         names the kind and carries the constraint values.
 
+        A CLEARANCE-FAMILY RULE ALSO CARRIES ``gap_mm``, read from the
+        rule itself. Trust it over the descriptor for Board Outline
+        Clearance, whose descriptor says ``Gap=0mil`` whatever the rule
+        holds (measured on AD 26.10: 0.254 mm and 3 mm both described as
+        0). That rule's per-object table is not exposed to scripts, so a
+        value set only in the table is visible in Design > Rules alone.
+
         Returns:
             Dictionary with "rules" array (each with name, rule_kind,
-            enabled, priority, scope_1, scope_2, comment, descriptor)
-            and "count".
+            enabled, priority, scope_1, scope_2, comment, descriptor, and
+            gap_mm for clearance, component, hole-to-hole and board
+            outline clearance rules) and "count".
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_design_rules", {})
@@ -683,6 +800,8 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_get_clearance_violations(
         net: str = "",
+        offset: int = 0,
+        limit: int = 200,
     ) -> dict[str, Any]:
         """Read the violations ALREADY on the board, optionally filtered
         to one net. Does NOT run DRC.
@@ -719,13 +838,22 @@ def register_pcb_tools(mcp):
         Args:
             net: Net name to filter by (substring match). Empty string
                 returns ALL stored violations.
+            offset: How many matching violations to skip, for paging.
+            limit: How many to return, 200 by default.
 
         Returns:
-            Dict with ``{violation_count, drc_triggered, note,
-            violations}``. Capped at 200.
+            Dict with ``{violation_count, offset, limit, returned,
+            has_more, drc_triggered, note, violations}``.
+            ``violation_count`` is every violation that matched; when
+            ``has_more`` is true, call again with ``offset`` raised by
+            ``returned``.
         """
         bridge = get_bridge()
-        params = {"net": net} if net else {}
+        params: dict[str, Any] = {"net": net} if net else {}
+        if offset:
+            params["offset"] = max(0, int(offset))
+        if limit != 200:
+            params["limit"] = max(1, int(limit))
         return await bridge.send_command_async(
             "pcb.get_clearance_violations", params, timeout=90.0)
 
@@ -759,6 +887,12 @@ def register_pcb_tools(mcp):
         to 100 violations with full location data, so the agent can
         jump straight to the offending spot instead of guessing from
         the description.
+
+        ``drc_confirmed`` is true only when Altium rewrote the .DRC
+        report during this call. A cancelled dialog leaves the old
+        report untouched, so its count, 0 included, belongs to an
+        earlier run. It also stays false when the checker's Create
+        Report File option is off.
 
         Per-violation shape:
           - ``name``, ``description``, ``rule``: text from Altium
@@ -4139,9 +4273,11 @@ def register_pcb_tools(mcp):
         not have is refused with ``UNKNOWN_LAYER`` rather than silently
         retargeting another layer.
 
-        The assignment is READ BACK before reporting. If the read-back
-        disagrees the call answers ``success: false`` with ``applied:
-        false`` and a note, and the board is NOT saved.
+        The net is written to the board's InternalPlaneNetName for that
+        layer and READ BACK before reporting; if that does not take, the
+        layer object's own net is tried and read back too. When neither
+        reads back the net the call answers ``success: false`` with
+        ``applied: false`` and a note, and the board is NOT marked changed.
 
         Args:
             layer: Internal plane layer, e.g. "InternalPlane1" or the name
@@ -4150,7 +4286,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "success", "layer" (the RESOLVED layer),
-            "layer_name", "net", "net_readback", "applied" and "note".
+            "layer_name", "net", "net_readback", "applied", "route" (which
+            write took) and "note".
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -4705,6 +4842,11 @@ def register_pcb_tools(mcp):
                     or ``"All"``.
                 Mixing predicates across kinds (e.g., ``InNet`` on a
                 differential_pairs rule) creates a rule that never matches.
+                Bracket a comparison joined by And/Or/Xor/Not:
+                ``"IsPad And (HoleSize > 3)"``, or use ``&&``/``||``.
+                Altium binds And tighter than ``>``, and an unbracketed
+                ``"IsPad And HoleSize > 3"`` is refused before anything
+                is sent, with the bracketed form in ``suggested_scope``.
             net_scope: Which nets the rule applies between. Options:
                 ``"different_nets"`` (default) for Clearance rules;
                 ``"any_net"`` for all-pairs; ``"same_net"`` for same-net
@@ -4727,6 +4869,10 @@ def register_pcb_tools(mcp):
         ``pcb_set_rule_properties`` (gap_mils field), which dispatches
         through Rule.RuleKind without needing the symbol.
         """
+        if scope:
+            refusal = _scope_refusal(scope, created=False)
+            if refusal:
+                return refusal
         bridge = get_bridge()
         params: dict[str, Any] = {
             "name": name,
@@ -4941,58 +5087,45 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_via_soldermask_relief(
-        expansion_mils: int = 4,
+        expansion_mils: float = 4,
         net: str = "",
     ) -> dict[str, Any]:
-        """REFUSED on this Altium build: the write crashes the engine.
+        """Open the solder mask round each via's barrel, measured from the
+        hole edge, on both sides.
 
-        Setting a via's soldermask expansion from script raises an access
-        violation inside ScriptingSystem.DLL on AD 26.10.1.6, measured
-        twice on a scratch board with three vias and nothing else, once
-        through BeginModify and once through SendMessageToRobots. The
-        engine shows a modal before any handler guard can run, so the
-        polling loop stops and the session needs a manual restart. The
-        handler refuses rather than attempt it: every caller who tried
-        lost their session and changed nothing on the board.
+        Every via, or those on ``net``, gets its mask expansion set as a
+        manual value with "from hole edge" on, so the opening is the hole
+        plus ``expansion_mils`` all round. Both sides are written: a via
+        stores a bottom value even while its sides are linked, and that
+        value takes effect if they are ever unlinked. Each via is read
+        back, and ``vias_verified`` counts those holding the value.
 
-        TENT VIAS WITH A RULE INSTEAD. Altium's own route is a Solder
-        Mask Expansion rule, which covers every via at once and survives
-        a repour, where a per-via write would not. Create it with
+        WRITTEN THROUGH THE VIA'S PAD CACHE. Assigning the expansion
+        straight onto a via crashes Altium's scripting engine (an access
+        violation in ScriptingSystem.DLL, measured on AD 26.10); the same
+        value written into the cache a via shares with pads takes and
+        reads back, so the handler only ever uses that route.
+
+        A Solder Mask Expansion rule scoped ``IsVia`` is the alternative
+        that also covers vias placed later:
         ``pcb_create_design_rule(rule_type="solder_mask_expansion",
-        scope="IsVia", value=<negative mils>)``. A negative expansion
-        contracts the mask opening; the rule is also editable by hand in
-        Design > Rules > Mask.
-
-        REFUSED HERE, NOT AT THE BRIDGE, on purpose. The handler refuses
-        too, but reaching it means sending the command, and a session
-        running a deployed script older than 2026.09.10.3 still has the
-        write in it. Sending would take down exactly the session this
-        exists to protect. Nothing is sent.
+        scope="IsVia", value=<mils>)``.
 
         Args:
-            expansion_mils: accepted and unused.
-            net: accepted and unused.
+            expansion_mils: Mask expansion from the hole edge, in mils.
+                Default 4.
+            net: Only vias on this net. Empty means every via.
 
         Returns:
-            An error dict with `NOT_SCRIPTABLE` and the rule route.
+            ``vias_matched``, ``vias_verified``, ``expansion_mils``,
+            ``net``, ``from_hole_edge``.
         """
-        return {
-            "success": False,
-            "error": "NOT_SCRIPTABLE",
-            "reason": (
-                "Writing a via soldermask expansion crashes the Altium "
-                "scripting engine on this build (access violation in "
-                "ScriptingSystem.DLL), which stops the polling loop and "
-                "needs a manual restart, so nothing was sent."
-            ),
-            "instead": (
-                "Tent vias with a Solder Mask Expansion rule scoped IsVia, "
-                "in Design > Rules > Mask. pcb_create_design_rule cannot "
-                "author that rule kind; app_run_menu opens the dialog and "
-                "app_drive_dialogs fills it in."
-            ),
-            "requested": {"expansion_mils": expansion_mils, "net": net},
-        }
+        params: dict[str, Any] = {"expansion_mils": format_length(expansion_mils)}
+        if net.strip():
+            params["net"] = net.strip()
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.set_via_soldermask_relief", params)
 
     @mcp.tool()
     async def pcb_get_mech_layer_names(
@@ -5262,7 +5395,13 @@ def register_pcb_tools(mcp):
         Returns:
             Dictionary with "pads" array (each with name, component, x, y,
             net, layer, shape, top_x_size, top_y_size, hole_size, rotation,
-            is_smd, solder_mask_expansion, paste_mask_expansion) and "count"
+            is_smd, solder_mask_expansion, solder_mask_bottom_expansion,
+            solder_mask_separate, paste_mask_expansion) and "count".
+            solder_mask_expansion is the TOP side when
+            solder_mask_separate is true and both sides when it is false;
+            the bottom value is stored either way and takes effect once
+            the sides are unlinked. Expansions read 0 when the pad follows
+            the board's rule.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -5957,11 +6096,16 @@ def register_pcb_tools(mcp):
         not do it: it dispatches through the base reference and reports
         a match while changing nothing.
 
+        A clearance-family rule also returns ``gap_mm``, read from the
+        rule itself; for Board Outline Clearance the descriptor says
+        ``Gap=0mil`` whatever the rule holds, so read ``gap_mm``.
+
         Args:
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
 
         Returns:
-            Dict with name, rule_kind, enabled, priority, descriptor.
+            Dict with name, rule_kind, enabled, priority, descriptor, and
+            gap_mm for a clearance-family rule.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -6035,7 +6179,10 @@ def register_pcb_tools(mcp):
         Args:
             name: Rule name to update.
             enabled: Whether DRC enforces the rule.
-            scope1 / scope2: Rule scope query expressions.
+            scope1 / scope2: Rule scope query expressions. A comparison
+                joined by And/Or/Xor/Not must be bracketed
+                (``"IsPad And (HoleSize > 3)"``) or joined with ``&&``;
+                an unbracketed one is refused before anything is sent.
             comment: Free-form comment.
             gap_mils: Clearance gap. Applies to Clearance,
                 ComponentClearance, and HoleToHoleClearance rules.
@@ -6047,6 +6194,10 @@ def register_pcb_tools(mcp):
         Returns:
             Dict with name, rule_kind, and properties_updated count.
         """
+        for given in (scope1, scope2):
+            refusal = _scope_refusal(given, properties_updated=0) if given else None
+            if refusal:
+                return refusal
         params: dict[str, Any] = {"name": name}
         for key, value in [
             ("scope1", scope1),

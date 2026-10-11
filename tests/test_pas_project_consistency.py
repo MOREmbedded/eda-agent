@@ -421,3 +421,27 @@ def test_disk_pas_files_are_in_build_or_excluded():
         f"build.py (deploys to the bundle), PRJSCR_ONLY (IDE-debug only), "
         f"or EXCLUDED (build output / legacy)."
     )
+
+
+def test_statusform_defines_every_handler_its_form_names():
+    """StatusForm.dfm names its event handlers; StatusForm.pas must hold them.
+
+    A form looks its handlers up in its own unit only. One that is
+    missing or renamed binds to nothing, with no error: the click does
+    nothing, and if it is the poll timer the bridge looks alive and
+    answers nothing.
+    """
+    form = (SCRIPTS_DIR / "StatusForm.dfm").read_text(
+        encoding="utf-8", errors="replace")
+    named = set(re.findall(r"^\s*On\w+\s*=\s*(\w+)\s*$", form, re.MULTILINE))
+    assert len(named) > 10, f"read only {len(named)} handlers from the form"
+
+    unit = (SCRIPTS_DIR / "StatusForm.pas").read_text(
+        encoding="utf-8", errors="replace")
+    defined = {name.lower() for name in re.findall(
+        r"^\s*(?:Function|Procedure)\s+(\w+)", unit,
+        re.MULTILINE | re.IGNORECASE)}
+    missing = sorted(h for h in named if h.lower() not in defined)
+    assert not missing, (
+        f"StatusForm.dfm names handlers StatusForm.pas does not define: "
+        f"{missing}")

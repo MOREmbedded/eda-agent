@@ -6,7 +6,10 @@
 
 Function App_Ping(RequestId : String) : String;
 Var
-    Ver : String;
+    Ver, ScriptProjects : String;
+    Workspace : IWorkspace;
+    Proj : IProject;
+    I : Integer;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
     // Altium script cache. cast_errors surfaces the silent-cast counter
@@ -28,11 +31,37 @@ Begin
     Except
         Ver := '';
     End;
+    // Where the script project is open from. Python compares
+    // SCRIPT_VERSION against a Main.pas it can see, and in a working-tree
+    // setup Altium can have the script project open from somewhere else,
+    // so the open Altium_API.PrjScr paths go back for it to compare.
+    // Read only; a failure costs this field and nothing else.
+    ScriptProjects := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            Begin
+                Proj := Workspace.DM_Projects(I);
+                If Proj = Nil Then Continue;
+                If Pos('ALTIUM_API.PRJSCR', UpperCase(Proj.DM_ProjectFullPath)) > 0 Then
+                Begin
+                    If ScriptProjects <> '' Then ScriptProjects := ScriptProjects + ',';
+                    ScriptProjects := ScriptProjects + '"'
+                        + EscapeJsonString(Proj.DM_ProjectFullPath) + '"';
+                End;
+            End;
+        End;
+    Except
+        ScriptProjects := '';
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"pong":true,"script_version":"' + SCRIPT_VERSION +
         '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
-        ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
+        ',"cast_errors":' + IntToStr(CastErrorCount) +
+        ',"script_projects":[' + ScriptProjects + ']}');
 End;
 
 Function App_GetVersion(RequestId : String) : String;
@@ -668,6 +697,66 @@ Begin
 End;
 
 {..............................................................................}
+{ App_SaveDocument - save ONE open document: file_path, or the focused one.    }
+{                                                                              }
+{ app_save_all writes every open document, so one that cannot be written (a   }
+{ sheet in a read-only folder) stops a save the caller never asked for. This  }
+{ touches only the named document, never focuses anything and never walks the }
+{ workspace. Whether it reached disk is measured by the file's age, because   }
+{ DoFileSave does not raise when the editor declines, and Modified is         }
+{ reported but not trusted, as App_SaveAll records.                           }
+{..............................................................................}
+
+Function App_SaveDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, Reason : String;
+    ServerDoc : IServerDocument;
+    WasModified, Saved : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath = '' Then FilePath := CurrentFocusedDocPath(0);
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No file_path given and no document is focused');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            FilePath + ' is not open in Altium, so it holds no unsaved edits');
+        Exit;
+    End;
+
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except End;
+    AgeBefore := -1;
+    Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
+    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.DoFileSave(''); Except End;
+    AgeAfter := -1;
+    Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+    Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
+
+    Reason := '';
+    If Not Saved Then
+        Reason := 'The file did not get newer. Altium declines a save while a '
+            + 'command is active in the editor, which an abandoned edit can '
+            + 'leave behind with nothing on screen, and a read-only folder '
+            + 'refuses it. File ages tick every two seconds, so a save right '
+            + 'after another can also read as not written: try again.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"file_path":"' + EscapeJsonString(FilePath) + '"'
+        + ',"saved":' + BoolToJsonStr(Saved)
+        + ',"was_modified":' + BoolToJsonStr(WasModified)
+        + ',"reason":"' + EscapeJsonString(Reason) + '"}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
@@ -875,9 +964,17 @@ Begin
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
         'create_document':     Result := App_CreateDocument(Params, RequestId);
         'save_all':            Result := App_SaveAll(RequestId);
+        'save_document':       Result := App_SaveDocument(Params, RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
         'stop_server':         Begin SaveAllDirty(0); Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
+End;
+
+{ UnitStamp_Application - which build of Application.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Application(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

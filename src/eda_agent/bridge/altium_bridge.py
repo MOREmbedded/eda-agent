@@ -739,7 +739,9 @@ class AltiumBridge:
 
             if ready:
                 try:
-                    with open(response_path, "r", encoding="utf-8") as f:
+                    # utf-8-sig drops a byte-order mark at the start,
+                    # which json.load would otherwise reject.
+                    with open(response_path, "r", encoding="utf-8-sig") as f:
                         data = json.load(f)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
                     parse_errors += 1

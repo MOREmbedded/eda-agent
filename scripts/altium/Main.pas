@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.06.1';
+    SCRIPT_VERSION = '2026.10.11.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -56,6 +56,13 @@ Const
     // (track width, hole size, annular ring) are orders of magnitude
     // below it.
     MAX_INT = 1000000000;
+
+    // TLibIdentifierKind in declaration order: 0 Any, 1 NameNoType,
+    // 2 NameWithType, 3 FullPath, 4 VaultName (System API constants).
+    // VaultName is how SchServer.LoadComponent addresses a part in a
+    // Workspace. Written as a number so no enum name has to exist in
+    // this host; an unknown identifier stops the script.
+    LIB_IDENT_KIND_VAULT_NAME = 4;
 
 Var
     WorkspaceDir : String;
@@ -148,8 +155,8 @@ End;
 { unambiguous even when a single operation's property list contains '|'.       }
 {                                                                               }
 { Defined in Main.pas so Library.pas and Generic.pas can both use them,       }
-{ the Altium project compiles files in DesignN order (Main â†’ ... â†’ Library â†’  }
-{ ... â†’ Generic) and a callee must come earlier than its caller.               }
+{ the Altium project compiles files in DesignN order (Main, ..., Library,     }
+{ ..., Generic) and a callee must come earlier than its caller.               }
 {..............................................................................}
 
 Function NextBatchOp(Var Remaining : String) : String;
@@ -1844,3 +1851,10 @@ End;
 { Request dispatch and the poll timer are in StatusForm.pas (the pump's     }
 { handler must live in the form's own unit); the StartMCPServer entry point }
 { stays in Dispatcher.pas, which compiles last.                             }
+
+{ UnitStamp_Main - which build of Main.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Main(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

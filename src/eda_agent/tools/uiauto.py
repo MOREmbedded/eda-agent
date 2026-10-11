@@ -456,7 +456,10 @@ def register_uiauto_tools(mcp):
             appeared); on failure ``reason`` and ``offered`` listing what
             that level actually contained. A path that leaves the menu
             open (it ended at a submenu, or the click did not land) is a
-            failure: no command ran.
+            failure: no command ran. A level that reads empty, or without
+            the entry asked for, is walked once more before failing
+            (``retried``); ``first_read`` then says what the first read
+            found, and both reads are in ``reason`` when both fail.
         """
         if not menu.available():
             return {"ok": False, "reason": (
@@ -503,6 +506,12 @@ def register_uiauto_tools(mcp):
         does while a modal is up, and it works precisely when no other
         tool can because it does not use the bridge at all. It reads the
         Win32 process, so a blocked Altium answers it normally.
+
+        ``blocked: false`` ONLY MEANS THE MAIN WINDOW IS NOT DISABLED. It
+        does not mean the UI is alive. After Altium's UI crashed with the
+        process still running, this was reported reading a live pid,
+        blocked false and no dialogs. When the bridge is silent and this
+        says not blocked, look at the screen before calling it a livelock.
 
         FOR EACH DIALOG you get the caption, the message text, every
         button with its enabled state, and a ``kind``:
@@ -605,26 +614,16 @@ def register_uiauto_tools(mcp):
                 if not offered:
                     # NO BUTTON HANDLES AT ALL: a WPF dialog. Its buttons
                     # are not child windows, so there is nothing to click
-                    # and nothing to list. MEASURED on "Unsaved Changes":
-                    # this branch used to refuse and leave the bridge
-                    # blocked, while a plain Enter cleared it instantly.
-                    #
-                    # Only the two keys that map to a dialog's own
-                    # defaults are offered, and the caption still decides
-                    # which, so "Cancel" cannot silently become a save.
+                    # and nothing to list, but they are UI Automation
+                    # elements with names, so the named one is invoked.
                     role = dialog_driver.role_of(button_caption)
-                    key = "escape" if role == "dismiss" else "enter"
                     if role in dialog_driver.COMMITTING \
                             and not allow_irreversible:
                         return {"ok": False, "role": role, "reason": (
                             f"{button_caption!r} commits a change. Pass "
                             f"allow_irreversible=True if that is intended.")}
-                    # The named button first, through UI Automation: a WPF
-                    # button is an element even where it is not a window,
-                    # and Enter only reaches the default action, which on
-                    # some dialogs (Silkscreen Preparation) is not the
-                    # button asked for.
                     from ..ui import uia
+                    pressed = {}
                     if uia.available():
                         pressed = uia.invoke(target.hwnd, button_caption)
                         if pressed.get("ok"):
@@ -640,18 +639,37 @@ def register_uiauto_tools(mcp):
                                     "reason": None if took else (
                                         f"{button_caption!r} was invoked and "
                                         f"{target.title!r} is still open")}
-                    windows.press_key(target.hwnd, key)
+                    # NEVER ENTER. Enter presses the dialog's DEFAULT
+                    # button, whatever was asked for. MEASURED on "Unsaved
+                    # Changes": asked for "Don't Save", the name missed on
+                    # a curly apostrophe, Enter pressed Save, and the reply
+                    # said "Don't Save". Escape is kept for a dismiss,
+                    # because Escape is what a dialog maps to its cancel.
+                    if role != "dismiss":
+                        why = pressed.get("reason") or (
+                            "UI Automation is unavailable here")
+                        return {
+                            "ok": False, "dialog": target.title,
+                            "pressed": None,
+                            "offered": pressed.get("offered", []),
+                            "reason": (
+                                f"{button_caption!r} could not be pressed on "
+                                f"{target.title!r}, which exposes no button "
+                                f"handles ({why}). Nothing was pressed: "
+                                f"Enter would press the dialog's default "
+                                f"button, which need not be this one."),
+                        }
+                    windows.press_key(target.hwnd, "escape")
                     shut = windows.wait_for_close(target.hwnd, timeout=5.0)
                     return {
                         "ok": shut, "dialog": target.title,
                         "pressed": button_caption, "method": "keyboard",
-                        "key": key, "dialog_closed": shut,
+                        "key": "escape", "dialog_closed": shut,
+                        "outcome_verified": shut,
                         "reason": None if shut else (
-                            f"sent {key} because {target.title!r} exposes no "
-                            f"button handles, and the dialog is still open. "
-                            f"Its captions are only readable by OCR, so the "
-                            f"key is a guess at the default action rather "
-                            f"than a press of the named button."),
+                            f"sent Escape for {button_caption!r} because "
+                            f"{target.title!r} exposes no button handles, "
+                            f"and the dialog is still open."),
                     }
                 return {"ok": False,
                         "reason": (f"{button_caption!r} is not a button on "
@@ -876,8 +894,11 @@ def register_uiauto_tools(mcp):
                 by default.
 
         Returns:
-            ``{"ok": true, "panels": [{name, rect, holder_class}],
-            "count": N}``, plus ``offered`` when asked for.
+            ``{"ok": true, "panels": [{name, rect, button_hwnd,
+            content_count}], "count": N}``, plus ``offered`` when asked
+            for. A panel is found by the tab it carries, so an empty list
+            comes with a ``note``: it has been reported empty on AD 25
+            while Properties was open.
         """
         from ..ui import panels
 
@@ -891,9 +912,10 @@ def register_uiauto_tools(mcp):
         out: dict[str, Any] = {
             "ok": True,
             "count": len(open_now),
-            "panels": [{"name": p["name"], "rect": p["rect"],
-                        "holder_class": p["holder_class"]} for p in open_now],
+            "panels": [panels.describe(p) for p in open_now],
         }
+        if not open_now:
+            out["note"] = panels.EMPTY_SCAN_NOTE
         if offered_too:
             out["offered"] = panels.offered(pid)
         return out
@@ -910,7 +932,10 @@ def register_uiauto_tools(mcp):
         A panel that is already open is reported as such and NOT clicked.
         Those menu entries are toggles, so clicking one you already have
         would close it, and asking for a panel is not a request to lose
-        it.
+        it. When the panel cannot be seen after the click (it may have
+        been open with no tab the scan reads), the entry is clicked once
+        more so the panel is left as it was, and the reply says so with
+        ``toggled_back``. Calling again does not help in that case.
 
         Args:
             name: the panel's name as View > Panels spells it, e.g.

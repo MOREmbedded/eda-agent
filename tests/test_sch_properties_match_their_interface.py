@@ -406,6 +406,8 @@ begin
 end;
 function UnknownObjectTypeMessage(S: String): String;
 begin Result := S; end;
+function SchOnlyTypeMessage(S: String; ToolName: String): String;
+begin Result := S; end;
 function EscapeJsonString(S: String): String;
 begin Result := S; end;
 function BuildErrorResponse(Id, Code, Message: String): String;

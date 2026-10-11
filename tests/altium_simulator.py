@@ -1599,13 +1599,29 @@ class AltiumSimulator:
         elif action == "get_font_id":
             return _build_success_response(rid, '{"font_id":1}')
         elif action == "select_objects":
-            # Route through modify with Selection=true
+            # Mirrors Gen_SelectObjects: select through modify, then read
+            # the flag back and report matched and selected, never the
+            # property notes.
             obj_type_str = params.get("object_type", "")
             filter_str = params.get("filter", "")
-            return self._gen_modify_objects(
+            reply = self._gen_modify_objects(
                 {"scope": "active_doc", "object_type": obj_type_str,
                  "filter": filter_str, "set": "Selection=true"}, rid
             )
+            parsed = json.loads(reply)
+            if not parsed.get("success"):
+                return reply
+            matched = int(parsed["data"]["matched"])
+            type_int = self._resolve_object_type(obj_type_str)
+            selected = sum(
+                1 for obj in self.sch_objects
+                if obj.object_id == type_int
+                and self._matches_filter(obj, filter_str)
+                and obj.get_property("Selection").lower() == "true")
+            ok = "true" if selected >= matched else "false"
+            return _build_success_response(
+                rid, '{"matched":' + str(matched) + ',"selected":'
+                + str(selected) + ',"success":' + ok + '}')
         elif action == "deselect_all":
             return _build_success_response(rid, '{"deselected":true}')
         elif action == "zoom":

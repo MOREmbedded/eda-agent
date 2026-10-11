@@ -960,6 +960,10 @@ End;
 {..............................................................................}
 { Get net-to-pin connectivity from compiled project                           }
 { Params: project_path, component, net_name, limit                            }
+{ limit_hit says the list stopped at limit with more pins left, and          }
+{ skipped_nil counts documents, components and pins the model returned as   }
+{ Nil, so a short list is not mistaken for the whole design. Proj_GetBOM    }
+{ reports the same two.                                                      }
 {..............................................................................}
 
 Function Proj_GetNets(Params : String; RequestId : String) : String;
@@ -970,8 +974,8 @@ Var
     Doc : IDocument;
     Comp : IComponent;
     Pin : IPin;
-    I, J, K, Count, Limit, DocCount : Integer;
-    UsePhysical : Boolean;
+    I, J, K, Count, Limit, DocCount, Skipped : Integer;
+    UsePhysical, LimitHit : Boolean;
     Data, CompDesig, NetName : String;
     First : Boolean;
 Begin
@@ -1006,31 +1010,37 @@ Begin
     Data := '[';
     First := True;
     Count := 0;
+    Skipped := 0;
+    LimitHit := False;
 
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
     Begin
-        If Count >= Limit Then Break;
+        If LimitHit Then Break;
         Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Continue;
+        If Doc = Nil Then Begin Inc(Skipped); Continue; End;
 
         For J := 0 To Doc.DM_ComponentCount - 1 Do
         Begin
-            If Count >= Limit Then Break;
+            If LimitHit Then Break;
             Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Continue;
+            If Comp = Nil Then Begin Inc(Skipped); Continue; End;
 
             CompDesig := Comp.DM_PhysicalDesignator;
             If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
 
             For K := 0 To Comp.DM_PinCount - 1 Do
             Begin
-                If Count >= Limit Then Break;
                 Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Continue;
+                If Pin = Nil Then Begin Inc(Skipped); Continue; End;
 
                 NetName := Pin.DM_FlattenedNetName;
                 If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
+                If Count >= Limit Then
+                Begin
+                    LimitHit := True;
+                    Break;
+                End;
 
                 If Not First Then Data := Data + ',';
                 First := False;
@@ -1045,7 +1055,11 @@ Begin
     End;
 
     Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, '{"pins":' + Data + ',"count":' + IntToStr(Count) + '}');
+    Result := BuildSuccessResponse(RequestId, '{"pins":' + Data
+        + ',"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"skipped_nil":' + IntToStr(Skipped) + '}');
 End;
 
 {..............................................................................}
@@ -1060,8 +1074,8 @@ Var
     Doc : IDocument;
     Comp : IComponent;
     Pin : IPin;
-    I, J, K, Count, Limit, DocCount : Integer;
-    UsePhysical : Boolean;
+    I, J, K, Count, Limit, DocCount, Skipped : Integer;
+    UsePhysical, LimitHit : Boolean;
     Data, CompDesig, CompComment, CompFP, CompLib, PinList : String;
     First, FirstPin : Boolean;
 Begin
@@ -1080,20 +1094,27 @@ Begin
     Data := '[';
     First := True;
     Count := 0;
+    Skipped := 0;
+    LimitHit := False;
 
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
     Begin
-        If Count >= Limit Then Break;
+        If LimitHit Then Break;
         Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Continue;
+        If Doc = Nil Then Begin Inc(Skipped); Continue; End;
 
         For J := 0 To Doc.DM_ComponentCount - 1 Do
         Begin
-            If Count >= Limit Then Break;
+            If LimitHit Then Break;
             Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Continue;
+            If Comp = Nil Then Begin Inc(Skipped); Continue; End;
 
+            If Count >= Limit Then
+            Begin
+                LimitHit := True;
+                Break;
+            End;
             CompDesig := Comp.DM_PhysicalDesignator;
             CompComment := Comp.DM_Comment;
             CompFP := Comp.DM_Footprint;
@@ -1105,7 +1126,7 @@ Begin
             For K := 0 To Comp.DM_PinCount - 1 Do
             Begin
                 Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Continue;
+                If Pin = Nil Then Begin Inc(Skipped); Continue; End;
                 If Not FirstPin Then PinList := PinList + ',';
                 FirstPin := False;
                 PinList := PinList + '{"pin":"' + EscapeJsonString(Pin.DM_PinNumber) +
@@ -1125,7 +1146,11 @@ Begin
     End;
 
     Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, '{"components":' + Data + ',"count":' + IntToStr(Count) + '}');
+    Result := BuildSuccessResponse(RequestId, '{"components":' + Data
+        + ',"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"skipped_nil":' + IntToStr(Skipped) + '}');
 End;
 
 {..............................................................................}
@@ -2097,9 +2122,9 @@ Begin
                 Finally
                     SchDoc.SchIterator_Destroy(Iterator);
                 End;
-                SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
-                SchDoc.GraphicallyInvalidate;
-                MarkDocDirtyByPath(FilePath);
+                { The sheet is in TouchedDocs, so the outer Finally closes it:
+                  PostProcess, redraw and mark dirty. Closing it here as well
+                  ran PostProcess twice for one PreProcess. }
                 Continue;
             End;
 
@@ -4978,4 +5003,11 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown project action: ' + Action);
     End;
+End;
+
+{ UnitStamp_Project - which build of Project.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Project(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

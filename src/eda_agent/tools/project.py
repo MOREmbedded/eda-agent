@@ -508,7 +508,9 @@ def register_project_tools(mcp):
                 `proj_get_compile_freshness` to confirm no docs are dirty.
 
         Returns:
-            Dict with "pins" and "count".
+            Dict with "pins", "count", "limit", "limit_hit" (true when
+            the list stopped at ``limit`` with pins left over) and
+            "skipped_nil" (entries Altium returned empty).
 
         Examples:
             # PREFERRED, one unfiltered call, then filter locally:
@@ -702,7 +704,9 @@ def register_project_tools(mcp):
             limit: Max components to return (default 1000).
 
         Returns:
-            Dictionary with "components" array and "count", plus
+            Dictionary with "components" array and "count", "limit",
+            "limit_hit" (true when the list stopped at ``limit`` with
+            components left over), "skipped_nil", plus
             `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()

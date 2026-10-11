@@ -316,7 +316,7 @@ def test_a_closed_polygon_arrives_sealed(e2e_bridge, altium_sim):
 
     mod = '''(footprint "TRI" (version 20251024) (layer "F.Cu")
       (fp_poly (pts (xy 0 0) (xy 2 0) (xy 1 2) (xy 0 0))
-        (stroke (width 0.12) (type solid)) (fill solid) (layer "F.SilkS"))
+        (stroke (width 0.12) (type solid)) (fill none) (layer "F.SilkS"))
       (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu")))'''
     comp = read_kicad_footprint(mod)
     plan = build_altium_plan(
@@ -333,6 +333,26 @@ def test_a_closed_polygon_arrives_sealed(e2e_bridge, altium_sim):
     starts = {(t["x1"], t["y1"]) for t in altium_sim.lib_tracks}
     ends = {(t["x2"], t["y2"]) for t in altium_sim.lib_tracks}
     assert starts == ends, f"outline not closed: {starts} vs {ends}"
+
+
+def test_a_filled_polygon_arrives_as_a_region():
+    """(fill solid) is a filled area, placed as a region with every
+    vertex; an outline-only polygon stays an outline (above)."""
+    from eda_agent.libimport.easyeda.altium import build_altium_plan
+    from eda_agent.libimport.easyeda.document import EasyEdaComponent
+    from eda_agent.libimport.kicad.reader import read_kicad_footprint
+
+    mod = '''(footprint "TRI" (version 20251024) (layer "F.Cu")
+      (fp_poly (pts (xy 0 0) (xy 2 0) (xy 1 2))
+        (stroke (width 0.12) (type solid)) (fill solid) (layer "F.SilkS"))
+      (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu")))'''
+    comp = read_kicad_footprint(mod)
+    plan = build_altium_plan(
+        EasyEdaComponent(mpn="TRI", footprint=comp.footprint),
+        "T.SchLib", "T.PcbLib")
+    [step] = [s for s in plan["steps"] if s["tool"] == "lib_add_footprint_regions"]
+    [region] = step["args"]["regions"]
+    assert region["layer"] == "TopOverlay" and len(region["points"]) == 3
 
 
 def test_silkscreen_art_does_not_land_on_copper(e2e_bridge, altium_sim):

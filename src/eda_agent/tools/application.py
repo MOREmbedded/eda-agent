@@ -61,6 +61,107 @@ def _bundled_script_version() -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _bundled_script_path() -> Optional[str]:
+    """The Main.pas that _bundled_script_version reads, as a string."""
+    try:
+        return str(get_bundled_scripts_path() / "Main.pas")
+    except Exception:
+        return None
+
+
+def _folder_of(file_path: str) -> str:
+    """A file's folder, comparable across slash style, case and WSL mounts."""
+    text = str(file_path).replace("\\", "/")
+    mounted = re.match(r"^/mnt/([A-Za-z])/(.*)$", text)
+    if mounted:
+        text = f"{mounted.group(1)}:/{mounted.group(2)}"
+    return text.rsplit("/", 1)[0].rstrip("/").lower()
+
+
+def _script_location(loaded: Any) -> tuple[Optional[bool], list[str]]:
+    """Whether Altium's open script project is one this server compares with.
+
+    ``loaded`` is the list of open Altium_API.PrjScr paths the running
+    script reports, or None when it predates reporting them. The folders
+    this server knows are the bundled scripts (what version_match reads)
+    and the install-scripts destination. Neither answer changes
+    version_match: it still describes the bundled Main.pas.
+    """
+    if not isinstance(loaded, list) or not loaded:
+        return None, []
+    from ..cli import get_default_scripts_dest
+
+    bundled = _bundled_script_path()
+    known = {_folder_of(str(get_default_scripts_dest() / "Main.pas"))}
+    if bundled:
+        known.add(_folder_of(bundled))
+    match = any(_folder_of(str(p)) in known for p in loaded)
+    warnings = []
+    if not match:
+        warnings.append(
+            f"Altium has the script project open from {', '.join(map(str, loaded))}, "
+            f"but SCRIPT_VERSION was compared against {bundled}. version_match "
+            f"describes that file, not the script Altium loaded.")
+    if len(loaded) > 1:
+        warnings.append(
+            f"{len(loaded)} Altium_API.PrjScr projects are open in Altium "
+            f"({', '.join(map(str, loaded))}); only one of them runs the bridge.")
+    return match, warnings
+
+
+#: What clears Altium's compiled-unit cache. Re-running StartMCPServer does
+#: not recompile an edited unit, and restarting Altium was measured not to
+#: either, because Altium reopens the script project with its compiled units.
+RELOAD_STEP = ("close the script project in Altium's Projects panel (right-click Altium_API.PrjScr, Close Project), reopen it and run StartMCPServer")
+
+
+def _unit_stamp_check(bridge: Any, loaded: Any) -> tuple[dict, list[str]]:
+    """Compare each unit's running stamp with the files Altium loaded.
+
+    Returns the fields for app_ping and any warning. A script too old to
+    report stamps, or one run from unstamped repository files, says so
+    rather than passing as current.
+    """
+    from pathlib import Path
+
+    from ..cli import get_default_scripts_dest
+    from ..script_stamps import stale_units
+
+    try:
+        reported = bridge.send_command("application.get_unit_stamps", timeout=3.0)
+    except Exception:                            # noqa: BLE001 - older script
+        return {"unit_stamps": None}, []
+    if not isinstance(reported, dict):
+        return {"unit_stamps": None}, []
+    folders = [Path(str(p)).parent for p in (loaded or []) if p]
+    folders.append(get_default_scripts_dest())
+    folder = next((f for f in folders if (f / "Main.pas").is_file()), None)
+    if folder is None:
+        return {"unit_stamps": reported, "stale_units": None}, []
+    stale, unstamped = stale_units(reported, folder)
+    warnings = []
+    if stale:
+        warnings.append(
+            f"Altium is still running an older compile of {', '.join(stale)} "
+            f"than the files in {folder}. To recompile, {RELOAD_STEP}. An "
+            f"'Undeclared identifier' naming something those units define is "
+            f"this, not a code bug.")
+    return {"unit_stamps": reported, "stale_units": stale,
+            "unstamped_units": unstamped, "stamps_compared_with": str(folder)}, warnings
+
+
+def _other_servers() -> tuple[list, Optional[str]]:
+    """Other eda-agent servers on this workspace, and the warning for them."""
+    from .. import server_registry
+    from ..config import get_config
+
+    try:
+        found = server_registry.others(get_config().workspace_dir)
+    except Exception:                            # noqa: BLE001 - a warning only
+        return [], None
+    return found, server_registry.duplicate_warning(found)
+
+
 def register_meta_tools(mcp):
     """Register the backend-agnostic discovery/dispatch pair.
 
@@ -232,11 +333,21 @@ def register_application_tools(mcp):
         is None, ``ambiguous`` is True and ``reason`` explains, and every
         UI tool refuses rather than read the wrong process's dialogs.
 
+        MORE THAN ONE eda-agent SERVER. ``other_servers`` lists the other
+        servers recorded on this workspace (pid and start time), and
+        ``warnings`` says so when there are any. A warning only: several
+        sessions at once are allowed, and nothing is stopped.
+
         Returns:
             Dictionary with status information
         """
         bridge = get_bridge()
-        return bridge.get_altium_status()
+        status = dict(bridge.get_altium_status())
+        servers, warning = _other_servers()
+        status["other_servers"] = servers
+        if warning:
+            status.setdefault("warnings", []).append(warning)
+        return status
 
     @mcp.tool()
     async def app_context() -> dict[str, Any]:
@@ -300,6 +411,11 @@ def register_application_tools(mcp):
                 "Close and reopen Altium_API.PrjScr so Altium recompiles. "
                 "Until then the running script is not the deployed one."
             )
+        # Where the script project is open from, and other servers on this
+        # workspace. Not repeated when the message above already says it.
+        already = " ".join(warnings)
+        warnings.extend(w for w in ping.get("warnings") or []
+                        if w not in already)
 
         active: dict[str, Any] = {}
         open_count = 0
@@ -404,6 +520,37 @@ def register_application_tools(mcp):
             "application.save_all", timeout=60.0
         )
         return result
+
+    @mcp.tool()
+    async def app_save_document(file_path: str = "") -> dict[str, Any]:
+        """Save ONE open document: ``file_path``, or the focused one.
+
+        ``app_save_all`` writes every open document, so one that cannot
+        be written, a sheet in a read-only folder say, stops a save you
+        never asked for. This touches only the named document, never
+        changes focus and never walks the workspace.
+
+        ``saved`` is measured from the file's age on disk: Altium does
+        not report a declined save. ``was_modified`` says whether Altium
+        thought there was anything to write, and it misses edits made
+        through scripts: a board changed only by this server's tools read
+        false and was saved all the same. A save Altium declines while
+        a command is active reads ``saved`` false; run
+        ``app_exit_active_command`` and retry.
+
+        Args:
+            file_path: Absolute path of an open document. Empty saves the
+                focused document.
+
+        Returns:
+            ``file_path``, ``saved``, ``was_modified`` and a ``reason``
+            when it was not saved. NOT_OPEN when the document is not open,
+            since only an open document can hold unsaved edits.
+        """
+        bridge = get_bridge()
+        params = {"file_path": file_path} if file_path else {}
+        return await bridge.send_command_async(
+            "application.save_document", params, timeout=60.0)
 
     @mcp.tool()
     async def app_exit_active_command() -> dict[str, Any]:
@@ -634,8 +781,15 @@ def register_application_tools(mcp):
 
         Also reads SCRIPT_VERSION from the .pas that Altium has compiled
         and compares it to the version in the bundled on-disk Main.pas.
-        A mismatch means Altium is running a stale cached script, close
-        and reopen Altium_API.PrjScr (or restart Altium) to recompile.
+        A mismatch means Altium is running a stale cached script: close
+        the script project in the Projects panel and reopen it to
+        recompile. Re-running StartMCPServer does not recompile, and a
+        restart of Altium alone has not always been enough.
+
+        SCRIPT_VERSION only speaks for Main.pas. Each unit also reports a
+        stamp that install-scripts writes from its content, and
+        stale_units names any unit whose running compile differs from
+        the files Altium loaded.
 
         Returns:
             Dictionary with:
@@ -653,16 +807,40 @@ def register_application_tools(mcp):
               It is here because a bug report without it costs a round
               trip, and twice the answer changed the diagnosis.
             - message: human-readable status (flags stale cache if detected)
+            - bundled_script_path: the Main.pas that bundled_script_version
+              was read from, so a mismatch can be traced to a file
+            - script_projects_open: the Altium_API.PrjScr paths Altium has
+              open, as the running script reports them (None when it is
+              too old to report them)
+            - script_location_match: True when one of those is in the
+              bundled or the install-scripts folder, False when none is
+              (version_match then describes a file Altium did not load),
+              None when unknown
+            - unit_stamps: each unit's stamp as the running script reports
+              it (None for a script too old to report them)
+            - stale_units: units whose running compile differs from the
+              files in stamps_compared_with; unstamped_units run from
+              copies install-scripts did not stamp
+            - other_servers: other eda-agent servers on this workspace,
+              each with pid and start time
+            - warnings: anything above worth acting on. Warnings only:
+              nothing here refuses or stops anything.
         """
         bridge = get_bridge()
+        script_path = _bundled_script_path()
+        servers, duplicate = _other_servers()
+        warnings: list[str] = [duplicate] if duplicate else []
         if not bridge.is_altium_running():
             return {
                 "success": False,
                 "mcp_server_version": _mcp_server_version,
                 "altium_script_version": None,
                 "bundled_script_version": _bundled_script_version(),
+                "bundled_script_path": script_path,
                 "version_match": False,
                 "altium_version": "",
+                "other_servers": servers,
+                "warnings": warnings,
                 "message": "Altium Designer is not running",
             }
 
@@ -674,8 +852,11 @@ def register_application_tools(mcp):
                 "mcp_server_version": _mcp_server_version,
                 "altium_script_version": None,
                 "bundled_script_version": bundled,
+                "bundled_script_path": script_path,
                 "version_match": False,
                 "altium_version": "",
+                "other_servers": servers,
+                "warnings": warnings,
                 "message": "Altium script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
             }
 
@@ -696,17 +877,34 @@ def register_application_tools(mcp):
             match = False
             msg = (
                 f"STALE SCRIPT CACHE: Altium is running version {altium_ver}, "
-                f"but the on-disk bundle is {bundled}. Close and reopen "
-                f"Altium_API.PrjScr (or restart Altium) to recompile."
+                f"but the on-disk bundle is {bundled}. To recompile, "
+                f"{RELOAD_STEP}."
             )
+
+        loaded = result.get("script_projects")
+        location_match, location_warnings = _script_location(loaded)
+        warnings = location_warnings + warnings
+        if location_match is False:
+            msg = f"{msg} {location_warnings[0]}"
+        stamp_fields, stamp_warnings = _unit_stamp_check(bridge, loaded)
+        warnings = stamp_warnings + warnings
+        if stamp_warnings:
+            match = False
+            msg = f"{msg} {stamp_warnings[0]}"
 
         return {
             "success": True,
             "mcp_server_version": _mcp_server_version,
             "altium_script_version": altium_ver,
             "bundled_script_version": bundled,
+            "bundled_script_path": script_path,
             "version_match": match,
             "altium_version": result.get("altium_version") or "",
+            "script_projects_open": loaded if isinstance(loaded, list) else None,
+            "script_location_match": location_match,
+            **stamp_fields,
+            "other_servers": servers,
+            "warnings": warnings,
             "message": msg,
             "_system_reminder": _SESSION_REMINDER,
         }

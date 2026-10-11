@@ -256,19 +256,39 @@ class AltiumConfig(BaseModel):
     def write_runtime_config(self) -> None:
         """Write ``mcp_config.json`` so the Pascal side reads the same values.
 
-        Idempotent: if the file already matches what we'd write, no-ops.
-        Failures are non-fatal; Pascal falls back to InitDefaultConfig.
+        A value the user set in the file is KEPT and adopted, not reset:
+        this runs on every connect, and it used to replace the file with
+        defaults whenever the two differed, so a hand-set
+        ``auto_shutdown_ms`` lasted until the next connect. Keys this
+        version does not know are kept too. A value
+        that does not validate falls back to the default for that key
+        only. Missing keys are filled in, so the file always lists every
+        tunable. Idempotent: no write when nothing changes. Failures are
+        non-fatal; Pascal falls back to InitDefaultConfig.
         """
         try:
-            payload = self.runtime.model_dump()
             target = self.config_file_path
+            existing: dict = {}
             if target.exists():
                 try:
-                    existing = json.loads(target.read_text(encoding="utf-8"))
-                    if existing == payload:
-                        return
+                    loaded = json.loads(target.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        existing = loaded
                 except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                    pass
+                    existing = {}
+            merged = self.runtime.model_dump()
+            for key in list(merged):
+                if key not in existing:
+                    continue
+                trial = dict(merged, **{key: existing[key]})
+                try:
+                    merged = MCPRuntimeConfig(**trial).model_dump()
+                except ValueError:
+                    continue
+            self.runtime = MCPRuntimeConfig(**merged)
+            payload = dict(existing, **merged)
+            if existing == payload:
+                return
             tmp = target.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             replace_with_retry(tmp, target)

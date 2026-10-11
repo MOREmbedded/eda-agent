@@ -60,9 +60,13 @@ def _check_pointer_file() -> Check:
                 "file. DelphiScript reads it to find the IPC workspace."
             ),
         )
+    # The pointer is written in the ANSI codepage, so it is read the same
+    # way. Read as ascii, a profile path with an accented letter raised
+    # UnicodeDecodeError, which is not an OSError and escaped the check.
+    from ..config import _pointer_encoding
     try:
-        contents = pointer.read_text(encoding="ascii").strip()
-    except OSError as exc:
+        contents = pointer.read_text(encoding=_pointer_encoding()).strip()
+    except (OSError, UnicodeDecodeError) as exc:
         return Check(
             name="workspace pointer file readable",
             status=Status.FAIL,
@@ -298,9 +302,13 @@ def _check_easyeda_extension_built() -> Check:
     Someone debugging that will check ports and firewalls for a while
     before suspecting the half that lives inside the editor.
     """
-    source = (Path(__file__).resolve().parents[3]
-              / "extensions" / "easyeda" / "main.js")
-    built = source.parent / "dist" / "index.js"
+    from ..easyeda_extension import default_build_dir, is_packaged, source_dir
+
+    folder = source_dir()
+    source = (folder or Path("extensions/easyeda")) / "main.js"
+    # A wheel's copy is built into a folder of the user's, not in place.
+    built = ((default_build_dir() if is_packaged(folder) else source.parent)
+             / "dist" / "index.js")
 
     if not source.is_file():
         # Not an error on a source install that omits the extension.

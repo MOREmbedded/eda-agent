@@ -26,7 +26,8 @@ _STOP_STEP = (
 )
 _RELAUNCH_STEP = (
     "Relaunch the polling loop: File > Run Script... > Altium_API > "
-    "Dispatcher.pas > StartMCPServer > Run."
+    "Dispatcher.pas > StartMCPServer > Run, or run `eda-agent relaunch` "
+    "in a terminal."
 )
 
 _GUIDANCE = {

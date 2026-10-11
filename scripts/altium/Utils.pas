@@ -2071,3 +2071,10 @@ Begin
     Else
         Result := Result + ',"success":true';
 End;
+
+{ UnitStamp_Utils - which build of Utils.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Utils(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

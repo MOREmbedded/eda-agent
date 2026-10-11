@@ -308,6 +308,81 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "Annotation is the supported route and keeps the schematic and "
             "board in step, which a direct rename would not."),
     },
+    {
+        "task": "Add or adjust a 3D body in a footprint",
+        "keywords": ("3d", "body", "step", "model", "footprint", "height",
+                     "standoff", "opacity", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_link_3d_model", "lib_auto_link_3d_models",
+                "lib_update_footprint_heights_from_3d"],
+        "avoid": [
+            ("pcb_place_3d_body", "places a free body on a BOARD, not "
+                                  "inside the footprint in front"),
+            ("obj_run_process", "an Altium process this build does not "
+                                "know does nothing and reports no error, "
+                                "so a guessed 3D command looks like it ran"),
+        ],
+        "note": (
+            "lib_link_3d_model puts a STEP model in a footprint with its "
+            "offsets and rotations; lib_auto_link_3d_models matches models "
+            "to footprints by name across a library; and "
+            "lib_update_footprint_heights_from_3d sets each footprint's "
+            "height from its body. lib_get_footprint_primitives counts the "
+            "bodies a footprint carries and the layer each is on."),
+    },
+    {
+        "task": "Move every 3D body of a library onto one layer",
+        "keywords": ("3d", "body", "bodies", "layer", "mechanical", "move",
+                     "cleanup", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_move_bodies_to_layer"],
+        "avoid": [
+            ("obj_modify", "edits objects on a BOARD, not the footprints "
+                           "of the library in front"),
+        ],
+        "note": (
+            "Every footprint, or the named ones; a body already on the "
+            "layer is left alone. A mechanical layer the library has not "
+            "enabled is accepted with a warning, since Altium does not "
+            "draw what is on it."),
+    },
+    {
+        "task": "Redraw the assembly layer of a library's footprints",
+        "keywords": ("assembly", "outline", "designator", "mechanical",
+                     "redraw", "cleanup", "footprint", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_redraw_assembly"],
+        "avoid": [
+            ("lib_add_footprint_tracks", "draws one footprint by hand, "
+                                         "from coordinates you supply"),
+        ],
+        "note": (
+            "A rectangle round the 3D bodies, the courtyard or the pads, "
+            "and a .Designator in its middle. With replace (the default) "
+            "the tracks, arcs, texts, fills and regions already on that "
+            "layer are cleared first, never bodies or pads, so it needs "
+            "confirm=true."),
+    },
+    {
+        "task": "Place or adjust a 3D body on a board",
+        "keywords": ("3d", "body", "step", "model", "board", "opacity",
+                     "transparent", "standoff", "height"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_3d_body", "obj_query", "obj_modify"],
+        "avoid": [
+            ("lib_link_3d_model", "edits a footprint in a LIBRARY, not the "
+                                  "board"),
+        ],
+        "note": (
+            "pcb_place_3d_body puts a free STEP body on the board. On "
+            "eComponentBodyObject, obj_modify writes StandoffHeight and "
+            "OverallHeight in mils and BodyOpacity3D from 0 (clear) to 1 "
+            "(solid), not a percentage."),
+    },
 )
 
 

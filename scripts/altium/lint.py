@@ -275,6 +275,91 @@ RULE_PCB_SUBTYPE_ON_BASE = LineRule(
     description="Subtype-only PCB property on a base IPCB_Primitive var; narrow to a typed local (Track/Arc/Pad/...) via ObjectId.",
 )
 
+# A PCB arc's stroke is LineWidth; IPCB_Arc has no Width. Arc.Width stops the
+# script with "Undeclared identifier" and Try/Except does not catch it (seen on
+# a live board 2026-09-14, fixed in 2d1630b). Schematic objects do have Width,
+# which is why the subtype rule above leaves it out and this one keys on the
+# Arc local name.
+RULE_ARC_WIDTH = LineRule(
+    name="pcb-arc-width",
+    pattern=re.compile(r"\bArc\.Width\b"),
+    severity="error",
+    memory="delphiscript_interface_narrowing.md",
+    description="IPCB_Arc has no Width; read Arc.LineWidth instead.",
+)
+
+# Pascal binds Or, And and Xor tighter than =, <> and the other comparisons, so
+# `A = 'x' Or B = 'y'` reads as `A = ('x' Or B) = 'y'`, which is a type error
+# or a wrong test, never what was meant. Every comparison beside one has to be
+# bracketed. Found as an unbracketed line in a property allow-list.
+_UNBRACKETED_COMPARISON = re.compile(
+    r"(?<![(\w.'])[A-Za-z_][\w.]*(?:\[[^\]]*\])?\s*(?:=|<>|<=|>=|<|>)\s*"
+    r"(?:'[^']*'|[\w.]+(?:\([^()]*\))?)\s+(?:Or|And|Xor)\b"
+    r"|\b(?:Or|And|Xor)\s+(?!\(|Not\b)[A-Za-z_][\w.]*(?:\[[^\]]*\])?\s*"
+    r"(?:=|<>|<=|>=|<|>)\s*", re.IGNORECASE)
+
+
+def _blank_comments_and_strings(text: str) -> str:
+    """``text`` with every comment and string body blanked, across lines.
+
+    Unlike the per-line stripper this tracks a brace comment over several
+    lines, so prose inside one is never read as code. Newlines are kept.
+    """
+    def blank(chunk: str) -> str:
+        return "".join("\n" if c == "\n" else " " for c in chunk)
+
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "{":
+            end = text.find("}", i)
+            end = n if end == -1 else end + 1
+            out.append(blank(text[i:end]))
+            i = end
+        elif text.startswith("(*", i):
+            end = text.find("*)", i)
+            end = n if end == -1 else end + 2
+            out.append(blank(text[i:end]))
+            i = end
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            out.append(blank(text[i:end]))
+            i = end
+        elif ch == "'":
+            end = i + 1
+            while end < n:
+                if text[end] == "'":
+                    if text[end + 1:end + 2] == "'":
+                        end += 2
+                        continue
+                    break
+                end += 1
+            out.append("'" + blank(text[i + 1:end]) + "'")
+            i = end + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _scan_unbracketed_comparison(path: str, text: str) -> list[Finding]:
+    """A comparison beside Or, And or Xor with no brackets around it."""
+    findings: list[Finding] = []
+    raw_lines = text.split("\n")
+    clean_lines = _blank_comments_and_strings(text).split("\n")
+    for line_no, clean in enumerate(clean_lines, 1):
+        m = _UNBRACKETED_COMPARISON.search(clean)
+        if m:
+            findings.append(Finding(
+                file=path, line=line_no, col=m.start() + 1,
+                rule="unbracketed-comparison", severity="error",
+                snippet=raw_lines[line_no - 1],
+                memory="delphiscript_api_quirks.md",
+            ))
+    return findings
+
 # IPCB_Rule.Priority is a read-only function, not a property.
 RULE_RULE_PRIORITY_WRITE = LineRule(
     name="rule-priority-readonly-write",
@@ -469,6 +554,7 @@ LINE_RULES = [
     RULE_PCB_SUBTYPE_ON_BASE,
     RULE_FOOTPRINT_NAME_WRITE,
     RULE_RULE_PRIORITY_WRITE,
+    RULE_ARC_WIDTH,
     RULE_PROBE_TEXT_WRITE,
     RULE_KNOWN_WRONG_E_IDENT,
     RULE_KNOWN_WRONG_METHOD,
@@ -952,8 +1038,10 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_reserved_in_var_block(rel, raw_lines))
     findings.extend(_scan_param_redeclared_as_local(rel, raw_lines))
     findings.extend(_scan_dollar_i(rel, text))
+    findings.extend(_scan_unbracketed_comparison(rel, text))
     findings.extend(_scan_call_before_definition(rel, raw_lines))
     findings.extend(_scan_undeclared_local(rel, raw_lines))
+    findings.extend(_scan_local_shadows_enum(rel, raw_lines))
     # Comment-brace check uses raw text (it tracks comment depth itself).
     findings.extend(_scan_comment_brace(rel, text))
 
@@ -1266,6 +1354,47 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
             take(line)
     return names
 
+
+
+def _scan_local_shadows_enum(path: str, lines: list[str]) -> list[Finding]:
+    """A local or parameter whose name is an enum constant in other case.
+
+    DelphiScript names are case-insensitive, so a local ``EArc`` IS
+    ``eArc`` inside its routine. Gen_MirrorSchComponent declared
+    ``EArc : ISch_EllipticalArc`` and compared ``Kind = eArc``: the
+    comparison read the unassigned local (0), never matched, and every
+    arc of a mirrored symbol stayed where it was while the call reported
+    it skipped as kind 8. Nothing raises; the constant is simply gone in
+    that routine.
+
+    Flags a use spelled like an enum constant (``e`` then a capital) whose
+    name the routine declares in a different case. A local declared with
+    the same spelling as its uses is the local, and is left alone.
+
+    Line by line, not through _blank_block_comments: that one reads the
+    brace in a string such as '{"designator":' as a comment opening and
+    blanked the very lines this rule has to see.
+    """
+    findings: list[Finding] = []
+    for _name, start, begin, stop in _routine_spans(lines):
+        declared = _declared_names(lines, start, begin)
+        if not declared:
+            continue
+        header = " ".join(strip_comments_and_strings(lines[k])
+                          for k in range(start, begin))
+        spelled = set(re.findall(r"\b\w+\b", header))
+        for k in range(begin, stop):
+            text = strip_comments_and_strings(lines[k])
+            for m in re.finditer(r"\be[A-Z]\w*", text):
+                tok = m.group(0)
+                if tok.lower() in declared and tok not in spelled:
+                    findings.append(Finding(
+                        file=path, line=k + 1, col=m.start() + 1,
+                        rule="local-shadows-enum", severity="error",
+                        snippet=lines[k],
+                        memory="delphiscript_reserved_words.md",
+                    ))
+    return findings
 
 def _scan_undeclared_local(path: str, lines: list[str]) -> list[Finding]:
     """An identifier used as a local that this routine never declares.

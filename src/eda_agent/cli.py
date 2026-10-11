@@ -83,8 +83,117 @@ def cmd_scripts_path() -> int:
 
 
 # --------------------------------------------------------------------------
+# easyeda-extension
+# --------------------------------------------------------------------------
+
+def cmd_easyeda_extension(action: str, out: Optional[str] = None) -> int:
+    """Print the EasyEDA extension source folder, or build its .eext."""
+    from . import easyeda_extension
+
+    if action == "path":
+        folder = easyeda_extension.source_dir()
+        if folder is None:
+            print("ERROR: no EasyEDA extension source in this install",
+                  file=sys.stderr)
+            return 1
+        print(str(folder))
+        return 0
+    code, message = easyeda_extension.build(out)
+    print(message, file=sys.stdout if code == 0 else sys.stderr)
+    return code
+
+
+# --------------------------------------------------------------------------
+# relaunch
+# --------------------------------------------------------------------------
+
+def relaunch_command(exe: str, prjscr: str) -> list[str]:
+    """The command that asks a running Altium to start the bridge script.
+
+    A second X2.exe launched with -R hands the process to the instance
+    already running, the way Altium's own menu entries run a script.
+    Passed as a list, so the | needs no shell escaping.
+    """
+    return [exe, f"-RScriptingSystem:RunScript(ProjectName={prjscr}"
+                 f"|ProcName=Dispatcher.pas>StartMCPServer)"]
+
+
+def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
+                 force: bool = False) -> int:
+    """Start the bridge script in the running Altium, when you ask for it.
+
+    Nothing runs this on its own: starting a script inside someone's
+    Altium is their call. Request files already in the workspace are
+    left alone, since another session may be waiting on them, and a
+    bridge that already answers a ping is left running unless --force.
+    """
+    if sys.platform != "win32":
+        print("ERROR: relaunch runs on Windows, where Altium is", file=sys.stderr)
+        return 1
+    project = (Path(prjscr).expanduser() if prjscr
+               else get_default_scripts_dest() / "Altium_API.PrjScr")
+    if not project.is_file():
+        print(f"ERROR: no script project at {project}. Run "
+              f"`eda-agent install-scripts` first, or pass --prjscr.",
+              file=sys.stderr)
+        return 1
+
+    from .bridge.process_manager import AltiumProcessManager
+
+    selection = AltiumProcessManager().select_altium_process()
+    if selection.process is None:
+        print("ERROR: " + (selection.reason or "Altium is not running"),
+              file=sys.stderr)
+        return 1
+    exe = selection.process.exe_path
+    if not exe or not Path(exe).is_file():
+        print(f"ERROR: could not read the path of Altium's executable "
+              f"(pid {selection.process.pid})", file=sys.stderr)
+        return 1
+
+    command = relaunch_command(exe, str(project))
+    if dry_run:
+        print(" ".join(f'"{part}"' if " " in part else part for part in command))
+        return 0
+    if not force:
+        from .diag.doctor import _ping_altium
+
+        if _ping_altium() is not None:
+            print("The bridge already answers a ping; nothing was started. "
+                  "Pass --force to run StartMCPServer anyway.")
+            return 0
+
+    import subprocess
+
+    subprocess.Popen(command, close_fds=True)
+    print(f"Asked Altium (pid {selection.process.pid}) to run "
+          f"StartMCPServer from {project}. Check the status window, or run "
+          f"`eda-agent doctor`.")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # install-scripts
 # --------------------------------------------------------------------------
+
+_UTF8_BOM = bytes((0xEF, 0xBB, 0xBF))
+
+
+def _stamp_deployed_unit(path: Path) -> None:
+    """Write the unit's content hash into its UnitStamp function.
+
+    Only the deployed copy is stamped; the repository keeps 'dev'. See
+    eda_agent/script_stamps.py for why one version constant is not enough.
+    """
+    from .script_stamps import has_stamp, stamp_source
+
+    raw = path.read_bytes()
+    bom = raw.startswith(_UTF8_BOM)
+    text = raw.decode("utf-8-sig")
+    if has_stamp(text):
+        path.write_bytes((_UTF8_BOM if bom else b"")
+                         + stamp_source(text).encode("utf-8"))
+
 
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project to a user-chosen directory.
@@ -152,6 +261,8 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
         if child.suffix not in allowed_suffixes:
             continue
         shutil.copy2(child, dst / child.name)
+        if child.suffix == ".pas":
+            _stamp_deployed_unit(dst / child.name)
         copied += 1
 
     # Publish the workspace path for DelphiScript to pick up, even before

@@ -70,6 +70,8 @@ def _use_sites(ident: str) -> list[tuple[str, int, str]]:
 
     * ``X.Prop :=``   a property write
     * ``X.Method(``   a method call on an object
+    * ``X.Method;``   a call with no arguments, which Pascal writes
+                      without parentheses (also before ``Then``)
     * ``Func(``       a plain call, which is how the ``StrTo*``
                       converters are used
 
@@ -78,7 +80,9 @@ def _use_sites(ident: str) -> list[tuple[str, int, str]]:
     which is the trap that made an earlier guard in this suite point at
     dead code.
     """
-    member = re.compile(r"\.\s*" + re.escape(ident) + r"\s*(?::=|\()")
+    # An indexed property, X.Prop[Layer] :=, counts like X.Prop :=.
+    member = re.compile(r"\.\s*" + re.escape(ident) + r"(?:\[[^\]]*\])?"
+                        + r"(?:\s*(?::=|\(|;)|\s+Then\b)", re.I)
     plain = re.compile(r"(?<![.\w])" + re.escape(ident) + r"\s*\(")
     declares = re.compile(r"\s*(?:Function|Procedure)\s+" + re.escape(ident)
                           + r"\b", re.I)
@@ -191,7 +195,11 @@ def test_every_step_that_writes_a_property_is_ranked():
 # Step 19 (the layout model read) only reads. Its undeclared-identifier
 # risk is listed in the step itself, identifier by identifier, for the
 # same reason step 8's is.
-_STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24"}
+#
+# Step 30 (footprint validation) only reads a footprint's primitives; the
+# properties it reads are listed in the step with where each is already read.
+_STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
+                             "30"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

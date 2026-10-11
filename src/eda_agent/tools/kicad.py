@@ -54,6 +54,25 @@ def _basename(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _report_placeholders(result: dict[str, Any], refs: list[str]) -> None:
+    """Say which parts got a generated box instead of their footprint.
+
+    The board generators fall back to an ``eda:BOX`` of 1 mm pads when a
+    part's footprint cannot be found in KiCad's libraries. That used to
+    happen silently: the board opened, the ratsnest looked right, and the
+    reply did not mention that some parts had no real land pattern.
+    """
+    result["placeholder_footprints"] = list(refs)
+    if refs:
+        result["warning"] = (
+            f"{len(refs)} of {result.get('part_count', len(refs))} parts got "
+            f"a generated placeholder (eda:BOX, 1 mm pads in a row) because "
+            f"their footprint was not found in KiCad's libraries: "
+            f"{', '.join(refs)}. Give each a footprint lib_id (Lib:Name) "
+            f"that exists, or create one with "
+            f"kicad_create_footprint_from_package, before laying out.")
+
+
 def _resolve_plan_libs(plan):
     """Resolve a plan's real symbols and footprints from KiCad's libraries.
 
@@ -1235,7 +1254,8 @@ def register_kicad_tools(mcp) -> None:
         """Generate a complete, openable KiCad project from a DesignPlan:
         <name>.kicad_pro + <name>.kicad_sch + <name>.kicad_pcb in output_dir.
         The full design-execution deliverable (real symbols/footprints where
-        resolvable, placement, net assignment, board outline)."""
+        resolvable, placement, net assignment, board outline). Parts given a
+        placeholder footprint box are listed in ``placeholder_footprints``."""
         import json as _json
         import uuid as _uuid
         from pydantic import ValidationError
@@ -1275,6 +1295,7 @@ def register_kicad_tools(mcp) -> None:
                                         "pinned_symbol_libs": []},
                "net_settings": {}, "pcbnew": {}, "schematic": {},
                "sheets": [], "text_variables": {}}
+        placeholders: list[str] = []
         try:
             with open(sch_path, "w", encoding="utf-8") as fh:
                 fh.write(build_schematic(parts, nets, uid=uid, title=title,
@@ -1282,14 +1303,18 @@ def register_kicad_tools(mcp) -> None:
                                          part_symbol=part_symbol))
             with open(pcb_path, "w", encoding="utf-8") as fh:
                 fh.write(build_pcb(parts, nets, uid=uid, title=title,
-                                   mod_texts=mod_texts))
+                                   mod_texts=mod_texts,
+                                   placeholders=placeholders))
             with open(pro_path, "w", encoding="utf-8") as fh:
                 _json.dump(pro, fh, indent=2)
         except OSError as e:
             return {"ok": False, "reason": str(e)}
-        return {"ok": True, "project": pro_path, "schematic": sch_path,
-                "board": pcb_path, "part_count": len(parts),
-                "net_count": len(nets)}
+        result: dict[str, Any] = {
+            "ok": True, "project": pro_path, "schematic": sch_path,
+            "board": pcb_path, "part_count": len(parts),
+            "net_count": len(nets)}
+        _report_placeholders(result, placeholders)
+        return result
 
     @mcp.tool()
     async def kicad_generate_schematic(plan_json, output_path: str,
@@ -1372,7 +1397,11 @@ def register_kicad_tools(mcp) -> None:
         """Generate a KiCad board (.kicad_pcb) from a DesignPlan: declares the
         nets and places a footprint per part with pads assigned to those nets.
         The PCB side of design-execution; the output opens in pcbnew with the
-        ratsnest ready to route. Writes a new file."""
+        ratsnest ready to route. Writes a new file.
+
+        A part whose footprint is not found in KiCad's libraries gets a
+        generated placeholder box instead; those parts are listed in
+        ``placeholder_footprints`` and named in ``warning``."""
         import json as _json
         import uuid as _uuid
         from pydantic import ValidationError
@@ -1411,8 +1440,10 @@ def register_kicad_tools(mcp) -> None:
                             mod_texts[p.refdes] = fh.read()
         except Exception:
             mod_texts = {}
+        placeholders: list[str] = []
         pcb = build_pcb(parts, nets, uid=lambda: str(_uuid.uuid4()),
-                        title=(plan.spec or "")[:80], mod_texts=mod_texts)
+                        title=(plan.spec or "")[:80], mod_texts=mod_texts,
+                        placeholders=placeholders)
         try:
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as fh:
@@ -1422,6 +1453,7 @@ def register_kicad_tools(mcp) -> None:
         result: dict[str, Any] = {"ok": True, "path": output_path,
                                   "part_count": len(parts),
                                   "net_count": len(nets)}
+        _report_placeholders(result, placeholders)
         if render:
             try:
                 cli = get_kicad_bridge().kicad_cli_path()
@@ -1465,6 +1497,136 @@ def register_kicad_tools(mcp) -> None:
                 cli = get_kicad_bridge().kicad_cli_path()
                 rr = await run_cli(cli, ["fp", "export", "svg", "--footprint",
                                         name, "--output", library_path,
+                                        library_path])
+                result["render_ok"] = rr["returncode"] == 0
+                if rr["returncode"] != 0:
+                    result["render_error"] = rr.get("stderr") or rr.get("stdout")
+            except Exception as e:
+                result["render_ok"] = False
+                result["render_error"] = str(e)
+        return result
+
+    @mcp.tool()
+    async def kicad_create_footprint_from_package(
+            library_path: str, package: Any, name: str = "",
+            density: str = "", description: str = "", tags: str = "",
+            drafting: Optional[dict] = None, overwrite: bool = False,
+            render: bool = False) -> dict[str, Any]:
+        """Create a COMPLETE .kicad_mod footprint from a package drawing.
+
+        Written into a .pretty library. The lands come from IPC-7351B for the package's terminal
+        dimensions and tolerances (the engine behind
+        lib_create_footprint_from_package). Writes pads (roundrect with
+        roundrect_rratio, circle, oval, rect; drills, oval slots,
+        np_thru_hole), paste windows over an exposed pad as unnumbered
+        F.Paste pads with the pad's own paste left out, silkscreen kept
+        clear of copper with a pin 1 dot on F.SilkS, the body outline and
+        ${REFERENCE} on F.Fab, and the courtyard on F.CrtYd. Origin at
+        the package centroid; KiCad's Y axis points down, so Y is flipped.
+        No 3D body: KiCad draws one only from a model file.
+
+        The written file is parsed back and every pad compared with the
+        model (count, centre, size, drill, slot); a difference makes ok
+        false.
+
+        Args:
+            library_path: the .pretty directory (created if missing).
+            package: the PackageSpec as an object or JSON text, in mm,
+                the same schema as lib_create_footprint_from_package.
+            name: footprint name; default the package's name.
+            density: L, N or M; default the package's own (N).
+            description: appended to the generated description.
+            tags: KiCad keyword tags.
+            drafting: drafting rule overrides.
+            overwrite: replace an existing footprint of the same name.
+                Off by default: a footprint in a library may already be
+                on boards.
+            render: export an SVG with kicad-cli to look at.
+        """
+        from ..core.kicad_footprint import (
+            build_footprint_from_model,
+            footprint_pads_mm,
+            is_plain_name,
+        )
+        from ..design.landpattern.emit import model_from_package
+        from ..design.landpattern.spec import SpecError
+
+        if not library_path:
+            return {"ok": False, "reason": "library_path is required"}
+        try:
+            model = model_from_package(package, density=density, name=name,
+                                       description=description,
+                                       drafting=drafting)
+        except SpecError as e:
+            return {"ok": False, "reason": str(e)}
+        fp_name = model.name
+        if not is_plain_name(fp_name):
+            return {"ok": False, "reason": (
+                f"footprint name {fp_name!r} cannot be a file name (it holds "
+                "a path separator, a colon or nothing); pass name")}
+        path = os.path.join(library_path, f"{fp_name}.kicad_mod")
+        if os.path.exists(path) and not overwrite:
+            return {"ok": False, "reason": (
+                f"{path} already exists; pass overwrite=true to replace it "
+                "or another name")}
+        try:
+            content = build_footprint_from_model(model, tags=tags)
+        except ValueError as e:
+            return {"ok": False, "reason": str(e)}
+        try:
+            os.makedirs(library_path, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        except OSError as e:
+            return {"ok": False, "reason": f"could not write {path}: {e}"}
+
+        # Parse the file back and hold it to the model.
+        mismatches: list[dict] = []
+        read = [p for p in footprint_pads_mm(content) if p["number"] != ""]
+        windows = [p for p in footprint_pads_mm(content) if p["number"] == ""]
+        if len(read) != len(model.pads):
+            mismatches.append({"check": "pad_count",
+                               "expected": len(model.pads), "read": len(read)})
+        for want, got in zip(model.pads, read):
+            if want.number != got["number"]:
+                mismatches.append({"check": "number", "expected": want.number,
+                                   "read": got["number"]})
+            for key, a, b in (("x", want.x, got["x"]), ("y", want.y, got["y"]),
+                              ("w", want.width, got["w"]),
+                              ("h", want.height, got["h"]),
+                              ("drill", want.hole if want.kind != "smd" else 0.0,
+                               got["drill"]),
+                              ("slot", want.hole_length
+                               if want.kind != "smd"
+                               and want.hole_length > want.hole else 0.0,
+                               got["slot"])):
+                if abs(float(a) - float(b)) > 1e-6:
+                    mismatches.append({"check": key, "pad": want.number,
+                                       "expected": a, "read": b})
+        want_windows = sum(len(p.paste_apertures) for p in model.pads)
+        if len(windows) != want_windows:
+            mismatches.append({"check": "paste_windows",
+                               "expected": want_windows, "read": len(windows)})
+        result: dict[str, Any] = {
+            "ok": not mismatches, "path": path, "name": fp_name,
+            "family": model.family, "density": model.density,
+            "description": model.description, "pad_count": len(read),
+            "paste_windows": len(windows),
+            "layers": {"silk": "F.SilkS", "assembly": "F.Fab",
+                       "courtyard": "F.CrtYd", "paste": "F.Paste"},
+            "readback": {"ok": not mismatches, "mismatches": mismatches},
+            "courtyard_mm": list(model.courtyard_bbox()),
+            "warnings": model.warnings,
+            "notes": ["3D body: not written; KiCad draws one only from a "
+                      "model file",
+                      "mask and paste margins: written only when non-zero, "
+                      "so a 1:1 opening follows the board's own setting"],
+        }
+        if render:
+            try:
+                cli = get_kicad_bridge().kicad_cli_path()
+                rr = await run_cli(cli, ["fp", "export", "svg", "--footprint",
+                                        fp_name, "--output", library_path,
                                         library_path])
                 result["render_ok"] = rr["returncode"] == 0
                 if rr["returncode"] != 0:

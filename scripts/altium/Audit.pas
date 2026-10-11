@@ -4558,3 +4558,10 @@ Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown audit action: ' + Action);
 End;
+
+{ UnitStamp_Audit - which build of Audit.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Audit(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

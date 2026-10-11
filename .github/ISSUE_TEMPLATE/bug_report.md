@@ -29,7 +29,8 @@ blocks.
 
 - `eda-agent` version: <output of `eda-agent --version`>
 - Python version: <output of `python --version`>
-- Altium Designer version: <Help > About in Altium>
+- EDA tool and version: <Altium Designer: Help > About; KiCad or
+  EasyEDA Pro: their About dialog>
 - Windows version:
 - MCP client (Claude Code / Claude Desktop / other):
 

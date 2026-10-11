@@ -6,8 +6,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from eda_agent.fileio.altium_sch import read_schematic_components
 from eda_agent.fileio.bom import bom_from_file, bom_to_csv, consolidate_bom
+from eda_agent.fileio.review import review_project_file
 
 _FIXDIR = Path(__file__).resolve().parent / "integration" / "fixtures"
 FIXTURE = _FIXDIR / "main.SchDoc"
@@ -99,3 +102,44 @@ def test_bom_to_csv_empty_is_header_only():
     assert bom_to_csv([]).strip().split("\n") == ["Quantity,Designators,MPN,"
                                                   "Manufacturer,Value,"
                                                   "LibReference,Datasheet"]
+
+
+# A file that cannot be read used to come back as an empty BOM, and an
+# empty review, both reported as success.
+
+def _project(tmp_path, structure=None):
+    prj = tmp_path / "board.PrjPcb"
+    prj.write_text("[Design]\n", encoding="utf-8")
+    if structure is not None:
+        (tmp_path / "board.PrjPcbStructure").write_text(
+            structure, encoding="utf-8")
+    return prj
+
+
+@pytest.mark.parametrize("read", [bom_from_file, review_project_file])
+def test_a_missing_file_is_an_error(tmp_path, read):
+    with pytest.raises(FileNotFoundError):
+        read(tmp_path / "absent.PrjPcb")
+
+
+@pytest.mark.parametrize("read", [bom_from_file, review_project_file])
+def test_a_board_file_is_not_read_as_an_empty_design(tmp_path, read):
+    board = tmp_path / "board.PcbDoc"
+    board.write_bytes(b"PCB")
+    with pytest.raises(ValueError, match="cannot be read here"):
+        read(board)
+
+
+@pytest.mark.parametrize("read", [bom_from_file, review_project_file])
+@pytest.mark.parametrize("structure", [
+    None,
+    "Record=TopLevelDocument|FileName=absent.SchDoc|SheetNumber=\n",
+])
+def test_a_project_with_no_sheets_to_read_is_an_error(tmp_path, read,
+                                                     structure):
+    with pytest.raises(ValueError, match="found no sheets"):
+        read(_project(tmp_path, structure))
+
+
+def test_the_fixture_project_still_has_parts():
+    assert bom_from_file(PRJ)

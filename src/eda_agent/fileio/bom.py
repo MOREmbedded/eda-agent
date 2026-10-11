@@ -70,23 +70,33 @@ def consolidate_bom(components: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return lines
 
 
+EMPTY_BOM_WARNING = (
+    "no placed components were read. Unless the design really is empty, "
+    "the sheets were not read: they may be unannotated, or in a form this "
+    "reader does not parse.")
+
+
 def bom_from_file(path: str | Path) -> list[dict[str, Any]]:
     """Read a ``.SchDoc`` or ``.PrjPcb`` and return its consolidated BOM.
 
     A ``.SchDoc`` is read directly; a ``.PrjPcb`` aggregates every sheet
     (a designator that repeats across sheets, e.g. a multi-part component,
     is de-duplicated so it counts once). Pure Python; no Altium.
-    """
-    path = Path(path)
-    if path.suffix.lower() == ".schdoc":
-        from .altium_sch import read_schematic_components
-        return consolidate_bom(read_schematic_components(path))
 
-    from .altium_project import read_project_sheets
+    A missing file, any other kind of file, or a project with no sheets
+    to read raises rather than returning an empty BOM. A design that was
+    read and holds no components returns ``[]``, and callers attach
+    ``EMPTY_BOM_WARNING`` to it.
+    """
+    from .altium_project import check_design_file, required_project_sheets
     from .altium_sch import read_schematic_components
 
+    path = check_design_file(path, (".SchDoc", ".PrjPcb"))
+    if path.suffix.lower() == ".schdoc":
+        return consolidate_bom(read_schematic_components(path))
+
     by_designator: dict[str, dict] = {}
-    for sheet in read_project_sheets(path):
+    for sheet in required_project_sheets(path):
         for comp in read_schematic_components(sheet):
             d = (comp.get("designator") or "").strip()
             if d:

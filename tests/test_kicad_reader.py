@@ -1365,7 +1365,7 @@ def test_the_writer_reports_pins_that_disagree():
 
 _POLY_MOD = '''(footprint "POLYFP" (version 20251024) (layer "F.Cu")
   (fp_poly (pts (xy 0 0) (xy 2.54 0) (xy 1.27 2.54) (xy 0 0))
-    (stroke (width 0.12) (type solid)) (fill solid) (layer "F.SilkS"))
+    (stroke (width 0.12) (type solid)) (fill none) (layer "F.SilkS"))
   (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
 )'''
 
@@ -1413,7 +1413,7 @@ def test_an_open_run_of_points_gains_no_edge():
     fp_line chain that happens to have three points must stay open."""
     open_mod = _POLY_MOD.replace(
         '(fp_poly (pts (xy 0 0) (xy 2.54 0) (xy 1.27 2.54) (xy 0 0))\n'
-        '    (stroke (width 0.12) (type solid)) (fill solid) '
+        '    (stroke (width 0.12) (type solid)) (fill none) '
         '(layer "F.SilkS"))',
         '(fp_line (start 0 0) (end 2.54 0) '
         '(stroke (width 0.12) (type solid)) (layer "F.SilkS"))')

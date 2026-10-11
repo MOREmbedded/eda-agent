@@ -50,8 +50,11 @@ import ctypes
 import os
 import re
 import time
+from ctypes import byref, wintypes
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import win32api
@@ -475,7 +478,7 @@ _CONTAINER_CLASSES = ("panel", "groupbox", "static")
 
 
 def _normalise(text: str) -> str:
-    return re.sub(r"[&\s.]+", "", str(text or "")).lower()
+    return re.sub(r"[&\s.]+", "", plain(text)).lower()
 
 
 def read_text(hwnd: int) -> str:

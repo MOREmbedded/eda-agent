@@ -197,10 +197,56 @@ def test_the_conversion_is_exact_under_fpc(tmp_path):
     assert abs(round(1.625 * 10_000_000 / 25.4) * 25.4 / 10_000_000 - 1.625) < 1e-5
 
 
+def test_region_points_parse_exactly_under_fpc(tmp_path):
+    """The regions handler reads its points with RegionPointCount and
+    RegionPointCoord. Compiled here with the IsFloatStr they rely on and
+    fed the payload the Python side builds, so the two agree on every
+    coordinate, and a malformed pair refuses the region."""
+    fpc = shutil.which("fpc")
+    if not fpc:
+        pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
+    region = {"layer": "TopPaste",
+              "points": [[-0.775, -0.625], [0.775, -0.625], [0.775, 0.625],
+                         [-0.775, 0.625]]}
+    payload, problems = library_module._regions_payload([region])
+    assert not problems
+    points = payload.split(";points=", 1)[1]
+    lines = [f"  WriteLn(RegionPointCount('{points}'));"]
+    for i in range(1, 5):
+        lines.append(f"  WriteLn(RegionPointCoord('{points}', {i}, True) + '|' "
+                     f"+ RegionPointCoord('{points}', {i}, False));")
+    lines += [
+        "  WriteLn(RegionPointCount('1,2/3,4/5'));",
+        "  WriteLn(RegionPointCount('1,2/3,x/5,6'));",
+        "  WriteLn(RegionPointCount(''));",
+        "  WriteLn('<' + RegionPointCoord('1,2/3,4', 3, True) + '>');",
+    ]
+    program = "\n".join([
+        "program regions;", "{$mode delphi}", "uses SysUtils;",
+        _routine("Utils.pas", "IsFloatStr"),
+        _routine("Library.pas", "RegionPointCount"),
+        _routine("Library.pas", "RegionPointCoord"),
+        "begin", *lines, "end.",
+    ])
+    path = tmp_path / "regions.pas"
+    path.write_text(program, encoding="utf-8")
+    built = subprocess.run([fpc, str(path)], cwd=tmp_path, capture_output=True,
+                           text=True)
+    assert built.returncode == 0, built.stdout + built.stderr
+    exe = tmp_path / ("regions.exe" if os.name == "nt" else "regions")
+    out = subprocess.run([str(exe)], capture_output=True, text=True).stdout.split()
+    assert out[0] == "4"
+    for got, (x, y) in zip(out[1:5], region["points"]):
+        gx, gy = got.split("|")
+        assert (float(gx), float(gy)) == (x, y)
+    assert out[5:] == ["-1", "-1", "0", "<>"]
+
+
 @pytest.mark.parametrize("unit,name", [
     ("Library.pas", "Lib_AddFootprintPad"), ("Library.pas", "Lib_AddFootprintPads"),
     ("Library.pas", "Lib_AddFootprintTrack"), ("Library.pas", "Lib_AddFootprintTracks"),
     ("Library.pas", "Lib_AddFootprintArc"), ("Library.pas", "Lib_AddFootprintText"),
+    ("Library.pas", "Lib_AddFootprintRegions"),
     ("PCB.pas", "PCB_PlacePad"),
 ])
 def test_every_authoring_handler_reads_lengths_in_the_callers_unit(unit, name):

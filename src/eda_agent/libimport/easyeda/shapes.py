@@ -138,6 +138,101 @@ def parse_points(raw: str) -> list[tuple[float, float]]:
     return [(nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
 
 
+_PATH_TOKEN_RE = re.compile(r"[MLHVAZmlhvaz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+#: Degrees per segment when an arc in a region outline becomes a polyline.
+_ARC_STEP_DEG = 10.0
+
+
+def parse_path_points(raw: str) -> list[tuple[float, float]]:
+    """The outline of an SVG path, as points (canvas units).
+
+    A SOLIDREGION carries an SVG path, not a point list, and its corners
+    are often arcs: ``M x y L x y A rx ry rot large sweep x y Z``. Reading
+    it as a point list dropped the letters and paired the arc's radius
+    and flags into coordinates, so a radius of 10.3 and a flag of 0 came
+    out, once moved to the footprint origin, as (-39897, 30000) mils on
+    Mechanical1 (#39.22). M, L, H, V, A and Z are read, absolute and
+    relative; an arc is followed in steps of ``_ARC_STEP_DEG``. A string
+    with no command letters is a plain point list.
+    """
+    if not raw:
+        return []
+    tokens = _PATH_TOKEN_RE.findall(raw)
+    if not any(t.isalpha() for t in tokens):
+        return parse_points(raw)
+    from .geometry import svg_arc_to_center
+    import math
+
+    pts: list[tuple[float, float]] = []
+    x = y = 0.0
+    start = (0.0, 0.0)
+    cmd = ""
+    i = 0
+
+    def num() -> float:
+        nonlocal i
+        v = float(tokens[i])
+        i += 1
+        return v
+
+    while i < len(tokens):
+        if tokens[i].isalpha():
+            cmd = tokens[i]
+            i += 1
+            if cmd in "Zz":
+                x, y = start
+                continue
+        elif not cmd:
+            i += 1
+            continue
+        rel = cmd.islower()
+        c = cmd.upper()
+        try:
+            if c in ("M", "L"):
+                nx, ny = num(), num()
+                if rel:
+                    nx, ny = x + nx, y + ny
+                x, y = nx, ny
+                pts.append((x, y))
+                if c == "M":
+                    start = (x, y)
+                    cmd = "l" if rel else "L"
+            elif c == "H":
+                nx = num()
+                x = x + nx if rel else nx
+                pts.append((x, y))
+            elif c == "V":
+                ny = num()
+                y = y + ny if rel else ny
+                pts.append((x, y))
+            elif c == "A":
+                rx, ry, rot = num(), num(), num()
+                large, sweep = int(num()), int(num())
+                nx, ny = num(), num()
+                if rel:
+                    nx, ny = x + nx, y + ny
+                arc = svg_arc_to_center(x, y, rx, ry, rot, large, sweep, nx, ny)
+                if arc is not None:
+                    span = arc.end_angle - arc.start_angle
+                    steps = max(1, int(abs(span) / _ARC_STEP_DEG))
+                    phi = math.radians(rot)
+                    for k in range(1, steps):
+                        t = math.radians(arc.start_angle + span * k / steps)
+                        ex, ey = arc.rx * math.cos(t), arc.ry * math.sin(t)
+                        pts.append((arc.cx + ex * math.cos(phi) - ey * math.sin(phi),
+                                    arc.cy + ex * math.sin(phi) + ey * math.cos(phi)))
+                x, y = nx, ny
+                pts.append((x, y))
+            else:
+                i += 1
+        except (IndexError, ValueError):
+            break
+    if len(pts) > 1 and pts[-1] == pts[0]:
+        pts.pop()
+    return pts
+
+
 @dataclass
 class EeShape:
     """Base: every parsed shape keeps its raw string for diagnostics."""
@@ -482,7 +577,7 @@ def parse_footprint_shapes(blob: str) -> list[EeShape]:
         elif cmd == "SOLIDREGION":
             out.append(EePolyline(
                 kind="solid_region", raw=raw,
-                layer=_i(f, 1, 3), points=parse_points(_s(f, 3)),
+                layer=_i(f, 1, 3), points=parse_path_points(_s(f, 3)),
                 closed=True, fill=_s(f, 4)))
         elif cmd == "VIA":
             # Vias inside a footprint are through features; model as a

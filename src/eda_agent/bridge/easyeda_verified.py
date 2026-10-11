@@ -38,8 +38,13 @@ def verified_path() -> Path:
     configured = os.environ.get("EDA_AGENT_EASYEDA_VERIFIED", "").strip()
     if configured:
         return Path(configured)
-    return (Path(__file__).resolve().parents[3]
-            / "extensions" / "easyeda" / "verified.json")
+    from ..easyeda_extension import default_build_dir, is_packaged, source_dir
+
+    folder = source_dir()
+    if folder is None or is_packaged(folder):
+        # The wheel's copy is read-only; smoke runs record beside the build.
+        folder = default_build_dir()
+    return folder / "verified.json"
 
 
 def load_verified() -> dict[str, Any]:

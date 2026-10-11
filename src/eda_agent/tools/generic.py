@@ -44,8 +44,19 @@ PLACEMENT_KEYS = frozenset({
 })
 
 
+#: The keys a managed placement dict is read for.
+MANAGED_PLACEMENT_KEYS = frozenset({
+    "design_item_id",
+    "x",
+    "y",
+    "rotation",
+    "designator",
+})
+
+
 def unknown_placement_keys(
     placements: list[dict[str, Any]],
+    valid: frozenset[str] = PLACEMENT_KEYS,
 ) -> dict[str, Optional[str]]:
     """``{unrecognised_key: nearest_valid_key_or_None}``.
 
@@ -58,12 +69,56 @@ def unknown_placement_keys(
         if not isinstance(item, dict):
             continue
         for key in item:
-            if key in PLACEMENT_KEYS or key in found:
+            if key in valid or key in found:
                 continue
             near = difflib.get_close_matches(
-                str(key), sorted(PLACEMENT_KEYS), n=1, cutoff=0.5)
+                str(key), sorted(valid), n=1, cutoff=0.5)
             found[key] = near[0] if near else None
     return found
+
+
+def _unknown_keys_refusal(placements: list[dict[str, Any]],
+                          valid: frozenset[str],
+                          consequence: str) -> Optional[dict[str, Any]]:
+    """The reply for placement dicts with keys nothing reads, or None."""
+    unknown = unknown_placement_keys(placements, valid)
+    if not unknown:
+        return None
+    described = [
+        f"{key!r}" + (f" (did you mean {near!r}?)" if near else "")
+        for key, near in sorted(unknown.items())]
+    return {
+        "error": "UNKNOWN_PLACEMENT_KEYS",
+        "reason": (
+            "placement dicts carry keys this tool does not read, and acting "
+            f"on the rest would {consequence}: " + ", ".join(described)),
+        "valid_keys": sorted(valid),
+        "placed": 0,
+        "failed": 0,
+        "total": len(placements),
+    }
+
+
+async def _focus_sheet(bridge: Any,
+                       document_path: Optional[str]) -> Optional[dict[str, Any]]:
+    """Make ``document_path`` the active sheet; the reply if that failed.
+
+    Placement lands on the active schematic, and a sheet just created is
+    not focused, so without this the parts can land on another open one.
+    """
+    if not document_path:
+        return None
+    focus = await bridge.send_command_async(
+        "application.set_active_document", {"file_path": document_path})
+    if isinstance(focus, dict) and not focus.get("success", True):
+        return {
+            "error": "FOCUS_FAILED",
+            "reason": f"could not focus {document_path} before placement; "
+                      "aborting to avoid placing on the wrong sheet",
+            "focus_result": focus,
+            "placed": 0,
+        }
+    return None
 
 
 #: How many components in one call count as "drawing a sheet" rather than
@@ -210,6 +265,12 @@ def register_generic_tools(mcp):
                 PinLength is a common source of wrong conclusions about
                 what is wired.
                 "Designator.Text,Comment.Text,LibReference" for components
+                A managed (Workspace) component also reads, but does not
+                write, "LibIdentifierKind,LibraryIdentifier,DesignItemId,
+                VaultGUID,ItemGUID,RevisionGUID,SymbolReference,
+                SymbolVaultGUID,SymbolItemGUID,SymbolRevisionGUID". Read
+                off a part Altium placed, they are the values the managed
+                tools need.
 
                 PCB PRIMITIVES DO NOT. They are a separate, flat set,
                 and mixing the two is the single commonest mistake here:
@@ -227,7 +288,7 @@ def register_generic_tools(mcp):
                 TopXSize, TopYSize, Rotation, Name, Text, Pattern,
                 Designator, Comment, SourceDesignator, Kind,
                 RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea,
-                StandoffHeight, OverallHeight, InComponent, Component,
+                StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component,
                 InPolygon, IsKeepout, Locked, Layer1, Layer2,
                 IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
                 IsComment, UseTTFonts.
@@ -238,6 +299,10 @@ def register_generic_tools(mcp):
                 would leave the hole as large as the pad is refused, so
                 give Size first to grow a via and HoleSize first to
                 shrink it. Lengths read back in decimal mils.
+                On a pad, Name and Designator both read and write its
+                designator; an empty one is refused.
+                On a 3D body, BodyOpacity3D reads and
+                writes 0 (clear) to 1 (solid), not a percentage.
                 IsDesignator and IsComment pick out component labels:
                 filter "IsDesignator=true" for every designator.
 
@@ -276,6 +341,10 @@ def register_generic_tools(mcp):
                 "Text=VCC", match net labels with Text equal to VCC
                 "Designator.Text=R1", match component with designator R1
                 "" (empty), match all objects of the type
+                On a PCB type a length (X, Y, X1, Y1, X2, Y2, Width, Size,
+                HoleSize, ...) matches as a number in mils, to 0.00005
+                mil, with '.' or ',' as the decimal point:
+                "X2=3172.6356" and "X2=3172,63560" are the same filter.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -632,7 +701,11 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
-            Dictionary with count of selected objects
+            ``{"matched": N, "selected": M, "success": bool}``. ``matched``
+            is what the filter picked; ``selected`` is how many of those
+            read back as selected afterwards, and ``success`` is false
+            with a ``reason`` when that is fewer. A select reports
+            nothing about property readability.
         """
         bad = filter_problem(filter)
         if bad:
@@ -700,9 +773,15 @@ def register_generic_tools(mcp):
                 not a second reflection.
             doc_path: sheet to act on. Defaults to the focused schematic.
 
+        Every primitive is reflected about the component's X: pins
+        (left and right swap), lines and rectangles by both ends, polygons,
+        polylines and Beziers by every vertex, and arcs by their centre
+        with their sweep mirrored. A primitive kind it cannot reflect is
+        left where it was and counted in primitives_skipped.
+
         Returns:
             Dictionary with designator, mirrored (the resulting state),
-            primitives_moved, and changed.
+            primitives_moved, primitives_skipped, and changed.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}
@@ -936,6 +1015,10 @@ def register_generic_tools(mcp):
             count of components whose parameters were touched;
             ``failed`` is the count of stamps that couldn't be applied
             (designator not found, parameter not settable, etc).
+            A ``Footprint`` key repoints the part's footprint model;
+            ``footprints_applied`` counts the ones that read back the
+            new name and ``footprints_not_applied`` lists designators
+            whose part has no footprint model or did not take it.
         """
         # Encode the list-of-dicts into the Pascal handler's expected
         # wire format: stamps separated by `~~`, fields within a stamp
@@ -1461,33 +1544,41 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_set_sheet_size(
-        style: str,
+        style: str = "",
         custom_width: int = 0,
         custom_height: int = 0,
+        orientation: str = "",
     ) -> dict[str, Any]:
         """Set the sheet size / template style of the active schematic.
 
         Changes SheetStyle on the current SchDoc. Use a named style
         (A-E, A0-A4, Letter, Legal, Tabloid) or "Custom" with explicit
-        width and height in mils.
+        width and height in mils. Give ``style``, ``orientation`` or both.
 
         Args:
             style: Sheet size name, e.g. "A", "A3", "A4", "Letter", "Custom"
             custom_width: Custom sheet width in mils (only if style="Custom")
             custom_height: Custom sheet height in mils (only if style="Custom")
+            orientation: "landscape" or "portrait"; empty leaves it as is
 
         Returns:
             Dictionary confirming the style change
         """
+        orientation = orientation.strip().lower()
+        if orientation not in ("", "landscape", "portrait"):
+            return {"success": False, "error": (
+                f"orientation must be landscape or portrait, not {orientation!r}")}
+        if not style.strip() and not orientation:
+            return {"success": False, "error": "give style, orientation or both"}
+        params = {
+            "style": style,
+            "custom_width": str(custom_width),
+            "custom_height": str(custom_height),
+        }
+        if orientation:
+            params["orientation"] = orientation
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.set_sheet_size",
-            {
-                "style": style,
-                "custom_width": str(custom_width),
-                "custom_height": str(custom_height),
-            },
-        )
+        result = await bridge.send_command_async("generic.set_sheet_size", params)
         return result
 
     @mcp.tool()
@@ -2776,24 +2867,11 @@ def register_generic_tools(mcp):
         Returns:
             Dict with placed, failed, total counts.
         """
-        unknown = unknown_placement_keys(placements)
-        if unknown:
-            described = []
-            for key in sorted(unknown):
-                near = unknown[key]
-                described.append(
-                    f"{key!r}" + (f" (did you mean {near!r}?)" if near else ""))
-            return {
-                "error": "UNKNOWN_PLACEMENT_KEYS",
-                "reason": (
-                    "placement dicts carry keys this tool does not read, "
-                    "and acting on the rest would place parts from a "
-                    "library path that never arrived: " + ", ".join(described)),
-                "valid_keys": sorted(PLACEMENT_KEYS),
-                "placed": 0,
-                "failed": 0,
-                "total": len(placements),
-            }
+        refusal = _unknown_keys_refusal(
+            placements, PLACEMENT_KEYS,
+            "place parts from a library path that never arrived")
+        if refusal is not None:
+            return refusal
 
         op_strs: list[str] = []
         for p in placements:
@@ -2819,29 +2897,98 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         refusal = await _refuse_manual_sheet_layout(
             bridge, len(op_strs), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
         if refusal is not None:
             return refusal
-        # Focus the target sheet first so placement can't land on a
-        # different open document (placement targets the active doc, and
-        # a freshly created sheet is not auto-focused).
-        if document_path:
-            focus = await bridge.send_command_async(
-                "application.set_active_document",
-                {"file_path": document_path},
-            )
-            if isinstance(focus, dict) and not focus.get("success", True):
-                return {
-                    "error": "FOCUS_FAILED",
-                    "reason": f"could not focus {document_path} before "
-                    "placement; aborting to avoid placing on the wrong "
-                    "sheet",
-                    "focus_result": focus,
-                    "placed": 0,
-                }
         return await bridge.send_command_async(
             "generic.place_sch_components_from_library",
             {"placements": "~~".join(op_strs)},
         )
+
+    @mcp.tool()
+    async def sch_place_vault_components(
+        placements: list[dict[str, Any]],
+        vault: str = "",
+        document_path: Optional[str] = None,
+        lib_identifier_kind: Optional[int] = None,
+        allow_manual_layout: bool = False,
+    ) -> dict[str, Any]:
+        """Place MANY managed (Workspace) components in ONE call.
+
+        ``sch_place_components`` for parts that live in an Altium
+        Workspace rather than a library file. Such a part has no library
+        path; it is placed by its Design Item ID and stays linked to its
+        Workspace item. The hand-drawing rule of ``sch_place_components``
+        applies here too: four or more parts onto a sheet with two or
+        fewer is refused unless ``allow_manual_layout=True``.
+
+        A part number is not looked up here, so bring the Design Item ID.
+        ``lib_get_vault_component`` checks one without placing it.
+
+        Args:
+            placements: List of dicts, each with "design_item_id"
+                (required), ``x`` and ``y`` in mils, and optionally
+                ``designator`` and ``rotation`` (0, 90, 180 or 270).
+            vault: The Workspace name, for the whole batch. Usually left
+                out: it is read off managed parts already on an open
+                sheet of the design, where Altium wrote it. When no open
+                sheet has one, the call is refused and says what to do.
+                Ask the user for the name rather than making one up.
+            document_path: Absolute path of the .SchDoc to place onto. It
+                is focused first; without it the active sheet is used,
+                and a sheet just created is not active yet.
+            lib_identifier_kind: The identifier kind to load by, 4
+                (VaultName) when left out. ``lib_get_vault_component``
+                reports the kind that loaded.
+            allow_manual_layout: Place onto a near-empty sheet anyway.
+
+        Returns:
+            ``placed``, ``linked``, ``failed``, ``total``, ``vault``,
+            lib_identifier_kind, ``loader_callable``, ``note`` and one
+            ``items`` entry per placement. ``linked`` counts the parts
+            that read back a VaultGUID and ItemGUID, the link the file
+            saves; a part placed but not linked is a plain copy of the
+            symbol (``reason`` PLACED_WITHOUT_LINK). NOT_FOUND_IN_VAULT
+            means that ID did not load; LOAD_RAISED means this Altium
+            cannot load managed parts at all.
+        """
+        refusal = _unknown_keys_refusal(
+            placements, MANAGED_PLACEMENT_KEYS,
+            "place parts without what those keys were meant to say")
+        if refusal is not None:
+            return refusal
+        op_strs: list[str] = []
+        for p in placements:
+            item_id = str(p.get("design_item_id", "")).strip()
+            if not item_id:
+                continue
+            fields = [
+                f"design_item_id={payload_safe(item_id)}",
+                f"x={int(p.get('x', 0))}",
+                f"y={int(p.get('y', 0))}",
+                f"rotation={int(p.get('rotation', 0))}",
+            ]
+            if p.get("designator"):
+                fields.append(f"designator={payload_safe(p['designator'])}")
+            op_strs.append(";".join(fields))
+        if not op_strs:
+            return {"error": "No valid placements", "placed": 0}
+
+        bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(op_strs), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
+        if refusal is not None:
+            return refusal
+        params: dict[str, Any] = {"placements": "~~".join(op_strs)}
+        if vault:
+            params["vault"] = vault
+        if lib_identifier_kind is not None:
+            params["lib_identifier_kind"] = int(lib_identifier_kind)
+        return await bridge.send_command_async(
+            "generic.place_sch_vault_components", params)
 
     @mcp.tool()
     async def sim_attach_primitives(

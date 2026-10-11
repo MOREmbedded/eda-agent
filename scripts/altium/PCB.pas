@@ -289,16 +289,24 @@ End;
 
 {..............................................................................}
 { PCB_GetNetClasses - Get all net classes with their member nets              }
+{ Params: members (default true; false returns names only, which is faster). }
+{                                                                             }
+{ MemberCount and MemberName[] are undeclared on IPCB_ObjectClass in a       }
+{ script, so membership is found by asking each class IsMember of every net, }
+{ the way PCB_AddTestpointsForNetClass and LmClassesSection already do. A    }
+{ probe that raises is counted in probe_errors rather than read as "not a    }
+{ member", so an empty list can be told apart from one that was not read.   }
 {..............................................................................}
 
 Function PCB_GetNetClasses(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
+    Iterator, NetIter : IPCB_BoardIterator;
     ObjClass : IPCB_ObjectClass;
-    JsonItems : String;
-    First : Boolean;
-    Count : Integer;
+    Net : IPCB_Net;
+    JsonItems, Members, MembersStr : String;
+    First, WantMembers : Boolean;
+    Count, MemberCount, ProbeErrors : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -307,14 +315,12 @@ Begin
         Exit;
     End;
 
+    MembersStr := LowerCase(ExtractJsonValue(Params, 'members'));
+    WantMembers := Not ((MembersStr = 'false') Or (MembersStr = '0'));
     JsonItems := '';
     First := True;
     Count := 0;
 
-    { MemberCount / MemberName[] are not exposed on IPCB_ObjectClass in         }
-    { DelphiScript, they are compile-time undeclared. Return class metadata   }
-    { only; callers that need per-member resolution can iterate nets and       }
-    { group them via the parent class on each net.                              }
     Iterator := Board.BoardIterator_Create;
     Iterator.SetState_FilterAll;
     Iterator.AddFilter_ObjectSet(MkSet(eClassObject));
@@ -326,9 +332,42 @@ Begin
         Begin
             If Not First Then JsonItems := JsonItems + ',';
             First := False;
-
             JsonItems := JsonItems + '{"name":"' + EscapeJsonString(ObjClass.Name) + '",'
-                + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass) + '}';
+                + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass);
+
+            If WantMembers Then
+            Begin
+                Members := '';
+                MemberCount := 0;
+                ProbeErrors := 0;
+                NetIter := Board.BoardIterator_Create;
+                Try
+                    NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+                    NetIter.AddFilter_LayerSet(AllLayers);
+                    NetIter.AddFilter_Method(eProcessAll);
+                    Net := NetIter.FirstPCBObject;
+                    While Net <> Nil Do
+                    Begin
+                        Try
+                            If ObjClass.IsMember(Net) Then
+                            Begin
+                                If Members <> '' Then Members := Members + ',';
+                                Members := Members + '"' + EscapeJsonString(Net.Name) + '"';
+                                Inc(MemberCount);
+                            End;
+                        Except
+                            Inc(ProbeErrors);
+                        End;
+                        Net := NetIter.NextPCBObject;
+                    End;
+                Finally
+                    Board.BoardIterator_Destroy(NetIter);
+                End;
+                JsonItems := JsonItems + ',"nets":[' + Members + ']'
+                    + ',"member_count":' + IntToStr(MemberCount)
+                    + ',"probe_errors":' + IntToStr(ProbeErrors);
+            End;
+            JsonItems := JsonItems + '}';
             Inc(Count);
         End;
         ObjClass := Iterator.NextPCBObject;
@@ -336,7 +375,8 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"net_classes":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"net_classes":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"members_read":' + BoolToJsonStr(WantMembers) + '}');
 End;
 
 {..............................................................................}
@@ -438,20 +478,95 @@ End;
 { PCB_GetDesignRules - Get all design rules                                   }
 {..............................................................................}
 
+{ The Gap a clearance-family rule really holds, in mm, or '' when the rule  }
+{ is not one or is not found. Read through a typed local assigned straight  }
+{ from the iterator, which is where DelphiScript narrows.                   }
+{                                                                           }
+{ For Board Outline Clearance (kind 63) the descriptor Altium composes      }
+{ always says Gap=0mil, whatever the rule holds: measured on AD 26.10, a    }
+{ new rule read Gap 0.254 mm and one written to 3 mm read 3 mm, both with   }
+{ a descriptor of Gap=0mil. A caller reading only the descriptor concluded  }
+{ the rule did nothing (#39.7). The rule's per-object table is not exposed  }
+{ to scripts at all.                                                        }
+Function ClearanceGapMM(Board : IPCB_Board; RuleName : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    ClearRule : IPCB_ClearanceConstraint;
+    Kind : Integer;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        ClearRule := Iter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            If ClearRule.Name = RuleName Then
+            Begin
+                Kind := -1;
+                Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+                If (Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52) Or (Kind = 63) Then
+                    Try Result := FloatToJsonStr(CoordToMM(ClearRule.Gap)); Except Result := ''; End;
+                Break;
+            End;
+            ClearRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function PCB_GetDesignRules(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
-    JsonItems, RuleTypeStr : String;
+    JsonItems, RuleTypeStr, GapStr : String;
     First : Boolean;
-    Count : Integer;
+    Count, GapIdx : Integer;
+    GapNames, GapValues : TStringList;
+    GapIter : IPCB_BoardIterator;
+    ClearRule : IPCB_ClearanceConstraint;
+    Kind : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
+    End;
+
+    { The clearance-family gaps first, typed, because the descriptor of a  }
+    { Board Outline Clearance rule says Gap=0mil whatever it holds (see     }
+    { ClearanceGapMM).                                                      }
+    GapNames := TStringList.Create;
+    GapValues := TStringList.Create;
+    GapIter := Board.BoardIterator_Create;
+    Try
+        GapIter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        GapIter.AddFilter_LayerSet(AllLayers);
+        GapIter.AddFilter_Method(eProcessAll);
+        ClearRule := GapIter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+            If (Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52) Or (Kind = 63) Then
+            Begin
+                GapStr := '';
+                Try GapStr := FloatToJsonStr(CoordToMM(ClearRule.Gap)); Except End;
+                If GapStr <> '' Then
+                Begin
+                    GapNames.Add(ClearRule.Name);
+                    GapValues.Add(GapStr);
+                End;
+            End;
+            ClearRule := GapIter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(GapIter);
     End;
 
     JsonItems := '';
@@ -483,11 +598,17 @@ Begin
             + '"scope_1":"' + EscapeJsonString(Rule.Scope1Expression) + '",'
             + '"scope_2":"' + EscapeJsonString(Rule.Scope2Expression) + '",'
             + '"comment":"' + EscapeJsonString(Rule.Comment) + '",'
-            + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"}';
+            + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"';
+        GapIdx := GapNames.IndexOf(Rule.Name);
+        If GapIdx >= 0 Then
+            JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
+        JsonItems := JsonItems + '}';
         Inc(Count);
         Rule := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
+    GapNames.Free;
+    GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
         '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
@@ -695,7 +816,7 @@ Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Rule : IPCB_Rule;
-    RuleName : String;
+    RuleName, GapField : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -718,12 +839,16 @@ Begin
         Exit;
     End;
 
+    GapField := ClearanceGapMM(Board, RuleName);
+    If GapField <> '' Then GapField := ',"gap_mm":' + GapField;
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
         + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
         + '"priority":' + IntToStr(Rule.Priority) + ','
-        + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"}');
+        + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"'
+        + GapField + '}');
 End;
 
 {..............................................................................}
@@ -1145,6 +1270,16 @@ Begin
 End;
 
 {..............................................................................}
+{ DrcReportAge - File age of the .DRC report, or -1 when there is none       }
+{..............................................................................}
+Function DrcReportAge(ReportPath : String) : Integer;
+Begin
+    Result := -1;
+    If ReportPath = '' Then Exit;
+    Try Result := FileAge(ReportPath); Except Result := -1; End;
+End;
+
+{..............................................................................}
 { PCB_RunDRC - Run design rule check, return violation count                  }
 {..............................................................................}
 
@@ -1240,7 +1375,8 @@ Var
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
     JsonItems, ReportPath, AllowStr : String;
-    First, ReportPresent, AllowModal : Boolean;
+    First, ReportPresent, AllowModal, ReportFresh : Boolean;
+    ReportBefore, ReportAfter : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1271,8 +1407,22 @@ Begin
         Exit;
     End;
 
+    { Altium writes a .DRC report beside the board each time the check runs. }
+    { Its file age is read before and after the run: if it changed, the     }
+    { check ran. If the dialog was cancelled the age is unchanged, even when }
+    { a report from an earlier run is sitting there. FileAge gives -1 for a }
+    { missing file, so a report that appears during the call counts too.   }
+    { File ages tick every two seconds, so a run that lands in the same     }
+    { tick as the last one reads as not confirmed. That errs the safe way.  }
+    ReportPath := '';
+    Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
+    ReportBefore := DrcReportAge(ReportPath);
+
     ResetParameters;
     RunProcess('PCB:DesignRuleCheck');
+
+    ReportAfter := DrcReportAge(ReportPath);
+    ReportFresh := (ReportAfter >= 0) And (ReportAfter > ReportBefore);
 
     // Count violations by iterating
     ViolationCount := 0;
@@ -1298,42 +1448,40 @@ Begin
     End;
     Board.BoardIterator_Destroy(Iterator);
 
-    { A ZERO HERE USED TO BE INDISTINGUISHABLE FROM A CANCELLED CHECK.       }
-    { PCB:DesignRuleCheck opens the Design Rule Checker dialog on AD26.      }
-    { MEASURED: pressing Cancel produced violation_count 0 with an empty     }
-    { list, byte-identical to a board that genuinely passes. A caller was    }
-    { told the good news either way, which is the worst shape this bug takes.}
-    {                                                                         }
-    { There is no verified silent form of the process. The only corroboration }
-    { available in-process is the .DRC report Altium writes beside the board  }
-    { when the check actually runs, so its presence is reported and a zero is }
-    { explicitly qualified rather than left to speak for itself. Nothing is   }
-    { deleted to force the issue: that would mean removing a file from the    }
-    { user's project folder to answer a question.                             }
-    ReportPath := '';
+    { A cancelled Design Rule Checker dialog used to return violation_count }
+    { 0 with an empty list, the same answer as a board that passes. There  }
+    { is no silent form of the process, so the answer carries whether the  }
+    { report was rewritten, and drc_confirmed is true only when it was. A  }
+    { report that merely exists proves nothing: any earlier run leaves one. }
+    { Nothing is deleted to force a fresh report, since that would remove a }
+    { file from the user's project folder.                                  }
     ReportPresent := False;
-    Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
     If ReportPath <> '' Then
         Try ReportPresent := FileExists(ReportPath); Except End;
 
-    If (ViolationCount = 0) And (Not ReportPresent) Then
+    If Not ReportFresh Then
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":0,"violations":[],"drc_confirmed":false'
-            + ',"drc_triggered":true'
-            + ',"report_present":false'
-            + ',"report_path":"' + EscapeJsonString(ReportPath) + '"'
-            + ',"reason":"no violations were found AND no .DRC report exists, '
-            + 'so this zero does NOT mean the board is clean. The Design Rule '
-            + 'Checker is a dialog on this build: if it was cancelled the '
-            + 'check never ran. Confirm the dialog was answered, or drive it '
-            + 'with app_run_ui_command."}')
+            '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"violations":[' + JsonItems + '],'
+            + '"drc_triggered":true,'
+            + '"drc_confirmed":false,'
+            + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '",'
+            + '"reason":"The .DRC report was not rewritten during this call, so '
+            + 'the check is not confirmed to have run. A cancelled Design Rule '
+            + 'Checker dialog looks like this. The violations listed, or a count '
+            + 'of 0, are whatever an earlier run left on the board. It also '
+            + 'happens when the run finished within two seconds of the previous '
+            + 'report (run it again), or when Create Report File is off in the '
+            + 'Design Rule Checker (turn it on)."}')
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"violations":[' + JsonItems + '],'
             + '"drc_triggered":true,'
-            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"drc_confirmed":true,'
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
-            + '"violations":[' + JsonItems + ']}');
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '"}');
 End;
 
 {..............................................................................}
@@ -4302,14 +4450,13 @@ End;
 { why plane nets were being attempted with pcb_place_polygon_rect - there was  }
 { no other way to reach them, pcb_modify_layer having no net parameter.        }
 {                                                                              }
-{ THE WRITE PATH IS NOT CONFIRMED. The DelphiScript reference carried in this  }
-{ repo (docs/altium-delphiscript/) documents no plane-net accessor at all, so  }
-{ the layer object's Net property is attempted under Try/Except and then READ  }
-{ BACK. If this script binding does not carry that property, the write raises  }
-{ nothing and the read-back disagrees, and the call answers success=false with }
-{ applied=false rather than claiming a write that did not land - the same      }
-{ honesty contract pcb_modify_layer and pcb_set_layer_color already keep. The  }
-{ board is saved only when the read-back agrees.                               }
+{ The plane's net is written and read back through the board's              }
+{ InternalPlaneNetName[layer], which the PCB API reference documents as a    }
+{ read/write string property. The layer object's Net, the route this used    }
+{ before and which no reference documents, is tried only if that read-back   }
+{ disagrees, and is read back the same way. route says which one took. The   }
+{ call answers success=false when neither reads back the net, and the board  }
+{ is marked changed only when one does.                                      }
 {                                                                              }
 { Params: layer (required, plane name or InternalPlaneN), net (required)       }
 {..............................................................................}
@@ -4320,7 +4467,7 @@ Var
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     NetObj : IPCB_Net;
-    LayerStr, NetStr, ResolvedName, NetBack, NoteStr : String;
+    LayerStr, NetStr, ResolvedName, NetBack, NoteStr, Route : String;
     TargetLayer : TLayer;
     Applied : Boolean;
 Begin
@@ -4398,9 +4545,10 @@ Begin
     ResolvedName := GetLayerString(TargetLayer);
     Try ResolvedName := LayerObj.Name; Except End;
 
+    Route := '';
     PCBServer.PreProcess;
     Try
-        Try LayerObj.Net := NetObj; Except End;
+        Try Board.InternalPlaneNetName[TargetLayer] := NetObj.Name; Except End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
@@ -4408,13 +4556,26 @@ Begin
     End;
 
     NetBack := '';
-    Try
-        If LayerObj.Net <> Nil Then NetBack := LayerObj.Net.Name;
-    Except
-        NetBack := '';
-    End;
-
+    Try NetBack := Board.InternalPlaneNetName[TargetLayer]; Except NetBack := ''; End;
     Applied := (NetBack <> '') And (UpperCase(NetBack) = UpperCase(NetStr));
+    If Applied Then Route := 'InternalPlaneNetName';
+
+    If Not Applied Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            Try LayerObj.Net := NetObj; Except End;
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, c_NoEventData);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Try
+            If LayerObj.Net <> Nil Then NetBack := LayerObj.Net.Name;
+        Except End;
+        Applied := (NetBack <> '') And (UpperCase(NetBack) = UpperCase(NetStr));
+        If Applied Then Route := 'LayerObject.Net';
+    End;
 
     If Applied Then
     Begin
@@ -4435,6 +4596,7 @@ Begin
         + '"net":"' + EscapeJsonString(NetStr) + '",'
         + '"net_readback":"' + EscapeJsonString(NetBack) + '",'
         + '"applied":' + BoolToJsonStr(Applied) + ','
+        + '"route":"' + Route + '",'
         + '"note":"' + EscapeJsonString(NoteStr) + '"}');
 End;
 
@@ -5120,6 +5282,7 @@ Var
     Body : IPCB_ComponentBody;
     Model : IPCB_Model;
     ModelPath, LayerStr, Why : String;
+    BodyLayer : TLayer;
     BodyX, BodyY, Standoff, CurX, CurY : Integer;
     DidStandoff, DidMove : Boolean;
     ReadBackX, ReadBackY : Integer;
@@ -5154,6 +5317,17 @@ Begin
     Standoff := Round(StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0));
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopLayer';
+    { Checked against the board before anything is made: the layer was   }
+    { read with GetLayerFromString, which puts an unknown name on top    }
+    { copper.                                                            }
+    BodyLayer := eNoLayer;
+    Try BodyLayer := ResolveLayerId(Board, LayerStr); Except BodyLayer := eNoLayer; End;
+    If BodyLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     DidStandoff := False;
     DidMove := False;
@@ -5197,7 +5371,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Body.I_ObjectAddress);
 
-        Try Body.Layer := GetLayerFromString(LayerStr); Except End;
+        Try Body.Layer := BodyLayer; Except End;
 
         { MOVED, NOT ASSIGNED. Lib_Link3DModel positions a body with
           MoveByXY, which is inherited from IPCB_Primitive and already
@@ -5215,11 +5389,20 @@ Begin
             CurX := 0;
             CurY := 0;
         End;
+        { Inside the body's modify bracket, now that it has a board. Moved   }
+        { without it, the spatial index kept the body at the origin, so it   }
+        { could not be picked where it was drawn (measured on AD 26.10).     }
         If (BodyX <> CurX) Or (BodyY <> CurY) Then
             Try
-                Body.MoveByXY(MilsToCoord(BodyX - CurX),
-                              MilsToCoord(BodyY - CurY));
-                DidMove := True;
+                Body.BeginModify;
+                Try
+                    Body.MoveByXY(MilsToCoord(BodyX - CurX),
+                                  MilsToCoord(BodyY - CurY));
+                    DidMove := True;
+                Finally
+                    Body.EndModify;
+                End;
+                Body.GraphicallyInvalidate;
             Except End;
 
         If Standoff <> 0 Then
@@ -5339,7 +5522,6 @@ Begin
         Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
         If Via = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create via object');
             Exit;
         End;
@@ -5437,7 +5619,6 @@ Begin
         Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
         If Track = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create track object');
             Exit;
         End;
@@ -5842,7 +6023,6 @@ Begin
         Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
         If Arc = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc object');
             Exit;
         End;
@@ -5945,7 +6125,6 @@ Begin
         TextObj := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
         If TextObj = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create text object');
             Exit;
         End;
@@ -6033,7 +6212,6 @@ Begin
         Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
         If Fill = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create fill object');
             Exit;
         End;
@@ -6306,7 +6484,6 @@ Begin
         End
         Else
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
                 'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
                 + 'via_size, differential_pairs, solder_mask_expansion, '
@@ -6694,6 +6871,9 @@ End;
 { Because nothing is triggered here, violation_count = 0 means "no stored    }
 { violations", which on a board where DRC has never run is NOT a pass; the   }
 { response says so via drc_triggered / note.                                 }
+{ offset and limit page the list (defaults 0 and 200); violation_count is   }
+{ always the full number that matched, so has_more says whether to ask for  }
+{ the next page.                                                             }
 {..............................................................................}
 
 Function PCB_GetClearanceViolations(Params : String; RequestId : String) : String;
@@ -6704,7 +6884,7 @@ Var
     FilterNet, ViolDesc, ViolName : String;
     JsonItems : String;
     First : Boolean;
-    Count : Integer;
+    Count, Offset, Limit, Returned : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -6714,6 +6894,11 @@ Begin
     End;
 
     FilterNet := ExtractJsonValue(Params, 'net');
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    If Offset < 0 Then Offset := 0;
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 200);
+    If Limit < 1 Then Limit := 200;
+    Returned := 0;
 
     { No DRC trigger here -- see the header. Iterating eViolationObject is   }
     { a pure board read: it opens no dialog and cannot block the loop.       }
@@ -6735,11 +6920,12 @@ Begin
         // Filter by net if specified (check if net name appears in description)
         If (FilterNet = '') Or (Pos(FilterNet, ViolDesc) > 0) Or (Pos(FilterNet, ViolName) > 0) Then
         Begin
-            If Count < 200 Then
+            If (Count >= Offset) And (Returned < Limit) Then
             Begin
                 If Not First Then JsonItems := JsonItems + ',';
                 First := False;
                 JsonItems := JsonItems + BuildViolationJson(Violation);
+                Inc(Returned);
             End;
             Inc(Count);
         End;
@@ -6749,6 +6935,10 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(Count) + ','
+        + '"offset":' + IntToStr(Offset) + ','
+        + '"limit":' + IntToStr(Limit) + ','
+        + '"returned":' + IntToStr(Returned) + ','
+        + '"has_more":' + BoolToJsonStr(Offset + Returned < Count) + ','
         + '"drc_triggered":false,'
         + '"note":"Existing violations only -- no DRC was run. 0 does not mean '
         + 'the board passes if DRC has never been run on it.",'
@@ -7213,7 +7403,8 @@ Var
     FilterNet, FilterDesig : String;
     JsonItems, PadName, NetName, LayerStr, CompDesig, ShapeStr : String;
     PadCache : TPadCache;
-    SolderMask, PasteMask : Integer;
+    SolderMask, SolderMaskBottom, PasteMask : Integer;
+    MaskSeparateFlag : Boolean;
     First : Boolean;
     Count : Integer;
 Begin
@@ -7278,13 +7469,21 @@ Begin
             Else ShapeStr := 'Other';
         Except ShapeStr := 'Unknown'; End;
 
-        // Get cache (solder/paste mask expansion)
+        // Get cache (solder/paste mask expansion). The solder mask value
+        // is the TOP side once the sides are separate, and the bottom is
+        // stored even while they are linked, so all three are reported.
         SolderMask := 0;
+        SolderMaskBottom := 0;
+        MaskSeparateFlag := False;
         PasteMask := 0;
         Try
             PadCache := Pad.GetState_Cache;
+            MaskSeparateFlag := PadCache.UseSeparateExpansions;
             If PadCache.SolderMaskExpansionValid = eCacheManual Then
+            Begin
                 SolderMask := CoordToMils(PadCache.SolderMaskExpansion);
+                SolderMaskBottom := CoordToMils(PadCache.SolderMaskBottomExpansion);
+            End;
             If PadCache.PasteMaskExpansionValid = eCacheManual Then
                 PasteMask := CoordToMils(PadCache.PasteMaskExpansion);
         Except End;
@@ -7302,6 +7501,8 @@ Begin
             + '"rotation":' + FloatToJsonStr(Pad.Rotation) + ','
             + '"is_smd":' + BoolToJsonStr(Pad.IsSurfaceMount) + ','
             + '"solder_mask_expansion":' + IntToStr(SolderMask) + ','
+            + '"solder_mask_bottom_expansion":' + IntToStr(SolderMaskBottom) + ','
+            + '"solder_mask_separate":' + BoolToJsonStr(MaskSeparateFlag) + ','
             + '"paste_mask_expansion":' + IntToStr(PasteMask) + '}';
         Inc(Count);
 
@@ -8392,7 +8593,6 @@ Begin
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
         If Polygon = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create polygon object');
             Exit;
         End;
@@ -8598,7 +8798,6 @@ Begin
         DiffPair := PCBServer.PCBObjectFactory(eDifferentialPairObject, eNoDimension, eCreate_Default);
         If DiffPair = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create diff pair object');
             Exit;
         End;
@@ -8673,7 +8872,6 @@ Begin
         Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
         If Region = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create region object');
             Exit;
         End;
@@ -8905,7 +9103,6 @@ Begin
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eLinearDimension, eCreate_Default);
         If Dim = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create dimension');
             Exit;
         End;
@@ -9008,7 +9205,6 @@ Begin
         Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
         If Pad = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pad');
             Exit;
         End;
@@ -9129,7 +9325,6 @@ Begin
         Comp := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
         If Comp = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create component object');
             Exit;
         End;
@@ -9447,7 +9642,6 @@ Begin
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eAngularDimension, eCreate_Default);
         If Dim = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create angular dimension');
             Exit;
         End;
@@ -9510,7 +9704,6 @@ Begin
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eRadialDimension, eCreate_Default);
         If Dim = Nil Then
         Begin
-            PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create radial dimension');
             Exit;
         End;
@@ -11252,33 +11445,117 @@ End;
 {..............................................................................}
 
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    Prim : IPCB_Primitive;
+    Matches : TInterfaceList;
+    Cache : TPadCache;
+    I : Integer;
+    NetFilter, NetName, ExpStr : String;
+    ExpMils : Double;
+    Exp : TCoord;
+    Matched, Verified : Integer;
+    Ok : Boolean;
 Begin
-    { THIS WRITE TAKES THE SCRIPTING ENGINE DOWN, MEASURED TWICE.
-      Setting SolderMaskExpansion / SolderMaskExpansionFromHoleEdge on an
-      IPCB_Via raises "Access violation in ScriptingSystem.DLL, read of
-      address 0x38" on AD 26.10.1.6. The fault is in the write itself: it
-      was measured once through Via.BeginModify and once through
-      SendMessageToRobots, on a scratch board holding three vias and
-      nothing else, and it is identical both ways. It is not catchable
-      either, because the engine shows a modal before any Except runs, so
-      the polling loop stops and the session needs a manual restart.
+    { ONE WRITE ON A VIA CRASHES THE SCRIPTING ENGINE, AND IT IS NOT THIS ONE.
+      Assigning SolderMaskExpansion straight onto an IPCB_Via raises an
+      access violation in ScriptingSystem.DLL (read of address 0x38) on
+      AD 26.10.1.6, through BeginModify or SendMessageToRobots alike, and
+      the engine shows its modal before any Except runs. Measured again on
+      2026-10-11 with nothing else on the board: that assignment still
+      faults, while SolderMaskExpansionFromHoleEdge assigned on the via and
+      the expansion written into the via's pad cache (GetState_Cache,
+      change, SetState_Cache) both take and read back. A via is a pad
+      underneath, and the cache record is TPadCache. So the value goes
+      through the cache, and SolderMaskExpansion is never assigned on a
+      via. Both sides are written, since the bottom value is stored even
+      while the sides are linked and takes effect when they are unlinked. }
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    ExpStr := ExtractJsonValue(Params, 'expansion_mils');
+    ExpMils := 4;
+    If ExpStr <> '' Then ExpMils := StrToFloatDef(ExpStr, -99999);
+    If ExpMils = -99999 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'expansion_mils is a number in mils');
+        Exit;
+    End;
+    Exp := MilsToCoordF(ExpMils);
 
-      The handler therefore does not attempt it. Refusing is not the
-      preferred answer anywhere in this bridge and is right here only
-      because the operation cannot complete: every caller who tried it
-      lost their session and changed nothing on the board.
+    { Collect first, write after the walk, as PCB_SetTrackWidth does: a  }
+    { primitive changed while the BoardIterator holds it corrupts the    }
+    { walk. The list is never freed, and each item comes back through a  }
+    { base IPCB_Primitive before it is narrowed to a via.                }
+    Matches := CreateObject(TInterfaceList);
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Via := Iterator.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            NetName := '';
+            Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+            If (NetFilter = '') Or (UpperCase(NetName) = UpperCase(NetFilter)) Then
+                Matches.Add(Via);
+            Via := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
 
-      Altium's own route for tenting is a Solder Mask Expansion rule
-      scoped IsVia, which covers every via at once and survives a
-      repour. PCB_CreateDesignRule builds that kind, so the pointer is
-      to a tool rather than to a dialog. }
-    Result := BuildErrorResponse(RequestId, 'NOT_SCRIPTABLE',
-        'Writing a via soldermask expansion crashes the Altium scripting '
-        + 'engine on this build (access violation in ScriptingSystem.DLL), '
-        + 'which stops the polling loop and needs a manual restart, so this '
-        + 'handler does not attempt it. Tent vias with a Solder Mask '
-        + 'Expansion rule instead: pcb_create_design_rule with '
-        + 'rule_type=solder_mask_expansion and scope=IsVia.');
+    Matched := Matches.Count;
+    Verified := 0;
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Prim := Matches.Items[I];
+            If Prim = Nil Then Continue;
+            Via := Prim;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_BeginModify, c_NoEventData);
+            Via.SolderMaskExpansionFromHoleEdge := True;
+            Cache := Via.GetState_Cache;
+            Cache.SolderMaskExpansion := Exp;
+            Cache.SolderMaskBottomExpansion := Exp;
+            Cache.SolderMaskExpansionValid := eCacheManual;
+            Via.SetState_Cache := Cache;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+            Via.GraphicallyInvalidate;
+            Cache := Via.GetState_Cache;
+            Ok := Via.SolderMaskExpansionFromHoleEdge
+                And (Cache.SolderMaskExpansionValid = eCacheManual)
+                And (Abs(Cache.SolderMaskExpansion - Exp) <= 10)
+                And (Abs(Cache.SolderMaskBottomExpansion - Exp) <= 10);
+            If Ok Then Verified := Verified + 1;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    If Matched > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('vias_matched', Matched) + ','
+        + JsonInt('vias_verified', Verified) + ','
+        + JsonFloat('expansion_mils', ExpMils) + ','
+        + JsonStr('net', NetFilter) + ','
+        + JsonRaw('from_hole_edge', 'true') + ','
+        + JsonStr('note', 'Each via''s mask opening is measured from its hole '
+            + 'edge, on both sides, as a manual value on the via. A Solder '
+            + 'Mask Expansion rule scoped IsVia covers every via at once '
+            + 'instead, including vias placed later.')));
 End;
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
@@ -15659,4 +15936,11 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown PCB action: ' + Action);
     End;
+End;
+
+{ UnitStamp_PCB - which build of PCB.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_PCB(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

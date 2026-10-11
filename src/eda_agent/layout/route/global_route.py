@@ -144,18 +144,59 @@ class GlobalRouter:
             dst += [h, a]
             eid += [v, v]
             length += [np.full(len(a), self.r.via_base / 2)] * 2
-        self.src = np.concatenate(src)
-        self.dst = np.concatenate(dst)
-        self.eid = np.concatenate(eid)
-        self.base = np.concatenate(length)
+        src = np.concatenate(src)
+        dst = np.concatenate(dst)
+        eid = np.concatenate(eid)
+        base = np.concatenate(length)
         self.n_nodes = n_t + GY * GX
+        # The arcs in the order a sparse matrix keeps them (by row, then
+        # column; no two arcs share both), so the graph is built once and
+        # only its weights change from search to search.
+        order = np.lexsort((dst, src))
+        self.src, self.dst, self.eid, self.base = src[order], dst[order], eid[order], base[order]
+        self._indptr = np.concatenate(
+            [[0], np.cumsum(np.bincount(self.src, minlength=self.n_nodes))]).astype(np.int32)
+        self._indices = self.dst.astype(np.int32)
+        # Arcs whose edge is full get the wall factor; which they are never
+        # changes.
+        self._wall = np.where((self.cap[self.eid] <= 0) & (self.eid < 2 * self.n_e), 50.0, 1.0)
+        # Edge -> the arcs over it, for the weights a change of use moves.
+        by_edge = np.argsort(self.eid, kind="stable")
+        self._arcs_of = (by_edge, np.searchsorted(self.eid[by_edge], np.arange(len(self.use) + 1)))
+        self._w = None
+        self._w_pres = None
+        self._stale: list = []
+
+    def _weights(self, arcs, pres: float) -> np.ndarray:
+        e = self.eid[arcs]
+        over = np.maximum(0, self.use[e] + 1 - self.cap[e])
+        w = self.base[arcs] * (1.0 + self.hist[e]) * (1.0 + pres * over)
+        return np.where(self._wall[arcs] != 1.0, w * 50.0, w)
 
     def _graph(self, pres: float) -> csr_matrix:
-        over = np.maximum(0, self.use + 1 - self.cap)[self.eid]
-        full = self.cap[self.eid] <= 0
-        w = self.base * (1.0 + self.hist[self.eid]) * (1.0 + pres * over)
-        w = np.where(full & (self.eid < 2 * self.n_e), w * 50.0, w)
-        return csr_matrix((w, (self.src, self.dst)), shape=(self.n_nodes, self.n_nodes))
+        """The tile graph at present-cost pres: every arc's weight from
+        its edge's use, capacity and history. Weights are recomputed whole
+        when pres or the history moved, else only over the edges whose
+        use changed since (_stale); either way each is the same number."""
+        if self._w is None or pres != self._w_pres:
+            self._w = self._weights(np.arange(len(self.eid)), pres)
+            self._w_pres = pres
+        elif self._stale:
+            edges = np.unique(np.concatenate(self._stale))
+            by_edge, start = self._arcs_of
+            lo, n = start[edges], start[edges + 1] - start[edges]
+            if n.sum():
+                # The arcs of each edge, run after run.
+                first = np.repeat(lo - (np.cumsum(n) - n), n)
+                arcs = by_edge[first + np.arange(n.sum())]
+                self._w[arcs] = self._weights(arcs, pres)
+        self._stale = []
+        return csr_matrix((self._w, self._indices, self._indptr),
+                          shape=(self.n_nodes, self.n_nodes))
+
+    def _use(self, edges, delta: int) -> None:
+        np.add.at(self.use, edges, delta)
+        self._stale.append(np.asarray(edges, dtype=np.int64))
 
     # -- tiles ---------------------------------------------------------------
 
@@ -177,7 +218,7 @@ class GlobalRouter:
         gn = self.nets.get(job.id)
         if gn is not None:
             for es in gn.edges:
-                np.subtract.at(self.use, es, 1)
+                self._use(es, -1)
         gn = GlobalNet(job)
         self.nets[job.id] = gn
         terms = job.terminals
@@ -206,7 +247,7 @@ class GlobalRouter:
                 path.append(n)
             path.reverse()
             used = self._edges_of(path)
-            np.add.at(self.use, used, 1)
+            self._use(used, 1)
             gn.routes.append(path)
             gn.edges.append(used)
             tree.update(path)
@@ -233,23 +274,38 @@ class GlobalRouter:
     def overflow(self) -> np.ndarray:
         return np.maximum(0, self.use - self.cap)
 
-    def run(self, jobs, iterations: int = 30, log=None) -> dict:
+    #: With stall, the negotiation stops once the last STALL_WINDOW
+    #: rounds brought the overflow no lower than STALL_PROGRESS of the best
+    #: round before them. MEASURED on four slow boards: the overflow levels
+    #: off by round 7 to 16 and stays there (one board's rises from the
+    #: first round), while the rounds after it took up to 180 s of 550.
+    STALL_WINDOW = 4
+    STALL_PROGRESS = 0.98
+
+    def run(self, jobs, iterations: int = 30, log=None, stall: bool = False) -> dict:
         log = log or (lambda s: None)
         jobs = [j for j in jobs if j.plane_mask is None]
         pres = 0.5
         todo = list(jobs)
         stats = {}
+        seen: list[int] = []
         for it in range(iterations):
             for j in todo:
                 self._route_net(j, pres)
             over = self.overflow()
             bad = over > 0
             self.hist[bad] += 1.0
+            self._w = None
             total = int(over.sum())
             stats = {"iterations": it + 1, "overflow": total,
                      "tiles": (self.L, self.GY, self.GX), "tile_cells": self.T}
             log(f"global iteration {it + 1}: overflow {total}")
             if not total:
+                break
+            seen.append(total)
+            w = self.STALL_WINDOW
+            if stall and len(seen) > w and min(seen[-w:]) > self.STALL_PROGRESS * min(seen[:-w]):
+                stats["stalled"] = True
                 break
             todo = [j for j in jobs if any(bad[e].any() for e in self.nets[j.id].edges)]
             pres *= 1.5

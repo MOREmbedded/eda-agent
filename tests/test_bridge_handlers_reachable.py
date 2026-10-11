@@ -73,14 +73,6 @@ KNOWN_UNREACHABLE = {
     "fillet_corners",
     "measure_distance",
     "place_compile_mask",
-    # Deliberately unreachable from Python: the handler refuses, and
-    # pcb_set_via_soldermask_relief refuses locally rather than send to
-    # it. Reaching it means putting the command on the wire, and a
-    # session running a deployed script older than 2026.09.10.3 still
-    # has the write that takes the scripting engine down. The handler
-    # stays as the second layer, for tool_invoke and raw commands.
-    # See tests/test_via_soldermask_relief_is_refused.py.
-    "set_via_soldermask_relief",
     # The schematic emitter placed its junctions through this until
     # it stopped placing any: Altium draws its own at every T, in the
     # colour interactive wiring gives them (see AUTO JUNCTIONS in
@@ -396,6 +388,24 @@ def _sent_commands() -> dict[str, str]:
     return sent
 
 
+def _answered_before_routing() -> set[str]:
+    """Full command names ProcessCommand answers itself, before its Case.
+
+    Read from the file that holds the category routing, by content, the
+    same way ``_category_to_module`` finds it. application.get_unit_stamps
+    is answered there because it asks every unit, not one.
+    """
+    for path in sorted(PASCAL_DIR.glob("*.pas")):
+        if path.name == "Altium_MCP.pas":
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if not re.search(r"'\w+':\s*Result\s*:=\s*Handle\w+Command", body):
+            continue
+        routing = body[:body.index("Case Category Of")]
+        return set(re.findall(r"If\s+Command\s*=\s*'(\w+\.\w+)'\s+Then", routing))
+    return set()
+
+
 @pytest.fixture(scope="module")
 def unhandled() -> dict[str, str]:
     handlers = _dispatched_handlers()
@@ -405,8 +415,9 @@ def unhandled() -> dict[str, str]:
         f"vacuously")
 
     sent = _sent_commands()
+    early = _answered_before_routing()
     return {cmd: where for cmd, where in sent.items()
-            if cmd.split(".", 1)[1] not in handlers}
+            if cmd.split(".", 1)[1] not in handlers and cmd not in early}
 
 
 def test_every_command_python_sends_has_a_handler(unhandled):

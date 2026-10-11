@@ -78,6 +78,12 @@ _CATEGORY_BY_PREFIX = (
     # matters here: the first match wins, so a new prefix that is a
     # prefix of an existing one has to go above it.
     ("easyeda_", "easyeda"),
+    # Package checks and renders work on a footprint before it exists in any
+    # library; filed with the library tools that draw it.
+    ("footprint_", "library"),
+    # A datasheet is a part's document, fetched like part_fetch fetches a
+    # part, and with no editor involved.
+    ("datasheet_", "parts"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -111,7 +117,7 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_create_ic_symbol", "lib_create_standard_footprint",
     "lib_create_symbol", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
-    "lib_link_3d_model", "lib_link_footprint", "lib_search",
+    "lib_link_3d_model", "lib_link_footprint",
     "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
     "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
     "obj_select", "obj_zoom", "pcb_bind_pad_nets",
@@ -138,6 +144,12 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts"})
 # Tools that are pure Python regardless of their prefix (deterministic, no
 # bridge round-trip). Substring match keeps the calculators in one rule.
 _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
+
+# Pure Python tools filed under a category that is otherwise bridge-backed:
+# the package checks compute over a package description and never reach an
+# editor, so they work with nothing running.
+_OFFLINE_BY_NAME = frozenset({"footprint_check_package",
+                              "footprint_render_package"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
@@ -244,13 +256,16 @@ INTERACTION_OVERRIDES = {
     # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
-    # Refuses on this Altium build: the via soldermask write raises an
-    # access violation inside ScriptingSystem.DLL, so the handler
-    # answers NOT_SCRIPTABLE and touches nothing. The pcb_set_ prefix
-    # defaults to "silent" (mutates), which tells a caller filtering for
-    # safe operations the opposite of the truth. If a build is ever
-    # found where the write works, this goes back to SILENT with it.
-    "pcb_set_via_soldermask_relief": READONLY,
+    # Writes the downloaded PDF and its sidecar into the workspace cache.
+    # Filed under parts, which is offline and so falls back to READONLY;
+    # a tool that writes files is SILENT here, as part_fetch is.
+    "datasheet_fetch": SILENT,
+    # Writes the SVG (and a PNG) it draws, as pcb_render_svg does.
+    "footprint_render_package": SILENT,
+    # Reads the footprint's pads, primitives and the library's layers and
+    # writes nothing. The lib_ prefix says nothing about that, and the
+    # default would publish an audit as a tool that edits the library.
+    "lib_audit_footprint_vs_package": READONLY,
 }
 
 # --- explicit maturity overrides -------------------------------------------
@@ -381,6 +396,9 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     "easyeda_create_ic_symbol": "library",
     "easyeda_create_passive_symbol": "library",
     "easyeda_create_standard_footprint": "library",
+    # Delegates the drawing like the one above; its only command of its
+    # own is the pad readback, a pcb read the deriver would file it under.
+    "easyeda_create_footprint_from_package": "library",
     # Bundles five reads through a helper that takes the command as an
     # argument, so there is no literal for the deriver to see. Every
     # one of those reads is a pcb command.
@@ -464,6 +482,8 @@ def category_of(name: str) -> str:
 
 def _is_offline(name: str, category: str) -> bool:
     if category in _OFFLINE_CATEGORIES:
+        return True
+    if name in _OFFLINE_BY_NAME:
         return True
     if name in _CALC_NEEDS_BRIDGE:
         return False

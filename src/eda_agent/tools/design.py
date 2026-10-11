@@ -1837,7 +1837,10 @@ def register_design_tools(mcp) -> None:
 
         Returns ``{file, line_count, part_count, lines}`` where each line is
         ``{quantity, designators, mpn, manufacturer, value, lib_reference,
-        datasheet}``: or ``{"error": ...}`` if disabled or unreadable.
+        datasheet}``: or ``{"error": ...}`` if disabled or unreadable
+        (missing file, a suffix other than .SchDoc/.PrjPcb, or a project
+        whose sheets cannot be resolved). A design read with zero parts
+        adds a ``warning``: an empty BOM is not proof of an empty design.
         """
         from ..fileio.review import (
             HEADLESS_DISABLED_MESSAGE,
@@ -1850,12 +1853,16 @@ def register_design_tools(mcp) -> None:
             lines = bom_from_file(path)
         except (ValueError, OSError) as e:
             return {"error": f"cannot read {path}: {e}"}
-        return {
+        result: dict[str, Any] = {
             "file": str(path),
             "line_count": len(lines),
             "part_count": sum(ln["quantity"] for ln in lines),
             "lines": lines,
         }
+        if not lines:
+            from ..fileio.bom import EMPTY_BOM_WARNING
+            result["warning"] = EMPTY_BOM_WARNING
+        return result
 
     @mcp.tool()
     async def design_review_plan(
@@ -2423,6 +2430,12 @@ def register_design_tools(mcp) -> None:
         magnitude exceeds every stated power input (a boost / inverting
         stage the user must confirm). Pure Python, no Altium.
 
+        ``board_intent`` (stackup, impedance targets, peak currents,
+        fastest edge, enclosure, assembly, finish, test strategy) is all
+        optional and never fails validation. Where the rest of the
+        requirement makes one of them matter and it is missing, ``notes``
+        carries a suggested question to ask the user.
+
         Args:
             requirement: DesignRequirement as a JSON object/dict. Units are
                 SI with the unit in the field name (``voltage_v``,
@@ -2430,9 +2443,9 @@ def register_design_tools(mcp) -> None:
                 MILLIMETRES (``board_size_mm``, ``height_max_mm``).
 
         Returns:
-            ``{"ok": True, "issues": [], "summary": "..."}`` when the
-            requirement is planning-ready (``summary`` is the labelled-line
-            block to embed in ``DesignPlan.summary``), or
+            ``{"ok": True, "issues": [], "notes": [...], "summary": "..."}``
+            when the requirement is planning-ready (``summary`` is the
+            labelled-line block to embed in ``DesignPlan.summary``), or
             ``{"ok": False, "issues": [...]}`` / ``{"ok": False,
             "errors": [...]}`` (schema problems) listing what to resolve.
         """

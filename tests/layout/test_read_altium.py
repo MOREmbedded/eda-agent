@@ -300,6 +300,64 @@ def test_a_pour_inside_another_takes_its_own_net_not_the_outer_one():
     assert [r.net for r in b.regions[2:]] == ["+3V3", "CORE"]
 
 
+def _nested_pours(inner_net_read):
+    """An outer +3V3 pour round an inner CORE pour on one layer: the outer
+    pour's copper voids round the inner boundary and round a CORE via; the
+    inner pour's copper holds the CORE via and voids round a +3V3 via. The
+    inner copper is read with ``inner_net_read``."""
+    from eda_agent.layout.model import Layer, LayoutBoard, Region, Rule, Via
+
+    outer_b = [(0, 0), (1000, 0), (1000, 1000), (0, 1000)]
+    inner_b = [(100, 100), (400, 100), (400, 400), (100, 400)]
+    hole = [(270, 270), (330, 270), (330, 330), (270, 330)]
+    b = LayoutBoard(layers=[Layer("TopLayer", order=0), Layer("MidLayer1", order=1),
+                            Layer("BottomLayer", order=2)],
+                    rules=[Rule("Clearance", "clearance", values={"gap": 5.0},
+                                descriptor="Clearance Constraint (Gap=5mil) (All),(All)")])
+    b.regions = [
+        Region("MidLayer1", outer_b, [], "+3V3", "pour_boundary", source="polygon:outer"),
+        Region("MidLayer1", inner_b, [], "CORE", "pour_boundary", source="polygon:inner"),
+        Region("MidLayer1", [(5, 5), (995, 5), (995, 995), (5, 995)],
+               [[(95, 95), (405, 95), (405, 405), (95, 405)]], "+3V3", "pour",
+               source="polygon:outer"),
+        Region("MidLayer1", list(inner_b), [hole], inner_net_read, "pour",
+               source="polygon:outer" if inner_net_read == "+3V3" else "polygon:inner"),
+    ]
+    b.vias = [Via(200, 200, 16, 8, "TopLayer", "BottomLayer", "CORE"),
+              Via(300, 300, 16, 8, "TopLayer", "BottomLayer", "+3V3")]
+    return b
+
+
+def test_poured_copper_named_for_the_outer_pour_goes_to_the_one_its_contents_prove():
+    from eda_agent.layout.drc import run_drc
+    from eda_agent.layout.read_altium import repair_pour_nets
+
+    b = _nested_pours("+3V3")
+    assert run_drc(b).violations, "read as the outer net, the CORE via overlaps it"
+    assert repair_pour_nets(b) == 1
+    inner = b.regions[3]
+    assert (inner.net, inner.source) == ("CORE", "polygon:inner")
+    assert b.regions[2].net == "+3V3"
+    assert not run_drc(b).violations
+
+
+def test_poured_copper_that_holds_only_its_own_net_is_left_as_read():
+    from eda_agent.layout.read_altium import repair_pour_nets
+
+    b = _nested_pours("CORE")
+    assert repair_pour_nets(b) == 0
+    assert [r.net for r in b.regions[2:]] == ["+3V3", "CORE"]
+
+
+def test_poured_copper_no_boundary_explains_is_left_as_read():
+    from eda_agent.layout.read_altium import repair_pour_nets
+
+    b = _nested_pours("+3V3")
+    del b.regions[1]            # no CORE boundary: nothing to give it to
+    assert repair_pour_nets(b) == 0
+    assert b.regions[2].net == "+3V3"
+
+
 def test_a_cutout_that_is_the_board_shape_is_not_a_hole():
     board_shape = [[0, 0], [1000 * C, 0], [1000 * C, 500 * C], [0, 500 * C]]
     b = read_board(_copper_only([

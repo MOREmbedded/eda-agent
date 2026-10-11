@@ -10,9 +10,11 @@ a live board it took the scripting engine down with an access violation.
 Because the fault landed between PreProcess and PostProcess it also left
 an open transaction in the PCB server, so the next edit misbehaved too.
 
-Rewriting that handler to collect first was not enough: the write faults
-on AD 26.10.1.6 however it is spelled, so it refuses instead, and what
-is guarded here is that it stays refused.
+Rewriting that handler to collect first was not enough on its own: the
+assignment of SolderMaskExpansion onto a via faults on AD 26.10.1.6
+however it is spelled. It now collects first and writes the value
+through the via's pad cache, which takes, and it is guarded here with
+the other collectors.
 
 A note in one handler does not stop the next one being written the same
 way, which is what the rest of this checks.
@@ -124,7 +126,8 @@ def test_no_primitive_is_written_inside_a_board_walk(source: str):
 #: The handlers that walk the board and then write to what they found.
 #: PCB_SetTrackWidth is where the pattern was worked out; the other one
 #: had the defect and nobody had reported it.
-_COLLECTORS = ("PCB_SetTrackWidth", "PCB_MoveTracksToLayer")
+_COLLECTORS = ("PCB_SetTrackWidth", "PCB_MoveTracksToLayer",
+               "PCB_SetViaSoldermaskRelief")
 
 
 def _body(source: str, name: str) -> str:
@@ -204,21 +207,11 @@ def test_the_list_of_primitives_is_not_freed(source: str, name: str):
     assert f"{_list_name(body)}.Free" not in body
 
 
-def test_the_via_relief_does_not_walk_the_board_at_all(source: str):
-    """The handler that hit this refuses now, so it cannot hit it again.
-
-    Setting a via's soldermask expansion faults inside
-    ScriptingSystem.DLL on AD 26.10.1.6 however it is written, so the
-    collect-then-modify rewrite was not enough and the handler answers
-    NOT_SCRIPTABLE without touching the board. Guarded here rather than
-    only where the refusal lives, because restoring the write is exactly
-    the change that would bring the original crash back.
-    """
+def test_the_via_relief_never_assigns_the_expansion_on_the_via(source: str):
+    """The one write measured to fault, twice in 2026-09 and again on
+    2026-10-11, is SolderMaskExpansion assigned onto an IPCB_Via. The
+    value goes into the via's pad cache instead."""
     body = _body(source, "PCB_SetViaSoldermaskRelief")
-    assert "NOT_SCRIPTABLE" in body, (
-        "PCB_SetViaSoldermaskRelief no longer refuses; if the write is "
-        "back it needs the collect-then-modify guards above and a live "
-        "re-measurement on the Altium build that faulted")
-    assert "BoardIterator_Create" not in body
-    assert "PCBServer.PreProcess" not in body
-    assert "SolderMaskExpansion" not in body
+    assert not re.search(r"\bVia\.SolderMaskExpansion\s*:=", body)
+    assert "Cache.SolderMaskExpansion := Exp;" in body
+    assert "Via.SetState_Cache := Cache;" in body

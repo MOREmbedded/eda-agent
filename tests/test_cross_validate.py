@@ -1388,6 +1388,38 @@ def generate_batch_field_cases():
     pad_payload, _dropped = _lib._pads_payload(pad_step["args"]["pads"])
     for key in ("designator", "shape", "corner_radius", "hole_size", "layer"):
         cases.append(("BatchFieldSweep", [pad_payload, key]))
+
+    # And the package footprint's payloads: the optional pad fields the
+    # batch handler reads only when present (a slot, a non-plated hole, a
+    # manual paste and mask expansion), and the regions handler's points.
+    try:
+        from eda_agent.design.landpattern.emit import (
+            altium_plan, model_from_package, resolve_altium_layers)
+    except Exception:  # pragma: no cover - engine absent
+        return cases
+    layers = resolve_altium_layers([], assembly_layer="Mechanical13",
+                                   courtyard_layer="Mechanical15")
+    qfn = model_from_package(
+        {"family": "qfn", "pins": 16, "pitch": 0.5, "body_x": [2.9, 3.1],
+         "body_y": [2.9, 3.1], "lead_length": [0.3, 0.5],
+         "lead_width": [0.18, 0.30], "ep_x": [1.61, 1.75],
+         "ep_y": [1.61, 1.75]}, drafting={"mask_expansion": 0.05})
+    holes = model_from_package(
+        {"family": "custom", "body_x": 6, "body_y": 4, "custom_pads": [
+            {"number": "1", "x": -1.5, "y": 0, "width": 2.4, "height": 1.4,
+             "shape": "oval", "hole": 0.8, "hole_length": 1.6},
+            {"number": "MH", "x": 1.5, "y": 0, "width": 1.0, "height": 1.0,
+             "shape": "circle", "hole": 1.0, "plated": False}]})
+    for model in (qfn, holes):
+        plan = altium_plan(model, layers)
+        payload, _ = _lib._pads_payload(plan["pads"], "mm")
+        for key in ("x", "hole_length", "plated", "paste_expansion",
+                    "mask_expansion"):
+            cases.append(("BatchFieldSweep", [payload, key]))
+        if plan["regions"]:
+            regions, _ = _lib._regions_payload(plan["regions"])
+            for key in ("layer", "points"):
+                cases.append(("BatchFieldSweep", [regions, key]))
     return cases
 
 

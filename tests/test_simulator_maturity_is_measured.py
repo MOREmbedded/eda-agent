@@ -77,6 +77,24 @@ def _own_nodes(fn: ast.AST) -> list[ast.AST]:
     return out
 
 
+def _literal_sends(fn) -> set[str]:
+    return {
+        node.args[0].value
+        for node in _own_nodes(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None)
+        in ("send_command", "send_command_async")
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+
+
+def _called_names(fn) -> set[str]:
+    return {node.func.id for node in _own_nodes(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+
 def _commands_by_tool() -> dict[str, list[str]]:
     """Every bridge command each tool sends, by literal first argument.
 
@@ -84,6 +102,10 @@ def _commands_by_tool() -> dict[str, list[str]]:
     here. That direction is safe: a tool whose command cannot be read
     statically sends no literal, so it never enters the set and is
     published as live_only, which is the conservative answer.
+
+    A send in a module-level helper the tool calls by name counts for the
+    tool: sch_place_components lost its focus command from this view when
+    that moved into _focus_sheet, though the tool still sends it.
     """
     out: dict[str, list[str]] = {}
     for path in sorted(TOOLS_DIR.glob("*.py")):
@@ -91,21 +113,22 @@ def _commands_by_tool() -> dict[str, list[str]]:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError:  # pragma: no cover - caught by the parse guard
             continue
+        helpers = {node.name: node for node in tree.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if tool_metadata(fn.name)["category"] == "other":
                 continue
-            cmds = {
-                node.args[0].value
-                for node in _own_nodes(fn)
-                if isinstance(node, ast.Call)
-                and getattr(node.func, "attr", None)
-                in ("send_command", "send_command_async")
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
-            }
+            cmds = _literal_sends(fn)
+            seen, todo = set(), list(_called_names(fn))
+            while todo:
+                name = todo.pop()
+                if name in seen or name not in helpers:
+                    continue
+                seen.add(name)
+                cmds |= _literal_sends(helpers[name])
+                todo.extend(_called_names(helpers[name]))
             if cmds:
                 out[fn.name] = sorted(cmds)
     return out

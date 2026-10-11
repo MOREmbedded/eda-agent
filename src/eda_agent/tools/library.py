@@ -385,8 +385,117 @@ def _pads_payload(pads: list[dict[str, Any]],
             f"rotation={_payload_safe(p.get('rotation', 0))}",
             f"layer={_payload_safe(p.get('layer', 'TopLayer'))}",
         ]
+        # Optional, and only sent when the pad carries them, so every
+        # payload without them is byte-identical to what it always was.
+        for key in _OPTIONAL_PAD_LENGTHS:
+            if p.get(key) is not None:
+                fields.append(f"{key}={format_length(p[key])}")
+        if p.get("plated") is not None:
+            plated = p["plated"]
+            if isinstance(plated, str):
+                plated = plated.strip().lower() not in ("false", "0", "no")
+            fields.append(f"plated={'true' if plated else 'false'}")
         op_strs.append(";".join(fields))
     return "~~".join(op_strs), skipped_invalid
+
+
+def _tracks_payload(tracks: list[dict[str, Any]],
+                    units: str = "mil") -> tuple[str, int]:
+    """The ``tracks`` batch payload, and how many entries were dropped.
+
+    Shared by lib_add_footprint_tracks and the package footprint tool so
+    the two cannot format a track differently. A track missing an
+    endpoint is dropped and counted.
+    """
+    op_strs: list[str] = []
+    skipped_invalid = 0
+    for t in tracks:
+        if not all(k in t for k in ("x1", "y1", "x2", "y2")):
+            skipped_invalid += 1
+            continue
+        fields = [
+            f"x1={format_length(t.get('x1', 0))}",
+            f"y1={format_length(t.get('y1', 0))}",
+            f"x2={format_length(t.get('x2', 0))}",
+            f"y2={format_length(t.get('y2', 0))}",
+            f"width={format_length(t.get('width', length_in(units, 10)))}",
+            f"layer={_payload_safe(t.get('layer', 'TopOverlay'))}",
+        ]
+        op_strs.append(";".join(fields))
+    return "~~".join(op_strs), skipped_invalid
+
+
+def _pad_geometry_problem(reply: Any) -> str:
+    """Why a library.get_pad_geometry reply is not a footprint, or ''.
+
+    A footprint with no pads reads as an empty list and is a real
+    answer; a refusal or a reply with no list at all is not.
+    """
+    if not isinstance(reply, dict):
+        return f"the read returned {type(reply).__name__}, not a footprint"
+    if reply.get("success") is False or (
+            reply.get("error") and not isinstance(reply.get("pads"), list)):
+        err = reply.get("error")
+        if isinstance(err, dict):
+            err = err.get("message") or err.get("code")
+        return f"the read was refused: {err or 'no reason given'}"
+    if not isinstance(reply.get("pads"), list):
+        return "the read carried no pad list"
+    return ""
+
+
+def _unread_footprint(name: str, reason: str, code: str) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "ok": False,
+        "reason": (f"could not read footprint {name!r}: {reason}. Nothing "
+                   "was audited; check the name with lib_get_footprints"),
+        "findings": [],
+    }
+    if code:
+        out["error_code"] = code
+    return out
+
+
+#: Pad fields the batch handler writes only when present, all lengths in
+#: the call's units: a slot length (above hole_size it makes a slotted
+#: hole), and manual paste and solder mask expansions.
+_OPTIONAL_PAD_LENGTHS = ("hole_length", "paste_expansion", "mask_expansion")
+
+
+def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """The ``regions`` batch payload for library.add_footprint_regions.
+
+    Each region is ``{"layer": ..., "points": [[x, y], ...]}``; points go
+    out as ``x,y`` pairs joined by ``/``, unrounded. Returns
+    ``(payload, problems)``: a region with no layer or fewer than three
+    numeric points is named in ``problems`` and left out, never sent with
+    a guessed layer or a point read as zero.
+    """
+    ops: list[str] = []
+    problems: list[str] = []
+    for i, region in enumerate(regions or []):
+        if not isinstance(region, dict):
+            problems.append(f"region {i} is not an object")
+            continue
+        layer = str(region.get("layer") or "").strip()
+        if not layer:
+            problems.append(f"region {i} has no layer")
+            continue
+        pts = region.get("points")
+        try:
+            pairs = [(float(p[0]), float(p[1])) for p in pts]
+        except (TypeError, ValueError, IndexError, KeyError):
+            problems.append(f"region {i} points must be [x, y] number pairs")
+            continue
+        if len(pairs) > 3 and pairs[0] == pairs[-1]:
+            pairs = pairs[:-1]
+        if len(pairs) < 3:
+            problems.append(f"region {i} needs at least three points")
+            continue
+        points = "/".join(f"{format_length(x)},{format_length(y)}"
+                          for x, y in pairs)
+        ops.append(f"layer={_payload_safe(layer)};points={points}")
+    return "~~".join(ops), problems
 
 
 def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
@@ -1308,7 +1417,16 @@ def register_library_tools(mcp):
             skip: BGA ball designators to omit (depopulation), e.g.
                 ["A1","E5"] (bga family only).
             pitch: pad centre-to-centre within a row (mils).
-            pad_w, pad_h: pad size (mils).
+            pad_w, pad_h: pad size (mils). TWO MEANINGS, kept for the
+                callers that rely on them: pad_w is the pad's X size in
+                every family but quad, so in dual (rows left and right)
+                and chip it runs ACROSS the row, along the span, while
+                in sip, header and tab it runs along the row; in quad
+                each side turns the pad and pad_w runs ALONG the row.
+                For a footprint from a package drawing use
+                lib_create_footprint_from_package, which sizes the lands
+                by IPC-7351B from the terminal's lead_length (along the
+                span) and lead_width (across it).
             row_span: centre-to-centre between the two rows / opposite
                 sides (mils). Required for dual and quad.
             shape: pad shape (default "roundrect"); corner_radius is its %.
@@ -1356,11 +1474,14 @@ def register_library_tools(mcp):
         tracks = geom.all_tracks()
         tracks_res: dict[str, Any] = {}
         if tracks:
+            # Unrounded, like the pads: round() moved every fractional mil,
+            # so a 1 mm body (39.37 mil) came out 39 mil wide.
             track_ops = [
                 ";".join([
-                    f"x1={round(t['x1'])}", f"y1={round(t['y1'])}",
-                    f"x2={round(t['x2'])}", f"y2={round(t['y2'])}",
-                    f"width={round(t['width'])}", f"layer={t['layer']}",
+                    f"x1={format_length(t['x1'])}", f"y1={format_length(t['y1'])}",
+                    f"x2={format_length(t['x2'])}", f"y2={format_length(t['y2'])}",
+                    f"width={format_length(t['width'])}",
+                    f"layer={_payload_safe(t['layer'])}",
                 ])
                 for t in tracks
             ]
@@ -1378,6 +1499,287 @@ def register_library_tools(mcp):
             "create": created,
             "pads_result": pads_res,
             "tracks_result": tracks_res,
+        }
+
+    @mcp.tool()
+    async def lib_create_footprint_from_package(
+        package: Any,
+        name: str = "",
+        density: str = "",
+        description: str = "",
+        assembly_layer: str = "",
+        courtyard_layer: str = "",
+        drafting: Optional[dict[str, Any]] = None,
+        set_height: bool = True,
+    ) -> dict[str, Any]:
+        """Create a COMPLETE footprint in the open PcbLib from a package drawing.
+
+        Takes the package as the datasheet draws it, not a pad list: the
+        lands come from IPC-7351B (toe, heel and side fillets with the
+        tolerance stack-up) for the family and density asked for. Writes
+        the pads (rounded rectangles with their corner ratio, rotation,
+        holes, slots, non-plated holes), paste windows over an exposed
+        pad with the pad's own paste closed, silkscreen kept clear of the
+        copper with a pin 1 dot, the body outline and a .Designator on
+        the assembly layer, the courtyard, and the footprint height from
+        the package's maximum A. Origin at the package centroid. Every
+        length goes in millimetres, unrounded.
+
+        It then READS THE PADS BACK (lib_get_pad_geometry) and compares
+        count, centres, sizes, rotation, shape, holes and any manual paste
+        or mask expansion with what was sent, within one internal unit.
+        A difference is a failure, not a warning.
+
+        DATASHEET DISCIPLINE: transcribe the package from the
+        manufacturer's drawing fetched in this conversation, each
+        dimension as min/nom/max with its page and figure, and name the
+        datasheet in ``source``. The engine sizes lands from the
+        tolerances, so a nominal-only dimension gives a worse pattern and
+        says so in ``warnings``.
+
+        Args:
+            package: the PackageSpec as an object (or its JSON text):
+                ``family`` (chip, melf, molded, sod, sot23, sot89, sot223,
+                dpak, soic, son, qfn, qfp, plcc, bga, lga, crystal2,
+                crystal4, dip, header, radial, axial, to220, to92,
+                connector, custom) and the dimensions it needs, each a
+                number, ``[min, max]``, ``[min, nom, max]`` or
+                ``{min, nom, max, cite}``. Axes: two-row parts have their
+                rows LEFT and RIGHT, so ``lead_span_x`` is the tip to tip
+                span across them (JEDEC E) and ``body_y`` the body along
+                them (D); ``lead_length`` is the terminal along the span
+                (L), ``lead_width`` across it (b). Exposed pad:
+                ``ep_x``/``ep_y``. ``source``: {document, revision, page,
+                ref, url}.
+            name: footprint name; default the package's ``name``, else a
+                generated one (e.g. SOIC-8-P1.27N).
+            density: L, N or M (least, nominal, most). Default: the
+                package's own, N unless it says otherwise.
+            description: appended to the generated description, which
+                already names the family, the standard, the density and
+                the source.
+            assembly_layer, courtyard_layer: mechanical layers for those
+                roles. Empty picks them BY ROLE from the library: the
+                layer whose kind is "Assembly Top" / "Courtyard Top",
+                else the one whose name says so (the same reading
+                lib_audit_footprint_policies uses). With neither, the
+                call refuses and lists the library's layers rather than
+                guessing a number.
+            drafting: overrides of the drafting rules, e.g.
+                ``{"silk_width": 0.15, "ep_paste_coverage": 0.6,
+                "mask_expansion": 0.05}``. A non-zero mask expansion is
+                written to every pad; at the default 1:1 the library's
+                design rule decides.
+            set_height: write the footprint height (package A max) with
+                the existing height setter.
+
+        Returns:
+            ``{ok, footprint, library_path, created, layers, readback,
+            pads, courtyard_mm, warnings, notes, ipc, steps}``. ``ok`` is
+            true only when every step succeeded and the readback matched.
+            A failure after the footprint was created says so: the
+            footprint exists and is incomplete.
+        """
+        from ..bridge.exceptions import AltiumError
+        from ..design.landpattern.emit import (
+            LayerRoleError,
+            altium_plan,
+            model_from_package,
+            resolve_altium_layers,
+            verify_altium_readback,
+        )
+        from ..design.landpattern.spec import SpecError
+
+        try:
+            model = model_from_package(package, density=density, name=name,
+                                       description=description,
+                                       drafting=drafting)
+        except SpecError as e:
+            return {"ok": False, "reason": str(e), "created": False}
+        fp_name = model.name
+        if any(ord(ch) < 32 for ch in fp_name) or not fp_name.strip():
+            return {"ok": False, "created": False,
+                    "reason": f"footprint name {fp_name!r} is empty or has a "
+                              "control character"}
+
+        bridge = get_bridge()
+        steps: dict[str, Any] = {}
+
+        async def step(label: str, call) -> Any:
+            try:
+                reply = await call
+            except AltiumError as e:
+                steps[label] = {"error": str(e), "code": e.code}
+                return None
+            steps[label] = reply
+            return reply
+
+        def failed(label: str, why: str, created: bool) -> dict[str, Any]:
+            out: dict[str, Any] = {
+                "ok": False, "footprint": fp_name, "created": created,
+                "reason": f"{label}: {why}", "steps": steps,
+                "warnings": model.warnings}
+            if created:
+                out["note"] = (f"footprint {fp_name!r} exists and is "
+                               "incomplete; remove it with lib_delete_footprint "
+                               "before trying again")
+            return out
+
+        # The library the writes go to: GetCurrentPCBLibrary, the same one
+        # create_footprint uses. Its path keeps the reads on that library.
+        mech = await step("mech_layers", bridge.send_command_async(
+            "library.get_mech_layers", {}))
+        if mech is None and not (assembly_layer and courtyard_layer):
+            return failed("mech_layers", "could not read the library's "
+                          "mechanical layers; pass assembly_layer and "
+                          "courtyard_layer", False)
+        lib_path = str((mech or {}).get("library_path") or "")
+        try:
+            layers = resolve_altium_layers(
+                (mech or {}).get("layers") or [], assembly_layer=assembly_layer,
+                courtyard_layer=courtyard_layer)
+            plan = altium_plan(model, layers)
+        except (LayerRoleError, SpecError) as e:
+            return {"ok": False, "created": False, "reason": str(e),
+                    "steps": steps}
+
+        listing = await step("existing", bridge.send_command_async(
+            "library.get_footprints", {"library_path": lib_path}))
+        if listing is None:
+            return failed("existing", "could not list the library, so a "
+                          "footprint of the same name cannot be ruled out", False)
+        rows = listing.get("footprints") if isinstance(listing, dict) else None
+        if not isinstance(rows, list):
+            return failed("existing", "the library listing carried no "
+                          "footprint list", False)
+        names = {str(f.get("name")) for f in rows if isinstance(f, dict)}
+        if fp_name in names:
+            return failed("existing", f"a footprint named {fp_name!r} is "
+                          "already in the library; pass another name", False)
+
+        created = await step("create", bridge.send_command_async(
+            "library.create_footprint",
+            {"name": fp_name, "description": model.description}))
+        if created is None:
+            return failed("create", "the footprint was not created", False)
+
+        def batch_ok(reply: Any, want: int) -> str:
+            if not isinstance(reply, dict):
+                return "no reply"
+            if int(reply.get("added") or 0) != want or int(
+                    reply.get("failed") or 0):
+                return (f"added {reply.get('added')} of {want}, failed "
+                        f"{reply.get('failed')}, unknown layers "
+                        f"{reply.get('unknown_layers')!r}")
+            if int(reply.get("property_failures") or 0):
+                return (f"Altium refused {reply.get('property_failures')} "
+                        "pad property writes (slot, plating or expansion)")
+            return ""
+
+        pads_payload, _ = _pads_payload(plan["pads"], "mm")
+        reply = await step("pads", bridge.send_command_async(
+            "library.add_footprint_pads", _with_units(
+                {"pads": pads_payload, "footprint_name": fp_name}, "mm")))
+        problem = "the call failed" if reply is None else batch_ok(
+            reply, len(plan["pads"]))
+        if problem:
+            return failed("pads", problem, True)
+
+        tracks_payload, _ = _tracks_payload(plan["tracks"], "mm")
+        if tracks_payload:
+            reply = await step("tracks", bridge.send_command_async(
+                "library.add_footprint_tracks", _with_units(
+                    {"tracks": tracks_payload, "footprint_name": fp_name},
+                    "mm")))
+            problem = "the call failed" if reply is None else batch_ok(
+                reply, len(plan["tracks"]))
+            if problem:
+                return failed("tracks", problem, True)
+
+        if plan["regions"]:
+            regions_payload, refused = _regions_payload(plan["regions"])
+            if refused:
+                return failed("regions", "; ".join(refused), True)
+            reply = await step("regions", bridge.send_command_async(
+                "library.add_footprint_regions", _with_units(
+                    {"regions": regions_payload, "footprint_name": fp_name},
+                    "mm")))
+            problem = "the call failed" if reply is None else batch_ok(
+                reply, len(plan["regions"]))
+            if problem:
+                return failed("regions", problem, True)
+
+        for i, arc in enumerate(plan["arcs"]):
+            reply = await step(f"arc_{i}", bridge.send_command_async(
+                "library.add_footprint_arc", _with_units({
+                    "x_center": format_length(arc["x_center"]),
+                    "y_center": format_length(arc["y_center"]),
+                    "radius": format_length(arc["radius"]),
+                    "start_angle": arc["start_angle"],
+                    "end_angle": arc["end_angle"],
+                    "width": format_length(arc["width"]),
+                    "layer": arc["layer"], "footprint_name": fp_name}, "mm")))
+            if reply is None:
+                return failed(f"arc_{i}", "the call failed", True)
+
+        for i, text in enumerate(plan["texts"]):
+            reply = await step(f"text_{i}", bridge.send_command_async(
+                "library.add_footprint_text", _with_units({
+                    "text": text["text"],
+                    "x": format_length(text["x"]),
+                    "y": format_length(text["y"]),
+                    "size": format_length(text["size"]),
+                    "width": format_length(text["width"]),
+                    "rotation": 0, "layer": text["layer"],
+                    "component_name": fp_name}, "mm")))
+            if reply is None:
+                return failed(f"text_{i}", "the call failed", True)
+
+        height = float(plan["height_mm"] or 0.0)
+        if set_height and height > 0:
+            reply = await step("height", bridge.send_command_async(
+                "library.set_footprint_height",
+                {"footprint_name": fp_name,
+                 "height_mm": format_length(height)}))
+            if reply is None:
+                return failed("height", "the call failed", True)
+
+        readback = await step("readback", bridge.send_command_async(
+            "library.get_pad_geometry",
+            {"footprint_name": fp_name, "library_path": lib_path}))
+        verdict = verify_altium_readback(plan, readback)
+        notes = list(plan["notes"])
+        if not (set_height and height > 0):
+            notes.append("height: not written (set_height false, or the "
+                         "package gives no height)")
+        notes.append("3D body: the footprint height is set; no extruded body "
+                     "is drawn, which would need a body-outline write this "
+                     "bridge has not run live")
+        return {
+            "ok": bool(verdict.get("ok")),
+            "footprint": fp_name,
+            "library_path": lib_path,
+            "family": model.family,
+            "density": model.density,
+            "description": model.description,
+            "created": {"pads": len(plan["pads"]),
+                        "tracks": len(plan["tracks"]),
+                        "regions": len(plan["regions"]),
+                        "arcs": len(plan["arcs"]),
+                        "texts": len(plan["texts"]),
+                        "height_mm": height if set_height else 0.0},
+            "layers": layers,
+            "readback": verdict,
+            "pads": [{"number": p.number, "x": p.x, "y": p.y,
+                      "width": p.width, "height": p.height, "shape": p.shape,
+                      "rotation": p.rotation, "hole": p.hole,
+                      "kind": p.kind} for p in model.pads],
+            "courtyard_mm": list(model.courtyard_bbox()),
+            "pin1": list(model.pin1),
+            "warnings": model.warnings,
+            "notes": notes,
+            "ipc": model.ipc.get("calcs", {}),
+            "steps": steps,
         }
 
     @mcp.tool()
@@ -1481,6 +1883,15 @@ def register_library_tools(mcp):
                 - layer      (str, default "TopLayer"). Only used for SMD
                   pads (hole_size=0); a drilled pad is forced through-hole
                   (MultiLayer). Use "BottomLayer" for bottom-side SMD.
+                Optional, written only when given:
+                - hole_length (slot length, above hole_size: a slotted hole
+                  hole_size wide, along the pad's X before rotation)
+                - plated (false: a non-plated hole)
+                - paste_expansion, mask_expansion (a manual expansion that
+                  overrides the design rule; minus the larger pad side
+                  closes the paste opening)
+                The reply counts them (slots, unplated, expansions) and
+                any write this Altium build refused (property_failures).
 
         Example, a 4-pad 0402 + corner pad in one call:
             lib_add_footprint_pads(pads=[
@@ -1620,21 +2031,8 @@ def register_library_tools(mcp):
         refusal = _units_refusal(units)
         if refusal:
             return refusal
-        op_strs: list[str] = []
-        skipped_invalid = 0
-        for t in tracks:
-            if not all(k in t for k in ("x1", "y1", "x2", "y2")):
-                skipped_invalid += 1
-                continue
-            fields = [
-                f"x1={format_length(t.get('x1', 0))}",
-                f"y1={format_length(t.get('y1', 0))}",
-                f"x2={format_length(t.get('x2', 0))}",
-                f"y2={format_length(t.get('y2', 0))}",
-                f"width={format_length(t.get('width', length_in(units, 10)))}",
-                f"layer={_payload_safe(t.get('layer', 'TopOverlay'))}",
-            ]
-            op_strs.append(";".join(fields))
+        payload, skipped_invalid = _tracks_payload(tracks, units)
+        op_strs = [op for op in payload.split("~~") if op]
 
         if not op_strs:
             return {
@@ -1652,6 +2050,51 @@ def register_library_tools(mcp):
             "library.add_footprint_tracks", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
+        return result
+
+    @mcp.tool()
+    async def lib_add_footprint_regions(
+        regions: list[dict[str, Any]],
+        footprint_name: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Add solid polygon regions to a PcbLib footprint in ONE call.
+
+        What a footprint needs beyond pads and lines: paste windows over
+        an exposed pad (on TopPaste, with the pad's own paste closed by a
+        negative paste_expansion in lib_add_footprint_pads), or any filled
+        shape on a mechanical or overlay layer.
+
+        Args:
+            regions: list of ``{"layer": ..., "points": [[x, y], ...]}``,
+                three or more points each, relative to the footprint
+                origin. The layer is REQUIRED: there is no default,
+                because a solid shape defaulted onto copper is a short.
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot.
+            units: "mil" (default) or "mm", for every point, kept exact.
+
+        Returns:
+            Dict with added, failed, bad_points, unknown_layers, total. A
+            region refused here before sending is listed in
+            ``refused`` with the reason.
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        payload, problems = _regions_payload(regions)
+        if not payload:
+            return {"error": "No valid regions", "added": 0,
+                    "total": len(regions or []), "refused": problems}
+        bridge = get_bridge()
+        params: dict[str, Any] = {"regions": payload}
+        if footprint_name:
+            params["footprint_name"] = footprint_name
+        result = await bridge.send_command_async(
+            "library.add_footprint_regions", _with_units(params, units))
+        if isinstance(result, dict) and problems:
+            result["refused"] = problems
         return result
 
     @mcp.tool()
@@ -2896,6 +3339,7 @@ def register_library_tools(mcp):
         rotation: int = 0,
         designator: Optional[str] = None,
         sheet_path: Optional[str] = None,
+        part_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Place one database library (DbLib) part on a schematic sheet.
 
@@ -2929,11 +3373,16 @@ def register_library_tools(mcp):
             rotation: 0, 90, 180 or 270.
             designator: Optional designator to stamp on the part.
             sheet_path: Optional .SchDoc path; default the active sheet.
+            part_id: Which part of a multi-part component to place, from
+                1 (A). Left out, Altium's default part is placed.
 
         Returns:
             {"placed", "library_path", "table", "key", "lib_reference",
             "database_table", "database_linked", "x", "y", "rotation",
-            "designator"}.
+            "part_id", "part_count", "part_id_applied", "designator"}.
+            ``part_id`` is read back off the placed part; a part_id
+            above ``part_count`` is not applied and
+            ``part_id_applied`` says so.
         """
         refusal = dblib_path_refusal(library_path)
         if refusal:
@@ -2944,6 +3393,8 @@ def register_library_tools(mcp):
             return {"success": False, "error": "key is required"}
         if int(rotation) not in (0, 90, 180, 270):
             return {"success": False, "error": "rotation must be 0, 90, 180 or 270"}
+        if part_id is not None and int(part_id) < 1:
+            return {"success": False, "error": "part_id must be 1 or more"}
         params: dict[str, Any] = {
             "library_path": library_path, "table": table, "key": key,
             "x": str(int(x)), "y": str(int(y)), "rotation": str(int(rotation)),
@@ -2952,6 +3403,8 @@ def register_library_tools(mcp):
             params["designator"] = designator
         if sheet_path:
             params["sheet_path"] = sheet_path
+        if part_id is not None:
+            params["part_id"] = str(int(part_id))
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.place_dblib_component", params, timeout=_DBLIB_TIMEOUT)
@@ -4419,6 +4872,98 @@ def register_library_tools(mcp):
         )
 
     @mcp.tool()
+    async def lib_get_vault_name() -> dict[str, Any]:
+        """The Workspace name the managed tools would use, read off the design.
+
+        Altium writes the Workspace name onto every managed part it
+        places. This reads it from the active sheet, then from the other
+        sheets that are already open; it never opens one. A Workspace has
+        been seen under two names on one design, so a part addressed by
+        kind 4 (VaultName) is preferred and ``other_kind`` says when only
+        another kind was found.
+
+        Returns:
+            ``found``, ``vault``, ``other_kind`` and ``seen``, every
+            ``kind:name`` met, separated by ``|``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("library.get_vault_name", {})
+
+    @mcp.tool()
+    async def lib_find_vault_components(name: str) -> dict[str, Any]:
+        """Find the Design Item ID of a managed part by its exact name.
+
+        Looks through the managed (Workspace) parts already placed on the
+        sheets Altium has open, and matches ``name`` exactly, case
+        ignored, against each part's comment, library reference and
+        Design Item ID. Every match comes back, one per Design Item ID,
+        with the lifecycle state the library manager reports, so two
+        parts sharing a name are both shown rather than the first one
+        being picked.
+
+        It does not search the whole Workspace: that needs Altium's EDMS
+        interfaces, whose methods no reference documents, and a call this
+        Altium lacks would stop the bridge. A part not yet used in the
+        design has to be looked up in Altium's Components panel.
+
+        Args:
+            name: The comment, library reference or Design Item ID.
+
+        Returns:
+            ``name``, ``count``, ``sheets_searched`` and ``matches``, each
+            with design_item_id, comment, lib_reference, vault,
+            lib_identifier_kind, revision_guid, lifecycle_state and sheet.
+        """
+        if not str(name or "").strip():
+            return {"success": False, "error": "name is required"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.find_vault_components", {"name": str(name).strip()})
+
+    @mcp.tool()
+    async def lib_get_vault_component(
+        design_item_id: str,
+        vault: str = "",
+        lib_identifier_kind: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Check one managed (Workspace) component can be placed, without placing it.
+
+        Loads the item the way ``sch_place_vault_components`` would, reads
+        its identity, and throws it away again; nothing reaches a sheet.
+        The kind asked for is tried first, then the others. The library
+        manager's lookups (library path, lifecycle state, revisions,
+        placement parameters) are reported alongside, as they come back.
+        A part number is not looked up here, so bring the Design Item ID.
+
+        Args:
+            design_item_id: The component's Design Item ID.
+            vault: The Workspace name. Usually left out; see
+                ``lib_get_vault_name``.
+            lib_identifier_kind: Altium's TLibIdentifierKind, tried first:
+                0 Any, 1 NameNoType, 2 NameWithType, 3 FullPath, 4 VaultName
+                (the default). A managed part Altium placed shows the kind
+                and identifier that work, through ``obj_query`` on
+                ``eSchComponent``.
+
+        Returns:
+            ``placeable``, ``loader_callable``, lib_identifier_kind (the
+            kind that loaded, -1 if none), ``load_probe`` (``kind:result``
+            for each try), the loaded ``loaded_design_item_id``,
+            ``vault_guid``, ``item_guid`` and ``revision_guid``, then
+            ``library_path``, ``display_path``, ``lifecycle_state``,
+            ``has_revisions``, ``revisions``, ``placement_parameters``,
+            ``note`` and ``diag`` (library manager calls that raised).
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"design_item_id": design_item_id}
+        if vault:
+            params["vault"] = vault
+        if lib_identifier_kind is not None:
+            params["lib_identifier_kind"] = int(lib_identifier_kind)
+        return await bridge.send_command_async(
+            "library.get_vault_component", params)
+
+    @mcp.tool()
     async def lib_uninstall_library(library_path: str) -> dict[str, Any]:
         """Unregister a library from the environment's Available Libraries.
 
@@ -4552,14 +5097,24 @@ def register_library_tools(mcp):
         the part's connectivity rather than its drawing, and clearing
         graphics off a layer should not quietly cost you the pinout.
 
+        THE FOOTPRINT ON SCREEN IS EDITED FROM ANOTHER. The footprint the
+        editor shows keeps its primitives on the library board, which is
+        written back into it at the next switch, so removing from it in
+        place came undone. When the target is on screen, another
+        footprint is made current for the delete (a temporary one in a
+        single-footprint library, removed afterwards) and the target is
+        shown again at the end; ``was_current`` says this happened.
+
         Args:
             footprint_name: The footprint to edit. Required: deleting
                 from whichever footprint the editor happens to show is
                 the mistake this avoids.
-            object_type: PCB object type, e.g. "track", "arc", "string",
+            object_type: PCB object type, e.g. "track", "arc", "text",
                 "region", "fill". Give this or ``layer``.
-            layer: Restrict to one layer, e.g. "TopOverlay". The usual
-                case: clear a silkscreen without touching anything else.
+            layer: Restrict to one layer, e.g. "TopOverlay", or a name
+                the library's stack gives it, such as "Top Assembly". A
+                name the stack does not have is refused, with the names
+                it does have.
             library_path: The .PcbLib. Defaults to the focused document.
             include_pads: Allow pads to be removed. Off by default.
             confirm: Required. Read the footprint first with
@@ -4568,7 +5123,8 @@ def register_library_tools(mcp):
 
         Returns:
             Dict with ``library``, ``footprint``, ``removed``,
-            ``examined``, ``layers`` and ``pads_included``.
+            ``examined``, ``layers``, ``pads_included`` and
+            ``was_current``.
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
@@ -4592,6 +5148,147 @@ def register_library_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.delete_footprint_primitives", params)
+
+    @mcp.tool()
+    async def lib_move_bodies_to_layer(
+        layer: str,
+        footprint_names: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Put the 3D bodies of the focused PCB library on one mechanical
+        layer.
+
+        Libraries put together from several sources carry their bodies
+        on whatever layer each source used, so one footprint's model
+        shows with a layer turned on and the next one's never does.
+        Every footprint, or only the named ones, has each body moved; a
+        body already on the layer is counted and left alone. Nothing is
+        added or removed.
+
+        Args:
+            layer: The mechanical layer, by number ("Mechanical13") or by
+                the name the library's stack gives it. Anything else is
+                refused, as Altium's body dialog only offers mechanical
+                layers.
+            footprint_names: Only these footprints. Empty means every
+                footprint in the library; names no footprint has come
+                back in ``not_found``.
+
+        Does NOT save the library. A mechanical layer the library has not
+        enabled is accepted, with ``layer_enabled`` false and a
+        ``warning``, since Altium does not draw what is on it.
+
+        Returns:
+            Dict with ``layer``, ``layer_enabled``, ``footprints``,
+            ``bodies``, ``moved``,
+            ``already_on_layer``, ``footprints_without_bodies``,
+            ``not_found``, and ``items`` (``{name, moved, from}`` for
+            each footprint that changed).
+        """
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        params: dict[str, Any] = {"layer": layer.strip()}
+        names = [n.strip() for n in (footprint_names or []) if n.strip()]
+        if names:
+            params["footprint_names"] = "\t".join(names)
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.move_bodies_to_layer", params, timeout=60.0)
+
+    @mcp.tool()
+    async def lib_redraw_assembly(
+        layer: str,
+        footprint_names: Optional[list[str]] = None,
+        outline_from: str = "auto",
+        courtyard_layer: str = "",
+        width: Optional[float] = None,
+        designator: bool = True,
+        text_height: float = 0,
+        replace: bool = True,
+        confirm: bool = False,
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Draw the assembly layer of the focused PCB library again from
+        each footprint's own geometry: a rectangle round the part and a
+        ``.Designator`` in its middle.
+
+        Libraries collected over the years carry the assembly drawing on
+        the wrong layer, from another package, or not at all. With
+        ``replace`` (the default) each footprint's tracks, arcs, texts,
+        fills and regions on ``layer`` are cleared first; 3D bodies and
+        pads on that layer are never touched.
+
+        Args:
+            layer: The mechanical layer the assembly drawing goes on.
+            footprint_names: Only these footprints. Empty means all.
+            outline_from: What the rectangle goes round. ``body`` (the 3D
+                bodies), ``pads`` (their copper, without mask expansion),
+                ``courtyard`` (whatever is drawn on ``courtyard_layer``),
+                or ``auto`` (bodies, then the courtyard when
+                ``courtyard_layer`` is given, then pads). A footprint
+                with none of them is skipped and named in ``skipped``.
+            courtyard_layer: The layer the courtyard is drawn on. It
+                cannot be ``layer`` itself with ``replace``, which would
+                clear the courtyard.
+            width: Line width. Default 4 mil (0.1 mm).
+            designator: Place a ``.Designator`` text in the middle,
+                turned upright in a box taller than wide.
+            text_height: Text height. 0 sizes it to a third of the
+                box's short side, kept short enough for a four-character
+                designator to fit along the long side, between 0.2 and
+                1 mm.
+            replace: Clear what is on the layer first. With False the new
+                drawing goes beside what is there.
+            confirm: Required with ``replace``, since it clears that
+                layer in every footprint it redraws.
+            units: "mil" (default) or "mm" for ``width`` and
+                ``text_height``.
+
+        The footprint on screen is shown again at the end. Does NOT save
+        the library. A mechanical layer the library has not enabled is
+        accepted, with ``layer_enabled`` false and a ``warning``, since
+        Altium does not draw what is on it.
+
+        Returns:
+            Dict with ``layer``, ``layer_enabled``, ``redrawn``,
+            ``cleared``, ``skipped``,
+            ``not_found``, and ``items`` (``{name, outline_from,
+            cleared, width_mm, height_mm}`` per footprint drawn).
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        source = (outline_from or "auto").strip().lower()
+        if source not in ("auto", "body", "pads", "courtyard"):
+            return {"ok": False, "reason": (
+                f"outline_from must be auto, body, pads or courtyard; "
+                f"got {outline_from!r}")}
+        if source == "courtyard" and not courtyard_layer.strip():
+            return {"ok": False,
+                    "reason": "outline_from courtyard needs courtyard_layer"}
+        if text_height < 0 or (width is not None and width <= 0):
+            return {"ok": False,
+                    "reason": "width must be above 0 and text_height 0 or more"}
+        params: dict[str, Any] = {
+            "layer": layer.strip(),
+            "outline_from": source,
+            "width": format_length(length_in(units, 4) if width is None else width),
+            "designator": "true" if designator else "false",
+            "replace": "true" if replace else "false",
+        }
+        names = [n.strip() for n in (footprint_names or []) if n.strip()]
+        if names:
+            params["footprint_names"] = "\t".join(names)
+        if courtyard_layer.strip():
+            params["courtyard_layer"] = courtyard_layer.strip()
+        if text_height:
+            params["text_height"] = format_length(text_height)
+        if confirm:
+            params["confirm"] = "true"
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.redraw_assembly", _with_units(params, units), timeout=120.0)
 
     @mcp.tool()
     async def lib_delete_footprint(
@@ -4822,19 +5519,167 @@ def register_library_tools(mcp):
 
         Returns:
             {name, description, library_path, pad_count, pads: [{
-             name, x_mm, y_mm, w_mm, h_mm, shape, corner_pct, rotation,
-             hole_mm, hole_w_mm, hole_type, plated, layer,
-             paste_expansion_mm, paste_expansion_source,
-             mask_expansion_mm, mask_expansion_source}]}.
-            *_expansion_source is 'manual' when the pad overrides the
-            design rule, 'rule' otherwise (value 0 in that case: the
-            rule's value lives in the design rules, not on the pad).
+             name, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
+             shape, corner_pct, rotation, hole_rotation, hole_mm,
+             hole_w_mm, hole_type, slot_aligned (slots only), plated,
+             layer, paste_expansion_mm, paste_expansion_source,
+             paste_expansion_state, mask_expansion_mm,
+             mask_bottom_expansion_mm, mask_separate,
+             mask_expansion_source, mask_expansion_state}]}.
+            mask_expansion_mm is the TOP side when mask_separate is true
+            and both sides when it is false; mask_bottom_expansion_mm is
+            the stored bottom value, which takes effect once the sides are
+            unlinked even while it is not in use.
+            x_mm/y_mm are the pad's origin; copper_x_mm/copper_y_mm are
+            the centre of its copper, which differs on a custom pad.
+            hole_rotation is relative to the pad, so a slot lines up when
+            the copper's and the hole's long axes agree in the pad's
+            frame, which slot_aligned reports. *_expansion_source is
+            'manual' when the pad overrides the design rule, 'rule'
+            otherwise (value 0 in that case: the rule's value lives in
+            the design rules, not on the pad); *_expansion_state is the
+            cache's own manual, valid or invalid.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.get_pad_geometry",
             {"footprint_name": footprint_name, "library_path": library_path},
         )
+
+    @mcp.tool()
+    async def lib_set_pad_properties(
+        footprint_name: str,
+        pad_name: str,
+        library_path: str = "",
+        units: str = "mil",
+        x_size: Optional[float] = None,
+        y_size: Optional[float] = None,
+        shape: Optional[str] = None,
+        rotation: Optional[float] = None,
+        hole_size: Optional[float] = None,
+        hole_width: Optional[float] = None,
+        hole_rotation: Optional[float] = None,
+        plated: Optional[bool] = None,
+        paste_expansion: Optional[float] = None,
+        mask_expansion: Optional[float] = None,
+        mask_bottom_expansion: Optional[float] = None,
+        mask_separate: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Change pads that already exist in a PcbLib footprint.
+
+        Every pad named ``pad_name`` in the footprint is changed, and
+        only the fields you pass are written, so setting plating leaves
+        the shape alone. Each pad is read back afterwards and the reply
+        reports what it holds, not what was asked.
+
+        A mask or paste expansion is written with the pad's manual flag
+        set: without it Altium ignores the value and follows the board's
+        rule, and a library has no rules. ``hole_width`` makes the hole a
+        slot; ``hole_rotation`` is relative to the pad, so a slot lines up
+        when its long axis matches the copper's in the pad's frame (see
+        ``slot_aligned`` in ``lib_get_pad_geometry``). On a pad with a
+        per-layer stack only the top size is written, and ``note`` says so.
+
+        THE MASK HAS TWO SIDES. A pad keeps a top and a bottom solder
+        mask expansion; with the sides linked the top value serves both,
+        but the bottom value is still stored and takes effect the moment
+        the sides are unlinked. So ``mask_expansion`` writes both sides
+        unless ``mask_bottom_expansion`` is given too, which writes the
+        bottom and unlinks the sides. ``mask_separate`` links or unlinks
+        them explicitly. The reply reads back all three.
+
+        Args:
+            footprint_name: The footprint holding the pad.
+            pad_name: The pad's designator.
+            library_path: Optional .PcbLib path; defaults to the focused
+                library.
+            units: "mil" (default) or "mm", for every length here.
+            x_size, y_size: Copper size.
+            shape: "round", "rectangular" or "octagonal".
+            rotation: Pad rotation in degrees.
+            hole_size: Hole diameter, 0 for a surface-mount pad.
+            hole_width: Slot length; makes the hole a slot.
+            hole_rotation: Slot rotation relative to the pad, in degrees.
+            plated: Whether the hole is plated.
+            paste_expansion, mask_expansion: Expansions, set as manual.
+                ``mask_expansion`` is the top side, and the bottom too
+                unless ``mask_bottom_expansion`` is given.
+            mask_bottom_expansion: The bottom side's mask expansion; the
+                sides are unlinked.
+            mask_separate: Link (False) or unlink (True) the two sides.
+
+        Returns:
+            ``pads_changed``, ``pads_with_a_failed_write``, ``note`` and
+            ``pads``, each as read back (position, size, rotation, hole,
+            slot, plating, expansion states, ``mask_expansion_mm``,
+            ``mask_bottom_expansion_mm``, ``mask_separate``,
+            ``all_writes_ran``).
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        params: dict[str, Any] = {"footprint_name": footprint_name,
+                                  "pad_name": pad_name,
+                                  "library_path": library_path}
+        for key, value in (("x_size", x_size), ("y_size", y_size),
+                           ("hole_size", hole_size), ("hole_width", hole_width),
+                           ("paste_expansion", paste_expansion),
+                           ("mask_expansion", mask_expansion),
+                           ("mask_bottom_expansion", mask_bottom_expansion)):
+            if value is not None:
+                params[key] = format_length(value)
+        for key, value in (("rotation", rotation),
+                           ("hole_rotation", hole_rotation)):
+            if value is not None:
+                params[key] = float(value)
+        if shape is not None:
+            params["shape"] = shape
+        if plated is not None:
+            params["plated"] = bool(plated)
+        if mask_separate is not None:
+            params["mask_separate"] = "true" if mask_separate else "false"
+        if len(params) == 3:
+            return {"success": False,
+                    "error": "give at least one property to change"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_pad_properties", _with_units(params, units))
+
+    @mcp.tool()
+    async def lib_get_footprint_primitives(
+        footprint_name: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Every non-pad primitive of one PcbLib footprint, with where it is.
+
+        Tracks, arcs, regions, fills, texts and vias, each with its layer
+        (the name the library's stack gives it, plus ``layer_id``), in mm
+        from the footprint's origin: the frame the ``lib_add_footprint_*``
+        writers take. Pads are in ``lib_get_pad_geometry``. Read-only.
+        Each primitive is listed once. Altium's own iterator yields one
+        just added to the footprint on screen twice until that footprint
+        is shown again; the footprint writers here show it again after
+        each write, and this read skips a repeat either way.
+
+        Args:
+            footprint_name: The footprint name in the library.
+            library_path: Optional .PcbLib path; defaults to the focused
+                library.
+
+        Returns:
+            {name, library_path, height_mm, bodies (a count),
+            body_layers (the layer of each body), tracks
+            [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
+            layer_id, xc, yc, r, start, end, width}], regions and fills
+            [{layer, layer_id, x1, y1, x2, y2, area (regions)}], texts
+            [{text, layer, layer_id, x, y, size, rotation, x1, y1, x2,
+            y2}], vias [{x, y, diameter, hole}]}. A text's box is
+            Altium's cached one and can lag an edit made this session.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.get_footprint_primitives",
+            {"footprint_name": footprint_name, "library_path": library_path})
 
     @mcp.tool()
     async def lib_audit_footprint_vs_datasheet(
@@ -4872,7 +5717,9 @@ def register_library_tools(mcp):
 
         dual_row expands with the SOIC/SOP convention (pin 1 top-left,
         CCW); quad with the QFP/QFN convention (pin 1 top of left side,
-        CCW). For any other numbering give explicit ``pads``.
+        CCW). For any other numbering give explicit ``pads``. pad_w has
+        two meanings, kept for existing callers: in dual_row it is the
+        pad's X size, ACROSS the row; in quad it runs ALONG the row.
 
         Returns:
             {ok, rotation_applied_deg, findings: [{check, severity,
@@ -4901,14 +5748,157 @@ def register_library_tools(mcp):
                     f"spec_json does not match the land-pattern spec "
                     f"schema: {e}"}
 
+        from ..bridge.exceptions import AltiumCommandError
+
         bridge = get_bridge()
-        footprint = await bridge.send_command_async(
-            "library.get_pad_geometry",
-            {"footprint_name": footprint_name, "library_path": library_path},
-        )
+        try:
+            footprint = await bridge.send_command_async(
+                "library.get_pad_geometry",
+                {"footprint_name": footprint_name, "library_path": library_path},
+            )
+        except AltiumCommandError as e:
+            return _unread_footprint(footprint_name, str(e), e.code)
+        problem = _pad_geometry_problem(footprint)
+        if problem:
+            # A footprint that could not be read is not one with the wrong
+            # pad count. Auditing the refusal reported "pad_count: expected
+            # 8, actual 0" for a name that simply was not in the library.
+            out = _unread_footprint(footprint_name, problem, "")
+            out["footprint"] = footprint
+            return out
         report = audit_footprint_against_spec(spec, footprint)
         report["footprint"] = footprint
         report["spec_source"] = spec.source.model_dump()
+        return report
+
+    @mcp.tool()
+    async def lib_audit_footprint_vs_package(
+        footprint_name: str,
+        package: Any,
+        density: str = "N",
+        library_path: str = "",
+        assembly_layer: str = "",
+        courtyard_layer: str = "",
+    ) -> dict[str, Any]:
+        """Audit an existing PcbLib footprint against its package drawing.
+
+        Where lib_audit_footprint_vs_datasheet compares pads with a land
+        pattern typed in, this takes the PACKAGE (the same PackageSpec as
+        lib_create_footprint_from_package) and checks the footprint is
+        right for it. Reads only.
+
+        Checked: pad count, numbering and pin 1 (a mirror-image footprint,
+        the bottom-view mistake, is named as such); pitch exactly; row
+        span, land sizes and land centres against the IPC-7351B pattern
+        within the deviations measured between real vendor patterns and
+        IPC (a footprint drawn to the vendor's own pattern passes); every
+        land covering the centre of its terminal; holes against the leads;
+        paste on an exposed pad (closed opening plus windows covering 50
+        to 80 %) and on every land; manual solder mask settings; origin at
+        the package centroid; and, from the footprint's other primitives,
+        a courtyard that encloses the lands and the body, silkscreen off
+        the copper, an assembly outline that follows the body, and the
+        footprint height against the package's maximum. A turned footprint
+        is compared after turning it back. What could not be read is
+        listed under ``not_examined``.
+
+        Run footprint_check_package on the package first: an audit against
+        a misread package passes a footprint built from the same misread.
+
+        Args:
+            footprint_name: the footprint in the library.
+            package: the PackageSpec as an object or JSON text.
+            density: L, N or M, the IPC pattern compared against.
+            library_path: optional .PcbLib path; default the focused one.
+            assembly_layer, courtyard_layer: the mechanical layers for
+                those roles; empty picks them by the library's layer kind
+                ("Assembly Top" / "Courtyard Top"), then by name.
+
+        Returns:
+            ``{ok, errors, warnings, findings: [{check, severity, message,
+            pad?, expected?, actual?}], examined, not_examined, alignment,
+            metrics, notes, package_check}``. ``ok`` is true with no
+            error-severity finding.
+        """
+        from ..bridge.exceptions import AltiumCommandError
+        from ..design.landpattern.audit import audit_footprint_vs_package
+        from ..design.landpattern.check import check_package, read_package
+        from ..design.landpattern.emit import model_from_package
+        from ..design.landpattern.spec import SpecError
+
+        try:
+            spec = read_package(package)
+            model = model_from_package(spec, density=density or "N")
+        except SpecError as e:
+            return {"ok": False, "reason": str(e), "findings": []}
+
+        bridge = get_bridge()
+        try:
+            footprint = await bridge.send_command_async(
+                "library.get_pad_geometry",
+                {"footprint_name": footprint_name, "library_path": library_path},
+            )
+        except AltiumCommandError as e:
+            return _unread_footprint(footprint_name, str(e), e.code)
+        problem = _pad_geometry_problem(footprint)
+        if problem:
+            out = _unread_footprint(footprint_name, problem, "")
+            out["footprint"] = footprint
+            return out
+        lib_path = str(footprint.get("library_path") or library_path or "")
+
+        prims: Optional[dict[str, Any]] = None
+        prims_reason = ""
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_footprint_primitives",
+                {"footprint_name": footprint_name, "library_path": lib_path})
+            if isinstance(reply, dict) and isinstance(reply.get("tracks"), list):
+                prims = reply
+            else:
+                prims_reason = "the primitives read carried no track list"
+        except AltiumCommandError as e:
+            prims_reason = (f"the primitives read failed ({e.code or e}); a "
+                            "deployed script older than this tool has no "
+                            "get_footprint_primitives handler")
+
+        mech: Optional[list[dict[str, Any]]] = None
+        notes: list[str] = []
+        try:
+            reply = await bridge.send_command_async("library.get_mech_layers", {})
+            mpath = str((reply or {}).get("library_path") or "")
+            if mpath and lib_path and mpath.lower() != lib_path.lower():
+                notes.append(f"the mechanical layer kinds come from {mpath}, "
+                             f"not {lib_path}; layers were matched by name only")
+            else:
+                mech = list((reply or {}).get("layers") or [])
+        except AltiumCommandError as e:
+            notes.append(f"mechanical layer kinds not read ({e.code or e}); "
+                         "layers were matched by name only")
+
+        report = audit_footprint_vs_package(
+            spec, footprint["pads"], model=model, primitives=prims,
+            mech_layers=mech, courtyard_layer=courtyard_layer,
+            assembly_layer=assembly_layer, primitives_reason=prims_reason)
+        report["notes"] = notes + list(report.get("notes") or [])
+        if prims is not None:
+            report["primitives_read"] = {
+                k: len(prims.get(k) or [])
+                for k in ("tracks", "arcs", "regions", "fills", "texts")}
+            report["primitives_read"]["height_mm"] = prims.get("height_mm")
+        sanity = check_package(spec)
+        report["package_check"] = {
+            "ok": sanity["ok"], "errors": sanity["errors"],
+            "warnings": sanity["warnings"],
+            "findings": [f for f in sanity["findings"]
+                         if f["severity"] == "error"]}
+        if not sanity["ok"]:
+            report["notes"].append(
+                "the package itself fails its sanity checks "
+                "(package_check); the footprint was audited against a "
+                "package that cannot be right")
+        report["footprint"] = footprint_name
+        report["library_path"] = lib_path
         return report
 
     @mcp.tool()
