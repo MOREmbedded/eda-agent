@@ -16,6 +16,7 @@ Corresponding DelphiScript files:
 """
 
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,31 @@ from tests.test_json_parsing import (
     extract_json_value, build_success_response, build_error_response,
     escape_json_string,
 )
+
+
+_MAIN_PAS = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Main.pas"
+
+
+def _pascal_function(name: str) -> str:
+    source = _MAIN_PAS.read_text(encoding="utf-8")
+    match = re.search(
+        rf"Function\s+{re.escape(name)}\b.*?(?=\n(?:Function|Procedure)\s+\w+)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert match is not None, f"{name} not found in Main.pas"
+    return match.group(0)
+
+
+def test_request_reader_avoids_ad26_sharing_violation_modal():
+    """AD26 turns LoadFromFile's EFOpenError into a modal before recovery."""
+    body = _pascal_function("ReadFileContent")
+
+    assert "FileOpen(FilePath, fmOpenRead Or fmShareDenyNone)" in body
+    assert "If Handle <> -1 Then" in body
+    assert "THandleStream.Create(Handle)" in body
+    assert "FileClose(Handle)" in body
+    assert ".LoadFromFile(" not in body
 
 
 class TestRequestFormat:

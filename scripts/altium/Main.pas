@@ -1037,18 +1037,19 @@ End;
 Function ReadFileContent(FilePath : String) : String;
 Var
     SL : TStringList;
+    Stream : THandleStream;
     Content : String;
     Attempt : Integer;
+    Handle : Integer;
     Ok : Boolean;
 Begin
-    { Read via TStringList.LoadFromFile, NOT TextFile Reset/ReadLn. The RTL    }
-    { Reset raises a low-level EInOutError on a sharing violation (I/O error   }
-    { 32) which the Altium script engine intercepts with a modal BEFORE the    }
-    { surrounding Try/Except can swallow it, stalling the polling loop.        }
-    { LoadFromFile opens through a TFileStream and raises an ordinary VCL      }
-    { EFOpenError that Try/Except catches cleanly -- no engine modal. The      }
-    { lock is transient (Defender scanning the freshly renamed request file,   }
-    { or a collision with Python's atomic replace), so retry briefly.          }
+    { Do not call LoadFromFile here. A sharing violation from its internal     }
+    { TFileStream surfaced as a modal EFOpenError in Altium Designer 26.10.1.5 }
+    { before the surrounding Try/Except could recover, stalling the polling    }
+    { loop. FileOpen reports a sharing violation as -1 without raising. Once   }
+    { the handle exists, LoadFromStream cannot race the file open. The lock is }
+    { transient (usually a scanner touching the atomically-renamed request),   }
+    { so retry briefly.                                                        }
     { NOTE: stash the content in a LOCAL string and assign Result from it as }
     { the LAST statement. Assigning Result directly from SL.Text (an object  }
     { property) and then Exit-ing triggers the DelphiScript return-clobber    }
@@ -1063,17 +1064,27 @@ Begin
     Begin
         Inc(Attempt);
         Ok := False;
-        SL := TStringList.Create;
-        Try
+        Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
+        If Handle <> -1 Then
+        Begin
+            SL := TStringList.Create;
             Try
-                SL.LoadFromFile(FilePath);
-                Content := SL.Text;
-                Ok := True;
-            Except
-                Ok := False;
+                Stream := THandleStream.Create(Handle);
+                Try
+                    Try
+                        SL.LoadFromStream(Stream);
+                        Content := SL.Text;
+                        Ok := True;
+                    Except
+                        Ok := False;
+                    End;
+                Finally
+                    Stream.Free;
+                End;
+            Finally
+                FileClose(Handle);
+                SL.Free;
             End;
-        Finally
-            SL.Free;
         End;
         If Ok Then Break;
         Sleep(15);
