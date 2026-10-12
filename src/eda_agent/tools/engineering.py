@@ -1,0 +1,322 @@
+"""Engineering tools adapted from the team's Altium AI Automation v3.1.0.
+
+The calculations are offline. Live IPC comparison reads a footprint through
+eda-agent's existing, tested Altium bridge.
+"""
+from __future__ import annotations
+
+import os
+import re
+from functools import cache
+from pathlib import Path
+from typing import Any
+
+from ..engineering import a365, design_intent, footprint, ipc7351, libcheck, ltspice, mapping, naming, pins, rules, symbol
+from ..engineering.config import A365Policy, LTspicePolicy
+from ..engineering.errors import AltiumAIError
+
+
+def _result(fn, *args, **kwargs) -> dict[str, Any]:
+    try:
+        value = fn(*args, **kwargs)
+        return {"ok": True, **value} if isinstance(value, dict) else {"ok": True, "result": value}
+    except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+        result: dict[str, Any] = {"ok": False, "reason": str(exc)}
+        if isinstance(exc, AltiumAIError) and exc.details:
+            result["details"] = exc.details
+        return result
+
+
+def _audit_footprint(footprint: dict, min_pad_gap_um: int, silk_clear_um: int) -> dict:
+    return libcheck.summarize(libcheck.audit_footprint(
+        footprint, min_pad_gap_um=min_pad_gap_um, silk_clear_um=silk_clear_um))
+
+
+def _audit_symbol(symbol: dict, grid_mils: int) -> dict:
+    return libcheck.summarize(libcheck.audit_symbol(symbol, grid=grid_mils))
+
+
+def _check_name(kind: str, name: str) -> dict:
+    return {"name": naming.NamingPolicy().validate(kind, name)}
+
+
+def _render_name(kind: str, tokens: dict) -> dict:
+    return {"name": naming.NamingPolicy().render(kind, **tokens)}
+
+
+def _compare_ipc(footprint: dict, spec: dict, tolerance_um: int) -> dict:
+    return libcheck.cross_check_ipc(footprint, spec, tol_um=tolerance_um)
+
+
+def _validate_intent(intent: dict) -> dict:
+    return design_intent.validate_intent(intent)
+
+
+def _parse_pins(csv_text: str, expected_count: int | None) -> dict:
+    parsed = pins.parse_pin_table(csv_text)
+    return {"pins": pins.pins_to_dicts(parsed),
+            "warnings": pins.validate_pins(parsed, expected_count)}
+
+
+def _generate_symbol(csv_text: str, lib_ref: str, description: str,
+                     designator_prefix: str) -> dict:
+    parsed = pins.parse_pin_table(csv_text)
+    warnings = pins.validate_pins(parsed)
+    generated = symbol.generate_symbol(parsed, lib_ref, description, designator_prefix)
+    warnings.extend(symbol.check_symbol(generated))
+    return {"symbol": generated, "warnings": warnings}
+
+
+def _validate_ruleset(ruleset: dict) -> dict:
+    return rules.validate_ruleset(ruleset)
+
+
+def _evaluate_rules(ruleset: dict, data: dict) -> dict:
+    rules.validate_ruleset(ruleset)
+    return rules.evaluate(ruleset, data)
+
+
+def _live_pads_to_um(raw: dict) -> dict:
+    if not raw.get("success", True):
+        raise ValueError(raw.get("error") or "Altium did not return footprint geometry")
+    data = raw.get("data", raw)
+    if not isinstance(data, dict) or not isinstance(data.get("pads"), list):
+        raise ValueError("Altium response has no pads")
+    return {"name": data.get("name", ""), "pads": [
+        {"name": str(p["name"]), **{k: round(float(p[f"{k}_mm"]) * 1000)
+                                   for k in ("x", "y", "w", "h")}}
+        for p in data["pads"]]}
+
+
+def _ltspice_runner() -> ltspice.LTspiceRunner:
+    configured = os.environ.get("EDA_AGENT_LTSPICE_EXE", "")
+    candidates = [Path(configured)] if configured else [
+        Path(r"C:\Program Files\ADI\LTspice\LTspice.exe"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ADI" / "LTspice" / "LTspice.exe",
+    ]
+    exe = next((p for p in candidates if p.is_file()), None)
+    if exe is None:
+        raise FileNotFoundError("LTspice.exe not found; set EDA_AGENT_LTSPICE_EXE")
+    root = Path(os.environ.get("EDA_AGENT_LTSPICE_RUNS") or Path.home() / "EDA Agent" / "ltspice")
+    models = tuple(Path(p) for p in os.environ.get("EDA_AGENT_LTSPICE_MODEL_ROOTS", "").split(os.pathsep) if p)
+    return ltspice.LTspiceRunner(LTspicePolicy(str(exe), root, model_roots=models))
+
+
+def _run_ltspice(project: str, netlist: str, timeout_s: float) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", project):
+        raise ValueError("project must be a short name without path separators")
+    return _ltspice_runner().run(project, netlist_text=netlist, timeout_s=timeout_s)
+
+
+def _trace_ltspice(project: str, run_id: str, trace_name: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", project):
+        raise ValueError("project must be a short name without path separators")
+    return _ltspice_runner().get_trace(project, run_id, trace_name)
+
+
+def a365_config() -> A365Policy:
+    client_id = os.environ.get("EDA_AGENT_NEXAR_CLIENT_ID", "")
+    if not client_id:
+        raise ValueError("set EDA_AGENT_NEXAR_CLIENT_ID before using Altium 365")
+    workspaces = tuple(w.strip().rstrip("/") + "/" for w in
+                       os.environ.get("EDA_AGENT_A365_WORKSPACES", "").split(",") if w.strip())
+    return A365Policy(client_id=client_id, workspaces=workspaces,
+                      token_store=Path.home() / "EDA Agent" / "a365_token.bin")
+
+
+@cache
+def _a365_client() -> a365.NexarClient:
+    return a365.NexarClient(a365_config(),
+                            client_secret=os.environ.get("EDA_AGENT_NEXAR_CLIENT_SECRET"))
+
+
+def register_engineering_tools(mcp, *, altium: bool = False) -> None:
+    @mcp.tool()
+    def eng_calculate_ipc(spec: dict) -> dict:
+        """Calculate an IPC-7351B footprint from package min/max dimensions in mm.
+
+        Requires kind, prefix, density, L, T, W, body_l, body_w, height,
+        plus pins and pitch for non-chip packages. Missing solder-joint goals
+        are refused; supply company goals via ALTIUM_AI_IPC_DIR.
+        """
+        return _result(ipc7351.build, spec)
+
+    @mcp.tool()
+    def eng_compare_ipc_footprint(footprint: dict, spec: dict,
+                                  tolerance_um: int = 20) -> dict:
+        """Compare footprint pads in integer micrometres with IPC calculation."""
+        return _result(_compare_ipc, footprint, spec, tolerance_um)
+
+    @mcp.tool()
+    def eng_audit_footprint(footprint: dict, min_pad_gap_um: int = 150,
+                            silk_clear_um: int = 100) -> dict:
+        """Audit pads, numbering, courtyard, silkscreen, origin and pin-1 marker.
+
+        Footprint coordinates and dimensions must be integer micrometres.
+        """
+        return _result(_audit_footprint, footprint, min_pad_gap_um, silk_clear_um)
+
+    @mcp.tool()
+    def eng_audit_symbol(symbol: dict, grid_mils: int = 100) -> dict:
+        """Audit symbol pin numbers, grid alignment and hidden pins."""
+        return _result(_audit_symbol, symbol, grid_mils)
+
+    @mcp.tool()
+    def eng_parse_pin_table(csv_text: str, expected_count: int | None = None) -> dict:
+        """Parse and validate a datasheet pin CSV: number,name,type[,side]."""
+        return _result(_parse_pins, csv_text, expected_count)
+
+    @mcp.tool()
+    def eng_generate_symbol(csv_text: str, lib_ref: str, description: str = "",
+                            designator_prefix: str = "U") -> dict:
+        """Generate schematic symbol geometry on a 100 mil grid from pins."""
+        return _result(_generate_symbol, csv_text, lib_ref, description, designator_prefix)
+
+    @mcp.tool()
+    def eng_generate_datasheet_footprint(package: dict) -> dict:
+        """Build footprint geometry from a datasheet land pattern in mm.
+
+        The package needs footprint_name, body and a dual_row or custom
+        pattern. The supplied dimensions are used as printed in the datasheet.
+        """
+        return _result(footprint.generate_footprint, package)
+
+    @mcp.tool()
+    def eng_validate_ruleset(ruleset: dict) -> dict:
+        """Validate a JSON engineering ruleset and list required design data."""
+        return _result(_validate_ruleset, ruleset)
+
+    @mcp.tool()
+    def eng_evaluate_rules(ruleset: dict, data: dict) -> dict:
+        """Evaluate owner rules against supplied components, nets and PCB data."""
+        return _result(_evaluate_rules, ruleset, data)
+
+    @mcp.tool()
+    def eng_parse_rul(export_text: str) -> dict:
+        """Parse a PCB .RUL text export into field records (format varies by AD version)."""
+        return _result(lambda: {"records": rules.parse_rul(export_text)})
+
+    @mcp.tool()
+    def eng_validate_design_intent(intent: dict) -> dict:
+        """Validate requirements, parts and nets in a design-intent document."""
+        return _result(_validate_intent, intent)
+
+    @mcp.tool()
+    def eng_diff_design_intent(before: dict, after: dict) -> dict:
+        """Report components and nets added, removed or changed in design intent."""
+        return _result(design_intent.diff_intent, before, after)
+
+    @mcp.tool()
+    def eng_check_pin_pad_map(pins: list[dict], pads: list[dict],
+                              explicit: dict | None = None,
+                              unconnected_pads: list[str] | None = None) -> dict:
+        """Check that every symbol pin maps to valid footprint pads."""
+        return _result(lambda: {"mapping": mapping.build_pin_pad_map(
+            pins, pads, explicit, unconnected_pads)})
+
+    @mcp.tool()
+    def eng_check_name(kind: str, name: str) -> dict:
+        """Check a footprint, symbol or component name against owner policy."""
+        return _result(_check_name, kind, name)
+
+    @mcp.tool()
+    def eng_render_name(kind: str, tokens: dict) -> dict:
+        """Render a footprint, symbol or component name from owner policy."""
+        return _result(_render_name, kind, tokens)
+
+    @mcp.tool()
+    def eng_scan_delphiscript(source: str) -> dict:
+        """Find process, registry and file operations in generated DelphiScript."""
+        return _result(lambda: {"findings": libcheck.scan_script(source)})
+
+    @mcp.tool()
+    def eng_ltspice_check_netlist(netlist: str) -> dict:
+        """Check a SPICE netlist for unsafe includes and file directives."""
+        return _result(lambda: {"includes": ltspice.check_netlist(
+            netlist, Path.home() / "EDA Agent" / "ltspice" / "check", ())})
+
+    @mcp.tool()
+    def eng_ltspice_parse_log(log_text: str) -> dict:
+        """Parse LTspice measurements, warnings and errors from a log."""
+        return _result(ltspice.parse_log, log_text)
+
+    @mcp.tool()
+    def eng_ltspice_parse_trace(raw_ascii: str, trace_name: str,
+                                max_points: int = 2000) -> dict:
+        """Extract and decimate a waveform from an ASCII LTspice RAW file."""
+        def parse() -> dict:
+            if not 1 <= max_points <= 100_000:
+                raise ValueError("max_points must be between 1 and 100000")
+            return ltspice.trace(ltspice.parse_raw_ascii(raw_ascii), trace_name, max_points)
+        return _result(parse)
+
+    @mcp.tool()
+    def eng_ltspice_run(project: str, netlist: str, timeout_s: float = 300.0) -> dict:
+        """Run a netlist in a sandboxed folder using an installed LTspice.
+
+        Set EDA_AGENT_LTSPICE_EXE if LTspice is outside standard locations.
+        """
+        return _result(_run_ltspice, project, netlist, timeout_s)
+
+    @mcp.tool()
+    def eng_ltspice_trace(project: str, run_id: str, trace_name: str) -> dict:
+        """Read a waveform from a previous LTspice batch run."""
+        return _result(_trace_ltspice, project, run_id, trace_name)
+
+    @mcp.tool()
+    def eng_a365_workspaces() -> dict:
+        """List Altium 365 workspaces visible to the configured Nexar account."""
+        return _result(lambda: {"workspaces": _a365_client().workspaces()})
+
+    @mcp.tool()
+    def eng_a365_projects(workspace_url: str, name_contains: str = "",
+                          limit: int = 200) -> dict:
+        """List projects in an allowed Altium 365 workspace."""
+        return _result(lambda: _a365_client().projects(workspace_url, name_contains, limit))
+
+    @mcp.tool()
+    def eng_a365_project(project_id: str) -> dict:
+        """Read one Altium 365 project by Nexar ID."""
+        return _result(lambda: _a365_client().project(project_id))
+
+    @mcp.tool()
+    def eng_a365_library_folders(workspace_url: str) -> dict:
+        """List library folders in an allowed Altium 365 workspace."""
+        return _result(lambda: {"folders": _a365_client().library_folders(workspace_url)})
+
+    @mcp.tool()
+    def eng_a365_library_components(workspace_url: str,
+                                     name_contains: str = "") -> dict:
+        """Search library component names in an allowed Altium 365 workspace."""
+        return _result(lambda: {"components": _a365_client().library_components(
+            workspace_url, name_contains)})
+
+    @mcp.tool()
+    def eng_a365_component(component_id: str) -> dict:
+        """Read an Altium 365 managed component by Nexar ID."""
+        return _result(lambda: _a365_client().component(component_id))
+
+    @mcp.tool()
+    def eng_a365_query(query: str, variables: dict | None = None) -> dict:
+        """Run a read-only Nexar GraphQL query with mutation checks."""
+        return _result(lambda: _a365_client().execute(query, variables))
+
+    @mcp.tool()
+    def eng_a365_doctor() -> dict:
+        """Check the connected Nexar schema for required Altium 365 fields."""
+        return _result(lambda: _a365_client().doctor())
+
+    if altium:
+        @mcp.tool()
+        async def eng_compare_live_ipc_footprint(footprint_name: str, spec: dict,
+                                                  library_path: str = "",
+                                                  tolerance_um: int = 20) -> dict:
+            """Read a live PcbLib footprint and compare its pads to IPC geometry."""
+            from ..bridge import get_bridge
+            try:
+                raw = await get_bridge().send_command_async(
+                    "library.get_pad_geometry",
+                    {"footprint_name": footprint_name, "library_path": library_path})
+                return _result(_compare_ipc, _live_pads_to_um(raw), spec, tolerance_um)
+            except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+                return {"ok": False, "reason": str(exc)}

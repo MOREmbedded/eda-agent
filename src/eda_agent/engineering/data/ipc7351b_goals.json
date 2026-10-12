@@ -1,0 +1,43 @@
+{
+  "_readme": "Solder-joint goals (mm) per IPC-7351B family and density (M=Most, N=Nominal, L=Least). Values marked 'cross-checked' were confirmed in two or more independent sources (see manual, IPC chapter). null means NOT CONFIGURED: the calculator refuses to use it. Fill null values from your licensed copy of IPC-7351B (or your company standard) in config/ipc/company_goals.json, which overrides this file key by key.",
+  "standard": "IPC-7351B",
+  "tolerances": {"F": 0.10, "P": 0.10,
+                 "_note": "F = board fabrication tolerance, P = placement tolerance (mm). Defaults follow the IPC-7351 worked example (land profile 0.05 x 2, placement 0.1 true position). Adjust to your fabricator and assembler capability."},
+  "rounding": {"pad": 0.05, "pad_small_chip": 0.01, "courtyard": 0.05,
+               "_note": "Z and X are rounded up, G is rounded down, so rounding never reduces the solder fillet."},
+  "min_pad_gap": 0.15,
+  "families": {
+    "chip_ge_1608": {
+      "description": "Rectangular or square-end chip components, body 1608 metric (0603) and larger",
+      "toe": {"M": 0.55, "N": 0.35, "L": 0.15}, "heel": {"M": 0.00, "N": 0.00, "L": 0.00},
+      "side": {"M": 0.05, "N": 0.00, "L": -0.05}, "courtyard": {"M": 0.50, "N": 0.25, "L": 0.10},
+      "status": "cross-checked", "sources": ["IPC-7351B text excerpt", "PCBSync IPC-7351 article (2026)"]
+    },
+    "chip_lt_1608": {
+      "description": "Chip components smaller than 1608 metric",
+      "toe": {"M": null, "N": 0.20, "L": null}, "heel": {"M": null, "N": 0.00, "L": null},
+      "side": {"M": null, "N": 0.00, "L": null}, "courtyard": {"M": null, "N": 0.15, "L": null},
+      "status": "nominal only - confirm with licensed standard",
+      "sources": ["IPC technical paper E6&S17 (toe 0.20, courtyard 0.15, round-off 0.01)"]
+    },
+    "gullwing_pitch_gt_0625": {
+      "description": "Gull-wing leads, pitch greater than 0.625 mm (SOIC, SOP, SOT, QFP)",
+      "toe": {"M": 0.55, "N": 0.35, "L": 0.15}, "heel": {"M": 0.45, "N": 0.35, "L": 0.25},
+      "side": {"M": 0.05, "N": 0.03, "L": 0.01}, "courtyard": {"M": 0.50, "N": 0.25, "L": 0.10},
+      "status": "cross-checked", "sources": ["IPC-7351 (2005) Table 3-2", "PCBSync", "AtlasPCB"]
+    },
+    "gullwing_pitch_le_0625": {
+      "description": "Gull-wing leads, pitch 0.625 mm or less",
+      "toe": {"M": null, "N": null, "L": null}, "heel": {"M": null, "N": null, "L": null},
+      "side": {"M": null, "N": null, "L": null}, "courtyard": {"M": 0.50, "N": 0.25, "L": 0.10},
+      "status": "not configured - sources disagree on side goals; enter from licensed standard", "sources": []
+    },
+    "nolead": {
+      "description": "Bottom-termination no-lead packages (QFN, DFN, SON)",
+      "toe": {"M": null, "N": 0.30, "L": null}, "heel": {"M": null, "N": 0.00, "L": null},
+      "side": {"M": null, "N": -0.04, "L": null}, "courtyard": {"M": 0.50, "N": 0.25, "L": 0.10},
+      "status": "nominal from a single secondary source - confirm with licensed standard",
+      "sources": ["Secondary source quoting IPC-7351 nominal QFN goals"]
+    }
+  }
+}

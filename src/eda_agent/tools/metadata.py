@@ -78,6 +78,7 @@ _CATEGORY_BY_PREFIX = (
     # matters here: the first match wins, so a new prefix that is a
     # prefix of an existing one has to go above it.
     ("easyeda_", "easyeda"),
+    ("eng_", "engineering"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -137,7 +138,14 @@ _SIMULATOR_TOOLS = frozenset({
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
 # running, which is what "offline" means here.
-_OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts"})
+_OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
+
+_ENGINEERING_EXTERNAL = frozenset({
+    "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
+    "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
+    "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
+    "eng_a365_doctor", "eng_ltspice_run", "eng_ltspice_trace",
+})
 # pcb / audit / simulation -> live_only; design is mixed (mostly offline,
 # handled by the offline classifier below).
 
@@ -475,6 +483,8 @@ def category_of(name: str) -> str:
 
 
 def _is_offline(name: str, category: str) -> bool:
+    if name in _ENGINEERING_EXTERNAL:
+        return False
     if category in _OFFLINE_CATEGORIES:
         return True
     if name in _CALC_NEEDS_BRIDGE:
@@ -501,6 +511,8 @@ def interaction_of(name: str, category: str | None = None) -> str:
     if name in INTERACTION_OVERRIDES:
         return INTERACTION_OVERRIDES[name]
     category = category or category_of(name)
+    if category == "engineering":
+        return READONLY
     if category == "audit":
         return READONLY
     if name.startswith(_READONLY_PREFIXES):

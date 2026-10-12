@@ -39,6 +39,7 @@ from .calc import register_calc_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
+from .engineering import register_engineering_tools
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -261,6 +262,7 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_all_tools(mcp)
     if backend in ("kicad", "both"):
         register_kicad_tools(mcp)
+    register_engineering_tools(mcp, altium=backend in ("altium", "both"))
     # The engineering calculators (pcb_calc_*) are pure physics and
     # EDA-independent. Altium's register_all_tools already defines them, so add
     # them only for a KiCad-only server to reach calculator parity without
@@ -331,4 +333,5 @@ __all__ = [
     "register_audit_tools",
     "register_route_tools",
     "register_kicad_tools",
+    "register_engineering_tools",
 ]

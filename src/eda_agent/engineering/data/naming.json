@@ -1,0 +1,11 @@
+{
+  "_readme": "Owner naming policy. Templates use {tokens}; every generated or submitted name must match 'pattern'. Edit to your company convention; validate with `altium-ai naming-check`.",
+  "footprint": {"template": "{ipc_name}", "pattern": "[A-Z0-9][A-Z0-9PX._\\-]{2,60}"},
+  "symbol":    {"template": "{mpn}", "pattern": "[A-Z0-9][A-Z0-9_.+\\-]{1,60}"},
+  "component": {"template": "{mfr_short}_{mpn}", "pattern": "[A-Z0-9]{2,8}_[A-Z0-9][A-Z0-9_.+\\-]{1,60}"},
+  "manufacturer_abbreviations": {
+    "Texas Instruments": "TI", "STMicroelectronics": "ST", "Analog Devices": "ADI",
+    "Microchip Technology": "MCHP", "NXP Semiconductors": "NXP", "Infineon Technologies": "IFX",
+    "onsemi": "ONS", "Murata": "MUR", "Yageo": "YAG", "Vishay": "VSH"
+  }
+}

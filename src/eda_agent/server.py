@@ -694,6 +694,9 @@ def main() -> int:
         help="Fast offline preconditions (workspace, pointer file, scripts)",
     )
 
+    subparsers.add_parser("a365-login", help="Authorize Nexar and store the token for Altium 365 read tools")
+    subparsers.add_parser("a365-logout", help="Remove the stored Nexar token")
+
     # doctor -- full preflight, talks to Altium
     doctor_p = subparsers.add_parser(
         "doctor",
@@ -860,6 +863,24 @@ def main() -> int:
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
         return cli.cmd_install_scripts(dest=args.dest, force=args.force)
+    if args.command in ("a365-login", "a365-logout"):
+        from .engineering.a365 import TokenStore, interactive_login
+        from .tools.engineering import a365_config
+        try:
+            if args.command == "a365-login":
+                cfg = a365_config()
+                store = TokenStore(cfg.token_store)
+                store.save(interactive_login(
+                    cfg, os.environ.get("EDA_AGENT_NEXAR_CLIENT_SECRET")))
+                print("Altium 365 token stored for the current Windows user")
+            else:
+                store = TokenStore(Path.home() / "EDA Agent" / "a365_token.bin")
+                store.clear()
+                print("Altium 365 token removed")
+            return 0
+        except Exception as exc:
+            print(f"Altium 365 authorization failed: {exc}", file=sys.stderr)
+            return 1
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([
