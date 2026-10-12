@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.11.1';
+    SCRIPT_VERSION = '2026.10.12.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -1034,60 +1034,72 @@ End;
 { JSON Helper Functions                                                        }
 {..............................................................................}
 
-Function ReadFileContent(FilePath : String) : String;
+Function LoadTextFile(SL : TStringList; FilePath : String) : Boolean;
 Var
-    SL : TStringList;
     Stream : THandleStream;
-    Content : String;
     Attempt : Integer;
     Handle : Integer;
     Ok : Boolean;
 Begin
-    { Do not call LoadFromFile here. A sharing violation from its internal     }
-    { TFileStream surfaced as a modal EFOpenError in Altium Designer 26.10.1.5 }
-    { before the surrounding Try/Except could recover, stalling the polling    }
-    { loop. FileOpen reports a sharing violation as -1 without raising. Once   }
-    { the handle exists, LoadFromStream cannot race the file open. The lock is }
-    { transient (usually a scanner touching the atomically-renamed request),   }
-    { so retry briefly.                                                        }
+    { Read every file through here, never SL.LoadFromFile. A sharing          }
+    { violation inside LoadFromFile's TFileStream arrived as a modal          }
+    { EFOpenError on Altium Designer 26.10.1.5 before the surrounding         }
+    { Try/Except ran, stalling the polling loop. FileOpen returns -1 on a     }
+    { sharing violation instead of raising, and once the handle is held       }
+    { LoadFromStream has no open left to fail. The lock is usually brief (a   }
+    { scanner touching a freshly written file), so retry for about 180 ms.    }
+    { False when the file is missing or stayed locked; SL is then empty.      }
+    Ok := False;
+    SL.Text := '';
+    If FileExists(FilePath) Then
+    Begin
+        Attempt := 0;
+        While Attempt < 12 Do
+        Begin
+            Inc(Attempt);
+            Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
+            If Handle <> -1 Then
+            Begin
+                Try
+                    Stream := THandleStream.Create(Handle);
+                    Try
+                        Try
+                            SL.LoadFromStream(Stream);
+                            Ok := True;
+                        Except
+                            Ok := False;
+                        End;
+                    Finally
+                        Stream.Free;
+                    End;
+                Finally
+                    FileClose(Handle);
+                End;
+            End;
+            If Ok Then Break;
+            Sleep(15);
+        End;
+    End;
+    Result := Ok;
+End;
+
+Function ReadFileContent(FilePath : String) : String;
+Var
+    SL : TStringList;
+    Content : String;
+Begin
     { NOTE: stash the content in a LOCAL string and assign Result from it as }
     { the LAST statement. Assigning Result directly from SL.Text (an object  }
     { property) and then Exit-ing triggers the DelphiScript return-clobber    }
     { bug: the caller receives the FilePath argument instead of the file      }
     { content, so the dispatcher reads the request path as the command and    }
     { silently processes nothing. See delphiscript_result_clobber.            }
-    Result := '';
-    If Not FileExists(FilePath) Then Exit;
     Content := '';
-    Attempt := 0;
-    While Attempt < 12 Do
-    Begin
-        Inc(Attempt);
-        Ok := False;
-        Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
-        If Handle <> -1 Then
-        Begin
-            SL := TStringList.Create;
-            Try
-                Stream := THandleStream.Create(Handle);
-                Try
-                    Try
-                        SL.LoadFromStream(Stream);
-                        Content := SL.Text;
-                        Ok := True;
-                    Except
-                        Ok := False;
-                    End;
-                Finally
-                    Stream.Free;
-                End;
-            Finally
-                FileClose(Handle);
-                SL.Free;
-            End;
-        End;
-        If Ok Then Break;
-        Sleep(15);
+    SL := TStringList.Create;
+    Try
+        If LoadTextFile(SL, FilePath) Then Content := SL.Text;
+    Finally
+        SL.Free;
     End;
     Result := Content;
 End;
@@ -1105,8 +1117,8 @@ Begin
     { SaveToFile goes through a TFileStream and raises an ordinary VCL         }
     { exception that Try/Except catches cleanly -- no engine modal. The lock   }
     { is transient (Defender scan, or Python reading the response mid-write),  }
-    { so retry briefly. Mirrors ReadFileContent and the proven sibling-MCP     }
-    { idiom (OutputLines.Text := json; SaveToFile).                           }
+    { so retry briefly. Same idiom as the proven sibling MCP                  }
+    { (OutputLines.Text := json; SaveToFile).                                 }
     { CLEAR THE DESTINATION FIRST, with calls that cannot raise.
 
       MEASURED: EFCreateError, "Cannot create file ... because it is

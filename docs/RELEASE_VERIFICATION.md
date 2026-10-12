@@ -1,4 +1,4 @@
-# Release verification: 2026.10.11.1
+# Release verification: 2026.10.12.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -272,7 +272,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.11.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.12.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -2182,7 +2182,7 @@ are fixes found by live measurement on AD 26.10.1.6:
    reflects, a half arc's opening turns the other way,
    `primitives_skipped` is 0.
 
-Recorded on AD 26.10.1.6 with script 2026.10.11.1, scratch documents:
+Recorded on AD 26.10.1.6 with the previous script build, scratch documents:
 items 1 to 4 and 6 to 9. Item 1: two bodies moved and kept their layer
 through save and a restart of Altium, the footprint on screen and one off
 screen alike. Item 2: a 0603 body gave a 1.6 x 0.8 mm outline, three runs

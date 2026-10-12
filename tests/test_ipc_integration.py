@@ -30,7 +30,8 @@ from tests.test_json_parsing import (
 )
 
 
-_MAIN_PAS = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Main.pas"
+_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "altium"
+_MAIN_PAS = _SCRIPTS / "Main.pas"
 
 
 def _pascal_function(name: str) -> str:
@@ -46,13 +47,28 @@ def _pascal_function(name: str) -> str:
 
 def test_request_reader_avoids_ad26_sharing_violation_modal():
     """AD26 turns LoadFromFile's EFOpenError into a modal before recovery."""
-    body = _pascal_function("ReadFileContent")
+    body = _pascal_function("LoadTextFile")
 
     assert "FileOpen(FilePath, fmOpenRead Or fmShareDenyNone)" in body
     assert "If Handle <> -1 Then" in body
     assert "THandleStream.Create(Handle)" in body
     assert "FileClose(Handle)" in body
-    assert ".LoadFromFile(" not in body
+    assert "LoadTextFile(SL, FilePath)" in _pascal_function("ReadFileContent")
+
+
+def test_no_script_reads_a_file_with_load_from_file():
+    """Every file read goes through LoadTextFile, so no reader can raise the
+    modal that LoadFromFile's failed open produced on AD26."""
+    offenders = [
+        f"{pas.name}:{n}"
+        for pas in sorted(_SCRIPTS.glob("*.pas"))
+        if pas.name != "Altium_MCP.pas"
+        for n, line in enumerate(
+            pas.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1
+        )
+        if ".LoadFromFile(" in line
+    ]
+    assert offenders == []
 
 
 class TestRequestFormat:
