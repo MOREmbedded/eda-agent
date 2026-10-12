@@ -10911,7 +10911,7 @@ Begin
             'No PCB document is active');
         Exit;
     End;
-    AppendLog(FormatLogStamp + ',0,_pcb_geometry,board,' + RequestId);
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,board,' + RequestId);
 
     { Board outline: walk Segments. Each carries a vertex (vx, vy) and -- }
     { for arc segments -- a center (cx, cy) + radius + angles. v1 keeps   }
@@ -10921,9 +10921,9 @@ Begin
     Outline := Board.BoardOutline;
     If Outline <> Nil Then
     Begin
-        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_rebuild,' + RequestId);
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_rebuild,' + RequestId);
         Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
-        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_ready,' + RequestId);
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_ready,' + RequestId);
         For I := 0 To Outline.PointCount - 1 Do
         Begin
             Seg := Outline.Segments[I];
@@ -10951,7 +10951,7 @@ Begin
         End;
     End;
     OutlineJson := OutlineJson + ']';
-    AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_done,' + RequestId);
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_done,' + RequestId);
 
     { From the outline's segments: its cached rectangle went stale after a }
     { reshape and the renders built on this bbox clipped the board.         }
@@ -10985,12 +10985,12 @@ Begin
     Try
         Seen := 0;
         Obj := Iter.FirstPCBObject;
-        AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_first,' + RequestId);
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,iter_first,' + RequestId);
         While Obj <> Nil Do
         Begin
             Inc(Seen);
             If (Seen Mod 1000) = 0 Then
-                AppendLog(FormatLogStamp + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
+                AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
             LayerName := '';
             Try LayerName := GetLayerString(Obj.Layer); Except End;
 
@@ -11197,7 +11197,7 @@ Begin
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
-    AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_done,' + RequestId);
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,iter_done,' + RequestId);
 
     TracksJson  := '[' + TracksParts.Text + ']';
     ArcsJson    := '[' + ArcsParts.Text + ']';
