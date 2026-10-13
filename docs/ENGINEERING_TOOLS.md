@@ -45,7 +45,9 @@ install LTspice or set `EDA_AGENT_LTSPICE_EXE` to its executable. Batch runs
 are stored under `%USERPROFILE%\EDA Agent\ltspice` by default; override with
 `EDA_AGENT_LTSPICE_RUNS`. Optional `EDA_AGENT_LTSPICE_MODEL_ROOTS` is a
 semicolon-separated allowlist of model directories. The runner checks file
-directives, limits parallel processes, and enforces a timeout.
+directives, limits parallel processes, and enforces a timeout. On Windows the
+LTspice process is started hidden (`SW_HIDE`), so batch runs never flash a
+window on screen.
 
 ## Altium 365
 

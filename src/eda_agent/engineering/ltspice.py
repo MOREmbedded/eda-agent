@@ -260,6 +260,21 @@ def trace(raw: RawData, name: str, max_points: int = 2000) -> dict:
 
 
 # ---------------------------------------------------------------- runner
+def hidden_window_kwargs(platform: str | None = None) -> dict:
+    """On Windows start LTspice with SW_HIDE so a batch run never flashes a window.
+
+    LTspice otherwise briefly opens a visible window per run even in -b mode,
+    which is disruptive when many runs fire back to back. No-op elsewhere.
+    """
+    import sys as _sys
+    if (platform or _sys.platform) != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"startupinfo": si, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
 class LTspiceRunner:
     def __init__(self, cfg: LTspicePolicy, popen=subprocess.Popen, clock=time.monotonic):
         self.cfg = cfg
@@ -307,7 +322,7 @@ class LTspiceRunner:
         try:
             start = self._clock()
             proc = self._popen(self.argv(deck), cwd=str(d), stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL)
+                               stderr=subprocess.DEVNULL, **hidden_window_kwargs())
             try:
                 rc = proc.wait(timeout=t)
             except subprocess.TimeoutExpired:

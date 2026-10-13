@@ -123,3 +123,13 @@ def test_pin_table_to_symbol_and_datasheet_footprint():
 def test_rul_export_parser_preserves_fields():
     result = _tools()["eng_parse_rul"]("NAME=Clearance|KIND=Electrical|VALUE=0.2mm\n")
     assert result["records"] == [{"NAME": "Clearance", "KIND": "Electrical", "VALUE": "0.2mm"}]
+
+
+def test_ltspice_hides_its_window_only_on_windows():
+    from eda_agent.engineering.ltspice import hidden_window_kwargs
+
+    assert hidden_window_kwargs("linux") == {}
+    assert hidden_window_kwargs("darwin") == {}
+    win = hidden_window_kwargs("win32")
+    assert win["startupinfo"].wShowWindow == 0
+    assert win["creationflags"] != 0
