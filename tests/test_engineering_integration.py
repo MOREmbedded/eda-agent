@@ -22,6 +22,8 @@ def _tools():
         "eng_check_pin_pad_map", "eng_compare_live_ipc_footprint",
         "eng_parse_pin_table", "eng_generate_symbol",
         "eng_generate_datasheet_footprint", "eng_parse_rul",
+        "eng_a365_workspace_infos", "eng_a365_library_components_params",
+        "eng_a365_entity",
     )}
 
 

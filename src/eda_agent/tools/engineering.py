@@ -269,6 +269,11 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
         return _result(lambda: {"workspaces": _a365_client().workspaces()})
 
     @mcp.tool()
+    def eng_a365_workspace_infos() -> dict:
+        """Like eng_a365_workspaces, plus each workspace's id and description."""
+        return _result(lambda: {"workspaces": _a365_client().workspace_infos()})
+
+    @mcp.tool()
     def eng_a365_projects(workspace_url: str, name_contains: str = "",
                           limit: int = 200) -> dict:
         """List projects in an allowed Altium 365 workspace."""
@@ -292,9 +297,25 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
             workspace_url, name_contains)})
 
     @mcp.tool()
+    def eng_a365_library_components_params(workspace_url: str) -> dict:
+        """List library components in an allowed Altium 365 workspace, each with its parameters."""
+        return _result(lambda: {"components": _a365_client().library_components_params(workspace_url)})
+
+    @mcp.tool()
     def eng_a365_component(component_id: str) -> dict:
         """Read an Altium 365 managed component by Nexar ID."""
         return _result(lambda: _a365_client().component(component_id))
+
+    @mcp.tool()
+    def eng_a365_entity(query_field: str, entity_id: str, max_fields: int = 60) -> dict:
+        """Schema-driven read of any Altium 365 des*ById entity.
+
+        query_field must look like e.g. desFootprintById: selects the
+        entity's scalar fields as reported by the live Nexar schema, so
+        no field names are guessed. Use when there is no dedicated
+        eng_a365_* reader for the entity kind you need.
+        """
+        return _result(lambda: _a365_client().entity(query_field, entity_id, max_fields))
 
     @mcp.tool()
     def eng_a365_query(query: str, variables: dict | None = None) -> dict:

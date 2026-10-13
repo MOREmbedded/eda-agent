@@ -55,8 +55,16 @@ Set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally
 `eda-agent a365-login` interactively once; the token is stored for the
 current Windows user using DPAPI. `eda-agent a365-logout` removes it.
 The MCP tools expose workspace, project and library reads plus read-only
-GraphQL queries. Publishing and release mutations from the source package
-are not exposed because its owner-approval job service was not imported.
+GraphQL queries. `eng_a365_workspace_infos` adds each workspace's id and
+description; `eng_a365_library_components_params` lists library components
+together with their parameters in one call; `eng_a365_entity` reads any
+`des*ById` entity by introspecting the live schema for its scalar fields, for
+entity kinds with no dedicated reader. Publishing and release mutations from
+the source package (`release_component`, `create_symbol`, and the newer
+`update_parameters`) exist on the client but are not exposed as tools: its
+owner-approval job service was not imported, and a write tool needs the
+off-by-default/explicit-confirmation guard the integration brief defers to a
+later phase.
 
 The original DelphiScript bridge is not installed here. Its Altium operations
 are marked as requiring AD26 validation, while `eda-agent` already has a
