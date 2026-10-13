@@ -234,3 +234,219 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     print("Each Altium session, start the polling loop via:")
     print("  File -> Run Script... -> Altium_API -> Dispatcher.pas -> StartMCPServer -> Run")
     return 0
+
+
+# --------------------------------------------------------------------------
+# profile-* -- per-workspace owner profile (see profile.py, docs/PROFILES.md)
+# --------------------------------------------------------------------------
+
+_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS = """{
+  "_comment": "Overrides the hardcoded default for lib_add_footprint_pad / lib_create_standard_footprint.",
+  "pad_corner_radius_pct": 25
+}
+"""
+
+_PROFILE_EXAMPLE_DOCUMENT_SETTINGS = """{
+  "_comment": "Applied to the current schematic by profile_apply_document_settings. PCB-side is documentation only for now -- no bridge command exists yet to set a board's units/grid.",
+  "schematic_units": "mil",
+  "pcb_units": "mm",
+  "schematic_snap_grid_mil": 100,
+  "schematic_visible_grid_mil": 100
+}
+"""
+
+_PROFILE_EXAMPLE_FOOTPRINT_POLICY = """{
+  "_comment": "Matches design.footprint_policy.py's explicit-policy keys. Omit a key to infer it from the library's own majority convention instead.",
+  "courtyard": true,
+  "three_d_model": true,
+  "pin1_marker": true
+}
+"""
+
+
+def _profile_scaffold(directory, name: str) -> None:
+    from pathlib import Path as _Path
+    directory = _Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "profile.json").write_text(
+        '{\n  "name": "' + name + '",\n  "description": ""\n}\n',
+        encoding="utf-8")
+    (directory / "footprint_defaults.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS, encoding="utf-8")
+    (directory / "footprint_policy.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_POLICY, encoding="utf-8")
+    (directory / "document_settings.json").write_text(_PROFILE_EXAMPLE_DOCUMENT_SETTINGS, encoding="utf-8")
+    (directory / "rules").mkdir(exist_ok=True)
+    (directory / "fab_profiles").mkdir(exist_ok=True)
+    (directory / "templates").mkdir(exist_ok=True)
+
+
+def cmd_profile_init(name: str, *, here: bool) -> int:
+    """Scaffold a new profile named `name`: `--here` creates a project-local
+    .eda-agent/profile/ in the current directory (meant to be committed
+    to that project's repo); without it, creates a centrally-switchable
+    ~/.eda-agent/profiles/<name>/. See docs/PROFILES.md."""
+    from . import profile as profile_mod
+
+    if here:
+        directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
+    else:
+        directory = profile_mod.central_profiles_root() / name
+    if directory.exists() and any(directory.iterdir()):
+        print(f"ERROR: {directory} already exists and is not empty.", file=sys.stderr)
+        return 1
+    _profile_scaffold(directory, name)
+    print(f"Scaffolded profile at: {directory}")
+    if not here:
+        print(f"Activate it with: eda-agent profile-use {name}")
+    return 0
+
+
+def cmd_profile_use(name: str) -> int:
+    """Set the centrally active profile (~/.eda-agent/active_profile)."""
+    from . import profile as profile_mod
+
+    target = profile_mod.central_profiles_root() / name
+    if not target.is_dir():
+        print(f"ERROR: no profile named {name!r} at {target}. "
+              f"Run `eda-agent profile-init {name}` first.", file=sys.stderr)
+        return 1
+    pointer = profile_mod.active_profile_pointer()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    print(f"Active profile: {name} ({target})")
+    return 0
+
+
+def cmd_profile_list() -> int:
+    """List centrally-registered profiles and which one is active."""
+    from . import profile as profile_mod
+
+    root = profile_mod.central_profiles_root()
+    names = sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+    pointer = profile_mod.active_profile_pointer()
+    active = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    if not names:
+        print(f"No central profiles under {root}.")
+    for n in names:
+        marker = " (active)" if n == active else ""
+        print(f"{n}{marker}")
+    project = profile_mod.find_project_profile(Path.cwd())
+    if project:
+        print(f"\nA project-local profile overrides this here: {project}")
+    return 0
+
+
+def cmd_profile_show(*, as_json: bool) -> int:
+    """Print the profile actually in effect for the current directory."""
+    import json as _json
+    from . import profile as profile_mod
+
+    p = profile_mod.get_active_profile()
+    if p is None:
+        if as_json:
+            print(_json.dumps({"active": False}))
+        else:
+            print("No profile active here.")
+        return 0
+    data = {
+        "active": True, "directory": str(p.directory), "meta": p.meta,
+        "footprint_defaults": p.footprint_defaults,
+        "footprint_policy": p.footprint_policy,
+        "document_settings": p.document_settings,
+        "rulesets": p.rulesets(), "fab_profiles": p.fab_profile_names(),
+        "templates": p.template_names(),
+    }
+    if as_json:
+        print(_json.dumps(data, indent=2))
+        return 0
+    print(f"Profile: {p.meta.get('name', '(unnamed)')} -- {p.directory}")
+    if p.meta.get("description"):
+        print(f"  {p.meta['description']}")
+    print(f"  footprint_defaults: {p.footprint_defaults or '(none)'}")
+    print(f"  footprint_policy:   {p.footprint_policy or '(none)'}")
+    print(f"  document_settings:  {p.document_settings or '(none)'}")
+    print(f"  rulesets:           {p.rulesets() or '(none)'}")
+    print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
+    print(f"  templates:          {p.template_names() or '(none)'}")
+    return 0
+
+
+def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
+    """Load every file in a profile and report errors. The owner writes
+    these files; this command is how they check their own work before
+    relying on it (same discipline engineering/rules.py documents for
+    rulesets)."""
+    from . import profile as profile_mod
+    from .engineering.naming import NamingPolicy
+    from .engineering.rules import validate_ruleset
+    from .design.fab_profile import load_fab_profile
+
+    if here:
+        directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
+    elif name:
+        directory = profile_mod.central_profiles_root() / name
+    else:
+        directory = profile_mod.resolve_profile_dir()
+        if directory is None:
+            print("No profile active here and no name/--here given.", file=sys.stderr)
+            return 1
+
+    if not directory.is_dir():
+        print(f"ERROR: {directory} does not exist.", file=sys.stderr)
+        return 1
+
+    errors: list[str] = []
+    p = profile_mod.load_profile(directory)
+
+    if p.naming_path:
+        try:
+            NamingPolicy(path=p.naming_path)
+        except Exception as exc:  # noqa: BLE001 -- report, don't crash the CLI
+            errors.append(f"naming.json: {exc}")
+
+    if p.rules_dir:
+        import json as _json
+        for rs_path in sorted(p.rules_dir.glob("*.json")):
+            try:
+                validate_ruleset(_json.loads(rs_path.read_text(encoding="utf-8")))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"rules/{rs_path.name}: {exc}")
+
+    if p.fab_profiles_dir:
+        for fp_path in sorted(p.fab_profiles_dir.glob("*.json")):
+            result = load_fab_profile(str(fp_path))
+            if not result.get("ok"):
+                errors.append(f"fab_profiles/{fp_path.name}: {result.get('reason')}")
+
+    if errors:
+        print(f"{len(errors)} problem(s) in {directory}:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+    print(f"Profile at {directory} is valid.")
+    return 0
+
+
+def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
+    """Copy a profile's templates/<template>/ tree verbatim to dest. Plain
+    file copy -- Altium project files are just files on disk, so no
+    DelphiScript is involved."""
+    from . import profile as profile_mod
+
+    p = profile_mod.get_active_profile()
+    if not p or not p.templates_dir:
+        print("No active profile defines templates/.", file=sys.stderr)
+        return 1
+    src = p.templates_dir / template
+    if not src.is_dir():
+        available = p.template_names()
+        print(f"ERROR: template {template!r} not found. Available: {available or '(none)'}",
+              file=sys.stderr)
+        return 1
+    dst = Path(dest)
+    if dst.exists() and any(dst.iterdir()) and not force:
+        print(f"ERROR: {dst} already exists and is not empty. Pass --force to overwrite.",
+              file=sys.stderr)
+        return 1
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    print(f"Created project from template {template!r} at: {dst}")
+    return 0

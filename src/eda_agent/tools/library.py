@@ -18,6 +18,7 @@ from .datasheet_hints import tag_response
 from ..config import get_config
 from ..units import format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
+from .. import profile as _profile_module
 
 
 def _encode_layer_ops(layers) -> "str | dict":
@@ -363,6 +364,10 @@ def _pads_payload(pads: list[dict[str, Any]],
     """
     op_strs: list[str] = []
     skipped_invalid = 0
+    # 25 is Altium's own typical roundrect corner %; a profile overrides it
+    # for every pad in this batch that doesn't specify its own (see
+    # profile.py / docs/PROFILES.md).
+    default_corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
     for p in pads:
         # Free-text fields are neutralised for the same reason as pins: a
         # designator or layer carrying ";", "=" or "~~" reshapes the
@@ -381,7 +386,7 @@ def _pads_payload(pads: list[dict[str, Any]],
             f"y_size={format_length(p.get('y_size', length_in(units, 60)))}",
             f"hole_size={format_length(p.get('hole_size', 0))}",
             f"shape={_payload_safe(p.get('shape', 'rectangular'))}",
-            f"corner_radius={round(p.get('corner_radius', 25))}",
+            f"corner_radius={round(p.get('corner_radius', default_corner_radius))}",
             f"rotation={_payload_safe(p.get('rotation', 0))}",
             f"layer={_payload_safe(p.get('layer', 'TopLayer'))}",
         ]
@@ -1407,7 +1412,7 @@ def register_library_tools(mcp):
         pad_h: float = 30.0,
         row_span: float = 0.0,
         shape: str = "roundrect",
-        corner_radius: int = 25,
+        corner_radius: Optional[int] = None,
         silk: bool = True,
         courtyard: float = 10.0,
         body_w: float = 0.0,
@@ -1455,6 +1460,10 @@ def register_library_tools(mcp):
             row_span: centre-to-centre between the two rows / opposite
                 sides (mils). Required for dual and quad.
             shape: pad shape (default "roundrect"); corner_radius is its %.
+            corner_radius: roundrect corner radius percentage. Default:
+                the active profile's footprint_defaults.json
+                pad_corner_radius_pct if one applies (see docs/PROFILES.md),
+                else 25 (Altium's own typical value).
             silk: draw a silkscreen body outline (TopOverlay).
             courtyard: clearance (mils) past the extent for the courtyard
                 rectangle (Mechanical1); 0 disables it.
@@ -1468,6 +1477,9 @@ def register_library_tools(mcp):
             per-step bridge results.
         """
         from eda_agent.design.footprint_gen import generate_footprint
+
+        if corner_radius is None:
+            corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
 
         try:
             geom = generate_footprint(
@@ -1534,7 +1546,7 @@ def register_library_tools(mcp):
         shape: str = "rectangular",
         layer: str = "TopLayer",
         rotation: int = 0,
-        corner_radius: int = 25,
+        corner_radius: Optional[int] = None,
         footprint_name: str = "",
         units: str = "mil",
     ) -> dict[str, Any]:
@@ -1556,7 +1568,10 @@ def register_library_tools(mcp):
                 for through-hole pads (always MultiLayer).
             rotation: Pad rotation in degrees
             corner_radius: Corner radius percentage for shape="roundrect"
-                (Altium stores RR radius as a %; 25 is typical).
+                (Altium stores RR radius as a %). Default: the active
+                profile's footprint_defaults.json pad_corner_radius_pct if
+                one applies (see docs/PROFILES.md), else 25 (Altium's own
+                typical value).
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot, since otherwise
@@ -1572,6 +1587,8 @@ def register_library_tools(mcp):
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        if corner_radius is None:
+            corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
         bridge = get_bridge()
         params: dict[str, Any] = {
             "designator": designator,
@@ -1619,7 +1636,9 @@ def register_library_tools(mcp):
                 - shape      (str, default "rectangular"), one of
                   round / rectangular / octagonal / roundrect (modern IPC
                   rounded-rectangle SMD). Oval = round with x_size!=y_size.
-                - corner_radius (int %, default 25) for shape="roundrect"
+                - corner_radius (int %, default: the active profile's
+                  footprint_defaults.json pad_corner_radius_pct if one
+                  applies, else 25) for shape="roundrect"
                 - rotation   (float deg, default 0)
                 - layer      (str, default "TopLayer"). Only used for SMD
                   pads (hole_size=0); a drilled pad is forced through-hole
@@ -2046,7 +2065,10 @@ def register_library_tools(mcp):
             library_path: Optional .PcbLib to focus first; defaults to the
                 focused library.
             policy: Optional explicit conventions to enforce; omitted
-                dimensions are inferred from the library.
+                dimensions are inferred from the library. When not passed
+                at all, the active profile's footprint_policy.json is used
+                if one applies (see docs/PROFILES.md); pass an explicit
+                {} to force pure inferred mode despite an active profile.
 
         Returns ``{library_path, footprint_count, conventions, findings,
         summary}``.
@@ -2055,6 +2077,10 @@ def register_library_tools(mcp):
             audit_footprint_library,
             plan_footprint_fixes,
         )
+
+        if policy is None:
+            active = _profile_module.get_active_profile()
+            policy = active.footprint_policy if active else None
 
         bridge = get_bridge()
         footprints, resolved_path = await _read_library_geometry(

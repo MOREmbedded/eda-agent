@@ -770,6 +770,56 @@ def main() -> int:
         help="Seconds before giving up on a wedged dialog sequence (default 300).",
     )
 
+    # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
+    # conventions, document units & grid, project templates). See profile.py
+    # and docs/PROFILES.md. Flat hyphenated verbs, same style as
+    # scripts-path/install-scripts and a365-login/a365-logout -- this
+    # codebase has no nested-subcommand precedent to follow instead.
+    profile_init_p = subparsers.add_parser(
+        "profile-init",
+        help="Scaffold a new owner profile (see docs/PROFILES.md).",
+    )
+    profile_init_p.add_argument("name", help="Profile name.")
+    profile_init_p.add_argument(
+        "--here", action="store_true",
+        help="Scaffold a project-local .eda-agent/profile/ in the current "
+             "directory instead of a centrally-switchable one. Meant to be "
+             "committed to that project's own repo.",
+    )
+
+    subparsers.add_parser("profile-list", help="List central profiles and which one is active.")
+
+    profile_show_p = subparsers.add_parser(
+        "profile-show",
+        help="Show the profile actually in effect for the current directory.",
+    )
+    profile_show_p.add_argument("--json", action="store_true", dest="json_out",
+                                help="Emit machine-readable JSON.")
+
+    profile_use_p = subparsers.add_parser(
+        "profile-use",
+        help="Set the centrally active profile.",
+    )
+    profile_use_p.add_argument("name")
+
+    profile_validate_p = subparsers.add_parser(
+        "profile-validate",
+        help="Load every file in a profile and report errors.",
+    )
+    profile_validate_p.add_argument("name", nargs="?", default=None,
+                                    help="Central profile name (default: whatever resolves here).")
+    profile_validate_p.add_argument("--here", action="store_true",
+                                    help="Validate the project-local .eda-agent/profile/ in cwd.")
+
+    profile_new_project_p = subparsers.add_parser(
+        "profile-new-project",
+        help="Copy a profile's templates/<name>/ tree to a new project directory.",
+    )
+    profile_new_project_p.add_argument("template")
+    profile_new_project_p.add_argument("dest")
+    profile_new_project_p.add_argument("--force", action="store_true",
+                                       help="Overwrite a non-empty destination.")
+
     # dashboard -- local web UI for the MCP bridge
     dash_p = subparsers.add_parser(
         "dashboard",
@@ -874,6 +924,14 @@ def main() -> int:
                             "severity (default: error).")
 
     args = parser.parse_args()
+
+    # Resolve the active profile (see profile.py) before anything else runs,
+    # so naming.py / ipc7351.py's own EDA_AGENT_IPC_DIR reads transparently
+    # pick up a profile's naming.json / company_goals.json. Safe at any point
+    # before the first tool call: registration (just above, at import) only
+    # decides WHICH tools exist, not what they read at call time.
+    from . import profile as _profile
+    _profile.apply_env()
 
     # Backend was already registered at import from EDA_AGENT_BACKEND. If
     # --backend asks for a different one, re-exec once with the env set so the
@@ -1024,6 +1082,19 @@ def main() -> int:
             wait_first=args.wait_first,
             budget=args.budget,
         )
+
+    if args.command == "profile-init":
+        return cli.cmd_profile_init(args.name, here=args.here)
+    if args.command == "profile-list":
+        return cli.cmd_profile_list()
+    if args.command == "profile-show":
+        return cli.cmd_profile_show(as_json=args.json_out)
+    if args.command == "profile-use":
+        return cli.cmd_profile_use(args.name)
+    if args.command == "profile-validate":
+        return cli.cmd_profile_validate(name=args.name, here=args.here)
+    if args.command == "profile-new-project":
+        return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
 
     parser.print_help(sys.stderr)
     return 2

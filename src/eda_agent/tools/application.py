@@ -142,7 +142,7 @@ def register_meta_tools(mcp):
         Filters (all optional, AND-combined):
             category: core, application, project, library, generic,
                 schematic, pcb, audit, design, engineering, simulation, routing, meta,
-                parts (and kicad on the KiCad backend; the EasyEDA tools
+                parts, profile (and kicad on the KiCad backend; the EasyEDA tools
                 file under the same subject headings as Altium's, so
                 "pcb" means the same thing on either). "core" holds the
                 EDA-agnostic main flow (review_design, get_board_info,
