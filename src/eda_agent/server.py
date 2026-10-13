@@ -99,6 +99,16 @@ def setup_logging() -> None:
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
+    # A rotating, capped, secret-redacting file under %USERPROFILE%\EDA
+    # Agent\logs\ (or EDA_AGENT_LOG_DIR), alongside the stderr handler
+    # above. Best-effort: a disk or permissions problem here must not
+    # stop the server, which already logs to stderr regardless.
+    try:
+        from .activity_log import install as install_activity_log
+        install_activity_log(root)
+    except OSError as exc:
+        root.warning("could not set up the rotating log file: %s", exc)
+
 
 # Which EDA tool this server drives. Resolved once, at import, from the
 # environment so it is settled before the dashboard (which reads the

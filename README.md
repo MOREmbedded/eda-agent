@@ -487,6 +487,20 @@ UI automation (synthesised keyboard and mouse input, used for the parts of Altiu
 - Read at call time, so it takes effect on the next event rather than the next restart
 - See [UI automation synthesises real keyboard and mouse input](#ui-automation-synthesises-real-keyboard-and-mouse-input) for what it is for and what it can do
 
+Activity log (rotating, size-capped, secrets redacted; in addition to the
+server's existing stderr logging):
+
+- Default: `%USERPROFILE%\EDA Agent\logs\eda_agent.log`
+- Override the directory: set `EDA_AGENT_LOG_DIR`
+- `EDA_AGENT_LOG_MAX_MB` (default 10): rotate a file at this size
+- `EDA_AGENT_LOG_BACKUPS` (default 5): rotated files kept
+- `EDA_AGENT_LOG_TOTAL_MAX_MB` (default 200): hard cap for the whole log
+  directory; oldest rotated files are deleted first
+- `EDA_AGENT_LOG_MIN_FREE_MB` (default 1024): below this free disk space,
+  DEBUG/INFO logging is suspended and one CRITICAL entry is written
+- Bearer tokens, OAuth tokens and distributor/Nexar API keys are redacted
+  before a line is written, regardless of which code logged it
+
 Coordinates throughout the API are in **mils** (1 mil = 0.0254 mm).
 
 ## Development
