@@ -43,6 +43,7 @@ SCOPES = "openid profile email user.access design.domain offline_access"
 
 QUERIES = {
     "workspaces": "query { desWorkspaces { url name } }",
+    "workspace_infos": "query { desWorkspaceInfos { url workspaceId name description } }",
     "projects": ("query($ws: String!, $after: String) { desProjects(workspaceUrl: $ws, after: $after) "
                  "{ totalCount pageInfo { hasNextPage endCursor } nodes { id name description } } }"),
     "project": "query($id: ID!) { desProjectById(id: $id) { id name description } }",
@@ -51,6 +52,8 @@ QUERIES = {
 QUERIES.update({
     "library_folders": "query($ws: String!) { desLibrary(workspaceUrl: $ws) { folders { id name path } } }",
     "library_components": "query($ws: String!) { desLibrary(workspaceUrl: $ws) { components { nodes { id name } } } }",
+    "library_components_params": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) { components { nodes { id name "
+                                  "details { parameters { type name value } } } } } }"),
     "component": ("query($id: ID!) { desComponentById(id: $id) { id name details { parameters { type name value } } } }"),
     "symbol": "query($id: ID!) { desSymbolById(id: $id) { name revisionInternalId folder { id name path } } }",
 })
@@ -97,7 +100,8 @@ SCHEMA_EXPECTATIONS = [("Query", "desWorkspaces"), ("Query", "desProjects"), ("Q
                        ("DesProject", "id"), ("DesProject", "name"), ("DesProject", "description"),
                        ("Query", "desLibrary"), ("Query", "desComponentById"), ("Query", "desSymbolById")]
 # write operations: checked separately so a missing mutation disables only that tool
-WRITE_EXPECTATIONS = {"create_symbol": ("Mutation", "desCreateSymbol"),
+WRITE_EXPECTATIONS = {"update_parameters": ("Mutation", "desUpdateComponentRevisionParameters"),
+                      "create_symbol": ("Mutation", "desCreateSymbol"),
                       "create_footprint": ("Mutation", "desCreateFootprint"),
                       "release_component": ("Mutation", "desReleaseComponent")}
 
@@ -274,8 +278,10 @@ class NexarClient:
             assert_read_only(query)
         else:
             fixed = MUTATIONS.get(_mutation_template)
-            ok = (fixed == query) if fixed else (_mutation_template == "release_component"
-                                                and query.startswith("mutation { desReleaseComponent(input: "))
+            ok = (fixed == query) if fixed else (
+                (_mutation_template == "release_component" and query.startswith("mutation { desReleaseComponent(input: "))
+                or (_mutation_template == "update_parameters_inline"
+                    and query.startswith("mutation { desUpdateComponentRevisionParameters(input: ")))
             if not ok:
                 raise PermissionDenied("mutations may only use the fixed templates in a365.py")
             use_cache = False
@@ -328,6 +334,13 @@ class NexarClient:
             ws = [w for w in ws if w.get("url") in self.cfg.workspaces]
         return ws
 
+    def workspace_infos(self) -> list[dict]:
+        """Like workspaces(), plus workspaceId and description (desWorkspaceInfos)."""
+        ws = self.execute(QUERIES["workspace_infos"])["data"]["desWorkspaceInfos"] or []
+        if self.cfg.workspaces:
+            ws = [w for w in ws if (w.get("url") or "") in self.cfg.workspaces]
+        return ws
+
     def projects(self, workspace_url: str, name_contains: str = "", limit: int = 200) -> dict:
         ws = self.check_workspace(workspace_url)
         out, after, pages = [], None, 0
@@ -372,6 +385,38 @@ class NexarClient:
         if d is None:
             raise NotFound(f"component {component_id} not found")
         return d
+
+    def library_components_params(self, workspace_url: str) -> list[dict]:
+        """Like library_components(), plus each component's parameters (one call instead of N)."""
+        ws = self.check_workspace(workspace_url)
+        nodes = self.execute(QUERIES["library_components_params"], {"ws": ws})["data"]["desLibrary"]["components"]["nodes"]
+        return nodes or []
+
+    def entity(self, query_field: str, entity_id: str, max_fields: int = 60) -> dict:
+        """Schema-driven read of any des*ById entity: selects the entity's scalar fields as listed by the live
+        schema (no guessed field names)."""
+        if not re.fullmatch(r"des[A-Za-z]+ById", query_field):
+            raise ValidationFailed("query_field must look like desXxxById")
+        qf = {f["name"]: f for f in (self.type_fields("Query").get("fields") or [])}
+        if query_field not in qf:
+            raise NotFound(f"{query_field} is not in the live schema")
+        t = qf[query_field]["type"]
+        while t.get("ofType"):
+            t = t["ofType"]
+        tf = self.type_fields(t["name"]).get("fields") or []
+
+        def scalar(f):
+            ty = f["type"]
+            while ty.get("ofType") and ty["kind"] in ("NON_NULL", "LIST"):
+                ty = ty["ofType"]
+            return ty["kind"] in ("SCALAR", "ENUM")
+        names = [f["name"] for f in tf if scalar(f) and not f.get("args")][:max_fields]
+        objs = [f["name"] for f in tf if not scalar(f)]
+        q = f'query($id: ID!) {{ {query_field}(id: $id) {{ {" ".join(names)} }} }}'
+        d = self.execute(q, {"id": entity_id})["data"][query_field]
+        if d is None:
+            raise NotFound(f"{query_field}({entity_id}) returned nothing")
+        return {"type": t["name"], "fields": d, "object_fields_available": objs[:80]}
 
     # ------------------------------------------------------------ library (write; owner-approved jobs only)
     def write_enabled(self, op: str) -> None:
@@ -420,6 +465,24 @@ class NexarClient:
         payload = self.execute(release_mutation(input_obj), {}, _mutation_template="release_component")
         self._check_errors(payload, "desReleaseComponent")
         return {"released": input_obj["componentItemName"]}
+
+    def update_parameters(self, component_id: str, parameters: list[dict], release_note: str,
+                          replace_existing: bool = False) -> dict:
+        """desUpdateComponentRevisionParameters (Nexar parameters guide). replace_existing=True deletes ALL
+        existing parameters first (documented); the component id changes with the new revision."""
+        self.write_enabled("update_parameters")
+        payload = self._update_params_payload(component_id, parameters, release_note, replace_existing)
+        new_id = ((payload.get("data") or {}).get("desUpdateComponentRevisionParameters") or {}).get("componentId")
+        if not new_id:
+            raise ValidationFailed("parameter update returned no componentId", details={"payload": payload})
+        return {"new_component_id": new_id}
+
+    def _update_params_payload(self, component_id, parameters, release_note, replace_existing):
+        # inline input exactly as in Nexar's documented example (no undocumented input type names)
+        vars_ = {"componentId": component_id, "releaseNote": release_note, "replaceExisting": replace_existing,
+                 "parameters": [{"name": p["name"], "value": str(p["value"])} for p in parameters]}
+        inline = "mutation { desUpdateComponentRevisionParameters(input: " + gql_literal(vars_) + ") { componentId } }"
+        return self.execute(inline, {}, _mutation_template="update_parameters_inline")
 
     def doctor(self) -> dict:
         """Check that every field used by built-in queries exists in the live schema."""

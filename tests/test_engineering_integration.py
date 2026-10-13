@@ -25,6 +25,9 @@ def _tools():
         "eng_parse_ipc_footprint_name", "eng_validate_library",
         "eng_write_library_validation_report", "eng_eco_preview",
         "eng_validate_library_live", "eng_eco_preview_live",
+        "eng_a365_workspace_infos", "eng_a365_library_components_params",
+        "eng_a365_entity", "eng_a365_publish_model", "eng_a365_release_component",
+        "eng_a365_update_parameters",
     )}
 
 

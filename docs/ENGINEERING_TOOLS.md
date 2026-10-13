@@ -158,8 +158,45 @@ Set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally
 `eda-agent a365-login` interactively once; the token is stored for the
 current Windows user using DPAPI. `eda-agent a365-logout` removes it.
 The MCP tools expose workspace, project and library reads plus read-only
-GraphQL queries. Publishing and release mutations from the source package
-are not exposed because its owner-approval job service was not imported.
+GraphQL queries. `eng_a365_workspace_infos` adds each workspace's id and
+description; `eng_a365_library_components_params` lists library components
+together with their parameters in one call; `eng_a365_entity` reads any
+`des*ById` entity by introspecting the live schema for its scalar fields, for
+entity kinds with no dedicated reader.
+
+### Write tools
+
+Three write operations, each refusing unless `confirm=True` (eda-agent's
+existing style for an irreversible action, e.g. `easyeda_clear_routing`) -
+there is no separate owner-approval job queue here, since that whole
+governance layer was deliberately not ported (see BOOSTER_INTEGRATION_BRIEF.md):
+
+- `eng_a365_publish_model(kind, workspace_url, folder_id, name, file_path, confirm=False)` -
+  upload a symbol or footprint file (via Nexar's File Service) and link it
+  into a library folder. `name` is checked against the owner naming policy
+  (`engineering/naming.py`) before publishing.
+- `eng_a365_release_component(input_obj, confirm=False)` - release a
+  component revision (`desReleaseComponent`). `input_obj` is passed through
+  as-is - the mutation's input is documented inline by Nexar rather than a
+  named type, so it is built the same way the client already builds it
+  (`a365.py`'s `release_mutation`/`gql_literal`), not guessed at here.
+- `eng_a365_update_parameters(component_id, parameters, release_note, replace_existing=False, confirm_replace="", confirm=False)` -
+  add or change a component's parameters (new revision). `replace_existing=True`
+  deletes ALL existing parameters first and additionally requires
+  `confirm_replace` set to the exact string `"REPLACE ALL PARAMETERS"` -
+  ported verbatim from Altium Booster 3.2's own guard for this operation
+  (`service.py`), not a new phrase invented for this port. Every call
+  verifies the write by reading the new component revision back and
+  confirming each requested parameter actually matches, rather than
+  trusting the mutation's own success response (the project's eco_verify
+  discipline: a write that reports success is not the same as a write that
+  happened).
+
+None of these three is wired into a doctor-style pre-flight beyond
+`eng_a365_doctor`'s existing schema check; verify the exact mutation shapes
+against a real Nexar account before relying on them (unverified against a
+live account while porting this - no Nexar credential was available to test
+against).
 
 The original DelphiScript bridge is not installed here. Its Altium operations
 are marked as requiring AD26 validation, while `eda-agent` already has a
