@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "eda-agent"
 version = "0.6.1"
-description = "MCP server for EDA tool automation, currently supports Altium Designer. Around 500 tools for schematic, PCB, and library ops via DelphiScript bridge."
+description = "MCP server for EDA tool automation, currently supports Altium Designer. Around 550 tools for schematic, PCB, and library ops via DelphiScript bridge."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

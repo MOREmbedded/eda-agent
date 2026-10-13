@@ -86,6 +86,66 @@ def cmd_scripts_path() -> int:
 # install-scripts
 # --------------------------------------------------------------------------
 
+def cmd_eco_execute(*, confirm: bool, validate_only: bool,
+                    allow_confirm_dialogs: bool, wait_first: float,
+                    budget: float) -> int:
+    """Watch for and auto-press Altium's Engineering Change Order dialog.
+
+    EXPERIMENTAL, UNVERIFIED: no live Altium session was available while
+    building this. A thin wrapper around ui.dialog_driver.drive(), the
+    existing, already-exercised reactive dialog driver
+    (app_drive_dialogs/app_update_from_libraries already use it against
+    a live ECO dialog) -- no new UI-automation code, no second bridge,
+    no second polling loop.
+
+    Ported at the owner's explicit request (see
+    BOOSTER_INTEGRATION_BRIEF.md) to mirror Altium Booster 3.2's
+    EcoDialogDriver. eda-agent's own guidance (tools/guidance.py) and
+    proj_sync_pcb's docstring say completing an ECO needs a human; this
+    command is the explicit, opt-in way to do it anyway -- run
+    deliberately from a terminal, separate from the casual MCP tool
+    surface. Verify against a real Altium session (Booster's E-01/E-02
+    procedures in its manual are the closest existing check) before
+    trusting it on a real design.
+
+    This does not trigger an ECO itself. Start it, THEN trigger one
+    separately (proj_sync_pcb through your MCP client, or Design >
+    Update PCB Document in Altium) while it runs.
+    """
+    if not confirm:
+        print(
+            "Refusing: pass --confirm to acknowledge this presses "
+            "Execute Changes on the Engineering Change Order dialog "
+            "without a human reviewing it first. eda-agent's own "
+            "guidance says that step needs a human; this command is the "
+            "explicit opt-in override. See docs/ENGINEERING_TOOLS.md.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .bridge.process_manager import AltiumProcessManager
+    pid = AltiumProcessManager().get_altium_pid()
+    if not pid:
+        print("Altium Designer process not found; start Altium first.",
+              file=sys.stderr)
+        return 1
+
+    from .ui import dialog_driver
+    result = dialog_driver.drive(
+        pid, intent="proceed", allow_commit=not validate_only,
+        allow_confirm=allow_confirm_dialogs, dry_run=False,
+        wait_first=wait_first, budget=budget,
+    )
+
+    import json
+    print(json.dumps(result, indent=2, default=str))
+    if result.get("stopped_for_a_human"):
+        print("Stopped for a human: a dialog needed attention this "
+              "driver will not answer on its own.", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project to a user-chosen directory.
 

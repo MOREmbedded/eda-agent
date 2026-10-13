@@ -729,6 +729,47 @@ def main() -> int:
         help="Emit machine-readable JSON instead of the text report.",
     )
 
+    # eco-execute -- EXPERIMENTAL, UNVERIFIED: auto-press the ECO dialog
+    eco_p = subparsers.add_parser(
+        "eco-execute",
+        help=(
+            "EXPERIMENTAL, UNVERIFIED. Watch for Altium's Engineering "
+            "Change Order dialog and press Validate Changes / Execute "
+            "Changes / Close on it automatically, via app_drive_dialogs' "
+            "existing reactive driver. Off unless --confirm is passed. "
+            "This automates the one step eda-agent's own guidance and "
+            "proj_sync_pcb's docstring say needs a human; see "
+            "docs/ENGINEERING_TOOLS.md before using it on a real design. "
+            "Trigger the ECO separately (proj_sync_pcb via your MCP "
+            "client, or Design > Update PCB Document in Altium itself) "
+            "while this is running -- it only watches and presses, it "
+            "does not trigger anything."
+        ),
+    )
+    eco_p.add_argument(
+        "--confirm", action="store_true",
+        help="Required. Acknowledges this presses Execute Changes without "
+             "a human looking at the dialog first.",
+    )
+    eco_p.add_argument(
+        "--validate-only", action="store_true",
+        help="Press Validate Changes only; leave Execute Changes/Close "
+             "for a human to press after reviewing the preview.",
+    )
+    eco_p.add_argument(
+        "--allow-confirm-dialogs", action="store_true",
+        help="Also answer yes/no confirmation dialogs encountered along "
+             "the way (see app_drive_dialogs' allow_confirm).",
+    )
+    eco_p.add_argument(
+        "--wait-first", type=float, default=60.0,
+        help="Seconds to wait for the ECO dialog to appear (default 60).",
+    )
+    eco_p.add_argument(
+        "--budget", type=float, default=300.0,
+        help="Seconds before giving up on a wedged dialog sequence (default 300).",
+    )
+
     # dashboard -- local web UI for the MCP bridge
     dash_p = subparsers.add_parser(
         "dashboard",
@@ -974,6 +1015,15 @@ def main() -> int:
         else:
             print(format_report(checks, title=title))
         return overall_exit_code(checks)
+
+    if args.command == "eco-execute":
+        return cli.cmd_eco_execute(
+            confirm=args.confirm,
+            validate_only=args.validate_only,
+            allow_confirm_dialogs=args.allow_confirm_dialogs,
+            wait_first=args.wait_first,
+            budget=args.budget,
+        )
 
     parser.print_help(sys.stderr)
     return 2
