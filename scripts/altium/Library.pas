@@ -1618,8 +1618,8 @@ Begin
             Shape := GetBatchField(Op, 'shape');
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
-            PasteMaskExpansion := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
-            SolderMaskExpansion := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
+            PasteExpMils := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
+            SolderExpMils := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
 
             { Resolve the layer BEFORE creating anything. GetLayerFromString    }
             { answered eTopLayer for every name it did not know, so one         }
@@ -1668,12 +1668,12 @@ Begin
             If GetBatchField(Op, 'paste_mask_expansion') <> '' Then
             Begin
                 Cache.PasteMaskExpansionValid := eCacheManual;
-                Cache.PasteMaskExpansion := MilsToCoord(PasteMaskExpansion);
+                Cache.PasteMaskExpansion := MilsToCoord(PasteExpMils);
             End;
             If GetBatchField(Op, 'solder_mask_expansion') <> '' Then
             Begin
                 Cache.SolderMaskExpansionValid := eCacheManual;
-                Cache.SolderMaskExpansion := MilsToCoord(SolderMaskExpansion);
+                Cache.SolderMaskExpansion := MilsToCoord(SolderExpMils);
             End;
             Pad.SetState_Cache := Cache;
 

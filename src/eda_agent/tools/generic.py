@@ -1577,24 +1577,35 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_set_sheet_size(
-        style: str,
+        style: str = "",
         custom_width: int = 0,
         custom_height: int = 0,
+        orientation: str = "",
     ) -> dict[str, Any]:
-        """Set the sheet size / template style of the active schematic.
+        """Set the sheet size / template style / orientation of the active schematic.
 
         Changes SheetStyle on the current SchDoc. Use a named style
         (A-E, A0-A4, Letter, Legal, Tabloid) or "Custom" with explicit
-        width and height in mils.
+        width and height in mils. ``orientation`` ("landscape" or
+        "portrait") sets WorkspaceOrientation and may be given on its own,
+        with an empty ``style``, to rotate the sheet without touching its
+        size. The Pascal handler has accepted ``orientation`` for a while;
+        this wrapper simply did not pass it, so the only way to turn a
+        sheet was the Properties panel. At least one of ``style`` /
+        ``orientation`` is required.
 
         Args:
             style: Sheet size name, e.g. "A", "A3", "A4", "Letter", "Custom"
+                (empty to leave the size alone)
             custom_width: Custom sheet width in mils (only if style="Custom")
             custom_height: Custom sheet height in mils (only if style="Custom")
+            orientation: "landscape" | "portrait" | "" (leave unchanged)
 
         Returns:
-            Dictionary confirming the style change
+            Dictionary confirming the style / orientation change
         """
+        if not style and not orientation:
+            return {"success": False, "error": "style or orientation required"}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.set_sheet_size",
@@ -1602,6 +1613,7 @@ def register_generic_tools(mcp):
                 "style": style,
                 "custom_width": str(custom_width),
                 "custom_height": str(custom_height),
+                "orientation": orientation,
             },
         )
         return result

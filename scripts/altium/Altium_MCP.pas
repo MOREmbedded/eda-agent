@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.13.3';
+    SCRIPT_VERSION = '2026.10.13.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -11613,8 +11613,8 @@ Begin
             Shape := GetBatchField(Op, 'shape');
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
-            PasteMaskExpansion := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
-            SolderMaskExpansion := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
+            PasteExpMils := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
+            SolderExpMils := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
 
             { Resolve the layer BEFORE creating anything. GetLayerFromString    }
             { answered eTopLayer for every name it did not know, so one         }
@@ -11663,12 +11663,12 @@ Begin
             If GetBatchField(Op, 'paste_mask_expansion') <> '' Then
             Begin
                 Cache.PasteMaskExpansionValid := eCacheManual;
-                Cache.PasteMaskExpansion := MilsToCoord(PasteMaskExpansion);
+                Cache.PasteMaskExpansion := MilsToCoord(PasteExpMils);
             End;
             If GetBatchField(Op, 'solder_mask_expansion') <> '' Then
             Begin
                 Cache.SolderMaskExpansionValid := eCacheManual;
-                Cache.SolderMaskExpansion := MilsToCoord(SolderMaskExpansion);
+                Cache.SolderMaskExpansion := MilsToCoord(SolderExpMils);
             End;
             Pad.SetState_Cache := Cache;
 
