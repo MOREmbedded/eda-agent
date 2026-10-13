@@ -40,26 +40,34 @@ some package families and density levels unconfigured.
   result as timestamped CSV and HTML reports under a given directory.
 - `eng_validate_library_live` (Altium backend only): the live version of
   `eng_validate_library` - reads every component (`library.get_component_details`)
-  and footprint (`library.get_pad_geometry`) in a SchLib/PcbLib pair through
+  and footprint (`library.get_footprint_pads`) in a SchLib/PcbLib pair through
   the existing bridge commands, one round-trip each (capped by
   `max_components`/`max_footprints`; hitting the cap is reported in the
-  result, not silently dropped). **Known gap, left for a future phase**: no
-  bridge command currently returns a footprint's courtyard, silkscreen or
-  3D-body presence for a *library* footprint (only pad-only geometry is
-  available; `library.get_library_geometry`, used internally by
-  `lib_audit_footprint_policies`, computes a richer per-footprint record
-  but never returns it to the caller, and `library.get_footprint_pads`,
-  reachable only through `lib_export_kicad_footprint`, discards everything
-  but a pad count). So `eng_validate_library_live` passes
-  `has_full_footprint_geometry=False`, which skips the courtyard and
-  pin-1-marker checks entirely rather than reporting a false "no courtyard"
-  on every single footprint (see `libcheck.audit_footprint`'s
-  `has_full_geometry` parameter). Pad spacing, numbering, origin,
-  IPC-name consistency, symbol pin checks, footprint-link resolution,
-  pin-vs-pad counts, and (with a ruleset) parameter checks all run against
-  real geometry. **Unverified against live Altium** (no SchLib/PcbLib pair
-  was available while porting this) - verify against a known library pair
-  before relying on it.
+  result, not silently dropped).
+
+  Altium has no per-footprint "this is the courtyard/silkscreen layer" API
+  (board-level `LayerObject_V7.Kind` is the closest, but is unset in most
+  vendor libraries - see `Lib_GetFootprintPads`'s comment in
+  `scripts/altium/Library.pas`), so courtyard and silkscreen tracks are
+  isolated by **layer name**, which you supply: `overlay_layer` (default
+  `"TopOverlay"`, Altium's own default) for silkscreen, `courtyard_layer`
+  (default `""` - unknown) for the courtyard. Set `courtyard_layer` to your
+  library's actual courtyard layer (often a named Mechanical layer, e.g.
+  `"Mechanical13"`) to also get courtyard and pin-1-marker checks; left
+  blank, those two are skipped rather than reporting a false "no courtyard"
+  on every single footprint (`libcheck.audit_footprint`'s `has_full_geometry`
+  parameter). Pad spacing, numbering, origin, IPC-name consistency, symbol
+  pin checks, footprint-link resolution, pin-vs-pad counts, 3D-body presence,
+  and (with a ruleset) parameter checks always run against real geometry.
+
+  `Lib_GetFootprintPads` (Library.pas) was extended in Phase 3 of the
+  Booster integration to carry track coordinates and a 3D-body flag it
+  previously computed but never returned (SCRIPT_VERSION bumped
+  accordingly) - the courtyard/silkscreen gap flagged in Phase 2 is closed
+  by this, not a remaining limitation. **Still unverified against live
+  Altium** (no SchLib/PcbLib pair was available while porting this) -
+  verify against a known library pair, with a real `courtyard_layer`, before
+  relying on it.
 
 ## ECO preview
 
