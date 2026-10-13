@@ -139,6 +139,48 @@ async def _fetch_live_library(schlib_path: str, pcblib_path: str,
     return symbols, footprints, meta
 
 
+async def _fetch_live_sch_view(project_path: str | None, limit: int) -> tuple[dict, bool]:
+    from ..bridge import get_bridge
+    bridge = get_bridge()
+    params: dict[str, Any] = {"limit": str(limit)}
+    if project_path:
+        params["project_path"] = project_path
+    bom = await bridge.send_command_async("project.get_bom", params)
+    comps = bom.get("components") or []
+    sch = {
+        "components": {str(c["designator"]): str(c.get("footprint") or "") for c in comps},
+        "pins": {f"{c['designator']}.{p['pin']}": str(p.get("net") or "")
+                for c in comps for p in (c.get("pins") or [])},
+    }
+    return sch, bool(bom.get("truncated"))
+
+
+async def _fetch_live_pcb_view(pad_page_limit: int = 5000, max_pages: int = 20) -> dict:
+    from ..bridge import get_bridge
+    bridge = get_bridge()
+    comp_result = await bridge.send_command_async("pcb.get_components", {})
+    comps = comp_result.get("components") or []
+    pads: list[dict] = []
+    offset = 0
+    for _ in range(max_pages):
+        page = await bridge.send_command_async(
+            "pcb.get_pad_properties",
+            {"offset": str(offset), "limit": str(pad_page_limit)})
+        pads.extend(page.get("pads") or [])
+        if not page.get("truncated"):
+            break
+        offset = page.get("next_offset", offset + pad_page_limit)
+    else:
+        raise ValueError(
+            f"board has more than {max_pages * pad_page_limit} pads; "
+            "raise pad_page_limit or max_pages")
+    return {
+        "components": {str(c["designator"]): str(c.get("footprint") or "") for c in comps},
+        "pins": {f"{p['component']}.{p['name']}": str(p.get("net") or "")
+                for p in pads if p.get("component")},
+    }
+
+
 def _live_pads_to_um(raw: dict) -> dict:
     if not raw.get("success", True):
         raise ValueError(raw.get("error") or "Altium did not return footprint geometry")
@@ -473,5 +515,30 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                     symbols, footprints, naming=policy, ruleset=ruleset,
                     has_full_footprint_geometry=False)
                 return {"ok": True, **result, **meta}
+            except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+                return {"ok": False, "reason": str(exc)}
+
+        @mcp.tool()
+        async def eng_eco_preview_live(project_path: str = "", bom_limit: int = 5000) -> dict:
+            """Build eng_eco_preview's sch/pcb views from eda-agent's existing reads, then diff.
+
+            sch comes from one project.get_bom call (components, footprints
+            and pin-nets together); pcb comes from pcb.get_components plus a
+            paginated sweep of pcb.get_pad_properties. A BOM truncated at
+            bom_limit is refused rather than diffed against partial data -
+            raise bom_limit instead of trusting a partial result.
+
+            UNVERIFIED against live Altium; verify on a project with one
+            added/removed component and one footprint swap before relying
+            on it for anything that gates an actual ECO.
+            """
+            try:
+                sch, truncated = await _fetch_live_sch_view(project_path or None, bom_limit)
+                if truncated:
+                    return {"ok": False, "reason":
+                            f"BOM has more than {bom_limit} components; raise bom_limit "
+                            "rather than diff against a partial component list"}
+                pcb = await _fetch_live_pcb_view()
+                return _result(eco_preview.diff, sch, pcb)
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}
