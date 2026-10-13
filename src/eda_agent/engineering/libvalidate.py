@@ -113,7 +113,11 @@ def symbols_from_dump(rb_sym: list, rb_pin: list, rb_prm: list) -> dict:
     return syms
 
 
-def validate(symbols: dict, footprints: dict, naming=None, ruleset: dict | None = None) -> dict:
+def validate(symbols: dict, footprints: dict, naming=None, ruleset: dict | None = None,
+            has_full_footprint_geometry: bool = True) -> dict:
+    """has_full_footprint_geometry=False is for footprints assembled from pads-only
+    live geometry (see libcheck.audit_footprint): it skips courtyard and pin-1-marker
+    findings, which would otherwise be a guaranteed false positive on every footprint."""
     from .rules import evaluate
     rows = []
 
@@ -122,7 +126,7 @@ def validate(symbols: dict, footprints: dict, naming=None, ruleset: dict | None 
             rows.append({"item_type": kind, "item": name, **f})
 
     for name, fp in footprints.items():
-        add("footprint", name, audit_footprint(fp, naming=naming))
+        add("footprint", name, audit_footprint(fp, naming=naming, has_full_geometry=has_full_footprint_geometry))
         info = parse_ipc_name(name)
         if info:
             add("footprint", name, ipc_consistency(fp, info))

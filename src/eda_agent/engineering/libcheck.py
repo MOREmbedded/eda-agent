@@ -26,7 +26,15 @@ def _gap(a, b):
 
 
 def audit_footprint(fp: dict, *, min_pad_gap_um: int = 150, silk_clear_um: int = 100,
-                    naming=None, origin_tol_um: int = 50) -> list[dict]:
+                    naming=None, origin_tol_um: int = 50, has_full_geometry: bool = True) -> list[dict]:
+    """has_full_geometry=False skips the courtyard and pin-1-marker checks:
+    they fire unconditionally on an absent courtyard/silkscreen, which is
+    correct for footprints assembled with that data (courtyard/silkscreen
+    simply weren't drawn) but a guaranteed false positive on EVERY
+    footprint fed from a source that never reads courtyard/silkscreen at
+    all (pads-only live geometry), since absence-of-data and absence-of-
+    feature are indistinguishable there. Pad gap, numbering, origin and
+    naming checks are pads-only and stay on either way."""
     out = []
     pads = fp.get("pads", [])
     if not pads:
@@ -42,25 +50,26 @@ def audit_footprint(fp: dict, *, min_pad_gap_um: int = 150, silk_clear_um: int =
             g = _gap(pads[i], pads[j])
             if g < min_pad_gap_um:
                 out.append(_f("error", "pad_gap", f"gap {g:.0f} um < {min_pad_gap_um} um", f"{pads[i]['name']}-{pads[j]['name']}"))
-    c = fp.get("courtyard")
-    if not c:
-        out.append(_f("error", "courtyard", "no courtyard"))
-    else:
-        for p in pads:
-            if (p["x"] - p["w"] / 2 < c["x1"] or p["x"] + p["w"] / 2 > c["x2"] or
-                    p["y"] - p["h"] / 2 < c["y1"] or p["y"] + p["h"] / 2 > c["y2"]):
-                out.append(_f("error", "courtyard", "pad outside courtyard", p["name"]))
-    for s in fp.get("silkscreen", []):
-        for p in pads:
-            # distance from silk segment to pad rectangle (axis-aligned segments only)
-            if s["y1"] == s["y2"]:
-                y = s["y1"]
-                if min(s["x1"], s["x2"]) - silk_clear_um < p["x"] + p["w"] / 2 and \
-                        max(s["x1"], s["x2"]) + silk_clear_um > p["x"] - p["w"] / 2 and \
-                        abs(y - p["y"]) < p["h"] / 2 + silk_clear_um:
-                    out.append(_f("warning", "silk_clearance", "silkscreen closer than clearance to pad", p["name"]))
-    if not fp.get("pin1_marker") and len(pads) > 2:
-        out.append(_f("warning", "pin1_marker", "no pin 1 marker"))
+    if has_full_geometry:
+        c = fp.get("courtyard")
+        if not c:
+            out.append(_f("error", "courtyard", "no courtyard"))
+        else:
+            for p in pads:
+                if (p["x"] - p["w"] / 2 < c["x1"] or p["x"] + p["w"] / 2 > c["x2"] or
+                        p["y"] - p["h"] / 2 < c["y1"] or p["y"] + p["h"] / 2 > c["y2"]):
+                    out.append(_f("error", "courtyard", "pad outside courtyard", p["name"]))
+        for s in fp.get("silkscreen", []):
+            for p in pads:
+                # distance from silk segment to pad rectangle (axis-aligned segments only)
+                if s["y1"] == s["y2"]:
+                    y = s["y1"]
+                    if min(s["x1"], s["x2"]) - silk_clear_um < p["x"] + p["w"] / 2 and \
+                            max(s["x1"], s["x2"]) + silk_clear_um > p["x"] - p["w"] / 2 and \
+                            abs(y - p["y"]) < p["h"] / 2 + silk_clear_um:
+                        out.append(_f("warning", "silk_clearance", "silkscreen closer than clearance to pad", p["name"]))
+        if not fp.get("pin1_marker") and len(pads) > 2:
+            out.append(_f("warning", "pin1_marker", "no pin 1 marker"))
     sig = [p for p in pads if not p.get("thermal")]
     cx = (max(p["x"] for p in sig) + min(p["x"] for p in sig)) / 2
     cy = (max(p["y"] for p in sig) + min(p["y"] for p in sig)) / 2

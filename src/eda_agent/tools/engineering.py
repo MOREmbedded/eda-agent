@@ -86,6 +86,59 @@ def _write_library_validation_report(result: dict, out_dir: str, title: str) -> 
     return libvalidate.write_reports(result, Path(out_dir), title)
 
 
+def _symbol_from_live_details(details: dict) -> dict:
+    designator = details.get("designator")
+    footprints = [str(m["model_name"]) for m in (details.get("models") or [])
+                 if str(m.get("model_type", "")).upper() == "PCBLIB" and m.get("model_name")]
+    pins = [{"number": str(p.get("designator", "")), "name": str(p.get("name", "")),
+            "x": p.get("x", 0), "y": p.get("y", 0), "length": p.get("length", 0),
+            "hidden": bool(p.get("hidden"))}
+           for p in (details.get("pins") or [])]
+    return {"lib_ref": str(details.get("name", "")),
+           "designator": str((designator or {}).get("text", "")) if isinstance(designator, dict) else "",
+           "description": str(details.get("description", "")),
+           "pin_count": int(details.get("pin_count") or len(pins)),
+           "footprints": footprints, "pins": pins,
+           "parameters": details.get("parameters") or {}}
+
+
+async def _fetch_live_library(schlib_path: str, pcblib_path: str,
+                              max_components: int, max_footprints: int) -> tuple[dict, dict, dict]:
+    from ..bridge import get_bridge
+    bridge = get_bridge()
+    meta: dict[str, Any] = {"components_truncated": False, "footprints_truncated": False}
+
+    comp_list = await bridge.send_command_async(
+        "library.get_components", {"library_path": schlib_path})
+    names = [str(c["name"]) for c in (comp_list.get("components") or [])]
+    if len(names) > max_components:
+        meta["components_truncated"] = True
+        names = names[:max_components]
+    symbols = {}
+    for name in names:
+        details = await bridge.send_command_async(
+            "library.get_component_details",
+            {"component_name": name, "library_path": schlib_path})
+        sym = _symbol_from_live_details(details)
+        symbols[sym["lib_ref"] or name] = sym
+
+    fp_list = await bridge.send_command_async(
+        "library.get_footprints", {"library_path": pcblib_path})
+    fp_names = [str(f["name"]) for f in (fp_list.get("footprints") or [])]
+    if len(fp_names) > max_footprints:
+        meta["footprints_truncated"] = True
+        fp_names = fp_names[:max_footprints]
+    footprints = {}
+    for name in fp_names:
+        raw = await bridge.send_command_async(
+            "library.get_pad_geometry",
+            {"footprint_name": name, "library_path": pcblib_path})
+        fp = _live_pads_to_um(raw)
+        footprints[fp["name"] or name] = fp
+
+    return symbols, footprints, meta
+
+
 def _live_pads_to_um(raw: dict) -> dict:
     if not raw.get("success", True):
         raise ValueError(raw.get("error") or "Altium did not return footprint geometry")
@@ -383,5 +436,42 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                     "library.get_pad_geometry",
                     {"footprint_name": footprint_name, "library_path": library_path})
                 return _result(_compare_ipc, _live_pads_to_um(raw), spec, tolerance_um)
+            except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+                return {"ok": False, "reason": str(exc)}
+
+        @mcp.tool()
+        async def eng_validate_library_live(schlib_path: str, pcblib_path: str,
+                                            ruleset: dict | None = None, use_naming: bool = True,
+                                            max_components: int = 200,
+                                            max_footprints: int = 200) -> dict:
+            """Audit a live SchLib/PcbLib pair with eng_validate_library's checks.
+
+            Reads every component (library.get_component_details) and every
+            footprint (library.get_pad_geometry) through the existing
+            library bridge commands - one round-trip per component plus
+            one per footprint, so max_components/max_footprints cap the
+            work on a large library; hitting a cap is reported in the
+            result, not silently dropped.
+
+            UNVERIFIED against live Altium (no SchLib/PcbLib was available
+            to test against while porting this); verify against a known
+            library pair before relying on it.
+
+            Courtyard and pin-1-marker checks are skipped: pad geometry
+            alone has no courtyard/silkscreen, and reporting "no courtyard"
+            on every footprint would be a guaranteed false positive, not a
+            real finding (see libcheck.audit_footprint). Pad spacing,
+            numbering, origin, IPC-name consistency, symbol pin checks,
+            footprint-link resolution, pin-vs-pad counts, and (with a
+            ruleset) parameter checks all use real geometry.
+            """
+            try:
+                policy = naming.NamingPolicy() if use_naming else None
+                symbols, footprints, meta = await _fetch_live_library(
+                    schlib_path, pcblib_path, max_components, max_footprints)
+                result = libvalidate.validate(
+                    symbols, footprints, naming=policy, ruleset=ruleset,
+                    has_full_footprint_geometry=False)
+                return {"ok": True, **result, **meta}
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}
