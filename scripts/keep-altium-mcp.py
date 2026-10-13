@@ -44,6 +44,20 @@ def active_altium_command(workspace: Path) -> bool:
     return any(workspace.glob("progress_*.json"))
 
 
+def pending_script_launcher() -> bool:
+    """A URI launch still waiting in X2 must not be launched again."""
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            if (proc.info["name"] or "").lower() != "x2.exe":
+                continue
+            if any("dxpprocess://ScriptingSystem:RunScript" in arg
+                   for arg in (proc.info["cmdline"] or [])):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
 async def _check_mcp() -> None:
     url = f"http://{MCP_HOST}:{MCP_PORT}/mcp"
     async with streamable_http_client(url) as (read, write, _):
@@ -156,7 +170,9 @@ def main() -> None:
                     else:
                         failed_pings += 1
                         logging.warning("Altium script ping failed (%s)", failed_pings)
-                        if failed_pings >= 2 and time.monotonic() - last_script_launch > 120:
+                        if (failed_pings >= 2
+                                and time.monotonic() - last_script_launch > 120
+                                and not pending_script_launcher()):
                             subprocess.run(
                                 [
                                     "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
