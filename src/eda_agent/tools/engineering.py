@@ -11,7 +11,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from ..engineering import a365, design_intent, footprint, ipc7351, libcheck, libvalidate, ltspice, mapping, naming, pins, rules, symbol
+from ..engineering import a365, design_intent, eco_preview, footprint, ipc7351, libcheck, libvalidate, ltspice, mapping, naming, pins, rules, symbol
 from ..engineering.config import A365Policy, LTspicePolicy
 from ..engineering.errors import AltiumAIError
 
@@ -251,6 +251,25 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
     def eng_diff_design_intent(before: dict, after: dict) -> dict:
         """Report components and nets added, removed or changed in design intent."""
         return _result(design_intent.diff_intent, before, after)
+
+    @mcp.tool()
+    def eng_eco_preview(sch: dict, pcb: dict) -> dict:
+        """Compare a schematic view against a PCB view before running an ECO.
+
+        sch and pcb are both {"components": {designator: footprint},
+        "pins": {"designator.pin": net}}. Reports components to
+        add/remove, footprint changes, net changes per pin, stray
+        PCB-only connections, and whole nets to add/remove - the things
+        "Design > Update PCB Document" itself would act on.
+
+        This is a different, coarser check than eng's pad-level ECO
+        verification (core.eco_verify.verify_eco, used after an ECO runs
+        to catch pads an ECO silently left unbound): this one runs
+        BEFORE an ECO and sees component/footprint/net-level changes
+        verify_eco cannot. Building sch/pcb from a live schematic/PCB
+        read is Phase 2 work; see docs/ENGINEERING_TOOLS.md.
+        """
+        return _result(eco_preview.diff, sch, pcb)
 
     @mcp.tool()
     def eng_check_pin_pad_map(pins: list[dict], pads: list[dict],

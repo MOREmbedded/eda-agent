@@ -41,6 +41,21 @@ some package families and density levels unconfigured.
 - `eng_write_library_validation_report`: write an `eng_validate_library`
   result as timestamped CSV and HTML reports under a given directory.
 
+## ECO preview
+
+`eng_eco_preview` compares a schematic view against a PCB view - components
+to add/remove, footprint changes, per-pin net changes, PCB-only stray
+connections, and whole nets to add/remove - the things "Design > Update PCB
+Document" itself would act on. It is a coarser, pre-ECO check than
+`core.eco_verify.verify_eco` (used after an ECO runs, to catch pads an ECO
+silently left unbound - see its module docstring); the two are
+complementary, not redundant. Building the sch/pcb views from a live
+schematic/PCB read is Phase 2 work; for now, supply them directly as
+`{"components": {designator: footprint}, "pins": {"designator.pin": net}}`.
+Booster's ECO trigger and its UI-Automation dialog driver are out of scope
+(see BOOSTER_INTEGRATION_BRIEF.md) - this integration does not run or
+confirm an ECO, only previews what one would change.
+
 ## Rules and design intent
 
 `eng_validate_ruleset` and `eng_evaluate_rules` take the JSON ruleset and the

@@ -23,7 +23,7 @@ def _tools():
         "eng_parse_pin_table", "eng_generate_symbol",
         "eng_generate_datasheet_footprint", "eng_parse_rul",
         "eng_parse_ipc_footprint_name", "eng_validate_library",
-        "eng_write_library_validation_report",
+        "eng_write_library_validation_report", "eng_eco_preview",
     )}
 
 
@@ -187,6 +187,29 @@ def test_write_library_validation_report_produces_csv_and_html(tmp_path):
     html_text = Path(written["html"]).read_text(encoding="utf-8")
     assert "severity" in csv_text
     assert "Demo library" in html_text
+
+
+def test_eco_preview_reports_in_sync_boards_as_clean():
+    tools = _tools()
+    sch = {"components": {"R1": "RESC1608X55N"}, "pins": {"R1.1": "SIG", "R1.2": "GND"}}
+    pcb = {"components": {"R1": "RESC1608X55N"}, "pins": {"R1.1": "SIG", "R1.2": "GND"}}
+    result = tools["eng_eco_preview"](sch, pcb)
+    assert result["ok"] and result["in_sync"]
+    assert result["summary"]["components_to_add"] == 0
+
+
+def test_eco_preview_catches_component_footprint_and_net_changes():
+    tools = _tools()
+    sch = {"components": {"R1": "RESC1608X55N", "R2": "RESC1608X55N"},
+           "pins": {"R1.1": "SIG", "R1.2": "GND", "R2.1": "SIG", "R2.2": "GND"}}
+    pcb = {"components": {"R1": "RESC2012X55N", "R3": "RESC1608X55N"},
+          "pins": {"R1.1": "SIG", "R1.2": "VCC", "R3.1": "OLD"}}
+    result = tools["eng_eco_preview"](sch, pcb)
+    assert result["ok"] and not result["in_sync"]
+    assert result["components_to_add"] == ["R2"]
+    assert result["components_to_remove"] == ["R3"]
+    assert result["footprint_changes"] == ["R1"]
+    assert {"pin": "R1.2", "schematic": "GND", "pcb": "VCC"} in result["pin_net_changes"]
 
 
 def test_ltspice_hides_its_window_only_on_windows():
