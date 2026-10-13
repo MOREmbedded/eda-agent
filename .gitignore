@@ -13,6 +13,10 @@ pip-wheel-metadata/
 
 # Packaging / virtualenvs
 .venv/
+
+# Local IPC workspace + deployed scripts (install-scripts --dest), kept
+# inside the repo per-developer rather than the default %USERPROFILE% location.
+.eda-local/
 venv/
 env/
 ENV/
@@ -108,3 +112,4 @@ extensions/easyeda/dist/
 
 extensions/easyeda/verified.json
 extensions/easyeda/*.eext
+/.eda-local/*
