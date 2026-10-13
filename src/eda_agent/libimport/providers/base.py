@@ -103,7 +103,7 @@ class PartHit:
         return f"{self.provider}:{self.part_id}"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "ref": self.ref,
             "provider": self.provider,
             "part_id": self.part_id,
@@ -115,6 +115,11 @@ class PartHit:
             "provenance": self.provenance,
             "license": self.license,
         }
+        # Omitted when empty so a provider with nothing provider-specific
+        # to add (most of them) keeps the same output shape as before.
+        if self.extra:
+            out["extra"] = self.extra
+        return out
 
 
 @runtime_checkable

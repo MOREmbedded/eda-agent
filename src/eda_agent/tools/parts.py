@@ -65,6 +65,10 @@ def register_parts_tools(mcp):
         manufacturer land pattern with
         ``lib_audit_footprint_vs_datasheet`` before trusting it.
 
+        A hit may carry an `extra` dict with provider-specific data not
+        shared across sources (e.g. Nexar's stock, pricing, lifecycle
+        status and similar parts); absent when the provider has none.
+
         Args:
             query: substring matched against part name, manufacturer and
                 keywords. Empty lists the providers instead.

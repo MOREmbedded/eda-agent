@@ -198,20 +198,37 @@ class NexarProvider(DistributorProvider):
     _TOKEN_URL = "https://identity.nexar.com/connect/token"
     _API_URL = "https://api.nexar.com/graphql"
 
+    #: Pricing, stock and lifecycle fields per Nexar's published Supply
+    #: query examples (support.nexar.com); not yet exercised against the
+    #: live schema with a real credential (verified_live stays False), so
+    #: a renamed or absent field degrades that one hit's extra data
+    #: rather than failing the search (see _pricing_extra).
+    _PART_FIELDS = """
+      mpn
+      manufacturer { name }
+      shortDescription
+      bestDatasheet { url }
+      totalAvail
+      medianPrice1000 { quantity convertedPrice }
+      sellers(authorizedOnly: true) {
+        company { name }
+        offers { inventoryLevel prices { quantity price currency } }
+      }
+      specs { attribute { shortname name } displayValue }
+      similarParts { mpn manufacturer { name } }
+    """
+
     _QUERY = """
     query SearchMpn($q: String!, $limit: Int!) {
       supSearchMpn(q: $q, limit: $limit) {
         results {
           part {
-            mpn
-            manufacturer { name }
-            shortDescription
-            bestDatasheet { url }
+            %s
           }
         }
       }
     }
-    """
+    """ % _PART_FIELDS
 
     def _token(self) -> str:
         creds = self._credentials()
@@ -229,6 +246,46 @@ class NexarProvider(DistributorProvider):
             raise ProviderUnavailable(
                 f"{self.name} returned no access_token")
         return token
+
+    @staticmethod
+    def _pricing_extra(part: dict) -> dict[str, Any]:
+        """Pricing, stock, lifecycle and similar-part data for PartHit.extra.
+
+        Read defensively (every field optional, no raw indexing) for the
+        same reason first_string walks several paths: a renamed or
+        absent field here must shrink this one hit's extra data, not
+        raise and lose the hit.
+        """
+        specs = {}
+        for s in part.get("specs") or []:
+            attr = s.get("attribute") or {}
+            key = attr.get("shortname") or attr.get("name")
+            if key:
+                specs[key] = s.get("displayValue", "")
+        sellers = part.get("sellers") or []
+        best_price = None
+        for seller in sellers:
+            for offer in seller.get("offers") or []:
+                for price in offer.get("prices") or []:
+                    if price.get("quantity") == 1 and (
+                            best_price is None
+                            or price.get("price", float("inf")) < best_price["price"]):
+                        company = (seller.get("company") or {}).get("name")
+                        best_price = {"price": price.get("price"),
+                                      "currency": price.get("currency"),
+                                      "seller": company}
+        similar = [
+            f"{(x.get('manufacturer') or {}).get('name', '')} {x.get('mpn', '')}".strip()
+            for x in (part.get("similarParts") or [])[:5]
+        ]
+        return {
+            "total_available": part.get("totalAvail"),
+            "median_price_1000": part.get("medianPrice1000"),
+            "best_unit_price": best_price,
+            "lifecycle": specs.get("lifecyclestatus", ""),
+            "authorized_sellers": len(sellers),
+            "similar_parts": similar,
+        }
 
     def search(self, query: str, limit: int = 20) -> list[PartHit]:
         token = self._token()
@@ -254,6 +311,7 @@ class NexarProvider(DistributorProvider):
                 manufacturer=first_string(part, ("manufacturer", "name")),
                 description=first_string(part, ("shortDescription",)),
                 datasheet=first_string(part, ("bestDatasheet", "url")),
+                extra=self._pricing_extra(part),
             ))
         return hits
 

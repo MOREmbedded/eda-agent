@@ -343,6 +343,63 @@ def test_tme_signature_does_not_depend_on_parameter_order():
     assert a == b
 
 
+# ---- Nexar pricing/stock enrichment ------------------------------------
+
+def test_nexar_search_surfaces_pricing_stock_and_lifecycle(monkeypatch):
+    """NexarProvider's query carries pricing/stock/lifecycle per Nexar's
+    published Supply examples; this checks it reaches PartHit.extra and
+    PartHit.to_dict(), not just that the query string changed."""
+    monkeypatch.setenv("NEXAR_CLIENT_ID", "id")
+    monkeypatch.setenv("NEXAR_CLIENT_SECRET", "secret")
+    # One combined body answers both calls NexarProvider.search() makes:
+    # _token() reads "access_token" directly off the payload; search()
+    # reads "data" off the same payload. Each ignores the other's key.
+    _respond(monkeypatch, {
+        "access_token": "tok", "expires_in": 86400,
+        "data": {"supSearchMpn": {"results": [{"part": {
+            "mpn": "NE555P", "manufacturer": {"name": "TI"},
+            "shortDescription": "Timer IC", "bestDatasheet": {"url": "https://example.invalid/ne555.pdf"},
+            "totalAvail": 123456,
+            "medianPrice1000": {"quantity": 1000, "convertedPrice": 0.08},
+            "sellers": [{"company": {"name": "Mouser"}, "offers": [
+                {"inventoryLevel": 500, "prices": [{"quantity": 1, "price": 0.5, "currency": "USD"}]}]}],
+            "specs": [{"attribute": {"shortname": "lifecyclestatus"}, "displayValue": "Active"}],
+            "similarParts": [{"mpn": "NE555D", "manufacturer": {"name": "TI"}}],
+        }}]}},
+    })
+
+    hits = NexarProvider().search("NE555")
+    assert [h.mpn for h in hits] == ["NE555P"]
+    extra = hits[0].extra
+    assert extra["total_available"] == 123456
+    assert extra["median_price_1000"] == {"quantity": 1000, "convertedPrice": 0.08}
+    assert extra["best_unit_price"] == {"price": 0.5, "currency": "USD", "seller": "Mouser"}
+    assert extra["lifecycle"] == "Active"
+    assert extra["authorized_sellers"] == 1
+    assert extra["similar_parts"] == ["TI NE555D"]
+    assert hits[0].to_dict()["extra"] == extra
+
+
+def test_nexar_pricing_extra_degrades_rather_than_raises_on_missing_fields():
+    """A bare-minimum part payload (no sellers/specs/similarParts) must
+    still produce a hit with empty-but-present extra fields."""
+    extra = NexarProvider._pricing_extra({"mpn": "X", "manufacturer": {"name": "Y"}})
+    assert extra == {
+        "total_available": None, "median_price_1000": None,
+        "best_unit_price": None, "lifecycle": "", "authorized_sellers": 0,
+        "similar_parts": [],
+    }
+
+
+def test_a_hit_with_no_extra_data_keeps_to_dict_unchanged(monkeypatch):
+    """Providers that never set extra must not suddenly carry an empty key."""
+    monkeypatch.setenv("MOUSER_API_KEY", "k")
+    _respond(monkeypatch, {"SearchResults": {"Parts": [
+        {"ManufacturerPartNumber": "NE555P", "Manufacturer": "TI"}]}})
+    hit = MouserProvider().search("NE555")[0]
+    assert "extra" not in hit.to_dict()
+
+
 # ---- fetch ------------------------------------------------------------
 
 def test_fetch_says_plainly_that_there_is_nothing_to_place(monkeypatch):
