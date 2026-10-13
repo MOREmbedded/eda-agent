@@ -78,6 +78,20 @@ def _registered_tools() -> set[str]:
                     fn(_Mcp())
                 except Exception:  # noqa: BLE001 - a backend may decline
                     pass
+                # A register_* function may gate some tools behind a
+                # keyword flag (e.g. engineering.py's altium=True, which
+                # adds eng_compare_live_ipc_footprint). Call again with
+                # every such flag set so a flagged-off tool is still seen
+                # by this walk; otherwise a real catalog entry for it
+                # reads as "not registered" the moment the (generated,
+                # always-current) TOOL_REFERENCE.md lists it.
+                flags = {p.name: True for p in inspect.signature(fn).parameters.values()
+                         if p.kind == inspect.Parameter.KEYWORD_ONLY and p.default is False}
+                if flags:
+                    try:
+                        fn(_Mcp(), **flags)
+                    except Exception:  # noqa: BLE001 - a backend may decline
+                        pass
     return captured
 
 

@@ -27,6 +27,20 @@ to a policy directory, edit them to match your company standard, and set
 `EDA_AGENT_IPC_DIR` to that directory. The bundled goals intentionally leave
 some package families and density levels unconfigured.
 
+- `eng_parse_ipc_footprint_name`: parse an IPC-7351B footprint name back into
+  its implied pin count, pitch and row span, for cross-checking against the
+  footprint's actual geometry.
+- `eng_validate_library`: audit a whole SchLib/PcbLib pair at once -
+  per-footprint and per-symbol checks, IPC-name consistency, footprint-link
+  resolution, symbol pin vs. footprint pad counts, and (with a ruleset)
+  required-parameter checks. Takes already-assembled `symbols`/`footprints`
+  dicts; eda-agent has no bulk library-dump bridge command yet, so building
+  those dicts from a live library is Phase 2/3 work - for now, assemble them
+  from `eng_calculate_ipc`/`eng_generate_datasheet_footprint` output or from
+  the existing granular library-read tools.
+- `eng_write_library_validation_report`: write an `eng_validate_library`
+  result as timestamped CSV and HTML reports under a given directory.
+
 ## Rules and design intent
 
 `eng_validate_ruleset` and `eng_evaluate_rules` take the JSON ruleset and the

@@ -11,7 +11,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from ..engineering import a365, design_intent, footprint, ipc7351, libcheck, ltspice, mapping, naming, pins, rules, symbol
+from ..engineering import a365, design_intent, footprint, ipc7351, libcheck, libvalidate, ltspice, mapping, naming, pins, rules, symbol
 from ..engineering.config import A365Policy, LTspicePolicy
 from ..engineering.errors import AltiumAIError
 
@@ -74,6 +74,16 @@ def _validate_ruleset(ruleset: dict) -> dict:
 def _evaluate_rules(ruleset: dict, data: dict) -> dict:
     rules.validate_ruleset(ruleset)
     return rules.evaluate(ruleset, data)
+
+
+def _validate_library(symbols: dict, footprints: dict, ruleset: dict | None,
+                      use_naming: bool) -> dict:
+    policy = naming.NamingPolicy() if use_naming else None
+    return libvalidate.validate(symbols, footprints, naming=policy, ruleset=ruleset)
+
+
+def _write_library_validation_report(result: dict, out_dir: str, title: str) -> dict:
+    return libvalidate.write_reports(result, Path(out_dir), title)
 
 
 def _live_pads_to_um(raw: dict) -> dict:
@@ -190,6 +200,42 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
     def eng_evaluate_rules(ruleset: dict, data: dict) -> dict:
         """Evaluate owner rules against supplied components, nets and PCB data."""
         return _result(_evaluate_rules, ruleset, data)
+
+    @mcp.tool()
+    def eng_parse_ipc_footprint_name(name: str) -> dict:
+        """Parse an IPC-7351B footprint name back into package dimensions.
+
+        Returns the kind/pitch/span/pins/density implied by the name, or
+        ok: false if the name does not follow a recognised IPC convention.
+        """
+        parsed = libvalidate.parse_ipc_name(name)
+        if parsed is None:
+            return {"ok": False, "reason": f"{name!r} does not match a known IPC-7351B naming convention"}
+        return {"ok": True, **parsed}
+
+    @mcp.tool()
+    def eng_validate_library(symbols: dict, footprints: dict,
+                             ruleset: dict | None = None, use_naming: bool = True) -> dict:
+        """Audit a whole SchLib/PcbLib pair: checks, IPC-name consistency, footprint links, pin/pad counts.
+
+        Runs per-footprint and per-symbol checks, IPC-name consistency,
+        footprint-link resolution, symbol pin vs. footprint pad counts, and
+        (with a ruleset) required-parameter checks.
+
+        symbols is lib_ref -> {designator, description, pin_count, footprints,
+        pins, parameters}; footprints is name -> {description, pads, ...} as
+        produced by footprint.py or by reading an existing PcbLib footprint.
+        Phase 1: pass in already-assembled dicts. Reading a whole library
+        live from Altium into this shape is Phase 2 work (no bulk library
+        dump bridge command exists yet; see docs/ENGINEERING_TOOLS.md).
+        """
+        return _result(_validate_library, symbols, footprints, ruleset, use_naming)
+
+    @mcp.tool()
+    def eng_write_library_validation_report(result: dict, out_dir: str,
+                                            title: str = "Library validation") -> dict:
+        """Write a library validation result (from eng_validate_library) as CSV and HTML reports."""
+        return _result(_write_library_validation_report, result, out_dir, title)
 
     @mcp.tool()
     def eng_parse_rul(export_text: str) -> dict:

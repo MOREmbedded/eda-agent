@@ -22,6 +22,8 @@ def _tools():
         "eng_check_pin_pad_map", "eng_compare_live_ipc_footprint",
         "eng_parse_pin_table", "eng_generate_symbol",
         "eng_generate_datasheet_footprint", "eng_parse_rul",
+        "eng_parse_ipc_footprint_name", "eng_validate_library",
+        "eng_write_library_validation_report",
     )}
 
 
@@ -123,6 +125,68 @@ def test_pin_table_to_symbol_and_datasheet_footprint():
 def test_rul_export_parser_preserves_fields():
     result = _tools()["eng_parse_rul"]("NAME=Clearance|KIND=Electrical|VALUE=0.2mm\n")
     assert result["records"] == [{"NAME": "Clearance", "KIND": "Electrical", "VALUE": "0.2mm"}]
+
+
+def test_ipc_footprint_name_parses_back_to_package_dimensions():
+    tools = _tools()
+    parsed = tools["eng_parse_ipc_footprint_name"]("SOIC127P600X175-8N")
+    assert parsed["ok"] and parsed["pins"] == 8 and parsed["pitch"] == 1.27
+    chip = tools["eng_parse_ipc_footprint_name"]("RESC1608X55N")
+    assert chip["ok"] and chip["body_l"] == 1.6
+    unknown = tools["eng_parse_ipc_footprint_name"]("MY_FOOTPRINT")
+    assert not unknown["ok"]
+
+
+def _soic8_footprint():
+    result = _tools()["eng_calculate_ipc"](SOIC8)
+    return {
+        "name": result["ipc_name"],
+        "pads": [
+            {"name": p["name"], **{key: round(p[key] * 1000)
+                                   for key in ("x", "y", "w", "h")}}
+            for p in result["pads"]
+        ],
+        "courtyard": {k: round(v * 1000) for k, v in result["courtyard"].items()},
+        "pin1_marker": {"x": 0},
+    }
+
+
+def test_validate_library_passes_a_consistent_schlib_pcblib_pair():
+    tools = _tools()
+    fp = _soic8_footprint()
+    symbols = {"AMP_8": {"lib_ref": "AMP_8", "designator": "U", "description": "", "pin_count": 8,
+                         "footprints": [fp["name"]], "pins": [
+                             {"number": str(i), "name": str(i), "x": 0, "y": i * 100, "length": 200, "hidden": False}
+                             for i in range(1, 9)], "parameters": {}}}
+    result = tools["eng_validate_library"](symbols, {fp["name"]: fp})
+    assert result["ok"] and result["passed"]
+    assert result["counts"]["error"] == 0
+
+
+def test_validate_library_reports_missing_footprint_link_and_ipc_mismatch():
+    tools = _tools()
+    fp = _soic8_footprint()
+    fp["pads"] = fp["pads"][:-1]  # drop a pad: now disagrees with the IPC name's pin count
+    symbols = {"ORPHAN": {"lib_ref": "ORPHAN", "designator": "U", "description": "", "pin_count": 2,
+                          "footprints": [], "pins": [], "parameters": {}}}
+    result = tools["eng_validate_library"](symbols, {fp["name"]: fp})
+    assert result["ok"] and not result["passed"]
+    checks = {f["check"] for f in result["findings"]}
+    assert "footprint_link" in checks
+    assert "ipc_pins" in checks
+
+
+def test_write_library_validation_report_produces_csv_and_html(tmp_path):
+    tools = _tools()
+    fp = _soic8_footprint()
+    result = tools["eng_validate_library"]({}, {fp["name"]: fp})
+    written = tools["eng_write_library_validation_report"](result, str(tmp_path), "Demo library")
+    assert written["ok"]
+    from pathlib import Path
+    csv_text = Path(written["csv"]).read_text(encoding="utf-8")
+    html_text = Path(written["html"]).read_text(encoding="utf-8")
+    assert "severity" in csv_text
+    assert "Demo library" in html_text
 
 
 def test_ltspice_hides_its_window_only_on_windows():
