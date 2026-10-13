@@ -4895,8 +4895,8 @@ Begin
 
         If StyleStr = '' Then
         Begin
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
+            MarkDocDirtyByPath(SchDoc.DocumentName);
             Result := BuildSuccessResponse(RequestId,
                 '{"success":true,"orientation":"' + EscapeJsonString(OrientStr) + '"}');
             Exit;
@@ -4917,21 +4917,22 @@ Begin
         Else If StyleStr = 'TABLOID' Then SchDoc.SheetStyle := eSheetTabloid
         Else If StyleStr = 'CUSTOM' Then
         Begin
-            SchDoc.SheetStyle := eSheetCustom;
+            SchDoc.UseCustomSheet := True;
             If CustomW > 0 Then SchDoc.CustomX := MilsToCoord(CustomW);
             If CustomH > 0 Then SchDoc.CustomY := MilsToCoord(CustomH);
         End
         Else
         Begin
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
             Result := BuildErrorResponse(RequestId, 'INVALID_STYLE',
                 'Unknown sheet style: ' + StyleStr);
             Exit;
         End;
+        If StyleStr <> 'CUSTOM' Then SchDoc.UseCustomSheet := False;
     Finally
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     End;
     SchDoc.GraphicallyInvalidate;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"style":"' + EscapeJsonString(StyleStr) + '"}');
@@ -6614,7 +6615,9 @@ Begin
 
         // Sheet size
         Try
-            Case SchDoc.SheetStyle Of
+            If SchDoc.UseCustomSheet Then
+                SheetStyle := 'Custom'
+            Else Case SchDoc.SheetStyle Of
                 0 : SheetStyle := 'A4';
                 1 : SheetStyle := 'A3';
                 2 : SheetStyle := 'A2';

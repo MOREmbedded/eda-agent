@@ -171,6 +171,11 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "SchDoc.UseMetricUnit  →  SchDoc.UnitSystem = eMetric",
     ),
     (
+        re.compile(r"\beSheetCustom\b"),
+        "TSheetStyle has no custom member; set ISch_Document.UseCustomSheet",
+        "SchDoc.SheetStyle := eSheetCustom  →  SchDoc.UseCustomSheet := True",
+    ),
+    (
         re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberName\s*\["),
         "IPCB_ObjectClass has no per-member enumeration surface",
         "ObjClass.MemberCount / ObjClass.MemberName[I]  →  iterate nets and group",

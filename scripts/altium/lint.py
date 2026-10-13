@@ -300,6 +300,7 @@ RULE_PROBE_TEXT_WRITE = LineRule(
 # after a five-minute Altium restart cycle. Map: wrong name -> what to use
 # instead. Extend whenever the script engine surfaces another bogus name.
 KNOWN_WRONG_E_IDENTS = {
+    "eSheetCustom": "TSheetStyle has no custom member; set ISch_Document.UseCustomSheet := True",
     # eSchDoc was typed in a SchDoc/SchLib type-guard. There is no
     # eSchDoc constant; SchServer.GetCurrentSchDocument only ever returns
     # a SchDoc or SchLib (or Nil), so the second arm of the check is
