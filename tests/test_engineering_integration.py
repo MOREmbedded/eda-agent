@@ -24,6 +24,7 @@ def _tools():
         "eng_generate_datasheet_footprint", "eng_parse_rul",
         "eng_parse_ipc_footprint_name", "eng_validate_library",
         "eng_write_library_validation_report", "eng_eco_preview",
+        "eng_validate_library_live", "eng_eco_preview_live",
     )}
 
 

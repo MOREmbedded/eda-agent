@@ -34,12 +34,32 @@ some package families and density levels unconfigured.
   per-footprint and per-symbol checks, IPC-name consistency, footprint-link
   resolution, symbol pin vs. footprint pad counts, and (with a ruleset)
   required-parameter checks. Takes already-assembled `symbols`/`footprints`
-  dicts; eda-agent has no bulk library-dump bridge command yet, so building
-  those dicts from a live library is Phase 2/3 work - for now, assemble them
-  from `eng_calculate_ipc`/`eng_generate_datasheet_footprint` output or from
-  the existing granular library-read tools.
+  dicts; assemble them from `eng_calculate_ipc`/`eng_generate_datasheet_footprint`
+  output, or use `eng_validate_library_live` below to read them from Altium.
 - `eng_write_library_validation_report`: write an `eng_validate_library`
   result as timestamped CSV and HTML reports under a given directory.
+- `eng_validate_library_live` (Altium backend only): the live version of
+  `eng_validate_library` - reads every component (`library.get_component_details`)
+  and footprint (`library.get_pad_geometry`) in a SchLib/PcbLib pair through
+  the existing bridge commands, one round-trip each (capped by
+  `max_components`/`max_footprints`; hitting the cap is reported in the
+  result, not silently dropped). **Known gap, left for a future phase**: no
+  bridge command currently returns a footprint's courtyard, silkscreen or
+  3D-body presence for a *library* footprint (only pad-only geometry is
+  available; `library.get_library_geometry`, used internally by
+  `lib_audit_footprint_policies`, computes a richer per-footprint record
+  but never returns it to the caller, and `library.get_footprint_pads`,
+  reachable only through `lib_export_kicad_footprint`, discards everything
+  but a pad count). So `eng_validate_library_live` passes
+  `has_full_footprint_geometry=False`, which skips the courtyard and
+  pin-1-marker checks entirely rather than reporting a false "no courtyard"
+  on every single footprint (see `libcheck.audit_footprint`'s
+  `has_full_geometry` parameter). Pad spacing, numbering, origin,
+  IPC-name consistency, symbol pin checks, footprint-link resolution,
+  pin-vs-pad counts, and (with a ruleset) parameter checks all run against
+  real geometry. **Unverified against live Altium** (no SchLib/PcbLib pair
+  was available while porting this) - verify against a known library pair
+  before relying on it.
 
 ## ECO preview
 
@@ -52,9 +72,53 @@ silently left unbound - see its module docstring); the two are
 complementary, not redundant. Building the sch/pcb views from a live
 schematic/PCB read is Phase 2 work; for now, supply them directly as
 `{"components": {designator: footprint}, "pins": {"designator.pin": net}}`.
-Booster's ECO trigger and its UI-Automation dialog driver are out of scope
-(see BOOSTER_INTEGRATION_BRIEF.md) - this integration does not run or
-confirm an ECO, only previews what one would change.
+`eng_eco_preview` and `eng_eco_preview_live` only preview; they never run or
+confirm an ECO. For actually triggering and completing one, see "ECO update"
+below.
+
+`eng_eco_preview_live` (Altium backend only) builds the sch/pcb views from
+eda-agent's existing reads and runs the diff: the schematic side comes from
+one `project.get_bom` call (components, footprints and pin-nets together);
+the PCB side comes from `pcb.get_components` plus a paginated sweep of
+`pcb.get_pad_properties`. A BOM truncated at `bom_limit` is refused rather
+than diffed against a partial component list - raise `bom_limit` instead of
+trusting a partial result. **Unverified against live Altium** - verify on a
+project with one added/removed component and one footprint swap before
+relying on it for anything that gates an actual ECO.
+
+## ECO update (experimental)
+
+Triggering an ECO is unchanged: `proj_sync_pcb` fires "Design > Update PCB
+Document" and waits (bounded by `wait_seconds`) for a human to answer the
+Engineering Change Order dialog, verifying pad-net completeness afterward
+(see its own docstring). That dialog is non-suppressible by Altium's own
+design - it will always open - but **pressing its buttons can be
+automated**, through the reactive UI Automation driver eda-agent already
+has (`app_drive_dialogs` / `ui.dialog_driver.drive`, the same mechanism
+`app_update_from_libraries` already uses end-to-end against a live ECO
+dialog). This is what Altium Booster 3.2's `EcoDialogDriver` does; eda-agent
+reuses its own existing driver rather than porting a second one.
+
+Two ways to use it, both gated behind an explicit opt-in (never a silent
+default) and both **unverified against a live Altium session** (none was
+available while building this - verify with Booster's own E-01/E-02
+procedures, in its manual, before trusting either on a real design):
+
+- `app_drive_dialogs(intent="proceed", allow_commit=True, dry_run=False, ...)` -
+  the existing MCP tool, usable from any MCP client. `allow_commit=True` is
+  the opt-in; `dry_run=False` is required to actually press anything.
+- `eda-agent eco-execute --confirm` - a CLI-only wrapper around the same
+  driver, for running it deliberately from a terminal rather than through
+  the casual MCP tool surface. `--validate-only` presses Validate Changes
+  and stops there, leaving Execute Changes/Close for a human; `--wait-first`
+  and `--budget` bound how long it waits. It does not trigger the ECO
+  itself - start it, then trigger one separately (`proj_sync_pcb`, or
+  Design > Update PCB Document in Altium) while it runs.
+
+Neither path adds a second bridge or a second polling loop: both read the
+ECO dialog over the same Win32 UI layer `app_list_open_dialogs` already
+uses, and press buttons the same way `app_update_from_libraries` already
+does.
 
 ## Rules and design intent
 

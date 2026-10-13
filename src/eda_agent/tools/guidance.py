@@ -325,9 +325,17 @@ _NOT_POSSIBLE: tuple[dict[str, Any], ...] = (
     {
         "capability": "Apply an ECO without a human click",
         "backends": ("altium",),
-        "why": ("The Engineering Change Order dialog is non-suppressible by "
-                "design. It can be launched, not completed."),
-        "do_instead": [],
+        "why": ("The Engineering Change Order dialog itself is "
+                "non-suppressible by design and still opens. Its buttons "
+                "CAN be pressed without a literal human click, through the "
+                "same reactive UI Automation driver app_drive_dialogs "
+                "already uses against a live ECO dialog -- gated behind "
+                "allow_commit=True, an explicit opt-in rather than a "
+                "silent default. A CLI-only variant, eco-execute "
+                "(--confirm required; see docs/ENGINEERING_TOOLS.md), runs "
+                "it from a terminal instead of the MCP tool surface. "
+                "Unverified against a live Altium session either way."),
+        "do_instead": ["app_drive_dialogs"],
     },
     {
         "capability": "Use hierarchical sheets in a schematic",
