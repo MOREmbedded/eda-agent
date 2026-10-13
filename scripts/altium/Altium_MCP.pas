@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.11.1';
+    SCRIPT_VERSION = '2026.10.13.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -43017,7 +43017,7 @@ Begin
               eWire query used to stop DelphiScript here with "property does
               not exist".  Narrow to interfaces that actually expose Width. }
             If Obj.ObjectId = ePort Then
-            Begin Port := Obj; Result := IntToStr(CoordToMils(Port.Width)); End
+            Begin PortObj := Obj; Result := IntToStr(CoordToMils(PortObj.Width)); End
             Else Result := '';
         End
         Else If PropName = 'PinLength'   Then Result := IntToStr(CoordToMils(Obj.PinLength))
@@ -43365,7 +43365,7 @@ Begin
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
         Else If PropName = 'AutoSize' Then
         Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.AutoSize := StrToBool(Value); End
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.AutoSize := StrToBool(Value); End
             Else Matched := False;
         End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
@@ -43401,8 +43401,8 @@ Begin
         // Coord properties (expected in mils)
         Else If PropName = 'Width' Then
         Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.Width := MilsToCoord(StrToIntDef(Value, 0)); End
-            Else Obj.Width := MilsToCoord(StrToIntDef(Value, 0));
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.Width := MilsToCoord(StrToIntDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoord(StrToIntDef(Value, 0))

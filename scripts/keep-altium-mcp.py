@@ -125,6 +125,7 @@ def main() -> None:
         bridge = get_bridge()
         failed_pings = 0
         failed_mcp_checks = 0
+        last_blocking_dialog = ""
         last_script_launch = 0.0
         last_mcp_restart = 0.0
         while True:
@@ -167,11 +168,18 @@ def main() -> None:
                 if bridge.is_altium_running() and not active_altium_command(workspace):
                     if bridge.ping():
                         failed_pings = 0
+                        last_blocking_dialog = ""
                     else:
                         failed_pings += 1
                         logging.warning("Altium script ping failed (%s)", failed_pings)
+                        dialog = bridge._dialog_probe()
+                        dialog_summary = dialog.get("summary", "") if dialog else ""
+                        if dialog_summary and dialog_summary != last_blocking_dialog:
+                            logging.error("Altium is blocked by a dialog: %s", dialog_summary)
+                        last_blocking_dialog = dialog_summary
                         if (failed_pings >= 2
                                 and time.monotonic() - last_script_launch > 120
+                                and not dialog
                                 and not pending_script_launcher()):
                             subprocess.run(
                                 [

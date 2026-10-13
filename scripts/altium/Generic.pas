@@ -701,7 +701,7 @@ Begin
               eWire query used to stop DelphiScript here with "property does
               not exist".  Narrow to interfaces that actually expose Width. }
             If Obj.ObjectId = ePort Then
-            Begin Port := Obj; Result := IntToStr(CoordToMils(Port.Width)); End
+            Begin PortObj := Obj; Result := IntToStr(CoordToMils(PortObj.Width)); End
             Else Result := '';
         End
         Else If PropName = 'PinLength'   Then Result := IntToStr(CoordToMils(Obj.PinLength))
@@ -1049,7 +1049,7 @@ Begin
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
         Else If PropName = 'AutoSize' Then
         Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.AutoSize := StrToBool(Value); End
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.AutoSize := StrToBool(Value); End
             Else Matched := False;
         End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
@@ -1085,8 +1085,8 @@ Begin
         // Coord properties (expected in mils)
         Else If PropName = 'Width' Then
         Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.Width := MilsToCoord(StrToIntDef(Value, 0)); End
-            Else Obj.Width := MilsToCoord(StrToIntDef(Value, 0));
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.Width := MilsToCoord(StrToIntDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoord(StrToIntDef(Value, 0))
