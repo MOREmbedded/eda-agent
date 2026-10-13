@@ -14,6 +14,7 @@ from typing import Any
 from ..engineering import a365, design_intent, eco_preview, footprint, ipc7351, libcheck, libvalidate, ltspice, mapping, naming, pins, rules, symbol
 from ..engineering.config import A365Policy, LTspicePolicy
 from ..engineering.errors import AltiumAIError
+from ..units import MM_PER_MIL
 
 
 def _result(fn, *args, **kwargs) -> dict[str, Any]:
@@ -102,8 +103,52 @@ def _symbol_from_live_details(details: dict) -> dict:
            "parameters": details.get("parameters") or {}}
 
 
+def _mils_to_um(value: float) -> int:
+    return round(value * MM_PER_MIL * 1000)
+
+
+def _live_footprint_geometry(raw: dict, overlay_layer: str, courtyard_layer: str) -> dict:
+    """Adapt library.get_footprint_pads' response (mils) into libvalidate's
+    micrometre shape, isolating silkscreen/courtyard tracks by the layer
+    names the caller supplies (Altium has no per-footprint "this is the
+    courtyard layer" API; see scripts/altium/Library.pas:Lib_GetFootprintPads).
+    courtyard is present only when courtyard_layer matched at least one
+    track, so audit_footprint's has_full_geometry stays an honest signal
+    rather than a bbox computed from zero tracks."""
+    name = str(raw.get("name", ""))
+    pads = [
+        {"name": str(p["name"]),
+         "x": _mils_to_um(p["x"]), "y": _mils_to_um(p["y"]),
+         "w": _mils_to_um(p["size_x"]), "h": _mils_to_um(p["size_y"])}
+        for p in (raw.get("pads") or [])
+    ]
+    silkscreen: list[dict] = []
+    court_tracks: list[dict] = []
+    for prim in (raw.get("primitives") or []):
+        if prim.get("kind") != "track" or "x1" not in prim:
+            continue
+        layer = str(prim.get("layer", ""))
+        seg = {"layer": layer,
+              "x1": _mils_to_um(prim["x1"]), "y1": _mils_to_um(prim["y1"]),
+              "x2": _mils_to_um(prim["x2"]), "y2": _mils_to_um(prim["y2"])}
+        if overlay_layer and layer == overlay_layer:
+            silkscreen.append(seg)
+        if courtyard_layer and layer == courtyard_layer:
+            court_tracks.append(seg)
+    footprint: dict[str, Any] = {"name": name, "pads": pads, "silkscreen": silkscreen,
+                                 "has_3d": bool(raw.get("has_3d"))}
+    if court_tracks:
+        xs = [v for t in court_tracks for v in (t["x1"], t["x2"])]
+        ys = [v for t in court_tracks for v in (t["y1"], t["y2"])]
+        footprint["courtyard"] = {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
+    if pads:
+        footprint["pin1_marker"] = {"present_if_silk": bool(silkscreen)} if silkscreen else None
+    return footprint
+
+
 async def _fetch_live_library(schlib_path: str, pcblib_path: str,
-                              max_components: int, max_footprints: int) -> tuple[dict, dict, dict]:
+                              max_components: int, max_footprints: int,
+                              overlay_layer: str = "", courtyard_layer: str = "") -> tuple[dict, dict, dict]:
     from ..bridge import get_bridge
     bridge = get_bridge()
     meta: dict[str, Any] = {"components_truncated": False, "footprints_truncated": False}
@@ -131,9 +176,9 @@ async def _fetch_live_library(schlib_path: str, pcblib_path: str,
     footprints = {}
     for name in fp_names:
         raw = await bridge.send_command_async(
-            "library.get_pad_geometry",
+            "library.get_footprint_pads",
             {"footprint_name": name, "library_path": pcblib_path})
-        fp = _live_pads_to_um(raw)
+        fp = _live_footprint_geometry(raw, overlay_layer, courtyard_layer)
         footprints[fp["name"] or name] = fp
 
     return symbols, footprints, meta
@@ -485,11 +530,13 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
         async def eng_validate_library_live(schlib_path: str, pcblib_path: str,
                                             ruleset: dict | None = None, use_naming: bool = True,
                                             max_components: int = 200,
-                                            max_footprints: int = 200) -> dict:
+                                            max_footprints: int = 200,
+                                            overlay_layer: str = "TopOverlay",
+                                            courtyard_layer: str = "") -> dict:
             """Audit a live SchLib/PcbLib pair with eng_validate_library's checks.
 
             Reads every component (library.get_component_details) and every
-            footprint (library.get_pad_geometry) through the existing
+            footprint (library.get_footprint_pads) through the existing
             library bridge commands - one round-trip per component plus
             one per footprint, so max_components/max_footprints cap the
             work on a large library; hitting a cap is reported in the
@@ -499,21 +546,30 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
             to test against while porting this); verify against a known
             library pair before relying on it.
 
-            Courtyard and pin-1-marker checks are skipped: pad geometry
-            alone has no courtyard/silkscreen, and reporting "no courtyard"
-            on every footprint would be a guaranteed false positive, not a
-            real finding (see libcheck.audit_footprint). Pad spacing,
-            numbering, origin, IPC-name consistency, symbol pin checks,
-            footprint-link resolution, pin-vs-pad counts, and (with a
-            ruleset) parameter checks all use real geometry.
+            Altium has no per-footprint "this is the courtyard/silkscreen
+            layer" API (board-level LayerObject_V7.Kind is the closest, but
+            is unset in most vendor libraries), so this isolates those
+            tracks by LAYER NAME, which you supply: overlay_layer (default
+            "TopOverlay", Altium's own default) for silkscreen, and
+            courtyard_layer (default "" - unknown) for the courtyard. Set
+            courtyard_layer to your library's actual courtyard layer (often
+            a named Mechanical layer, e.g. "Mechanical13") to also get
+            courtyard and pin-1-marker checks; left blank, those two checks
+            are skipped rather than reporting a false "no courtyard" on
+            every single footprint (see libcheck.audit_footprint's
+            has_full_geometry). Pad spacing, numbering, origin, IPC-name
+            consistency, symbol pin checks, footprint-link resolution,
+            pin-vs-pad counts, and (with a ruleset) parameter checks always
+            use real geometry regardless.
             """
             try:
                 policy = naming.NamingPolicy() if use_naming else None
                 symbols, footprints, meta = await _fetch_live_library(
-                    schlib_path, pcblib_path, max_components, max_footprints)
+                    schlib_path, pcblib_path, max_components, max_footprints,
+                    overlay_layer, courtyard_layer)
                 result = libvalidate.validate(
                     symbols, footprints, naming=policy, ruleset=ruleset,
-                    has_full_footprint_geometry=False)
+                    has_full_footprint_geometry=bool(courtyard_layer))
                 return {"ok": True, **result, **meta}
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}

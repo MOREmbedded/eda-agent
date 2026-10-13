@@ -2262,9 +2262,10 @@ Begin
 End;
 
 { Lib_GetFootprintPads - Read the pad geometry of one footprint in the active }
-{ (or named) PcbLib, for export (e.g. KiCad .kicad_mod). Coordinates are in   }
-{ mils relative to the library origin (the footprint reference point), which  }
-{ is the same frame Lib_AddFootprintPad writes in.                            }
+{ (or named) PcbLib, for export (e.g. KiCad .kicad_mod) and for library       }
+{ validation (eng_validate_library_live). Coordinates are in mils relative to }
+{ the library origin (the footprint reference point), which is the same      }
+{ frame Lib_AddFootprintPad writes in.                                        }
 {                                                                              }
 { Params:                                                                      }
 {   footprint_name - optional; defaults to the library's current component.   }
@@ -2272,14 +2273,18 @@ End;
 {                                                                              }
 { Response: name, pad_count, and a pads array; each pad carries name, x, y,   }
 {   size_x, size_y, shape, layer, hole, rotation -- dimensions in mils, angles }
-{   in degrees.                                                                }
+{   in degrees. Also a primitives array (kind: track/arc/region/fill, layer,  }
+{   and -- tracks only -- x1/y1/x2/y2 in the same mils/footprint-origin frame }
+{   as pads, so a caller can isolate silkscreen/courtyard outline tracks by   }
+{   layer name without a second round-trip); bodies (3D body count) and       }
+{   has_3d (bodies > 0) for an audit that needs only presence, not the count. }
 Function Lib_GetFootprintPads(Params : String; RequestId : String) : String;
 Var
     SeenPads : TStringList;
     PadAddr : String;
     LibPath, FocusedPath, FpWanted, FpName : String;
     ShapeStr, LayerStr, PadsJson, RespJson : String;
-    PrimsJson, KindStr : String;
+    PrimsJson, KindStr, CoordsJson : String;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -2288,6 +2293,7 @@ Var
     GrpIter : IPCB_GroupIterator;
     Pad : IPCB_Pad;
     Prim : IPCB_Primitive;
+    Track : IPCB_Track;
     XOrg, YOrg : TCoord;
     Count, PCount, BodyCount : Integer;
 Begin
@@ -2437,7 +2443,19 @@ Begin
       component bodies. Layer names come from GetLayerString, so the policy
       auditor sees 'TopOverlay', 'Mechanical13', etc. Only ObjectId / Layer
       are touched here -- both live on IPCB_Primitive -- so no interface
-      narrowing is needed. }
+      narrowing is needed for arc/region/fill.
+
+      TRACKS also carry x1/y1/x2/y2, in mils relative to the footprint's
+      own origin (same frame as the pads above), so a caller can tell
+      silkscreen/courtyard outline tracks from pad positions without a
+      second round-trip. Cast to IPCB_Track only for eTrackObject, the one
+      kind this caller (libvalidate.py's courtyard bbox and axis-aligned
+      silkscreen-clearance check) needs coordinates for; arcs/regions/fills
+      stay kind+layer only, same as before. Which layer means "courtyard"
+      or "silkscreen" is not this library's to decide -- Altium has no
+      per-footprint API for that (board-level LayerObject_V7.Kind is the
+      closest, but it is unset in most vendor libraries) -- so the caller
+      matches layer names itself, same as it already does for PCB reads. }
     PrimsJson := '[';
     PCount := 0;
     BodyCount := 0;
@@ -2458,10 +2476,25 @@ Begin
                 Else If Prim.ObjectId = eFillObject Then KindStr := 'fill';
                 LayerStr := '';
                 Try LayerStr := GetLayerString(Prim.Layer); Except End;
+                CoordsJson := '';
+                If KindStr = 'track' Then
+                Begin
+                    Try
+                        Track := Prim;
+                        CoordsJson :=
+                            ',"x1":' + IntToStr(CoordToMils(Track.X1 - XOrg)) +
+                            ',"y1":' + IntToStr(CoordToMils(Track.Y1 - YOrg)) +
+                            ',"x2":' + IntToStr(CoordToMils(Track.X2 - XOrg)) +
+                            ',"y2":' + IntToStr(CoordToMils(Track.Y2 - YOrg));
+                    Except
+                        CoordsJson := '';
+                    End;
+                End;
                 If PCount > 0 Then PrimsJson := PrimsJson + ',';
                 PrimsJson := PrimsJson +
                     '{"kind":"' + KindStr + '"' +
-                    ',"layer":"' + EscapeJsonString(LayerStr) + '"}';
+                    ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
+                    CoordsJson + '}';
                 Inc(PCount);
             End;
             Prim := GrpIter.NextPCBObject;
@@ -2476,7 +2509,8 @@ Begin
         ',"pad_count":' + IntToStr(Count) +
         ',"pads":' + PadsJson +
         ',"primitives":' + PrimsJson +
-        ',"bodies":' + IntToStr(BodyCount) + '}';
+        ',"bodies":' + IntToStr(BodyCount) +
+        ',"has_3d":' + BoolToJsonStr(BodyCount > 0) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 

@@ -1,7 +1,7 @@
 """eng_validate_library_live: the live version of eng_validate_library,
 tested against synthetic payloads shaped exactly like the documented
 bridge responses (library.get_components, library.get_component_details,
-library.get_footprints, library.get_pad_geometry).
+library.get_footprints, library.get_footprint_pads).
 
 UNVERIFIED against live Altium (no SchLib/PcbLib pair was available
 while porting this) - this is the same status ltspice.py's output
@@ -58,12 +58,17 @@ _SYMBOL_DETAILS = {
     "models": [{"model_name": "TESTFP", "model_type": "PCBLIB",
                "is_current": True, "datafile_links": []}],
 }
-_FOOTPRINT_PADS = {
+# library.get_footprint_pads' response shape: pads/primitives in mils (ints).
+_FOOTPRINT_GEOMETRY = {
     "name": "TESTFP", "pad_count": 2,
     "pads": [
-        {"name": "1", "x_mm": -1.0, "y_mm": 0.0, "w_mm": 0.3, "h_mm": 0.3},
-        {"name": "2", "x_mm": 1.0, "y_mm": 0.0, "w_mm": 0.3, "h_mm": 0.3},
+        {"name": "1", "x": -40, "y": 0, "size_x": 12, "size_y": 12,
+         "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0},
+        {"name": "2", "x": 40, "y": 0, "size_x": 12, "size_y": 12,
+         "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0},
     ],
+    "primitives": [],
+    "bodies": 1, "has_3d": True,
 }
 
 
@@ -72,7 +77,7 @@ def _library_responses(**overrides):
         "library.get_components": {"count": 1, "components": [{"index": 0, "name": "AMP2"}]},
         "library.get_component_details": _SYMBOL_DETAILS,
         "library.get_footprints": {"count": 1, "footprints": [{"name": "TESTFP", "description": ""}]},
-        "library.get_pad_geometry": _FOOTPRINT_PADS,
+        "library.get_footprint_pads": _FOOTPRINT_GEOMETRY,
     }
     base.update(overrides)
     return base
@@ -93,18 +98,18 @@ async def test_validate_library_live_builds_symbols_and_footprints_from_the_brid
     # one enumeration call each side, one detail call per component/footprint
     commands = [c for c, _ in bridge.calls]
     assert commands.count("library.get_component_details") == 1
-    assert commands.count("library.get_pad_geometry") == 1
+    assert commands.count("library.get_footprint_pads") == 1
 
 
 @pytest.mark.asyncio
-async def test_validate_library_live_skips_courtyard_and_pin1_marker_checks(
+async def test_validate_library_live_skips_courtyard_and_pin1_marker_checks_by_default(
         monkeypatch, tmp_path):
     """The real regression guard: pad-only live geometry has no courtyard
     or silkscreen, so those checks must not fire as false positives on
     every footprint. A footprint with >2 pads and no courtyard would
     normally get BOTH a courtyard error and a pin-1-marker warning
     (confirmed directly against libcheck.audit_footprint below); the live
-    path must report neither."""
+    path must report neither when courtyard_layer is not supplied."""
     from eda_agent.engineering.libcheck import audit_footprint
 
     fp_no_geometry = {"name": "X", "pads": [
@@ -120,17 +125,50 @@ async def test_validate_library_live_skips_courtyard_and_pin1_marker_checks(
     checks2 = {f["check"] for f in without_full}
     assert "courtyard" not in checks2 and "pin1_marker" not in checks2
 
-    responses = _library_responses(
-        **{"library.get_pad_geometry": {
-            "name": "TESTFP", "pad_count": 3,
-            "pads": [{"name": "1", "x_mm": -1.0, "y_mm": 0, "w_mm": 0.3, "h_mm": 0.3},
-                    {"name": "2", "x_mm": 0.0, "y_mm": 0, "w_mm": 0.3, "h_mm": 0.3},
-                    {"name": "3", "x_mm": 1.0, "y_mm": 0, "w_mm": 0.3, "h_mm": 0.3}]}})
+    responses = _library_responses(**{"library.get_footprint_pads": {
+        "name": "TESTFP", "pad_count": 3,
+        "pads": [{"name": "1", "x": -40, "y": 0, "size_x": 12, "size_y": 12,
+                  "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0},
+                 {"name": "2", "x": 0, "y": 0, "size_x": 12, "size_y": 12,
+                  "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0},
+                 {"name": "3", "x": 40, "y": 0, "size_x": 12, "size_y": 12,
+                  "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0}],
+        "primitives": [], "bodies": 0, "has_3d": False}})
     bridge = _CannedBridge(responses)
     _install(monkeypatch, tmp_path, bridge)
     result = await _tool("eng_validate_library_live")("fake.SchLib", "fake.PcbLib")
     checks3 = {f["check"] for f in result["findings"]}
     assert "courtyard" not in checks3 and "pin1_marker" not in checks3
+
+
+@pytest.mark.asyncio
+async def test_validate_library_live_runs_courtyard_checks_once_the_layer_is_named(
+        monkeypatch, tmp_path):
+    """Opting in with courtyard_layer must actually isolate the courtyard
+    tracks from the primitives array and run the full check, not just flip
+    the flag with nothing behind it."""
+    responses = _library_responses(**{"library.get_footprint_pads": {
+        "name": "TESTFP", "pad_count": 2,
+        "pads": [{"name": "1", "x": -40, "y": 0, "size_x": 12, "size_y": 12,
+                  "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0},
+                 {"name": "2", "x": 40, "y": 0, "size_x": 12, "size_y": 12,
+                  "shape": "round", "layer": "top", "hole": 0, "rotation": 0.0}],
+        "primitives": [
+            # courtyard box far too small: pads sit outside it on purpose
+            {"kind": "track", "layer": "Mechanical13", "x1": -20, "y1": -20, "x2": 20, "y2": -20},
+            {"kind": "track", "layer": "Mechanical13", "x1": 20, "y1": -20, "x2": 20, "y2": 20},
+            {"kind": "track", "layer": "Mechanical13", "x1": 20, "y1": 20, "x2": -20, "y2": 20},
+            {"kind": "track", "layer": "Mechanical13", "x1": -20, "y1": 20, "x2": -20, "y2": -20},
+        ],
+        "bodies": 1, "has_3d": True}})
+    bridge = _CannedBridge(responses)
+    _install(monkeypatch, tmp_path, bridge)
+
+    result = await _tool("eng_validate_library_live")(
+        "fake.SchLib", "fake.PcbLib", courtyard_layer="Mechanical13")
+    assert result["ok"]
+    checks = {f["check"] for f in result["findings"]}
+    assert "courtyard" in checks, "a pad outside the supplied courtyard must be caught"
 
 
 @pytest.mark.asyncio
