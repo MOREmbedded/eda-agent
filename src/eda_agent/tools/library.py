@@ -346,6 +346,27 @@ def _with_units(params: dict[str, Any], units: str) -> dict[str, Any]:
     return params
 
 
+def corner_pct_from_radius(radius: float, x_size: float, y_size: float) -> int:
+    """Altium's roundrect percentage for an absolute corner radius.
+
+    Altium has no setter for the absolute radius: it stores a percentage
+    (0..100) of half the pad's shortest side, so a pad resized later keeps
+    the percentage and its radius changes with it."""
+    half = min(float(x_size), float(y_size)) / 2.0
+    if half <= 0:
+        return 0
+    return max(0, min(100, round(100.0 * float(radius) / half)))
+
+
+def _pad_corner_pct(p: dict[str, Any], units: str) -> int:
+    """A pad dict's corner percentage; corner_radius_length wins when given."""
+    if p.get("corner_radius_length") is not None:
+        return corner_pct_from_radius(
+            p["corner_radius_length"], p.get("x_size", length_in(units, 60)),
+            p.get("y_size", length_in(units, 60)))
+    return round(p.get("corner_radius", 25))
+
+
 def _pads_payload(pads: list[dict[str, Any]],
                   units: str = "mil") -> tuple[str, int]:
     """Build the ``pads`` batch payload, and count what was dropped.
@@ -381,7 +402,7 @@ def _pads_payload(pads: list[dict[str, Any]],
             f"y_size={format_length(p.get('y_size', length_in(units, 60)))}",
             f"hole_size={format_length(p.get('hole_size', 0))}",
             f"shape={_payload_safe(p.get('shape', 'rectangular'))}",
-            f"corner_radius={round(p.get('corner_radius', 25))}",
+            f"corner_radius={_pad_corner_pct(p, units)}",
             f"rotation={_payload_safe(p.get('rotation', 0))}",
             f"layer={_payload_safe(p.get('layer', 'TopLayer'))}",
         ]
@@ -1979,6 +2000,7 @@ def register_library_tools(mcp):
         corner_radius: int = 25,
         footprint_name: str = "",
         units: str = "mil",
+        corner_radius_length: Optional[float] = None,
     ) -> dict[str, Any]:
         """Add a pad to a footprint: the named one, or the current one.
 
@@ -1999,6 +2021,10 @@ def register_library_tools(mcp):
             rotation: Pad rotation in degrees
             corner_radius: Corner radius percentage for shape="roundrect"
                 (Altium stores RR radius as a %; 25 is typical).
+            corner_radius_length: the corner radius as a length in
+                ``units`` instead, converted to that percentage of half
+                the shortest side. Altium keeps only the percentage, so
+                resizing the pad later changes the radius.
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot, since otherwise
@@ -2015,6 +2041,8 @@ def register_library_tools(mcp):
         if refusal:
             return refusal
         bridge = get_bridge()
+        params_x = length_in(units, 60) if x_size is None else x_size
+        params_y = length_in(units, 60) if y_size is None else y_size
         params: dict[str, Any] = {
             "designator": designator,
             "x": format_length(x),
@@ -2027,7 +2055,10 @@ def register_library_tools(mcp):
             "shape": shape,
             "layer": layer,
             "rotation": rotation,
-            "corner_radius": corner_radius,
+            "corner_radius": _pad_corner_pct(
+                {"corner_radius": corner_radius,
+                 "corner_radius_length": corner_radius_length,
+                 "x_size": params_x, "y_size": params_y}, units),
         }
         if footprint_name:
             params["footprint_name"] = footprint_name
@@ -2062,6 +2093,8 @@ def register_library_tools(mcp):
                   round / rectangular / octagonal / roundrect (modern IPC
                   rounded-rectangle SMD). Oval = round with x_size!=y_size.
                 - corner_radius (int %, default 25) for shape="roundrect"
+                - corner_radius_length (a length in ``units``, converted to
+                  that percentage; resizing the pad later changes it)
                 - rotation   (float deg, default 0)
                 - layer      (str, default "TopLayer"). Only used for SMD
                   pads (hole_size=0); a drilled pad is forced through-hole
@@ -2253,6 +2286,9 @@ def register_library_tools(mcp):
                 three or more points each, relative to the footprint
                 origin. The layer is REQUIRED: there is no default,
                 because a solid shape defaulted onto copper is a short.
+                The outline is straight segments between the points: a
+                script-built contour holds no true arc, so send a curve
+                as short segments.
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.

@@ -426,3 +426,18 @@ def test_an_empty_selection_is_refused(e2e_bridge):
     with pytest.raises(AltiumCommandError) as excinfo:
         _exclude(e2e_bridge, [])
     assert excinfo.value.code == "MISSING_PARAM"
+
+
+def test_corner_radius_length_becomes_the_percentage():
+    from eda_agent.tools.library import _pads_payload, corner_pct_from_radius
+
+    # 0.3 x 0.8 mm pad, 0.05 mm radius: 0.05 / 0.15 is 33 %.
+    assert corner_pct_from_radius(0.05, 0.3, 0.8) == 33
+    assert corner_pct_from_radius(1.0, 0.3, 0.8) == 100      # clamped
+    payload, _ = _pads_payload([
+        {"designator": "1", "x_size": 0.3, "y_size": 0.8, "shape": "roundrect",
+         "corner_radius_length": 0.05},
+        {"designator": "2", "shape": "roundrect", "corner_radius": 40},
+    ], "mm")
+    first, second = payload.split("~~")
+    assert "corner_radius=33" in first and "corner_radius=40" in second

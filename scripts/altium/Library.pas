@@ -1387,6 +1387,29 @@ Begin
     End;
 End;
 
+{ A rounded-rectangle pad. A through-hole pad sits on MultiLayer, which the
+  per-layer setters ignore: it came out round with corner_pct 0. Its shape
+  and percentage go on the top, middle and bottom layers instead. Altium
+  stores the radius only as a percentage of half the shortest side. }
+Procedure SetPadRoundRect(Pad : IPCB_Pad; Pct : Integer);
+Begin
+    If Pad.Layer = eMultiLayer Then
+    Begin
+        Pad.TopShape := eRoundedRectangular;
+        Pad.SetState_StackShapeOnLayer(eTopLayer, eRoundedRectangular);
+        Pad.SetState_StackCRPctOnLayer(eTopLayer, Pct);
+        Pad.SetState_StackShapeOnLayer(eMidLayers, eRoundedRectangular);
+        Pad.SetState_StackCRPctOnLayer(eMidLayers, Pct);
+        Pad.SetState_StackShapeOnLayer(eBottomLayer, eRoundedRectangular);
+        Pad.SetState_StackCRPctOnLayer(eBottomLayer, Pct);
+    End
+    Else
+    Begin
+        Pad.SetState_StackShapeOnLayer(Pad.Layer, eRoundedRectangular);
+        Pad.SetState_StackCRPctOnLayer(Pad.Layer, Pct);
+    End;
+End;
+
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr : String;
@@ -1467,8 +1490,7 @@ Begin
         Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
         Else If (Shape = 'roundrect') Or (Shape = 'rounded_rectangular') Then
         Begin
-            Pad.SetState_StackShapeOnLayer(Pad.Layer, eRoundedRectangular);
-            Pad.SetState_StackCRPctOnLayer(Pad.Layer, CornerRadius);
+            SetPadRoundRect(Pad, CornerRadius);
         End
         Else Pad.TopShape := eRounded;
 
@@ -1625,8 +1647,7 @@ Begin
             Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
             Else If (Shape = 'roundrect') Or (Shape = 'rounded_rectangular') Then
             Begin
-                Pad.SetState_StackShapeOnLayer(Pad.Layer, eRoundedRectangular);
-                Pad.SetState_StackCRPctOnLayer(Pad.Layer, CornerRadius);
+                SetPadRoundRect(Pad, CornerRadius);
             End
             Else Pad.TopShape := eRounded;
 
