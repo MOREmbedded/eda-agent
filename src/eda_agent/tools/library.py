@@ -856,6 +856,81 @@ async def _search_named_dblib(bridge, library_path: str, query: str,
     return out
 
 
+def _standard_symbol_warnings(components: list[dict]) -> list[dict]:
+    """Amplifiers whose body is a rectangle with no triangle (polygon)."""
+    from eda_agent.design.symbol_gen import classify_amplifier_pins
+
+    out = []
+    for comp in components:
+        body = comp.get("body") or {}
+        if not body or body.get("polygons", 0) or not body.get("rectangles", 0):
+            continue
+        groups = classify_amplifier_pins(comp.get("pins") or [])
+        if groups is None:
+            continue
+        out.append({
+            "name": comp.get("name"),
+            "description": comp.get("description", ""),
+            "units": len(groups["units"]),
+            "reason": "the pins form an amplifier (IN+, IN-, OUT) but the "
+                      "body is a rectangle; the standard symbol is a "
+                      "triangle",
+        })
+    return out
+
+
+async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
+                                 description: str) -> dict[str, Any]:
+    """Create a triangle amplifier symbol from AmplifierSymbol geometry.
+
+    Per part: the body (triangle or block) FIRST, then the pins, then the
+    +/- marks, because Altium draws in insertion order and a solid body
+    added later paints over the pins (see lib_create_ic_symbol)."""
+    bridge = get_bridge()
+    created = await bridge.send_command_async(
+        "library.create_symbol",
+        {"name": name, "designator_prefix": prefix,
+         "description": description, "part_count": str(amp.part_count)},
+    )
+    steps: list[dict[str, Any]] = []
+    total_pins = 0
+    for part in amp.parts:
+        res: dict[str, Any] = {"part": part["part"]}
+        for poly in part["polygons"]:
+            verts = ",".join(str(v) for pt in poly["points"] for v in pt)
+            res["triangle"] = await bridge.send_command_async(
+                "library.add_symbol_polygon",
+                {"vertices": verts, "fill_color": poly["fill_color"],
+                 "owner_part_id": poly["owner_part_id"]})
+        for r in part["rectangles"]:
+            res["block"] = await bridge.send_command_async(
+                "library.add_symbol_rectangle",
+                {"x1": r["x1"], "y1": r["y1"], "x2": r["x2"], "y2": r["y2"],
+                 "fill_color": r["fill_color"], "border_color": 0,
+                 "owner_part_id": r["owner_part_id"]})
+        payload, _ = _pins_payload(part["pins"])
+        res["pins"] = await bridge.send_command_async(
+            "library.add_pins", {"pins": payload})
+        total_pins += len(part["pins"])
+        if part["texts"]:
+            ops = [";".join([f"text={t['text']}", f"x={t['x']}",
+                             f"y={t['y']}", f"font_size={t['font_size']}",
+                             f"owner_part_id={t['owner_part_id']}"])
+                   for t in part["texts"]]
+            res["marks"] = await bridge.send_command_async(
+                "library.add_symbol_text", {"texts": "~~".join(ops)})
+        steps.append(res)
+    return {"symbol": name, "body": "amplifier", "parts": amp.part_count,
+            "pins": total_pins, "create": created, "steps": steps}
+
+
+#: Every key lib_set_label_formats encodes into an op.
+_LABEL_OP_KEYS = frozenset({
+    "target", "font_id", "color", "is_hidden", "orientation",
+    "justification", "x", "y", "text",
+})
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -905,8 +980,21 @@ def register_library_tools(mcp):
         right_pins: list[dict[str, Any]],
         designator_prefix: str = "U",
         description: str = "",
+        body: str = "auto",
+        invert_on_top: bool = False,
     ) -> dict[str, Any]:
         """Create a COMPLETE, discipline-compliant IC symbol in ONE call.
+
+        STANDARD SYMBOLS FIRST. An op-amp, comparator, current-sense or
+        instrumentation amplifier gets the TRIANGLE, not a rectangle:
+        inputs on the left with + and - beside them, the output at the
+        apex, supplies on the top and bottom edges. With ``body="auto"``
+        (the default) the triangle is chosen whenever the pin names form
+        IN+/IN-/OUT units (+INA/-INA/OUTA and IN1+/IN1-/OUT1 count), and a
+        dual or quad becomes one triangle per part plus a power part.
+        ``body="rectangle"`` or ``"amplifier"`` forces the choice. Before
+        drawing one, consider copying an existing standard-symbol part from
+        the user's own library with lib_copy_component and renaming pins.
 
         You decide the functional grouping (inputs/power/control on the
         LEFT, outputs/status on the RIGHT -- discipline rule 18); this
@@ -921,14 +1009,40 @@ def register_library_tools(mcp):
                 with `designator`, `name`, and optional `electrical_type`
                 (input/output/power/passive/...).
             right_pins: Pins on the RIGHT side, top-to-bottom, same shape.
+                For an amplifier the sides are ignored: the triangle puts
+                every pin where the convention does.
             designator_prefix: e.g. "U".
             description: Component description.
+            body: "auto" (triangle for amplifiers, else rectangle),
+                "amplifier" or "rectangle".
+            invert_on_top: triangle only; put IN- above IN+.
 
         Returns:
-            Dict with the symbol name, pin count, body extent, and the
-            per-step bridge results.
+            Dict with the symbol name, pin count, ``body`` drawn, body
+            extent, and the per-step bridge results.
         """
-        from eda_agent.design.symbol_gen import generate_ic_symbol
+        from eda_agent.design.symbol_gen import (
+            generate_amplifier_symbol, generate_ic_symbol,
+            looks_like_amplifier)
+
+        wanted = (body or "auto").strip().lower()
+        if wanted not in ("auto", "amplifier", "rectangle"):
+            return {"ok": False, "reason":
+                    "body must be 'auto', 'amplifier' or 'rectangle'"}
+        all_pins = [*left_pins, *right_pins]
+        if wanted == "amplifier" or (
+                wanted == "auto" and looks_like_amplifier(all_pins,
+                                                          description)):
+            try:
+                amp = generate_amplifier_symbol(all_pins,
+                                                invert_on_top=invert_on_top)
+            except ValueError as e:
+                if wanted == "amplifier":
+                    return {"ok": False, "reason": str(e)}
+                amp = None
+            if amp is not None:
+                return await _emit_amplifier_symbol(
+                    name, amp, designator_prefix, description)
 
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
@@ -993,31 +1107,49 @@ def register_library_tools(mcp):
         kind: str,
         designator_prefix: str = "",
         description: str = "",
+        pin_map: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
-        """Create a standard 2-pin PASSIVE symbol in ONE call.
+        """Create a standard DISCRETE symbol (the conventional glyph) in ONE call.
 
-        Draws the recognizable glyph for a resistor / capacitor /
-        polarized_capacitor / inductor / diode / led / crystal / fuse,
-        with pin 1 on the left and pin 2 on the right. Composes
-        `lib_create_symbol` + `lib_add_pins` + the
-        glyph primitives (emitted as raw mils, so the LED's emission
-        arrows and the crystal's resonator keep their sub-100-mil detail).
+        Use this, not a rectangle, for any discrete part. Draws resistor,
+        capacitor, polarized_capacitor, inductor (arcs), diode, led,
+        crystal, fuse, zener, schottky, tvs, tvs_bidirectional, switch,
+        push_button, and the three-pin nmos, pmos, npn and pnp. Two-pin
+        parts have pin 1 on the left and pin 2 on the right; a transistor
+        has its gate/base on the left and the other two leaving the top
+        and bottom. Glyph detail is emitted in raw mils, so it keeps its
+        sub-100-mil shape while every pin stays on the 100-mil grid.
 
         Args:
             name: Component name (e.g. "R_0402").
-            kind: "resistor" | "capacitor" | "polarized_capacitor" |
-                "inductor" | "diode" | "led" | "crystal" | "fuse"
-                (aliases r/c/cap_pol/electrolytic/cp/l/d/xtal/f accepted).
-            designator_prefix: default by kind (R/C/L/D/Y/F) if omitted.
+            kind: one of the kinds above (aliases such as r/c/cp/l/d/xtal/
+                f/z/sd/tvs_bi/sw/button/nfet/pfet/bjt_npn are accepted).
+            designator_prefix: default by kind (R/C/L/D/Y/F/S/Q) if omitted.
             description: Component description.
+            pin_map: transistors only, role -> pin number, e.g.
+                {"G": "1", "S": "2", "D": "3"}. Defaults are the common
+                SOT-23 assignment (MOSFET 1=G 2=S 3=D, BJT 1=B 2=E 3=C);
+                check the datasheet.
 
         Returns:
             Dict with the symbol name and per-step bridge results.
         """
-        from eda_agent.design.symbol_gen import generate_passive_symbol
+        from eda_agent.design.symbol_gen import (
+            TRANSISTOR_DEFAULT_PINS, generate_passive_symbol,
+            generate_transistor_symbol)
 
         try:
-            geom = generate_passive_symbol(kind)
+            if kind.strip().lower() in ("nmos", "pmos", "npn", "pnp",
+                                        "nfet", "pfet", "n_mosfet",
+                                        "p_mosfet", "mosfet_n", "mosfet_p",
+                                        "bjt_npn", "bjt_pnp"):
+                geom = generate_transistor_symbol(kind, pin_map)
+            elif pin_map:
+                return {"ok": False, "reason":
+                        "pin_map applies to transistors only "
+                        f"({sorted(TRANSISTOR_DEFAULT_PINS)})"}
+            else:
+                geom = generate_passive_symbol(kind)
         except ValueError as e:
             return {"ok": False, "reason": str(e)}
         prefix = designator_prefix or {
@@ -1030,6 +1162,14 @@ def register_library_tools(mcp):
             "led": "D", "diode_led": "D",
             "crystal": "Y", "xtal": "Y", "y": "Y",
             "fuse": "F", "f": "F",
+            "zener": "D", "z": "D", "schottky": "D", "sd": "D",
+            "tvs": "D", "tvs_uni": "D", "tvs_bidirectional": "D",
+            "tvs_bi": "D", "bidirectional_tvs": "D",
+            "switch": "S", "spst": "S", "sw": "S", "push_button": "S",
+            "pushbutton": "S", "button": "S", "tactile": "S",
+            "nmos": "Q", "pmos": "Q", "npn": "Q", "pnp": "Q", "nfet": "Q",
+            "pfet": "Q", "n_mosfet": "Q", "p_mosfet": "Q", "mosfet_n": "Q",
+            "mosfet_p": "Q", "bjt_npn": "Q", "bjt_pnp": "Q",
         }.get(kind.strip().lower(), "U")
 
         bridge = get_bridge()
@@ -1066,6 +1206,12 @@ def register_library_tools(mcp):
                 str(v) for pt in poly["points"] for v in pt)
             steps[f"poly{i}"] = await bridge.send_command_async(
                 "library.add_symbol_polygon", {"vertices": verts})
+        for i, arc in enumerate(geom.arcs):
+            steps[f"arc{i}"] = await bridge.send_command_async(
+                "library.add_symbol_arc",
+                {"x_center": arc["x"], "y_center": arc["y"],
+                 "radius": arc["radius"], "start_angle": arc["start"],
+                 "end_angle": arc["end"], "width": 1})
 
         return {
             "symbol": name, "kind": kind, "designator_prefix": prefix,
@@ -3534,8 +3680,16 @@ def register_library_tools(mcp):
         expect_designator_color: Optional[int] = None,
         limit: int = 5000,
         timeout: Optional[float] = None,
+        check_standard_symbols: bool = False,
     ) -> dict[str, Any]:
         """Bulk visual-style audit across every component in a library.
+
+        ``check_standard_symbols=True`` also reports
+        ``standard_symbol_warnings``: symbols whose pins make them an
+        op-amp, comparator, current-sense or instrumentation amplifier but
+        whose body is a rectangle with no triangle. It warns and changes
+        nothing; fix one by copying a triangle part from the same library
+        (lib_copy_component) or redrawing with lib_create_ic_symbol.
 
         Walks the focused .SchLib (or one specified by ``library_path``)
         component-by-component and emits each component's designator
@@ -3560,7 +3714,10 @@ def register_library_tools(mcp):
             library_path: .SchLib path. Defaults to focused doc.
             with_comment: Include comment style record per component.
             with_parameters: Include parameter_styles array per component.
-            with_pins: Include pins array per component.
+            with_pins: Include pins array per component, plus ``body``
+                (rectangle and polygon counts) and ``description``.
+            check_standard_symbols: Flag amplifiers drawn as rectangles
+                (implies with_pins).
             expect_designator_font_id: Filter; trim components where
                 designator.font_id equals this value.
             expect_designator_color: Filter; trim components where
@@ -3584,7 +3741,7 @@ def register_library_tools(mcp):
             params["with_comment"] = "true"
         if with_parameters:
             params["with_parameters"] = "true"
-        if with_pins:
+        if with_pins or check_standard_symbols:
             params["with_pins"] = "true"
         if expect_designator_font_id is not None:
             params["expect_designator_font_id"] = str(expect_designator_font_id)
@@ -3593,7 +3750,11 @@ def register_library_tools(mcp):
         result = await bridge.send_command_async(
             "library.audit_styles", params, timeout=timeout,
         )
-        return result or {}
+        result = result or {}
+        if check_standard_symbols and isinstance(result, dict):
+            result["standard_symbol_warnings"] = _standard_symbol_warnings(
+                result.get("components") or [])
+        return result
 
     @mcp.tool()
     async def lib_set_label_formats(
@@ -3623,10 +3784,17 @@ def register_library_tools(mcp):
              "color":   <int>,               # optional, BGR-packed
              "is_hidden": False,             # optional
              "orientation": <int>,           # optional, 0/90/180/270
-             "justification": <int>}         # optional
+             "justification": <int>,         # optional
+             "x": <mils>, "y": <mils>,       # optional, position
+             "text": "=Partnumber"}          # optional, label text
 
-        At least one style field must be set per op. Targets are
+        At least one field must be set per op. Targets are
         ``"designator"``, ``"comment"``, or ``"parameter:<Name>"``.
+        ``x`` and ``y`` are in mils in the symbol's own frame, the frame
+        ``lib_add_pins`` places pins in; give one to move along one axis.
+        ``text`` sets what the label shows: on ``comment``, ``"=Partnumber"``
+        makes it display that parameter's value. Hide a parameter with
+        ``is_hidden: True`` and show it with ``False``.
         Use ``obj_get_font_id`` / ``obj_get_font_spec`` to resolve the font_id
         for {name, size, bold, italic} from the active library's font
         table; that keeps the call neutral to any particular library's
@@ -3665,6 +3833,15 @@ def register_library_tools(mcp):
                 return {"ok": False, "reason":
                         f"ops[{i}].target must be a string without "
                         "';' or '~~'"}
+            unknown = sorted(set(op) - _LABEL_OP_KEYS)
+            if unknown:
+                # A key this does not encode would be dropped on the way to
+                # Altium while the reply still said "modified". That is how
+                # designator x/y moves reported success and never moved.
+                return {"ok": False, "reason":
+                        f"ops[{i}] has keys this tool does not set: "
+                        f"{unknown}. Known keys: "
+                        f"{sorted(_LABEL_OP_KEYS)}"}
             parts = [f"target={target}"]
             style_set = False
             if op.get("font_id") is not None:
@@ -3685,10 +3862,23 @@ def register_library_tools(mcp):
             if op.get("justification") is not None:
                 parts.append(f"justification={int(op['justification'])}")
                 style_set = True
+            for axis in ("x", "y"):
+                if op.get(axis) is not None:
+                    parts.append(f"{axis}={int(round(float(op[axis])))}")
+                    style_set = True
+            if op.get("text") is not None:
+                text = str(op["text"])
+                if not text or ";" in text or "~~" in text:
+                    return {"ok": False, "reason":
+                            f"ops[{i}].text must be non-empty and contain "
+                            "neither ';' nor '~~'"}
+                parts.append(f"text={text}")
+                style_set = True
             if not style_set:
                 return {"ok": False, "reason":
                         f"ops[{i}] must set at least one of font_id / "
-                        "color / is_hidden / orientation / justification"}
+                        "color / is_hidden / orientation / justification "
+                        "/ x / y / text"}
             encoded_ops.append(";".join(parts))
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -3891,12 +4081,18 @@ def register_library_tools(mcp):
             (``Component.Designator.Text``, e.g. ``"U?"`` / ``"R?"``).
             Use this to normalize library designator defaults in bulk
             (pairs with ``lib_get_components(with_designator=True)``).
+          - ``"Comment"`` sets the component's comment text, e.g.
+            ``"=Partnumber"`` to show that parameter's value.
+
+        A parameter this creates is HIDDEN. Show, hide or move any
+        parameter, the designator or the comment with
+        ``lib_set_label_formats`` (``is_hidden``, ``x``, ``y``).
 
         Args:
             assignments: List of dicts with keys:
                 - component_name: Name of the component in the library
                 - param_name: Parameter name (e.g., "Partnumber", "Manufacturer"),
-                  or the special "Description" / "Designator" property keys
+                  or the special "Description" / "Designator" / "Comment" keys
                 - param_value: Value to set
             library_path: Path to library (uses active library if not specified)
 
@@ -4096,6 +4292,8 @@ def register_library_tools(mcp):
     async def lib_add_symbol_polygon(
         vertices: str,
         grid: int = 25,
+        fill_color: Optional[int] = None,
+        owner_part_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Add a polygon (filled shape) to the current library symbol.
 
@@ -4108,6 +4306,12 @@ def register_library_tools(mcp):
                 glyph detail (e.g. a diode triangle) and doesn't need the
                 100-mil pin grid (rule 15), so the default is a finer 25;
                 pass 100 for coarse or 0/1 to disable snapping.
+            fill_color: omit for a solid glyph in the line colour (a diode
+                triangle); a colour such as 8454143, Altium's block yellow,
+                makes it a filled BODY (an amplifier triangle); -1 draws
+                an outline only.
+            owner_part_id: the part of a multi-part symbol to draw on;
+                omit for the current part.
 
         Returns:
             Dictionary confirming polygon addition with vertex count
@@ -4123,10 +4327,14 @@ def register_library_tools(mcp):
         except (ValueError, AttributeError):
             # Pass through; bridge will reject malformed vertices itself.
             pass
+        params: dict[str, Any] = {"vertices": vertices}
+        if fill_color is not None:
+            params["fill_color"] = int(fill_color)
+        if owner_part_id is not None:
+            params["owner_part_id"] = int(owner_part_id)
         bridge = get_bridge()
         result = await bridge.send_command_async(
-            "library.add_symbol_polygon",
-            {"vertices": vertices},
+            "library.add_symbol_polygon", params,
         )
         return result
 
@@ -4195,6 +4403,9 @@ def register_library_tools(mcp):
 
         Returns:
             Dictionary with "count", "component" name, and "pins" array.
+            Each pin has ``owner_part_id`` and ``display_mode``: 0 is the
+            normal display, 1 and up are alternate modes, which repeat a
+            part's pins elsewhere and otherwise look like duplicates.
             Each pin has: designator, name, electrical_type, x, y,
             orientation, hidden. Plus `_datasheet_guidance` +
             `_datasheet_parts`.

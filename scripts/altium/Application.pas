@@ -762,8 +762,8 @@ End;
 
 Function App_SaveAll(RequestId : String) : String;
 Var
-    StillDirty, Seen, Written : Integer;
-    Paths, AgesBefore, AgesAfter : String;
+    StillDirty, Seen, Written, P : Integer;
+    Paths, AgesBefore, AgesAfter, Skipped, Rest, Name : String;
 Begin
     Try
         // Iterate every IServerDocument the editor has open and DoFileSave
@@ -782,7 +782,36 @@ Begin
         AgesBefore := AgesForPaths(Paths);
 
         SaveAttempts := 0;
+        LibsSkippedClean := 0;
+        SkippedLibNames := '';
         SaveAllDirty(0);
+
+        { Libraries no tool edited are not written. Name them, so a caller
+          who edited one by hand in Altium can see it was not saved here. }
+        Skipped := '';
+        Rest := SkippedLibNames;
+        While Rest <> '' Do
+        Begin
+            P := Pos('|', Rest);
+            If P > 0 Then
+            Begin
+                Name := Copy(Rest, 1, P - 1);
+                Rest := Copy(Rest, P + 1, Length(Rest));
+            End
+            Else
+            Begin
+                Name := Rest;
+                Rest := '';
+            End;
+            If Skipped <> '' Then Skipped := Skipped + ',';
+            Skipped := Skipped + '"' + EscapeJsonString(Name) + '"';
+        End;
+        Skipped := ',"libraries_left_unedited":[' + Skipped + ']';
+        If LibsSkippedClean > 0 Then
+            Skipped := Skipped + ',"libraries_note":"These libraries were open '
+                + 'but no tool edited them, so they were not written. Edits '
+                + 'made by hand in Altium are not tracked: save those in '
+                + 'Altium or with app_save_document."';
 
         AgesAfter := AgesForPaths(Paths);
         Written := CountChangedAges(AgesBefore, AgesAfter);
@@ -802,9 +831,10 @@ Begin
             Result := BuildSuccessResponse(RequestId,
                 '{"saved":true,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":0,"documents_written":0'
-                + ',"still_dirty":' + IntToStr(StillDirty)
-                + ',"note":"nothing was open to save. Only a document open '
-                + 'in the editor has an IServerDocument; the rest are project '
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped
+                + ',"note":"nothing needed saving: no edited document was open. '
+                + 'Only a document open in the editor has an IServerDocument, '
+                + 'libraries no tool edited are skipped, and the rest are project '
                 + 'members that cannot be holding unsaved edits. Writing '
                 + 'nothing is the correct outcome here, not a failure."}')
         Else If Written = 0 Then
@@ -812,7 +842,7 @@ Begin
                 '{"saved":false,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":' + IntToStr(SaveAttempts)
                 + ',"documents_written":0'
-                + ',"still_dirty":' + IntToStr(StillDirty)
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped
                 + ',"reason":"every open document was written to and not one '
                 + 'got newer on disk. Altium declines a save while a command '
                 + 'is active in the editor, and an abandoned transaction '
@@ -823,7 +853,7 @@ Begin
                 '{"saved":true,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":' + IntToStr(SaveAttempts)
                 + ',"documents_written":' + IntToStr(Written)
-                + ',"still_dirty":' + IntToStr(StillDirty) + '}');
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped + '}');
     Except
         Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'SaveAllDirty raised an exception');
     End;

@@ -8544,6 +8544,60 @@ def register_easyeda_tools(mcp):
             prepared.append(entry)
         return _call("sch.add_pins", {"pins": prepared}, timeout=300.0)
 
+    async def _easyeda_amplifier_symbol(library_uuid: str, name: str,
+                                        description: str,
+                                        part: dict) -> dict[str, Any]:
+        """Triangle amplifier symbol: create, open, pins, triangle, marks."""
+        import math
+
+        created = await easyeda_create_symbol(
+            library_uuid=library_uuid, name=name, description=description)
+        if not created.get("ok"):
+            return created
+        uuid = str(created.get("uuid") or created.get("value") or "").strip()
+        if not uuid:
+            return {"ok": False, "reason": (
+                "the editor created the symbol but returned no uuid, so "
+                "it cannot be opened to draw into"), "created": created}
+        opened = await easyeda_open_symbol(uuid=uuid,
+                                           library_uuid=library_uuid)
+        if not opened.get("ok"):
+            return {"ok": False, "reason": (
+                "the symbol was created but could not be opened, so "
+                "nothing was drawn into it"), "created": created,
+                "opened": opened}
+        batch = []
+        for pin in part["pins"]:
+            length = float(pin["length"])
+            # symbol_gen gives the BODY end; the editor wants the
+            # ELECTRICAL end, one pin length along the pin's direction,
+            # which here includes straight up and straight down.
+            a = math.radians(float(pin["rotation"]))
+            discipline = str(pin.get("electrical_type") or "passive").lower()
+            batch.append({
+                "pin_number": pin["designator"], "name": pin["name"],
+                "x": float(pin["x"]) + round(length * math.cos(a)),
+                "y": float(pin["y"]) + round(length * math.sin(a)),
+                "rotation": float(pin["rotation"]), "length": length,
+                "pin_type": _PIN_TYPE_FROM_DISCIPLINE.get(
+                    discipline, "UNDEFINED"),
+            })
+        placed = await easyeda_add_pins(pins=batch)
+        if not placed.get("ok"):
+            return {"ok": False, "reason": (
+                "the symbol was created but its pins were not placed, so "
+                "it exists and is unusable"), "pins": placed}
+        drawn = [await easyeda_add_schematic_polygon(
+            points=[[float(x), float(y)] for x, y in poly["points"]])
+            for poly in part["polygons"]]
+        for t in part["texts"]:
+            drawn.append(await easyeda_add_schematic_text(
+                text=t["text"], x=float(t["x"]), y=float(t["y"])))
+        return {"ok": True, "name": name, "uuid": uuid, "body": "amplifier",
+                "pin_count": len(batch),
+                "steps": {"created": created, "pins": placed,
+                          "body": drawn}}
+
     @mcp.tool()
     async def easyeda_create_ic_symbol(
         library_uuid: str = "",
@@ -8551,8 +8605,17 @@ def register_easyeda_tools(mcp):
         left_pins: list[dict[str, Any]] | None = None,
         right_pins: list[dict[str, Any]] | None = None,
         description: str = "",
+        body: str = "auto",
     ) -> dict[str, Any]:
         """Create a COMPLETE IC symbol in one call.
+
+        STANDARD SYMBOLS FIRST: a single op-amp, comparator, current-sense
+        or instrumentation amplifier is drawn as a TRIANGLE (inputs left
+        with + and -, output at the apex, supplies top and bottom) when
+        ``body="auto"`` and the pin names form IN+/IN-/OUT. A dual or quad
+        stays a rectangle here, and the reply says so; multi-part symbols
+        are drawn as triangles on the Altium side. ``body="rectangle"``
+        forces the box.
 
         You decide the functional grouping, inputs and power on the
         LEFT, outputs on the RIGHT. This lays the pins out on the grid,
@@ -8588,6 +8651,30 @@ def register_easyeda_tools(mcp):
         if not left and not right:
             return {"ok": False, "reason": (
                 "a symbol needs at least one pin on one side")}
+
+        from eda_agent.design.symbol_gen import (
+            generate_amplifier_symbol, looks_like_amplifier)
+
+        wanted_body = str(body or "auto").strip().lower()
+        amp = None
+        amp_note = ""
+        if wanted_body == "auto" and looks_like_amplifier(left + right,
+                                                          description):
+            try:
+                candidate = generate_amplifier_symbol(left + right)
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.part_count == 1:
+                amp = candidate
+            elif candidate is not None:
+                amp_note = (
+                    f"{candidate.part_count - 1} amplifier units need one "
+                    "triangle per part, which is drawn on the Altium side; "
+                    "drew a rectangle here")
+        if amp is not None:
+            return await _easyeda_amplifier_symbol(
+                str(library_uuid).strip(), str(name).strip(),
+                str(description or ""), amp.parts[0])
 
         try:
             geometry = generate_ic_symbol(left, right)
@@ -8655,6 +8742,7 @@ def register_easyeda_tools(mcp):
             height=abs(float(body["y1"]) - float(body["y2"])))
 
         return {
+            **({"note": amp_note} if amp_note else {}),
             "ok": True,
             "name": str(name).strip(),
             "uuid": uuid,
@@ -8686,8 +8774,8 @@ def register_easyeda_tools(mcp):
         ONLY resistor and inductor for now, and the reason is a genuine
         limit rather than unfinished work. EasyEDA's schematic
         primitives are arc, circle, polygon, rectangle, text, wire, pin
-        and bus, with no LINE among them. A resistor and an inductor are
-        a rectangle. A capacitor is two plates, a diode a bar, a crystal
+        and bus, with no LINE among them. A resistor is a rectangle and
+        an inductor is a row of arcs. A capacitor is two plates, a diode a bar, a crystal
         two plates and a fuse a lead through a body, and every one of
         those is an open segment.
 
@@ -8785,6 +8873,19 @@ def register_easyeda_tools(mcp):
         for poly in geometry.polygons:
             drawn.append(await easyeda_add_schematic_polygon(
                 points=[[float(x), float(y)] for x, y in poly["points"]]))
+        # Arcs (an inductor's turns) go as three points on the curve, the
+        # form easyeda_add_schematic_arc takes: start, middle, end.
+        import math
+        for arc in geometry.arcs:
+            cx, cy, r = float(arc["x"]), float(arc["y"]), float(arc["radius"])
+            pts = [(cx + r * math.cos(math.radians(a)),
+                    cy + r * math.sin(math.radians(a)))
+                   for a in (arc["start"], (arc["start"] + arc["end"]) / 2,
+                             arc["end"])]
+            drawn.append(await easyeda_add_schematic_arc(
+                start_x=pts[0][0], start_y=pts[0][1],
+                reference_x=pts[1][0], reference_y=pts[1][1],
+                end_x=pts[2][0], end_y=pts[2][1]))
 
         return {
             "ok": True,

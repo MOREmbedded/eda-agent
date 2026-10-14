@@ -503,6 +503,11 @@ def register_application_tools(mcp):
         Detach also triggers save_all automatically, so you don't need this
         as the very last step.
 
+        A LIBRARY NO TOOL EDITED IS NOT WRITTEN. Libraries opened only to
+        read from or copy out of are left untouched and listed in
+        ``libraries_left_unedited``. Edits made by hand in Altium are not
+        tracked, so save those in Altium or with ``app_save_document``.
+
         CHECK ``still_dirty``, DO NOT ASSUME. Altium refuses to save while
         a command is active in the editor and asks a human whether to
         write a copy instead; DoFileSave does not raise when it declines.
@@ -512,8 +517,8 @@ def register_application_tools(mcp):
         ``app_exit_active_command`` and retry.
 
         Returns:
-            Dict with ``saved``, ``still_dirty``, and a ``reason`` when
-            documents remain unsaved.
+            Dict with ``saved``, ``still_dirty``, ``libraries_left_unedited``,
+            and a ``reason`` when documents remain unsaved.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(

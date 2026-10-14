@@ -115,6 +115,40 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "the delete reach it."),
     },
     {
+        "task": "Create a schematic symbol: standard symbols, not rectangles",
+        "keywords": ("symbol", "create", "new", "draw", "author", "opamp",
+                     "op-amp", "amplifier", "comparator", "triangle",
+                     "current-sense", "resistor", "capacitor", "inductor",
+                     "diode", "zener", "tvs", "transistor", "mosfet", "bjt",
+                     "switch", "schlib"),
+        "when": (("create", "symbol"), ("new", "symbol"), ("draw", "symbol"),
+                 ("opamp",), ("op-amp",), ("amplifier",), ("comparator",),
+                 ("triangle",)),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_get_components", "lib_copy_component",
+                "lib_create_passive_symbol", "lib_create_ic_symbol"],
+        "avoid": [
+            ("lib_add_symbol_rectangle", "a rectangle body is only for an "
+                                         "IC with no conventional symbol. "
+                                         "Amplifiers get the triangle and "
+                                         "discretes their glyph"),
+        ],
+        "note": (
+            "Use the conventional symbol. First look in the user's own "
+            "library for a part already drawn that way (a triangle op-amp, "
+            "a MOSFET) and copy it with lib_copy_component, then rename and "
+            "renumber its pins to the new datasheet: it keeps the house "
+            "style. Otherwise lib_create_passive_symbol draws discretes "
+            "(R, C, L as arcs, diode, LED, zener, schottky, TVS, crystal, "
+            "fuse, switch, push button, N/P MOSFET, NPN/PNP), and "
+            "lib_create_ic_symbol draws an op-amp, comparator, current-sense "
+            "or instrumentation amplifier as a triangle automatically: "
+            "inputs left with + and -, output at the apex, supplies top and "
+            "bottom, one triangle per part for a dual or quad. A rectangle "
+            "is right only for an IC with no conventional symbol."),
+    },
+    {
         "task": "Read or change one part of a multi-part symbol",
         "keywords": ("multi-part", "multipart", "part", "gate", "section",
                      "symbol", "pins", "electrical"),

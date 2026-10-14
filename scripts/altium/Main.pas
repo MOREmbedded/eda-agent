@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.12.1';
+    SCRIPT_VERSION = '2026.10.14.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -84,6 +84,17 @@ Var
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
+    { Libraries the last save pass left alone because no tool edited them,
+      and their names. See SaveOneDocByDocRef. }
+    LibsSkippedClean : Integer;
+    SkippedLibNames : String;
+    { File names, upper case, of every document a tool has flagged for
+      saving this session, each wrapped in '|'. See NoteDocEdited. }
+    EditedDocs : String;
+    { Documents the current save pass has already handled, wrapped in '|'.
+      A free document is reached once per project walk, and the second
+      visit would report a library it had just written as left alone. }
+    SavePassSeen : String;
     LastCompiledProject : IProject;
 
     { Silent cast-failure counter, incremented every time a defensive       }
@@ -387,11 +398,64 @@ End;
 { app_save_all or proj_save.                                                   }
 {..............................................................................}
 
+{..............................................................................}
+{ Record that a tool edited a document, so app_save_all knows to write it.     }
+{                                                                              }
+{ A library opened only to read from used to be rewritten by every save-all,   }
+{ because the save pass flushes every open document. MEASURED: a save-all      }
+{ after copying symbols out of ten user libraries rewrote all ten, untouched.  }
+{ Libraries are now written only when they appear here. The Modified flag      }
+{ cannot stand in for this list, because it reads False while the editor tab   }
+{ shows the document edited.                                                   }
+{                                                                              }
+{ Kept by FILE NAME, because DM_FullPath returns a bare name for a document    }
+{ that is open outside any project. Two libraries with the same name in        }
+{ different folders are both written, which errs on the side of saving.       }
+{..............................................................................}
+
+Procedure NoteDocEdited(FilePath : String);
+Var
+    Key : String;
+Begin
+    If FilePath = '' Then Exit;
+    Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
+    If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
+End;
+
+Function DocWasEdited(FilePath : String) : Boolean;
+Begin
+    Result := False;
+    If FilePath = '' Then Exit;
+    Result := Pos('|' + UpperCase(ExtractFileName(FilePath)) + '|', EditedDocs) > 0;
+End;
+
+Procedure ForgetDocEdited(FilePath : String);
+Var
+    Key : String;
+    P : Integer;
+Begin
+    If FilePath = '' Then Exit;
+    Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
+    P := Pos(Key, EditedDocs);
+    If P > 0 Then
+        EditedDocs := Copy(EditedDocs, 1, P - 1)
+            + Copy(EditedDocs, P + Length(Key), Length(EditedDocs));
+End;
+
+Function IsLibraryDocPath(FilePath : String) : Boolean;
+Var
+    Ext : String;
+Begin
+    Ext := UpperCase(ExtractFileExt(FilePath));
+    Result := (Ext = '.SCHLIB') Or (Ext = '.PCBLIB');
+End;
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
 Begin
     If FilePath = '' Then Exit;
+    NoteDocEdited(FilePath);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
     Try ServerDoc.SetModified(True); Except End;
@@ -634,6 +698,8 @@ End;
 Procedure SaveOneDocByDocRef(Doc : IDocument);
 Var
     ServerDoc : IServerDocument;
+    Path : String;
+    AgeBefore, AgeAfter : Integer;
 Begin
     If Doc = Nil Then Exit;
     Try
@@ -642,18 +708,41 @@ Begin
           cannot be holding unsaved edits. SaveAttempts counts the ones
           actually reached, so a pass that wrote nothing because nothing
           was open is not confused with one the editor declined. }
-        ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+        Path := Doc.DM_FullPath;
+        ServerDoc := Client.GetDocumentByPath(Path);
+    Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    If Pos('|' + UpperCase(Path) + '|', SavePassSeen) > 0 Then Exit;
+    SavePassSeen := SavePassSeen + '|' + UpperCase(Path) + '|';
+
+        { A LIBRARY NO TOOL EDITED IS LEFT ALONE. Libraries are opened to
+          read from and copy out of far more often than they are edited, and
+          the forced flush below rewrote every one of them. See
+          NoteDocEdited. }
+        If IsLibraryDocPath(Path) And (Not DocWasEdited(Path)) Then
+        Begin
+            LibsSkippedClean := LibsSkippedClean + 1;
+            If SkippedLibNames <> '' Then SkippedLibNames := SkippedLibNames + '|';
+            SkippedLibNames := SkippedLibNames + ExtractFileName(Path);
+            Exit;
+        End;
+
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
         { Altium builds, so checking it can leave docs unsaved. DoFileSave    }
         { on a clean doc is a fast no-op.                                     }
-        If ServerDoc <> Nil Then
+        SaveAttempts := SaveAttempts + 1;
+        AgeBefore := -1;
+        Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
+        Try ServerDoc.SetModified(True); Except End;
+        Try ServerDoc.DoFileSave(''); Except End;
+        { Once written, a library has nothing pending until the next edit. }
+        If IsLibraryDocPath(Path) Then
         Begin
-            SaveAttempts := SaveAttempts + 1;
-            Try ServerDoc.SetModified(True); Except End;
-            Try ServerDoc.DoFileSave(''); Except End;
+            AgeAfter := -1;
+            Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+            If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
         End;
-    Except End;
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -971,6 +1060,9 @@ Var
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
+    SavePassSeen := '';
+    LibsSkippedClean := 0;
+    SkippedLibNames := '';
 
     // Real projects + their member docs
     For I := 0 To Workspace.DM_ProjectCount - 1 Do
