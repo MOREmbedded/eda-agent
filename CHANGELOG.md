@@ -51,9 +51,10 @@ companies without re-stating their conventions on every call. See
   than traced outlines, so nothing is approximated away from the source
   art and holes need no special handling. Plans by default
   (`dry_run=True`) and reports the primitive count first, with a
-  `max_regions` cap. **UNVERIFIED on a live board**: the geometry is
-  tested and `pcb.place_region_poly` is an exercised command, but the
-  pipeline has not been watched end to end.
+  `max_regions` cap. Verified on a live board: an asymmetric test glyph
+  placed at a known origin and read back with `pcb_query_region`
+  confirmed the scale, the bottom-left origin corner, the layer, and
+  that the art is neither mirrored nor flipped.
 - `lib_read_pcblib_headers`: a `.PcbLib`'s footprint names, pad counts,
   heights and descriptions with Altium closed, for library hygiene in
   CI. Reads the ASCII streams only; pad geometry lives in the binary

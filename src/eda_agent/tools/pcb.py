@@ -6462,12 +6462,11 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Draw a raster image (logo, QR code, artwork) as PCB regions.
 
-        NOT YET VERIFIED ON A LIVE BOARD. The geometry is covered by
-        tests and the placement goes through pcb.place_region_poly, which
-        is an existing, exercised command; what no one has watched yet is
-        this pipeline end to end -- that the scale, the origin corner and
-        the layer name land where this docstring claims. Run it once with
-        dry_run on a scrap board before trusting it on a real one.
+        Verified on a live board (2026-10-15): an asymmetric test glyph
+        placed at a known origin was read back with pcb_query_region,
+        confirming the scale, the bottom-left origin corner, the layer,
+        and that the art is neither mirrored nor flipped. Still worth a
+        dry_run first on anything real, for the primitive count.
 
         Putting a logo on silkscreen has no API of its own; this converts
         the image to region primitives and places them. The image is
