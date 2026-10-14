@@ -1756,6 +1756,40 @@ def build_best_canvas_from_plan(
                 "repair-port stub upgrade failed and was skipped: "
                 f"{type(stub_exc).__name__}: {stub_exc}"),
         ))
+    # NOTHING OUTSIDE THE SHEET. The finished drawing is checked against
+    # its Altium frame (not paper size: an A3 frame is 15500 x 11100) with
+    # the border margin and title block kept clear. A drawing that fits is
+    # shifted inside as a whole, wiring with it; one that does not fit
+    # enlarges the sheet to the next size of its family, never spilling onto
+    # another sheet. Done last, on the winner, so every pass above judged
+    # the layout where it was built.
+    try:
+        from eda_agent.design.sheet_fit import fit_canvas
+        for act in fit_canvas(best_result.canvas):
+            if act["verdict"] == "fits":
+                continue
+            what = []
+            if act.get("enlarged_to"):
+                what.append(f"sheet enlarged from {act['size']} to "
+                            f"{act['enlarged_to']}")
+            if act.get("shifted"):
+                what.append(f"drawing shifted by {act['shifted'][0]}, "
+                            f"{act['shifted'][1]} mils to sit inside the frame")
+            if act["verdict"] == "too_big":
+                what.append(f"the drawing does not fit any size of the "
+                            f"{act['size']} family")
+            best_result.notes.append(PipelineNote(
+                severity="warning" if act["still_outside"] else "info",
+                text=f"sheet {act['sheet']}: " + "; ".join(what or [
+                    act["verdict"]]) + (
+                    f"; {act['still_outside']} object(s) still outside"
+                    if act["still_outside"] else ""),
+            ))
+    except Exception as fit_exc:                       # noqa: BLE001
+        best_result.notes.append(PipelineNote(
+            severity="warning",
+            text=f"sheet fit check failed and was skipped: "
+                 f"{type(fit_exc).__name__}: {fit_exc}"))
     # The counts were taken inside the candidate build; the two passes above
     # change the winner's wires afterwards.
     best_result.wire_count = len(best_result.canvas.wires)

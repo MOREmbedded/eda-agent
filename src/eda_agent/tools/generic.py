@@ -1582,6 +1582,80 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_audit_outside_sheet(limit: int = 100,
+                                      apply: bool = False) -> dict[str, Any]:
+        """Find anything drawn outside the active schematic's sheet, and
+        with ``apply`` bring it back inside.
+
+        Reads the sheet's REAL frame from Altium (an A3 frame is 15500 x
+        11100 mils, not A3 paper), every object's bounding box, and the
+        template's own graphics, which become the title-block keep-out
+        rather than objects. Reports what is past the border or over the
+        title block, then a verdict:
+        - ``fits``: nothing outside.
+        - ``shift``: the drawing fits once moved by ``dx``, ``dy``.
+        - ``enlarge``: it does not fit; ``to_size`` is the first larger
+          sheet of the SAME family (A4 -> A3, ANSI A -> B) that holds it.
+        - ``too_big``: nothing in the family holds it.
+        A shift is whole 100 mil steps, so everything stays on the grid.
+
+        ``apply`` (default False, which changes nothing) fixes it the
+        preferred way first: a ``shift`` moves EVERY object on the sheet
+        by dx, dy, wires and labels with the parts, so no connection
+        changes. An ``enlarge`` on a sheet without a template sets the
+        larger sheet size, then shifts if that is still needed. A sheet
+        drawn from a template is not enlarged here: ``to_template`` names
+        the same-family template to move it to. ``actions`` lists what was
+        done and the reply is the audit after it.
+        """
+        from eda_agent.design.sheet_fit import Box, fit_report
+
+        bridge = get_bridge()
+
+        async def audit() -> dict[str, Any]:
+            frame = await bridge.send_command_async(
+                "generic.get_sheet_frame", {"limit": "20000"})
+            if not isinstance(frame, dict) or "frame_x" not in frame:
+                return {"ok": False, "reason": "could not read the sheet frame",
+                        "reply": frame}
+            return _outside_sheet_report(frame, Box, fit_report, limit)
+
+        report = await audit()
+        if not apply or not report.get("ok"):
+            return report
+        actions: list[dict[str, Any]] = []
+        first = report.get("verdict")
+        if first == "enlarge":
+            if report.get("template"):
+                report["actions"] = actions
+                report["not_applied"] = (
+                    "the sheet uses a template; move it to "
+                    f"{report.get('to_template') or 'a larger template'} "
+                    "first, then run this again to shift what remains")
+                return report
+            to = str(report.get("to_size", ""))
+            if to.upper() not in _SHEET_STYLES_SETTABLE:
+                report["actions"] = actions
+                report["not_applied"] = f"sheet size {to} cannot be set by script"
+                return report
+            reply = await bridge.send_command_async(
+                "generic.set_sheet_size", {"style": to, "custom_width": "0",
+                                           "custom_height": "0"})
+            actions.append({"action": "set_sheet_size", "to": to,
+                            "reply": reply})
+            report = await audit()
+        if report.get("ok") and report.get("verdict") == "shift":
+            dx, dy = int(report["dx"]), int(report["dy"])
+            reply = await bridge.send_command_async(
+                "generic.shift_sheet", {"dx": str(dx), "dy": str(dy)})
+            actions.append({"action": "shift", "dx": dx, "dy": dy,
+                            "reply": reply})
+            report = await audit()
+        report["actions"] = actions
+        report["verdict_before"] = first
+        return report
+
+    @mcp.tool()
     async def sch_place_bus(
         x1: int,
         y1: int,
@@ -3050,3 +3124,56 @@ def register_generic_tools(mcp):
 
     # Schematic power ports, net labels, and free text are placed via the
     # dedicated handlers place_power_port / place_net_label / place_note.
+
+
+#: Sheet sizes generic.set_sheet_size can set (the OrCAD set it cannot).
+_SHEET_STYLES_SETTABLE = frozenset({
+    "A4", "A3", "A2", "A1", "A0", "A", "B", "C", "D", "E",
+    "LETTER", "LEGAL", "TABLOID"})
+
+
+def _outside_sheet_report(frame: dict, Box, fit_report, limit: int) -> dict:
+    """Outside-the-sheet verdict from a generic.get_sheet_frame reply.
+
+    The title block is the template's graphics in the bottom-right quarter of
+    the frame; without a template, Altium's standard block is assumed when
+    the title block is on."""
+    fx, fy = float(frame["frame_x"]), float(frame["frame_y"])
+    boxes = []
+    for o in frame.get("objects") or []:
+        x1, y1, x2, y2 = o["bbox"]
+        kind = str(o.get("type", ""))
+        if kind == "parameter":     # a document field, never drawn at 0,0
+            continue
+        boxes.append(Box(kind, o.get("label", ""), min(x1, x2), min(y1, y2),
+                         max(x1, x2), max(y1, y2)))
+    title = None
+    corner = [b for b in frame.get("template_boxes") or []
+              if min(b[0], b[2]) > fx / 2 and max(b[1], b[3]) < fy / 2]
+    if corner:
+        tx1 = min(min(b[0], b[2]) for b in corner)
+        ty2 = max(max(b[1], b[3]) for b in corner)
+        title = (fx - tx1, ty2)
+    elif frame.get("title_block_on", True):
+        from eda_agent.design.sheet_fit import DEFAULT_TITLE_BLOCK
+        title = DEFAULT_TITLE_BLOCK
+    style_names = ["A4", "A3", "A2", "A1", "A0", "A", "B", "C", "D", "E",
+                   "LETTER", "LEGAL", "TABLOID", "ORCADA", "ORCADB", "ORCADC",
+                   "ORCADD", "ORCADE"]
+    style = int(frame.get("sheet_style", 0) or 0)
+    size = "CUSTOM" if frame.get("use_custom") else (
+        style_names[style] if 0 <= style < len(style_names) else "CUSTOM")
+    report = fit_report(boxes, size, frame=(fx, fy), title_block=title)
+    report["outside"] = report["outside"][:limit]
+    if report.get("verdict") == "enlarge" and frame.get("template"):
+        from eda_agent.design.sheet_fit import template_for_size
+        report["to_template"] = template_for_size(frame["template"],
+                                                  report["to_size"])
+        if not report["to_template"]:
+            report["template_note"] = (
+                f"no {report['to_size']} template of the same family was "
+                f"found beside {frame['template']}")
+    return {"ok": True, "file_path": frame.get("file_path", ""),
+            "template": frame.get("template", ""), "objects": len(boxes),
+            "title_block": list(title) if title else None,
+            "truncated": bool(frame.get("truncated")), **report}

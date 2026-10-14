@@ -6455,6 +6455,218 @@ End;
 { Returns: file_path, kind, sheet_size, title_block, grid_size, unit_system  }
 {..............................................................................}
 
+{..............................................................................}
+{ Gen_GetSheetFrame - the sheet's real frame and every object's extent.         }
+{                                                                              }
+{ For the outside-the-sheet check. Frame from SheetSizeX/Y (what Altium draws, }
+{ which is not the paper size: an A3 frame is 15500 x 11100 mils), the custom  }
+{ flag and size, orientation, border and title block flags, and the template  }
+{ file. The template's own graphics are reported apart from the drawing, so a }
+{ title block is a keep-out and not an object "outside" anything.              }
+{                                                                              }
+{ ONLY MEMBERS ALREADY PROVEN: an undeclared identifier halts the script and  }
+{ Try/Except cannot catch it. SheetSizeX/Y, TitleBlockOn and                   }
+{ WorkspaceOrientation are read elsewhere in this unit; UseCustomSheet,       }
+{ GetState_CustomX/Y, BorderOn, GetState_TemplateFileName and eTemplate come  }
+{ from working reference scripts (schematic_utils.pas, ExtractTemplate.pas).  }
+{..............................................................................}
+
+{ The name of a schematic object type, the inverse of ObjectTypeFromString }
+{ and limited to the same constants, so it introduces no new identifier.  }
+Function SchTypeName(Id : Integer) : String;
+Begin
+    If Id = eNetLabel Then Result := 'net_label'
+    Else If Id = ePort Then Result := 'port'
+    Else If Id = ePowerObject Then Result := 'power_port'
+    Else If Id = eSchComponent Then Result := 'component'
+    Else If Id = eWire Then Result := 'wire'
+    Else If Id = eBus Then Result := 'bus'
+    Else If Id = eBusEntry Then Result := 'bus_entry'
+    Else If Id = eParameter Then Result := 'parameter'
+    Else If Id = eLabel Then Result := 'text'
+    Else If Id = eLine Then Result := 'line'
+    Else If Id = eRectangle Then Result := 'rectangle'
+    Else If Id = eSheetSymbol Then Result := 'sheet_symbol'
+    Else If Id = eSheetEntry Then Result := 'sheet_entry'
+    Else If Id = eNoERC Then Result := 'no_erc'
+    Else If Id = eJunction Then Result := 'junction'
+    Else If Id = eImage Then Result := 'image'
+    Else If Id = eTextFrame Then Result := 'text_frame'
+    Else If Id = eNote Then Result := 'note'
+    Else If Id = eProbe Then Result := 'probe'
+    Else If Id = eHarnessConnector Then Result := 'harness_connector'
+    Else If Id = eCrossSheetConnector Then Result := 'cross_sheet_connector'
+    Else If Id = eCompileMask Then Result := 'compile_mask'
+    Else Result := 'type_' + IntToStr(Id);
+End;
+
+Function SheetFrameBox(Obj : ISch_GraphicalObject) : String;
+Var
+    R : TCoordRect;
+Begin
+    R := Obj.BoundingRectangle;
+    Result := '[' + IntToStr(CoordToMils(R.X1)) + ',' + IntToStr(CoordToMils(R.Y1))
+        + ',' + IntToStr(CoordToMils(R.X2)) + ',' + IntToStr(CoordToMils(R.Y2)) + ']';
+End;
+
+Function Gen_GetSheetFrame(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Data, Objects, TplBoxes, ObjLabel, TplName : String;
+    Count, Limit, TplCount : Integer;
+    Truncated : Boolean;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No schematic document is active');
+        Exit;
+    End;
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 20000);
+
+    Data := '{"file_path":"' + EscapeJsonString(SchDoc.DocumentName) + '"';
+    Try Data := Data + ',"frame_x":' + IntToStr(CoordToMils(SchDoc.SheetSizeX))
+        + ',"frame_y":' + IntToStr(CoordToMils(SchDoc.SheetSizeY)); Except End;
+    Try Data := Data + ',"sheet_style":' + IntToStr(SchDoc.SheetStyle); Except End;
+    Try Data := Data + ',"use_custom":' + BoolToJsonStr(SchDoc.UseCustomSheet); Except End;
+    Try Data := Data + ',"custom_x":' + IntToStr(CoordToMils(SchDoc.GetState_CustomX))
+        + ',"custom_y":' + IntToStr(CoordToMils(SchDoc.GetState_CustomY)); Except End;
+    Try Data := Data + ',"orientation":' + IntToStr(SchDoc.WorkspaceOrientation); Except End;
+    Try Data := Data + ',"border_on":' + BoolToJsonStr(SchDoc.BorderOn); Except End;
+    Try Data := Data + ',"title_block_on":' + BoolToJsonStr(SchDoc.TitleBlockOn); Except End;
+    TplName := '';
+    Try TplName := SchDoc.GetState_TemplateFileName; Except End;
+    Data := Data + ',"template":"' + EscapeJsonString(TplName) + '"';
+
+    Objects := '';
+    TplBoxes := '';
+    Count := 0;
+    TplCount := 0;
+    Truncated := False;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                { The template's own graphics: border, title block, logo. }
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        If TplCount < 500 Then
+                        Begin
+                            If TplBoxes <> '' Then TplBoxes := TplBoxes + ',';
+                            TplBoxes := TplBoxes + SheetFrameBox(Child);
+                            Inc(TplCount);
+                        End;
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End
+            Else If Obj.ObjectId = eParameter Then
+            Begin
+                { A first-level parameter is a document field (Title, Date),
+                  read at 0,0 and never drawn as an object. }
+            End
+            Else
+            Begin
+                If Count >= Limit Then
+                Begin
+                    Truncated := True;
+                    Break;
+                End;
+                ObjLabel := '';
+                If Obj.ObjectId = eSchComponent Then
+                Begin
+                    Comp := Obj;
+                    Try ObjLabel := Comp.Designator.Text; Except End;
+                End;
+                If Objects <> '' Then Objects := Objects + ',';
+                Objects := Objects + '{"type":"' + SchTypeName(Obj.ObjectId) + '"'
+                    + ',"label":"' + EscapeJsonString(ObjLabel) + '"'
+                    + ',"bbox":' + SheetFrameBox(Obj) + '}';
+                Inc(Count);
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+
+    Data := Data + ',"template_boxes":[' + TplBoxes + ']'
+        + ',"objects":[' + Objects + ']'
+        + ',"count":' + IntToStr(Count)
+        + ',"truncated":' + BoolToJsonStr(Truncated) + '}';
+    Result := BuildSuccessResponse(RequestId, Data);
+End;
+
+{ Move every drawn object on the sheet by the same offset: components with
+  their pins and labels, wires, ports, labels, graphics. The template and the
+  document fields stay put. A uniform shift keeps every wire on its pin, so
+  connectivity is unchanged. MoveByXY is the documented relative move of
+  ISch_GraphicalObject (Altium's UndoRedo sample uses it on a component). }
+Function Gen_ShiftSheet(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Dx, Dy, Moved, Failed : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No schematic document is active');
+        Exit;
+    End;
+    Dx := StrToIntDef(ExtractJsonValue(Params, 'dx'), 0);
+    Dy := StrToIntDef(ExtractJsonValue(Params, 'dy'), 0);
+    Moved := 0;
+    Failed := 0;
+    If (Dx <> 0) Or (Dy <> 0) Then
+    Begin
+        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            Iter := SchDoc.SchIterator_Create;
+            Try
+                Iter.SetState_IterationDepth(eIterateFirstLevel);
+                Obj := Iter.FirstSchObject;
+                While Obj <> Nil Do
+                Begin
+                    If (Obj.ObjectId <> eTemplate) And (Obj.ObjectId <> eParameter) Then
+                    Begin
+                        Try
+                            SchBeginModify(Obj);
+                            Obj.MoveByXY(MilsToCoord(Dx), MilsToCoord(Dy));
+                            SchEndModify(Obj);
+                            RefreshSchObjectRender(Obj);
+                            Inc(Moved);
+                        Except
+                            Inc(Failed);
+                        End;
+                    End;
+                    Obj := Iter.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(Iter);
+            End;
+        Finally
+            SchServer.ProcessControl.PostProcess(SchDoc, '');
+        End;
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"dx":' + IntToStr(Dx)
+        + ',"dy":' + IntToStr(Dy) + ',"moved":' + IntToStr(Moved)
+        + ',"failed":' + IntToStr(Failed) + '}');
+End;
+
 Function Gen_GetDocumentInfo(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
@@ -12096,6 +12308,8 @@ Begin
         'place_junction':   Result := Gen_PlaceJunction(Params, RequestId);
         'place_junctions':  Result := Gen_PlaceJunctions(Params, RequestId);
         'get_document_info': Result := Gen_GetDocumentInfo(Params, RequestId);
+        'get_sheet_frame': Result := Gen_GetSheetFrame(Params, RequestId);
+        'shift_sheet':     Result := Gen_ShiftSheet(Params, RequestId);
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);

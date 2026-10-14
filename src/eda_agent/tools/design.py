@@ -471,6 +471,12 @@ def register_design_tools(mcp) -> None:
         - ``return_via_audit``: signal vias with no ground or plane via
           within ``max_distance_mils``.
         - ``plane_region_audit``: pour and plane copper broken into islands.
+        - ``loop_audit``: circuit loops (switching hot loop, gate drive,
+          bootstrap, decoupling, crystal, feedback, Kelvin) measured on the
+          placement and along routed copper, ranked worst first. Advisory.
+        - ``pad_entry_audit``: traces entering pads off-axis, off-centre,
+          wider than the pad, crowded, crossing a pad, and two-pin parts fed
+          unequally (tombstoning). Fails only on high-severity findings.
 
         Log the result as ``data`` on the stage_result
         (``design_session_log``); ``design_next_action`` checks the numbers
@@ -1863,6 +1869,279 @@ def register_design_tools(mcp) -> None:
             from ..fileio.bom import EMPTY_BOM_WARNING
             result["warning"] = EMPTY_BOM_WARNING
         return result
+
+    @mcp.tool()
+    async def design_find_loops(
+        plan_json: Union[str, dict, None] = None,
+        board_json_path: str = "",
+        expect_file: str = "",
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        kinds: Optional[list[str]] = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Find the circuit loops whose physical size matters, and measure
+        them on a placed board. Changes nothing.
+
+        Loops: a switching converter's HOT loop (input cap, switch, low side,
+        ground back to the cap; boost: switch, diode, output cap), its
+        output loop and bootstrap cap, a MOSFET gate drive, a decoupling cap
+        with the IC pins it serves, a crystal with its load caps, a
+        regulator FB divider or op-amp feedback network, and a current-sense
+        Kelvin connection. Each loop lists its parts and pins IN PATH ORDER
+        and says what found it: ``role`` (plan tags), ``pin_name`` (SW,
+        BOOT, FB, G/S/D, IN-/OUT, SENSE+) or ``structure`` (netlist shape).
+
+        Give ONE source:
+        - ``plan_json``: a DesignPlan; loops only, no geometry.
+        - ``board_json_path``: a saved LayoutBoard; loops measured on the
+          placement (area and an inductance estimate, or path length),
+          worst first.
+        - ``expect_file``: the focused board, read live (full path).
+
+        A board carries pad numbers, not pin functions, so pin-function loops
+        need ``pin_names``: {refdes: {pad_number: pin_name}}, e.g. from
+        lib_get_pin_list. Without them a board gives decoupling, crystal,
+        switching and shunt loops from structure alone.
+
+        Args:
+            kinds: restrict to these loop kinds.
+            limit: loops listed; counts are never cut.
+        """
+        import asyncio
+
+        from ..design.loops import find_loops, graph_from_plan
+
+        sources = [bool(plan_json), bool(board_json_path), bool(expect_file)]
+        if sum(sources) != 1:
+            return {"ok": False, "reason": "give exactly one of plan_json, "
+                    "board_json_path or expect_file"}
+        if plan_json:
+            payload = plan_json
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError as exc:
+                    return {"ok": False, "error": f"invalid JSON: {exc}"}
+            try:
+                plan = DesignPlan.model_validate(payload)
+            except ValidationError as exc:
+                return {"ok": False, "errors": [
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                    for e in exc.errors()]}
+            loops = [l.as_dict() for l in
+                     find_loops(graph_from_plan(plan, pin_names), kinds)]
+            source = "plan"
+        else:
+            from ..layout.loop_audit import analyze_loops
+            if board_json_path:
+                from ..layout.model import LayoutBoard
+                if not Path(board_json_path).is_file():
+                    return {"ok": False, "error": f"no such file: {board_json_path}"}
+                board = await asyncio.to_thread(LayoutBoard.load,
+                                                Path(board_json_path))
+                source = "file"
+            else:
+                from ..layout.read_altium import WrongBoard, read_live_board
+                try:
+                    board = await asyncio.to_thread(read_live_board, expect_file)
+                except WrongBoard as exc:
+                    return {"ok": False, "error": str(exc)}
+                source = "live"
+            loops = await asyncio.to_thread(analyze_loops, board, pin_names,
+                                            kinds)
+        by_kind: dict[str, int] = {}
+        for l in loops:
+            by_kind[l["kind"]] = by_kind.get(l["kind"], 0) + 1
+        return {"ok": True, "source": source, "count": len(loops),
+                "by_kind": by_kind, "loops": loops[:limit],
+                "truncated": len(loops) > limit}
+
+    @mcp.tool()
+    async def design_simulators() -> dict[str, Any]:
+        """Which circuit and field simulators are installed: ngspice
+        (batch build; KiCad's copy is a DLL only) and openEMS with its
+        Python bindings, with versions. Changes nothing, installs nothing.
+
+        A missing one comes back with an install offer (source, and the
+        scoop command where scoop is present). Put the offer to the user
+        and install only after they approve; a missing simulator never
+        fails a design, it only skips the simulation.
+        """
+        import asyncio
+
+        from ..sim.ngspice import simulator_backends
+
+        return await asyncio.to_thread(simulator_backends)
+
+    @mcp.tool()
+    async def design_simulate_loops(
+        plan_json: Union[str, dict],
+        models: Optional[dict[str, dict]] = None,
+        supplies: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        f_start: float = 1.0,
+        f_stop: float = 100e6,
+    ) -> dict[str, Any]:
+        """Loop gain, crossover, phase and gain margin of every feedback
+        loop in a plan, simulated in ngspice. Changes nothing.
+
+        The loops come from design_find_loops. Each is broken at the
+        driving pin (an op-amp's output) and measured by Middlebrook
+        double injection, so the real load on the output counts. A
+        switching regulator's FB loop runs only when its model is marked
+        ``"averaged": true``: a vendor's switching (transient) model has
+        no small-signal loop gain.
+
+        Models are the manufacturer's: ``models`` maps refdes to
+        ``{"file": path, "subckt": name, "pins": [plan pins in the
+        subckt's node order]}``. Without ``pins`` the .SUBCKT node names
+        are matched to the plan's pin names (and ``pin_names``). R, C and
+        L are SPICE primitives from their values. A part with no model is
+        listed in ``missing_models`` and nothing runs; nothing is ever
+        approximated. Rails take ``supplies`` ({net: volts}) or the
+        voltage in the net name (+12V, 3V3).
+
+        No ngspice: the reply carries the install offer and runs nothing.
+
+        A phase margin under 45 degrees is flagged ``low``: a common
+        design convention, not a datasheet limit; loops are ranked by
+        margin either way.
+        """
+        import asyncio
+
+        from ..design.loops import find_loops, graph_from_plan
+        from ..sim.deck import deck_from_plan
+        from ..sim.ngspice import find_ngspice, loop_gain, simulator_backends
+
+        payload = plan_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"invalid JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()]}
+        models = models or {}
+        loops = find_loops(graph_from_plan(plan, pin_names), ["feedback"])
+        if not loops:
+            return {"ok": True, "loops": [], "note": "no feedback loop found"}
+        if not find_ngspice():
+            return {"ok": True, "ran": False, "loops": [l.as_dict() for l in loops],
+                    "simulators": await asyncio.to_thread(simulator_backends)}
+
+        results = []
+        for loop in loops:
+            entry = loop.as_dict()
+            ic = loop.members[0][0]
+            if "FB with divider" in loop.note:
+                if not models.get(ic, {}).get("averaged"):
+                    entry.update(status="not_run", reason=(
+                        "a switching regulator's loop gain needs the vendor's "
+                        "averaged (AC) model; mark it \"averaged\": true"))
+                    results.append(entry)
+                    continue
+                # Break between the output rail and the divider's top pin.
+                top = next((k for k in loop.members[1:]), None)
+                if not top:
+                    entry.update(status="not_run", reason="no divider found")
+                    results.append(entry)
+                    continue
+                deck = deck_from_plan(plan, models, supplies, pin_names,
+                                      break_at=top)
+                drive, load = deck.get("load_node"), deck.get("driver_node")
+            else:
+                deck = deck_from_plan(plan, models, supplies, pin_names,
+                                      break_at=loop.members[0])
+                drive, load = deck.get("driver_node"), deck.get("load_node")
+            if not deck.get("ok"):
+                entry.update(status="not_run", **{
+                    k: deck[k] for k in ("missing_models", "needs_pin_map",
+                                         "bad_values", "unknown_supplies",
+                                         "problems", "model_policy", "reason")
+                    if deck.get(k)})
+                results.append(entry)
+                continue
+            run = await asyncio.to_thread(loop_gain, deck["netlist"], drive,
+                                          load, f_start, f_stop)
+            if not run.get("ok"):
+                entry.update(status="failed", errors=run.get("errors"),
+                             log_tail=run.get("log_tail"))
+                results.append(entry)
+                continue
+            pm = run.get("phase_margin_deg")
+            entry.update(status="ran", method=run["method"],
+                         dc_gain_db=run.get("dc_gain_db"),
+                         crossover_hz=run.get("crossover_hz"),
+                         phase_margin_deg=pm,
+                         gain_margin_db=run.get("gain_margin_db"),
+                         low=pm is not None and pm < 45)
+            if run.get("note"):
+                entry["note_sim"] = run["note"]
+            results.append(entry)
+        ran = [r for r in results if r.get("status") == "ran"]
+        ran.sort(key=lambda r: (r.get("phase_margin_deg") is None,
+                                r.get("phase_margin_deg") or 0))
+        return {"ok": True, "ran": bool(ran), "worst_first": ran,
+                "loops": results}
+
+    @mcp.tool()
+    async def pcb_smart_drc(
+        board_json_path: str = "",
+        expect_file: str = "",
+        spacing_mils: float = 40.0,
+        probe_mils: float = 100.0,
+        currents: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Design checks from TEMPORARY rules, evaluated offline. Writes no
+        rule and changes nothing on the board.
+
+        Asks what the board's own rules usually leave out, using the circuit
+        loops (design_find_loops) to know which nets matter:
+        - ``spacing``: sensitive nets (regulator/op-amp feedback, crystal)
+          closer than ``spacing_mils`` to noisy ones (switch node, bootstrap,
+          gate drive). Take ``spacing_mils`` from the datasheet layout
+          section where one is given; 40 is a starting value.
+        - ``tightest_pairs``: the actual gap of every sensitive/noisy pair
+          within ``probe_mils``, smallest first: how close the board runs to
+          trouble, not only where it fails.
+        - ``hot_loop_width``: hot-loop tracks narrower than the IPC-2221
+          width for the current given per net in ``currents`` (amps).
+
+        Gaps use the DRC's own geometry. Give ``board_json_path`` (saved
+        LayoutBoard) or ``expect_file`` (focused board, read live). A board
+        carries pad numbers only, so pass ``pin_names`` ({refdes: {pad:
+        pin_name}}) to find feedback, bootstrap and gate-drive nets.
+        """
+        import asyncio
+
+        from ..layout.smart_drc import smart_drc
+
+        if bool(board_json_path) == bool(expect_file):
+            return {"ok": False, "reason": "give exactly one of "
+                    "board_json_path or expect_file"}
+        if board_json_path:
+            from ..layout.model import LayoutBoard
+            if not Path(board_json_path).is_file():
+                return {"ok": False, "error": f"no such file: {board_json_path}"}
+            board = await asyncio.to_thread(LayoutBoard.load, Path(board_json_path))
+            source = "file"
+        else:
+            from ..layout.read_altium import WrongBoard, read_live_board
+            try:
+                board = await asyncio.to_thread(read_live_board, expect_file)
+            except WrongBoard as exc:
+                return {"ok": False, "error": str(exc)}
+            source = "live"
+        result = await asyncio.to_thread(
+            smart_drc, board, spacing_mils=spacing_mils, probe_mils=probe_mils,
+            currents=currents, pin_names=pin_names, limit=limit)
+        return {"ok": True, "source": source, **result}
 
     @mcp.tool()
     async def design_review_plan(
