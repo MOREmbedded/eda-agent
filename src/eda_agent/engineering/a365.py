@@ -37,6 +37,7 @@ import webbrowser
 from pathlib import Path
 
 from .config import A365Policy
+from ..atomicfile import replace_with_retry
 from .errors import AuthenticationFailed, NotFound, PermissionDenied, ValidationFailed
 
 SCOPES = "openid profile email user.access design.domain offline_access"
@@ -157,7 +158,10 @@ class TokenStore:
         tmp.write_bytes(data)
         if sys.platform != "win32":
             os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        # A scanner or indexer can hold the target for a moment on
+        # Windows, which makes a bare os.replace fail and lose the
+        # freshly written token.
+        replace_with_retry(tmp, self.path)
 
     def load(self) -> dict | None:
         if not self.path.exists():

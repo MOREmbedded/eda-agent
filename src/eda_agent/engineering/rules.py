@@ -20,6 +20,7 @@ import json
 import re
 from pathlib import Path
 
+from ..units import MM_PER_MIL
 from .errors import NotFound, ValidationFailed
 
 SEVERITIES = ("error", "warning", "info")
@@ -46,7 +47,7 @@ def to_mm(v: str) -> float:
     if not m:
         raise ValidationFailed(f"length {v!r} must be a number followed by mm, mil or um")
     x, u = float(m.group(1)), m.group(2).lower()
-    return x if u == "mm" else x * 0.0254 if u == "mil" else x / 1000
+    return x if u == "mm" else x * MM_PER_MIL if u == "mil" else x / 1000
 
 
 # ---------------------------------------------------------------- loading and validation
