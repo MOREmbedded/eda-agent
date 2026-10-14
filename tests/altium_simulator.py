@@ -1307,6 +1307,20 @@ class AltiumSimulator:
                                              "No schematic library is active")
             return _build_success_response(rid, '{"success":true}')
 
+        elif action == "add_symbol_polygon":
+            # Mirrors Lib_AddSymbolPolygon: a library must be active and
+            # the vertex list must hold at least three points.
+            if not self.lib_has_schlib:
+                return _build_error_response(rid, "NO_SCHLIB",
+                                             "No schematic library is active")
+            coords = [c for c in str(params.get("vertices", "")).split(",")
+                      if c.strip()]
+            if len(coords) < 6:
+                return _build_error_response(
+                    rid, "INVALID_PARAMS", "At least 3 vertices are required")
+            return _build_success_response(
+                rid, '{"success":true,"vertices":%d}' % (len(coords) // 2))
+
         elif action == "add_symbol_line":
             if not self.lib_has_schlib:
                 return _build_error_response(rid, "NO_SCHLIB",

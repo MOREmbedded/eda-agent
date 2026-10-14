@@ -112,7 +112,7 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_add_footprint_arc", "lib_add_footprint_pad",
     "lib_add_footprint_pads", "lib_add_footprint_track",
     "lib_add_footprint_tracks", "lib_add_pins",
-    "lib_add_symbol_rectangle", "lib_add_symbol_text",
+    "lib_add_symbol_polygon", "lib_add_symbol_rectangle", "lib_add_symbol_text",
     "lib_batch_rename", "lib_batch_set_params", "lib_create_footprint",
     "lib_create_ic_symbol", "lib_create_standard_footprint",
     "lib_create_symbol", "lib_diff_libraries",
