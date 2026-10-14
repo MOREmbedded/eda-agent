@@ -1,20 +1,45 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 550 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 570 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
+
+**Getting started:** [Requirements](#requirements) → [Installation](#installation) → [Check that it worked](#check-that-it-worked) → [Workspace and profiles](#workspace-and-profiles)
+
+<details>
+<summary><b>Full contents</b></summary>
+
+- [Demo](#demo)
+- [Dashboard](#dashboard)
+- [How it works](#how-it-works)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
+- [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
+- [EDA backends](#eda-backends)
+- [Finding the right tool](#finding-the-right-tool)
+- [Tool count (clients that cap it)](#tool-count-clients-that-cap-it)
+- [Part sourcing](#part-sourcing)
+- [Example use cases](#example-use-cases)
+- [Known limitations](#known-limitations) - read this before trusting it with a real design
+- [Timeout and server lifecycle](#timeout-and-server-lifecycle)
+- [Tool reference](#tool-reference) - and the other documents
+- [Architecture](#architecture)
+- [CLI](#cli)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+- [Disclaimer](#disclaimer)
+
+</details>
 
 ## Demo
 
 Claude Code reviewing a buck converter through eda-agent. The feedback resistor divider on this schematic is intentionally wrong; Claude catches it among other recommendations.
 
 [![eda-agent demo: Claude Code reviewing a buck converter](https://img.youtube.com/vi/snRyCx3OlxM/maxresdefault.jpg)](https://youtu.be/snRyCx3OlxM)
-
-## Support the project
-
-Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, a donation helps keep the progress going.
-
-<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="45"></a>
 
 ## Dashboard
 
@@ -37,7 +62,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **~550 tools on the default Altium backend** (600+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
+- **~570 tools on the default Altium backend** (650+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
 - **Bulk batch primitives**: `obj_batch_modify`, `obj_batch_create`, `obj_batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `sch_place_wires`, `place_net_labels`, `place_power_ports`, `sch_place_components`, `sch_set_components_parameters`, `get_sch_doc_pins`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
@@ -74,6 +99,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - An EDA tool, one of:
   - **Altium Designer** (recent versions, AD20+ preferred) - Windows only
   - **KiCad 9+** with the IPC API server enabled (Preferences → Plugins → KiCad API server), plus `pip install -e .[kicad]`
+  - **EasyEDA Pro**, through a browser extension you build and import into the editor. Note the connection runs the other way round: the editor dials out to this server, so nothing here can start it
 
 The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), so one install drives any of them. See [EDA backends](#eda-backends).
 
@@ -142,6 +168,102 @@ From then on, every Altium startup compiles the script project and the polling l
 2. Expand `Altium_API` → `Dispatcher.pas`, select **StartMCPServer**, click **Run**
 
 The polling loop starts and your MCP client can drive Altium.
+
+### Check that it worked
+
+Two commands answer "is this set up correctly", so you find out here
+rather than from a failing tool call later:
+
+```bash
+eda-agent health
+```
+
+Offline and instant: is the workspace directory writable, does the
+pointer file agree with it, are the bundled scripts findable. Run it
+any time; it never touches Altium.
+
+```bash
+eda-agent doctor
+```
+
+The full check, with Altium open and `StartMCPServer` running: everything
+`health` covers, plus that Altium is running, that the polling loop
+answers, that the deployed script version matches this source tree, and
+a save round-trip. Every line is a pass, a warning or a fix instruction.
+
+The common first failure is `workspace pointer matches config` reporting
+two different paths. That means Python resolved one workspace while the
+script was told another, which the next section explains.
+
+## Workspace and profiles
+
+Two separate ideas that are easy to confuse, because both are "somewhere
+on disk that affects how this behaves". One is plumbing, the other is
+your house style.
+
+### The workspace: how Python and Altium talk
+
+Altium's DelphiScript cannot be called directly from outside, so the two
+sides pass files in a shared folder. Python writes `request_<id>.json`,
+the polling loop inside Altium picks it up, acts, and writes
+`response_<id>.json` back. That folder is the **workspace**, and it is
+pure plumbing: nothing about your design lives there.
+
+- Default: `%USERPROFILE%\EDA Agent\workspace\`
+- Override with the `EDA_AGENT_WORKSPACE` environment variable
+- DelphiScript cannot read environment variables, so Python also writes
+  the resolved path to `C:\ProgramData\eda-agent\workspace-path.txt`.
+  That pointer file is how the script finds the same folder.
+
+**Both sides must agree.** If you set `EDA_AGENT_WORKSPACE` for your MCP
+client but not in the terminal you later run `doctor` from, the two
+resolve different folders and commands appear to vanish: one side is
+posting letters to an address nobody reads. `eda-agent health` reports
+exactly this as `workspace pointer matches config`. Either set the
+variable the same way everywhere, or leave it unset and use the default.
+
+One workspace per machine is normal. It is not per project, and there is
+no reason to have several unless you deliberately run more than one
+Altium.
+
+### Profiles: your conventions, per company or project
+
+A **profile** is the opposite kind of thing: no plumbing, just the rules
+you would otherwise repeat on every call. Pad corner rounding, courtyard
+and silkscreen policy, naming conventions, design rules, fab stackups,
+schematic units and grid, project templates.
+
+The motivating case is working for several companies on one machine. One
+wants 1% pad rounding, another wants Altium's 25%; stating that on every
+call is how it ends up inconsistent. Put it in a profile and the
+authoring tools read it themselves, so `lib_add_footprint_pad` with no
+`corner_radius` does the right thing for whoever you are working for
+right now.
+
+A profile is found in this order, first match winning:
+
+1. `EDA_AGENT_PROFILE_DIR`, if set
+2. a project-local `.eda-agent/profile/`, found by walking up from the
+   working directory. Meant to be **committed** to that project's repo,
+   so a team shares one house style
+3. the centrally active profile, chosen with `eda-agent profile-use <name>`
+   from `~/.eda-agent/profiles/`
+4. none, in which case every tool keeps its built-in default
+
+The project-local path is relative to the working directory, which
+reaches the CLI but usually not the MCP server, since your client
+launches it from wherever it likes. **For an MCP setup, use
+`profile-use` or the environment variable.** `eda-agent profile-show`
+always reports what actually applies from where you are standing, and
+`eda-agent profile-validate` checks a profile before you rely on it.
+
+Full detail, and the format of each file, is in
+[`docs/PROFILES.md`](docs/PROFILES.md).
+
+In short: the **workspace** is how the two halves of this server reach
+each other and you mostly set it once and forget it; a **profile** is
+what you want the output to look like, and is worth revisiting whenever
+you change who you are working for.
 
 ## EDA backends
 
@@ -224,6 +346,12 @@ hit attributed to the source that found it; `part_fetch` then pulls one
 part's detail from a provider you name. **No provider is enabled by
 default**, and there is no fallback order, so a result always names its
 source.
+
+Two tools sit alongside them: `part_parse_lcsc_label` decodes the QR
+payload on an LCSC reel or bag into part number, MPN and quantity, and
+`part_cache_datasheet` keeps a datasheet PDF on disk with its URL,
+SHA-256 and fetch time, so a value can still be checked against the
+document after the conversation that found it.
 
 The providers, their credentials and their access policies are in
 [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md).
@@ -422,6 +550,15 @@ or leave work incomplete. It is generated by
 maps official Altium scripting examples and interfaces to those tools, records
 live AD-version verification and known gaps, and gives future agents the
 required extension trail.
+
+[`CHANGELOG.md`](CHANGELOG.md) records what each change added or fixed,
+and marks anything not yet watched working against a live Altium session
+or a real Nexar account. The deeper references are
+[`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) for the `eng_*`
+family, [`docs/PROFILES.md`](docs/PROFILES.md) for per-workspace house
+style, [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) for part
+providers, and [`docs/BACKENDS.md`](docs/BACKENDS.md) for the EDA
+backends.
 
 At runtime `tool_catalog` serves the same data, filtered by category,
 maturity, interaction or substring, and `tool_invoke` calls anything it
