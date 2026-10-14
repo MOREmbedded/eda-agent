@@ -79,6 +79,7 @@ _CATEGORY_BY_PREFIX = (
     # prefix of an existing one has to go above it.
     ("easyeda_", "easyeda"),
     ("eng_", "engineering"),
+    ("profile_", "profile"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
