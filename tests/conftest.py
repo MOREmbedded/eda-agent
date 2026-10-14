@@ -158,7 +158,8 @@ def wait_until(predicate, timeout: float = 5.0, interval: float = 0.005,
 # automatically below so individual tests do not each need a guard.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "integration" / "fixtures"
 _LOCAL_ONLY_FIXTURES = ("main.SchDoc", "EDAAgentTest.PcbDoc",
-                        "EDAAgentTest_ICs.SchLib", "EDAAgentTest_Export.OutJob")
+                        "EDAAgentTest_ICs.SchLib", "EDAAgentTest_Export.OutJob",
+                        "EDAAgentTest.PcbLib")
 # Committed fixtures that are only useful together with a local-only one: the
 # project files aggregate main.SchDoc, so a project test needs it too.
 _AGGREGATOR_FIXTURES = ("EDAAgentTest.PrjPcb", "EDAAgentTest.PrjPcbStructure")

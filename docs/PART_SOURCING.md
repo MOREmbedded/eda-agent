@@ -126,6 +126,52 @@ newer file outright ("Unable to load library") though its footprint parser
 accepts it. Any such file comes back with a `*_warning` naming both versions,
 rather than looking like a clean download.
 
+## Reading an LCSC reel label
+
+`part_parse_lcsc_label` decodes the QR payload printed on an LCSC reel or
+bag, which a handheld scanner types as text:
+
+```
+{pbn:PICK2403120102,on:GB2403120671,pc:C916399,pm:JSM2301S,qty:50,mc:,cc:1,pdi:107160244,hp:0,wc:ZH}
+```
+
+It returns the LCSC part number (`pc`), the manufacturer part number
+(`pm`) and the quantity (`qty`). Those three are the only keys with a
+documented meaning, and even that documentation is a community source
+rather than anything LCSC publishes. The remaining keys are returned
+verbatim under `fields` and are deliberately **not** given invented
+names, because a guessed label is indistinguishable from a known one to
+whoever reads the result next. A quantity the label did not state comes
+back as null rather than 0.
+
+It decodes text only. Reading the QR code out of an image is the
+scanner's job.
+
+## Caching a datasheet
+
+Every component-surfacing response already carries a vendor search query,
+because values must come from the datasheet rather than from memory.
+`part_cache_datasheet` finishes that thought by putting the document on
+disk, where it can be re-read, compared against a later revision, and
+cited by path after the conversation that found it is gone.
+`part_list_cached_datasheets` lists what is cached, each entry with its
+URL, SHA-256 and fetch time.
+
+Fetching reuses the same hardened path every provider call uses: HTTPS
+only, a host allowlist, a byte cap, a timeout. Two things are specific to
+datasheets:
+
+- **The allowlist is deny-by-default**, from `EDA_AGENT_DATASHEET_HOSTS`
+  (comma-separated). A datasheet URL usually comes from a model or a web
+  page, so there is no built-in list of vendor domains trusted on your
+  behalf; such a list would be a guess that rots. The refusal names the
+  host it declined, so allowing it is one step.
+- **The payload must really be a PDF**, checked by its magic bytes rather
+  than its `Content-Type`. A vendor page that redirects to a sign-in form
+  is the usual failure, and it routinely still claims to be a PDF.
+
+Re-requesting a cached URL returns the stored copy without fetching.
+
 ## Getting a KiCad-format part into Altium
 
 Two of the three providers publish KiCad format, so on the Altium side a hit

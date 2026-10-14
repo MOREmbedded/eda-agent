@@ -249,3 +249,59 @@ def register_parts_tools(mcp):
                     result["files"] = {}
                     result["download_error"] = str(exc)
         return result
+
+    @mcp.tool()
+    async def part_parse_lcsc_label(payload: str) -> dict[str, Any]:
+        """Decode the QR payload printed on an LCSC reel or bag label.
+
+        Pass the text a scanner produced, e.g.
+        ``{pbn:PICK2403120102,on:GB2403120671,pc:C916399,pm:JSM2301S,qty:50,
+        mc:,cc:1,pdi:107160244,hp:0,wc:ZH}``. Returns the LCSC part number,
+        the manufacturer part number and the quantity, plus every other
+        field verbatim.
+
+        Only pc, pm and qty have a documented meaning, and that
+        documentation is a community source rather than LCSC's own. The
+        rest are returned under ``fields`` WITHOUT invented names, so a
+        guess never arrives looking like a fact. ``quantity`` is null
+        when the label did not state one, which is not the same as zero.
+
+        This decodes text only: reading the QR code from an image is the
+        scanner's job, not this tool's.
+        """
+        from ..libimport.lcsc_barcode import parse_lcsc_barcode
+        return parse_lcsc_barcode(payload)
+
+    @mcp.tool()
+    async def part_cache_datasheet(url: str, mpn: str = "",
+                             force: bool = False) -> dict[str, Any]:
+        """Download a datasheet PDF to the local cache and return its path.
+
+        Component values must come from the datasheet rather than from
+        memory, and a cached PDF can be re-read, compared against a later
+        revision and cited by path long after the conversation that found
+        it. Fetching reuses the providers' hardened path: HTTPS only, a
+        host allowlist, a byte cap and a timeout.
+
+        The allowlist is DENY BY DEFAULT and comes from
+        ``EDA_AGENT_DATASHEET_HOSTS`` (comma-separated). A datasheet URL
+        usually comes from a model or a web page, so there is no built-in
+        list of vendor domains to trust on your behalf; the refusal names
+        the host so allowing it is one step. The payload must really be a
+        PDF, checked by magic bytes, because a vendor page that redirects
+        to a sign-in form is the common failure and its Content-Type
+        often still says PDF.
+
+        Re-requesting a cached URL returns the existing copy without
+        fetching; pass force=True to replace it.
+        """
+        from ..libimport.datasheet_cache import cache_datasheet
+        return cache_datasheet(url, mpn=mpn, force=force)
+
+    @mcp.tool()
+    async def part_list_cached_datasheets() -> dict[str, Any]:
+        """Every datasheet in the local cache, newest first, with the URL,
+        SHA-256 and fetch time each was stored with."""
+        from ..libimport.datasheet_cache import list_cached
+        entries = list_cached()
+        return {"ok": True, "count": len(entries), "datasheets": entries}

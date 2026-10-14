@@ -93,6 +93,7 @@ reference/
 tests/integration/fixtures/main.SchDoc
 tests/integration/fixtures/EDAAgentTest.PcbDoc
 tests/integration/fixtures/EDAAgentTest_ICs.SchLib
+tests/integration/fixtures/EDAAgentTest.PcbLib
 tests/integration/fixtures/EDAAgentTest_Export.OutJob
 tests/integration/fixtures/schematic_snapshot.*
 

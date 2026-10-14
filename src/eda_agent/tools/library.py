@@ -2098,6 +2098,33 @@ def register_library_tools(mcp):
         return report
 
     @mcp.tool()
+    async def lib_read_pcblib_headers(library_path: str) -> dict[str, Any]:
+        """Read a .PcbLib's footprint headers WITHOUT Altium running.
+
+        Returns each footprint's ``{name, pattern, description, pad_count,
+        height}`` plus the library's format string, by parsing the ASCII
+        streams of the OLE container directly. Use it for library hygiene
+        where opening Altium is not worth it or not possible: a CI check,
+        a sweep over a directory of libraries, a quick "what is in here".
+
+        Pad GEOMETRY is deliberately absent. It lives in Altium's binary
+        primitive region, which this project does not reverse-engineer
+        without ground truth, and reading it live through
+        ``lib_get_pad_geometry`` is both exact and already implemented.
+        ``pad_count`` is null when the library's own table of contents
+        does not state one, which is not the same as zero pads.
+        """
+        from ..fileio.altium_pcblib import read_pcblib_footprints, read_pcblib_header
+
+        try:
+            footprints = read_pcblib_footprints(library_path)
+            fmt = read_pcblib_header(library_path)
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": str(exc)}
+        return {"ok": True, "library_path": library_path, "format": fmt,
+                "footprint_count": len(footprints), "footprints": footprints}
+
+    @mcp.tool()
     async def lib_convert_designators_to_stroke(
         library_path: Optional[str] = None,
     ) -> dict[str, Any]:

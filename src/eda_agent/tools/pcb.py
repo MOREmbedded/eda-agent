@@ -6448,6 +6448,107 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_place_image(
+        image_path: str,
+        x: float,
+        y: float,
+        width: float,
+        units: str = "mil",
+        layer: str = "TopOverlay",
+        threshold: int = 128,
+        invert: bool = False,
+        dry_run: bool = True,
+        max_regions: int = 2000,
+    ) -> dict[str, Any]:
+        """Draw a raster image (logo, QR code, artwork) as PCB regions.
+
+        Putting a logo on silkscreen has no API of its own; this converts
+        the image to region primitives and places them. The image is
+        decomposed into non-overlapping RECTANGLES rather than traced
+        outlines, which is exact (nothing is approximated away from the
+        source art) and needs no special handling for holes, at the cost
+        of primitive COUNT.
+
+        That count is the thing to look at, which is why **dry_run
+        defaults to True**: it returns the plan (how many regions, the
+        area covered, the scale) and touches nothing. Anti-aliased or
+        dithered artwork can decompose into thousands of pieces, and
+        raising ``threshold`` or supplying cleaner two-colour art fixes
+        that far better than undoing a placement. Call again with
+        dry_run=False to commit.
+
+        Args:
+            image_path: PNG/BMP/JPG etc. Any format Pillow reads.
+            x, y: Where the image's BOTTOM-LEFT corner sits on the board.
+            width: Target width on the board; height follows the image's
+                aspect ratio.
+            units: "mil" (default) or "mm", for x, y and width.
+            layer: Target layer, default "TopOverlay" (silkscreen). Any
+                copper or mechanical layer works too.
+            threshold: A pixel is ink when its luminance is below this
+                (0-255). Raise it to catch more of a washed-out image,
+                lower it to drop anti-aliasing fringes.
+            invert: For artwork drawn light-on-dark.
+            dry_run: True (default) plans without placing.
+            max_regions: Refuse rather than place more than this many
+                primitives. A photograph will blow straight through it,
+                which is the point.
+
+        Returns:
+            The plan (region_count, bounds, scale, image) and, when
+            committed, how many regions were placed.
+        """
+        from ..design.image_regions import plan_image_regions
+
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        if normalise_units(units) == "mm":
+            x, y, width = (v * MILS_PER_MM for v in (x, y, width))
+
+        plan = plan_image_regions(image_path, origin_x=x, origin_y=y,
+                                  target_width_mils=width,
+                                  threshold=threshold, invert=invert)
+        if not plan["ok"]:
+            return {"success": False, "reason": plan["reason"]}
+
+        regions = plan.pop("regions")
+        summary = {**plan, "layer": layer, "dry_run": dry_run}
+
+        if dry_run:
+            summary["note"] = (
+                f"planned {plan['region_count']} region(s); nothing placed. "
+                f"Call again with dry_run=False to commit.")
+            return summary
+
+        if plan["region_count"] > max_regions:
+            return {"success": False, "reason":
+                    f"{plan['region_count']} regions exceeds max_regions "
+                    f"({max_regions}). Raise the cap deliberately, raise "
+                    f"threshold, or use cleaner two-colour artwork: this "
+                    f"many primitives is slow to place and slow to edit.",
+                    **{k: plan[k] for k in ("scale", "bounds", "image")}}
+
+        bridge = get_bridge()
+        placed = 0
+        for region in regions:
+            pts = ";".join(f"{v['x']:g}:{v['y']:g}" for v in region["vertices"])
+            result = await bridge.send_command_async(
+                "pcb.place_region_poly",
+                {"pts": pts, "layer": layer, "net": ""},
+            )
+            # Stop at the first refusal rather than pressing on: a wrong
+            # layer name fails identically every time, and finishing the
+            # run would leave a thousand of them to undo.
+            if isinstance(result, dict) and result.get("success") is False:
+                return {"success": False, "placed": placed,
+                        "reason": f"region {placed + 1} failed: "
+                                  f"{result.get('reason', result)}",
+                        **{k: plan[k] for k in ("scale", "bounds", "image")}}
+            placed += 1
+
+        return {"success": True, "placed": placed, **summary}
+
+    @mcp.tool()
     async def pcb_place_dimension(
         x1: int,
         y1: int,
