@@ -98,9 +98,8 @@ def cmd_eco_execute(*, confirm: bool, validate_only: bool,
     a live ECO dialog) -- no new UI-automation code, no second bridge,
     no second polling loop.
 
-    Ported at the owner's explicit request (see
-    BOOSTER_INTEGRATION_BRIEF.md) to mirror Altium Booster 3.2's
-    EcoDialogDriver. eda-agent's own guidance (tools/guidance.py) and
+    Ported at the owner's explicit request, to mirror Altium Booster
+    3.2's EcoDialogDriver. eda-agent's own guidance (tools/guidance.py) and
     proj_sync_pcb's docstring say completing an ECO needs a human; this
     command is the explicit, opt-in way to do it anyway -- run
     deliberately from a terminal, separate from the casual MCP tool

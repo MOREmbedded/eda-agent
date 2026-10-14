@@ -169,7 +169,7 @@ entity kinds with no dedicated reader.
 Three write operations, each refusing unless `confirm=True` (eda-agent's
 existing style for an irreversible action, e.g. `easyeda_clear_routing`) -
 there is no separate owner-approval job queue here, since that whole
-governance layer was deliberately not ported (see BOOSTER_INTEGRATION_BRIEF.md):
+governance layer was deliberately left out of this integration:
 
 - `eng_a365_publish_model(kind, workspace_url, folder_id, name, file_path, confirm=False)` -
   upload a symbol or footprint file (via Nexar's File Service) and link it

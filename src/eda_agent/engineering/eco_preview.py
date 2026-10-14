@@ -10,7 +10,7 @@ itself would act on. Ported from Altium Booster 3.2's eco.py; its
 EcoDialogDriver (presses the ECO dialog's buttons via Windows UI
 Automation) and bridge trigger are out of scope here - they belong to
 Booster's job-queue/governance layer, which this integration does not
-port (see BOOSTER_INTEGRATION_BRIEF.md).
+port.
 """
 from __future__ import annotations
 

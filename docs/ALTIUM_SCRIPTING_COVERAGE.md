@@ -70,6 +70,28 @@ The generic schematic type mapper now also recognizes `eArc`, `ePolygon`,
 `eTextFrame`. This lets `obj_query`, `obj_modify`, `obj_delete`, and
 `sch_query_region` address object kinds already used by dedicated handlers.
 
+## Additions from the 2026-10-13 Booster 3.2 integration
+
+Extended an existing handler rather than adding a new command. The full
+implementation trail above was followed: handler extended, dispatch
+unchanged since the action name already existed, Python wrapper added,
+`SCRIPT_VERSION` bumped to `2026.10.13.5`, reachability/consistency tests
+updated, `lint.py`/`build.py` run clean, and the result live-tested.
+
+| Public MCP tool | DelphiScript API/handler | Safety | Status |
+|---|---|---|---|
+| `eng_validate_library_live` (via bridge command `library.get_footprint_pads`) | `Lib_GetFootprintPads`, extended: `IPCB_Track.X1/Y1/X2/Y2` cast from `IPCB_Primitive` (same pattern as the existing `PCB_GetNetRouting`), plus the already-computed 3D `BodyCount` now also surfaced as `has_3d` | read-only | **live-verified 2026-10-13** - read back against a PcbLib authored in a running Altium session (a two-pad footprint with a courtyard on Mechanical1 and silkscreen on TopOverlay); track coordinates and the `has_3d` flag both returned correctly |
+
+`IPCB_Track.X1/Y1/X2/Y2` was already used by `PCB_GetNetRouting` before this
+change (presumably live-verified when that handler was added, though this
+reference's own `altium-delphiscript/README.md` does not carry an entry for
+it either) - this addition is a new call site for an existing, working
+pattern, not a new interface member for this codebase.
+
+Arcs, regions and fills still report `kind` and `layer` only. A courtyard or
+silkscreen outline drawn with arcs rather than tracks is therefore invisible
+to the geometry checks, which was a scope decision rather than an oversight.
+
 ## Official example-family coverage
 
 This table is intentionally by capability family. Individual public tools are
