@@ -817,8 +817,11 @@ def main() -> int:
     )
     profile_new_project_p.add_argument("template")
     profile_new_project_p.add_argument("dest")
-    profile_new_project_p.add_argument("--force", action="store_true",
-                                       help="Overwrite a non-empty destination.")
+    profile_new_project_p.add_argument(
+        "--force", action="store_true",
+        help="Copy into a non-empty destination. Files the template also "
+             "has are overwritten; anything else already there is left "
+             "alone (this merges, it does not replace the directory).")
 
     # dashboard -- local web UI for the MCP bridge
     dash_p = subparsers.add_parser(

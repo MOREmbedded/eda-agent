@@ -111,6 +111,76 @@ def test_lib_audit_footprint_policies_uses_the_active_profile_when_no_policy_is_
     assert captured["policy"] == {"courtyard": True}
 
 
+def test_a_broken_profile_does_not_break_pad_authoring(tmp_path, monkeypatch):
+    """One stray comma in a profile used to crash every pad call with a
+    JSONDecodeError raised from json.loads, several frames from anything
+    the caller could act on."""
+    d = tmp_path / "profile"
+    d.mkdir()
+    (d / "footprint_defaults.json").write_text("{oops}", encoding="utf-8")
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(d))
+
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools["lib_add_footprint_pad"](designator="1", x=0, y=0))
+    _cmd, params = bridge.calls[0]
+    assert params["corner_radius"] == 25
+
+
+@pytest.mark.parametrize("bad", ["one", True, 150, -5, None])
+def test_an_unusable_corner_radius_falls_back_on_both_pad_paths(tmp_path, monkeypatch, bad):
+    """A bad setting used to behave two different wrong ways: the singular
+    tool forwarded it to Altium verbatim (corner_radius=one), and the bulk
+    payload raised TypeError in round(). Both now fall back to 25, and
+    profile-validate is what reports the typo."""
+    import json
+    d = tmp_path / "profile"
+    d.mkdir()
+    (d / "footprint_defaults.json").write_text(
+        json.dumps({"pad_corner_radius_pct": bad}), encoding="utf-8")
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(d))
+
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools["lib_add_footprint_pad"](designator="1", x=0, y=0))
+    assert bridge.calls[0][1]["corner_radius"] == 25
+
+    asyncio.run(tools["lib_add_footprint_pads"](pads=[{"designator": "1", "x": 0, "y": 0}]))
+    assert "corner_radius=25;" in bridge.calls[1][1]["pads"]
+
+
+def test_a_fractional_corner_radius_is_rounded_to_a_whole_percent(tmp_path, monkeypatch):
+    _activate_profile(tmp_path, monkeypatch, footprint_defaults={"pad_corner_radius_pct": 1.4})
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools["lib_add_footprint_pad"](designator="1", x=0, y=0))
+    assert bridge.calls[0][1]["corner_radius"] == 1
+
+
+def test_a_bulk_batch_that_sets_every_radius_never_reads_the_profile(tmp_path, monkeypatch):
+    """The default is resolved lazily, once per batch at most: a caller that
+    specifies every pad (lib_create_standard_footprint does) should not pay
+    for a filesystem lookup at all."""
+    from eda_agent import profile as profile_mod
+
+    d = tmp_path / "profile"
+    d.mkdir()
+    (d / "footprint_defaults.json").write_text('{"pad_corner_radius_pct": 1}', encoding="utf-8")
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(d))
+
+    reads = []
+    original = profile_mod._read_json_lenient
+    monkeypatch.setattr(profile_mod, "_read_json_lenient",
+                        lambda path: (reads.append(path), original(path))[1])
+
+    tools, _bridge = _tools(monkeypatch)
+    pads = [{"designator": str(i), "x": i * 10, "y": 0, "corner_radius": 1}
+            for i in range(1, 9)]
+    asyncio.run(tools["lib_add_footprint_pads"](pads=pads))
+    assert reads == []
+
+    pads_without = [{"designator": str(i), "x": i * 10, "y": 0} for i in range(1, 9)]
+    asyncio.run(tools["lib_add_footprint_pads"](pads=pads_without))
+    assert len(reads) == 1, "resolved once for the whole batch, not once per pad"
+
+
 def test_lib_audit_footprint_policies_explicit_policy_still_wins(tmp_path, monkeypatch):
     _activate_profile(tmp_path, monkeypatch, footprint_policy={"courtyard": True})
     tools, bridge = _tools(monkeypatch)

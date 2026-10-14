@@ -113,6 +113,82 @@ def test_validate_reports_an_invalid_fab_profile(tmp_path, capsys):
     assert "bad.json" in capsys.readouterr().err
 
 
+def test_validate_reports_an_unreadable_profile_file(tmp_path, capsys):
+    """Loading degrades instead of raising, so this command is the place a
+    malformed profile file has to become visible."""
+    cli.cmd_profile_init("acme", here=False)
+    profile_dir = tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+    (profile_dir / "footprint_defaults.json").write_text("{oops}", encoding="utf-8")
+    capsys.readouterr()
+
+    rc = cli.cmd_profile_validate(name="acme", here=False)
+    assert rc == 1
+    assert "footprint_defaults.json" in capsys.readouterr().err
+
+
+def test_show_still_works_with_a_broken_profile(tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    profile_dir = tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+    (profile_dir / "footprint_defaults.json").write_text("{oops}", encoding="utf-8")
+    capsys.readouterr()
+
+    rc = cli.cmd_profile_show(as_json=True)
+    assert rc == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["active"] is True
+    assert data["footprint_defaults"] == {}
+    assert any("footprint_defaults.json" in e for e in data["errors"])
+
+
+@pytest.mark.parametrize("filename,content,needle", [
+    ("footprint_defaults.json", '{"pad_corner_radius_pct": "one"}', "pad_corner_radius_pct"),
+    ("document_settings.json", '{"schematic_units": "millimeters"}', "schematic_units"),
+    ("document_settings.json", '{"schematic_snap_grid_mil": "wide"}', "schematic_snap_grid_mil"),
+])
+def test_validate_applies_the_same_checks_the_tools_do(tmp_path, capsys, filename, content, needle):
+    """"Valid" has to mean the consumers will accept it, or this command
+    passes a profile that then gets refused at the point of use."""
+    cli.cmd_profile_init("acme", here=False)
+    profile_dir = tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+    (profile_dir / filename).write_text(content, encoding="utf-8")
+    capsys.readouterr()
+
+    rc = cli.cmd_profile_validate(name="acme", here=False)
+    assert rc == 1
+    assert needle in capsys.readouterr().err
+
+
+def test_validate_names_a_misspelled_setting(tmp_path, capsys):
+    """A typo'd key is the quietest way for a profile to do nothing."""
+    cli.cmd_profile_init("acme", here=False)
+    profile_dir = tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+    (profile_dir / "document_settings.json").write_text(
+        '{"schematic_unit": "mm"}', encoding="utf-8")
+    capsys.readouterr()
+
+    rc = cli.cmd_profile_validate(name="acme", here=False)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "schematic_unit" in err and "unknown setting" in err
+
+
+def test_validate_allows_underscore_comment_keys(tmp_path):
+    """The scaffold writes _comment into these files."""
+    cli.cmd_profile_init("acme", here=False)
+    profile_dir = tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+    (profile_dir / "document_settings.json").write_text(
+        '{"_comment": "ours", "schematic_units": "mm"}', encoding="utf-8")
+    assert cli.cmd_profile_validate(name="acme", here=False) == 0
+
+
+def test_the_scaffolded_profile_passes_its_own_validation(tmp_path):
+    """The example files profile-init writes must themselves be valid."""
+    cli.cmd_profile_init("acme", here=False)
+    assert cli.cmd_profile_validate(name="acme", here=False) == 0
+
+
 def test_new_project_copies_a_template(tmp_path):
     cli.cmd_profile_init("acme", here=False)
     cli.cmd_profile_use("acme")

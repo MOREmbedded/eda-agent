@@ -60,6 +60,29 @@ A profile found via (2) overrides one found via (3): a project's own
 committed profile always wins over whichever company you last switched to
 centrally.
 
+### Which one to use when
+
+**The project-local profile is found by walking up from the current working
+directory, so it only applies when eda-agent is RUN from inside that
+project.** That holds for the CLI (you `cd` into the project and run
+`eda-agent profile-show`). It usually does NOT hold for the MCP server: an
+MCP client launches `eda-agent` from whatever directory it likes -- its own
+install directory, your home directory -- and nothing re-points that at the
+board you happen to have open in Altium. eda-agent has no way to ask Altium
+for the active project's path on the Python side today, so there is nothing
+better to walk up from.
+
+So, in practice:
+
+- **Driving Altium through an MCP client** -- use the central profile
+  (`eda-agent profile-use acme`), or set `EDA_AGENT_PROFILE_DIR` in the
+  client's own server configuration. Both are independent of cwd.
+- **Running the CLI inside a project, or sharing conventions with a team
+  through that project's repo** -- use the project-local
+  `.eda-agent/profile/`.
+- `eda-agent profile-show` always reports what would actually apply from
+  where you are standing, which is the quickest way to check.
+
 ## CLI
 
 ```
@@ -80,6 +103,27 @@ Mutating a profile is a CLI-only action -- the MCP tool surface (below) is
 read-only, the same discipline `engineering/rules.py` already documents for
 rulesets ("the owner writes them; AI clients can list, read and run them but
 never edit them").
+
+### When a profile file is broken
+
+A file that is present but unusable (malformed JSON, or valid JSON that
+isn't an object) **degrades to its default rather than raising**. A profile
+is read from places that must not care whether it is any good: at server
+startup, and on the pad-authoring path. One stray comma should not take the
+MCP server down or break `lib_add_footprint_pad`, and before this it did
+both.
+
+Those problems are not swallowed, they are relocated: `profile-validate`
+exits non-zero and names every one, `profile-show` prints them, and
+`profile_show()` returns them in an `errors` list. Run
+`eda-agent profile-validate` after editing a profile.
+
+The same command also applies the checks the consuming tools apply (an
+unknown `schematic_units` name, a non-numeric grid or corner radius), and
+names any **misspelled setting key** -- a typo like `schematic_unit` would
+otherwise be ignored in silence, which looks exactly like the profile not
+being picked up at all. Keys starting with `_` are left alone, so
+`_comment` is a usable place for a note.
 
 ## MCP tools
 

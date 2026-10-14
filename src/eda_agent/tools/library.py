@@ -366,8 +366,10 @@ def _pads_payload(pads: list[dict[str, Any]],
     skipped_invalid = 0
     # 25 is Altium's own typical roundrect corner %; a profile overrides it
     # for every pad in this batch that doesn't specify its own (see
-    # profile.py / docs/PROFILES.md).
-    default_corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
+    # profile.py / docs/PROFILES.md). Resolved lazily and once per batch:
+    # callers that set corner_radius on every pad (lib_create_standard_
+    # footprint does) then touch the filesystem not at all.
+    default_corner_radius: int | None = None
     for p in pads:
         # Free-text fields are neutralised for the same reason as pins: a
         # designator or layer carrying ";", "=" or "~~" reshapes the
@@ -376,6 +378,11 @@ def _pads_payload(pads: list[dict[str, Any]],
         if not desig:
             skipped_invalid += 1
             continue
+        corner_radius = p.get("corner_radius")
+        if corner_radius is None:
+            if default_corner_radius is None:
+                default_corner_radius = _profile_module.get_pad_corner_radius_pct()
+            corner_radius = default_corner_radius
         fields = [
             f"designator={desig}",
             # Lengths unrounded, in ``units``: round() here quantised every
@@ -386,7 +393,7 @@ def _pads_payload(pads: list[dict[str, Any]],
             f"y_size={format_length(p.get('y_size', length_in(units, 60)))}",
             f"hole_size={format_length(p.get('hole_size', 0))}",
             f"shape={_payload_safe(p.get('shape', 'rectangular'))}",
-            f"corner_radius={round(p.get('corner_radius', default_corner_radius))}",
+            f"corner_radius={round(corner_radius)}",
             f"rotation={_payload_safe(p.get('rotation', 0))}",
             f"layer={_payload_safe(p.get('layer', 'TopLayer'))}",
         ]
@@ -1479,7 +1486,7 @@ def register_library_tools(mcp):
         from eda_agent.design.footprint_gen import generate_footprint
 
         if corner_radius is None:
-            corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
+            corner_radius = _profile_module.get_pad_corner_radius_pct()
 
         try:
             geom = generate_footprint(
@@ -1588,7 +1595,7 @@ def register_library_tools(mcp):
         if refusal:
             return refusal
         if corner_radius is None:
-            corner_radius = _profile_module.get_footprint_defaults().get("pad_corner_radius_pct", 25)
+            corner_radius = _profile_module.get_pad_corner_radius_pct()
         bridge = get_bridge()
         params: dict[str, Any] = {
             "designator": designator,

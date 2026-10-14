@@ -26,21 +26,7 @@ def _result(fn, *args, **kwargs) -> dict[str, Any]:
 
 def _profile_summary() -> dict:
     p = profile_mod.get_active_profile()
-    if p is None:
-        return {"active": False}
-    return {
-        "active": True,
-        "directory": str(p.directory),
-        "meta": p.meta,
-        "footprint_defaults": p.footprint_defaults,
-        "footprint_policy": p.footprint_policy,
-        "document_settings": p.document_settings,
-        "has_naming": p.naming_path is not None,
-        "has_company_goals": p.company_goals_path is not None,
-        "rulesets": p.rulesets(),
-        "fab_profiles": p.fab_profile_names(),
-        "templates": p.template_names(),
-    }
+    return p.summary() if p else {"active": False}
 
 
 def _profile_list() -> dict:
@@ -131,21 +117,38 @@ def register_profile_tools(mcp, *, altium: bool = False) -> None:
             if not p or not p.document_settings:
                 return {"ok": False, "reason": "no active profile defines document_settings.json"}
             ds = p.document_settings
+
+            # Every value here is hand-written in a profile file, so the whole
+            # set is checked before any of it reaches the bridge: an unknown
+            # unit name would fail in Pascal with nothing pointing back at the
+            # typo, and a non-numeric grid used to reach int() and raise. The
+            # rules live in profile.py so profile-validate applies the same
+            # ones. Refusing wholesale rather than per-field is deliberate:
+            # half-applied document settings are worse than none, because the
+            # reader cannot tell which half took.
+            # Unknown keys are a validate-time concern, not a reason to
+            # refuse applying the keys that ARE understood.
+            problems = [p for p in profile_mod.check_document_settings(ds)
+                        if "unknown setting" not in p]
+            if problems:
+                return {"ok": False, "reason": problems[0], "problems": problems}
+
+            unit = ds.get("schematic_units")
+            grid: dict[str, str] = {}
+            for key, param in (("schematic_snap_grid_mil", "snap_grid"),
+                               ("schematic_visible_grid_mil", "visible_grid")):
+                value = ds.get(key)
+                if value in (None, 0):  # 0 is obj_set_grid's own "leave it alone"
+                    continue
+                grid[param] = str(int(value))
+
             bridge = get_bridge()
             applied: dict[str, Any] = {}
-            unit = ds.get("schematic_units")
             if unit:
                 applied["units"] = await bridge.send_command_async(
                     "generic.set_sch_units", {"unit": unit})
-            snap = ds.get("schematic_snap_grid_mil")
-            visible = ds.get("schematic_visible_grid_mil")
-            if snap or visible:
-                params = {}
-                if snap:
-                    params["snap_grid"] = str(int(snap))
-                if visible:
-                    params["visible_grid"] = str(int(visible))
-                applied["grid"] = await bridge.send_command_async("generic.set_grid", params)
+            if grid:
+                applied["grid"] = await bridge.send_command_async("generic.set_grid", grid)
             if not applied:
                 return {"ok": False, "reason": "document_settings.json has no recognised keys"}
             return {"ok": True, **applied}

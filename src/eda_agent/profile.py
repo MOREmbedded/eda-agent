@@ -36,6 +36,13 @@ helpers:
      -- a project-local profile, meant to be committed to that project's
      own repo so a whole team shares it. Unlike `.eda-local/` (gitignored,
      per-developer-machine scratch), this is NOT gitignored by default.
+
+     Being cwd-relative, this reaches the CLI (run from inside a project)
+     but usually NOT the MCP server, which its client launches from
+     whatever directory it likes. Nothing here can do better: Python never
+     learns the active Altium project's path (scope resolution happens on
+     the Pascal side), so there is no project directory to walk up from.
+     An MCP setup wants (3) or (1); see docs/PROFILES.md.
   3. The centrally active profile: ``~/.eda-agent/active_profile`` names
      one of ``~/.eda-agent/profiles/<name>/``.
   4. None found -> no profile active; every caller keeps today's bundled
@@ -108,8 +115,27 @@ def resolve_profile_dir(start: Path | None = None) -> Path | None:
     return None
 
 
-def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _read_json_lenient(path: Path) -> tuple[dict, str | None]:
+    """``({}, None)`` when absent, ``({}, "<file>: <why>")`` when present but
+    unusable.
+
+    Reading a profile NEVER raises, because a profile is read from places
+    that must not care about it: apply_env() runs during startup, and
+    get_footprint_defaults() runs on the pad-authoring path. Raising there
+    meant one stray comma in a profile took down the whole MCP server, and
+    a JSON file that parsed to a list (not an object) reached a caller's
+    ``.get()`` as an AttributeError. Strictness belongs in
+    ``profile-validate``, which is what the errors collected here feed.
+    """
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {}, f"{path.name}: {exc}"
+    if not isinstance(data, dict):
+        return {}, f"{path.name}: expected a JSON object, got {type(data).__name__}"
+    return data, None
 
 
 @dataclass(frozen=True)
@@ -127,6 +153,32 @@ class ActiveProfile:
     rules_dir: Path | None = None
     fab_profiles_dir: Path | None = None
     templates_dir: Path | None = None
+    #: Files that are present but unusable. Loading degrades to defaults
+    #: rather than raising; these are what profile-validate reports and
+    #: profile_show surfaces, so a broken profile is loud where it should
+    #: be and harmless everywhere else.
+    errors: tuple[str, ...] = ()
+
+    def summary(self) -> dict:
+        """The shape profile_show (MCP) and profile-show (CLI) both report.
+
+        One definition rather than two: they were built separately and had
+        already drifted apart by a field.
+        """
+        return {
+            "active": True,
+            "directory": str(self.directory),
+            "meta": self.meta,
+            "footprint_defaults": self.footprint_defaults,
+            "footprint_policy": self.footprint_policy,
+            "document_settings": self.document_settings,
+            "has_naming": self.naming_path is not None,
+            "has_company_goals": self.company_goals_path is not None,
+            "rulesets": self.rulesets(),
+            "fab_profiles": self.fab_profile_names(),
+            "templates": self.template_names(),
+            "errors": list(self.errors),
+        }
 
     def rulesets(self) -> list[str]:
         if not self.rules_dir or not self.rules_dir.is_dir():
@@ -145,28 +197,21 @@ class ActiveProfile:
 
 
 def load_profile(directory: Path) -> ActiveProfile:
-    """Parse a profile directory. Every file is optional; a missing or
-    unreadable optional file is skipped, not an error -- only a malformed
-    *present* JSON file raises (surfaced by `profile-validate`)."""
-    meta = {}
-    meta_path = directory / "profile.json"
-    if meta_path.exists():
-        meta = _read_json(meta_path)
+    """Parse a profile directory. Every file is optional, and a present but
+    unusable one degrades to its default while being recorded in
+    ``errors`` -- see _read_json_lenient for why this never raises."""
+    errors: list[str] = []
 
-    footprint_defaults = {}
-    fd_path = directory / "footprint_defaults.json"
-    if fd_path.exists():
-        footprint_defaults = _read_json(fd_path)
+    def read(name: str) -> dict:
+        data, error = _read_json_lenient(directory / name)
+        if error:
+            errors.append(error)
+        return data
 
-    footprint_policy = {}
-    fp_path = directory / "footprint_policy.json"
-    if fp_path.exists():
-        footprint_policy = _read_json(fp_path)
-
-    document_settings = {}
-    ds_path = directory / "document_settings.json"
-    if ds_path.exists():
-        document_settings = _read_json(ds_path)
+    meta = read("profile.json")
+    footprint_defaults = read("footprint_defaults.json")
+    footprint_policy = read("footprint_policy.json")
+    document_settings = read("document_settings.json")
 
     naming_path = directory / "naming.json"
     company_goals_path = directory / "company_goals.json"
@@ -185,6 +230,7 @@ def load_profile(directory: Path) -> ActiveProfile:
         rules_dir=rules_dir if rules_dir.is_dir() else None,
         fab_profiles_dir=fab_profiles_dir if fab_profiles_dir.is_dir() else None,
         templates_dir=templates_dir if templates_dir.is_dir() else None,
+        errors=tuple(errors),
     )
 
 
@@ -212,7 +258,103 @@ def apply_env(start: Path | None = None) -> ActiveProfile | None:
     return profile
 
 
+# ---------------------------------------------------------------- file contents
+#
+# What a profile's values are allowed to BE lives here rather than at each
+# point of use, so that the tool consuming a setting and `profile-validate`
+# checking it can never disagree about what is valid. Consumers degrade to
+# the built-in default on a bad value (a typo must not break authoring or
+# startup); profile-validate is where the same check is reported loudly.
+
+#: Altium stores a rounded-rect pad's corner radius as a percentage, and
+#: 25 is its own typical value.
+PAD_CORNER_RADIUS_DEFAULT_PCT = 25
+
+#: The TUnit names sch_set_units accepts (see tools/generic.py).
+SCHEMATIC_UNITS = frozenset({"mil", "inch", "dxp", "auto_imperial",
+                             "mm", "cm", "m", "auto_metric"})
+
+
+def _as_percentage(value) -> int | None:
+    """A real 0-100 number as an int, or None if it is anything else.
+
+    ``bool`` is excluded deliberately: it is a subclass of int, so a
+    ``true`` in the JSON would otherwise arrive as a corner radius of 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not 0 <= value <= 100:
+        return None
+    return int(round(value))
+
+
+def _unknown_keys(data: dict, known: frozenset[str], filename: str) -> list[str]:
+    """A misspelled key is the quietest way for a profile to do nothing at
+    all, so it is named rather than ignored. Keys starting with "_" are
+    skipped: the scaffold writes "_comment" into these files, and a file
+    format with no room for a note invites one in the wrong place.
+    """
+    unknown = sorted(k for k in data if not k.startswith("_") and k not in known)
+    return [f"{filename}: unknown setting {k!r} (known: {sorted(known)})"
+            for k in unknown]
+
+
+_FOOTPRINT_DEFAULT_KEYS = frozenset({"pad_corner_radius_pct"})
+_DOCUMENT_SETTING_KEYS = frozenset({
+    "schematic_units", "pcb_units",
+    "schematic_snap_grid_mil", "schematic_visible_grid_mil"})
+
+
+def check_footprint_defaults(data: dict) -> list[str]:
+    problems = _unknown_keys(data, _FOOTPRINT_DEFAULT_KEYS, "footprint_defaults.json")
+    value = data.get("pad_corner_radius_pct")
+    if value is not None and _as_percentage(value) is None:
+        problems.append(
+            f"footprint_defaults.json: pad_corner_radius_pct must be a number "
+            f"from 0 to 100, got {value!r}")
+    return problems
+
+
+def check_document_settings(data: dict) -> list[str]:
+    problems = _unknown_keys(data, _DOCUMENT_SETTING_KEYS, "document_settings.json")
+    unit = data.get("schematic_units")
+    if unit is not None and unit not in SCHEMATIC_UNITS:
+        problems.append(
+            f"document_settings.json: schematic_units {unit!r} is not one of "
+            f"{sorted(SCHEMATIC_UNITS)}")
+    for key in ("schematic_snap_grid_mil", "schematic_visible_grid_mil"):
+        value = data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            problems.append(
+                f"document_settings.json: {key} must be a whole number of mils, "
+                f"got {value!r}")
+    return problems
+
+
+def get_pad_corner_radius_pct(start: Path | None = None) -> int:
+    """The active profile's pad corner radius %, or Altium's own default.
+
+    The one accessor for this value: tools/library.py reaches it from three
+    call sites, and when each read the raw dict instead, a non-numeric
+    setting was silently forwarded to Altium by one of them and raised
+    TypeError in another.
+    """
+    value = get_footprint_defaults(start).get("pad_corner_radius_pct")
+    resolved = _as_percentage(value) if value is not None else None
+    return PAD_CORNER_RADIUS_DEFAULT_PCT if resolved is None else resolved
+
+
 def get_footprint_defaults(start: Path | None = None) -> dict:
-    """Convenience read used by tools/library.py; {} when no profile is active."""
-    profile = get_active_profile(start)
-    return profile.footprint_defaults if profile else {}
+    """Convenience read used by tools/library.py; {} when no profile is active.
+
+    Reads ONLY footprint_defaults.json rather than going through
+    load_profile(): this sits on the pad-authoring path, and loading the
+    whole profile to reach one file read three others for nothing.
+    """
+    directory = resolve_profile_dir(start)
+    if directory is None:
+        return {}
+    data, _error = _read_json_lenient(directory / "footprint_defaults.json")
+    return data

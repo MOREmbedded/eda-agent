@@ -173,3 +173,75 @@ def test_apply_env_never_overrides_an_already_set_ipc_dir(tmp_path, monkeypatch)
 def test_apply_env_with_no_profile_is_a_noop(tmp_path):
     assert profile_mod.apply_env(tmp_path) is None
     assert "EDA_AGENT_IPC_DIR" not in os.environ
+
+
+# ---------------------------------------------------------------- broken profiles
+#
+# A profile is read from places that must not care whether it is any good:
+# apply_env() runs during server startup, and get_footprint_defaults() runs
+# on the pad-authoring path. Reading one used to raise, so a single stray
+# comma took down the whole MCP server, and a JSON file that parsed to a
+# list reached a caller's .get() as an AttributeError.
+
+def _broken_profile(tmp_path, filename: str, text: str):
+    d = tmp_path / "profile"
+    d.mkdir(exist_ok=True)
+    (d / filename).write_text(text, encoding="utf-8")
+    return d
+
+
+def test_malformed_json_is_recorded_rather_than_raised(tmp_path):
+    d = _broken_profile(tmp_path, "footprint_defaults.json", "{oops}")
+    p = profile_mod.load_profile(d)
+    assert p.footprint_defaults == {}
+    assert len(p.errors) == 1
+    assert "footprint_defaults.json" in p.errors[0]
+
+
+def test_json_that_is_not_an_object_is_recorded_rather_than_raised(tmp_path):
+    d = _broken_profile(tmp_path, "footprint_defaults.json", "[1, 2, 3]")
+    p = profile_mod.load_profile(d)
+    assert p.footprint_defaults == {}
+    assert "expected a JSON object" in p.errors[0]
+
+
+def test_every_optional_file_reports_its_own_problem(tmp_path):
+    d = tmp_path / "profile"
+    d.mkdir()
+    for name in ("profile.json", "footprint_defaults.json",
+                 "footprint_policy.json", "document_settings.json"):
+        (d / name).write_text("{nope}", encoding="utf-8")
+    p = profile_mod.load_profile(d)
+    assert len(p.errors) == 4
+    assert p.meta == {} and p.footprint_policy == {} and p.document_settings == {}
+
+
+def test_a_broken_profile_does_not_break_startup(tmp_path):
+    """apply_env() runs in server.py's main(): raising here took the server down."""
+    d = tmp_path / "company" / ".eda-agent" / "profile"
+    d.mkdir(parents=True)
+    (d / "profile.json").write_text("{oops}", encoding="utf-8")
+
+    result = profile_mod.apply_env(tmp_path / "company")
+    assert result is not None
+    assert result.errors
+
+
+def test_a_broken_profile_yields_empty_footprint_defaults(tmp_path, monkeypatch):
+    d = _broken_profile(tmp_path, "footprint_defaults.json", "{oops}")
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(d))
+    assert profile_mod.get_footprint_defaults() == {}
+
+
+def test_summary_carries_the_errors(tmp_path):
+    d = _broken_profile(tmp_path, "footprint_defaults.json", "{oops}")
+    summary = profile_mod.load_profile(d).summary()
+    assert summary["active"] is True
+    assert summary["errors"] and "footprint_defaults.json" in summary["errors"][0]
+
+
+def test_a_clean_profile_reports_no_errors(tmp_path):
+    d = _broken_profile(tmp_path, "footprint_defaults.json", '{"pad_corner_radius_pct": 1}')
+    p = profile_mod.load_profile(d)
+    assert p.errors == ()
+    assert p.summary()["errors"] == []

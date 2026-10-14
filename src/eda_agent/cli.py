@@ -346,17 +346,16 @@ def cmd_profile_show(*, as_json: bool) -> int:
             print(_json.dumps({"active": False}))
         else:
             print("No profile active here.")
+            # An override that points nowhere wins and then resolves to
+            # nothing, which otherwise reads as "I have no profile" when
+            # the real answer is "the path you gave me is wrong".
+            override = os.environ.get("EDA_AGENT_PROFILE_DIR")
+            if override and not Path(override).is_dir():
+                print(f"  (EDA_AGENT_PROFILE_DIR is set to {override}, "
+                      f"which is not a directory)", file=sys.stderr)
         return 0
-    data = {
-        "active": True, "directory": str(p.directory), "meta": p.meta,
-        "footprint_defaults": p.footprint_defaults,
-        "footprint_policy": p.footprint_policy,
-        "document_settings": p.document_settings,
-        "rulesets": p.rulesets(), "fab_profiles": p.fab_profile_names(),
-        "templates": p.template_names(),
-    }
     if as_json:
-        print(_json.dumps(data, indent=2))
+        print(_json.dumps(p.summary(), indent=2))
         return 0
     print(f"Profile: {p.meta.get('name', '(unnamed)')} -- {p.directory}")
     if p.meta.get("description"):
@@ -367,6 +366,8 @@ def cmd_profile_show(*, as_json: bool) -> int:
     print(f"  rulesets:           {p.rulesets() or '(none)'}")
     print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
     print(f"  templates:          {p.template_names() or '(none)'}")
+    for problem in p.errors:
+        print(f"  UNREADABLE: {problem}", file=sys.stderr)
     return 0
 
 
@@ -394,8 +395,15 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
         print(f"ERROR: {directory} does not exist.", file=sys.stderr)
         return 1
 
-    errors: list[str] = []
     p = profile_mod.load_profile(directory)
+    # Loading degrades rather than raising (so a typo cannot break startup or
+    # pad authoring), which makes this command the place those problems have
+    # to surface.
+    errors: list[str] = list(p.errors)
+    # The same checks the consumers apply, so "valid" here means the tools
+    # will accept it rather than refuse at the point of use.
+    errors += profile_mod.check_footprint_defaults(p.footprint_defaults)
+    errors += profile_mod.check_document_settings(p.document_settings)
 
     if p.naming_path:
         try:
