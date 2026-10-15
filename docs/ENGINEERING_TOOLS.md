@@ -150,6 +150,42 @@ directives, limits parallel processes, and enforces a timeout. On Windows the
 LTspice process is started hidden (`SW_HIDE`), so batch runs never flash a
 window on screen.
 
+### Simulating the schematic you have open
+
+`eng_ltspice_deck_from_schematic` builds the deck for you, which is the
+step that connects LTspice to the design rather than leaving it a
+calculator on the side. It reads the live sheet twice - the same SPICE
+classification `sim_get_readiness` reports, then the pin-to-net
+connectivity - and emits deck text. It runs nothing: pass the result to
+`eng_ltspice_run`, which sandboxes and safety-checks it.
+
+Read two parts of the response before running anything:
+
+- **`pin_order_assumptions`** lists every diode, transistor and FET whose
+  node order came from pin NUMBER order. SPICE reads terminals
+  positionally (`D1 anode cathode`, `Q1 collector base emitter`), so a
+  wrong order produces a deck that simulates cleanly and answers wrongly
+  - the worst failure available. R, L and C are never listed, because
+  their order cannot be wrong.
+- **`skipped`** gives a reason per omitted part, and **`net_renames`**
+  lists nets whose names SPICE could not accept (a `/` in a bus name,
+  for instance).
+
+`ground_net` (default `GND`) picks the net that becomes node 0. A
+schematic where nothing matched is refused rather than emitted: without
+a node 0 the deck either fails to converge or solves a different
+circuit.
+
+Parts needing a manufacturer model are the caller's decision.
+`on_missing_model="refuse"` (the default) emits nothing and names them,
+because a deck that silently drops a regulator still runs and still
+looks plausible. `on_missing_model="placeholder"` emits the rest and
+leaves each missing part as a comment, which is useful for an early look
+at a passive sub-circuit but will not run until the models are added.
+Fetch the vendor `.lib`/`.mdl` and attach it with `sim_attach_model`, or
+fix a `needs_primitive` part with `sim_attach_primitives`, then generate
+again.
+
 ## Altium 365
 
 Set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally

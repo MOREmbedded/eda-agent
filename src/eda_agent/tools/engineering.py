@@ -712,3 +712,104 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                 return _result(eco_preview.diff, sch, pcb)
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}
+
+        @mcp.tool()
+        async def eng_ltspice_deck_from_schematic(
+            analysis: str,
+            ground_net: str = "GND",
+            on_missing_model: str = "refuse",
+            title: str = "",
+            extra_directives: list[str] | None = None,
+        ) -> dict:
+            """Build an LTspice deck from the schematic open in Altium.
+
+            The missing half of the LTspice workflow: eng_ltspice_run
+            takes deck text, and until now you had to write that text
+            yourself. This reads the live sheet instead -- every
+            component's SPICE classification (the same pass
+            sim_get_readiness reports) plus the pin-to-net connectivity
+            -- and emits the deck.
+
+            It does NOT run anything. Read the report first, then hand
+            the deck to eng_ltspice_run, which sandboxes and
+            safety-checks it. Two parts of the report earn that pause:
+
+            - `pin_order_assumptions` names every diode, transistor and
+              FET whose node order was taken from pin NUMBER order.
+              SPICE reads terminals positionally, so a wrong order
+              simulates perfectly and answers wrongly. Passives are
+              never listed: their order cannot be wrong.
+            - `skipped` says why each omitted part was left out, and
+              `net_renames` lists nets whose names SPICE could not take.
+
+            Args:
+                analysis: the directive, without the dot: "tran 1m",
+                    "ac dec 100 1 1meg", "op". Checked against the
+                    analyses LTspice knows rather than interpolated.
+                ground_net: the net that becomes SPICE node 0 (default
+                    "GND"). A deck where nothing matched is refused: no
+                    node 0 means it will not converge, or will solve a
+                    different circuit.
+                on_missing_model: what to do about parts needing a
+                    manufacturer model. "refuse" (default) emits nothing
+                    and names them; "placeholder" emits everything else
+                    and leaves them as comments, so the deck is a
+                    starting point rather than something that runs.
+                title: first-line comment.
+                extra_directives: lines placed before the analysis, e.g.
+                    [".include mymodels.lib"].
+
+            Returns:
+                ok, deck, emitted, skipped, pin_order_assumptions,
+                net_renames, missing_models.
+            """
+            from ..bridge import get_bridge
+            from ..engineering import spice_netlist
+
+            try:
+                bridge = get_bridge()
+                readiness = await bridge.send_command_async(
+                    "generic.get_simulation_readiness", {})
+                if not isinstance(readiness, dict):
+                    return {"ok": False, "reason": "unreadable readiness response"}
+
+                ready = list(readiness.get("ready") or [])
+                needs_primitive = list(readiness.get("needs_primitive") or [])
+                needs_file = list(readiness.get("needs_file") or [])
+                components = ready + needs_primitive + needs_file
+                if not components:
+                    return {"ok": False, "reason":
+                            "no components on the active schematic, or no "
+                            "schematic is focused"}
+
+                designators = [str(c.get("designator", "")).strip()
+                               for c in components if c.get("designator")]
+                # The command is get_connectivity_BATCH; the tool that wraps
+                # it is named proj_get_connectivity_many, and the two do not
+                # match.
+                conn = await bridge.send_command_async(
+                    "project.get_connectivity_batch",
+                    {"designators": "~~".join(designators)})
+                by_designator = {
+                    str(c.get("designator", "")): list(c.get("pins") or [])
+                    for c in (conn.get("components") or [])
+                } if isinstance(conn, dict) else {}
+
+                result = spice_netlist.build_deck(
+                    components, by_designator,
+                    analysis=analysis,
+                    ground_net=ground_net,
+                    title=title or "eda-agent generated deck",
+                    extra_directives=tuple(extra_directives or ()),
+                    missing_models=tuple(
+                        str(c.get("designator", "")) for c in needs_file),
+                    on_missing_model=on_missing_model,
+                )
+                payload = result.to_dict()
+                if payload.get("ok"):
+                    payload["next_step"] = (
+                        "review pin_order_assumptions, then pass `deck` to "
+                        "eng_ltspice_run(project, netlist=deck)")
+                return payload
+            except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+                return {"ok": False, "reason": str(exc)}

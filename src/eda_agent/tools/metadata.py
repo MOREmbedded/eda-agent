@@ -146,6 +146,10 @@ _ENGINEERING_EXTERNAL = frozenset({
     "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
     "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
     "eng_a365_doctor", "eng_ltspice_run", "eng_ltspice_trace",
+    # Reads the live schematic (readiness + connectivity) before it can
+    # emit anything, unlike the rest of the eng_ltspice_* family, which
+    # parses text it was handed.
+    "eng_ltspice_deck_from_schematic",
 })
 # pcb / audit / simulation -> live_only; design is mixed (mostly offline,
 # handled by the offline classifier below).
