@@ -740,6 +740,8 @@ Begin
     AgeAfter := -1;
     Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
     Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
+    { Written, so a later stop has nothing of this edit left to save. }
+    If Saved Then ForgetDocEdited(FilePath);
 
     Reason := '';
     If Not Saved Then

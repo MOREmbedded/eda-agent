@@ -3,6 +3,7 @@
 """Library management tools for Altium Designer MCP Server."""
 
 import asyncio
+import math
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -487,10 +488,15 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
     """The ``regions`` batch payload for library.add_footprint_regions.
 
     Each region is ``{"layer": ..., "points": [[x, y], ...]}``; points go
-    out as ``x,y`` pairs joined by ``/``, unrounded. Returns
-    ``(payload, problems)``: a region with no layer or fewer than three
-    numeric points is named in ``problems`` and left out, never sent with
-    a guessed layer or a point read as zero.
+    out as ``x,y`` pairs joined by ``/``, unrounded. A point given as
+    ``[x, y, sweep]`` makes the edge from it to the next point a true arc
+    of ``sweep`` degrees, counterclockwise when positive; those edges go
+    out in an ``arcs`` field as ``index,cx,cy,radius,angle1,angle2``, the
+    index 1-based and the angles Altium's, which always run
+    counterclockwise from angle1 to angle2. Returns ``(payload,
+    problems)``: a region with no layer, fewer than three numeric points
+    or an arc that cannot be drawn is named in ``problems`` and left out,
+    never sent with a guessed layer or a point read as zero.
     """
     ops: list[str] = []
     problems: list[str] = []
@@ -504,19 +510,78 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
             continue
         pts = region.get("points")
         try:
-            pairs = [(float(p[0]), float(p[1])) for p in pts]
+            verts = [(float(p[0]), float(p[1]),
+                      float(p[2]) if len(p) > 2 else 0.0) for p in pts]
         except (TypeError, ValueError, IndexError, KeyError):
-            problems.append(f"region {i} points must be [x, y] number pairs")
+            problems.append(f"region {i} points must be [x, y] or "
+                            "[x, y, sweep] numbers")
             continue
-        if len(pairs) > 3 and pairs[0] == pairs[-1]:
-            pairs = pairs[:-1]
-        if len(pairs) < 3:
+        if len(verts) > 3 and verts[0][:2] == verts[-1][:2]:
+            verts = verts[:-1]
+        if len(verts) < 3:
             problems.append(f"region {i} needs at least three points")
             continue
+        arcs: list[str] = []
+        bad_arc = ""
+        for k, (x, y, sweep) in enumerate(verts):
+            if not sweep:
+                continue
+            nx, ny, _ = verts[(k + 1) % len(verts)]
+            arc = _edge_arc(x, y, nx, ny, sweep)
+            if isinstance(arc, str):
+                bad_arc = f"region {i} point {k}: {arc}"
+                break
+            cx, cy, r, a1, a2 = arc
+            arcs.append(f"{k + 1},{format_length(cx)},{format_length(cy)},"
+                        f"{format_length(r)},{_angle_text(a1)},{_angle_text(a2)}")
+        if bad_arc:
+            problems.append(bad_arc)
+            continue
         points = "/".join(f"{format_length(x)},{format_length(y)}"
-                          for x, y in pairs)
-        ops.append(f"layer={_payload_safe(layer)};points={points}")
+                          for x, y, _ in verts)
+        op = f"layer={_payload_safe(layer)};points={points}"
+        if arcs:
+            op += ";arcs=" + "/".join(arcs)
+        ops.append(op)
     return "~~".join(ops), problems
+
+
+def _edge_arc(x1: float, y1: float, x2: float, y2: float,
+              sweep: float) -> tuple[float, float, float, float, float] | str:
+    """The circle of an edge drawn as an arc from (x1, y1) to (x2, y2)
+    that sweeps ``sweep`` degrees, counterclockwise when positive.
+
+    Returns ``(cx, cy, radius, angle1, angle2)`` with the angles in
+    Altium's sense, counterclockwise from angle1 to angle2 and each in
+    [0, 360), so a clockwise edge has its start at angle2. Returns the
+    reason as a string when there is no such arc.
+    """
+    if not math.isfinite(sweep) or abs(sweep) >= 360:
+        return f"sweep {sweep:g} must be between -360 and 360 degrees"
+    dx, dy = x2 - x1, y2 - y1
+    chord = math.hypot(dx, dy)
+    if chord == 0:
+        return "an arc needs its end point apart from its start"
+    half = math.radians(abs(sweep)) / 2
+    radius = chord / (2 * math.sin(half))
+    # The centre sits on the chord's perpendicular bisector, on the left
+    # of the travel for a counterclockwise arc under 180 degrees and on
+    # the right past it; cos(half) changes sign at 180 and does both.
+    offset = radius * math.cos(half) * (1 if sweep > 0 else -1)
+    cx = (x1 + x2) / 2 - dy / chord * offset
+    cy = (y1 + y2) / 2 + dx / chord * offset
+    start = math.degrees(math.atan2(y1 - cy, x1 - cx)) % 360
+    end = math.degrees(math.atan2(y2 - cy, x2 - cx)) % 360
+    if sweep > 0:
+        return cx, cy, radius, start, end
+    return cx, cy, radius, end, start
+
+
+def _angle_text(deg: float) -> str:
+    """An angle for the wire: ten decimals, trailing zeros dropped, and a
+    value that rounds to 360 sent as 0."""
+    text = f"{round(deg, 10) % 360:.10f}".rstrip("0").rstrip(".")
+    return text if text not in ("", "-0") else "0"
 
 
 def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -2286,18 +2351,22 @@ def register_library_tools(mcp):
                 three or more points each, relative to the footprint
                 origin. The layer is REQUIRED: there is no default,
                 because a solid shape defaulted onto copper is a short.
-                The outline is straight segments between the points: a
-                script-built contour holds no true arc, so send a curve
-                as short segments.
+                A point given as ``[x, y, sweep]`` makes the edge from it
+                to the next point a true arc of ``sweep`` degrees,
+                counterclockwise when positive (a round end of a slot is
+                180 or -180); the region then holds the arc itself, as one
+                drawn with Place Region does, not a run of short lines.
+                Every other edge is a straight line.
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.
             units: "mil" (default) or "mm", for every point, kept exact.
 
         Returns:
-            Dict with added, failed, bad_points, unknown_layers, total. A
-            region refused here before sending is listed in
-            ``refused`` with the reason.
+            Dict with added, failed, bad_points, unknown_layers, total,
+            and arc_edges: the arc edges the created regions read back
+            as holding. A region refused here before sending is listed
+            in ``refused`` with the reason.
         """
         refusal = _units_refusal(units)
         if refusal:
@@ -6002,7 +6071,8 @@ def register_library_tools(mcp):
             body_layers (the layer of each body), tracks
             [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
             layer_id, xc, yc, r, start, end, width}], regions and fills
-            [{layer, layer_id, x1, y1, x2, y2, area (regions)}], texts
+            [{layer, layer_id, x1, y1, x2, y2, area and arc_edges
+            (regions)}], texts
             [{text, layer, layer_id, x, y, size, rotation, x1, y1, x2,
             y2}], vias [{x, y, diameter, hole}]}. A text's box is
             Altium's cached one and can lag an edit made this session.

@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.14.7';
+    SCRIPT_VERSION = '2026.10.15.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -773,13 +773,12 @@ Begin
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
         Try ServerDoc.SetModified(True); Except End;
         Try ServerDoc.DoFileSave(''); Except End;
-        { Once written, a library has nothing pending until the next edit. }
-        If IsLibraryDocPath(Path) Then
-        Begin
-            AgeAfter := -1;
-            Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
-            If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
-        End;
+        { Once written, a document has nothing pending until the next edit. }
+        { Any kind, not only libraries: a stop saves what was edited, and a  }
+        { sheet left marked would be rewritten by every later stop.          }
+        AgeAfter := -1;
+        Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
 End;
 
 Procedure SaveProjectMembers(Project : IProject);

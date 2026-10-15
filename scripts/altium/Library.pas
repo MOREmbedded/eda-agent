@@ -2012,13 +2012,61 @@ Begin
     End;
 End;
 
+{ RegionArcField - one field of the arc on the edge that starts at vertex    }
+{ Which (1-based), from an arcs field of 'index,cx,cy,radius,angle1,angle2'  }
+{ entries joined by '/'. Field 0 is cx and 4 is angle2. '' when that edge    }
+{ has no arc entry, or the entry is short.                                    }
+Function RegionArcField(ArcsStr : String; Which : Integer; Field : Integer) : String;
+Var
+    Rest, Entry, IndexStr : String;
+    SlashPos, CommaPos, K : Integer;
+Begin
+    Result := '';
+    Rest := Trim(ArcsStr);
+    While Rest <> '' Do
+    Begin
+        SlashPos := Pos('/', Rest);
+        If SlashPos = 0 Then
+        Begin
+            Entry := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Entry := Copy(Rest, 1, SlashPos - 1);
+            Rest := Copy(Rest, SlashPos + 1, Length(Rest));
+        End;
+        CommaPos := Pos(',', Entry);
+        If CommaPos = 0 Then Continue;
+        IndexStr := Trim(Copy(Entry, 1, CommaPos - 1));
+        If Not IsIntStr(IndexStr) Then Continue;
+        If StrToInt(IndexStr) <> Which Then Continue;
+        Entry := Copy(Entry, CommaPos + 1, Length(Entry));
+        For K := 1 To Field Do
+        Begin
+            CommaPos := Pos(',', Entry);
+            If CommaPos = 0 Then Exit;
+            Entry := Copy(Entry, CommaPos + 1, Length(Entry));
+        End;
+        CommaPos := Pos(',', Entry);
+        If CommaPos = 0 Then Result := Trim(Entry)
+        Else Result := Trim(Copy(Entry, 1, CommaPos - 1));
+        Exit;
+    End;
+End;
+
 { Lib_AddFootprintRegions - solid polygon regions in a PcbLib footprint:     }
 { paste windows over an exposed pad, or any filled shape on a named layer.   }
 {                                                                              }
 { Params: units (mil default, or mm), footprint_name (optional), regions:    }
 {   '~~' separated ops, ';' separated fields:                                 }
-{     layer=TopPaste;points=x1,y1/x2,y2/x3,y3[/...]                           }
+{     layer=TopPaste;points=x1,y1/x2,y2/x3,y3[/...][;arcs=i,cx,cy,r,a1,a2/..] }
 { Points are relative to the footprint origin, three or more per region.     }
+{ An arcs entry makes the edge from vertex i (1-based) to the next a true    }
+{ arc: centre cx,cy (footprint-relative), radius r, and Altium's angles,     }
+{ counterclockwise from a1 to a2. Such a region is built from shape segments }
+{ (ShapeSegments, then UpdateContourFromShape), as Place Region builds one,  }
+{ so it keeps the arc; one with no arcs keeps the plain contour route.       }
 { A region with no layer is refused rather than defaulted: the only default  }
 { the other authoring calls have is copper or silkscreen, and a solid shape  }
 { dropped on top copper by default is a short.                               }
@@ -2029,14 +2077,16 @@ End;
 { or the save discards it.                                                    }
 Function Lib_AddFootprintRegions(Params : String; RequestId : String) : String;
 Var
-    RegionsStr, Op, Remaining, LayerStr, BadLayers, PointsStr : String;
-    OpCount, Added, Failed, BadPoints, NPts, I : Integer;
+    RegionsStr, Op, Remaining, LayerStr, BadLayers, PointsStr, ArcsStr : String;
+    OpCount, Added, Failed, BadPoints, NPts, I, K, ArcEdges : Integer;
     UnitsStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     TargetProblem : String;
     Region : IPCB_Region;
     Contour : IPCB_Contour;
+    Seg : TPolySegment;
+    ArcsOk : Boolean;
     Layer : TLayer;
     OrgX, OrgY : TCoord;
 Begin
@@ -2072,6 +2122,7 @@ Begin
     Added := 0;
     Failed := 0;
     BadPoints := 0;
+    ArcEdges := 0;
     OpCount := 0;
     BadLayers := '';
     Remaining := RegionsStr;
@@ -2106,6 +2157,23 @@ Begin
                 Continue;
             End;
 
+            { Every field of every arc a number, or the region is refused  }
+            { rather than drawn with a centre read as zero.                 }
+            ArcsStr := GetBatchField(Op, 'arcs');
+            ArcsOk := True;
+            If ArcsStr <> '' Then
+                For I := 1 To NPts Do
+                    If RegionArcField(ArcsStr, I, 0) <> '' Then
+                        For K := 0 To 4 Do
+                            If Not IsFloatStr(RegionArcField(ArcsStr, I, K)) Then
+                                ArcsOk := False;
+            If Not ArcsOk Then
+            Begin
+                Inc(BadPoints);
+                Inc(Failed);
+                Continue;
+            End;
+
             Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
             If Region = Nil Then
             Begin
@@ -2113,16 +2181,54 @@ Begin
                 Continue;
             End;
             Region.Layer := Layer;
-            Contour := Region.MainContour.Replicate;
-            Contour.Count := NPts;
-            For I := 1 To NPts Do
+            If ArcsStr = '' Then
             Begin
-                Contour.X[I] := OrgX + CoordFromUnits(
-                    StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), UnitsStr);
-                Contour.Y[I] := OrgY + CoordFromUnits(
-                    StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), UnitsStr);
+                Contour := Region.MainContour.Replicate;
+                Contour.Count := NPts;
+                For I := 1 To NPts Do
+                Begin
+                    Contour.X[I] := OrgX + CoordFromUnits(
+                        StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), UnitsStr);
+                    Contour.Y[I] := OrgY + CoordFromUnits(
+                        StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), UnitsStr);
+                End;
+                Region.SetOutlineContour(Contour);
+            End
+            Else
+            Begin
+                { One segment per vertex, each carrying the edge that     }
+                { leaves it; the count grows with each write, as in the     }
+                { shape-segment samples this follows.                       }
+                For I := 1 To NPts Do
+                Begin
+                    Seg := TPolySegment;
+                    Seg.vx := OrgX + CoordFromUnits(
+                        StrToFloatDef(RegionPointCoord(PointsStr, I, True), 0), UnitsStr);
+                    Seg.vy := OrgY + CoordFromUnits(
+                        StrToFloatDef(RegionPointCoord(PointsStr, I, False), 0), UnitsStr);
+                    If RegionArcField(ArcsStr, I, 0) <> '' Then
+                    Begin
+                        Seg.Kind := ePolySegmentArc;
+                        Seg.cx := OrgX + CoordFromUnits(
+                            StrToFloatDef(RegionArcField(ArcsStr, I, 0), 0), UnitsStr);
+                        Seg.cy := OrgY + CoordFromUnits(
+                            StrToFloatDef(RegionArcField(ArcsStr, I, 1), 0), UnitsStr);
+                        Seg.Radius := CoordFromUnits(
+                            StrToFloatDef(RegionArcField(ArcsStr, I, 2), 0), UnitsStr);
+                        Seg.Angle1 := StrToFloatDef(RegionArcField(ArcsStr, I, 3), 0);
+                        Seg.Angle2 := StrToFloatDef(RegionArcField(ArcsStr, I, 4), 0);
+                    End
+                    Else
+                        Seg.Kind := ePolySegmentLine;
+                    Region.ShapeSegmentCount := I;
+                    Region.ShapeSegments[I - 1] := Seg;
+                End;
+                Region.UpdateContourFromShape(True);
+                { Counted off the region, so the reply says what it holds. }
+                For I := 0 To Region.ShapeSegmentCount - 1 Do
+                    If Region.ShapeSegments[I].Kind = ePolySegmentArc Then
+                        Inc(ArcEdges);
             End;
-            Region.SetOutlineContour(Contour);
 
             Footprint.AddPCBObject(Region);
             PcbLib.Board.AddPCBObject(Region);
@@ -2141,6 +2247,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
         + ',"bad_points":' + IntToStr(BadPoints)
+        + ',"arc_edges":' + IntToStr(ArcEdges)
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
@@ -11233,6 +11340,7 @@ Var
     TRect : TCoordRect;
     XOrg, YOrg, LayerId : Integer;
     NTracks, NArcs, NRegions, NFills, NTexts, NBodies, NVias : Integer;
+    RegionArcs, SegI : Integer;
     HeightMM, AreaMM2 : Double;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -11427,6 +11535,15 @@ Begin
                 Try LayerId := Region.Layer; Except End;
                 AreaMM2 := 0;
                 Try AreaMM2 := Region.Area / 100000000.0 * 0.00064516; Except End;
+                { Edges held as true arcs; 0 for a region of straight lines. }
+                RegionArcs := 0;
+                Try
+                    For SegI := 0 To Region.ShapeSegmentCount - 1 Do
+                        If Region.ShapeSegments[SegI].Kind = ePolySegmentArc Then
+                            Inc(RegionArcs);
+                Except
+                    RegionArcs := 0;
+                End;
                 Rec := '';
                 Try
                     TRect := Region.BoundingRectangle;
@@ -11436,7 +11553,8 @@ Begin
                         + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
                         + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
                         + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
-                        + ',"area":' + FloatToJsonStr(AreaMM2) + '}';
+                        + ',"area":' + FloatToJsonStr(AreaMM2)
+                        + ',"arc_edges":' + IntToStr(RegionArcs) + '}';
                 Except
                     Rec := '';
                 End;

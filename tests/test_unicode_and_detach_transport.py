@@ -181,5 +181,12 @@ def test_stopping_writes_only_edited_documents():
     gate = save.index("If SaveScope = 'edited' Then")
     assert "(Not ServerDoc.Modified) And (Not DocWasEdited(Path))" in save[gate:]
     assert gate < save.index("ServerDoc.SetModified(True)")
+    # A written document comes off the edited list whatever its kind, or a
+    # sheet edited once is rewritten by every later stop.
+    forget = save[save.index("ServerDoc.DoFileSave('')"):]
+    assert "ForgetDocEdited(Path)" in forget
+    assert "IsLibraryDocPath" not in forget
+    one = _decommented(_body(_src("Application.pas"), "App_SaveDocument"))
+    assert "If Saved Then ForgetDocEdited(FilePath);" in one
     # app_save_all keeps the full flush: its scope is never 'edited'.
     assert "SaveScope" not in _decommented(_body(_src("Application.pas"), "App_SaveAll"))
