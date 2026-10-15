@@ -592,8 +592,13 @@ class AltiumBridge:
         self._ensure_workspace_fast()
         request_path = self._request_path(request.id)
         tmp_path = request_path.with_suffix(".json.tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(request.to_dict(), f, indent=2)
+        # Literal characters behind a UTF-8 byte-order mark. Pascal reads
+        # the file with TStringList.LoadFromStream, which takes the mark as
+        # UTF-8 and reads a file without one in the ANSI codepage. A \uXXXX
+        # escape is no way round that: UnescapeJsonString can only turn
+        # 0..255 into a character, so a Chinese path arrived as '?'.
+        with open(tmp_path, "w", encoding="utf-8-sig") as f:
+            json.dump(request.to_dict(), f, indent=2, ensure_ascii=False)
         # The rename can lose a race with a Windows scanner holding the
         # target. Retried, then allowed to raise: a request that is never
         # published leaves the caller waiting out the full poll timeout

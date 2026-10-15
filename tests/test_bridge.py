@@ -92,7 +92,7 @@ class TestAltiumBridge:
         request_path = temp_workspace / f"request_{request.id}.json"
         assert request_path.exists()
 
-        with open(request_path, encoding="utf-8") as f:
+        with open(request_path, encoding="utf-8-sig") as f:
             data = json.load(f)
             assert data['command'] == "test.command"
             assert data['params'] == {"key": "value"}

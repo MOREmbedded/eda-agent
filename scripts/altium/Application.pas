@@ -760,6 +760,22 @@ End;
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
+{ Stop the polling loop. Documents a tool edited, or that the editor marks  }
+{ modified, are saved first; a clean document is not touched, so detaching  }
+{ never rewrites a file nobody changed. app_save_all keeps its full flush.  }
+Function App_StopServer(RequestId : String) : String;
+Begin
+    SaveScope := 'edited';
+    CleanLeftAlone := 0;
+    SaveAttempts := 0;
+    Try SaveAllDirty(0); Except End;
+    SaveScope := '';
+    Running := False;
+    Result := BuildSuccessResponse(RequestId, '{"stopped":true,"edited_saved":'
+        + IntToStr(SaveAttempts) + ',"clean_left_alone":'
+        + IntToStr(CleanLeftAlone) + '}');
+End;
+
 Function App_SaveAll(RequestId : String) : String;
 Var
     StillDirty, Seen, Written, P : Integer;
@@ -996,7 +1012,7 @@ Begin
         'save_all':            Result := App_SaveAll(RequestId);
         'save_document':       Result := App_SaveDocument(Params, RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
-        'stop_server':         Begin SaveAllDirty(0); Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
+        'stop_server':         Result := App_StopServer(RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

@@ -180,10 +180,13 @@ _UTF8_BOM = bytes((0xEF, 0xBB, 0xBF))
 
 
 def _stamp_deployed_unit(path: Path) -> None:
-    """Write the unit's content hash into its UnitStamp function.
+    """Write the unit's content hash into its UnitStamp function, and drop
+    any byte-order mark.
 
     Only the deployed copy is stamped; the repository keeps 'dev'. See
     eda_agent/script_stamps.py for why one version constant is not enough.
+    Altium Designer 21 reads a mark as source text and stops on line 1 with
+    "Invalid constant", so no deployed unit carries one.
     """
     from .script_stamps import has_stamp, stamp_source
 
@@ -191,8 +194,9 @@ def _stamp_deployed_unit(path: Path) -> None:
     bom = raw.startswith(_UTF8_BOM)
     text = raw.decode("utf-8-sig")
     if has_stamp(text):
-        path.write_bytes((_UTF8_BOM if bom else b"")
-                         + stamp_source(text).encode("utf-8"))
+        path.write_bytes(stamp_source(text).encode("utf-8"))
+    elif bom:
+        path.write_bytes(raw[len(_UTF8_BOM):])
 
 
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:

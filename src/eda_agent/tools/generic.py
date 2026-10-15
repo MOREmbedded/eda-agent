@@ -836,7 +836,8 @@ def register_generic_tools(mcp):
                 - filter: Pipe-separated filter conditions
                   (e.g., "Designator.Text=U1", "Name=VDD")
                 - set: Pipe-separated property=value assignments
-                  (e.g., "Location.X=300|Location.Y=-100|Orientation=2")
+                  (e.g., "Location.X=300|Location.Y=-100|Orientation=2").
+                  A value may contain ';' (Text=first;second) but not '|'.
 
         Returns:
             Dictionary with operations_processed, operations_skipped,
@@ -900,12 +901,26 @@ def register_generic_tools(mcp):
         # first were dropped without a trace (observed: 4 eSchComponent ops
         # followed by 8 eNetLabel ops reported operations_processed=4).
         # '~~' cannot occur in an Altium name, filter, or property string.
+        # set goes LAST and the script reads everything after ';set=', so a
+        # value may hold ';' (Text=first;second). The fields before it
+        # cannot, and nothing can hold '~~'; same refusal as obj_batch_delete.
         op_strings = []
-        for op in operations:
+        for i, op in enumerate(operations):
             scope = op.get("scope", "active_doc")
             obj_type = op.get("object_type", "")
             filt = op.get("filter", "")
             set_str = op.get("set", "")
+            for field, value, delims in (("scope", scope, (";", "~~")),
+                                         ("object_type", obj_type, (";", "~~")),
+                                         ("filter", filt, (";", "~~")),
+                                         ("set", set_str, ("~~",))):
+                hit = [d for d in delims if d in str(value)]
+                if hit:
+                    return {"ok": False, "reason":
+                            f"operations[{i}].{field} contains '{hit[0]}', a "
+                            "batch delimiter the wire format cannot carry "
+                            "there; nothing was sent",
+                            "operations_processed": 0}
             if not obj_type or not set_str:
                 continue
             bad = filter_problem(filt)

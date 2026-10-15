@@ -672,7 +672,8 @@ class AltiumSimulator:
         # spin forever -- reporting an error response, so the caller
         # learns the reason rather than waiting out the deadline.
         try:
-            content = request_path.read_text(encoding="utf-8")
+            # utf-8-sig, as LoadFromStream does: the bridge writes a mark.
+            content = request_path.read_text(encoding="utf-8-sig")
         except (IOError, OSError, UnicodeDecodeError) as exc:
             key = str(request_path)
             attempts = self._read_failures.get(key, 0) + 1

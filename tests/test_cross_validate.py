@@ -1071,6 +1071,9 @@ def run_python(fn_name: str, args: list[str]) -> str:
     if fn_name == 'GetBatchField':
         return get_batch_field(args[0], args[1])
 
+    elif fn_name == 'GetBatchTail':
+        return get_batch_tail(args[0], args[1])
+
     elif fn_name == 'BatchFieldSweep':
         return batch_field_sweep(args[0], args[1])
 
@@ -1285,6 +1288,18 @@ def get_batch_field(op: str, key: str) -> str:
     return ""
 
 
+def get_batch_tail(op: str, key: str) -> str:
+    """Main.pas GetBatchTail: everything after the first ';<key>=', or after
+    '<key>=' at the very start."""
+    marker = ";" + key.lower() + "="
+    p = op.lower().find(marker)
+    if p >= 0:
+        return op[p + len(marker):]
+    if op.lower().startswith(key.lower() + "="):
+        return op[len(key) + 1:]
+    return ""
+
+
 def batch_field_sweep(payload: str, key: str) -> str:
     """Every operation's value for one key, joined with '|'."""
     out = []
@@ -1337,6 +1352,14 @@ def generate_batch_field_cases():
         ("BatchFieldSweep", ["designator=1;name=~A~~designator=2;name=~B",
                              "name"]),
         ("BatchFieldSweep", ["a=1", "a"]),
+        # The set field is read to the end, so its text keeps a ';'.
+        ("GetBatchTail", ["scope=active_doc;object_type=eLabel;"
+                          "filter=Location.X=100;set=Text=first;second", "set"]),
+        ("GetBatchTail", ["scope=a;SET=Text=x", "set"]),
+        ("GetBatchTail", ["set=Text=a;b", "set"]),
+        ("GetBatchTail", ["scope=a;filter=b", "set"]),
+        ("GetBatchTail", ["scope=a;set=", "set"]),
+        ("GetBatchTail", ["scope=a;set=Text=x;set=y", "set"]),
     ]
 
     # And the real thing: payloads the Altium emitter produces.

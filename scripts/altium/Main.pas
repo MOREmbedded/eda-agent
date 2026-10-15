@@ -1,4 +1,4 @@
-﻿{ SPDX-License-Identifier: Apache-2.0                                   }
+{ SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
 { Main.pas - Constants, IPC primitives and JSON helpers for the Altium bridge   }
@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.14.6';
+    SCRIPT_VERSION = '2026.10.14.7';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -95,6 +95,12 @@ Var
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
     SavePassSeen : String;
+    { 'edited' while application.stop_server saves: only documents the  
+      editor marks modified or a tool recorded are written, and
+      CleanLeftAlone counts the rest. '' (as at startup) is the forced
+      flush app_save_all relies on. See SaveOneDocByDocRef. }
+    SaveScope : String;
+    CleanLeftAlone : Integer;
     LastCompiledProject : IProject;
 
     { Silent cast-failure counter, incremented every time a defensive       }
@@ -222,6 +228,24 @@ Begin
             End;
         End;
     End;
+End;
+
+{ The value of an op's LAST field, everything after ';<key>='. GetBatchField  }
+{ stops at the next ';', which cut a batch_modify set of Text=first;second    }
+{ to Text=first. Python writes set last and refuses a ';' in the fields      }
+{ before it, so the first ';set=' is the real one.                           }
+Function GetBatchTail(Op : String; Key : String) : String;
+Var
+    Marker : String;
+    P : Integer;
+Begin
+    Result := '';
+    Marker := ';' + LowerCase(Key) + '=';
+    P := Pos(Marker, LowerCase(Op));
+    If P > 0 Then
+        Result := Copy(Op, P + Length(Marker), Length(Op))
+    Else If Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 Then
+        Result := Copy(Op, Length(Key) + 2, Length(Op));
 End;
 
 {..............................................................................}
@@ -725,6 +749,19 @@ Begin
             If SkippedLibNames <> '' Then SkippedLibNames := SkippedLibNames + '|';
             SkippedLibNames := SkippedLibNames + ExtractFileName(Path);
             Exit;
+        End;
+
+        { STOPPING THE BRIDGE WRITES ONLY WHAT WAS EDITED. The forced flush   }
+        { below rewrote every clean schematic open in Altium on each detach. }
+        { An edit the Modified flag missed is not lost by skipping it: the   }
+        { editor still holds it and asks on close.                           }
+        If SaveScope = 'edited' Then
+        Begin
+            If (Not ServerDoc.Modified) And (Not DocWasEdited(Path)) Then
+            Begin
+                CleanLeftAlone := CleanLeftAlone + 1;
+                Exit;
+            End;
         End;
 
         { Unconditional flush, Modified flag does not always propagate from   }
@@ -1363,10 +1400,11 @@ Begin
             Else If NextCh = 'f' Then Begin Result := Result + #12; Inc(I, 2); End
             Else If NextCh = 'u' Then
             Begin
-                // \uXXXX, 4 hex digits. Codepoints <= 255 are emitted as a
-                // single ANSI byte (Pascal native). Higher codepoints can't
-                // be represented in single-byte ANSI; replaced with '?' so
-                // downstream string handling doesn't see truncated bytes.
+                // \uXXXX, 4 hex digits. Codepoints <= 255 become one
+                // character; higher ones are replaced with '?'. The bridge
+                // sends non-ASCII as literal UTF-8 behind a byte-order mark
+                // (_publish_request), so only control characters arrive
+                // escaped from it.
                 If I + 5 <= L Then
                 Begin
                     HexStr := Copy(S, I + 2, 4);
@@ -1635,9 +1673,10 @@ Begin
     End;
 
     // Inline escape (EscapeJsonString is not yet declared in build order).
-    // Must also \u00XX-escape control and non-ASCII bytes: one raw byte
-    // >127 in an error message (an accented file path, say) makes the whole
-    // response unparseable on the Python side and hides the real error.
+    // Must also \uXXXX-escape control and non-ASCII characters: one raw
+    // byte >127 in an error message (an accented file path, say) makes the
+    // whole response unparseable on the Python side and hides the real
+    // error. All four digits: a CJK path is above 255.
     HexDigits := '0123456789abcdef';
     EscMsg := '';
     For I := 1 To Length(ErrorMsg) Do
@@ -1650,7 +1689,9 @@ Begin
         Else If O = 10 Then EscMsg := EscMsg + '\n'
         Else If O = 9 Then EscMsg := EscMsg + '\t'
         Else If (O < 32) Or (O >= 128) Then
-            EscMsg := EscMsg + '\u00'
+            EscMsg := EscMsg + '\u'
+                + Copy(HexDigits, ((O Shr 12) And $F) + 1, 1)
+                + Copy(HexDigits, ((O Shr 8) And $F) + 1, 1)
                 + Copy(HexDigits, ((O Shr 4) And $F) + 1, 1)
                 + Copy(HexDigits, (O And $F) + 1, 1)
         Else

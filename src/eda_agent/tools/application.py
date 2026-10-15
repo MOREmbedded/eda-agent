@@ -751,10 +751,10 @@ def register_application_tools(mcp):
         loop is released.
 
         Call this tool once you've finished your Altium work for the session.
-        It flushes every dirty document via save_all, then sends
-        application.stop_server so the DelphiScript loop exits cleanly
-        within ~500 ms and stops the Python keep-alive. Altium becomes
-        immediately fully responsive.
+        It sends application.stop_server, which saves the documents a tool
+        edited or the editor marks modified and leaves every clean document
+        untouched, then exits the DelphiScript loop within ~500 ms. The
+        Python keep-alive stops and Altium becomes fully responsive.
 
         NOTE: After detach, the Altium script has fully stopped. To run more
         MCP tools later in the same Altium session the user must re-launch
@@ -762,17 +762,36 @@ def register_application_tools(mcp):
         confident you're done.
 
         Returns:
-            Dictionary confirming detachment
+            attached False always; stopped True only when Altium answered
+            that its loop stopped, with edited_saved and clean_left_alone
+            counts. Otherwise stopped False and the reason: the loop may
+            still be running.
         """
         bridge = get_bridge()
+        reply: Any = None
+        reason = ""
         try:
-            await bridge.send_command_async("application.stop_server", timeout=60.0)
-        except Exception:
-            pass  # Server may already be stopped
+            reply = await bridge.send_command_async("application.stop_server",
+                                                    timeout=60.0)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{type(exc).__name__}: {exc}"
         bridge.detach()
+        if isinstance(reply, dict) and reply.get("stopped") is True:
+            out = {"attached": False, "stopped": True,
+                   "message": "Detached from Altium Designer and stopped MCP server"}
+            for key in ("edited_saved", "clean_left_alone"):
+                if key in reply:
+                    out[key] = reply[key]
+            return out
+        if not reason:
+            reason = f"Altium did not confirm the stop (reply: {reply!r})"
         return {
             "attached": False,
-            "message": "Detached from Altium Designer and stopped MCP server",
+            "stopped": False,
+            "reason": reason,
+            "message": ("Detached on this side, but Altium did not confirm its "
+                        "polling loop stopped. If it was already stopped this is "
+                        "harmless; otherwise app_ping shows it still answering."),
         }
 
     @mcp.tool()

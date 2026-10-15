@@ -10193,7 +10193,7 @@ Begin
         GridXCnt := Trunc(CoordToMils(PadW) / GridSize);
         GridYCnt := Trunc(CoordToMils(PadH) / GridSize);
 
-        { Inner loop -- shrink grid count until gap is ≥ MinGap.             }
+        { Inner loop -- shrink grid count until gap is >= MinGap.             }
         GridXPad := 0; GridYPad := 0;
         While (GridXPad < MinGap) Or (GridYPad < MinGap) Do
         Begin

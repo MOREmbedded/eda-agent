@@ -511,6 +511,21 @@ begin
   end;
 end;
 
+{ GetBatchTail -- copied VERBATIM from Main.pas. }
+function GetBatchTail(Op : String; Key : String) : String;
+var
+  Marker : String;
+  P : Integer;
+begin
+  Result := '';
+  Marker := ';' + LowerCase(Key) + '=';
+  P := Pos(Marker, LowerCase(Op));
+  if P > 0 then
+    Result := Copy(Op, P + Length(Marker), Length(Op))
+  else if Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 then
+    Result := Copy(Op, Length(Key) + 2, Length(Op));
+end;
+
 { ---------------------------------------------------------------------------
   IEEE pin-symbol converters, copied VERBATIM from scripts/altium/Utils.pas.
   These decide whether an active-low pin gets its inversion bubble and a clock
@@ -1034,6 +1049,12 @@ begin
     else if FnName = 'GetBatchField' then
     begin
       ResultStr := GetBatchField(B64Decode(Parts[1]), B64Decode(Parts[2]));
+    end
+
+    { --- GetBatchTail: args = op, key --- }
+    else if FnName = 'GetBatchTail' then
+    begin
+      ResultStr := GetBatchTail(B64Decode(Parts[1]), B64Decode(Parts[2]));
     end
 
     { --- BatchFieldSweep: args = payload, key --- }
