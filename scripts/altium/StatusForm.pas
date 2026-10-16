@@ -1551,6 +1551,15 @@ Begin
     CleanupOrphanResponses(0);
     CleanupOrphanProgress(0);
 
+    { Script globals outlive a stop and a redeploy, but a design object    }
+    { held in one does not: MEASURED, the first symbol write after a       }
+    { relaunch read CurrentPartID off the old LastCreatedLibComponent and  }
+    { stopped the loop on "Undeclared identifier". Start with none held.   }
+    LastCreatedLibComponent := Nil;
+    LastCreatedLibComponentName := '';
+    RedisplayLibComponent := Nil;
+    RedisplayLibPath := '';
+
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';
     If FileExists(PumpStopPath) Then DeleteFile(PumpStopPath);

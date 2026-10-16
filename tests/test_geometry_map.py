@@ -384,6 +384,27 @@ def test_the_apply_pass_deletes_and_creates_with_proven_calls():
     assert """',"deleted":'""" in raw and """',"created":'""" in raw
 
 
+def test_a_moved_track_or_arc_is_read_back_width_included():
+    """A width trim of a hundredth of a mil is only worth anything if a
+    write that did not take is counted."""
+    body = _routine("PCB_ApplyFreePrimitives")
+    track = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Track.Width);"):]
+    assert track.index("Track.EndModify;") < track.index("(Track.Width <> WW) Then Inc(WireOff);")
+    arc = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Arc.LineWidth);"):]
+    assert arc.index("Arc.EndModify;") < arc.index("(Arc.LineWidth <> WW) Then Inc(WireOff);")
+    raw = PCB.read_text(encoding="ascii")
+    raw = raw[raw.index("Function PCB_ApplyFreePrimitives("):]
+    assert """',"track_arc_readback_off":' + IntToStr(WireOff)""" in raw
+
+
+def test_a_new_width_rides_the_track_line_in_internal_units():
+    d = _dump(_track_line(4, 1, 10, 0, 0, 50, 0))
+    lines, _ = build_edits({"tracks": [{"layer": "TopLayer", "width": 10,
+                                        "key": [0, 0, 50, 0], "new": [0, 0, 50, 0],
+                                        "new_width": 9.97}]}, d)
+    assert lines[0].endswith(f"\t0\t0\t{50 * C}\t0\t99700")
+
+
 def test_components_are_counted_and_left_to_pcb_move_components():
     _, rep = build_edits({"components": [{"designator": "R1"}]}, _dump())
     assert rep["components"]["applied"] == 0

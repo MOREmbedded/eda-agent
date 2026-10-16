@@ -108,7 +108,8 @@ def test_a_board_path_resolves_only_to_that_board():
     by_path = body.index("Client.GetDocumentByPath(Path)")
     opened = body.index("Client.OpenDocument('PCB', Path)")
     assert by_path < opened
-    assert body.index("If Not InProject Then Exit;") < opened
+    # Outside every project only a file that exists is opened.
+    assert body.index("If Not FileExists(Path) Then Exit;") < opened
     # Past the empty-path branch nothing falls back to another board.
     assert body.count("GetPCBBoardAnywhere(0)") == 1
     assert "UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil" in body

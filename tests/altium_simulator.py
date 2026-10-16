@@ -1322,6 +1322,14 @@ class AltiumSimulator:
             return _build_success_response(
                 rid, '{"success":true,"vertices":%d}' % (len(coords) // 2))
 
+        elif action == "redisplay":
+            # Mirrors Lib_Redisplay: a library must be active; this model
+            # holds no second symbol to switch to, so nothing is switched.
+            if not self.lib_has_schlib:
+                return _build_error_response(rid, "NO_SCHLIB",
+                                             "No schematic library is active")
+            return _build_success_response(rid, '{"switched":false}')
+
         elif action == "add_symbol_line":
             if not self.lib_has_schlib:
                 return _build_error_response(rid, "NO_SCHLIB",

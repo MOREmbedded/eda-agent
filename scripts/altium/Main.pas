@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.12';
+    SCRIPT_VERSION = '2026.10.16.16';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -154,6 +154,12 @@ Var
       library, and the name is compared against this recorded string
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
+
+    { The symbol Lib_Redisplay switched away from, and its library's path, }
+    { held for the call that switches back. Only ever assigned back, never }
+    { read from, for the reason given above; cleared on a reopen.          }
+    RedisplayLibComponent : ISch_Component;
+    RedisplayLibPath : String;
 
     { Re-entry guard for LookupLibComponent's last-resort reopen. A
       reopen re-reads the document and the retry looks the name up
@@ -612,12 +618,11 @@ End;
 { shown (which focuses it) and GetCurrentPCBBoard read. Empty path means      }
 { GetPCBBoardAnywhere.                                                        }
 {                                                                             }
-{ Only a loaded document, or a document of an open project, is shown. Client. }
-{ OpenDocument on any other path loads it with no project, a "free document"  }
-{ (App_SetActiveDocument refuses that for the same reason), and a mangled     }
-{ path turned the board into one and left the project unfocused. A path that }
-{ does not resolve gives Nil, never some other board, and a board that did   }
-{ not come to the front is Nil too, so the caller reports it.                }
+{ A loaded document is shown; an unloaded one is opened only when it is a    }
+{ document of an open project or a file that exists. A mangled path (no such }
+{ file) once opened as a "free document" and left the project unfocused. A   }
+{ path that does not resolve gives Nil, never some other board, and a board  }
+{ that did not come to the front is Nil too, so the caller reports it.       }
 {..............................................................................}
 
 Function ResolvePCBBoard(Path : String) : IPCB_Board;
@@ -656,7 +661,10 @@ Begin
                     If UpperCase(DocPath) = UpperCase(Path) Then InProject := True;
                 End;
             End;
-        If Not InProject Then Exit;
+        { A file in no project opens as a free document, which it is   }
+        { anyway (a scratch copy); a path naming no file is refused.   }
+        If Not InProject Then
+            If Not FileExists(Path) Then Exit;
         Try ServerDoc := Client.OpenDocument('PCB', Path); Except ServerDoc := Nil; End;
         If ServerDoc = Nil Then Exit;
     End;

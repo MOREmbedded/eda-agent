@@ -205,6 +205,12 @@ class TestLibAddPins:
     async def test_bulk_pin_packing(self, monkeypatch):
         sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.library")
         from eda_agent.tools import library as lib
+
+        async def _no_redisplay(bridge, result):
+            return result
+        # The payload is the subject here; the redisplay that follows a
+        # write has its own test (test_symbol_writes_redisplay).
+        monkeypatch.setattr(lib, "_redisplay_symbol", _no_redisplay)
         tools = _capture(lib, "register_library_tools")
         await tools["lib_add_pins"](pins=[
             {"designator": "1", "name": "OUT1", "x": 0, "y": 0,

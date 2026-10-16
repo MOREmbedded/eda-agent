@@ -310,6 +310,29 @@ def _snap_grid(value: int, grid: int) -> int:
     return -(((-value + grid // 2) // grid) * grid)
 
 
+async def _redisplay_symbol(bridge, result):
+    """Make the SchLib editor draw what a symbol write just added.
+
+    MEASURED: new shapes were not drawn, even on the symbol on screen, until
+    the editor switched to another symbol and back, and only when the two
+    switches were separate commands. ``redisplayed`` says whether it ran; a
+    library with no other symbol to switch to reads false.
+    """
+    if (not isinstance(result, dict) or result.get("success") is False
+            or result.get("ok") is False or "error" in result):
+        return result
+    redisplayed = False
+    try:
+        away = await bridge.send_command_async("library.redisplay", {"phase": "away"})
+        if isinstance(away, dict) and away.get("switched"):
+            back = await bridge.send_command_async("library.redisplay", {"phase": "back"})
+            redisplayed = bool(isinstance(back, dict) and back.get("switched"))
+    except Exception:                                    # noqa: BLE001
+        redisplayed = False
+    result["redisplayed"] = redisplayed
+    return result
+
+
 
 #: Only two sequences actually delimit the batch payload, confirmed
 #: against the Pascal parser (Main.pas GetBatchField):
@@ -1094,7 +1117,7 @@ def register_library_tools(mcp):
                 "part_count": str(max(1, int(part_count))),
             },
         )
-        return result
+        return await _redisplay_symbol(bridge, result)
 
     @mcp.tool()
     async def lib_create_ic_symbol(
@@ -1158,8 +1181,8 @@ def register_library_tools(mcp):
                     return {"ok": False, "reason": str(e)}
                 amp = None
             if amp is not None:
-                return await _emit_amplifier_symbol(
-                    name, amp, designator_prefix, description)
+                return await _redisplay_symbol(get_bridge(), await _emit_amplifier_symbol(
+                    name, amp, designator_prefix, description))
 
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
@@ -1206,7 +1229,7 @@ def register_library_tools(mcp):
         pins_res = await bridge.send_command_async(
             "library.add_pins", {"pins": pins_payload})
 
-        return {
+        return await _redisplay_symbol(bridge, {
             "symbol": name,
             "pins": len(geom.pins),
             "left": len(left_pins),
@@ -1216,7 +1239,7 @@ def register_library_tools(mcp):
             "create": created,
             "pins_result": pins_res,
             "rectangle_result": rect_res,
-        }
+        })
 
     @mcp.tool()
     async def lib_create_passive_symbol(
@@ -1330,11 +1353,11 @@ def register_library_tools(mcp):
                  "radius": arc["radius"], "start_angle": arc["start"],
                  "end_angle": arc["end"], "width": 1})
 
-        return {
+        return await _redisplay_symbol(bridge, {
             "symbol": name, "kind": kind, "designator_prefix": prefix,
             "pins": len(geom.pins), "create": created,
             "pins_result": pins_res, "glyph": steps,
-        }
+        })
 
     @mcp.tool()
     async def lib_set_current_component(
@@ -1406,7 +1429,7 @@ def register_library_tools(mcp):
         )
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
-        return result
+        return await _redisplay_symbol(bridge, result)
 
     @mcp.tool()
     async def lib_add_symbol_rectangle(
@@ -1449,7 +1472,7 @@ def register_library_tools(mcp):
                 "border_color": border_color,
             },
         )
-        return result
+        return await _redisplay_symbol(bridge, result)
 
     @mcp.tool()
     async def lib_add_symbol_text(
@@ -1495,10 +1518,10 @@ def register_library_tools(mcp):
         if not op_strs:
             return {"error": "No texts provided", "added": 0}
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        return await _redisplay_symbol(bridge, await bridge.send_command_async(
             "library.add_symbol_text",
             {"texts": "~~".join(op_strs)},
-        )
+        ))
 
     @mcp.tool()
     async def lib_add_symbol_lines(
@@ -1539,10 +1562,10 @@ def register_library_tools(mcp):
         if not op_strs:
             return {"error": "No lines provided", "added": 0}
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        return await _redisplay_symbol(bridge, await bridge.send_command_async(
             "library.add_symbol_lines",
             {"lines": "~~".join(op_strs)},
-        )
+        ))
 
     # =========================================================================
     # Footprint Creation
@@ -3421,6 +3444,7 @@ def register_library_tools(mcp):
         limit: int = 5000,
         timeout: Optional[float] = None,
         check_standard_symbols: bool = False,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """Audit label styles across every symbol of a library in one call.
 
@@ -3444,11 +3468,14 @@ def register_library_tools(mcp):
                 colour differs (BGR int, e.g. 8388608 for navy).
             limit: Cap on symbols returned (default 5000).
             timeout: Poll timeout in seconds.
+            refresh: SAVE the library and read it back in first. Symbols
+                are listed from the saved file, so ones created or changed
+                since the last save are otherwise missing or stale.
 
         Returns:
             library_path, count, mismatch_count, limit, truncated,
-            filter_applied, ``components`` [{name, designator, mismatched,
-            comment?, pins?, parameter_styles?}].
+            filter_applied, refreshed, ``components`` [{name, designator,
+            mismatched, comment?, pins?, parameter_styles?}].
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -3464,6 +3491,8 @@ def register_library_tools(mcp):
             params["expect_designator_font_id"] = str(expect_designator_font_id)
         if expect_designator_color is not None:
             params["expect_designator_color"] = str(expect_designator_color)
+        if refresh:
+            params["refresh"] = "true"
         result = await bridge.send_command_async(
             "library.audit_styles", params, timeout=timeout,
         )
@@ -3923,7 +3952,7 @@ def register_library_tools(mcp):
                 "width": width,
             },
         )
-        return result
+        return await _redisplay_symbol(bridge, result)
 
     @mcp.tool()
     async def lib_add_symbol_polygon(
@@ -3973,7 +4002,7 @@ def register_library_tools(mcp):
         result = await bridge.send_command_async(
             "library.add_symbol_polygon", params,
         )
-        return result
+        return await _redisplay_symbol(bridge, result)
 
     @mcp.tool()
     async def lib_set_component_description(

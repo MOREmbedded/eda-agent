@@ -2553,11 +2553,12 @@ def register_pcb_tools(mcp):
         Returns:
             {"board", "dry_run", "match": {kind: {entries, matched,
             unmatched, ambiguous, refused, samples?}}, "apply": {applied,
-            stale, missing, region_readback_off, region_bbox_off,
-            region_shapes_changed, deleted, created, create_failed,
-            create_readback_off, teardrops_created, by_kind}}. Any nonzero
-            ``*_off`` means a region (moved or created) did not read back
-            as written; ``by_kind.O.open`` 1 means the
+            stale, missing, region_readback_off, track_arc_readback_off,
+            region_bbox_off, region_shapes_changed, deleted, created,
+            create_failed, create_readback_off, teardrops_created,
+            by_kind}}. Any nonzero ``*_off`` means something did not read
+            back as written (a track's or arc's ends, radius or width
+            included); ``by_kind.O.open`` 1 means the
             outline's closing vertex did not read back on its first. A dry run keyed on the new
             geometry shows what landed.
         """

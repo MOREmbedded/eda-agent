@@ -386,6 +386,8 @@ Begin
     { component that no longer exists.                                    }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
+    RedisplayLibComponent := Nil;
+    RedisplayLibPath := '';
 
     ResetParameters;
     AddStringParameter('ObjectKind', 'Document');
@@ -1072,6 +1074,96 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
+End;
+
+{..............................................................................}
+{ Lib_Redisplay - make the SchLib editor draw what was just written.          }
+{                                                                             }
+{ MEASURED (AD 26.11, 2026-10-16): a polygon added to the symbol on screen    }
+{ was not drawn, and a new symbol's shapes stayed off screen because the      }
+{ editor kept showing the previous symbol; GraphicallyInvalidate repaints     }
+{ what is shown, so neither helped. Switching to another symbol and back      }
+{ drew both, but only as TWO commands: the editor follows a change of         }
+{ current symbol while it processes its messages, between commands.          }
+{ phase=away switches to another symbol and holds the current one; phase=back }
+{ switches back to it. With no other symbol walkable, nothing is switched.    }
+{..............................................................................}
+
+Function Lib_Redisplay(Params : String; RequestId : String) : String;
+Var
+    SchLib : ISch_Lib;
+    Cur, Other, LibComp : ISch_Component;
+    Iter : ISch_Iterator;
+    Phase, CurName, LibPath : String;
+Begin
+    Phase := LowerCase(ExtractJsonValue(Params, 'phase'));
+    SchLib := Nil;
+    If SchServer <> Nil Then SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+    LibPath := '';
+    Try LibPath := SchLib.DocumentName; Except LibPath := ''; End;
+
+    If Phase = 'back' Then
+    Begin
+        If (RedisplayLibComponent = Nil) Or (UpperCase(RedisplayLibPath) <> UpperCase(LibPath)) Then
+        Begin
+            RedisplayLibComponent := Nil;
+            RedisplayLibPath := '';
+            Result := BuildSuccessResponse(RequestId, '{"switched":false}');
+            Exit;
+        End;
+        Try SchLib.CurrentSchComponent := RedisplayLibComponent; Except End;
+        RedisplayLibComponent := Nil;
+        RedisplayLibPath := '';
+        Try Application.ProcessMessages; Except End;
+        Try SchLib.GraphicallyInvalidate; Except End;
+        Result := BuildSuccessResponse(RequestId, '{"switched":true}');
+        Exit;
+    End;
+
+    Cur := Nil;
+    Try Cur := SchLib.CurrentSchComponent; Except Cur := Nil; End;
+    If Cur = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{"switched":false}');
+        Exit;
+    End;
+    CurName := '';
+    Try CurName := Cur.LibReference; Except CurName := ''; End;
+    Other := Nil;
+    Iter := SchLib.SchLibIterator_Create;
+    If Iter <> Nil Then
+    Begin
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            LibComp := Iter.FirstSchObject;
+            While LibComp <> Nil Do
+            Begin
+                If LibComp.LibReference <> CurName Then
+                Begin
+                    Other := LibComp;
+                    Break;
+                End;
+                LibComp := Iter.NextSchObject;
+            End;
+        Finally
+            SchLib.SchIterator_Destroy(Iter);
+        End;
+    End;
+    If Other = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{"switched":false}');
+        Exit;
+    End;
+    RedisplayLibComponent := Cur;
+    RedisplayLibPath := LibPath;
+    Try SchLib.CurrentSchComponent := Other; Except End;
+    Try Application.ProcessMessages; Except End;
+    Result := BuildSuccessResponse(RequestId, '{"switched":true}');
 End;
 
 Function Lib_AddPin(Params : String; RequestId : String) : String;
@@ -7104,6 +7196,8 @@ Var
     DesigJson, CommentJson, PinList, StyleList, ElecStr, ResultsJson, Entry, CompName : String;
     PinLabelHidden : Boolean;
     First, FirstPin, FirstStyle, Mismatched : Boolean;
+    Refreshed : Boolean;
+    Fresh : ISch_Lib;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
 
@@ -7167,6 +7261,20 @@ Begin
             + ' but the active document is ' + SchLib.DocumentName
             + '. Check the path exists, and note the parameter is library_path.');
         Exit;
+    End;
+
+    { The names below come from the FILE, so a symbol not yet saved is not  }
+    { listed (MEASURED: two symbols made this session were missing). With   }
+    { refresh the library is saved and read back in first.                  }
+    Refreshed := False;
+    If LowerCase(ExtractJsonValue(Params, 'refresh')) = 'true' Then
+    Begin
+        Fresh := RefreshSchLibFromDisk(LibPath);
+        If Fresh <> Nil Then
+        Begin
+            SchLib := Fresh;
+            Refreshed := True;
+        End;
     End;
 
     Count := 0;
@@ -7353,6 +7461,7 @@ Begin
         ',"limit":' + IntToStr(Limit) +
         ',"truncated":' + BoolToJsonStr(Count >= Limit) +
         ',"filter_applied":' + BoolToJsonStr(FilterApplied) +
+        ',"refreshed":' + BoolToJsonStr(Refreshed) +
         ',"components":[' + ResultsJson + ']}');
 End;
 
@@ -16224,6 +16333,7 @@ Begin
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
+        'redisplay':             Result := Lib_Redisplay(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);

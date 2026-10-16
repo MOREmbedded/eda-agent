@@ -9466,7 +9466,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active')
         Else
             Result := BuildErrorResponse(RequestId, 'NO_PCB', BoardPathStr
-                + ' is not a loaded board or a board of an open project; nothing was placed');
+                + ' is not a board that is loaded, in an open project or on disk; nothing was placed');
         Exit;
     End;
 
@@ -9646,7 +9646,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active')
         Else
             Result := BuildErrorResponse(RequestId, 'NO_PCB', BoardPathStr
-                + ' is not a loaded board or a board of an open project; nothing was placed');
+                + ' is not a board that is loaded, in an open project or on disk; nothing was placed');
         Exit;
     End;
 
@@ -9784,8 +9784,8 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open')
         Else
             Result := BuildErrorResponse(RequestId, 'NO_PCB', BoardPathStr
-                + ' is not a loaded board or a board of an open project, or did '
-                + 'not come to the front; nothing was opened in its place');
+                + ' is not a board that is loaded, in an open project or on disk, '
+                + 'or did not come to the front; nothing was opened in its place');
         Exit;
     End;
     { With no path the board came from GetPCBBoardAnywhere, which puts the }
@@ -16467,6 +16467,7 @@ Var
     KindNo, Base, SC, MainStart, PX, PY, MinX, MinY, MaxX, MaxY : Integer;
     ShapeTouched, BBoxOff, Deleted, Created, CreateFailed, OutlineOpen : Integer;
     CreateOff, TearCreated, N2 : Integer;
+    WX1, WY1, WX2, WY2, WW, WireOff : Integer;
     RNet : IPCB_Net;
     NewLayer : TLayer;
     BR : TCoordRect;
@@ -16517,6 +16518,7 @@ Begin
     TotalStale := 0;
     TotalMissing := 0;
     ReadbackOff := 0;
+    WireOff := 0;
     PCBServer.PreProcess;
     Try
         { One pass per kind: T A V X F R P, then the outline. }
@@ -16723,13 +16725,21 @@ Begin
                             End
                             Else
                             Begin
+                                WX1 := StrToIntDef(A1, Track.X1);
+                                WY1 := StrToIntDef(SplitNextTab(Rest), Track.Y1);
+                                WX2 := StrToIntDef(SplitNextTab(Rest), Track.X2);
+                                WY2 := StrToIntDef(SplitNextTab(Rest), Track.Y2);
+                                WW := StrToIntDef(SplitNextTab(Rest), Track.Width);
                                 Track.BeginModify;
-                                Track.X1 := StrToIntDef(A1, Track.X1);
-                                Track.Y1 := StrToIntDef(SplitNextTab(Rest), Track.Y1);
-                                Track.X2 := StrToIntDef(SplitNextTab(Rest), Track.X2);
-                                Track.Y2 := StrToIntDef(SplitNextTab(Rest), Track.Y2);
-                                Track.Width := StrToIntDef(SplitNextTab(Rest), Track.Width);
+                                Track.X1 := WX1;
+                                Track.Y1 := WY1;
+                                Track.X2 := WX2;
+                                Track.Y2 := WY2;
+                                Track.Width := WW;
                                 Track.EndModify;
+                                { Read back: a width or end that did not take counts. }
+                                If (Track.X1 <> WX1) Or (Track.Y1 <> WY1) Or (Track.X2 <> WX2)
+                                    Or (Track.Y2 <> WY2) Or (Track.Width <> WW) Then Inc(WireOff);
                             End;
                         End
                         Else If KindNo = 2 Then
@@ -16746,14 +16756,20 @@ Begin
                             End
                             Else
                             Begin
+                                WX1 := StrToIntDef(A1, Arc.XCenter);
+                                WY1 := StrToIntDef(SplitNextTab(Rest), Arc.YCenter);
+                                WX2 := StrToIntDef(SplitNextTab(Rest), Arc.Radius);
                                 Arc.BeginModify;
-                                Arc.XCenter := StrToIntDef(A1, Arc.XCenter);
-                                Arc.YCenter := StrToIntDef(SplitNextTab(Rest), Arc.YCenter);
-                                Arc.Radius := StrToIntDef(SplitNextTab(Rest), Arc.Radius);
+                                Arc.XCenter := WX1;
+                                Arc.YCenter := WY1;
+                                Arc.Radius := WX2;
                                 Arc.StartAngle := StrToFloatDef(SplitNextTab(Rest), Arc.StartAngle);
                                 Arc.EndAngle := StrToFloatDef(SplitNextTab(Rest), Arc.EndAngle);
-                                Arc.LineWidth := StrToIntDef(SplitNextTab(Rest), Arc.LineWidth);
+                                WW := StrToIntDef(SplitNextTab(Rest), Arc.LineWidth);
+                                Arc.LineWidth := WW;
                                 Arc.EndModify;
+                                If (Arc.XCenter <> WX1) Or (Arc.YCenter <> WY1) Or (Arc.Radius <> WX2)
+                                    Or (Arc.LineWidth <> WW) Then Inc(WireOff);
                             End;
                         End
                         Else If KindNo = 3 Then
@@ -17239,6 +17255,7 @@ Begin
         '{"applied":' + IntToStr(TotalApplied) + ',"stale":' + IntToStr(TotalStale)
         + ',"missing":' + IntToStr(TotalMissing)
         + ',"region_readback_off":' + IntToStr(ReadbackOff)
+        + ',"track_arc_readback_off":' + IntToStr(WireOff)
         + ',"region_shape":"' + ShapeMode + '"'
         + ',"region_shapes_changed":' + IntToStr(ShapeTouched)
         + ',"region_bbox_off":' + IntToStr(BBoxOff)
