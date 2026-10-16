@@ -262,6 +262,21 @@ def test_regions_are_rewritten_without_the_undeclared_geometric_polygon():
     assert "Region.MainContour.X[Base]" in body
 
 
+def test_a_shape_based_region_does_not_keep_its_old_shape():
+    # MEASURED: contours read back new while Altium drew and saved the old
+    # shape segments. The shape is cleared or rebuilt, and the readback
+    # checks the drawn box, not only the contour arrays.
+    body = _routine("PCB_ApplyFreePrimitives")
+    shape = body[body.index("SC := Region.ShapeSegmentCount;"):]
+    assert "If (SC > 0) And (ShapeMode <> 'keep') Then" in shape
+    assert "Region.ShapeSegmentCount := 0;" in shape
+    assert "Region.UpdateContourFromShape(True);" in shape
+    assert shape.index("Region.UpdateContourFromShape(True);") < shape.index(
+        "BR := Region.BoundingRectangle;")
+    assert "Inc(BBoxOff);" in shape
+    assert "If (ShapeMode <> 'keep') And (ShapeMode <> 'clear') Then ShapeMode := 'rebuild';" in body
+
+
 def test_texts_are_moved_by_delta_after_their_string():
     # MEASURED: XLocation/YLocation writes left all 27 texts in place.
     body = _routine("PCB_ApplyFreePrimitives")

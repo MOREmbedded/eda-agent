@@ -16072,8 +16072,9 @@ Var
     Contour : IPCB_Contour;
     Dump, LayerIds : TStringList;
     OutPath, TxtStr, X0, Y0, X1, Y1, Response, Why : String;
-    Idx, Lyr, N, Holes, Cut, I : Integer;
+    Idx, Lyr, N, Holes, Cut, I, SC : Integer;
     NT, NA, NV, NX, NF, NR, NP, NO : Integer;
+    BR : TCoordRect;
 Begin
     OutPath := ExtractJsonValue(Params, 'out_path');
     If OutPath = '' Then
@@ -16246,9 +16247,15 @@ Begin
                     Try Y1 := IntToStr(Contour.Y[1]); Except Y1 := ''; End;
                     Holes := 0;
                     Try Holes := Region.HoleCount; Except Holes := 0; End;
+                    { Then the shape-segment count and the drawn box, which }
+                    { show whether the shape agrees with the contours.      }
+                    SC := 0;
+                    Try SC := Region.ShapeSegmentCount; Except SC := 0; End;
+                    BR := Region.BoundingRectangle;
                     Dump.Add('R' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
                         + IntToStr(N) + #9 + X0 + #9 + Y0 + #9 + X1 + #9 + Y1 + #9
-                        + IntToStr(Holes));
+                        + IntToStr(Holes) + #9 + IntToStr(SC) + #9 + IntToStr(BR.X1)
+                        + #9 + IntToStr(BR.Y1) + #9 + IntToStr(BR.X2) + #9 + IntToStr(BR.Y2));
                     If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
                     Inc(NR);
                 End;
@@ -16356,7 +16363,10 @@ Var
     A1, A2, A3, A4, A5, A6, A7 : String;
     LI, Idx, NextIdx, I, J, K, Lyr, N, NMain, NHoles, HN, SegKind : Integer;
     Applied, Stale, Missing, ReadbackOff, TotalApplied, TotalStale, TotalMissing : Integer;
-    KindNo, Base : Integer;
+    KindNo, Base, SC, MainStart, PX, PY, MinX, MinY, MaxX, MaxY : Integer;
+    ShapeTouched, BBoxOff : Integer;
+    BR : TCoordRect;
+    ShapeMode : String;
     IsFree, Ok, HoleOk, DoRepour : Boolean;
 Begin
     InPath := ExtractJsonValue(Params, 'in_path');
@@ -16367,6 +16377,15 @@ Begin
         Exit;
     End;
     DoRepour := LowerCase(ExtractJsonValue(Params, 'repour')) <> 'false';
+    ShapeMode := LowerCase(ExtractJsonValue(Params, 'region_shape'));
+    { rebuild by default: MEASURED on 228 regions, both rebuild and clear  }
+    { kept the new geometry and every hole through a save and reopen, and  }
+    { only rebuild had the drawn box right at once, so the readback can    }
+    { confirm it.                                                          }
+    If (ShapeMode <> 'keep') And (ShapeMode <> 'clear') Then ShapeMode := 'rebuild';
+    ShapeTouched := 0;
+    BBoxOff := 0;
+    MinX := 0; MinY := 0; MaxX := 0; MaxY := 0;
     Board := GeoMapBoard(Params, Why);
     If Board = Nil Then
     Begin
@@ -16681,6 +16700,7 @@ Begin
                                 Contour.Count := NMain;
                             End;
                             A5 := '';
+                            MainStart := J + 1;
                             For K := 1 To NMain Do
                             Begin
                                 Inc(J);
@@ -16689,6 +16709,12 @@ Begin
                                 A1 := SplitNextTab(Rest);
                                 A2 := SplitNextTab(Rest);
                                 If K = 1 Then A5 := A1;
+                                PX := StrToIntDef(A1, 0);
+                                PY := StrToIntDef(A2, 0);
+                                If (K = 1) Or (PX < MinX) Then MinX := PX;
+                                If (K = 1) Or (PX > MaxX) Then MaxX := PX;
+                                If (K = 1) Or (PY < MinY) Then MinY := PY;
+                                If (K = 1) Or (PY > MaxY) Then MaxY := PY;
                                 If Contour.Count = NMain Then
                                 Begin
                                     Contour.X[Base + K - 1] := StrToIntDef(A1, 0);
@@ -16722,7 +16748,46 @@ Begin
                             End;
                             If NHoles = 0 Then Region.SetOutlineContour(Contour);
                             Region.EndModify;
+                            { MEASURED: a region that also carries shape        }
+                            { segments (a shape-based region) kept them, and     }
+                            { Altium drew and saved the OLD shape while the      }
+                            { contours read back new. 'clear' drops the shape so }
+                            { the contours are the region; 'rebuild' writes the  }
+                            { new outline as straight shape segments and derives }
+                            { the contour from them, as Lib_AddFootprintRegions  }
+                            { does; 'keep' leaves the shape alone.               }
+                            SC := 0;
+                            Try SC := Region.ShapeSegmentCount; Except SC := 0; End;
+                            If (SC > 0) And (ShapeMode <> 'keep') Then
+                            Begin
+                                Region.BeginModify;
+                                If ShapeMode = 'rebuild' Then
+                                Begin
+                                    For K := 1 To NMain Do
+                                    Begin
+                                        Rest := Lines[MainStart + K - 1];
+                                        SplitNextTab(Rest);
+                                        Seg := TPolySegment;
+                                        Seg.Kind := ePolySegmentLine;
+                                        Seg.vx := StrToIntDef(SplitNextTab(Rest), 0);
+                                        Seg.vy := StrToIntDef(SplitNextTab(Rest), 0);
+                                        Region.ShapeSegmentCount := K;
+                                        Region.ShapeSegments[K - 1] := Seg;
+                                    End;
+                                    Region.UpdateContourFromShape(True);
+                                End
+                                Else
+                                    Region.ShapeSegmentCount := 0;
+                                Region.EndModify;
+                                Inc(ShapeTouched);
+                            End;
                             Try Region.GraphicallyInvalidate; Except End;
+                            { What Altium draws: its box must be the new        }
+                            { outline's extent, to a mil.                       }
+                            BR := Region.BoundingRectangle;
+                            If (Abs(BR.X1 - MinX) > 10000) Or (Abs(BR.X2 - MaxX) > 10000)
+                                Or (Abs(BR.Y1 - MinY) > 10000) Or (Abs(BR.Y2 - MaxY) > 10000) Then
+                                Inc(BBoxOff);
                             { Read back: the outline must hold its new count and  }
                             { first point, the holes must still be there, and the }
                             { first hole must hold its new first point.           }
@@ -16891,6 +16956,9 @@ Begin
         '{"applied":' + IntToStr(TotalApplied) + ',"stale":' + IntToStr(TotalStale)
         + ',"missing":' + IntToStr(TotalMissing)
         + ',"region_readback_off":' + IntToStr(ReadbackOff)
+        + ',"region_shape":"' + ShapeMode + '"'
+        + ',"region_shapes_changed":' + IntToStr(ShapeTouched)
+        + ',"region_bbox_off":' + IntToStr(BBoxOff)
         + ',"by_kind":{' + Stats + '}}');
     Result := Response;
 End;

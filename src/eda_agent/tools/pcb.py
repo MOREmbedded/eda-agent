@@ -2724,6 +2724,7 @@ def register_pcb_tools(mcp):
         angle_tolerance_deg: float = 1e-4,
         dry_run: bool = False,
         repour: bool = True,
+        region_shape: str = "rebuild",
     ) -> dict[str, Any]:
         """Move and reshape thousands of free primitives in ONE pass, from a file.
 
@@ -2788,6 +2789,15 @@ def register_pcb_tools(mcp):
             dry_run: Dump and match only; change nothing. Run this first.
             repour: Repour each reshaped polygon. False leaves every pour
                 as it was poured until pcb_repour_polygons is run.
+            region_shape: what happens to a region that also carries
+                Altium's shape segments, which Altium draws and saves in
+                preference to the contours: "rebuild" (default) writes the
+                new outline as straight shape segments; "clear" drops them
+                and Altium regenerates them from the contours on save;
+                "keep" leaves them, which leaves the OLD shape on screen
+                and in the file. Both rebuild and clear kept every hole
+                through a save and reopen; only rebuild reads back the new
+                drawn box at once.
 
         Returns:
             {"board", "dry_run", "match": {kind: {entries, matched, unmatched,
@@ -2795,7 +2805,10 @@ def register_pcb_tools(mcp):
             region_readback_off, by_kind} or absent on a dry run}.
             ``stale`` counts objects that changed between dump and apply;
             ``region_readback_off`` counts region contours (outline or hole)
-            that did not read back as written. Run a dry run of a map keyed
+            that did not read back as written; ``region_bbox_off`` counts
+            regions whose drawn box is not the new outline's extent, which
+            is what catches a shape left behind; ``region_shapes_changed``
+            counts shapes cleared or rebuilt. Run a dry run of a map keyed
             on the new geometry afterwards to see exactly what landed.
         """
         import codecs
@@ -2838,7 +2851,8 @@ def register_pcb_tools(mcp):
         # The mark is what makes LoadFromStream read UTF-8, for a new text.
         tmp.write_bytes(codecs.BOM_UTF8 + ("\n".join(lines) + "\n").encode("utf-8"))
         replace_with_retry(str(tmp), edits_path)
-        apply_params = {"in_path": str(edits_path), "board_path": board_path}
+        apply_params = {"in_path": str(edits_path), "board_path": board_path,
+                        "region_shape": region_shape}
         if not repour:
             apply_params["repour"] = "false"
         result["apply"] = await bridge.send_command_async(
