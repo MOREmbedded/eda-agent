@@ -85,70 +85,30 @@ def register_project_tools(mcp):
     async def proj_close(
         project_path: Optional[str] = None, save: bool = True
     ) -> dict[str, Any]:
-        """Close a project, saving its documents or discarding their edits.
+        """Close a project, saving its documents (default) or discarding
+        their unsaved edits (save=False).
 
-        ``save=True`` (default) writes this project's modified documents,
-        then closes it. ``save=False`` closes it without saving.
-
-        WITHOUT SAVING, TWO LAYERS KEEP THE BRIDGE FROM WEDGING. A close
-        with a modified member raises Altium's save prompt inside the
-        polling loop, where the bridge cannot answer it. MEASURED on AD
-        26.10.1.6: after an edit IServerDocument.Modified reads False while
-        the tab shows the sheet modified, so nothing gated on that read
-        works.
-
-        First, the handler clears the modified flag on every loaded member
-        without reading it. MEASURED on a local scratch project: the close
-        then raised no prompt and the file on disk was byte-identical.
-
-        Second, if a prompt appears anyway, this answers it through UI
-        Automation: "Save None", then "OK" once the dialog has retitled to
-        "Confirm Not Saving", which is what shows the decisions changed.
-        Pressing OK before that would save. The sequence was measured by
-        hand; this tool running it has not run live.
-
-        ALTIUM CLOSES THE FOCUSED PROJECT. MEASURED: a close naming a
-        project with no loaded document, while another project's board was
-        focused, closed that other project first. So the handler makes the
-        named project focused by showing one of its loaded documents, and
-        refuses, changing nothing, when it cannot. Every attempt compares
-        the open projects before and after: if anything else closed, it
-        stops without retrying and returns those paths as
-        ``closed_instead``, with ``success`` false.
-
-        IT ANSWERS ONLY FOR THIS PROJECT. It records the project's member
-        paths before closing and reads every path the prompt lists. If any
-        listed document is outside the project it presses nothing and
-        returns them, because answering would discard work in a project
-        nobody named. It also presses nothing when membership cannot be
-        established: no ``project_path``, or a deployed script that
-        reports member file names rather than paths.
-
-        A document shared with another open project is a member of both,
-        so its unsaved edits are discarded here too. ``save=True`` prompts
-        are never answered for you.
-
-        IF A PROMPT IS LEFT OPEN, answer it with ``app_invoke_element``
-        (``Save None``, then ``OK``) or ``app_press_dialog_button``. Both
-        work while the bridge is blocked, because they go through Win32
-        rather than through the loop.
+        Altium closes the FOCUSED project, so this focuses the named one
+        first and refuses if it cannot; if any other project closes, it
+        stops and reports it as ``closed_instead``. Without saving, it
+        clears each member's modified flag so no save prompt appears; if
+        one appears anyway it answers "Save None" then "OK" (untested
+        live), but only when every listed document belongs to this
+        project, else it presses nothing. A document shared with another
+        open project loses its edits too. A prompt left open blocks the
+        bridge: answer it with app_press_dialog_button.
 
         Args:
-            project_path: project to close. Omit for the focused project;
-                ``save=False`` then leaves any prompt for a human.
-            save: write modified documents first (True), or discard their
-                unsaved edits (False).
+            project_path: Project to close; omit for the focused one (a
+                save=False prompt is then left for a human).
+            save: Write modified documents first (True) or discard (False).
 
         Returns:
-            ``success`` and ``closed``, checked by looking the project up
-            again, and ``project_path``. When a prompt was answered,
-            ``prompts_answered`` and ``discarded``, the paths it listed.
-            When one was left, ``prompt`` and ``reason``: the bridge stays
-            blocked until it is answered. Without a prompt, ``discarded``
-            lists the loaded members closed without saving and
-            ``attempts`` how many closes it took. The modified flag cannot
-            be read reliably, so a path in ``discarded`` is not proof that
-            document had edits.
+            ``success``, ``closed`` (checked by looking again),
+            ``project_path``; ``prompts_answered`` and ``discarded`` when a
+            prompt was answered, ``prompt`` and ``reason`` when one was
+            left; otherwise ``discarded`` (members closed unsaved, not
+            proof of edits) and ``attempts``.
         """
         import asyncio as _asyncio
 
@@ -724,61 +684,28 @@ def register_project_tools(mcp):
         with_parameters: bool = True,
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Get full information about a single component.
+        """Get full information about one placed component.
 
-        IMPORTANT, if you need info for MORE THAN ONE component, use
-        `proj_get_component_info_many` (batch). Looping this tool is a
-        large wall-time sink, especially with `with_pin_nets=True`
-        because each call compiles the project.
+        IMPORTANT: for more than one, use proj_get_component_info_many.
+        Pin nets need a project compile (30-60 s on a large project);
+        with_pin_nets=False answers in under a second.
 
-        Performance note: pin nets are the only field that needs a
-        project compile, and a stale-cache compile on a multi-sheet
-        hierarchical project can take 30-60s. When you only need the
-        component's value, footprint, library reference, sheet, or
-        pin numbers/names (no nets), pass ``with_pin_nets=False`` and
-        the call drops to sub-second by skipping ``Project.DM_Compile``
-        entirely. Use the default ``with_pin_nets=True`` only when you
-        actually need to know what each pin is wired to.
-
-        ``with_parameters=False`` further skips the parameter iterator
-        (Manufacturer / MPN / Value / Footprint paths). Marginal win
-        compared to skipping the compile, but useful for the cheapest
-        possible "is this designator placed?" probe.
-
-        ``timeout`` overrides the bridge's default poll timeout. The
-        compile-bound full-fat call can legitimately need 60-90s on
-        large projects, raise this when you keep `with_pin_nets=True`.
-
-        DATASHEET DISCIPLINE: Before making any claim about this
-        component's pin function, voltage rating, timing, or electrical
-        behavior, fetch its datasheet (WebSearch + WebFetch if needed).
-        The parameters / comment / library metadata returned here are
-        NOT authoritative, only the manufacturer datasheet is.
-        `_datasheet_guidance` in the response carries the rule and a
-        suggested search query.
-
-        Returns the component's designator, comment, footprint, library
-        reference, parameters (when with_parameters=True), and every pin
-        with name/number (and net assignment when with_pin_nets=True).
+        DATASHEET DISCIPLINE: parameters and comment are not
+        authoritative; fetch the datasheet before stating pin functions
+        or ratings.
 
         Args:
-            designator: Component designator (e.g., "U1", "R8", "C3")
-            project_path: Optional project path. If None, uses active project.
-            with_pin_nets: When True (default) compile the project and
-                emit the flattened net for each pin. Set to False to
-                skip the compile and get a sub-second metadata-only
-                response.
-            with_parameters: When True (default) include the parameter
-                dict. Set to False for the cheapest possible probe.
-            timeout: Optional bridge poll-timeout override (seconds).
-                Use a higher value (e.g., 90) when keeping with_pin_nets
-                True on large hierarchical projects.
+            designator: e.g. "U1".
+            project_path: Project (default: the active one).
+            with_pin_nets: Compile and give each pin's net (default True).
+            with_parameters: Include parameters (default True).
+            timeout: Poll timeout in seconds (raise to ~90 with pin nets
+                on large projects).
 
         Returns:
-            Dictionary with designator, comment, footprint, lib_ref,
-            sheet, pins array (each with pin/name and, when requested,
-            net), and (when requested) parameters dict, plus
-            `_datasheet_guidance` + `_datasheet_parts`.
+            designator, comment, footprint, lib_ref, sheet, ``pins``
+            [{pin, name, net?}], ``parameters`` when asked, and
+            ``_datasheet_guidance``.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}

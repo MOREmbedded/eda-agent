@@ -24,65 +24,27 @@ def register_parts_tools(mcp):
     ) -> dict[str, Any]:
         """Search EVERY enabled part provider and merge the results.
 
-        No provider is a default and none is preferred: all are queried
-        equally, hits carry the provider that found them, and the merged
-        order is alphabetical by provider then part. That ordering is
-        NOT relevance, so do not read the first hit as the best one.
+        All providers count equally; hits are ordered by provider then
+        part, which is NOT relevance. A provider that cannot answer says
+        why ("unavailable" is not "no such part"). Each hit has a
+        ``kind``: "library" gives geometry (symbol or footprint),
+        "catalogue" gives identity (MPN, datasheet, stock) and no
+        geometry. Remote providers need the internet; local ones still
+        answer without it. An empty query lists the providers.
 
-        Each provider reports its own status. A provider that cannot
-        answer says why (endpoint withdrawn, software missing) instead
-        of returning nothing, because "unavailable" and "no such part"
-        are different answers and only one means stop looking.
-
-        Call with an empty query to list the providers and what they are,
-        including who operates them.
-
-        TWO KINDS OF SOURCE, merged but never conflated. A `library`
-        provider yields GEOMETRY: a symbol or footprint you can place. A
-        `catalogue` provider (the distributors and aggregators) yields
-        IDENTITY: the manufacturer part number, the datasheet, what is
-        in stock, and NO geometry at all. Every hit carries its `kind`,
-        because finding out that a distributor hit has no symbol after
-        choosing the part is the expensive way to learn it.
-
-        The two answer different questions rather than ranking against
-        each other: a catalogue tells you WHICH part to use and hands
-        you the datasheet every check here measures against, and a
-        library tells you whether you can draw it.
-
-        NOTE on maturity="offline": in this catalog that means "needs no
-        Altium", which is true here. It does NOT mean "needs nothing":
-        the remote providers want the internet. With no network the
-        search still succeeds on whatever local providers are enabled
-        (kicad_local reads libraries already on disk) and reports the
-        remote ones as unavailable, so a degraded answer is still a
-        useful one.
-
-        DATASHEET DISCIPLINE: a hit is a lead, not a verified part. The
-        `provenance` and `license` fields say what the provider claims
-        about where its geometry came from, and a blank means unknown,
-        not permissive. Audit any imported footprint against the
-        manufacturer land pattern with
-        ``lib_audit_footprint_vs_datasheet`` before trusting it.
+        DATASHEET DISCIPLINE: a hit is a lead. Blank ``provenance`` or
+        ``license`` means unknown; audit an imported footprint with
+        lib_audit_footprint_vs_datasheet before trusting it.
 
         Args:
-            query: substring matched against part name, manufacturer and
-                keywords. Empty lists the providers instead.
-            limit_per_provider: cap per source, so one large registry
-                cannot crowd out the others.
+            query: Substring of part name, manufacturer or keywords.
+            limit_per_provider: Cap per provider.
 
         Returns:
-            ``{"ok", "count", "providers": {name: status}, "hits": [...],
-            "by_mpn": [...]}`` or, for an empty query,
-            ``{"ok", "providers": [...]}``.
-
-            ``by_mpn`` correlates the same part across sources, so you
-            can see which providers carry it and what each states about
-            provenance and license. Cosmetic spelling differences fold
-            together; WILDCARD part numbers do not, because KiCad's
-            ``...C8Tx`` is a family placeholder rather than a spelling
-            of ``...C8T6``, and merging them would assert an equivalence
-            that is not safe to assume.
+            {"ok", "count", "providers": {name: status}, "hits",
+            "by_mpn"} (the same part across providers; wildcard part
+            numbers are not merged), or {"ok", "providers"} for an empty
+            query.
         """
         from eda_agent.libimport.providers import (
             available_providers,

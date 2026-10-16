@@ -168,71 +168,32 @@ def register_uiauto_tools(mcp):
     ) -> dict[str, Any]:
         """Drive Tools > Update From Libraries, ECO included.
 
-        THIS PRESSES BUTTONS IN THE GUI. Update From Libraries has no
-        API: Altium documents it as a dialog, there is no process that
-        launches it, and the operation ends in an Engineering Change
-        Order that only a click can execute. So this matches windows
-        belonging to the Altium process and presses named buttons on
-        them.
-
-        WHAT IT WILL DO AT THE END. The last steps press Validate
-        Changes and then EXECUTE CHANGES on the ECO. That applies every
-        pending change to the design and is not undoable through this
-        channel. Take ``app_checkpoint`` first.
-
-        WHAT IT CANNOT TELL YOU. While the wizard is open Altium's
-        script engine is blocked, so the bridge cannot be asked
-        anything, and an ECO's pending changes sit in a grid that
-        exposes no text to Windows. The reply records the windows and
-        buttons seen; it does NOT contain the change list. Read the
-        Messages panel afterwards for that.
-
-        NOTHING IS SCRIPTED. There is no list of expected dialogs. Each
-        one that appears is read, classified, and answered by the ROLE
-        of the buttons it offers, then the screen is read again. That is
-        deliberate: a scripted version failed on live Altium because the
-        editor legitimately shows dialogs no list contained, and waited
-        for a change order that was never coming while an unlisted modal
-        blocked the session.
-
-        It STOPS rather than guessing when a dialog reports an error,
-        asks a question it was not sent to answer, or offers no button
-        whose meaning is recognised.
-
-        RUN IT DRY FIRST, WHICH IS THE DEFAULT. A dry run reads the
-        first dialog, reports what it is and what it would press, and
-        presses nothing.
-
-        LAUNCHING. ``already_open`` (the default) attaches to a wizard
-        you have opened yourself, which avoids depending on a menu path
-        nobody has verified. ``menu`` asks the bridge to fire the menu
-        first; that request will not return until the wizard closes,
-        which is expected and is why it is issued without waiting.
+        THIS PRESSES BUTTONS IN THE GUI: the wizard has no API. Each
+        dialog is read and answered by the role of its buttons; it STOPS
+        on an error, an unexpected question or unknown buttons. The end
+        presses EXECUTE CHANGES on the ECO, which is not undoable here:
+        take app_checkpoint first, and run dry (the default) first. The
+        reply lists dialogs and buttons, not the change list; read the
+        Messages panel for that.
 
         Args:
-            target: ``schematic`` for Tools > Update From Libraries, or
-                ``pcb`` for Tools > Update From PCB Libraries.
-            launch: ``already_open`` or ``menu``.
-            dry_run: report without pressing. Default true.
-            confirm_execute_eco: must be true for a real run, and it is
-                named for the specific consequence rather than being a
-                general "confirm", because the irreversible part is the
-                ECO and not the wizard.
-            answer_confirmations: answer routine "carry on?" prompts.
-                Altium asks "Continue and create ECO?" before every
-                change order, so with this off the run stops there and
-                can never finish. A confirmation mentioning anything
-                irreversible (delete, overwrite, cannot be undone) is
-                still left alone whatever this is set to.
-            first_step_timeout: seconds to wait for the FIRST dialog to
-                appear. Raise it when launching by menu on a large
-                project.
+            target: "schematic" (Update From Libraries) or "pcb" (Update
+                From PCB Libraries).
+            launch: "already_open" (default; attach to a wizard you
+                opened) or "menu" (open it via the menu bar).
+            dry_run: Report what it would press, press nothing (default).
+            confirm_execute_eco: Must be True for a real run.
+            answer_confirmations: Answer routine "continue?" prompts,
+                needed to finish; prompts about deleting or overwriting
+                are never answered.
+            menu_may_steal_focus: Required for launch="menu", which brings
+                Altium to the front and moves the pointer.
+            first_step_timeout: Seconds to wait for the first dialog.
 
         Returns:
-            Dict with ``ok``, ``dry_run``, ``committed``,
-            ``stopped_for_a_human``, ``finished`` explaining how the run
-            ended, and ``steps``: for every dialog, what it was, what it
-            said, what it offered, what was pressed and WHY.
+            ``ok``, ``dry_run``, ``committed``, ``stopped_for_a_human``,
+            ``finished`` (how it ended) and ``steps`` (each dialog, what it
+            offered, what was pressed and why).
         """
         if target not in _MENUS:
             return {"ok": False, "reason": (

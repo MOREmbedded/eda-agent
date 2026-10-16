@@ -1656,60 +1656,39 @@ def register_library_tools(mcp):
         tab_h: float = 0.0,
         description: str = "",
     ) -> dict[str, Any]:
-        """Create a COMPLETE standard footprint in ONE call.
-
-        Composes parametric geometry with the bulk authoring tools: makes
-        the footprint, then emits every pad + the silkscreen outline +
-        the courtyard rectangle in two batched round-trips. Supply the
-        package's recommended land-pattern dimensions from the datasheet
-        (this carries no part library -- the numbers you pass ARE the
-        footprint).
+        """Create a COMPLETE standard footprint in ONE call from the land
+        dimensions you give (pads, silk outline, courtyard). For a package
+        drawing with tolerances prefer lib_create_footprint_from_package,
+        which sizes lands by IPC-7351B.
 
         Args:
             name: Footprint name (e.g. "SOIC-8_3.9x4.9").
-            family: "chip" (2-pin passive) | "sip" (single-row header) |
-                "dual" (SOIC/SOP/SON/SOT/DIP) | "header" (2-row pin/box
-                header, IDC, SWD/JTAG -- column-major odd/even numbering) |
-                "tab" (power/tab package: SOT-223, DPAK/D2PAK, TO-220 --
-                signal pins one side + a large tab pad opposite, pass
-                tab_w & tab_h) | "quad" (QFP/QFN) | "bga" (ball grid --
-                pass rows & cols). SOT-23 is "dual" with pin_count=3.
-                Through-hole (DIP/header/TO-220) = any family with hole > 0.
-            pin_count: total pads (2 for chip; even for header; n signal
-                pins for tab; divisible by 4 for quad; ignored for bga).
-            rows, cols: BGA ball grid dimensions (bga family only).
-            exposed_pad: centre thermal/exposed pad size (mils) for QFN/QFP
-                (quad family); 0 = none. Gets designator pin_count+1.
-            tab_w, tab_h: tab pad size (mils) for the "tab" family; the tab
-                gets designator pin_count+1 (tie it to a signal pin in the
-                schematic).
-            skip: BGA ball designators to omit (depopulation), e.g.
-                ["A1","E5"] (bga family only).
-            pitch: pad centre-to-centre within a row (mils).
-            pad_w, pad_h: pad size (mils). TWO MEANINGS, kept for the
-                callers that rely on them: pad_w is the pad's X size in
-                every family but quad, so in dual (rows left and right)
-                and chip it runs ACROSS the row, along the span, while
-                in sip, header and tab it runs along the row; in quad
-                each side turns the pad and pad_w runs ALONG the row.
-                For a footprint from a package drawing use
-                lib_create_footprint_from_package, which sizes the lands
-                by IPC-7351B from the terminal's lead_length (along the
-                span) and lead_width (across it).
-            row_span: centre-to-centre between the two rows / opposite
-                sides (mils). Required for dual and quad.
-            shape: pad shape (default "roundrect"); corner_radius is its %.
-            silk: draw a silkscreen body outline (TopOverlay).
-            courtyard: clearance (mils) past the extent for the courtyard
-                rectangle (Mechanical1); 0 disables it.
-            body_w, body_h: package body for the silk outline; default to
-                the pad extent.
-            hole: drill size (mils). >0 makes through-hole pads (DIP /
-                header / axial): pin 1 rectangular, the rest round.
+            family: "chip" | "sip" | "dual" (SOIC/SOP/SON/SOT/DIP; SOT-23
+                is dual with 3 pins) | "header" (2-row, odd/even) | "tab"
+                (SOT-223, DPAK, TO-220; give tab_w, tab_h) | "quad"
+                (QFP/QFN) | "bga" (give rows, cols). hole > 0 makes any
+                family through-hole.
+            pin_count: Total pads (2 chip, even header, signal pins for
+                tab, multiple of 4 quad; ignored for bga).
+            rows, cols: BGA grid.
+            exposed_pad: QFN/QFP centre pad size, mils (0 = none); it is
+                pin_count+1.
+            tab_w, tab_h: Tab pad size, mils; it is pin_count+1.
+            skip: BGA balls to leave out, e.g. ["A1"].
+            pitch: Pad pitch within a row, mils.
+            pad_w, pad_h: Pad size, mils. pad_w is the X size (across the
+                row for chip and dual, along it for sip, header and tab);
+                for quad it runs along each row.
+            row_span: Centre-to-centre between rows (dual, quad), mils.
+            shape: Pad shape (default "roundrect", corner_radius in %).
+            silk: Draw a TopOverlay body outline.
+            courtyard: Courtyard margin, mils (0 = none; Mechanical1).
+            body_w, body_h: Body size for the silk (default pad extent).
+            hole: Drill, mils; > 0 gives through-hole pads, pin 1 square.
+            description: Footprint description.
 
         Returns:
-            Dict with the footprint name, pad/track counts, extent, and the
-            per-step bridge results.
+            Footprint name, pad and track counts, extent, step results.
         """
         from eda_agent.design.footprint_gen import generate_footprint
 
@@ -1783,28 +1762,17 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Create a COMPLETE footprint in the open PcbLib from a package drawing.
 
-        Takes the package as the datasheet draws it, not a pad list: the
-        lands come from IPC-7351B (toe, heel and side fillets with the
-        tolerance stack-up) for the family and density asked for. Writes
-        the pads (rounded rectangles with their corner ratio, rotation,
-        holes, slots, non-plated holes), paste windows over an exposed
-        pad with the pad's own paste closed, silkscreen kept clear of the
-        copper with a pin 1 dot, the body outline and a .Designator on
-        the assembly layer, the courtyard, and the footprint height from
-        the package's maximum A. Origin at the package centroid. Every
-        length goes in millimetres, unrounded.
+        Give the package as the datasheet draws it, not a pad list: lands
+        come from IPC-7351B for the family and density. Writes pads,
+        exposed-pad paste windows, silkscreen with a pin 1 dot, assembly
+        outline and .Designator, courtyard and height; origin at the
+        centroid, all lengths in mm. The pads are then read back and any
+        difference is a failure.
 
-        It then READS THE PADS BACK (lib_get_pad_geometry) and compares
-        count, centres, sizes, rotation, shape, holes and any manual paste
-        or mask expansion with what was sent, within one internal unit.
-        A difference is a failure, not a warning.
-
-        DATASHEET DISCIPLINE: transcribe the package from the
-        manufacturer's drawing fetched in this conversation, each
-        dimension as min/nom/max with its page and figure, and name the
-        datasheet in ``source``. The engine sizes lands from the
-        tolerances, so a nominal-only dimension gives a worse pattern and
-        says so in ``warnings``.
+        DATASHEET DISCIPLINE: transcribe each dimension as min/nom/max
+        from the manufacturer's drawing fetched in this conversation, and
+        name it in ``source``; nominal-only dimensions give worse lands
+        and a warning.
 
         Args:
             package: the PackageSpec as an object (or its JSON text):
@@ -1820,34 +1788,22 @@ def register_library_tools(mcp):
                 (L), ``lead_width`` across it (b). Exposed pad:
                 ``ep_x``/``ep_y``. ``source``: {document, revision, page,
                 ref, url}.
-            name: footprint name; default the package's ``name``, else a
-                generated one (e.g. SOIC-8-P1.27N).
-            density: L, N or M (least, nominal, most). Default: the
-                package's own, N unless it says otherwise.
-            description: appended to the generated description, which
-                already names the family, the standard, the density and
-                the source.
-            assembly_layer, courtyard_layer: mechanical layers for those
-                roles. Empty picks them BY ROLE from the library: the
-                layer whose kind is "Assembly Top" / "Courtyard Top",
-                else the one whose name says so (the same reading
-                lib_audit_footprint_policies uses). With neither, the
-                call refuses and lists the library's layers rather than
-                guessing a number.
-            drafting: overrides of the drafting rules, e.g.
-                ``{"silk_width": 0.15, "ep_paste_coverage": 0.6,
-                "mask_expansion": 0.05}``. A non-zero mask expansion is
-                written to every pad; at the default 1:1 the library's
-                design rule decides.
-            set_height: write the footprint height (package A max) with
-                the existing height setter.
+            name: Footprint name; default the package's, else generated
+                (e.g. SOIC-8-P1.27N).
+            density: L, N or M (default the package's, else N).
+            description: Appended to the generated description.
+            assembly_layer, courtyard_layer: Mechanical layers. Empty picks
+                them by kind or name ("Assembly Top", "Courtyard Top");
+                with neither, it refuses and lists the layers.
+            drafting: Overrides, e.g. {"silk_width": 0.15,
+                "ep_paste_coverage": 0.6, "mask_expansion": 0.05}.
+            set_height: Write the height (package A max).
 
         Returns:
-            ``{ok, footprint, library_path, created, layers, readback,
-            pads, courtyard_mm, warnings, notes, ipc, steps}``. ``ok`` is
-            true only when every step succeeded and the readback matched.
-            A failure after the footprint was created says so: the
-            footprint exists and is incomplete.
+            {ok, footprint, library_path, created, layers, readback, pads,
+            courtyard_mm, warnings, notes, ipc, steps}. ``ok`` only when
+            every step succeeded and the readback matched; a later
+            failure leaves the footprint created but incomplete.
         """
         from ..bridge.exceptions import AltiumError
         from ..design.landpattern.emit import (
@@ -3133,62 +3089,28 @@ def register_library_tools(mcp):
         rotation_y: float = 0,
         rotation_z: float = 0,
     ) -> dict[str, Any]:
-        """Link a 3D STEP model to a PcbLib footprint.
-
-        Loads the STEP geometry into the footprint as an IPCB_ComponentBody
-        (the real 3D body that drives the 3D view and the height/placement
-        DRC), so the **active document must be the .PcbLib** that contains the
-        footprint. ``component_name`` selects the footprint by name (empty uses
-        the library's current footprint).
+        """Link a 3D STEP model to a footprint in the ACTIVE .PcbLib, as a
+        component body (drives the 3D view and height DRC).
 
         Args:
-            component_name: Name of the footprint in the active PcbLib
-            model_path: Path to the 3D model file (.step, .stp); must exist
-            offset_x: X offset in mils from the FOOTPRINT's origin. The
-                body is always moved onto that origin first: it arrives
-                at the board origin, and a footprint open in the editor
-                sits at Altium's library origin, about 50000,50000 mil,
-                so an offset of 50000 used to be needed to bring it back.
-                Do not add that any more.
-            offset_y: Y offset in mils, applied with offset_x
-            offset_z: Z offset in mils, sets the body's StandoffHeight.
-                This is the common adjustment: lifting a connector body
-                off the board so it sits on its pads rather than through
-                them.
-            rotation_x: NOT APPLIED, accepted for signature stability.
-                Set it in the library editor after linking.
-            rotation_y: NOT APPLIED, same reason as rotation_x.
-            rotation_z: NOT APPLIED. This one used to assign
-                ``Body.Rotation``, and IPCB_ComponentBody has no such
-                property on AD26 26.9.1.9. MEASURED: it raised
-                "Undeclared identifier: Rotation", which DelphiScript
-                cannot catch, so the Try around it never fired and the
-                resulting modal took the whole polling loop down with
-                it. Passing a rotation used to cost you the bridge.
-                The rotation lives on the MODEL, not the body, and has
-                to be set before the model is attached
-                (``Model.SetState`` in AutoSTEPplacer.pas). Its four
-                arguments are undocumented, so they are not guessed at
-                here. Rotate in the library editor for now.
+            component_name: Footprint name (empty: the current footprint).
+            model_path: Existing .step/.stp file.
+            offset_x: X offset in mils from the footprint's origin (the
+                body is moved onto that origin first).
+            offset_y: Y offset in mils.
+            offset_z: Standoff height in mils (lifts the body).
+            rotation_x: NOT APPLIED; rotate in the library editor.
+            rotation_y: NOT APPLIED.
+            rotation_z: NOT APPLIED (no scriptable rotation on the body;
+                assigning one halted the script).
 
         Returns:
-            Dict with ``success``, ``footprint``, ``model``,
-            ``footprint_origin_mils`` and ``moved_to_footprint_origin``
-            (false means the body may sit at the board origin, away
-            from the footprint), and
-            ``applied`` -- which adjustments were actually written to
-            the body (``standoff_height``, ``rotation_z``,
-            ``offset_xy``). Check it rather than assuming: each
-            assignment is individually guarded, so one failing does not
-            fail the call. ``rotation_z`` is now ALWAYS false, see
-            above. ``standoff_height`` is confirmed live;
-            ``offset_xy`` is not yet.
-
-            A ``false`` means the adjustment did not happen, which
-            covers both a rejected assignment and an argument left at
-            its default of 0: the handler skips a zero rather than
-            writing it. ``offset_xy`` covers ``offset_x`` and
-            ``offset_y`` together and is true if either is non-zero.
+            ``success``, ``footprint``, ``model``,
+            ``footprint_origin_mils``, ``moved_to_footprint_origin``
+            (false: the body may sit away from the footprint) and
+            ``applied`` {standoff_height, rotation_z (always false),
+            offset_xy}; false means not written, including a zero left at
+            its default.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -3363,77 +3285,35 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Search open SchLib documents and installed database libraries.
 
-        OPEN .SchLib FILES AND INSTALLED DATABASE LIBRARIES (DbLib) ARE
-        SEARCHED. Query libraries (SVN DbLib), integrated libraries
-        (IntLib), workspace components and installed .SchLib files that
-        are not open are not, so 0 hits is not "no such part". The reply
-        says what was searched (``libraries_searched``, DbLibs included)
-        and lists every installed library it could not read
-        (``not_searched``, with the reason), with a ``coverage_note`` when
-        anything was skipped.
+        Searched: every .SchLib open (in a project or standalone) and every
+        installed DbLib, case-insensitive substring. NOT searched: IntLibs,
+        query/SVN libraries, workspace components, closed SchLibs, so 0
+        hits is not "no such part"; ``not_searched`` and ``coverage_note``
+        say what was skipped. It reads files ON DISK: a symbol created and
+        not yet saved is not found (use lib_get_component_details).
+        DbLib rows match on every column (MPN, value) and are marked
+        ``source: "dblib"``; lib_dblib_search narrows to a table.
 
-        DbLib rows join ``results`` after the SchLib matches, with what
-        is left of ``limit``, each marked ``source: "dblib"`` and carrying
-        its table, key, symbol and footprints; SchLib matches are marked
-        ``source: "schlib"``. Every column of a row is matched, so a
-        manufacturer part number or a value finds the part. A DbLib that
-        cannot be connected stays under ``not_searched`` with the reason,
-        and ``dblib_searches`` says what each DbLib search covered. Use
-        ``lib_dblib_search`` to restrict to one table or a few columns,
-        and ``lib_dblib_get_record`` for every column of one row.
-
-        Case-insensitive substring match. Walks every .SchLib that is
-        a member of any open project, plus every standalone .SchLib in
-        the workspace's free-documents area. Each library is read via
-        ``CreateLibCompInfoReader`` so the search is fast even with
-        many libraries open: it only loads symbols when ``search_type``
-        is ``"parameters"``.
-
-        IT READS THE FILE ON DISK, NOT THE EDITOR. A component created
-        in this session and not yet saved WILL NOT BE FOUND, and the
-        reply is an ordinary empty result with nothing to say why.
-        MEASURED: a symbol that ``lib_get_component_details`` returned
-        in full was absent here until a save. Save first, or use
-        ``lib_get_component_details`` / ``lib_get_pin_list``, which read
-        the live document.
-
-        DATASHEET DISCIPLINE: Matches carry `_datasheet_guidance`.
-        Before recommending any matched part as a replacement or
-        answer, fetch its datasheet (WebSearch + WebFetch). Do not
-        recommend based on symbol metadata alone.
+        DATASHEET DISCIPLINE: fetch a part's datasheet before recommending
+        it; do not go on symbol metadata alone.
 
         Args:
-            query: Substring to match against component name / alias /
-                description (case-insensitive).
-            search_type: ``"all"`` (default, matches name / alias /
-                description), ``"name"``, ``"description"``, or
-                ``"parameters"`` (slow, also walks each candidate's
-                parameter dict via the live symbol).
-            library_path: Optional path to a single .SchLib, or to a
-                single .DbLib, to restrict the search to. When omitted,
-                searches every open .SchLib and every installed DbLib.
-            limit: Cap on returned matches (default 100), SchLib and
-                DbLib together.
-            include_dblibs: also search the installed database libraries
-                (default True). Their rows are read through the connection
-                each DbLib declares, every row of every enabled table up to
-                lib_dblib_search's row bound, so a large database makes the
-                search slower; False keeps it to open .SchLib files and
-                lists the DbLibs under ``not_searched``. A ``library_path``
-                naming a .DbLib searches that one either way.
+            query: Substring to match.
+            search_type: "all" (name, alias, description; default),
+                "name", "description", or "parameters" (slow).
+            library_path: Restrict to one .SchLib or .DbLib.
+            limit: Cap on matches, SchLib and DbLib together (default 100).
+            include_dblibs: Also search installed DbLibs (default True;
+                slower on large databases).
 
         Returns:
-            Dict with ``query``, ``search_type``, ``count``, ``limit``,
-            ``truncated`` (True when count == limit, or when a DbLib
-            search stopped early), and ``results``, a list of {name,
-            alias_name, description, library_path, part_count, source}
-            per match (a DbLib row adds table, key_field, symbol_ref,
-            symbol_library, footprints, matched_field, and its name is
-            the row's key), plus `_datasheet_guidance` +
-            `_datasheet_parts`; and ``libraries_searched``,
-            ``not_searched`` (each ``{library_path, library_type,
-            reason}``), ``dblib_searches`` and ``coverage_note`` as
-            above. Either list is None when it could not be read.
+            ``query``, ``search_type``, ``count``, ``limit``,
+            ``truncated``, ``results`` [{name, alias_name, description,
+            library_path, part_count, source}; DbLib rows add table,
+            key_field, symbol_ref, symbol_library, footprints,
+            matched_field], ``_datasheet_guidance``,
+            ``libraries_searched``, ``not_searched`` [{library_path,
+            library_type, reason}], ``dblib_searches``, ``coverage_note``.
         """
         bridge = get_bridge()
         if library_path and is_dblib_path(library_path):
@@ -3751,66 +3631,30 @@ def register_library_tools(mcp):
         library_path: Optional[str] = None,
         component_index: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Get full inspection of one library component in a single call.
+        """Everything about one library symbol in one call: metadata, pins,
+        parameters, models, and the style (font_id, color, is_hidden, x,
+        y, orientation, justification) of its designator, comment and
+        parameters. obj_get_font_spec expands a font_id. Naming
+        library_path opens (focuses) that library; nothing is saved.
 
-        Returns metadata, every pin, every parameter (as a flat dict),
-        AND visual-style records for the designator, comment, pins,
-        and each parameter (font_id, color, is_hidden, x, y,
-        orientation, justification). The integer ``font_id`` can be
-        expanded to {name, size, bold, italic} via ``obj_get_font_spec``
-        when style detail is needed; the round-trip default keeps it
-        compact.
-
-        If ``library_path`` is provided and isn't already focused, the
-        library is opened (focus changes), so the next ``lib_*`` call
-        operates on it without an explicit open. Saves are deferred,
-        opening doesn't write anything to disk.
-
-        DATASHEET DISCIPLINE: This response is the highest-density
-        device-fact surface in the library API (pins, parameters,
-        Manufacturer/MPN). Treat every value as a hint to find the
-        manufacturer datasheet, not as ground truth. The response
-        carries `_datasheet_guidance` and `_datasheet_parts`, fetch
-        the PDF and cite a section/page before stating any pin or
-        rating.
+        DATASHEET DISCIPLINE: pins, parameters and MPN here are hints;
+        fetch the datasheet and cite it before stating a pin or rating.
 
         Args:
-            component_name: Component LibRef as it appears in the .SchLib.
-            library_path: Optional .SchLib full path. When omitted the
-                currently focused library is used.
-            component_index: Alternative to component_name. The integer
-                `index` from lib_get_components. Use this to reach a
-                component whose LibReference carries bytes you cannot
-                reproduce (an embedded double-quote, or a control char
-                left by a broken import) -- the name never has to round
-                trip through the caller. Provide exactly one of
-                component_name / component_index.
+            component_name: LibRef in the .SchLib.
+            library_path: .SchLib path (default: the focused library).
+            component_index: ``index`` from lib_get_components, for a name
+                with characters you cannot reproduce. Give exactly one of
+                name or index.
 
         Returns:
-            Dict with:
-              - name, library_path, description, alias_name,
-                part_count, pin_count
-              - designator: {text, font_id, color, is_hidden, x, y,
-                orientation, justification} - the on-canvas designator
-                label (NOT just the prefix string).
-              - comment: {text, font_id, color, is_hidden, x, y,
-                orientation, justification} - the on-canvas comment /
-                value label.
-              - pins: list of {designator, name, electrical_type, x, y,
-                orientation, hidden, label_hidden}. Pin font / color
-                are not exposed by the Altium SDK on ISch_Pin and
-                therefore not surfaced here.
-              - parameters: flat dict of name -> value (cheap lookups).
-              - parameter_styles: list of {name, value, style:{font_id,
-                color, is_hidden, x, y, orientation, justification}}
-                in the same order parameters appear on the symbol.
-              - models: list of the component's implementations (footprint
-                / SPICE / 3D links), each {model_name, model_type,
-                is_current, datafile_links:[{entity_name, file_kind,
-                location}]}. datafile_links is the model's source (the
-                library it resolves from); empty when the footprint binds
-                by name only. Empty list when the part carries no models.
-              - `_datasheet_guidance` + `_datasheet_parts`.
+            name, library_path, description, alias_name, part_count,
+            pin_count; ``designator`` and ``comment`` (text plus style);
+            ``pins`` [{designator, name, electrical_type, x, y,
+            orientation, hidden, label_hidden}]; ``parameters`` (name ->
+            value); ``parameter_styles``; ``models`` [{model_name,
+            model_type, is_current, datafile_links}];
+            ``_datasheet_guidance``.
         """
         if not component_name and component_index is None:
             return {"ok": False, "reason":

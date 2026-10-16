@@ -774,80 +774,42 @@ def register_design_tools(mcp) -> None:
         block: str,
         params: dict,
     ) -> dict[str, Any]:
-        """Fold a canonical circuit block into a DesignPlan in one call.
+        """Add a standard sub-circuit to a DesignPlan, wired, in one call.
 
-        Authoring boilerplate sub-circuits pin-by-pin in plan JSON is slow
-        and error-prone (a decoupling network is N caps, 2N pins, and two
-        net merges that must line up). This emits the canonical *topology*
-        of a common block and wires it into ``plan_json`` -- allocating
-        unique refdes, tying every pin to the right net, and tagging
-        power/ground and roles -- then returns the augmented plan plus an
-        inline re-validation so the next authoring step starts from a known
-        state.
+        It sets the topology (unique refdes, every pin on its net, power
+        and ground tagged) and re-validates the plan. You choose every
+        part: lib_ref, value, footprint, mpn, datasheet_url in ``params``.
+        Nets the block only touches (a pull-up's signal, a divider's rail)
+        should already exist in the plan.
 
-        It is **naming-agnostic**: it owns the wiring pattern, never the
-        part choice. YOU supply every part identity in ``params``
-        (``lib_ref``/``value``/``footprint``/``mpn``/``datasheet_url``),
-        picked semantically from the live inventory snapshot. Pass computed
-        values from ``design_compute_component_value`` where relevant.
-
-        Blocks and their required ``params`` (all also accept ``pins`` to
-        override default pin names, ``refdes_prefix``, ``sheet``):
-
-          * ``decoupling``      power_net, ground_net, lib_ref [, count,
-                                value, footprint] -- N bypass caps.
-          * ``pullup``          signal_net, rail_net, lib_ref [, value].
-          * ``pulldown``        signal_net, ground_net, lib_ref [, value].
-          * ``series_resistor`` net_a, net_b, lib_ref [, value].
-          * ``voltage_divider`` rail_net, ground_net, lib_ref_top,
-                                lib_ref_bottom [, value_top, value_bottom,
-                                output_net] -- fresh midpoint net.
-          * ``rc_lowpass``      input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net].
-          * ``rc_highpass``     input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net] -- series
-                                C + shunt R (AC coupling).
-          * ``led_indicator``   anode_net, cathode_net, lib_ref_r,
-                                lib_ref_led [, value_r, mid_net].
-          * ``crystal``         xin_net, xout_net, ground_net, lib_ref,
-                                cap_lib_ref [, value, cap_value] -- crystal
-                                + a matched pair of load caps (one shared
-                                cap_value keeps the legs equal).
-          * ``pi_filter``       input_net, ground_net, lib_ref_l, lib_ref_c
-                                [, value_l, value_c, output_net] -- shunt C,
-                                series L/ferrite, shunt C.
-          * ``mosfet_low_side`` control_net, load_net, ground_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pulldown, pulldown, fet_pins] --
-                                gate series R + gate pull-down + FET
-                                switching a load low-side.
-          * ``mosfet_high_side`` control_net, load_net, rail_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pullup, pullup, fet_pins] -- gate
-                                series R + gate pull-up + PMOS switching a
-                                load high-side (source at the rail).
-
-        Call ``design_list_circuit_blocks`` for the full per-block
-        parameter contract.
-
-        Net endpoints the block does NOT own (a pullup's signal, an RC
-        input, a divider rail) should already exist in the plan; the block
-        only creates the nets it fully populates. If you point a block at a
-        net that ends up with a single pin, the inline ERC reports it as a
-        floating net for you to complete.
+        Blocks and required params (all accept pins, refdes_prefix, sheet;
+        design_list_circuit_blocks gives the full contract):
+          ``decoupling``: power_net, ground_net, lib_ref [count, value]
+          ``pullup``: signal_net, rail_net, lib_ref
+          ``pulldown``: signal_net, ground_net, lib_ref
+          ``series_resistor``: net_a, net_b, lib_ref
+          ``voltage_divider``: rail_net, ground_net, lib_ref_top,
+            lib_ref_bottom [output_net]
+          ``rc_lowpass`` / ``rc_highpass``: input_net, ground_net,
+            lib_ref_r, lib_ref_c [output_net]
+          ``led_indicator``: anode_net, cathode_net, lib_ref_r,
+            lib_ref_led
+          ``crystal``: xin_net, xout_net, ground_net, lib_ref, cap_lib_ref
+          ``pi_filter``: input_net, ground_net, lib_ref_l, lib_ref_c
+          ``mosfet_low_side``: control_net, load_net, ground_net,
+            lib_ref_r, lib_ref_fet
+          ``mosfet_high_side``: control_net, load_net, rail_net,
+            lib_ref_r, lib_ref_fet
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
-            block: block name (see the list above).
-            params: block parameters (see per-block requirements above).
+            block: block name from the list.
+            params: block parameters.
 
         Returns:
-            ``{ok, plan, added: {refdes, nets, extended_nets}, notes,
-            validation}`` where ``plan`` is the augmented DesignPlan dict
-            ready for the next ``design_add_circuit_block`` or
-            ``design_execute_plan``, and ``validation`` is the same payload
-            ``design_validate_plan`` returns. ``ok`` is False on a bad
-            block name / missing param / schema error, with ``errors``.
+            {ok, plan, added: {refdes, nets, extended_nets}, notes,
+            validation}; ``plan`` is ready for the next block or
+            design_execute_plan. ``ok`` False comes with ``errors``.
         """
         if isinstance(plan_json, dict):
             payload = plan_json
@@ -1403,56 +1365,31 @@ def register_design_tools(mcp) -> None:
         t_ambient: float = 25.0,
         tj_max: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Compute a manufacturable component value, snapped to an E-series.
-
-        Use this instead of doing the arithmetic by hand: it applies the
-        standard sizing equation, snaps to the nearest IEC 60063 preferred
-        value, and reports the ACHIEVED result plus the error so you can see
-        if the snap is good enough or a tighter ``series`` is needed.
+        """Compute a component value snapped to an E-series, with the value
+        actually achieved and its error. Use it instead of hand arithmetic.
 
         Args:
-            kind: Which calculation:
-              - ``"nearest"``: snap ``value`` to the nearest preferred value.
-              - ``"feedback_divider"``: regulator FB divider
-                ``v_out = v_ref*(1+Rtop/Rbot)``; needs ``v_out``, ``v_ref``;
-                optional ``r_bottom_ohms`` to fix the low side.
-              - ``"resistor_divider"``: unloaded divider
-                ``v_out = v_in*Rb/(Rt+Rb)``; needs ``v_in``, ``v_out``.
-              - ``"led_resistor"``: series resistor; needs ``v_supply``,
-                ``v_forward``, ``i_led_ma``.
-              - ``"rc_lowpass"``: first-order RC; needs ``f_cutoff_hz`` and
-                exactly one of ``r_ohms`` / ``c_farads``.
-              - ``"crystal_load_caps"``: symmetric crystal load caps; needs
-                ``c_load_pf`` (datasheet CL), optional ``c_stray_pf`` (default
-                5 pF per leg).
-              - ``"i2c_pullup"``: bus pull-up window (NXP UM10204); needs
-                ``v_bus``, ``c_bus_pf``, ``t_rise_ns`` (1000 standard / 300
-                fast / 120 fast-plus).
-              - ``"divider_tolerance"``: worst-case output window of an
-                unloaded divider; needs ``v_in``, ``r_top_ohms``,
-                ``r_bottom_ohms``, optional ``tol_pct`` (default 1).
-              - ``"opamp_gain"``: Rf/Rin (or Rg) for a gain stage; needs
-                ``gain`` and ``config`` (``inverting`` / ``non_inverting``).
-              - ``"buck_inductor"``: buck inductor; needs ``v_in``, ``v_out``,
-                ``i_out_a``, ``f_sw_khz``, optional ``ripple_pct`` (default 30).
-              - ``"capacitor_energy"``: stored energy; needs ``c_farads``,
-                ``voltage``.
-              - ``"holdup_cap"``: bulk hold-up capacitance; needs ``i_load_a``,
-                ``t_s`` (hold-up time), ``v_drop`` (allowed sag).
-              - ``"discharge_resistor"``: bleeder; needs ``c_farads``,
-                ``v_initial``, ``v_final``, ``t_s`` (discharge time).
-              - ``"junction_temp"``: Tj = Ta + P*theta_JA; needs ``power_w``,
-                ``theta_ja``, optional ``t_ambient`` (default 25).
-              - ``"max_power"``: thermal derating; needs ``tj_max``,
-                ``theta_ja``, optional ``t_ambient``.
-              - ``"required_theta_ja"``: package/heatsink sizing; needs
-                ``power_w``, ``tj_max``, optional ``t_ambient``.
-            series: E-series name (E6/E12/E24/E48/E96). Default E96 for
-                dividers/precision, pass E24 for jellybean R/C.
+            kind and what it needs:
+              nearest: value
+              feedback_divider: v_out, v_ref [r_bottom_ohms]
+              resistor_divider: v_in, v_out
+              led_resistor: v_supply, v_forward, i_led_ma
+              rc_lowpass: f_cutoff_hz and one of r_ohms / c_farads
+              crystal_load_caps: c_load_pf [c_stray_pf, default 5]
+              i2c_pullup: v_bus, c_bus_pf, t_rise_ns (1000/300/120)
+              divider_tolerance: v_in, r_top_ohms, r_bottom_ohms [tol_pct]
+              opamp_gain: gain, config (inverting / non_inverting)
+              buck_inductor: v_in, v_out, i_out_a, f_sw_khz [ripple_pct]
+              capacitor_energy: c_farads, voltage
+              holdup_cap: i_load_a, t_s, v_drop
+              discharge_resistor: c_farads, v_initial, v_final, t_s
+              junction_temp: power_w, theta_ja [t_ambient, default 25]
+              max_power: tj_max, theta_ja [t_ambient]
+              required_theta_ja: power_w, tj_max [t_ambient]
+            series: E6/E12/E24/E48/E96 (default E96; E24 for jellybean).
 
         Returns:
-            ``{"ok": True, ...fields..., "summary": "..."}`` or
-            ``{"ok": False, "error": "..."}``.
+            {"ok": True, ...values..., "summary"} or {"ok": False, "error"}.
         """
         try:
             k = kind.strip().lower()
@@ -2383,70 +2320,31 @@ def register_design_tools(mcp) -> None:
         placement_hints: Optional[dict[str, dict[str, int]]] = None,
         mode: str = "auto",
     ) -> dict[str, Any]:
-        """Instantiate a DesignPlan in Altium.
-
-        Two execution paths:
-
-        - ``use_canvas=True`` (default): the new canvas-based pipeline.
-          Plan -> SymbolExtractor -> SchematicCanvas (all in Python) ->
-          one-shot batched emit to Altium. Layout decisions are made
-          before any IPC; an SVG preview is written next to the project
-          file so you can sanity-check the schematic without opening it.
-
-        - ``use_canvas=False``: the legacy executor that interleaves
-          layout with Altium IPC. Kept as a fallback while the new path
-          stabilises.
-
-        Both halt early if the plan contains any needs_creation parts.
-        Resolve those first by either picking an existing-lib equivalent
-        or branching into a library-authoring sub-task.
+        """Draw a DesignPlan in Altium: places AND routes the sheet in one
+        call, and writes an SVG preview next to the project. Stops first if
+        the plan has needs_creation parts (pick existing ones or author
+        them).
 
         Args:
-            plan_json: Either a DesignPlan JSON string, or the DesignPlan
-                as a JSON object/dict. The MCP framework auto-deserializes
-                JSON-object literals to dicts before the tool sees them,
-                so both shapes are accepted.
-            project_path: Absolute path to the target .PrjPcb. Created
-                if it does not exist.
-            use_canvas: Pick the execution path. Default ``True`` runs
-                the new canvas pipeline; pass ``False`` to fall back to
-                the legacy executor.
-            placement_hints: Optional ``{refdes: {"x": int, "y": int,
-                "rotation": int}}`` partial anchors. Hinted refdes pin
-                to the supplied position; others run through the
-                algorithmic placement (Sugiyama + multi-try scoring).
-                Used by the agent-in-loop refinement workflow:
-                  1. Run ``design_preview_plan`` -> see SVG + score.
-                  2. If layout is bad, identify specific refdes that
-                     should sit elsewhere; build hints dict.
-                  3. Call ``design_preview_plan`` again with hints ->
-                     iterate until score is acceptable.
-                  4. Call ``design_execute_plan`` with the same hints
-                     to emit the refined layout.
-            mode: How to reach the sheet. ``"auto"`` (default) EDITS a
-                sheet this tool has drawn before, moving only the parts
-                whose position changed, placing the new ones, deleting
-                the ones the plan dropped, and leaving every other
-                component exactly as it is. It draws from scratch when
-                there is no prior sheet. This is what makes re-running a
-                changed plan safe on a schematic somebody has worked on.
-                ``"full"`` re-places every component, discarding any
-                hand edit; use it when you want the sheet redrawn.
-                ``"delta"`` refuses rather than redraw.
-
-                The edit path only knows what is in the plan. To keep a
-                part where a person dragged it, read the sheet back with
-                ``design_hints_from_sheet`` and pass the result as
-                ``placement_hints``.
+            plan_json: The DesignPlan as JSON text or a dict.
+            project_path: Target .PrjPcb (created if missing).
+            use_canvas: True (default) lays out in Python then emits once;
+                False uses the legacy executor.
+            placement_hints: {refdes: {"x", "y", "rotation"}} to pin parts;
+                the rest are placed by the engine. Iterate with
+                design_preview_plan, then execute with the same hints.
+            mode: "auto" (default) EDITS a sheet this tool drew before:
+                moves only changed parts, adds new ones, removes dropped
+                ones, leaves the rest; draws fresh when there is none.
+                "full" redraws everything (hand edits lost). "delta"
+                refuses rather than redraw. To keep hand-dragged parts,
+                pass design_hints_from_sheet's result as placement_hints.
 
         Returns:
-            Result dict with ok / project_path / sheets_touched / placed
-            (list of placements) / failures / needs_creation / notes.
-            Canvas-path additions: ``canvas`` (the SchematicCanvas dict
-            snapshot) and ``preview_svg_path`` (where the SVG was written).
-            On an edit, ``delta`` lists the refdes added, moved, replaced,
-            removed and untouched; ``placed`` then covers only the parts
-            actually placed, which on an edit is the new ones.
+            ok, project_path, sheets_touched, placed, failures,
+            needs_creation, notes, ``canvas``, ``preview_svg_path``; on an
+            edit, ``delta`` lists refdes added, moved, replaced, removed
+            and untouched.
         """
         if use_canvas:
             return execute_plan_via_canvas_from_json(

@@ -863,68 +863,26 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_run_drc(allow_modal: bool = False) -> dict[str, Any]:
-        """Run Design Rule Check (DRC) on the active PCB. MODAL --
-        BLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.
+        """Run Design Rule Check on the active PCB. MODAL: BLOCKS THE BRIDGE
+        until a human closes Altium's DRC dialog (no parameter avoids it),
+        so it refuses unless ``allow_modal=True``. PREFER
+        pcb_get_clearance_violations, which reads stored violations and
+        cannot block. Don't run it on a board with no tracks yet.
 
-        DANGER: Altium has no non-interactive DRC trigger exposed to
-        DelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL "Design
-        Rule Checker [mil]" setup dialog and the worker sits behind it
-        until a HUMAN clicks Cancel/OK. Nothing else on the bridge
-        runs meanwhile: one observed call left the loop dead for 30+
-        min, the client timed out at 1800 s, and every in-flight job
-        was stranded. No parameter suppresses the dialog, so this tool
-        refuses to fire unless the caller passes ``allow_modal=True``,
-        which is a promise that a human is at the keyboard.
-
-        PREFER ``pcb_get_clearance_violations`` -- it reads the
-        violations already stored on the board, runs no DRC, and
-        cannot block.
-
-        PATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board
-        (many components, zero tracks, everything unrouted) checks
-        every pad pair against every rule and is enormously slow for
-        an answer that is already known -- "nothing is routed yet".
-        Check ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``
-        first; if track count is 0, do not run DRC.
-
-        With ``allow_modal=True`` it executes the DRC and returns up
-        to 100 violations with full location data, so the agent can
-        jump straight to the offending spot instead of guessing from
-        the description.
-
-        ``drc_confirmed`` is true only when Altium rewrote the .DRC
-        report during this call. A cancelled dialog leaves the old
-        report untouched, so its count, 0 included, belongs to an
-        earlier run. It also stays false when the checker's Create
-        Report File option is off.
-
-        Per-violation shape:
-          - ``name``, ``description``, ``rule``: text from Altium
-          - ``x_mils`` / ``y_mils`` / ``layer``: violation's bbox
-            centre (the "go here" hint)
-          - ``primitive1`` / ``primitive2``: objects with
-            ``{detail, type, net, layer, x_mils, y_mils}``. ``type``
-            is the object kind (Track / Pad / Via / Region / Comp);
-            ``net`` is the net name. Two primitives are involved in
-            most rule kinds (Clearance, Short Circuit); a single-
-            primitive violation (e.g. AcuteAngle) leaves
-            ``primitive2`` with empty fields.
-
-        Use ``primitive1.net`` and ``primitive2.net`` to spot the
-        nets in conflict; use ``x_mils`` / ``y_mils`` to drive
-        ``proj_cross_probe`` or the dashboard's Drawing tab to the site.
+        ``drc_confirmed`` is true only if the .DRC report was rewritten
+        by this call; a cancelled dialog leaves an older report.
 
         Args:
-            allow_modal: Must be True to actually run DRC, and it
-                means "I accept that the bridge blocks on a modal
-                dialog until a human clicks it". Default False
-                refuses without touching Altium.
+            allow_modal: True means a human is there to close the dialog.
+                Default False refuses without touching Altium.
 
         Returns:
-            Dict with ``violation_count`` (full count even if > 100),
-            ``drc_triggered``, and ``violations`` array (first 100).
-            With ``allow_modal=False``: ``{ok: False, reason: ...}``
-            and no bridge call at all.
+            ``violation_count`` (all), ``drc_triggered``,
+            ``drc_confirmed`` and ``violations`` (first 100): name,
+            description, rule, x_mils, y_mils, layer, and ``primitive1``
+            / ``primitive2`` {detail, type, net, layer, x_mils, y_mils}
+            (primitive2 empty for single-object rules). Refused:
+            {ok: False, reason}.
         """
         if not allow_modal:
             return {
@@ -1700,180 +1658,75 @@ def register_pcb_tools(mcp):
         render_png: Optional[str] = None,
         apply: bool = False,
     ) -> dict[str, Any]:
-        """Connectivity-driven auto-placement: shorten wirelength, keep
-        components legal. **Dry-run by default** -- returns a proposed
-        move list and quality metrics without touching the board.
+        """Auto-place components to shorten wirelength, legally. Dry-run by
+        default: returns proposed moves and metrics, changes nothing.
 
-        A pure-Python solver run on the current board. It reads the
-        compiled netlist and every component's real footprint bounding
-        box, then improves positions to minimize half-perimeter
-        wirelength (HPWL) while keeping components inside the board
-        outline and free of same-layer overlaps.
-
-        Two solver cores are available via ``engine``:
-
-        - ``"refine"`` (default): a force-directed relaxation that nudges
-          the board's CURRENT positions, then a legalization pass. Best
-          for tidying an already-placed board.
-        - ``"construct"``: a from-scratch constructor that sizes the
-          placement, seeds parts at connectivity-weighted centroids,
-          chooses orientations, legalizes, and runs a short cooled
-          polish on a full multi-term objective (wirelength, overlap,
-          board-edge, decoupling proximity, connector banding, thermal).
-          Best for an unplaced or badly scrambled board. The full
-          per-term objective is always returned under ``objective_report``.
-
-        With ``optimize_rotation`` (default on) it also picks each
-        eligible part's orientation (0/90/180/270) to point its pins at
-        the nets they connect -- the classic auto-place win for 2-pin
-        passives. This needs per-pin geometry, so the tool also reads the
-        board's pads and maps them to components; orientation is only
-        considered for top-side parts currently sitting at an orthogonal
-        angle (others keep their rotation).
-
-        Workflow: call once with ``apply=False`` (default), read the
-        ``hpwl_improvement_pct`` and ``overlap_pairs_after``, eyeball the
-        ``moves``, then call again with ``apply=True`` to commit them in
-        one ``pcb.batch_move_components`` transaction. Components on
-        opposite layers may share an X/Y footprint (they cannot
-        physically collide).
-
-        Seeding: by default the solver refines the board's CURRENT
-        positions (small, sensible nudges). Pass ``reseed_grid=True`` for
-        a from-scratch re-place (ignores current positions) -- use only
-        on an unplaced or badly-scrambled board.
+        Reads the netlist and each footprint's real bounding box, then
+        minimises half-perimeter wirelength (HPWL) inside the outline with
+        no same-layer overlaps. Parts on opposite layers may overlap.
+        Workflow: run with apply=False, check ``summary``,
+        ``hpwl_improvement_pct``, ``overlap_pairs_after`` and ``moves``,
+        then run again with apply=True to commit in one transaction.
 
         Args:
-            designators: If given, ONLY these components are moved; every
-                other placed component is held fixed but still attracts
-                its nets and blocks overlaps. If omitted, all components
-                are candidates (minus ``fixed``).
-            fixed: Designators to pin in place (connectors, mounting
-                holes, anything already positioned). Naming-agnostic --
-                you choose which; the tool does not guess by prefix.
-            region: Placement bounds ``{x1, y1, x2, y2}`` in mils. If
-                omitted, the board outline's bounding rectangle is used.
-            iterations: Global-placement relaxation steps (default 400).
-                More iterations = better convergence, longer runtime.
+            designators: Only these move; the rest stay put but still pull
+                their nets and block overlaps. Default: all but ``fixed``.
+            fixed: Designators held in place. You choose them; nothing is
+                guessed from prefixes.
+            region: Bounds {x1, y1, x2, y2} in mils. Default: the board
+                outline's bounding box.
+            iterations: Relaxation steps (default 400).
             grid_mils: Snap grid for final positions (default 5).
-            clearance_mils: Extra copper-to-copper breathing room added
-                to each pair's half-extents (default 15).
-            max_net_fanout: Skip nets touching more than this many
-                components (default 0 = keep all). Set e.g. 20 to ignore
-                power/ground planes that do not usefully guide placement.
-            exclude_nets: Explicit net names to ignore (e.g. ``["GND"]``).
-            critical_nets: Net names to treat as placement-critical (e.g. a
-                clock, a high-speed pair, a sensitive analog feedback line).
-                Their pull is scaled by ``critical_weight`` so the solver
-                keeps their endpoints close and shortens those traces first,
-                at a small cost to ordinary nets. You (the planner) decide
-                which nets matter; the tool does not guess by name.
-            critical_weight: Multiplier applied to ``critical_nets`` pull
-                (default 3.0, clamped to [1, 20]). Higher = more aggressive
-                shortening of the critical nets versus the rest.
-            edge_parts: ``{refdes: band}`` mapping parts that must sit on a
-                board EDGE to which edge -- ``"L"``/``"R"``/``"T"``/``"B"``
-                (left/right/top/bottom). The solver seats each against that
-                edge (centred on the free axis) and holds it there. Use for
-                connectors, mounting holes, USB/headers -- anything needing
-                cable or panel access. You (the planner) decide which; the
-                tool does not guess by designator prefix.
-            keepout_groups: ``{refdes: group}`` mixed-signal separation tags.
-                Parts in DIFFERENT groups are pushed apart (the
-                industrial-engineering "undesirable adjacency" relationship)
-                -- segregate a noisy switching / digital section from a
-                sensitive analog / RF one. The group string is opaque (only
-                equality matters); you (the planner) assign the domains
-                semantically. ``construct`` engine only. Separating the groups
-                usually also shortens wirelength by de-interleaving them.
-            match_groups: ``{refdes: group}`` matched-pair keep-together tags.
-                Parts in the SAME group are pulled ADJACENT even when they
-                share no net -- the absolutely-necessary-adjacency relationship
-                / analog common-centroid matching (a differential pair's two
-                input resistors, a current mirror, a matched array). HPWL only
-                co-locates parts that share a net; this co-locates matched ones
-                that don't. ``construct`` engine only.
-            match_roles: ``{refdes: role}`` common-centroid sub-device labels
-                WITHIN a match_group (e.g. ``A``/``B`` for the two matched
-                halves of a cross-quad or interdigitated array). The optimiser
-                drives each role's centroid onto a common point so a linear
-                process/thermal gradient cancels -- it picks the balanced
-                ABBA/ABAB arrangement that ``match_groups`` alone (which only
-                keeps the cells compact) cannot distinguish from an unbalanced
-                AABB. Only meaningful with >= 2 roles per group and >= 2 cells
-                per role; needs ``match_groups`` set too. ``construct`` only.
-            plan_json: The DesignPlan (JSON string or dict) you authored. When
-                given, the placer auto-derives matched-pair ``match_groups``
-                from differential nets and analog/digital ``keepout_groups``
-                from the plan's net roles, and MERGES them under the explicit
-                ``match_groups`` / ``keepout_groups`` args (explicit wins per
-                refdes). No-op for a plan with no differential / mixed-signal
-                structure. What was inferred is echoed in ``auto_constraints``.
-            reseed_grid: Re-place from a fresh grid instead of refining
-                current positions (default False).
-            optimize_rotation: Also choose part orientation to shorten
-                pin-level wirelength (default True). Set False to keep
-                every part's current rotation.
-            engine: ``"refine"`` (default, nudge current positions) or
-                ``"construct"`` (from-scratch placement). ``"construct"``
-                implies a from-scratch re-place regardless of
-                ``reseed_grid``.
-            restarts: ``"construct"`` engine only. When > 1, run that many
-                seeded restarts and keep the lowest-objective legal
-                placement (variance reduction at a cost linear in
-                ``restarts``). Default 1 (single deterministic run).
-            render_png: Optional file path. When set, also render a preview
-                image of the proposed placement (board outline, courtyards,
-                net stars) to that path and return it as ``preview_png``
-                (offline, matplotlib). Rendering never breaks the move data;
-                failures surface as ``preview_error``.
-            apply: When True, commit the moves to the board. Default
-                False (dry-run).
+            clearance_mils: Extra spacing between parts (default 15).
+            max_net_fanout: Ignore nets on more components than this
+                (0 = keep all; ~20 drops power planes).
+            exclude_nets: Net names to ignore, e.g. ["GND"].
+            critical_nets: Nets whose pull is multiplied by
+                ``critical_weight`` so they come out shortest.
+            critical_weight: Multiplier for critical nets (default 3,
+                clamped to 1..20).
+            edge_parts: {refdes: "L"|"R"|"T"|"B"}: seat a part against that
+                board edge (connectors, mounting holes).
+            keepout_groups: {refdes: group}: parts in different groups are
+                pushed apart, e.g. switching vs analog. construct only.
+            match_groups: {refdes: group}: parts in one group are kept
+                adjacent even without a shared net (matched pairs).
+                construct only.
+            match_roles: {refdes: role} within a match group (e.g. A/B):
+                drives each role's centroid together for a common-centroid
+                (ABBA) layout. Needs match_groups; construct only.
+            plan_json: Your DesignPlan (JSON or dict). Adds match groups
+                from differential nets and keepout groups from analog vs
+                digital roles; explicit groups win. Echoed in
+                ``auto_constraints``.
+            reseed_grid: Re-place from scratch instead of refining current
+                positions (unplaced or scrambled boards only).
+            optimize_rotation: Also pick 0/90/180/270 per top-side part to
+                point pins at their nets (default True).
+            engine: "refine" (default) nudges current positions;
+                "construct" places from scratch with a multi-term objective
+                (wirelength, overlap, edge, decoupling, connectors,
+                thermal) and sizes the board.
+            restarts: construct only: run this many seeded restarts and
+                keep the best legal result (default 1).
+            render_png: Path for a preview image of the proposal, returned
+                as ``preview_png`` (``preview_error`` on failure).
+            apply: Commit the moves (default False).
 
         Returns:
-            Dict with:
-              - ``dry_run``: bool (True unless ``apply`` and moves exist)
-              - ``engine``: the solver core used
-              - ``component_count``, ``movable_count``, ``fixed_count``
-              - ``net_count`` (nets used after filtering)
-              - ``pin_count`` (pads mapped to components for rotation)
-              - ``summary``: a one-line plain-language assessment synthesising
-                legality, utilization, signal routability, decoupling, and the
-                suggested board size -- read this first to judge the placement
-              - ``hpwl_before``, ``hpwl_after``, ``hpwl_improvement_pct``
-              - ``overlap_pairs_before``, ``overlap_pairs_after``
-              - ``objective_report``: every objective term un-weighted
-                (``hpwl``, ``via``, ``cong``, ``clear``, ``edge``,
-                ``decap``, ``conn``, ``therm``) plus ``weighted_total``,
-                ``legal``, and ``utilization`` for the proposed layout
-              - ``net_length_report``: ``longest_nets`` (the few nets with
-                the largest physical bounding span in mils -- the routing
-                risk, and the candidates to mark ``critical_nets``) plus
-                ``critical_net_spans`` echoing the achieved span of each
-                net you flagged critical, so you can confirm it paid off
-              - ``ratsnest``: routability / via-pressure indicator from the
-                straight-line MST of each net. ``signal_crossings`` (rails
-                above ``signal_fanout_cap`` pins excluded, since planes carry
-                no signal via) predicts routing difficulty -- different-net
-                MST edges that cross need a layer change; ``total_crossings``
-                is the conservative all-net count
-              - ``decoupling_report``: the engine's structural decoupling
-                analysis -- a list of ``{decap, ic, distance_mils}`` (worst
-                first) naming which cap decouples which IC (found on the
-                connectivity graph, never by reference) and how close it
-                landed to the served power pin. Empty when no decoupling is
-                structurally identifiable
-              - ``suggested_board``: for the ``construct`` engine, the board
-                rectangle it sized and tightened to the placement
-                (``{x1, y1, x2, y2, width, height}`` in mils) -- the "best
-                PCB size" recommendation. ``null`` for the ``refine`` engine,
-                which works inside the existing outline
-              - ``moved_count``, ``rotated_count`` and ``moves`` (each
-                ``{designator, from: {x, y, rotation}, to: {x, y,
-                rotation}}`` in mils/degrees; ``to.rotation`` is null
-                when the orientation was unchanged)
-              - ``region`` used, ``notes`` from the solver, and
-                ``apply_result`` when ``apply=True``.
+            ``dry_run``, ``engine``, counts (component, movable, fixed,
+            net, pin), ``summary`` (read first), ``hpwl_before/after`` and
+            ``hpwl_improvement_pct``, ``overlap_pairs_before/after``,
+            ``objective_report`` (each term unweighted plus
+            ``weighted_total``, ``legal``, ``utilization``),
+            ``net_length_report`` (``longest_nets``,
+            ``critical_net_spans``), ``ratsnest`` (``signal_crossings``
+            predicts layer changes), ``decoupling_report`` ([{decap, ic,
+            distance_mils}], worst first, found from connectivity),
+            ``suggested_board`` (construct only), ``moved_count``,
+            ``rotated_count``, ``moves`` [{designator, from, to}] in
+            mils/degrees, ``region``, ``notes``, and ``apply_result`` when
+            applied.
         """
         bridge = get_bridge()
 
@@ -2726,28 +2579,17 @@ def register_pcb_tools(mcp):
         repour: bool = True,
         region_shape: str = "rebuild",
     ) -> dict[str, Any]:
-        """Move and reshape thousands of free primitives in ONE pass, from a file.
+        """Move and reshape thousands of free primitives in ONE pass, from a
+        JSON map of each object's CURRENT geometry and its new one.
 
-        For regenerating a board from a master, for example the other sizes
-        of one outline: a JSON map gives, for each free primitive, its
-        CURRENT geometry and its new one. The board is dumped once, every
-        entry is matched to one object within ``tolerance_mil``, and all
-        matches are applied in one transaction. Use it in place of
-        obj_batch_modify past a few hundred objects: each of that tool's
-        operations searches the whole board.
+        Use it past a few hundred objects, where obj_batch_modify is slow.
+        Each entry is matched to exactly one object within the tolerance;
+        none, several, or one object named twice is reported, never
+        guessed, and an object changed since the dump is left alone. Free
+        primitives only (not in a component, pour or dimension): move
+        components with pcb_move_components.
 
-        Objects are named by geometry because Altium gives no handle known to
-        survive a save and reopen. An entry that fits no object, fits several,
-        or names an object another entry also names is reported and left
-        alone, never guessed. The apply pass changes an object only if its old
-        geometry still reads back exactly as dumped.
-
-        Free primitives only: not owned by a component, a polygon pour or a
-        dimension. Move components with pcb_move_components and repour with
-        pcb_repour_polygons afterwards.
-
-        The map (mils, absolute board coordinates as the PcbDoc stores them,
-        not relative to the board origin)::
+        The map (mils, absolute board coordinates, not origin-relative)::
 
             {"tracks":   [{"layer", "width", "key": [x1,y1,x2,y2],
                            "new": [x1,y1,x2,y2], "new_width"?}],
@@ -2761,55 +2603,35 @@ def register_pcb_tools(mcp):
              "polygons": [{"layer", "key_first": [vx,vy], "segments": [seg]}],
              "board_outline": [seg] or {"segments": [seg]}}
 
-        A seg is ``{"kind": 0, "vx", "vy"}`` for a line or ``{"kind": 1, "vx",
-        "vy", "cx", "cy", "r", "sa", "ea"}`` for an arc, as Altium stores
-        outline segments. A track matches with its ends in either order. A
-        region keeps its hole count, and each hole its vertex count: holes are
-        rewritten in place, since a script cannot add or rebuild one. The
-        outline keeps nothing and is replaced whole. Polygons are matched by
-        layer and first vertex, and each changed one is repoured as
-        pcb_repour_polygons does it; ``repour=False`` reshapes them and
-        leaves the pours for pcb_repour_polygons, which can then take the
-        small ones first and a slow hatched one once. A repour clears
-        copper the PcbDoc can list as free (not owned) although the pour
-        made it: on one board a plain pcb_repour_polygons removed 21 of 175
-        free TopLayer
-        regions, and moving every pour removed 157, so check that no free
-        region you mean to keep sits in a pour. ``components`` entries are
-        counted and left to pcb_move_components.
+        A seg is {"kind": 0, "vx", "vy"} (line) or {"kind": 1, "vx", "vy",
+        "cx", "cy", "r", "sa", "ea"} (arc). Track ends match in either
+        order. A region keeps its hole count and each hole its vertex
+        count. The outline is replaced whole. Polygons match by layer and
+        first vertex. A repour also clears free regions lying inside the
+        pour, so keep wanted regions out of pours. ``components`` entries
+        are counted and ignored.
 
         Args:
             map_path: The JSON map.
-            board_path: The .PcbDoc to change. Required: the dump and the
-                apply must act on the same board, and it is refused unless
-                that file is the one Altium opens.
-            tolerance_mil: How far a key may sit from the object, per
-                coordinate and width.
+            board_path: The .PcbDoc to change (required; refused unless
+                that file is the board Altium opens).
+            tolerance_mil: Allowed distance per coordinate and width.
             angle_tolerance_deg: The same for arc angles, modulo 360.
-            dry_run: Dump and match only; change nothing. Run this first.
-            repour: Repour each reshaped polygon. False leaves every pour
-                as it was poured until pcb_repour_polygons is run.
-            region_shape: what happens to a region that also carries
-                Altium's shape segments, which Altium draws and saves in
-                preference to the contours: "rebuild" (default) writes the
-                new outline as straight shape segments; "clear" drops them
-                and Altium regenerates them from the contours on save;
-                "keep" leaves them, which leaves the OLD shape on screen
-                and in the file. Both rebuild and clear kept every hole
-                through a save and reopen; only rebuild reads back the new
-                drawn box at once.
+            dry_run: Dump and match only. Run this first.
+            repour: Repour each reshaped polygon. False leaves pours for
+                pcb_repour_polygons (small ones first, big hatched once).
+            region_shape: For regions that carry shape segments (what
+                Altium draws): "rebuild" (default) rewrites them from the
+                new outline; "clear" drops them; "keep" leaves the OLD
+                shape on screen.
 
         Returns:
-            {"board", "dry_run", "match": {kind: {entries, matched, unmatched,
-            ambiguous, refused, samples?}}, "apply": {applied, stale, missing,
-            region_readback_off, by_kind} or absent on a dry run}.
-            ``stale`` counts objects that changed between dump and apply;
-            ``region_readback_off`` counts region contours (outline or hole)
-            that did not read back as written; ``region_bbox_off`` counts
-            regions whose drawn box is not the new outline's extent, which
-            is what catches a shape left behind; ``region_shapes_changed``
-            counts shapes cleared or rebuilt. Run a dry run of a map keyed
-            on the new geometry afterwards to see exactly what landed.
+            {"board", "dry_run", "match": {kind: {entries, matched,
+            unmatched, ambiguous, refused, samples?}}, "apply": {applied,
+            stale, missing, region_readback_off, region_bbox_off,
+            region_shapes_changed, by_kind}}. Any nonzero ``*_off`` means
+            a region did not land as written. A dry run keyed on the new
+            geometry shows what landed.
         """
         import codecs
         import locale
@@ -2936,74 +2758,25 @@ def register_pcb_tools(mcp):
         copper_oz: float = 1.0,
         spacing_mils: float = 0.0,
     ) -> dict[str, Any]:
-        """Characteristic impedance of a PCB trace via IPC-2141 / Wadell
-        closed-form approximations. Pure math, no Altium hit.
-
-        Use this BEFORE routing a high-speed signal to pick the track
-        width that matches your transceiver's target impedance (USB
-        90 Ω diff, HDMI 100 Ω diff, single-ended PCIe 50 Ω, MIPI 100 Ω
-        diff, etc). For controlled-impedance fab spec sheets, the
-        accuracy of these closed-form formulas is ± ~10% -- good
-        enough for picking widths but fab houses will refine the
-        actual stackup. For real controlled-impedance boards, send
-        the stackup to your fab and use their Polar Si9000 / similar
-        report values.
-
-        Chaining with the layer stack: call ``pcb_get_layer_stackup``
-        first to read the actual dielectric heights and εr values
-        from the project, then feed those into this calculator. This
-        is essential -- guessing FR-4 at εr=4.2 ignores the stackup
-        the user actually picked and can give a 15-20% off answer
-        if they're using Megtron 6 or Rogers.
-
-        Supported geometries:
-          - ``"microstrip"`` -- single-ended outer-layer track with
-            reference plane below. IPC-2141 microstrip formula.
-          - ``"microstrip_diff"`` -- differential pair on outer
-            layer. Adds Wadell's mutual-coupling correction.
-          - ``"stripline"`` -- single-ended inner-layer track between
-            two reference planes.
-          - ``"stripline_diff"`` -- differential pair on an inner
-            layer between two reference planes.
-
-        Formula sources:
-          - IPC-2141 microstrip:
-            Z₀ = (87 / √(εr + 1.41)) × ln(5.98 × h / (0.8 × w + t))
-          - Symmetric stripline:
-            Z₀ = (60 / √εr) × ln(4 × b / (0.67 × π × (0.8 × w + t)))
-          - Differential variants apply the standard Wadell
-            correction: Zdiff ≈ 2 × Z₀ × (1 - 0.48 × exp(-0.96 × s/h))
-            for microstrip, similarly with empirical coefficients
-            for stripline.
+        """Characteristic impedance of a PCB trace (IPC-2141 microstrip and
+        stripline, Wadell coupling for pairs). Pure math, about +/-10%:
+        fine for choosing widths; the fab's field solver has the final
+        word. Read real heights and Er with pcb_get_layer_stackup first
+        rather than assuming FR-4.
 
         Args:
-            geometry: One of ``"microstrip"``, ``"microstrip_diff"``,
-                ``"stripline"``, ``"stripline_diff"``.
-            width_mils: Track width in mils. For differential, this
-                is the width of EACH conductor (not the pair).
-            dielectric_height_mils: For microstrip, the dielectric
-                thickness BELOW the trace (track-to-reference-plane).
-                For stripline, this is the TOTAL dielectric thickness
-                between the two reference planes (``b`` in IPC).
-            dielectric_constant: εr of the dielectric. Common: 4.2
-                (FR-4 at 1 GHz), 3.5 (Megtron 6), 3.0 (Rogers 4350B),
-                2.2 (PTFE). Default 4.2.
-            copper_oz: Copper weight in oz/ft² (used for ``t``,
-                trace thickness). 1 oz = 1.378 mils. Default 1.0.
-            spacing_mils: Edge-to-edge gap between conductors of a
-                differential pair, in mils. Ignored for single-ended.
+            geometry: "microstrip", "microstrip_diff", "stripline" or
+                "stripline_diff".
+            width_mils: Track width; for a pair, each conductor's.
+            dielectric_height_mils: Microstrip: trace to plane below.
+                Stripline: total between the two planes.
+            dielectric_constant: Er (default 4.2, FR-4).
+            copper_oz: Copper weight; 1 oz = 1.378 mil thick (default 1).
+            spacing_mils: Edge-to-edge gap of a pair.
 
         Returns:
-            Dict with:
-              - ``geometry``, ``width_mils``, ``dielectric_height_mils``,
-                ``dielectric_constant``, ``thickness_mils``,
-                ``spacing_mils`` (when diff)
-              - ``z0_ohms``: single-ended characteristic impedance
-              - ``zdiff_ohms`` (diff geometries only): differential
-                pair impedance
-              - ``propagation_delay_ps_per_inch``: propagation delay,
-                derived from the effective εr (microstrip uses
-                εr_eff = (εr + 1)/2; stripline uses εr directly).
+            Inputs echoed, ``thickness_mils``, ``z0_ohms``, ``zdiff_ohms``
+            (pairs) and ``propagation_delay_ps_per_inch``.
         """
         import math
         geometry = geometry.strip().lower()
@@ -3721,68 +3494,30 @@ def register_pcb_tools(mcp):
         dry_run: bool = False,
         use_current_variant: bool = False,
     ) -> dict[str, Any]:
-        """Suppress stencil paste on Not-Fitted (DNP) components.
+        """Suppress stencil paste on Not-Fitted (DNP) components, so no
+        paste lands on empty pads. Each surface pad gets a paste expansion
+        of minus its larger size; through-hole pads are skipped.
 
-        The remediation half of ``audit_variant_not_fitted``. A Not-Fitted
-        component is on the BOM as a placeholder and must NOT receive
-        paste: the SMT line would otherwise deposit paste on empty pads,
-        and the bridging that follows shows up as rework.
-
-        With no ``designators`` this asks ``audit_variant_not_fitted``
-        for the components Not Fitted in the project's CURRENT variant,
-        so the selection follows the variant you actually have open.
-        Pass an explicit list to override that.
-
-        Mechanism: each surface pad gets a manual PasteMaskExpansion of
-        minus its larger dimension, which collapses the stencil aperture
-        whatever the pad shape. Through-hole pads are left alone and
-        counted separately, since they have no aperture to suppress.
-
-        Reversible: ``restore=True`` discards the manual override so
-        Altium recomputes the expansion from the design rules.
-
-        RESTORE THE SAME LIST YOU APPLIED. ``restore`` will NOT guess:
-        called without ``designators`` it refuses and tells you what to
-        pass. That is deliberate. Resolving a restore from the current
-        variant means excluding under one variant, switching, then
-        restoring, and leaving any component that was excluded but is
-        fitted in the new variant with its aperture still suppressed.
-        Nothing would report it: the call succeeds, the pad looks
-        ordinary in the editor, and the part comes back from assembly
-        unsoldered.
-
-        The apply reply lists every component it touched in ``items``.
-        Pass those designators back to restore. If you really do want
-        the current variant's Not-Fitted list, ask for it with
-        ``use_current_variant=True`` and you own the choice.
-
-        Apply is unaffected: with no ``designators`` it uses the current
-        variant's Not-Fitted list, which is the whole point of applying.
-
-        Mismatch is visible either way. ``components_requested`` versus
-        ``components_matched`` in the reply reports how many of the
-        names you passed were actually found on this board.
+        Apply with no ``designators`` uses the current variant's
+        Not-Fitted list. RESTORE THE SAME LIST YOU APPLIED: restore
+        refuses without ``designators``, because restoring from a
+        different variant would silently leave a fitted part without
+        paste. Pass back the ``items`` the apply returned.
 
         Args:
-            designators: Components to treat. Omit on an apply to use
-                the current variant's Not-Fitted list. Required on a
-                restore unless ``use_current_variant`` is set.
-            restore: Undo a previous exclusion instead of applying one.
-            dry_run: Report which components WOULD be treated and change
-                nothing. Worth using first: this edits the board, and a
-                wrong variant selection would strip paste off parts that
-                are meant to be fitted.
-            use_current_variant: Allow a restore with no ``designators``
-                to resolve from the variant open right now. Off by
-                default because that is the failure above.
+            designators: Components to treat (apply default: the current
+                variant's Not-Fitted list; required for restore).
+            restore: Remove the override so the design rules apply again.
+            dry_run: Report what would change, change nothing (use first).
+            use_current_variant: Let a restore with no designators use the
+                current variant (you own that choice).
 
         Returns:
-            Dict with ``restored``, ``components_requested``,
+            ``restored``, ``components_requested`` vs
             ``components_matched``, ``pads_changed``,
-            ``pads_skipped_through_hole`` and per-component ``items``.
-            In dry-run mode: ``dry_run``, ``designators`` and ``source``.
-            On a refused restore: ``{"ok": False, "reason": ...}`` and
-            nothing is read from or written to the board.
+            ``pads_skipped_through_hole``, ``items``; a dry run gives
+            ``designators`` and ``source``; a refused restore gives
+            {"ok": False, "reason"} and touches nothing.
         """
         bridge = get_bridge()
 
@@ -5085,74 +4820,35 @@ def register_pcb_tools(mcp):
 
         Args:
             name: Rule name (e.g., "Min Clearance 6mil").
-            rule_type: Type of rule to create. Options:
-                ``"clearance"`` - Electrical clearance (value = gap in mils).
-                ``"width"`` - Track width constraint (value = min width
-                    in mils; max_value / favored_value optional).
-                ``"via_size"`` - Hole size constraint (value = min hole
-                    in mils; max_value optional).
-                ``"differential_pairs"`` - Differential-pair routing rule
-                    (value = min gap, max_value = max gap,
-                    favored_value = preferred gap, max_uncoupled_length =
-                    max uncoupled length in mils).
-                ``"solder_mask_expansion"`` - The mask opening at each pad
-                    and via site (value = radial expansion in mils,
-                    SIGNED). A negative value contracts the opening,
-                    which is how a via ends up covered. Scope it with
-                    ``"IsVia"`` to tent vias and leave pads alone.
-                ``"paste_mask_expansion"`` - Same shape, stencil side
-                    (value = radial expansion in mils, signed).
-                ``"vias_under_smd"`` - Whether the autorouter may put a
-                    via inside an SMD pad. Boolean: set ``allowed``, not
-                    ``value``. This is the DRC that catches via-in-pad,
-                    which needs filling and capping at fabrication.
-            value: Rule's primary value in mils. For width / via_size /
-                differential_pairs this is the MIN side. Default 10.
-            max_value: For width / via_size / differential_pairs. When
-                supplied, sets the MAX side independently of value. When
-                None, falls back to 5x value (legacy default).
-            favored_value: For width / differential_pairs. Sets the
-                preferred value. Defaults to value when None.
-            max_uncoupled_length: For differential_pairs only.
-                MaxUncoupledLength in mils (single scalar, not per-layer).
-                Defaults to 1000 mils when None.
-            scope: Optional query expression for Scope1. Pick the
-                predicate that matches the rule kind:
-                  - net-based rules (clearance, width, via_size):
-                    ``"InNet('GND')"``, ``"InNetClass('Power')"``,
-                    ``"All"``.
-                  - differential_pairs: ``"InDifferentialPair('USB')"``,
-                    ``"InDifferentialPairClass('HighSpeed')"``,
-                    ``"IsDifferentialPair"`` (matches any diff pair),
-                    or ``"All"``.
-                Mixing predicates across kinds (e.g., ``InNet`` on a
-                differential_pairs rule) creates a rule that never matches.
-                Bracket a comparison joined by And/Or/Xor/Not:
-                ``"IsPad And (HoleSize > 3)"``, or use ``&&``/``||``.
-                Altium binds And tighter than ``>``, and an unbracketed
-                ``"IsPad And HoleSize > 3"`` is refused before anything
-                is sent, with the bracketed form in ``suggested_scope``.
-            net_scope: Which nets the rule applies between. Options:
-                ``"different_nets"`` (default) for Clearance rules;
-                ``"any_net"`` for all-pairs; ``"same_net"`` for same-net
-                only. Has no effect on differential_pairs, and none on
-                the mask or vias_under_smd kinds, which are not
-                net-pair rules.
-            allowed: For vias_under_smd only. False forbids a via inside
-                an SMD pad. Omitted means True, which is Altium's own
-                default and creates a rule that changes nothing, rather
-                than one that silently bans via-in-pad board-wide.
+            rule_type: "clearance" (value = gap), "width" (value = min,
+                max_value/favored_value optional), "via_size" (value = min
+                hole), "differential_pairs" (value = min gap, max_value,
+                favored_value, max_uncoupled_length),
+                "solder_mask_expansion" / "paste_mask_expansion" (value =
+                SIGNED radial expansion; negative with scope "IsVia" tents
+                vias), "vias_under_smd" (set ``allowed``, not value).
+            value: Primary value in mils (the MIN for ranged kinds).
+            max_value: MAX for ranged kinds (default 5x value).
+            favored_value: Preferred value (default value).
+            max_uncoupled_length: differential_pairs only, mils
+                (default 1000).
+            scope: Query for Scope1, matching the kind: "InNet('GND')",
+                "InNetClass('Power')" or "All" for net rules;
+                "InDifferentialPair('USB')" or "IsDifferentialPair" for
+                pairs (InNet on a pair rule never matches). Bracket
+                comparisons: "IsPad And (HoleSize > 3)"; the unbracketed
+                form is refused with ``suggested_scope``.
+            net_scope: "different_nets" (default), "any_net" or
+                "same_net"; ignored by pair, mask and via-in-pad rules.
+            allowed: vias_under_smd only: False forbids via-in-pad.
+                Omitted means True, Altium's default.
 
         Returns:
             Dictionary with created rule details.
 
-        Note: Creating ComponentClearance, HoleToHoleClearance,
-        BoardOutlineClearance, and other newer rule kinds is not
-        supported on this Altium build because the relevant symbolic
-        constants (eRule_ComponentClearance, ...) are not exposed in
-        DelphiScript. Existing rules of those kinds can be UPDATED via
-        ``pcb_set_rule_properties`` (gap_mils field), which dispatches
-        through Rule.RuleKind without needing the symbol.
+        Component, hole-to-hole and board-outline clearance rules cannot
+        be created on this Altium build; existing ones can be changed
+        with pcb_set_rule_properties.
         """
         if scope:
             refusal = _scope_refusal(scope, created=False)
@@ -6420,46 +6116,16 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
-        Metadata fields always apply. Constraint fields are dispatched
-        by the rule's underlying RuleKind:
-
-        - Clearance (kind 0), ComponentClearance (kind 24),
-          HoleToHoleClearance (kind 52) and BoardOutlineClearance
-          (kind 63): ``gap_mils``, or ``gap_mm`` when the value is
-          metric. An integer mil field cannot express 0.2mm; it lands
-          on 8 mils, which is 0.2032mm. Pass one or the other.
-        - Width (kind 2): ``min_width_mils`` / ``max_width_mils`` /
-          ``favored_width_mils`` (applied to every layer).
-        - HoleSize (kind 42): ``min_hole_size_mils`` / ``max_hole_size_mils``.
-        - Routing Via: ``min_via_size_mils`` / ``max_via_size_mils`` /
-          ``preferred_via_size_mils`` and the three ``*_via_hole_mils``.
-          Checked as a set first (minimum <= preferred <= maximum, every
-          diameter larger than its hole) and each read back; the reply
-          carries ``via_sizes_mils`` and ``via_sizes_written``. A rule in
-          template mode keeps checking its templates, and ``via_note``
-          says so; this cannot switch a rule between modes.
-
-        THE GAP WRITE IS READ BACK, not assumed. A rule kind that does
-        not really carry Gap can accept the assignment and keep its old
-        value, so the reply carries ``gap_written``, ``gap_after_mm``
-        and, when it did not take, a note saying the rule still holds
-        the old number. Kind 63 in particular is included on the
-        strength of its position in the TRuleKind order rather than a
-        documented interface, so let ``gap_written`` decide whether it
-        worked rather than the count.
-
-        Pass only the parameters you want to change; everything else
-        stays untouched. Each VERIFIED field write increments
-        ``properties_updated`` in the response, so a refused constraint
-        no longer inflates it.
-
-        NOTE: Priority is NOT writable from this tool. ``IPCB_Rule.Priority``
-        is a read-only function in the PCB scripting API
-        (``Function Priority : TRulePrecedence``), not a property; there
-        is no ``SetState_Priority`` or ``SetPriority`` method either.
-        Assigning to it crashes the DelphiScript engine. To reorder rule
-        priorities, drag them in Altium's UI (PCB > Rules and Constraints
-        Editor; rules earlier in a category have higher priority).
+        Pass only what should change. Constraint fields by rule kind:
+        clearance kinds (Clearance, ComponentClearance, HoleToHole,
+        BoardOutline): ``gap_mils`` or ``gap_mm`` (0.2 mm cannot be said
+        in whole mils); Width: the three width fields, every layer;
+        HoleSize: the hole fields; Routing Via: the via size and hole
+        fields, checked as a set (min <= preferred <= max, diameter >
+        hole). Writes are read back: ``gap_written``, ``via_sizes_written``
+        and ``properties_updated`` count only what took. A template-mode
+        via rule keeps its templates (``via_note``). Priority cannot be
+        changed from a script; reorder rules in Altium's rules editor.
 
         Args:
             name: Rule name to update.

@@ -241,9 +241,6 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Query schematic OR PCB objects and read their properties.
 
-        Iterates objects of the given type, optionally filtering by property values,
-        and returns the requested properties for each matching object.
-
         Args:
             object_type: Altium object type constant.
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
@@ -257,27 +254,17 @@ def register_generic_tools(mcp):
 
                 SCHEMATIC objects use the dotted spelling:
                 "Text,Location.X,Location.Y" for net labels
-                "Designator,Name,ConnectionX,ConnectionY" for pins.
-                ConnectionX/ConnectionY are the pin's ELECTRICAL end --
-                the point a wire or net label must sit on to attach.
-                Location is the BODY-side root and is NOT the connection
-                point; deriving the end by hand from Orientation and
-                PinLength is a common source of wrong conclusions about
-                what is wired.
-                "Designator.Text,Comment.Text,LibReference" for components
-                A managed (Workspace) component also reads, but does not
-                write, "LibIdentifierKind,LibraryIdentifier,DesignItemId,
+                "Designator,Name,ConnectionX,ConnectionY" for pins:
+                ConnectionX/Y is the ELECTRICAL end a wire must touch;
+                Location is the body-side root, not the connection point.
+                "Designator.Text,Comment.Text,LibReference" for components.
+                A managed (Workspace) component also reads, not writes,
+                "LibIdentifierKind,LibraryIdentifier,DesignItemId,
                 VaultGUID,ItemGUID,RevisionGUID,SymbolReference,
-                SymbolVaultGUID,SymbolItemGUID,SymbolRevisionGUID". Read
-                off a part Altium placed, they are the values the managed
-                tools need.
+                SymbolVaultGUID,SymbolItemGUID,SymbolRevisionGUID".
 
-                PCB PRIMITIVES DO NOT. They are a separate, flat set,
-                and mixing the two is the single commonest mistake here:
-                a caller who used Designator.Text infers a dotted rule,
-                writes Net.Name on a track, and gets an error naming the
-                right spelling. Net is the one that catches people, and
-                it is plain "Net":
+                PCB PRIMITIVES ARE FLAT, NOT DOTTED: a track's net is
+                "Net", never "Net.Name".
                 "Net,Layer,Width" for tracks
                 "Net,Layer,HoleSize,Size" for vias
                 "Designator,Comment,Pattern,Rotation,X,Y" for components
@@ -293,58 +280,33 @@ def register_generic_tools(mcp):
                 IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
                 IsComment, UseTTFonts.
 
-                On a text, Height and StrokeWidth are writable in mils
-                (Altium's own names, Size and Width, answer the same).
-                On a via, Size and HoleSize are writable; a write that
-                would leave the hole as large as the pad is refused, so
-                give Size first to grow a via and HoleSize first to
-                shrink it. Lengths read back in decimal mils.
-                On a pad, Name and Designator both read and write its
-                designator; an empty one is refused.
-                On a 3D body, BodyOpacity3D reads and
-                writes 0 (clear) to 1 (solid), not a percentage.
-                IsDesignator and IsComment pick out component labels:
-                filter "IsDesignator=true" for every designator.
+                Lengths are decimal mils. Text: Height and StrokeWidth
+                (alias Size, Width) are writable. Via: Size and HoleSize
+                are writable; a hole as large as the pad is refused, so
+                give Size first to grow and HoleSize first to shrink.
+                Pad: Name and Designator both mean its designator.
+                3D body: BodyOpacity3D is 0 (clear) to 1 (solid).
+                Filter "IsDesignator=true" picks component designators.
 
-                A board type walks EVERY primitive of that type, a
-                footprint's own tracks and a hatched polygon's tracks
-                with the routing, on the same copper layers. Filter
-                "InComponent=false|InPolygon=false" keeps to free copper;
-                Component is the owning footprint's designator.
-
-                An unrecognised PCB property is REFUSED and the reply
-                lists the valid ones. It used to come back empty, which
-                is indistinguishable from a property that is genuinely
-                blank, and that ambiguity has three times been read as
-                "the bridge cannot see this data".
-
-                A track on a mechanical layer really does have no net,
-                so filter to copper before concluding anything from an
-                empty Net: filter="Layer=TopLayer".
+                A board type returns EVERY primitive of that type,
+                footprint and polygon copper included; filter
+                "InComponent=false|InPolygon=false" for free copper.
+                An unknown PCB property is refused with the valid list.
+                Mechanical-layer tracks have no net, so filter to copper
+                (e.g. "Layer=TopLayer") before reading an empty Net.
             scope: Document scope:
                 "active_doc", current sheet only (default)
                 "project", all SCH sheets in focused project
                 "doc:C:\\path\\to\\Sheet.SchDoc", specific sheet by path (no focus change)
                 "project:C:\\path\\to\\Project.PrjPcb", specific project by path
                 "lib_component:NAME", a named symbol in the active SchLib
-                "lib_component:NAME@3", part 3 of a MULTI-PART symbol.
-                    A SchLib iterator yields one part at a time, so
-                    without the suffix only part 1 is visible and a pin
-                    on part 3 reports matched:0. Query each part in
-                    turn to cover the whole component. The suffix is
-                    read from the RIGHT, so a LibRef containing '@'
-                    still works.
-                    Ask for the `OwnerPartId` property to see which
-                    part a returned primitive belongs to (0 means
-                    shared across every part).
-            filter: Pipe-separated property=value conditions (AND logic), e.g.:
-                "Text=VCC", match net labels with Text equal to VCC
-                "Designator.Text=R1", match component with designator R1
-                "" (empty), match all objects of the type
-                On a PCB type a length (X, Y, X1, Y1, X2, Y2, Width, Size,
-                HoleSize, ...) matches as a number in mils, to 0.00005
-                mil, with '.' or ',' as the decimal point:
-                "X2=3172.6356" and "X2=3172,63560" are the same filter.
+                "lib_component:NAME@3", part 3 of a MULTI-PART symbol:
+                    without the suffix only part 1 is seen, so query each
+                    part. OwnerPartId tells which part a primitive is on
+                    (0 = shared).
+            filter: Pipe-separated property=value conditions (AND), e.g.
+                "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
+                length matches as a number in mils ('.' or ',' decimal).
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -797,56 +759,34 @@ def register_generic_tools(mcp):
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Apply many filter+set operations in ONE IPC round-trip.
+        """Apply many filter+set operations in ONE call. PREFER THIS over
+        looping obj_modify whenever each object gets its own value (pins,
+        designators, per-sheet titles): one call, one Altium transaction.
 
-        PREFER THIS over looping `obj_modify` whenever you have more
-        than one change to make, especially when each change targets a
-        different object (different designator, different pin name,
-        different sheet). A single `obj_batch_modify` call touches N objects
-        in the same Altium transaction; N separate `obj_modify` calls
-        cost N LLM round-trips plus N IPC round-trips. The wall-time
-        difference is typically 10-100x on a multi-item edit.
-
-        Use it for: moving multiple pins to specific positions, re-laying
-        component placement, per-sheet title changes, bulk designator
-        rewrites, any workflow where each object gets its own value.
-
-        A DESIGNATOR BATCH IS WORTH A NETLIST CHECK AFTERWARDS. There is
-        no transaction rollback here: if an op fails part way the earlier
-        ones stay applied, and duplicate designators are not an error
-        Altium reports. Two parts left sharing `D?` had their separate
-        nets MERGED by the netlister, which is silent and survives
-        `File > Revert All` (reported on a live project, issue #23).
-        `proj_annotate` renumbers a whole project in one operation and
-        cannot leave duplicates, so prefer it when that is what you
-        want.
+        No rollback: ops that ran before a failure stay applied. After a
+        designator batch, check the netlist: duplicate designators merge
+        nets silently. proj_annotate renumbers without duplicates.
 
         Args:
             operations: List of operation dicts, each with:
                 - scope: "active_doc" (default), "project",
-                  "doc:C:\\path\\to\\file.SchDoc", or
-                  "lib_component:NAME" -- a named symbol in the active
-                  SchLib. Mixing lib_component scopes across ops edits
-                  many library symbols in ONE call, no per-symbol
-                  lib_set_current_component round-trip.
-                - object_type: Altium object type (e.g., "ePin", "eParameter",
-                  "eSchComponent", "eNetLabel"), or a PCB type such as
-                  "eTrackObject", which edits the active board and takes
-                  only scope "active_doc"
-                - filter: Pipe-separated filter conditions
-                  (e.g., "Designator.Text=U1", "Name=VDD")
-                - set: Pipe-separated property=value assignments
-                  (e.g., "Location.X=300|Location.Y=-100|Orientation=2").
-                  A value may contain ';' (Text=first;second) but not '|'.
+                  "doc:C:\\path\\to\\file.SchDoc", or "lib_component:NAME"
+                  (a symbol in the active SchLib; ops may name different
+                  symbols).
+                - object_type: e.g. "ePin", "eParameter", "eSchComponent",
+                  or a PCB type such as "eTrackObject" (active board,
+                  scope "active_doc" only).
+                - filter: Pipe-separated conditions, e.g. "Name=VDD".
+                - set: Pipe-separated assignments, e.g.
+                  "Location.X=300|Location.Y=-100|Orientation=2". A value
+                  may contain ';' but not '|'.
 
         Returns:
-            Dictionary with operations_processed, operations_skipped,
-            total_matched, and a per-operation `results` list. Each result
-            row carries its own `matched` count plus a `note` -- an op that
-            matched nothing reports note="no_objects_matched" instead of
-            being silently counted as successful.
+            operations_processed, operations_skipped, total_matched, and
+            per-op ``results`` with ``matched`` and a ``note``
+            ("no_objects_matched" when nothing matched).
 
-        Example, edit pins across THREE different library symbols in ONE call:
+        Example, pins on three library symbols in one call:
             obj_batch_modify(operations=[
                 {"scope": "lib_component:R_0402", "object_type": "ePin",
                  "filter": "Designator=1", "set": "Name=A"},
@@ -854,43 +794,6 @@ def register_generic_tools(mcp):
                  "filter": "Designator=1", "set": "Name=+"},
                 {"scope": "lib_component:LED_0603", "object_type": "ePin",
                  "filter": "Designator=1", "set": "Name=K"},
-            ])
-
-        Example, reposition 10 pins on a library symbol in ONE call
-        (vs. 10 separate `obj_modify` calls, each a full LLM turn):
-            obj_batch_modify(operations=[
-                {"scope": "active_doc", "object_type": "ePin",
-                 "filter": "Name=S1",
-                 "set":    "Location.X=200|Location.Y=-100|Orientation=2"},
-                {"scope": "active_doc", "object_type": "ePin",
-                 "filter": "Name=S2",
-                 "set":    "Location.X=200|Location.Y=-200|Orientation=2"},
-                {"scope": "active_doc", "object_type": "ePin",
-                 "filter": "Name=VDD",
-                 "set":    "Location.X=800|Location.Y=-100|Orientation=0"},
-                ... # 7 more pins
-            ])
-
-        Example, update 4 parameters across every project sheet in ONE call:
-            obj_batch_modify(operations=[
-                {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=Engineer",     "set": "Text=John Smith"},
-                {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=Revision",     "set": "Text=2.0"},
-                {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=Organization", "set": "Text=Acme Corp"},
-                {"scope": "project", "object_type": "eParameter",
-                 "filter": "Name=CompanyName",  "set": "Text=Acme Corp"},
-            ])
-
-        Example, different titles on specific sheets in ONE call:
-            obj_batch_modify(operations=[
-                {"scope": "doc:C:\\path\\TopLevel.SchDoc",
-                 "object_type": "eParameter",
-                 "filter": "Name=Title", "set": "Text=Top Level"},
-                {"scope": "doc:C:\\path\\PSU.SchDoc",
-                 "object_type": "eParameter",
-                 "filter": "Name=Title", "set": "Text=Power Supply"},
             ])
         """
         # Operations use the '~~' batch framing shared with obj_batch_delete.
@@ -2900,58 +2803,20 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
 
-        NOT THE WAY TO DRAW A SCHEMATIC, AND IT IS ENFORCED. Placing four
-        or more components onto a sheet that has two or fewer is refused:
-        that is a schematic being drawn by hand, and positions chosen that
-        way read like nothing a person would draw however correct the
-        netlist is. Build a DesignPlan and call design_execute_plan
-        instead, which places AND routes the whole sheet through a layout
-        engine measured against hand-drawn boards; design_layout_schematic
-        and design_preview_plan show you the result first without touching
-        the EDA. Use THIS tool to add parts to a sheet that already exists,
-        or when the positions came from that engine. To place coordinates
-        yourself anyway, pass ``allow_manual_layout=True``.
-
-        This is the only path for library placement (there is no singular
-        variant). Laying out a 50-part BOM is inherently a bulk operation;
-        done one-by-one it would cost 50 LLM turns.
-
-        TARGET DOCUMENT: placement lands on the ACTIVE schematic. Right
-        after `app_create_document` the new sheet is NOT auto-focused, so
-        without `document_path` parts can silently land on a *different*
-        open sheet. Pass `document_path` (absolute .SchDoc path) and this
-        tool focuses that sheet first (`app_set_active_document`) before
-        placing, always set it when you have just created the target
-        sheet.
+        NOT THE WAY TO DRAW A SCHEMATIC: four or more parts onto a sheet
+        with two or fewer is refused. Build a DesignPlan and call
+        design_execute_plan, which places and routes the sheet. Use this
+        to add parts to an existing sheet or to place positions the engine
+        chose. Parts land on the ACTIVE sheet unless ``document_path`` is
+        given; a sheet just created is not focused, so always pass it.
 
         Args:
-            allow_manual_layout: Set True to bypass the refusal described
-                above and place your own coordinates onto an empty sheet.
-                The default exists because this is almost never what the
-                caller actually wants; say why in the surrounding turn.
-            document_path: Absolute path of the .SchDoc to place onto.
-                When given, it is focused before placement so parts can't
-                land on the wrong sheet. When omitted, the current active
-                document is used.
-            placements: List of placement dicts, each with:
-                - library_path (str, optional, empty uses an
-                  already-open library)
-                - lib_reference (str, required), component name
-                - x, y (int, mils), placement location
-                - designator (str, optional), override designator
-                - rotation (int, optional), 0 / 90 / 180 / 270
-                - footprint (str, optional), override current footprint
-
-        Example, place a 5-part BOM row:
-            sch_place_components(placements=[
-                {"library_path": "C:\\Lib\\ST.SchLib",
-                 "lib_reference": "STM32F411RE",
-                 "x": 1000, "y": 2000, "designator": "U1"},
-                {"library_path": "C:\\Lib\\Res.SchLib",
-                 "lib_reference": "Res1", "x": 1500, "y": 2000,
-                 "designator": "R1"},
-                ... # 3 more
-            ])
+            placements: [{lib_reference (required), x, y (mils),
+                library_path (empty: an open library), designator,
+                rotation (0/90/180/270), footprint}].
+            document_path: .SchDoc to focus and place onto.
+            allow_manual_layout: True places your own coordinates onto an
+                empty sheet anyway; say why.
 
         Returns:
             Dict with placed, failed, total counts.

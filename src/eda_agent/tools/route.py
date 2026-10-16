@@ -110,62 +110,36 @@ def register_route_tools(mcp):
         pin_lanes: bool = True,
         bus_lanes: bool = True,
     ) -> dict[str, Any]:
-        """Route the focused board with the in-house layout engine, as a job.
+        """Route the focused board with the in-house engine, as a job.
 
-        Reads the board exactly (``pcb.get_layout_model``: padstacks per
-        layer, rules, pours, planes, in Altium's internal units), then routes
-        it in the background and returns a job id at once. Poll
-        ``design_job_status``; ``design_job_result`` gives the tracks and
-        vias to add, the exact DRC's verdict on the routed board, and which
-        pours it relied on as planes. Nothing is written to the board until
-        ``pcb_autoroute_apply``.
-
-        This is the in-house engine: no Altium autorouter, no external
-        program. Inner layers a pour covers are used as planes and not
-        routed on; a redundant one is given back to routing when the board
-        cannot be completed without it.
-
-        With the stage switches on, the routing runs in planned stages, each
-        one's copper fixed for the next: differential pairs (coupled at their gap, skew evened with
-        bumps), a dog-bone via for every pad a plane or pour joins (never a
-        via in a passive's pad; an exposed pad gets a via array), access
-        lanes kept straight out of fine-pitch IC pins, buses laid as nested
-        lanes, then everything else negotiated, high-current nets first,
-        then rails, then the rest. Every bend is 45 degrees or less, and no
-        via goes into a passive's pad. Over 160 finished boards these
-        defaults routed 98.93% mean against 98.85% for the router before
-        the stages (two boards fewer at 100%, all DRC-clean, about 29% more
-        time); plane fanout is off by default because it cost completion.
-        With all four switches off this is the router before the stages,
-        exactly.
+        Reads the board exactly, routes in the background and returns a job
+        id at once. Poll design_job_status; design_job_result gives the
+        tracks and vias, the DRC verdict and the pours used as planes.
+        Nothing is written until pcb_autoroute_apply. Stages, each fixed
+        for the next: differential pairs, plane fanout, IC pin lanes,
+        buses, then the rest by priority. Bends are 45 degrees or less and
+        no via goes in a passive's pad.
 
         Args:
-            expect_file: full path of the board to route. The read refuses
-                on the first reply if the focused board is another one.
-            nets: route only these nets; all other copper stays as it is.
-                None routes every net with two or more pads.
-            use_planes: treat inner layers a single pour covers as planes
-                (default True).
-            diff_pairs: route the board's differential pairs (its own
-                definitions, else read from _P/_N, +/-, DP/DM net names) as
-                coupled pairs first (default True).
-            plane_fanout: give every surface pad of a plane or pour net its
-                dog-bone via before the signals (default False).
-            pin_lanes: keep the first 0.8 mm straight out of each IC pin at
-                0.65 mm pitch or finer for that pin's own net (default True).
-            bus_lanes: lay three or more nets between the same two parts as
-                one group of nested lanes (default True).
+            expect_file: Full path of the board; refused if another board
+                is focused.
+            nets: Route only these nets (default: every net with 2+ pads).
+            use_planes: Use inner layers a pour covers as planes (default
+                True).
+            diff_pairs: Route differential pairs (defined, else _P/_N,
+                +/-, DP/DM names) first, coupled (default True).
+            plane_fanout: Dog-bone via for every plane-net surface pad
+                first (default False; it cost completion).
+            pin_lanes: Keep 0.8 mm straight out of IC pins at 0.65 mm pitch
+                or finer (default True).
+            bus_lanes: Route 3+ nets between the same two parts as nested
+                lanes (default True).
 
         Returns:
-            ``{"job_id", "board", "read": {pads, components, nets, layers}}``,
-            or ``{"error": ...}`` when the read failed or found another board.
-            The job's result adds, beside the copper and the DRC verdict:
-            ``via_in_pad`` (every via in a pad, for the fab notes: filled
-            and capped), ``pairs`` (per pair: lengths, skew, bumps, layer
-            changes, or why it was left to the router), ``buses`` (per bus:
-            its lanes, what was ripped up and planned again, or why not),
-            and ``unreached`` (every pad left unrouted, with its place and
-            the nets in its way).
+            {"job_id", "board", "read": {pads, components, nets, layers}}
+            or {"error"}. The job result adds ``via_in_pad`` (for fab
+            notes), ``pairs`` (lengths, skew), ``buses`` and ``unreached``
+            (pads left unrouted and what blocks them).
         """
         import asyncio
 

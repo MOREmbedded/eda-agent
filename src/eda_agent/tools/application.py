@@ -796,59 +796,19 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_ping() -> dict[str, Any]:
-        """Test if the Altium script is responding and report script version.
-
-        Verifies that:
-        1. Altium Designer is running
-        2. The Altium_API.PrjScr script is running (StartMCPServer)
-        3. File-based communication is working
-
-        Also reads SCRIPT_VERSION from the .pas that Altium has compiled
-        and compares it to the version in the bundled on-disk Main.pas.
-        A mismatch means Altium is running a stale cached script: close
-        the script project in the Projects panel and reopen it to
-        recompile. Re-running StartMCPServer does not recompile, and a
-        restart of Altium alone has not always been enough.
-
-        SCRIPT_VERSION only speaks for Main.pas. Each unit also reports a
-        stamp that install-scripts writes from its content, and
-        stale_units names any unit whose running compile differs from
-        the files Altium loaded.
+        """Check that Altium and its bridge script answer, and that the
+        running script is the version on disk. A mismatch or a non-empty
+        ``stale_units`` means Altium runs an old compile: close and reopen
+        the script project to recompile.
 
         Returns:
-            Dictionary with:
-            - success: True if Altium responded
-            - mcp_server_version: version of this eda-agent Python package
-              (from `eda_agent.__version__`), identifies the MCP server
-              process currently handling tool calls
-            - altium_script_version: version the running script reports
-              (empty string if the script is too old to report it)
-            - bundled_script_version: version of the on-disk Main.pas
-            - version_match: True if Altium matches bundled script version
-            - altium_version: the Altium build itself, as Altium reports
-              it. Reported, never acted on: nothing here refuses to run
-              on an old build, because most of the toolset works on one.
-              It is here because a bug report without it costs a round
-              trip, and twice the answer changed the diagnosis.
-            - message: human-readable status (flags stale cache if detected)
-            - bundled_script_path: the Main.pas that bundled_script_version
-              was read from, so a mismatch can be traced to a file
-            - script_projects_open: the Altium_API.PrjScr paths Altium has
-              open, as the running script reports them (None when it is
-              too old to report them)
-            - script_location_match: True when one of those is in the
-              bundled or the install-scripts folder, False when none is
-              (version_match then describes a file Altium did not load),
-              None when unknown
-            - unit_stamps: each unit's stamp as the running script reports
-              it (None for a script too old to report them)
-            - stale_units: units whose running compile differs from the
-              files in stamps_compared_with; unstamped_units run from
-              copies install-scripts did not stamp
-            - other_servers: other eda-agent servers on this workspace,
-              each with pid and start time
-            - warnings: anything above worth acting on. Warnings only:
-              nothing here refuses or stops anything.
+            ``success``, ``mcp_server_version``, ``altium_script_version``,
+            ``bundled_script_version`` and ``bundled_script_path``,
+            ``version_match``, ``altium_version``, ``message``,
+            ``script_projects_open`` and ``script_location_match`` (False:
+            Altium loaded scripts from elsewhere), ``unit_stamps``,
+            ``stale_units``, ``unstamped_units``, ``other_servers`` (other
+            eda-agent servers on this workspace) and ``warnings``.
         """
         bridge = get_bridge()
         script_path = _bundled_script_path()
