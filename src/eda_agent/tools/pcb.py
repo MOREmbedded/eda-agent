@@ -29,6 +29,10 @@ from .datasheet_hints import tag_response
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
+#: The dump and the apply pass of pcb_apply_geometry_map each walk every
+#: free primitive of a board, tens of thousands on a large one.
+_GEOMETRY_MAP_TIMEOUT = 1800.0
+
 
 def _build_objective_report(
     place_comps: list,
@@ -2653,6 +2657,196 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_save_copy_as(
+        target_path: str,
+        source_path: str = "",
+        backup: bool = True,
+    ) -> dict[str, Any]:
+        """Write the open board to another path, as File > Save Copy As.
+
+        The target becomes an exact copy of the board as it is in Altium,
+        unsaved edits included, and the open document stays on its own
+        path, in its own project, with its modified state unchanged. Use it
+        to start a variant from a master, for example a new size of a board
+        before pcb_apply_geometry_map reshapes it.
+
+        An existing target is overwritten. With ``backup`` (the default) it
+        is first copied to ``<target>.bak``, replacing an older .bak. A
+        target that is open in Altium is refused: close it first. The copy
+        is not added to any project; open the target's own project with
+        proj_open to work on it there.
+
+        Args:
+            target_path: Full path of the .PcbDoc to write.
+            source_path: The open board to copy. Empty uses the focused
+                board, or the only one open; several open with none
+                focused is refused rather than guessed.
+            backup: Keep the overwritten target as ``<target>.bak``.
+
+        Returns:
+            {"source", "target", "target_existed", "written",
+            "open_board_path", "backup"} or an error. ``written`` is read
+            from the target's file time, not assumed.
+        """
+        import shutil
+        from pathlib import Path
+
+        bridge = get_bridge()
+        params = {"target_path": target_path}
+        if source_path:
+            params["board_path"] = source_path
+        check = await bridge.send_command_async(
+            "pcb.save_copy_as", {**params, "check_only": "true"})
+        if not isinstance(check, dict) or "target_exists" not in check:
+            return check
+        backup_path = ""
+        if backup and check.get("target_exists"):
+            backup_path = target_path + ".bak"
+            try:
+                shutil.copy2(target_path, backup_path)
+            except OSError as e:
+                return {"success": False, "written": False,
+                        "error": f"could not keep a backup at {backup_path}: {e}. "
+                                 "Nothing was written; pass backup=False to "
+                                 "overwrite without one."}
+        result = await bridge.send_command_async("pcb.save_copy_as", params)
+        if isinstance(result, dict):
+            result["backup"] = backup_path
+            if backup_path and not Path(backup_path).is_file():
+                result["backup"] = ""
+        return result
+
+    @mcp.tool()
+    async def pcb_apply_geometry_map(
+        map_path: str,
+        board_path: str,
+        tolerance_mil: float = 0.01,
+        angle_tolerance_deg: float = 1e-4,
+        dry_run: bool = False,
+        repour: bool = True,
+    ) -> dict[str, Any]:
+        """Move and reshape thousands of free primitives in ONE pass, from a file.
+
+        For regenerating a board from a master, for example the other sizes
+        of one outline: a JSON map gives, for each free primitive, its
+        CURRENT geometry and its new one. The board is dumped once, every
+        entry is matched to one object within ``tolerance_mil``, and all
+        matches are applied in one transaction. Use it in place of
+        obj_batch_modify past a few hundred objects: each of that tool's
+        operations searches the whole board.
+
+        Objects are named by geometry because Altium gives no handle known to
+        survive a save and reopen. An entry that fits no object, fits several,
+        or names an object another entry also names is reported and left
+        alone, never guessed. The apply pass changes an object only if its old
+        geometry still reads back exactly as dumped.
+
+        Free primitives only: not owned by a component, a polygon pour or a
+        dimension. Move components with pcb_move_components and repour with
+        pcb_repour_polygons afterwards.
+
+        The map (mils, absolute board coordinates as the PcbDoc stores them,
+        not relative to the board origin)::
+
+            {"tracks":   [{"layer", "width", "key": [x1,y1,x2,y2],
+                           "new": [x1,y1,x2,y2], "new_width"?}],
+             "arcs":     [{"layer", "width", "key": [cx,cy,r,start,end],
+                           "new": [cx,cy,r,start,end], "new_width"?}],
+             "vias":     [{"key": [x,y], "new": [x,y]}],
+             "texts":    [{"layer", "key": [x,y,text], "new": [x,y,text?]}],
+             "fills":    [{"layer", "key": [x1,y1,x2,y2], "new": [...]}],
+             "regions":  [{"layer", "key": {"n", "first": [x,y], "holes"},
+                           "contour": [[x,y],...], "holes": [[[x,y],...],...]}],
+             "polygons": [{"layer", "key_first": [vx,vy], "segments": [seg]}],
+             "board_outline": [seg] or {"segments": [seg]}}
+
+        A seg is ``{"kind": 0, "vx", "vy"}`` for a line or ``{"kind": 1, "vx",
+        "vy", "cx", "cy", "r", "sa", "ea"}`` for an arc, as Altium stores
+        outline segments. A track matches with its ends in either order. A
+        region keeps its hole count, and each hole its vertex count: holes are
+        rewritten in place, since a script cannot add or rebuild one. The
+        outline keeps nothing and is replaced whole. Polygons are matched by
+        layer and first vertex, and each changed one is repoured as
+        pcb_repour_polygons does it; ``repour=False`` reshapes them and
+        leaves the pours for pcb_repour_polygons, which can then take the
+        small ones first and a slow hatched one once. A repour clears
+        copper the PcbDoc can list as free (not owned) although the pour
+        made it: on one board a plain pcb_repour_polygons removed 21 of 175
+        free TopLayer
+        regions, and moving every pour removed 157, so check that no free
+        region you mean to keep sits in a pour. ``components`` entries are
+        counted and left to pcb_move_components.
+
+        Args:
+            map_path: The JSON map.
+            board_path: The .PcbDoc to change. Required: the dump and the
+                apply must act on the same board, and it is refused unless
+                that file is the one Altium opens.
+            tolerance_mil: How far a key may sit from the object, per
+                coordinate and width.
+            angle_tolerance_deg: The same for arc angles, modulo 360.
+            dry_run: Dump and match only; change nothing. Run this first.
+            repour: Repour each reshaped polygon. False leaves every pour
+                as it was poured until pcb_repour_polygons is run.
+
+        Returns:
+            {"board", "dry_run", "match": {kind: {entries, matched, unmatched,
+            ambiguous, refused, samples?}}, "apply": {applied, stale, missing,
+            region_readback_off, by_kind} or absent on a dry run}.
+            ``stale`` counts objects that changed between dump and apply;
+            ``region_readback_off`` counts region contours (outline or hole)
+            that did not read back as written. Run a dry run of a map keyed
+            on the new geometry afterwards to see exactly what landed.
+        """
+        import codecs
+        import locale
+        from pathlib import Path
+
+        from ..atomicfile import replace_with_retry
+        from ..geometry_map import build_edits, parse_dump
+
+        try:
+            geometry_map = json.loads(Path(map_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            return {"success": False, "error": f"could not read the map: {e}"}
+        if not isinstance(geometry_map, dict):
+            return {"success": False, "error": "the map must be a JSON object"}
+
+        bridge = get_bridge()
+        workspace = Path(bridge.config.workspace_dir)
+        dump_path = workspace / "geometry_dump.tsv"
+        dumped = await bridge.send_command_async(
+            "pcb.dump_free_primitives",
+            {"out_path": str(dump_path), "board_path": board_path},
+            timeout=_GEOMETRY_MAP_TIMEOUT)
+        if not isinstance(dumped, dict) or "tracks" not in dumped:
+            return dumped
+        # TStringList.SaveToFile writes the ANSI code page.
+        dump = parse_dump(dump_path.read_text(
+            encoding=locale.getpreferredencoding(False), errors="replace"))
+
+        lines, match = build_edits(geometry_map, dump, tolerance_mil,
+                                   angle_tolerance_deg)
+        result: dict[str, Any] = {"board": dumped.get("board", ""),
+                                  "dry_run": dry_run, "dumped": dumped,
+                                  "match": match}
+        if dry_run or not lines:
+            return result
+
+        edits_path = workspace / "geometry_edits.tsv"
+        tmp = edits_path.with_suffix(".tmp")
+        # The mark is what makes LoadFromStream read UTF-8, for a new text.
+        tmp.write_bytes(codecs.BOM_UTF8 + ("\n".join(lines) + "\n").encode("utf-8"))
+        replace_with_retry(str(tmp), edits_path)
+        apply_params = {"in_path": str(edits_path), "board_path": board_path}
+        if not repour:
+            apply_params["repour"] = "false"
+        result["apply"] = await bridge.send_command_async(
+            "pcb.apply_free_primitives", apply_params,
+            timeout=_GEOMETRY_MAP_TIMEOUT)
+        return result
+
+    @mcp.tool()
     async def pcb_place_stitching_vias(
         net: str,
         x1_mils: int,
@@ -4361,8 +4555,14 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_repour_polygons() -> dict[str, Any]:
-        """Repour every poured polygon on the open PCB, in pour order.
+    async def pcb_repour_polygons(
+        names: Optional[list[str]] = None,
+        indices: Optional[list[int]] = None,
+        exclude: Optional[list[str]] = None,
+        board_path: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        """Repour poured polygons on the open PCB, in pour order.
 
         Each polygon is rebuilt through the API, so a changed clearance
         or board-edge rule takes effect. Shelved polygons stay shelved.
@@ -4370,12 +4570,83 @@ def register_pcb_tools(mcp):
         and none failed; each item reports its copper pieces and poured
         area before and after, so a repour that changed nothing shows.
 
+        With no filter every polygon is repoured. ``names`` and
+        ``indices`` (places in the board's polygon order, as
+        pcb_modify_polygon counts them) pick polygons and add up;
+        ``exclude`` drops names and wins. Use them to redo many small
+        pours quickly and a slow hatched one once, at the end.
+
+        A large hatched pour can take minutes. The call waits up to 30
+        times ``timeout`` while Altium reports it is still working, so
+        the default of 60 s allows 30 minutes.
+
+        Args:
+            names: Polygon names to repour (any case).
+            indices: Polygon indices to repour.
+            exclude: Polygon names to leave alone.
+            board_path: The .PcbDoc to act on. Empty uses the open board;
+                a path is refused unless that file is the board opened.
+            timeout: Seconds per wait window, see above.
+
         Returns:
-            ``repoured``, counts of ``polygons``, ``rebuilt``,
-            ``shelved`` and ``failed``, and per-polygon ``items``
+            ``repoured``, counts of ``polygons`` (selected), ``skipped``,
+            ``rebuilt``, ``shelved`` and ``failed``, per-polygon ``items``,
+            and ``not_found``: requested names no polygon has.
         """
+        for name in (names or []) + (exclude or []):
+            if "|" in str(name):
+                return {"repoured": False,
+                        "error": f"polygon name {name!r} holds '|', which the "
+                                 "request cannot carry"}
+        params: dict[str, Any] = {}
+        if names:
+            params["names"] = "|".join(str(n) for n in names)
+        if indices:
+            params["indices"] = "|".join(str(int(i)) for i in indices)
+        if exclude:
+            params["exclude"] = "|".join(str(n) for n in exclude)
+        if board_path:
+            params["board_path"] = board_path
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.repour_polygons", {})
+        result = await bridge.send_command_async("pcb.repour_polygons", params,
+                                                 timeout=timeout)
+        if isinstance(result, dict) and names:
+            found = {str(it.get("name", "")).upper() for it in result.get("items") or []}
+            dropped = {str(n).upper() for n in exclude or []}
+            result["not_found"] = [n for n in names if str(n).upper() not in found
+                                   and str(n).upper() not in dropped]
+        return result
+
+    @mcp.tool()
+    async def pcb_polygon_repour_mode(mode: str = "") -> dict[str, Any]:
+        """Read or set Altium's "Repour Polygons After Modification" preference.
+
+        With ``always``, editing anything a pour touches rebuilds that pour
+        after the edit, and a large hatched pour (tens of thousands of
+        pieces) can then take minutes per edit. Set ``never`` before a run
+        of geometry edits and repour once at the end with
+        pcb_repour_polygons, which rebuilds whatever this is set to. Put
+        the user's setting back afterwards: it is an application
+        preference, not a board property, and it stays until changed.
+
+        Args:
+            mode: "" reads only; "never", "threshold" or "always" sets it.
+
+        Returns:
+            {"mode_before", "mode", "before", "after"}: names and Altium's
+            raw values (0 never, 1 threshold, 2 always).
+        """
+        names = {0: "never", 1: "threshold", 2: "always"}
+        mode = (mode or "").strip().lower()
+        if mode and mode not in names.values():
+            return {"success": False,
+                    "error": f"mode must be never, threshold or always; got {mode!r}"}
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.polygon_repour_mode", {"mode": mode} if mode else {})
+        if isinstance(result, dict) and "after" in result:
+            result["mode_before"] = names.get(result.get("before"), "unknown")
+            result["mode"] = names.get(result.get("after"), "unknown")
         return result
 
     @mcp.tool()
