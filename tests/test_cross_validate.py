@@ -1074,6 +1074,9 @@ def run_python(fn_name: str, args: list[str]) -> str:
     elif fn_name == 'GetBatchTail':
         return get_batch_tail(args[0], args[1])
 
+    elif fn_name == 'PickSession':
+        return pick_session(args[0], args[1], int(args[2]), int(args[3]))
+
     elif fn_name == 'BatchFieldSweep':
         return batch_field_sweep(args[0], args[1])
 
@@ -1288,6 +1291,20 @@ def get_batch_field(op: str, key: str) -> str:
     return ""
 
 
+def pick_session(tags: str, current: str, elapsed_ms: int, slot_ms: int) -> str:
+    """Main.pas PickSession: a lone session goes; the current one keeps its
+    slot until slot_ms; otherwise the next tag after it, wrapping."""
+    pending = [t for t in tags.split("|") if t]
+    if not pending:
+        return ""
+    if len(pending) == 1:
+        return pending[0]
+    if current in pending and elapsed_ms < slot_ms:
+        return current
+    after = sorted(t for t in pending if t > current)
+    return after[0] if after else min(pending)
+
+
 def get_batch_tail(op: str, key: str) -> str:
     """Main.pas GetBatchTail: everything after the first ';<key>=', or after
     '<key>=' at the very start."""
@@ -1360,6 +1377,17 @@ def generate_batch_field_cases():
         ("GetBatchTail", ["scope=a;filter=b", "set"]),
         ("GetBatchTail", ["scope=a;set=", "set"]),
         ("GetBatchTail", ["scope=a;set=Text=x;set=y", "set"]),
+        # A session alone is never slotted, however long it has run.
+        ("PickSession", ["aaaa1111", "aaaa1111", "999999", "30000"]),
+        ("PickSession", ["bbbb2222", "aaaa1111", "0", "30000"]),
+        # The current session keeps its slot until it runs out...
+        ("PickSession", ["aaaa1111|bbbb2222", "aaaa1111", "29999", "30000"]),
+        # ...then the next one in tag order, wrapping to the lowest.
+        ("PickSession", ["aaaa1111|bbbb2222", "aaaa1111", "30000", "30000"]),
+        ("PickSession", ["aaaa1111|bbbb2222|cccc3333", "cccc3333", "40000", "30000"]),
+        ("PickSession", ["cccc3333|aaaa1111", "bbbb2222", "0", "30000"]),
+        ("PickSession", ["legacy|aaaa1111", "aaaa1111", "30000", "30000"]),
+        ("PickSession", ["", "aaaa1111", "0", "30000"]),
     ]
 
     # And the real thing: payloads the Altium emitter produces.

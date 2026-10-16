@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.1';
+    SCRIPT_VERSION = '2026.10.16.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -33,6 +33,11 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+
+    { How long one Claude session may run commands back to back while      }
+    { another session is waiting. See ScanForRequestFile. A session alone   }
+    { is never slotted.                                                     }
+    SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
 
@@ -102,6 +107,14 @@ Var
     SaveScope : String;
     CleanLeftAlone : Integer;
     LastCompiledProject : IProject;
+
+    { Time slots between Claude sessions sharing this Altium. SlotSession  }
+    { is the session tag whose slot is running, SlotStartTick when it      }
+    { began, QueueNoteTick when queue.json was last written. See           }
+    { ScanForRequestFile.                                                  }
+    SlotSession : String;
+    SlotStartTick : Integer;
+    QueueNoteTick : Integer;
 
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
@@ -1832,17 +1845,89 @@ End;
 { Per-request files on both sides, request_<id>.json + response_<id>.json, }
 { eliminate any cross-caller race: each caller publishes to its own filename }
 { and polls only its own response file.                                      }
+{                                                                              }
+{ TIME SLOTS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude   }
+{ session) writes ids <tag>-<seq>-<random>: an 8-character session tag and an }
+{ 8-digit sequence. Any other id is the 'legacy' session (a server from       }
+{ before this). Of the pending requests, each session's lowest sequence is    }
+{ its next. With one session pending it is served straight through: one      }
+{ session is never slotted. With several, the session whose slot is running  }
+{ keeps it for SESSION_SLOT_MS, then the next waiting session in tag order    }
+{ gets one slot, so no session has a second slot before every waiting one     }
+{ has had one. A command is never cut off: slots change between commands.    }
+{ While sessions contend, queue.json is refreshed about once a second, so a  }
+{ waiting client can tell a queue from a dead loop.                           }
+
+{ PickSession - which session's request goes next. Tags: the sessions with   }
+{ a pending request, joined by '|'. Current: the session whose slot is       }
+{ running, ElapsedMs how long it has run. A session alone always goes; the   }
+{ current session keeps its slot until SlotMs; otherwise the first tag after }
+{ Current in string order, wrapping to the lowest. Pure strings, so the Free }
+{ Pascal cross-check runs a verbatim copy.                                   }
+Function PickSession(Tags : String; Current : String; ElapsedMs : Integer;
+    SlotMs : Integer) : String;
+Var
+    Rest, Tag, Lowest, After : String;
+    Bar, Count : Integer;
+    HasCurrent : Boolean;
+Begin
+    Result := '';
+    Lowest := '';
+    After := '';
+    Count := 0;
+    HasCurrent := False;
+    Rest := Tags;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Tag := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Tag := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Tag <> '' Then
+        Begin
+            Inc(Count);
+            If Tag = Current Then HasCurrent := True;
+            If (Lowest = '') Or (Tag < Lowest) Then Lowest := Tag;
+            If Tag > Current Then
+                If (After = '') Or (Tag < After) Then After := Tag;
+        End;
+    End;
+    If Count = 0 Then Exit;
+    If Count = 1 Then
+    Begin
+        Result := Lowest;
+        Exit;
+    End;
+    If HasCurrent And (ElapsedMs < SlotMs) Then
+    Begin
+        Result := Current;
+        Exit;
+    End;
+    If After <> '' Then Result := After
+    Else Result := Lowest;
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
-    Files : TStringList;
-    I, NameLen : Integer;
-    Name, IdPart : String;
+    Files, Tags, BestSeq, BestName : TStringList;
+    I, NameLen, Pick, NowTick : Integer;
+    Name, IdPart, Tag, Seq, NextTag, Pending : String;
 Begin
     Result := False;
     FilePath := '';
     RequestId := '';
 
     Files := TStringList.Create;
+    Tags := TStringList.Create;
+    BestSeq := TStringList.Create;
+    BestName := TStringList.Create;
     Try
         FindFiles(WorkspaceDir, 'request_*.json', 63, False, Files);
         For I := 0 To Files.Count - 1 Do
@@ -1858,15 +1943,78 @@ Begin
                 IdPart := Copy(Name, 9, NameLen - 13);
                 If IsValidRequestId(IdPart) Then
                 Begin
-                    RequestId := IdPart;
-                    FilePath := WorkspaceDir + Name;
-                    Result := True;
-                    Exit;
+                    Tag := 'legacy';
+                    Seq := '';
+                    If (Length(IdPart) >= 19) And (Pos('-', IdPart) = 9)
+                        And (Copy(IdPart, 18, 1) = '-') Then
+                    Begin
+                        Tag := LowerCase(Copy(IdPart, 1, 8));
+                        Seq := Copy(IdPart, 10, 8);
+                    End;
+                    Pick := Tags.IndexOf(Tag);
+                    If Pick < 0 Then
+                    Begin
+                        Tags.Add(Tag);
+                        BestSeq.Add(Seq);
+                        BestName.Add(Name);
+                    End
+                    Else
+                    Begin
+                        If Seq < BestSeq[Pick] Then
+                        Begin
+                            BestSeq[Pick] := Seq;
+                            BestName[Pick] := Name;
+                        End;
+                    End;
                 End;
             End;
         End;
+
+        If Tags.Count > 0 Then
+        Begin
+            NowTick := GetTickCount;
+            Pending := '';
+            For I := 0 To Tags.Count - 1 Do
+            Begin
+                If Pending <> '' Then Pending := Pending + '|';
+                Pending := Pending + Tags[I];
+            End;
+            NextTag := PickSession(Pending, SlotSession, NowTick - SlotStartTick,
+                SESSION_SLOT_MS);
+            Pick := Tags.IndexOf(NextTag);
+            If Pick < 0 Then Pick := 0;
+            If Tags.Count > 1 Then
+            Begin
+                If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                Begin
+                    Pending := '';
+                    For I := 0 To Tags.Count - 1 Do
+                    Begin
+                        If Pending <> '' Then Pending := Pending + ',';
+                        Pending := Pending + '"' + Tags[I] + '"';
+                    End;
+                    Try
+                        WriteFileContent(WorkspaceDir + 'queue.json',
+                            '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
+                            + '],"slot_ms":' + IntToStr(SESSION_SLOT_MS) + '}');
+                    Except End;
+                    QueueNoteTick := NowTick;
+                End;
+            End;
+            If Tags[Pick] <> SlotSession Then
+            Begin
+                SlotSession := Tags[Pick];
+                SlotStartTick := NowTick;
+            End;
+            RequestId := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
+            FilePath := WorkspaceDir + BestName[Pick];
+            Result := True;
+        End;
     Finally
         Files.Free;
+        Tags.Free;
+        BestSeq.Free;
+        BestName.Free;
     End;
 End;
 
