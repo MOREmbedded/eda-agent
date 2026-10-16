@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.2';
+    SCRIPT_VERSION = '2026.10.16.12';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -608,14 +608,27 @@ End;
 { ResolvePCBBoard - get a SPECIFIC board by path when several PcbDocs are     }
 { open. GetPCBBoardAnywhere returns the focused/current board, which is the   }
 { WRONG one when the caller meant a different (e.g. newly created) board.     }
-{ PCBServer.GetPCBBoardByPath is undeclared on this build, so we open + show  }
-{ the target (which focuses it) and then read GetCurrentPCBBoard. Empty path  }
-{ falls back to GetPCBBoardAnywhere.                                          }
+{ PCBServer.GetPCBBoardByPath is undeclared on this build, so the target is   }
+{ shown (which focuses it) and GetCurrentPCBBoard read. Empty path means      }
+{ GetPCBBoardAnywhere.                                                        }
+{                                                                             }
+{ Only a loaded document, or a document of an open project, is shown. Client. }
+{ OpenDocument on any other path loads it with no project, a "free document"  }
+{ (App_SetActiveDocument refuses that for the same reason), and a mangled     }
+{ path turned the board into one and left the project unfocused. A path that }
+{ does not resolve gives Nil, never some other board, and a board that did   }
+{ not come to the front is Nil too, so the caller reports it.                }
 {..............................................................................}
 
 Function ResolvePCBBoard(Path : String) : IPCB_Board;
 Var
     ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    DocPath : String;
+    I, P : Integer;
+    InProject : Boolean;
 Begin
     Result := Nil;
     If Path = '' Then
@@ -624,17 +637,45 @@ Begin
         Exit;
     End;
     ServerDoc := Nil;
-    Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
     If ServerDoc = Nil Then
     Begin
-        { Path didn't resolve to a loadable PcbDoc; fall back rather than    }
-        { silently returning Nil and erroring the whole call.                }
-        Result := GetPCBBoardAnywhere(0);
-        Exit;
+        InProject := False;
+        Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+        If Workspace <> Nil Then
+            For P := 0 To Workspace.DM_ProjectCount - 1 Do
+            Begin
+                Project := Workspace.DM_Projects(P);
+                If Project = Nil Then Continue;
+                For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+                Begin
+                    Doc := Project.DM_LogicalDocuments(I);
+                    If Doc = Nil Then Continue;
+                    DocPath := '';
+                    Try DocPath := Doc.DM_FullPath; Except End;
+                    If UpperCase(DocPath) = UpperCase(Path) Then InProject := True;
+                End;
+            End;
+        If Not InProject Then Exit;
+        Try ServerDoc := Client.OpenDocument('PCB', Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Exit;
     End;
     Try Client.ShowDocument(ServerDoc); Except End;
-    Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-    If Result = Nil Then Result := GetPCBBoardAnywhere(0);
+    Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
+    If Result <> Nil Then
+        If UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil;
+End;
+
+{ The path of the board in front, '' when none is. For a check that a focus }
+{ took; it is focus-dependent on purpose.                                    }
+Function FrontPCBBoardPath(Dummy : Integer) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Result := '';
+    Try Board := PCBServer.GetCurrentPCBBoard; Except Board := Nil; End;
+    If Board <> Nil Then
+        Try Result := Board.FileName; Except Result := ''; End;
 End;
 
 {..............................................................................}

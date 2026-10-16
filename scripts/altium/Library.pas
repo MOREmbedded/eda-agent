@@ -3052,7 +3052,7 @@ Var
     Stack : IPCB_LayerStack_V7;
 Begin
     Result := '';
-    Try Result := GetLayerString(Lyr); Except End;
+    Try Result := LayerDisplayName(Lyr); Except End;
     If (Result <> '') And (Result <> 'Unknown') Then Exit;
     Result := '';
     If Board = Nil Then Exit;

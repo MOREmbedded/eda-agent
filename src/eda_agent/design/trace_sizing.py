@@ -36,7 +36,8 @@ _K_INTERNAL = 0.024
 _DT_EXP = 0.44            # temperature-rise exponent
 _AREA_EXP = 0.725        # cross-section exponent
 from ..units import OZ_TO_MILS as _OZ_TO_MILS  # 1 oz/ft^2 in mils
-_RHO_OHM_MIL = 6.7e-7    # annealed copper resistivity, ohm-mil, 25 degC
+# Annealed copper, IACS: 1.7241e-8 ohm-m at 20 degC, over 2.54e-5 m per mil.
+_RHO_OHM_MIL = 1.7241e-8 / 2.54e-5
 
 
 def copper_thickness_mils(copper_oz: float) -> float:

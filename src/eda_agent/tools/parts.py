@@ -105,27 +105,13 @@ def register_parts_tools(mcp):
     ) -> dict[str, Any]:
         """Fetch one part's detail, by the ``ref`` a search returned.
 
-        Pass the ``ref`` straight through: it is ``provider:part_id``,
-        so the source travels with the id and the merged results behave
-        like one catalogue. ``part_search`` puts a ``ref`` on every hit.
+        The ``ref`` is ``provider:part_id``; pass it through. A bare id
+        with no ``provider`` and no known prefix is refused, never
+        guessed; ``provider`` wins over a prefix.
 
-        The source is still explicit, never inferred. Nothing here picks
-        a provider for you: a bare id with no ``provider`` and no
-        recognised prefix is refused rather than guessed at, because
-        guessing is how one source quietly becomes the answer to
-        everything. ``provider`` may still be given separately, and wins
-        over a prefix if both are present.
-
-        Set ``download_dir`` to also write the provider's library files
-        there, when it offers any. Off by default because it writes to
-        disk, and a fetch should not do that unasked.
-
-        Downloaded files are checked against the KiCad installed on this
-        machine: a registry may publish a NEWER s-expression format than
-        the local KiCad can open (observed live, format 20260206 against
-        KiCad 10.0.1's 20251024, where the symbol parser refuses the file
-        outright). Any such file comes back with a ``*_warning`` entry
-        rather than looking like a clean download.
+        ``download_dir`` also writes the provider's library files there.
+        A downloaded KiCad file in a newer format than the local KiCad
+        reads comes back with a ``*_warning`` entry.
 
         Returns the provider's own detail plus a normalised summary
         (mpn, manufacturer, datasheet, provenance, license) where the

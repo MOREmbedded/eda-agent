@@ -151,27 +151,18 @@ def register_sim_tools(mcp):
     async def sim_get_readiness() -> dict[str, Any]:
         """Audit every component on the active schematic for SPICE readiness.
 
-        Use this as step 1 of any simulation workflow. The response
-        classifies each component into one of three buckets:
+        Step 1 of any simulation. Each component lands in one bucket:
+        ``ready`` (SpicePrefix set), ``needs_primitive`` (R/L/C or a
+        V/I/D/Q source needing SpicePrefix and Value; pass them all to
+        sim_attach_primitives in one call) or ``needs_file`` (an IC or
+        active part needing the vendor's .mdl/.ckt/.lib, for
+        sim_attach_model).
 
-          - ``ready``          , SpicePrefix already set; nothing to do.
-          - ``needs_primitive``, a passive (R/L/C) or source (V/I/D/Q)
-                                  that just needs SpicePrefix + Value.
-                                  Pass them all to
-                                  sim_attach_primitives in one call.
-          - ``needs_file``     , an IC or active part that requires a
-                                  manufacturer-supplied .mdl / .ckt /
-                                  .lib file. Call sim_attach_model
-                                  after fetching the file from the
-                                  vendor.
-
-        CRITICAL, vendor SPICE models only:
-        Never fabricate a SPICE model from datasheet reasoning. The
-        parameters that matter for convergence, bias point, and
-        small-signal behavior are not in any datasheet summary; a
-        plausible-looking hand-rolled model produces confidently-wrong
-        simulation results. The response's ``_spice_guidance`` block
-        makes this rule explicit and gives you per-part search queries.
+        VENDOR SPICE MODELS ONLY. Never build a model from a datasheet:
+        the parameters that set convergence and bias are not in it, and
+        a plausible hand-made model gives confidently wrong results.
+        ``_spice_guidance`` repeats this and gives per-part search
+        queries.
 
         Returns:
             Dict with:
@@ -243,19 +234,10 @@ def register_sim_tools(mcp):
         performs an operating point, DC sweep, transient and AC together
         (MEASURED: the dashboard's on/off switches are not honoured).
 
-        It succeeds only when the run produced its results document (a
-        .sdf, opened in its own tab), and fails with SIM_NOT_RUN when
-        nothing appeared. The results are saved and read back: the reply
-        carries each analysis's waves with min, max, first and last, and
-        sim_get_results gives the traces.
-
-        Typical workflow:
-            1. Activate one of the project's schematic sheets.
-            2. Use sim_get_readiness + sim_attach_* to make sure every
-               component has a SPICE model.
-            3. Place probes on measurement nodes with sch_place_probe.
-            4. Set the analyses with sim_setup_analysis.
-            5. Call sim_run, then sim_get_results for the traces.
+        Succeeds only when a results document (.sdf) appears, else
+        SIM_NOT_RUN; the reply summarises each wave, sim_get_results
+        gives the traces. Order: focus a sheet, sim_get_readiness and
+        sim_attach_*, sch_place_probe, sim_setup_analysis, sim_run.
 
         Args:
             analysis: Free-form label echoed back in the response.
@@ -316,16 +298,11 @@ def register_sim_tools(mcp):
                 ["v(out)", "i(v1)"].
             project_path: the project; empty uses the focused one.
 
-        WHAT A RUN DOES, MEASURED: a run started from a script performs
-        an operating point, a DC sweep, a transient and an AC analysis
-        together, whatever is switched off in the dashboard. The values
-        set here are what those analyses use. An analysis you do not need
-        still runs on its last settings; sim_get_results(analysis=...)
-        returns just the one you want.
-
-        Altium's own settings are saved first, so changes made in the
-        Simulation Dashboard are kept, then the file is changed and
-        reloaded into Altium. A project without a .simcfg gets one.
+        MEASURED: a scripted run performs operating point, DC, transient
+        and AC together whatever the dashboard switches say, so an
+        analysis not set here runs on its last settings;
+        sim_get_results(analysis=...) picks one. Dashboard changes are
+        saved first and kept; a project without a .simcfg gets one.
 
         Returns:
             Dict with simcfg (the file), set (the keys written), reloaded,

@@ -411,51 +411,28 @@ def register_review_tools(mcp):
         bad_connection_tolerance_mils: float = 1.0,
         checks: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Run all design-lint checks and return a consolidated violation
-        report.
+        """Run every design-lint audit and return one report.
 
-        Sequences the individual ``audit.*`` checks the way a pre-release
-        review would: compile-gate first, then schematic-side rules, then
-        PCB-side rules, then optional ERC/DRC. Each section's raw result
-        is preserved so an agent can drill in; a top-level ``summary``
-        gives counts per check.
-
-        Returns structured JSON instead of dumping to the Messages panel
-        (Altium's panel is fine for human review but the agent needs a
-        machine-readable shape).
-
-        Checks executed:
-          - ``component_param_visibility`` -- per-class parameter
-            visibility (cap voltage, IC MPN, etc).
-          - ``power_port_orientation`` -- ground down / rails up.
-          - ``find_floating_ports`` -- SCH ports not connected to a pin
-            or sheet entry.
-          - ``tented_via_ratio`` -- PCB tented vs untented via surfaces.
-          - ``find_bad_connections`` -- PCB tracks / arcs with dangling
-            endpoints within ``bad_connection_tolerance_mils``.
-          - ``find_signal_vias_without_return`` -- PCB signal vias with
-            no nearby ground/power via for return-current.
-          - ``drc`` (only if ``run_drc=True``) -- Altium's Design Rule
-            Check, full project.
+        Runs the schematic and PCB audits (the same ones as the
+        standalone ``audit_*`` tools) plus the BOM-side pin and
+        decoupling checks, each section in the shape its audit tool
+        returns.
 
         Args:
-            run_drc: If True, also runs Altium's DRC and includes its
-                violations. Off by default because DRC mutates the .DRC
-                report file and can take ~5-10s on a busy board.
-            bad_connection_tolerance_mils: Coord tolerance for
-                ``find_bad_connections``. Default 1.0; raise to surface
-                only gross misalignments.
+            run_drc: Also run Altium's DRC (off by default; it rewrites
+                the .DRC report).
+            bad_connection_tolerance_mils: Tolerance for
+                ``find_bad_connections`` (default 1.0).
+            checks: Run only these section names, e.g.
+                ``["find_floating_ports", "find_missing_decoupling"]``;
+                None runs all. Unknown names come back in
+                ``_unknown_checks``.
 
         Returns:
-            Dict with:
-              - ``summary``: per-check `{checked, violations}` (best
-                effort -- missing/failed checks listed under ``_failed``)
-              - ``sections``: per-check raw result objects under their
-                section name
-              - ``totals``: overall ``violations`` count across all
-                sections (does NOT include DRC raw count -- DRC items
-                are listed separately because severity / fix-cost
-                differs)
+            ``summary`` (per check ``{checked, violations, severity}``),
+            ``sections`` (raw results), ``totals`` (violations, by
+            severity, checks run and failed; DRC not counted),
+            ``_failed``.
         """
         bridge = get_bridge()
         sections: dict[str, Any] = {}

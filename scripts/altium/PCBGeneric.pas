@@ -146,7 +146,7 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
+        Else If PropName = 'Layer'      Then Result := LayerDisplayName(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
         Else If PropName = 'Selected'   Then Result := BoolToJsonStr(Obj.Selected)
         { 'Net.Name' is accepted as well as 'Net'. Designator.Text and
@@ -176,6 +176,10 @@ Begin
         Else If PropName = 'IsKeepout' Then
         Begin
             Result := BoolToJsonStr(Obj.IsKeepout);
+        End
+        Else If PropName = 'TearDrop' Then
+        Begin
+            Result := BoolToJsonStr(Obj.TearDrop);
         End
         Else If PropName = 'Locked' Then
         Begin
@@ -902,6 +906,7 @@ Begin
         (PropName = 'BodyOpacity3D') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
         (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
+        (PropName = 'TearDrop') Or
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
@@ -954,7 +959,7 @@ Begin
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
         + 'StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component, '
-        + 'InPolygon, IsKeepout, Locked, Layer1, Layer2, IsRedundant, Mode, '
+        + 'InPolygon, IsKeepout, TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
         + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts';
 End;
 
@@ -1052,7 +1057,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
             Obj := Iterator.FirstPCBObject;
             While Obj <> Nil Do
@@ -1089,7 +1094,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
             Obj := Iterator.FirstPCBObject;
             While Obj <> Nil Do
@@ -1130,7 +1135,9 @@ Begin
     Iterator := Board.BoardIterator_Create;
     Try
         Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-        Iterator.AddFilter_LayerSet(AllLayers);
+        { The V7 layer set: the legacy AllLayers stops at Mechanical16, and }
+        { MEASURED, 6390 outline primitives on Mechanical17 counted 0.      }
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iterator.AddFilter_Method(eProcessAll);
 
         Obj := Iterator.FirstPCBObject;
@@ -1266,6 +1273,22 @@ Begin
     Board.BoardOutline.SetState_XSizeYSize;
     Board.BoardOutline.GraphicallyInvalidate;
     Board.UpdateBoardOutline;
+End;
+
+{ A polygon or board outline holds one segment past PointCount: the closing }
+{ vertex at index PointCount, a line back to the first, which the community }
+{ PCBScale.pas rewrites by walking 0 To PointCount. Setting PointCount and   }
+{ writing 0..N-1 leaves it where it was. MEASURED: a replaced outline saved }
+{ the OLD first vertex there, a spike in the board shape. Call after the    }
+{ N segments are written. The record is copied from a segment, as the bevel }
+{ does, because a bare TPolySegment local cannot take field writes.        }
+Procedure ClosePolySegments(Poly : IPCB_Polygon; N : Integer);
+Var
+    Seg : TPolySegment;
+Begin
+    Seg := Poly.Segments[0];
+    Seg.Kind := ePolySegmentLine;
+    Poly.Segments[N] := Seg;
 End;
 
 { The first property a filter names that the PCB getter does not answer,  }

@@ -55,45 +55,24 @@ def register_render_tools(mcp):
         margin_mils: int = 200,
         flip_y: bool = True,
     ) -> dict[str, Any]:
-        """Render the active SchDoc to an SVG file (in-house renderer).
+        """Render the active SchDoc to an SVG file.
 
-        SCOPE: this is a VISUAL artifact for when an image is genuinely
-        needed (layout/readability review, sharing a picture, a CI
-        thumbnail). It is NOT an input to a design review. NEVER judge
-        connectivity, part values, ratings, or pin functions from this
-        render -- a wire that looks joined may not share a net, and a
-        net can be correct while the drawing looks messy. Connectivity
-        and part facts come from the compiled netlist + part data
-        (`proj_get_nets`, `proj_get_connectivity_many`, `obj_crossref_net`,
-        `proj_get_unconnected_pins`, `proj_get_erc_violations`,
-        `design_review_snapshot`), never from a picture.
+        For a picture of layout and readability. Never judge
+        connectivity, values or pin functions from it: use
+        ``proj_get_nets``, ``proj_get_connectivity_many`` or
+        ``design_review_snapshot``.
 
-        Pulls every component, pin, wire, junction, net label, port and
-        power port from the active schematic via the bridge, then emits
-        a self-contained SVG with ``data-designator``, ``data-net``,
-        ``data-pin`` attributes on every meaningful group so a downstream
-        consumer (the web dashboard, an LLM tool, a CI check) can hook
-        interaction without re-parsing.
-
-        v1 draws components as labelled bounding-box bodies with pin
-        stubs from the body to the electrical end. Full symbol-internal
-        primitives (rectangles / lines / arcs inside each symbol) are
-        deferred to v2 -- the v1 output is recognisable and ready for
-        interactive overlay but does not yet draw the actual symbol art.
+        Draws components as labelled boxes with pin stubs (not the symbol
+        art), wires, junctions, labels, ports and power ports, each group
+        carrying ``data-designator``, ``data-net`` and ``data-pin``.
 
         Args:
-            output_path: Where to write the SVG. Defaults to the
-                transient ``<workspace>/renders/`` dir (kept out of the
-                workspace root so renders don't pile up in your folder).
-            margin_mils: Padding around the geometry bbox in mils
-                (default 200).
-            flip_y: When True (default) flip the Y axis so the output
-                reads in Altium's conventional bottom-left-origin space
-                rather than SVG's top-left-origin.
+            output_path: SVG path; default the workspace renders folder.
+            margin_mils: Padding around the drawing (default 200).
+            flip_y: Flip Y to Altium's bottom-left origin (default True).
 
         Returns:
-            Dict with ``ok``, ``svg_path``, ``doc``, ``counts``
-            (one entry per primitive type).
+            ``ok``, ``svg_path``, ``doc``, ``counts``, ``bytes``.
         """
         bridge = get_bridge()
         geometry = await bridge.send_command_async(
@@ -141,53 +120,32 @@ def register_render_tools(mcp):
         interactive_legend: bool = True,
         background: str = "#1f2937",
     ) -> dict[str, Any]:
-        """Render the active PcbDoc to an SVG file (in-house renderer).
+        """Render the active PcbDoc to an SVG file.
 
-        SCOPE: a VISUAL artifact for when an image is genuinely needed
-        (placement / silkscreen / spacing review, sharing a picture).
-        It is NOT an input to a design review's electrical findings.
-        NEVER judge connectivity, net assignment, or clearance from this
-        render -- read those from the board data (`pcb_get_nets`,
-        `pcb_get_unrouted_nets`, `pcb_get_clearance_violations`,
-        `pcb_run_drc`, `proj_compare_sch_pcb`). The render shows
-        geometry; the netlist shows connection.
+        For a picture of placement, silkscreen or spacing. Never judge
+        connectivity, nets or clearance from it: use ``pcb_get_nets``,
+        ``pcb_get_unrouted_nets``, ``pcb_run_drc`` or
+        ``proj_compare_sch_pcb``.
 
-        Pulls the board outline, every track, arc, pad, via, and text
-        primitive from the active PCB via the bridge, then emits a
-        per-layer SVG. Layers are grouped in render order (KeepOut at
-        bottom, then bottom copper, top copper, overlays, outline on
-        top, drills last) and every track / arc / pad / via group
-        carries ``data-net``, ``data-layer``, ``data-shape`` so a
-        downstream dashboard or LLM tool can cross-probe or net-
-        highlight without re-parsing.
-
-        v1 surface: board outline + tracks + arcs + pads (round / rect /
-        octagonal / rounded-rect) + vias + texts on overlays. Regions
-        (polygon fills / copper pours) and component-body silkscreen
-        outlines are deferred to v1.1.
+        Draws the outline, tracks, arcs, pads, vias and overlay texts;
+        not regions, pours or component-body outlines. Each primitive
+        group carries ``data-net``, ``data-layer`` and ``data-shape``.
 
         Args:
-            output_path: Where to write the SVG. Defaults to the
-                transient ``<workspace>/renders/`` dir (kept out of the
-                workspace root so renders don't pile up in your folder).
-            layers: Restrict to these Altium layer names (e.g.
-                ``["TopLayer", "TopOverlay", "KeepOutLayer"]``). When
-                ``None`` (default) every known layer is rendered.
-                ``MultiLayer`` (vias) and the outline are always drawn.
-            margin_mils: Padding around the board bbox in mils.
-            flip_y: When True (default) flip Y so the SVG reads in
-                Altium's bottom-left-origin space.
-            show_drills: Punch hole circles through pads / vias.
-            show_texts: Render text primitives on overlay layers.
-            show_designators: Draw component designators on the overlay.
-            interactive_legend: Emit a clickable per-layer legend group
-                in the SVG (for the dashboard / cross-probe consumers).
-            background: Board-background fill (defaults to a slate
-                review colour; pass ``"none"`` for transparent).
+            output_path: SVG path; default the workspace renders folder.
+            layers: Only these layer names (e.g. ``["TopLayer",
+                "TopOverlay"]``); default all. Vias and the outline are
+                always drawn.
+            margin_mils: Padding around the board.
+            flip_y: Flip Y to Altium's bottom-left origin (default True).
+            show_drills: Draw pad and via holes.
+            show_texts: Draw overlay texts.
+            show_designators: Draw designators.
+            interactive_legend: Add a clickable per-layer legend.
+            background: Background fill; ``"none"`` for transparent.
 
         Returns:
-            Dict with ``ok``, ``svg_path``, ``counts`` (per primitive
-            kind), ``bbox`` (in mils), ``bytes``.
+            ``ok``, ``svg_path``, ``counts``, ``bbox`` (mils), ``bytes``.
         """
         bridge = get_bridge()
         geometry = await bridge.send_command_async(
@@ -228,51 +186,27 @@ def register_render_tools(mcp):
         margin_mils: Optional[int] = None,
         layers: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Render the active design and return it as a viewable image plus
-        a critique rubric -- the first step of a visual self-check loop.
+        """Render the active sheet or board to a PNG you can Read, with a
+        critique ``rubric`` naming the audit tool that measures each item.
 
-        SCOPE: layout and placement ONLY -- schematic readability /
-        spread / flow, PCB part placement, silkscreen, spacing, overlaps.
-        This is NOT a connectivity or part-correctness review. Do NOT use
-        it to decide what connects to what, whether a value/rating is
-        right, or whether a pin is wired -- those come from the netlist +
-        part data (`design_review_snapshot`, `proj_get_nets`,
-        `proj_get_connectivity_many`, `proj_get_erc_violations`), never
-        from the image. The rubric below is deliberately about geometry;
-        treat every electrical question as out of scope here.
-
-        Renderers are exports; this turns them into *feedback*. It draws
-        the active SchDoc or PcbDoc, rasterizes it to PNG (headless Edge)
-        so you can actually look at it with the Read tool, and returns a
-        document-specific ``rubric`` (what to look for) and
-        ``loop_protocol`` (render -> look -> critique -> cross-check ->
-        fix -> re-render). Each rubric item names the existing audit
-        tool(s) that measure it exactly, so vision finds candidates and
-        the audits confirm and locate them.
-
-        Use it as a loop: call this, ``Read`` the returned ``png_path``,
-        critique against ``rubric``, run the named audits for anything
-        suspicious, fix with the normal tools (for PCB placement,
-        ``pcb_plan_placement``), then call this again to confirm. A couple
-        of iterations is usually enough.
+        SCOPE: layout and placement only (readability, spacing, overlaps,
+        silkscreen). Never judge connectivity, values or wiring from the
+        image: use ``design_review_snapshot`` and the netlist tools. Loop:
+        render, Read ``png_path``, critique, run the named audits, fix,
+        render again.
 
         Args:
-            target: ``"auto"`` (detect the active document), ``"schematic"``,
-                or ``"pcb"``.
-            output_path: Where to write the SVG (``.png`` sits beside it).
-                Defaults to the transient ``<workspace>/renders/`` dir; the
-                scratch ``.raster.svg`` used for the screenshot is deleted
-                automatically (kept out of your folder).
-            rasterize: Also produce a PNG so the image is directly
-                viewable (default True). If no browser is found the SVG is
-                still returned with a ``rasterize_note``.
-            width: Raster width in pixels (height follows the aspect).
-            margin_mils: Override the render margin.
-            layers: PCB only -- restrict to these layer names.
+            target: "auto" (the active document), "schematic" or "pcb".
+            output_path: SVG path (PNG beside it); default the workspace
+                renders folder.
+            rasterize: Also make the PNG (default True; ``rasterize_note``
+                if no browser).
+            width: PNG width in pixels.
+            margin_mils: Render margin.
+            layers: PCB only: these layers.
 
         Returns:
-            Dict with ``ok``, ``target``, ``doc``, ``svg_path``,
-            ``png_path`` (None if rasterization was skipped/failed),
+            ``ok``, ``target``, ``doc``, ``svg_path``, ``png_path``,
             ``counts``, ``bbox``, ``rubric``, ``loop_protocol``,
             ``next_step``.
         """

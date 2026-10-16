@@ -285,53 +285,28 @@ def register_route_tools(mcp):
     ) -> dict[str, Any]:
         """Place the focused board's parts with the in-house placer, as a job.
 
-        Reads the board exactly (``pcb.get_layout_model``), then places it in
-        the background and returns a job id at once. Poll
-        ``design_job_status``; ``design_job_result`` gives the moves, the
-        wirelength before and after, any overlaps, and the exact DRC's
-        verdict on the placed board (unrouted). Nothing is moved on the board
-        until ``pcb_autoplace_apply``.
-
-        Two strategies. "blocks" plans the board by sub-circuit first: each
-        IC with its decoupling, pull-ups and filters in columns round it,
-        connectors with the parts on their lines, passives in rows, repeated
-        channels as identical tiles in a grid, the blocks placed in
-        signal-flow order from the connectors; its result also lists the
-        blocks (name, rectangle in mils, members) and every part the
-        legaliser had to move, with the moves over 80 mil flagged as
-        floorplan problems. "analytic" places by wirelength alone (quadratic
-        placement, spreading, legalising, refinement).
-
-        Parts keep their side. Locked parts, and parts whose designator
-        starts like a connector, mounting hole, fiducial, test point, switch
-        or battery, stay where they are unless named in ``parts``: they sit
-        where they do for mechanical reasons. The board's own routing does
-        not move with its parts: place before routing, or take the routing up
-        first with ``pcb_unroute``.
-
-        This is the in-house engine: no Altium auto-placer, no external
-        program.
+        Returns a job id at once; poll ``design_job_status``, and
+        ``design_job_result`` gives the moves, wirelength before and after,
+        overlaps and the DRC verdict. Nothing moves until
+        ``pcb_autoplace_apply``. Parts keep their side; locked parts and
+        mechanical ones (connectors, mounting holes, fiducials, test
+        points, switches, batteries) stay unless named in ``parts``.
+        Routing does not follow its parts: place first, or ``pcb_unroute``.
 
         Args:
-            expect_file: full path of the board to place. The read refuses on
-                the first reply if the focused board is another one.
-            parts: designators to move; every other part stays. None moves
-                every part that is not locked or mechanical (see above).
-            compact: spread the parts over only as much room as they need,
-                round where their connections pull them, instead of over the
-                whole board. For a small circuit on a large board; over the
-                benchmark boards it routes slightly worse, so it is off by
-                default. Analytic strategy only.
-            strategy: "blocks" or "analytic"; None takes the placer's
-                default, "blocks". A board where the floorplan has to push
-                more than a quarter of its parts out of place is placed by
-                "analytic" instead, and the result says so under
-                ``fallback``.
+            expect_file: Full path of the board; refused if another is
+                focused.
+            parts: Designators to move (default: all movable parts).
+            compact: Use only the room the parts need (small circuit on a
+                big board; analytic only).
+            strategy: "blocks" (default: by sub-circuit, decoupling round
+                each IC, repeated channels tiled, signal-flow order) or
+                "analytic" (wirelength only). "blocks" falls back to
+                "analytic" when its floorplan would push over a quarter of
+                the parts (``fallback``).
 
         Returns:
-            ``{"job_id", "board", "strategy", "read": {...}}``, or
-            ``{"error": ...}`` when the strategy is unknown, or the read
-            failed or found another board.
+            {"job_id", "board", "strategy", "read"} or {"error"}.
         """
         import asyncio
 
@@ -463,57 +438,32 @@ def register_route_tools(mcp):
     ) -> dict[str, Any]:
         """Route the board offline (grid A*) and return placeable ops.
 
-        Pure Python -- no Altium round-trip unless ``fetch_geometry``
-        is set. Output ``tracks`` are ``{x1, y1, x2, y2, width, layer,
-        net_name}`` (the ``pcb_place_tracks`` item shape) and ``vias``
-        are ``{x, y, net, size, hole_size}`` (the ``pcb_place_via``
-        params), integer mils, so the result applies verbatim. Per-net
-        failure is honest data (status ``failed``), not a tool error.
-
-        Live sequence: fetch geometry -> this tool ->
-        ``pcb_place_tracks`` / ``pcb_place_via`` -> ``pcb_run_drc`` ->
-        ``route_plan_repairs`` -> apply -> repeat.
+        Pure Python unless ``fetch_geometry``. ``tracks`` come in the
+        pcb_place_tracks shape and ``vias`` in the pcb_place_via shape,
+        integer mils, ready to apply. A net that fails is reported, not
+        raised. Loop: plan, place, DRC, route_plan_repairs, repeat.
 
         Args:
-            geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /
-                pads / tracks / vias, all mils). Pads and copper of
-                nets NOT being routed stay in the obstacle map.
-            rules: Routing rules, all mils -- ``clearance_mils``,
-                ``track_width_mils`` (int, or per-class dict with
-                ``"default"``), ``via_size_mils``, ``via_drill_mils``,
-                ``layers`` (default TopLayer + BottomLayer). ``None``
-                uses defaults.
-            nets: Route only these net names; everything else stays a
-                static obstacle. Unknown names are reported in
-                ``unknown_nets``. ``None`` routes every netted pad
-                group.
-            net_classes: Net name -> class (``power`` / ``ground`` /
-                ``differential`` / ...). Sets routing order and the
-                per-class track width. Unlisted nets are ``signal``.
-            grid_pitch_mils: Routing grid pitch in mils (default 25).
-            bend_penalty: A* corner cost in grid-pitch units.
-            via_cost: A* layer-change cost in grid-pitch units.
-            max_expansions: Per-connection A* budget so a walled-in
-                net fails fast.
-            fetch_geometry: When True and ``geometry`` is None, pull
-                the live board over the bridge.
+            geometry: Board geometry payload (bbox, outline, pads, tracks,
+                vias, mils). Unrouted nets' copper stays an obstacle.
+            rules: clearance_mils, track_width_mils (int or per-class dict
+                with "default"), via_size_mils, via_drill_mils, layers
+                (default top and bottom).
+            nets: Route only these (unknown ones in ``unknown_nets``).
+            net_classes: net -> class (power, ground, differential...),
+                setting order and width; others are "signal".
+            grid_pitch_mils: Grid pitch (default 25).
+            bend_penalty: Corner cost, in grid pitches.
+            via_cost: Layer-change cost, in grid pitches.
+            max_expansions: Search budget per connection.
+            fetch_geometry: Read the live board when geometry is None.
 
         Returns:
-            ``{"ok": True, "summary": {nets_total, routed, failed,
-            skipped, completion, track_count, via_count,
-            total_length_mils}, "order": [...], "nets": {net:
-            {status, class, width, tracks, vias, ...}}, "tracks":
-            [...], "vias": [...], "validation": {...}}``; with a
-            ``nets`` filter also ``requested_nets`` / ``unknown_nets``.
-            ``{"ok": False, "reason": ...}`` on malformed input.
-
-            ``geometry`` says which board state was planned against:
-            ``source`` is ``live`` when this call read the board and
-            ``caller`` when you supplied the dict, plus the ``bbox`` and
-            ``counts`` from that payload. A ``caller`` plan is only as
-            current as the snapshot behind it, and this tool cannot date
-            it: after placing anything, re-read before re-planning or
-            the next plan routes through copper it cannot see.
+            {"ok", "summary" (routed, failed, completion, counts,
+            length), "order", "nets" {net: {status, class, width, ...}},
+            "tracks", "vias", "validation", "geometry" (source "live" or
+            "caller", bbox, counts)}. A caller-supplied geometry is only
+            as fresh as its snapshot: re-read after placing anything.
         """
         geom, geom_source = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
@@ -563,23 +513,15 @@ def register_route_tools(mcp):
     ) -> dict[str, Any]:
         """Turn a DRC violation payload into an ordered repair plan.
 
-        Pure Python, stateless. Classifies the ``pcb_run_drc`` payload
-        (or a bare violation list) into buckets (net_clearance /
-        pad_clearance / unrouted / antenna / width / other), then plans
-        actions: ``rip_and_reroute`` (worst clearance offender first),
-        ``nudge`` {net, dx, dy, x_mils, y_mils} for a lone
-        pad-clearance conflict, ``widen``/``narrow`` {net} for width
-        violations, ``escalate`` {reason} when the plan cannot converge
-        alone. Deltas/coordinates are integer mils.
-
-        Executor contract: apply the actions in order
-        (``rip_and_reroute`` = ``pcb_delete_net`` + route that net
-        again via ``route_plan`` with the ``nets`` filter or a DSN
-        round-trip; ``nudge`` = ``obj_modify`` on the primitive nearest
-        (x_mils, y_mils); ``widen``/``narrow`` =
-        ``pcb_set_track_width``; ``escalate`` = stop and surface the
-        reason). Then ``pcb_run_drc`` again and re-plan from the fresh
-        violations -- the loop's outer iteration bound is the caller's.
+        Pure Python. Apply the actions in order, then run
+        ``pcb_run_drc`` and plan again:
+          ``rip_and_reroute`` {net}: ``pcb_delete_net``, then route it
+            again (``route_plan`` with ``nets``); worst offender first.
+          ``nudge`` {net, dx, dy, x_mils, y_mils}: ``obj_modify`` on the
+            primitive nearest (x_mils, y_mils).
+          ``widen`` / ``narrow`` {net}: ``pcb_set_track_width``.
+          ``escalate`` {reason}: stop and report it.
+        Coordinates and deltas are integer mils.
 
         Args:
             violations: ``pcb_run_drc`` result ``{violation_count,

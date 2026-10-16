@@ -81,6 +81,16 @@ def test_resistance_and_drop_with_length():
         trace_resistance_mohm(r.recommended_width_mils, 1.0, 1000.0))
 
 
+def test_resistance_matches_copper_sheet_resistance():
+    # 1 oz copper (1.378 mil = 35.0 um) is 1.7241e-8 / 35.0e-6 = 0.4926
+    # mOhm per square, so 10 mil x 1000 mil (100 squares) is 49.3 mOhm.
+    # The constant was once copper's resistivity in ohm-INCH used with
+    # mils, which gave 0.049 mOhm, and the formula-only checks above
+    # agreed with it.
+    assert trace_resistance_mohm(10.0, 1.0, 1000.0) == pytest.approx(
+        49.26, rel=0.002)
+
+
 def test_no_length_no_resistance():
     r = trace_width_for_current(2.0)
     assert r.resistance_mohm is None

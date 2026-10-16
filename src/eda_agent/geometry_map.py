@@ -122,8 +122,36 @@ class LayerResolver:
         return self.by_name.get(_norm_layer(layer))
 
 
+#: Altium's coordinates are 32-bit integers, so about 214,748 mil is the
+#: furthest a value can reach. MEASURED: an arc radius of 662,000 mil raised
+#: an EConvertError dialog in the middle of an apply and stopped the script.
+_COORD_MAX = 2 ** 31 - 1
+
+
+class OutOfRange(ValueError):
+    """A map value Altium cannot hold, refused before anything is sent."""
+
+
 def _mil(value: Any) -> int:
-    return int(round(float(value) * COORD_PER_MIL))
+    mils = float(value)
+    if not math.isfinite(mils) or abs(mils) * COORD_PER_MIL > _COORD_MAX:
+        raise OutOfRange(f"{value!r} mil is outside Altium's coordinate range "
+                         f"(+/-{_COORD_MAX // COORD_PER_MIL:,} mil)")
+    return int(round(mils * COORD_PER_MIL))
+
+
+def _arc_fits(cx: Any, cy: Any, r: Any) -> None:
+    """An arc's extremes are coordinates too: centre plus radius must fit."""
+    for c in (cx, cy):
+        _mil(abs(float(c)) + abs(float(r)))
+
+
+def _refuse(rep: "KindReport", i: int, exc: Exception, usage: str) -> None:
+    """Count a refused entry, naming the value when it was out of range."""
+    rep.refused += 1
+    if isinstance(exc, OutOfRange):
+        rep.out_of_range += 1
+    rep.note("refused", i, str(exc) if isinstance(exc, OutOfRange) else usage)
 
 
 def _buckets(value: float, tol: float, q: float) -> range:
@@ -165,6 +193,7 @@ class KindReport:
     unmatched: int = 0
     ambiguous: int = 0
     refused: int = 0
+    out_of_range: int = 0
     samples: list = field(default_factory=list)
 
     def note(self, what: str, index: int, detail: str) -> None:
@@ -175,6 +204,8 @@ class KindReport:
         out = {"entries": self.entries, "matched": self.matched,
                "unmatched": self.unmatched, "ambiguous": self.ambiguous,
                "refused": self.refused}
+        if self.out_of_range:
+            out["out_of_range"] = self.out_of_range
         if self.samples:
             out["samples"] = self.samples
         return out
@@ -235,21 +266,35 @@ def _segments_lines(segments: Iterable, report: KindReport, index: int) -> Optio
             kind = int(seg.get("kind", 0))
             vx, vy = _mil(seg["vx"]), _mil(seg["vy"])
             if kind == 1:
+                _arc_fits(seg["cx"], seg["cy"], seg["r"])
                 lines.append(f"s\t1\t{vx}\t{vy}\t{_mil(seg['cx'])}\t{_mil(seg['cy'])}\t"
                              f"{_mil(seg['r'])}\t{_angle_text(seg['sa'])}\t"
                              f"{_angle_text(seg['ea'])}")
             else:
                 lines.append(f"s\t0\t{vx}\t{vy}")
-        except (KeyError, TypeError, ValueError, AttributeError):
-            report.refused += 1
-            report.note("refused", index, "a segment needs kind, vx, vy (and cx, "
-                        "cy, r, sa, ea for an arc)")
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            _refuse(report, index, exc, "a segment needs kind, vx, vy (and cx, "
+                    "cy, r, sa, ea for an arc)")
             return None
     if len(lines) < 3:
         report.refused += 1
         report.note("refused", index, "an outline needs three or more segments")
         return None
     return lines
+
+
+#: Marks a "delete" entry once it has joined the move entries of its kind.
+_DELETE = "__delete__"
+
+
+def _deletes_of(geometry_map: dict, kind: str) -> list:
+    """The map's "delete" entries of one kind, marked, ready to be matched
+    alongside that kind's moves."""
+    out = []
+    for e in geometry_map.get("delete") or []:
+        if isinstance(e, dict) and str(e.get("kind", "")).lower() == kind:
+            out.append({**e, _DELETE: True})
+    return out
 
 
 def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
@@ -265,6 +310,7 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
     layer_of = LayerResolver(dump.layers)
     report: dict = {}
     out: dict = {k: [] for k in "TAVXFRPO"}
+    deleted = {"track": 0, "arc": 0, "region": 0}
 
     def bad_layer(rep: KindReport, i: int, layer: Any) -> None:
         rep.refused += 1
@@ -279,7 +325,10 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         idx.add((lyr,), (w, x1, y1, x2, y2), obj)
     picks: dict = {}
     pending: dict = {}
-    entries = geometry_map.get("tracks") or []
+    # Deletes join the moves in one pass, so an object a move and a delete
+    # both name comes out ambiguous instead of being moved and then lost.
+    entries = (list(geometry_map.get("tracks") or [])
+               + _deletes_of(geometry_map, "track"))
     rep.entries = len(entries)
     # (object, entry) pairs that fit only with the key's ends swapped; the
     # new ends are swapped with them.
@@ -289,11 +338,12 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             lyr = layer_of(e["layer"])
             w = float(e["width"]) * COORD_PER_MIL
             k = [float(v) * COORD_PER_MIL for v in e["key"]]
-            new = [_mil(v) for v in e["new"]]
+            new = [0, 0, 0, 0] if e.get(_DELETE) else [_mil(v) for v in e["new"]]
+            if not e.get(_DELETE) and e.get("new_width") is not None:
+                _mil(e["new_width"])
             assert len(k) == 4 and len(new) == 4
-        except (KeyError, TypeError, ValueError, AssertionError):
-            rep.refused += 1
-            rep.note("refused", i, "needs layer, width, key [x1,y1,x2,y2], new")
+        except (KeyError, TypeError, ValueError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs layer, width, key [x1,y1,x2,y2], new")
             continue
         if lyr is None:
             bad_layer(rep, i, e.get("layer"))
@@ -310,13 +360,17 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         _claim(rep, picks, pending, i, cands, f"track on {e['layer']} at {e['key']}")
     for obj, i in _settle(rep, picks, pending, entries).items():
         e = entries[i]
+        o, lyr, w, x1, y1, x2, y2 = obj
+        old = f"T\t{o}\t{x1}\t{y1}\t{x2}\t{y2}\t{lyr}\t{w}"
+        if e.get(_DELETE):
+            out["T"].append((o, old + "\tDEL"))
+            deleted["track"] += 1
+            continue
         new = [_mil(v) for v in e["new"]]
         if (obj, i) in flipped:
             new = [new[2], new[3], new[0], new[1]]
         nw = _mil(e["new_width"]) if e.get("new_width") is not None else obj[2]
-        o, lyr, w, x1, y1, x2, y2 = obj
-        out["T"].append((o, f"T\t{o}\t{x1}\t{y1}\t{x2}\t{y2}\t{lyr}\t{w}\t"
-                            f"{new[0]}\t{new[1]}\t{new[2]}\t{new[3]}\t{nw}"))
+        out["T"].append((o, old + f"\t{new[0]}\t{new[1]}\t{new[2]}\t{new[3]}\t{nw}"))
     report["tracks"] = rep
 
     # Arcs: centre, radius and width bucketed, angles checked modulo 360.
@@ -326,7 +380,8 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         _, lyr, w, cx, cy, r, _sa, _ea = obj
         idx.add((lyr,), (w, cx, cy, r), obj)
     picks, pending = {}, {}
-    entries = geometry_map.get("arcs") or []
+    entries = (list(geometry_map.get("arcs") or [])
+               + _deletes_of(geometry_map, "arc"))
     rep.entries = len(entries)
     for i, e in enumerate(entries):
         try:
@@ -334,10 +389,15 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             w = float(e["width"]) * COORD_PER_MIL
             cx, cy, r = (float(v) * COORD_PER_MIL for v in e["key"][:3])
             sa, ea = float(e["key"][3]), float(e["key"][4])
-            assert len(e["new"]) == 5
-        except (KeyError, TypeError, ValueError, IndexError, AssertionError):
-            rep.refused += 1
-            rep.note("refused", i, "needs layer, width, key [cx,cy,r,start,end], new")
+            assert e.get(_DELETE) or len(e["new"]) == 5
+            if not e.get(_DELETE):
+                n = e["new"]
+                _arc_fits(n[0], n[1], n[2])
+                float(n[3]), float(n[4])
+                if e.get("new_width") is not None:
+                    _mil(e["new_width"])
+        except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs layer, width, key [cx,cy,r,start,end], new")
             continue
         if lyr is None:
             bad_layer(rep, i, e.get("layer"))
@@ -349,12 +409,16 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         _claim(rep, picks, pending, i, cands, f"arc on {e['layer']} at {e['key']}")
     for obj, i in _settle(rep, picks, pending, entries).items():
         e = entries[i]
+        o, lyr, w, cx, cy, r, sa, ea = obj
+        old = f"A\t{o}\t{cx}\t{cy}\t{r}\t{sa}\t{ea}\t{lyr}\t{w}"
+        if e.get(_DELETE):
+            out["A"].append((o, old + "\tDEL"))
+            deleted["arc"] += 1
+            continue
         n = e["new"]
         nw = _mil(e["new_width"]) if e.get("new_width") is not None else obj[2]
-        o, lyr, w, cx, cy, r, sa, ea = obj
-        out["A"].append((o, f"A\t{o}\t{cx}\t{cy}\t{r}\t{sa}\t{ea}\t{lyr}\t{w}\t"
-                            f"{_mil(n[0])}\t{_mil(n[1])}\t{_mil(n[2])}\t"
-                            f"{_angle_text(n[3])}\t{_angle_text(n[4])}\t{nw}"))
+        out["A"].append((o, old + f"\t{_mil(n[0])}\t{_mil(n[1])}\t{_mil(n[2])}\t"
+                                  f"{_angle_text(n[3])}\t{_angle_text(n[4])}\t{nw}"))
     report["arcs"] = rep
 
     # Vias: position only.
@@ -369,9 +433,9 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         try:
             x, y = (float(v) * COORD_PER_MIL for v in e["key"][:2])
             assert len(e["new"]) == 2
-        except (KeyError, TypeError, ValueError, IndexError, AssertionError):
-            rep.refused += 1
-            rep.note("refused", i, "needs key [x,y], new [x,y]")
+            _mil(e["new"][0]), _mil(e["new"][1])
+        except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs key [x,y], new [x,y]")
             continue
         cands = [obj for obj in idx.near((), (x, y))
                  if abs(obj[1] - x) <= tol and abs(obj[2] - y) <= tol]
@@ -397,9 +461,9 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             text = str(e["key"][2]) if len(e["key"]) > 2 else None
             n = e["new"]
             assert len(n) >= 2
-        except (KeyError, TypeError, ValueError, IndexError, AssertionError):
-            rep.refused += 1
-            rep.note("refused", i, "needs layer, key [x,y,text], new [x,y,text]")
+            _mil(n[0]), _mil(n[1])
+        except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs layer, key [x,y,text], new [x,y,text]")
             continue
         if lyr is None:
             bad_layer(rep, i, e.get("layer"))
@@ -434,9 +498,9 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             lyr = layer_of(e["layer"])
             k = [float(v) * COORD_PER_MIL for v in e["key"][:4]]
             assert len(k) == 4 and len(e["new"]) == 4
-        except (KeyError, TypeError, ValueError, AssertionError):
-            rep.refused += 1
-            rep.note("refused", i, "needs layer, key [x1,y1,x2,y2], new")
+            [_mil(v) for v in e["new"]]
+        except (KeyError, TypeError, ValueError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs layer, key [x1,y1,x2,y2], new")
             continue
         if lyr is None:
             bad_layer(rep, i, e.get("layer"))
@@ -465,7 +529,8 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
                 idx.add((lyr, n, holes), (fx, fy), (obj, fx, fy, base))
     picks, pending = {}, {}
     first_of: dict = {}
-    entries = geometry_map.get("regions") or []
+    entries = (list(geometry_map.get("regions") or [])
+               + _deletes_of(geometry_map, "region"))
     rep.entries = len(entries)
     for i, e in enumerate(entries):
         try:
@@ -473,9 +538,10 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             key = e["key"]
             n, holes = int(key["n"]), int(key.get("holes", 0))
             fx, fy = (float(v) * COORD_PER_MIL for v in key["first"][:2])
-            contour = e["contour"]
-            new_holes = e.get("holes") or []
-            assert len(contour) >= 3 and len(new_holes) == holes
+            if not e.get(_DELETE):
+                contour = e["contour"]
+                new_holes = e.get("holes") or []
+                assert len(contour) >= 3 and len(new_holes) == holes
         except (KeyError, TypeError, ValueError, IndexError, AssertionError):
             rep.refused += 1
             rep.note("refused", i, "needs layer, key {n, first, holes}, contour "
@@ -495,13 +561,16 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         e = entries[i]
         o, lyr, n, *_rest, holes = obj
         ox, oy, base = first_of[(obj, i)]
+        if e.get(_DELETE):
+            out["R"].append((o, f"R\t{o}\t{lyr}\t{n}\t{ox}\t{oy}\t{holes}\tDEL"))
+            deleted["region"] += 1
+            continue
         try:
             main = [(_mil(p[0]), _mil(p[1])) for p in e["contour"]]
             hole_pts = [[(_mil(p[0]), _mil(p[1])) for p in h] for h in e["holes"] or []]
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError) as exc:
             rep.matched -= 1
-            rep.refused += 1
-            rep.note("refused", i, "contour and holes must be [x, y] points")
+            _refuse(rep, i, exc, "contour and holes must be [x, y] points")
             continue
         block = [f"R\t{o}\t{lyr}\t{n}\t{ox}\t{oy}\t{holes}\t{len(main)}\t{len(hole_pts)}"
                  f"\t{base}"]
@@ -561,11 +630,77 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
                 [f"O\t{dump.outline_segments}\t{len(lines)}"] + lines)))
     report["board_outline"] = rep
 
+    # New free tracks and arcs (no net) and free regions (net optional),
+    # after everything that is matched.
+    rep = KindReport()
+    creates = geometry_map.get("create") or []
+    rep.entries = len(creates)
+    for i, e in enumerate(creates):
+        try:
+            kind = str(e.get("kind", "")).lower()
+            layer = str(e["layer"]).strip()
+            assert kind in ("track", "arc", "region") and layer
+            assert not any(c in layer for c in "\t\r\n")
+            # MEASURED: copies on the keep-out layer carry IsKeepout, and a
+            # track created there without it read false, so DRC would treat
+            # it differently. Default to the original's flag.
+            keep = e.get("keepout", _norm_layer(layer) == "keepoutlayer")
+            flag = "1" if keep else "0"
+            if kind == "region":
+                pts = e["contour"]
+                net = str(e.get("net") or "")
+                assert not any(c in net for c in "\t\r\n")
+                xy = [(_mil(p[0]), _mil(p[1])) for p in pts]
+                # A closing vertex equal to the first is dropped; Altium
+                # closes a region's contour itself.
+                if len(xy) > 3 and xy[-1] == xy[0]:
+                    xy.pop()
+                assert len(xy) >= 3
+                tear = "1" if e.get("teardrop") else "0"
+                line = "C\tR\t{}\t{}\t{}\t{}\t{}\t{}".format(
+                    layer, len(xy), tear, flag,
+                    "\t".join(f"{x}\t{y}" for x, y in xy), net)
+                if layer_of(layer) is None:
+                    rep.note("layer_not_in_dump", i, layer)
+                out.setdefault("C", []).append((i, line))
+                rep.matched += 1
+                continue
+            w = _mil(e["width"])
+            g = e["geom"]
+            assert w > 0
+            if kind == "track":
+                assert len(g) == 4
+                line = "C\tT\t{}\t{}\t{}\t{}".format(
+                    layer, w, "\t".join(str(_mil(v)) for v in g), flag)
+            else:
+                assert len(g) == 5 and float(g[2]) > 0
+                _arc_fits(g[0], g[1], g[2])
+                line = (f"C\tA\t{layer}\t{w}\t{_mil(g[0])}\t{_mil(g[1])}\t"
+                        f"{_mil(g[2])}\t{_angle_text(g[3])}\t{_angle_text(g[4])}\t{flag}")
+        except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
+            _refuse(rep, i, exc, "needs kind track|arc, layer, width > 0 and "
+                    "geom [x1,y1,x2,y2] or [cx,cy,r,start,end]; or kind "
+                    "region, layer and contour [[x,y],...] of 3+ points")
+            continue
+        if layer_of(layer) is None:
+            # Created by name in Altium, which knows every layer the board
+            # has; the dump only lists layers with free primitives on them.
+            rep.note("layer_not_in_dump", i, layer)
+        out.setdefault("C", []).append((i, line))
+        rep.matched += 1
+    if creates:
+        report["create"] = rep
+
     ordered = []
-    for kind in "TAVXFRPO":
-        for _o, text in sorted(out[kind], key=lambda t: t[0]):
+    for kind in "TAVXFRPOC":
+        for _o, text in sorted(out.get(kind, []), key=lambda t: t[0]):
             ordered.extend(text.split("\n"))
     summary = {k: v.as_dict() for k, v in report.items()}
+    dels = geometry_map.get("delete") or []
+    if dels:
+        summary["delete"] = {"entries": len(dels), "matched": sum(deleted.values()),
+                             "tracks": deleted["track"], "arcs": deleted["arc"],
+                             "regions": deleted["region"]}
     comps = geometry_map.get("components") or []
     if comps:
         summary["components"] = {

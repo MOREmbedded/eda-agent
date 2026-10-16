@@ -185,6 +185,205 @@ def test_edit_lines_come_in_the_order_the_apply_pass_reads():
                                         "s\t0", "s\t0"]
 
 
+def test_a_delete_is_matched_like_a_move_and_marked():
+    d = _dump(_track_line(4, 57, 10, 0, 0, 50, 0),
+              f"A\t2\t57\t{10 * C}\t{5 * C}\t{5 * C}\t{3 * C}\t0\t90")
+    lines, rep = build_edits({"delete": [
+        {"kind": "track", "layer": "Mechanical1", "width": 10, "key": [50, 0, 0, 0]},
+        {"kind": "arc", "layer": "Mechanical1", "width": 10, "key": [5, 5, 3, 0, 90]},
+        {"kind": "track", "layer": "Mechanical1", "width": 10, "key": [9, 9, 8, 8]},
+    ]}, d)
+    assert lines[0] == f"T\t4\t0\t0\t{50 * C}\t0\t57\t{10 * C}\tDEL"
+    assert lines[1].startswith("A\t2\t") and lines[1].endswith("\tDEL")
+    assert rep["delete"] == {"entries": 3, "matched": 2, "tracks": 1, "arcs": 1,
+                             "regions": 0}
+    assert rep["tracks"]["unmatched"] == 1
+
+
+def test_region_deletes_pair_off_exact_duplicates_and_carry_no_contour():
+    """MEASURED: Teardrops made two identical teardrop regions where two
+    track ends coincide; one delete entry per copy removes both."""
+    dup = f"R\t{{o}}\t1\t4\t{5 * C}\t{6 * C}\t\t\t0"
+    d = _dump(dup.format(o=3), dup.format(o=8),
+              f"R\t9\t1\t4\t{7 * C}\t{7 * C}\t\t\t0")
+    key = {"kind": "region", "layer": "TopLayer", "key": {"n": 4, "first": [5, 6]}}
+    lines, rep = build_edits({"delete": [dict(key), dict(key)]}, d)
+    assert lines == [f"R\t3\t1\t4\t{5 * C}\t{6 * C}\t0\tDEL",
+                     f"R\t8\t1\t4\t{5 * C}\t{6 * C}\t0\tDEL"]
+    assert rep["delete"]["regions"] == 2 and rep["delete"]["matched"] == 2
+    # One entry for two copies is still ambiguous, never a guess.
+    lines, rep = build_edits({"delete": [dict(key)]}, d)
+    assert not lines and rep["regions"]["ambiguous"] == 1
+
+
+def test_one_object_moved_and_deleted_is_neither():
+    d = _dump(_track_line(4, 1, 10, 0, 0, 50, 0))
+    key = {"layer": "TopLayer", "width": 10, "key": [0, 0, 50, 0]}
+    lines, rep = build_edits({"tracks": [dict(key, new=[1, 1, 51, 1])],
+                              "delete": [dict(key, kind="track")]}, d)
+    assert not lines and rep["tracks"]["ambiguous"] == 2
+
+
+def test_creates_come_last_and_bad_ones_are_refused():
+    d = _dump(_track_line(4, 1, 10, 0, 0, 50, 0))
+    lines, rep = build_edits({
+        "tracks": [{"layer": "TopLayer", "width": 10, "key": [0, 0, 50, 0],
+                    "new": [1, 1, 51, 1]}],
+        "create": [{"kind": "track", "layer": "KeepOutLayer", "width": 47.24,
+                    "geom": [0, 0, 10, 0]},
+                   {"kind": "arc", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [5, 5, 2, 0, 180]},
+                   {"kind": "arc", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [5, 5, 0, 0, 180]},
+                   {"kind": "polygon", "layer": "TopLayer", "width": 1, "geom": []}]}, d)
+    assert lines[0].startswith("T\t4\t")
+    # MEASURED: keep-out copies carry IsKeepout; a create there defaults to it.
+    assert lines[1] == f"C\tT\tKeepOutLayer\t{472400}\t0\t0\t{10 * C}\t0\t1"
+    assert lines[2] == (f"C\tA\tMechanical1\t{39400}\t{5 * C}\t{5 * C}\t{2 * C}"
+                        "\t0.0\t180.0\t0")
+    assert rep["create"]["matched"] == 2 and rep["create"]["refused"] == 2
+    lines, _ = build_edits({"create": [{"kind": "track", "layer": "KeepOutLayer",
+                                        "width": 1, "geom": [0, 0, 1, 0],
+                                        "keepout": False}]}, d)
+    assert lines == [f"C\tT\tKeepOutLayer\t{C}\t0\t0\t{C}\t0\t0"]
+
+
+def test_a_created_region_carries_its_net_and_teardrop_flag():
+    """Applying a map dropped a board's teardrops; they are recreated as
+    free regions with a net and Altium's teardrop flag."""
+    lines, rep = build_edits({"create": [
+        {"kind": "region", "layer": "TopLayer", "net": "N1", "teardrop": True,
+         "contour": [[0, 0], [4, 0], [2, 3], [0, 0]]},
+        {"kind": "region", "layer": "BottomLayer", "contour": [[0, 0], [1, 0], [1, 1]]},
+        {"kind": "region", "layer": "TopLayer", "contour": [[0, 0], [1, 0]]},
+        {"kind": "region", "layer": "TopLayer", "net": "A\tB",
+         "contour": [[0, 0], [1, 0], [1, 1]]},
+        {"kind": "region", "layer": "TopLayer", "contour": [[0, 0], [1], [1, 1]]},
+        {"kind": "region", "layer": "TopLayer",
+         "contour": [[0, 0], [_HUGE, 0], [1, 1]]}]}, _dump())
+    # The repeated closing vertex is dropped; the net goes last.
+    assert lines == [
+        f"C\tR\tTopLayer\t3\t1\t0\t0\t0\t{4 * C}\t0\t{2 * C}\t{3 * C}\tN1",
+        f"C\tR\tBottomLayer\t3\t0\t0\t0\t0\t{C}\t0\t{C}\t{C}\t"]
+    assert rep["create"]["matched"] == 2 and rep["create"]["refused"] == 4
+    assert rep["create"]["out_of_range"] == 1
+
+
+def test_the_region_create_flags_binds_and_reads_back_before_it_counts():
+    body = _routine("PCB_ApplyFreePrimitives")
+    reg = body[body.index("If Hdr = 'R' Then"):]
+    assert "PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default)" in reg
+    # A net the board lacks creates nothing, rather than a netless copy.
+    missing = reg.index("If RNet = Nil Then")
+    assert reg.index("Inc(CreateFailed);", missing) < reg.index("PCBObjectFactory")
+    add = reg.index("Board.AddPCBObject(Region);")
+    assert reg.index("Region.UpdateContourFromShape(True);") < add
+    assert reg.index("Region.TearDrop := True;") < add
+    assert reg.index("BindPrimitiveToNet(RNet, Region);") < add
+    for check in ("Region.MainContour.Count", "Region.BoundingRectangle",
+                  "Not Region.TearDrop", "Region.Net.Name <> A4"):
+        assert reg.index(check) > add, check
+    assert "Inc(CreateOff);" in reg
+    raw = PCB.read_text(encoding="ascii")
+    raw = raw[raw.index("Function PCB_ApplyFreePrimitives("):]
+    assert """',"create_readback_off":'""" in raw
+    assert """',"teardrops_created":'""" in raw
+
+
+#: MEASURED: an arc radius of 662,000 mil, a near-straight outline arc,
+#: raised EConvertError "'3249903854' is not a valid integer value" in the
+#: middle of an apply and stopped the script. Altium's coordinates are
+#: 32-bit, so every value is checked before anything is sent.
+_HUGE = 662000
+
+
+def test_values_altium_cannot_hold_are_refused_before_anything_is_sent():
+    d = _dump(_track_line(4, 1, 10, 0, 0, 50, 0), "O\t4",
+              f"A\t2\t57\t{10 * C}\t{5 * C}\t{5 * C}\t{3 * C}\t0\t90",
+              f"V\t0\t{5 * C}\t{5 * C}", f"X\t5\t10\t{1 * C}\t{2 * C}\tM",
+              f"F\t6\t1\t0\t0\t{C}\t{C}")
+    near_straight = [{"kind": 0, "vx": 0, "vy": 0}, {"kind": 0, "vx": 9, "vy": 0},
+                     {"kind": 1, "vx": 9, "vy": 9, "cx": -_HUGE + 9, "cy": 9,
+                      "r": _HUGE, "sa": 0, "ea": 0.001}]
+    lines, rep = build_edits({
+        "tracks": [{"layer": "TopLayer", "width": 10, "key": [0, 0, 50, 0],
+                    "new": [0, 0, 50, 0], "new_width": float("inf")}],
+        "arcs": [{"layer": "Mechanical1", "width": 10, "key": [5, 5, 3, 0, 90],
+                  "new": [5, 5, _HUGE, 0, 90]}],
+        "vias": [{"key": [5, 5], "new": [_HUGE, 0]}],
+        "texts": [{"layer": "TopOverlay", "key": [1, 2, "M"], "new": [0, -_HUGE]}],
+        "fills": [{"layer": "TopLayer", "key": [0, 0, 1, 1], "new": [0, 0, _HUGE, 1]}],
+        "board_outline": near_straight,
+        "create": [{"kind": "arc", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [0, 0, _HUGE, 0, 1]},
+                   # The centre fits and the radius fits; the far side does not.
+                   {"kind": "arc", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [200000, 0, 20000, 0, 1]},
+                   {"kind": "track", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [0, 0, float("nan"), 0]}]}, d)
+    assert lines == []
+    for kind in ("tracks", "arcs", "vias", "texts", "fills", "board_outline"):
+        assert rep[kind]["refused"] == 1, kind
+        assert "outside Altium's coordinate range" in rep[kind]["samples"][0]["refused"]
+    assert rep["create"]["refused"] == 3 and rep["create"]["matched"] == 0
+    # The largest value that fits still goes through.
+    lines, rep = build_edits({"vias": [{"key": [5, 5], "new": [214748, 0]}]}, d)
+    assert lines == [f"V\t0\t{5 * C}\t{5 * C}\t{214748 * C}\t0"]
+
+
+def test_every_polygon_writer_rewrites_the_closing_vertex():
+    """MEASURED: a replaced board outline saved 412 vertices for 411
+    segments, the last still the OLD first vertex, a spike in the shape.
+    A polygon keeps a closing vertex at index PointCount, so every routine
+    that sets PointCount must write it after its last segment."""
+    scripts = PCB.parent
+    writers = 0
+    for name in ("PCB.pas", "PCBGeneric.pas", "Generic.pas", "Library.pas"):
+        text = (scripts / name).read_text(encoding="ascii", errors="replace")
+        for m in re.finditer(r"(\w+(?:\.\w+)?)\.PointCount := ([^;]+);", text):
+            obj, count = m.group(1), m.group(2).strip()
+            body = text[m.end():]
+            body = body[:re.search(r"\n(?:Function|Procedure) ", body).start()]
+            close = body.find(f"ClosePolySegments({obj}, {count});")
+            assert close >= 0, f"{name}: {obj}.PointCount := {count} is never closed"
+            writes = [w.start() for w in re.finditer(
+                re.escape(obj) + r"\.Segments\[[^\]]+\] :=", body)]
+            assert writes and writes[-1] < close, (
+                f"{name}: {obj} writes a segment after it is closed")
+            writers += 1
+    assert writers == 5
+    helper = (scripts / "PCBGeneric.pas").read_text(encoding="ascii")
+    helper = helper[helper.index("Procedure ClosePolySegments("):]
+    helper = helper[:helper.index("End;") + 4]
+    assert "Seg := Poly.Segments[0];" in helper
+    assert "Poly.Segments[N] := Seg;" in helper
+    apply = _routine("PCB_ApplyFreePrimitives")
+    assert "Board.BoardOutline.Segments[N].vx <> Board.BoardOutline.Segments[0].vx" in apply
+
+
+def test_the_apply_pass_deletes_and_creates_with_proven_calls():
+    body = _routine("PCB_ApplyFreePrimitives")
+    dele = body[body.index("If A1 = 'DEL' Then"):]
+    assert dele.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < dele.index(
+        "Board.RemovePCBObject(Prim);")
+    assert body.count("Board.RemovePCBObject(Prim);") == 3
+    region = body[body.index("Else If (KindNo = 6) And (Pos(#9 + 'DEL', Lines[J]) > 0) Then"):]
+    region = region[:region.index("Else If KindNo = 6 Then")]
+    assert region.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < region.index(
+        "Board.RemovePCBObject(Prim);")
+    create = body[body.index("If Copy(Lines[LI], 1, 2) <> 'C' + #9 Then Continue;"):]
+    assert "NewLayer := ResolveLayerId(Board, A1);" in create
+    assert "If NewLayer = eNoLayer Then" in create
+    assert "PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default)" in create
+    assert "PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default)" in create
+    assert create.index("Board.AddPCBObject(Track);") < create.index("PostProcess")
+    assert create.index("Track.IsKeepout := True;") < create.index("Board.AddPCBObject(Track);")
+    assert create.index("Arc.IsKeepout := True;") < create.index("Board.AddPCBObject(Arc);")
+    raw = PCB.read_text(encoding="ascii")
+    raw = raw[raw.index("Function PCB_ApplyFreePrimitives("):]
+    assert """',"deleted":'""" in raw and """',"created":'""" in raw
+
+
 def test_components_are_counted_and_left_to_pcb_move_components():
     _, rep = build_edits({"components": [{"designator": "R1"}]}, _dump())
     assert rep["components"]["applied"] == 0
@@ -200,6 +399,19 @@ def _routine(name: str) -> str:
     end = re.search(r"(?m)^End;", code[start.start():])
     body = code[start.start():start.start() + end.end()]
     return re.sub(r"\{[^}]*\}", "", body)
+
+
+def test_dump_and_apply_walk_every_layer_with_one_layer_set():
+    """MEASURED: 6390 outline primitives on Mechanical17 were missing from
+    the dump; the legacy AllLayers set stops at Mechanical16. The apply pass
+    finds objects by ordinal, so it must walk the same set."""
+    for name in ("PCB_DumpFreePrimitives", "PCB_ApplyFreePrimitives"):
+        body = _routine(name)
+        assert "AddFilter_LayerSet(AllLayers)" not in body, name
+        assert "AddFilter_IPCB_LayerSet(LayerSet.AllLayers)" in body, name
+    generic = (PCB.parent / "PCBGeneric.pas").read_text(encoding="ascii")
+    assert "AddFilter_LayerSet(AllLayers)" not in generic
+    assert "Then Result := LayerDisplayName(Obj.Layer)" in generic
 
 
 def test_the_three_actions_are_dispatched():
@@ -367,6 +579,28 @@ async def test_a_dry_run_matches_and_changes_nothing(tmp_path, monkeypatch):
     raw = Path(params["in_path"]).read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf") and b"T\t0\t" in raw
     assert out["apply"]["applied"] == 1
+
+
+@pytest.mark.asyncio
+async def test_one_value_altium_cannot_hold_stops_the_whole_apply(tmp_path, monkeypatch):
+    # The deletes of an outline whose replacement was refused would leave
+    # the board half changed, so nothing is applied.
+    bridge = _Bridge(tmp_path, f"V\t0\t{5 * C}\t{5 * C}\n"
+                               f"T\t1\t57\t{10 * C}\t0\t0\t{50 * C}\t0\nL\t57\tMechanical1\n")
+    tools = _tools(monkeypatch, bridge)
+    mp = tmp_path / "map.json"
+    mp.write_text(json.dumps({
+        "delete": [{"kind": "track", "layer": "Mechanical1", "width": 10,
+                    "key": [0, 0, 50, 0]}],
+        "create": [{"kind": "arc", "layer": "Mechanical1", "width": 3.94,
+                    "geom": [0, 0, _HUGE, 0, 1]}]}))
+    out = await tools["pcb_apply_geometry_map"](str(mp), board_path="b")
+    assert out["success"] is False and "nothing applied" in out["error"]
+    assert out["out_of_range"] == {"create": 1}
+    assert [c for c, _ in bridge.sent] == ["pcb.dump_free_primitives"]
+    # A dry run still reports the match, the refusal included.
+    out = await tools["pcb_apply_geometry_map"](str(mp), board_path="b", dry_run=True)
+    assert out["match"]["create"]["out_of_range"] == 1 and "error" not in out
 
 
 @pytest.mark.asyncio

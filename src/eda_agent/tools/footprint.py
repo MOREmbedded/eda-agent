@@ -63,20 +63,13 @@ def register_footprint_tools(mcp):
     async def datasheet_fetch(url: str, part_number: str = "") -> dict[str, Any]:
         """Download a datasheet PDF into the workspace and return its path.
 
-        Read the returned ``path`` yourself (the pages with the package
-        drawing and the recommended land pattern); nothing here parses the
-        PDF. The file is kept under ``<workspace>/datasheets``, named by a
-        hash of the URL, with a JSON sidecar recording the URL, part
-        number, SHA-256, size and fetch time, so a second call for the same
-        URL is answered from the cache (``cache: "hit"``) with the same
-        bytes. A cached copy that no longer matches its recorded hash is
-        fetched again.
-
-        Refused, with nothing stored: a URL that is not http or https; a
-        file over 50 MB; a server that does not answer within 60 s; and a
-        reply that is not a PDF (no ``%PDF`` header), which is what a login
-        or cookie page looks like. For those, download the file in a
-        browser and read the local copy.
+        Read the ``path`` yourself; nothing here parses the PDF. Files are
+        cached under ``<workspace>/datasheets`` with a sidecar (URL, part
+        number, SHA-256), so a repeat call is a ``cache: "hit"``; a copy
+        whose hash no longer matches is fetched again. Refused, storing
+        nothing: a non-http(s) URL, over 50 MB, no answer in 60 s, or a
+        reply that is not a PDF (a login page); download those in a
+        browser instead.
 
         Args:
             url: the datasheet's http or https URL, ideally the

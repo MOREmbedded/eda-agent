@@ -180,41 +180,25 @@ def register_meta_tools(mcp):
         with_description: bool = False,
         with_schema: bool = False,
     ) -> dict[str, Any]:
-        """Discover tools by category / maturity / interaction without
+        """Find tools by category, maturity, interaction or text, without
         loading every schema.
-
-        The surface has 350+ tools; loading them all strains a client's
-        context. This meta-tool returns a filtered, classified index so a
-        client can find the right tool first, then rely on its full schema.
 
         Filters (all optional, AND-combined):
             category: core, application, project, library, generic,
                 schematic, pcb, audit, design, simulation, routing, meta,
-                parts (and kicad on the KiCad backend; the EasyEDA tools
-                file under the same subject headings as Altium's, so
-                "pcb" means the same thing on either). "core" holds the
-                EDA-agnostic main flow (review_design, get_board_info,
-                list_components, list_nets, run_drc, run_erc) and is the
-                usual starting point. Call with NO filter to get the live
-                ``categories`` map rather than trusting this list.
-            maturity: how far a tool can be exercised without Altium.
-                ``offline`` needs no Altium at all; ``simulator`` is
-                bridge-backed but every command it sends is implemented
-                by the in-repo Altium simulator; ``live_only`` sends at
-                least one command only real Altium answers. Filter on
-                ``offline`` to find what runs with nothing open.
+                parts (and kicad on the KiCad backend). "core" is the
+                EDA-agnostic main flow and the usual start. No filter
+                returns the live ``categories`` map.
+            maturity: ``offline`` (no Altium), ``simulator`` or
+                ``live_only``.
             interaction: readonly | silent | modal | partial. ``modal``
-                tools pop a blocking Altium dialog; ``partial`` ones leave
-                the job incomplete: plan around both.
-            query: case-insensitive substring over the tool name (and
-                description when ``with_description``).
+                pops a blocking dialog; ``partial`` leaves the job
+                incomplete.
+            query: case-insensitive substring of the name or description.
             with_description: include the one-line summary per tool.
-            with_schema: include each tool's parameters and required
-                list. ESSENTIAL under the minimal toolset: no tool schema
-                is loaded up front there, so calling tool_invoke without
-                this means guessing argument names. Filter first, schemas
-                are dropped past a cap so this cannot flood the very
-                context the minimal toolset exists to protect.
+            with_schema: include parameters and required list; needed
+                before tool_invoke under the minimal toolset. Capped, so
+                filter first.
 
         Returns ``{count, tools:[{name, category, maturity, interaction
         [, description][, parameters, required]}], categories:{cat: n}}``.
@@ -353,38 +337,22 @@ def register_application_tools(mcp):
     async def app_context() -> dict[str, Any]:
         """Where you are, in one call. Run this before anything else.
 
-        THE FOUR FACTS THAT EXPLAIN MOST "WHY DIDN'T THAT WORK". Each has
-        cost a session on its own, and each was individually available
-        and individually unasked for:
+        Reports the facts behind most "why didn't that work": which
+        document is focused and its kind (most tools act on it, and a
+        pcb_ tool aimed at a focused library can act on another board);
+        whether the running script matches the deployed one (a deployed
+        fix does nothing until reloaded); what is unsaved; and whether
+        the bridge answers at all.
 
-        * **Which document is focused, and what kind it is.** Nearly
-          every tool acts on the focused document. A pcb_ tool aimed
-          while a library is focused does not always fail; it can resolve
-          some other open document and report success for work you did
-          not ask for.
-        * **Whether the running script matches the one on disk.**
-          DelphiScript caches compiled units, so a deployed fix does
-          nothing until the script project is reopened. Symptom: a fix
-          that "did not work".
-        * **What is unsaved.** An edit that is real in memory and absent
-          from disk reads as a tool that silently did nothing.
-        * **Whether the bridge is answering at all**, as opposed to
-          Altium being up.
-
-        This composes existing reads rather than adding a bridge call, so
-        it is cheap and cannot disagree with the tools it summarises.
-
-        WHAT IT DOES NOT TELL YOU: which library component is current.
-        That is editor state with no read exposed, and the library
-        authoring tools depend on it. If a lib_add_* call lands somewhere
-        unexpected, set the target explicitly with
-        ``lib_set_current_component`` rather than assuming.
+        It cannot tell which library component is current; if a lib_add_*
+        call lands somewhere unexpected, set it with
+        ``lib_set_current_component``.
 
         Returns:
-            ``{"backend": ..., "bridge_answering": bool,
-            "script_version_match": bool, "active_document": {...},
-            "open_document_count": N, "unsaved": [paths],
-            "warnings": [...], "next_step": ...}``.
+            ``{"backend", "bridge_answering", "script_version_match",
+            "running_script_version", "deployed_script_version",
+            "altium_version", "active_document", "open_document_count",
+            "unsaved": [paths], "warnings", "next_step"}``.
 
             ``warnings`` is empty when nothing needs attention.
             ``next_step`` is the single thing worth doing first, or empty.
@@ -494,26 +462,14 @@ def register_application_tools(mcp):
     async def app_save_all() -> dict[str, Any]:
         """Flush every dirty Altium document to disk.
 
-        Mutation tools (pcb_place_tracks, move_component, modify_objects, ...)
-        now mark documents as modified in-memory only. Changes stay fast
-        because they skip per-operation disk writes. Call save_all at logical
-        checkpoints, after a routing pass, before running DRC, or before
-        closing, to persist everything.
+        Edit tools change documents in memory only; call this at
+        checkpoints (after routing, before DRC, before closing). Detach
+        saves too. A library no tool edited is not written (listed in
+        ``libraries_left_unedited``); hand edits are not tracked, so save
+        those with ``app_save_document``.
 
-        Detach also triggers save_all automatically, so you don't need this
-        as the very last step.
-
-        A LIBRARY NO TOOL EDITED IS NOT WRITTEN. Libraries opened only to
-        read from or copy out of are left untouched and listed in
-        ``libraries_left_unedited``. Edits made by hand in Altium are not
-        tracked, so save those in Altium or with ``app_save_document``.
-
-        CHECK ``still_dirty``, DO NOT ASSUME. Altium refuses to save while
-        a command is active in the editor and asks a human whether to
-        write a copy instead; DoFileSave does not raise when it declines.
-        MEASURED: this returned saved:true while every single save was
-        being refused. It now counts what is still modified afterwards,
-        and ``saved`` is false when anything is. If that happens, run
+        CHECK ``still_dirty``: Altium declines to save, silently, while a
+        command is active in the editor, and ``saved`` is false then. Run
         ``app_exit_active_command`` and retry.
 
         Returns:
@@ -562,26 +518,11 @@ def register_application_tools(mcp):
         """Close a transaction a crashed handler left open in Altium.
 
         THE TOOL FOR "A command is currently active and save cannot be
-        completed at this time". While that state is set, EVERY save is
-        refused and the editor asks whether to write a copy instead.
-
-        IT SURVIVES RESTARTING THE POLLING LOOP, because the state lives
-        in Altium's PCB server rather than in the script, and Escape in
-        the editor does not clear it either. MEASURED on 2026-08-25:
-        saves were being refused on a brand-new library, and the state
-        had been left hours earlier by ``lib_link_3d_model`` faulting
-        between PreProcess and PostProcess on an undeclared identifier.
-        It outlived several restarts.
-
-        Every PreProcess in this bridge is paired, including on its error
-        paths, so this is not routine cleanup: it is recovery from a
-        handler that DIED mid-transaction. AltiumScriptCentral ships the
-        same one-line remedy as ExitActiveCommand.vbs.
-
-        Calling it when nothing is outstanding is harmless.
-
-        It saves nothing by itself. Run ``app_save_all`` afterwards and
-        check ``still_dirty``.
+        completed at this time", when every save is refused. The state
+        lives in Altium, so it survives restarting the polling loop and
+        Escape does not clear it; it is left by a handler that died
+        mid-transaction. Harmless when nothing is open. It saves nothing:
+        run ``app_save_all`` afterwards and check ``still_dirty``.
 
         Returns:
             Dict reporting whether each server accepted the unwind, plus
@@ -744,22 +685,11 @@ def register_application_tools(mcp):
     async def app_detach() -> dict[str, Any]:
         """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
 
-        While the eda-agent MCP server is connected, a keep-alive thread pings
-        Altium every 30 s, which keeps Altium's scripting engine held by the
-        polling loop, Altium's own script-backed UI commands (some ribbon
-        buttons, Parameter Manager actions, etc.) may be unresponsive until the
-        loop is released.
-
-        Call this tool once you've finished your Altium work for the session.
-        It sends application.stop_server, which saves the documents a tool
-        edited or the editor marks modified and leaves every clean document
-        untouched, then exits the DelphiScript loop within ~500 ms. The
-        Python keep-alive stops and Altium becomes fully responsive.
-
-        NOTE: After detach, the Altium script has fully stopped. To run more
-        MCP tools later in the same Altium session the user must re-launch
-        StartMCPServer via File -> Run Script. Don't detach until you're
-        confident you're done.
+        While the loop runs it holds Altium's scripting engine, so some of
+        Altium's own script-backed commands may not respond. This saves
+        edited and modified documents, leaves clean ones alone, and stops
+        the loop. Afterwards the user must run StartMCPServer again (File
+        > Run Script) before any more tools work, so detach only when done.
 
         Returns:
             attached False always; stopped True only when Altium answered
@@ -971,10 +901,8 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new blank document of a given kind and save it to disk.
 
-        Wraps IClient.OpenNewDocument + DoFileSave. The new document is
-        written to `file_path` and, by default, attached to the currently
-        focused project. Use this to create a .PcbDoc before running
-        update_pcb, to spin up a fresh .SchDoc, library, OutJob, etc.
+        Saved to `file_path` and, by default, added to the focused
+        project.
 
         Args:
             kind: Document kind, 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
@@ -986,12 +914,9 @@ def register_application_tools(mcp):
             add_to_project: Attach the new file to the focused project.
                 Default True. Set False to leave it as a free document.
 
-        The new document is focused before this returns, and ``focused``
-        says whether that took: the library and board tools act on the
-        focused document, and a new one left behind the old meant the
-        next call wrote into the old one. A document that could not be
-        saved is an error (a missing folder is named), not a success with
-        ``saved: false``.
+        The new document is focused, and ``focused`` says whether that
+        took, since the next tool acts on the focused one. A save that
+        fails is an error naming the cause.
 
         Returns:
             Dictionary with kind, file_path, saved, focused,
@@ -1131,37 +1056,17 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:
-        """Dispatch a menu command by path. DISPATCH IS NOT EXECUTION.
+        """Dispatch a menu command by path. DISPATCH IS NOT EXECUTION:
+        Altium accepts an unknown or unavailable process in silence, so
+        the reply says ``dispatched`` with ``outcome_verified: false``.
+        Use ``app_click_menu`` when the command must actually run; it
+        clicks the real menu and fails on a path that does not exist.
 
-        This sends the command and cannot tell you it ran. Altium's
-        ``RunProcess`` accepts an unknown process id in silence and
-        reports nothing back, so a typo, a command unavailable in the
-        current editor, and a command that worked are indistinguishable
-        from here. MEASURED 2026-08-17: "Tools|Preferences" returned in
-        0.11s with ``success: true`` and no dialog ever appeared. That is
-        why the reply says ``dispatched``, never ``executed``, and carries
-        ``outcome_verified: false``.
-
-        Use ``app_click_menu`` when you need the command to actually
-        happen. It walks the real menu bar and clicks the item, so it
-        fails loudly on a path that does not exist and reaches the many
-        commands that have no process id at all.
-
-        These paths are mapped to internal processes:
-        - "File|Save All"
-        - "Tools|Design Rule Check"
-        - "Tools|Electrical Rules Check"
-        - "Project|Compile"
-        - "Edit|Select All" / "Edit|Deselect All"
-        - "View|Zoom Fit"
-        - "Tools|Preferences"
-        - "Tools|Extensions and Updates"
-
-        Anything else is REFUSED with UNMAPPED_MENU_PATH. The old
-        fallback guessed a MenuID out of the pipe-separated path and was
-        measured opening nothing while reporting success, so refusing
-        and pointing at ``app_click_menu`` is strictly more useful than
-        a guess that cannot work.
+        Mapped paths: "File|Save All", "Tools|Design Rule Check",
+        "Tools|Electrical Rules Check", "Project|Compile", "Edit|Select
+        All", "Edit|Deselect All", "View|Zoom Fit", "Tools|Preferences",
+        "Tools|Extensions and Updates". Anything else is refused with
+        UNMAPPED_MENU_PATH.
 
         Args:
             menu_path: Menu path using pipe separators (e.g., "File|Save All")

@@ -884,29 +884,20 @@ def register_guidance_tools(mcp):
                          backend: str = "") -> dict[str, Any]:
         """How to do something correctly, and what is genuinely impossible.
 
-        USE THIS BEFORE CONCLUDING A CAPABILITY IS MISSING. The recorded
-        failures are not "could not find the tool name", which
-        ``tool_catalog`` already solves. They are aiming a board tool at
-        a library, and reporting a capability absent when it was
-        present. Both return a confident wrong answer rather than an
-        error.
+        USE THIS BEFORE CONCLUDING A CAPABILITY IS MISSING. The costly
+        mistakes are aiming a board tool at a library and reporting a
+        capability absent when it exists; both give a confident wrong
+        answer, not an error.
 
-        Answers three distinct things, kept apart on purpose: the tool
-        and its prerequisites, the tool you were probably reaching for
-        and why it acts on another document, and the short list of
-        things that are proven impossible with the reason.
+        Answers three things, kept apart: the tool and its
+        prerequisites, the tool you were probably reaching for and why
+        it acts on another document, and what is proven impossible,
+        with the reason. An empty result means only that this guide has
+        nothing on it; fall back to ``tool_catalog``.
 
-        An empty result means this guide has nothing on the subject. It
-        is not evidence that the server cannot do it: fall back to
-        ``tool_catalog``.
-
-        Search here for help when a tool seems missing, when you are not
-        sure which tool to use, when an operation seems not supported,
-        or when a call failed because the wrong document was open.
-        (``tool_catalog`` matches on this description, and searching the
-        obvious word, help, used to return four other tools and not this
-        one. The vocabulary of being stuck has to appear here, not only
-        the vocabulary of the answer.)
+        Ask here for help when a tool seems missing, you are not sure
+        which tool to use, an operation seems not supported, or a call
+        failed because the wrong document was open.
 
         Args:
             task: What you are trying to do, in your own words, e.g.

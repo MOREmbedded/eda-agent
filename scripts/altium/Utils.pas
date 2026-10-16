@@ -1295,6 +1295,29 @@ Begin
     Else Result := 'Unknown';
 End;
 
+{ GetLayerString, plus Mechanical17 and up, which it calls Unknown. The     }
+{ number is taken from the layer's distance to Mechanical17 and kept only    }
+{ when LayerUtils.MechanicalLayer gives the same layer back for it.          }
+Function LayerDisplayName(Layer : TLayer) : String;
+Var
+    Base, Back : TLayer;
+    N : Integer;
+Begin
+    Result := GetLayerString(Layer);
+    If Result <> 'Unknown' Then Exit;
+    Try
+        Base := LayerUtils.MechanicalLayer(17);
+        N := 17 + (Layer - Base);
+        If (N >= 17) And (N <= 1024) Then
+        Begin
+            Back := LayerUtils.MechanicalLayer(N);
+            If Back = Layer Then Result := 'Mechanical' + IntToStr(N);
+        End;
+    Except
+        Result := 'Unknown';
+    End;
+End;
+
 Function ExtractJsonArray(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;

@@ -68,6 +68,7 @@ Begin
     Else If N = 'pin'             Then Result := ePin
     Else If N = 'label'           Then Result := eLabel
     Else If N = 'line'            Then Result := eLine
+    Else If N = 'polyline'        Then Result := ePolyline
     Else If N = 'rectangle'       Then Result := eRectangle
     Else If N = 'sheetsymbol'     Then Result := eSheetSymbol
     Else If N = 'sheetentry'      Then Result := eSheetEntry
@@ -93,7 +94,7 @@ End;
 Function SchObjectTypeNames(Dummy : Integer): String;
 Begin
     Result := 'eNetLabel, ePort, ePowerObject, eSchComponent, eWire, eBus, '
-            + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, '
+            + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, ePolyline, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask';
