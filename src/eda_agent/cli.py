@@ -165,11 +165,54 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
 
     import subprocess
 
-    subprocess.Popen(command, close_fds=True)
+    from .ui import windows
+
+    frames = windows.visible_main_frames(selection.process.pid)
+    launcher = subprocess.Popen(command, close_fds=True)
     print(f"Asked Altium (pid {selection.process.pid}) to run "
           f"StartMCPServer from {project}. Check the status window, or run "
           f"`eda-agent doctor`.")
+    shown = _reshow_hidden_frames(launcher, frames)
+    if shown:
+        print(f"Altium's main window was hidden after the hand-off and has "
+              f"been shown again ({len(shown)} window"
+              f"{'' if len(shown) == 1 else 's'}).")
     return 0
+
+
+#: How long relaunch waits for the second X2.EXE to hand over and exit,
+#: then how long it keeps watching the main window afterwards.
+RELAUNCH_HANDOFF_TIMEOUT_S = 30.0
+RELAUNCH_WATCH_S = 5.0
+
+
+def _reshow_hidden_frames(launcher, frames: list) -> list:
+    """Show again any main frame the -R hand-off left hidden.
+
+    Altium's main window has been found hidden, not minimized, with no
+    taskbar button, after relaunches; only frames that were on screen
+    before the hand-off are touched. Returns the handles shown again.
+    """
+    if not frames:
+        return []
+    from .ui import windows
+    import time
+
+    wait = getattr(launcher, "wait", None)
+    if wait is not None:
+        try:
+            wait(timeout=RELAUNCH_HANDOFF_TIMEOUT_S)
+        except Exception:                         # noqa: BLE001
+            pass
+    shown: list = []
+    deadline = time.monotonic() + RELAUNCH_WATCH_S
+    while True:
+        for hwnd in windows.show_if_hidden(frames):
+            if hwnd not in shown:
+                shown.append(hwnd)
+        if time.monotonic() >= deadline:
+            return shown
+        time.sleep(0.25)
 
 
 # --------------------------------------------------------------------------

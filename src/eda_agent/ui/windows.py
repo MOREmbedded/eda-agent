@@ -239,6 +239,42 @@ def window_title(hwnd) -> str:
         return ""
 
 
+def visible_main_frames(pid: int) -> list:
+    """Handles of a process's main frames that are on screen now.
+
+    The record taken before something that may hide them, so that only
+    a window the user could see is ever shown again. [] when nothing
+    can be read.
+    """
+    if not _AVAILABLE:
+        return []
+    try:
+        return [w.hwnd for w in enumerate_windows(pid=pid)
+                if _is_main_frame(w)]
+    except Exception:                            # noqa: BLE001
+        return []
+
+
+def show_if_hidden(hwnds) -> list:
+    """Show each window that still exists but is no longer visible.
+
+    For handles from ``visible_main_frames``: showing keeps a maximized
+    frame maximized, and a window that has been destroyed is skipped.
+    Returns the handles shown again.
+    """
+    if not _AVAILABLE:
+        return []
+    shown = []
+    for hwnd in hwnds:
+        try:
+            if win32gui.IsWindow(hwnd) and not win32gui.IsWindowVisible(hwnd):
+                win32gui.ShowWindow(hwnd, _SW_SHOW)
+                shown.append(hwnd)
+        except Exception:                        # noqa: BLE001
+            continue
+    return shown
+
+
 def owns_foreground(hwnd) -> bool:
     """Whether hwnd's APPLICATION is the active one.
 

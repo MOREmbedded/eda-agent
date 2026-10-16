@@ -83,3 +83,63 @@ def test_two_altiums_are_not_guessed_between(tmp_path, monkeypatch, capsys):
 def test_a_missing_project_says_to_install_the_scripts(tmp_path, capsys):
     assert cli.cmd_relaunch(prjscr=str(tmp_path / "none.PrjScr")) == 1
     assert "install-scripts" in capsys.readouterr().err
+
+
+def _relaunch_with_frames(tmp_path, monkeypatch, before, hidden):
+    _, project = _one_altium(tmp_path, monkeypatch)
+    import eda_agent.diag.doctor as doctor
+    from eda_agent.ui import windows
+    monkeypatch.setattr(doctor, "_ping_altium", lambda: None)
+    monkeypatch.setattr(cli, "RELAUNCH_WATCH_S", 0.0)
+    waited = []
+
+    class Launcher:
+        def wait(self, timeout=None):
+            waited.append(timeout)
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **k: Launcher())
+    monkeypatch.setattr(windows, "visible_main_frames", lambda pid: list(before))
+    asked = []
+
+    def show_if_hidden(hwnds):
+        asked.append(list(hwnds))
+        return [h for h in hwnds if h in hidden]
+
+    monkeypatch.setattr(windows, "show_if_hidden", show_if_hidden)
+    assert cli.cmd_relaunch(prjscr=str(project)) == 0
+    return waited, asked
+
+
+def test_a_main_window_the_handoff_hid_is_shown_again(tmp_path, monkeypatch,
+                                                      capsys):
+    waited, asked = _relaunch_with_frames(tmp_path, monkeypatch,
+                                          before=[11], hidden=[11])
+    # Checked only once the second X2.EXE has handed over and exited.
+    assert waited == [cli.RELAUNCH_HANDOFF_TIMEOUT_S]
+    assert asked == [[11]]
+    assert "shown again" in capsys.readouterr().out
+
+
+def test_a_window_hidden_before_the_relaunch_is_left_hidden(tmp_path,
+                                                            monkeypatch, capsys):
+    _, asked = _relaunch_with_frames(tmp_path, monkeypatch,
+                                     before=[], hidden=[11])
+    assert asked == []
+    assert "shown again" not in capsys.readouterr().out
+
+
+def test_show_if_hidden_shows_only_live_hidden_windows(monkeypatch):
+    from eda_agent.ui import windows
+    if not windows.available():
+        pytest.skip("pywin32 not importable")
+    state = {1: True, 2: False, 3: None}     # visible, hidden, destroyed
+    shown = []
+    monkeypatch.setattr(windows.win32gui, "IsWindow",
+                        lambda h: state[h] is not None)
+    monkeypatch.setattr(windows.win32gui, "IsWindowVisible",
+                        lambda h: bool(state[h]))
+    monkeypatch.setattr(windows.win32gui, "ShowWindow",
+                        lambda h, cmd: shown.append((h, cmd)))
+    assert windows.show_if_hidden([1, 2, 3]) == [2]
+    assert shown == [(2, 5)]                 # SW_SHOW keeps it maximized
