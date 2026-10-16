@@ -273,7 +273,7 @@ app_ping
 ```
 
 Expect `altium_script_version` = `2026.10.16.16`, `version_match` =
-`true`, and `mcp_server_version` = `0.7.0`.
+`true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
 `altium_script_version` is the Pascal that Altium compiled;
