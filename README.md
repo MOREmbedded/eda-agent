@@ -72,8 +72,8 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - **Sch <-> PCB netlist crossref**: `crossref_net(net_name)` compares the schematic pin list against the PCB pad list for the same net. Catches ECO drift, stale post-fabrication routing, phantom nets from port/sheet-entry rename conflicts. `in_sync` flag + `sch_only` / `pcb_only` diff
 - **SPICE simulation workflow**: `sim_get_readiness` audits every component and partitions into ready / needs-primitive / needs-file. `sim_attach_primitives` sets SpicePrefix + Value on passives. `sim_attach_model` links a vendor `.mdl` / `.ckt`. `sim_run` dispatches the simulator. Built-in guardrail: never fabricate a SPICE model file, fetch the vendor one
 - **Focus-independent PCB access**: every PCB handler falls back to `GetPCBBoardByPath` when `GetCurrentPCBBoard` returns nil (user has a sch tab focused). No more misleading "No PCB document is active" when the PCB is right there
-- **Fast and compile-cached**: persistent polling loop; ~10 ms per call in active mode. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `proj_force_recompile` + `proj_get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
-- **Persistent polling loop**: one script start, then ~10 ms per tool call in active mode
+- **Fast and compile-cached**: the polling loop runs at a 10 ms interval in active mode, which bounds the bridge's own latency rather than describing what a call costs - measure yours with `eda-agent perf`, which joins the two timing logs and separates time spent inside Altium from time spent getting there. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `proj_force_recompile` + `proj_get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
+- **Persistent polling loop**: one script start, then a 10 ms poll interval in active mode (30 ms idle), so the loop is not what a call waits on
 - **Annotation runs silently**: `proj_annotate` designates components without popping the annotate dialog
 - **Drives the GUI where there is no API**: a great deal of Altium exists only as menus and dialogs. `app_click_menu` walks the real menu bar by name (and lists what a menu holds, so paths are discovered rather than guessed); `app_list_open_dialogs` reports what is on screen, what it says and whether Altium is stuck; `app_set_dialog_control` sets checkboxes, fields and grid rows; `app_press_dialog_button` presses one button; `app_drive_dialogs` answers a whole sequence reactively. **None of it uses the bridge**, only Win32 and the accessible layer, so it keeps working while a modal has the scripting engine blocked, which is exactly when you need it. `app_run_ui_command` fires a menu command and answers its dialogs in the same call, because a command that opens a modal blocks the bridge and a second call would never arrive. The driver decides from what is on screen rather than from a script, stops on any dialog it cannot classify, and gates the press that changes the design behind `allow_commit`. Dialog text that Altium paints into handle-less controls is recovered by OCR and labelled as read from pixels, not text
 - **Deferred save for speed**: mutations mark documents as modified in memory; disk writes happen on explicit `app_save_all` (or automatically on `app_detach`). Before this, every edit triggered a full project save, which dominated latency
@@ -264,6 +264,39 @@ In short: the **workspace** is how the two halves of this server reach
 each other and you mostly set it once and forget it; a **profile** is
 what you want the output to look like, and is worth revisiting whenever
 you change who you are working for.
+
+## Measuring performance
+
+Two logs in the workspace time every call, from opposite ends:
+
+- **`activity.log`** is written by the Pascal side around the handler,
+  so it measures work done **inside Altium**.
+- **`bridge_trace.log`** is written by Python, so it measures the
+  **round trip the caller experienced** - per request id, with poll
+  counts, deadline extensions and timeouts.
+
+Every built-in view (the in-Altium Perf tab, the dashboard table, its
+p95 sparkline) reads the first one. `eda-agent perf` joins them on the
+request id, so the gap between the two becomes visible for the first
+time: that gap is the IPC cost plus any time the call spent **queued**,
+since Altium answers one request at a time.
+
+```
+                  p50      p95      max
+  round trip     1777    90043   145529
+  in Altium        31   106469   145485
+  overhead        187     4992     5008
+```
+
+Read it this way: `in Altium` is the handler's own cost - a slow one is
+a slow handler, and batching or caching is the fix. `overhead` is
+everything else, and a large value on a *fast* handler usually means
+the call waited behind a slow one rather than that the IPC is slow.
+The report also counts timeouts, deadline extensions, and any call that
+was blocked by a modal dialog, naming the dialog.
+
+`--json` emits the same data for scripting. Nothing is sent anywhere;
+it reads two local files.
 
 ## EDA backends
 
@@ -613,6 +646,7 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
 | `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, `app_save_all` canary round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
 | `eda-agent eco-execute --confirm [--validate-only] [--allow-confirm-dialogs] [--wait-first N] [--budget N]` | **Experimental, unverified.** Watches for and auto-presses Altium's Engineering Change Order dialog (Validate Changes / Execute Changes / Close), via the existing `app_drive_dialogs` reactive driver. Off unless `--confirm`; does not trigger an ECO itself (trigger separately with `proj_sync_pcb` or Design > Update PCB Document while this runs). See [ECO update](docs/ENGINEERING_TOOLS.md#eco-update-experimental) |
+| `eda-agent perf [--json] [--limit N]` | Where call time actually goes. Joins `bridge_trace.log` (the round trip the caller saw) with `activity.log` (the handler time inside Altium) on the request id, and reports both plus the difference, per command. See [Measuring performance](#measuring-performance) |
 | `eda-agent profile-init <name> [--here]` | Scaffold a new owner profile (naming/rules/fab/footprint conventions). `--here` makes it project-local (`.eda-agent/profile/`, meant to be committed); without it, a centrally-switchable `~/.eda-agent/profiles/<name>/`. See [docs/PROFILES.md](docs/PROFILES.md) |
 | `eda-agent profile-list` | List central profiles and which one is active |
 | `eda-agent profile-use <name>` | Set the centrally active profile |

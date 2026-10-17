@@ -457,3 +457,33 @@ def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
     shutil.copytree(src, dst, dirs_exist_ok=True)
     print(f"Created project from template {template!r} at: {dst}")
     return 0
+
+
+# --------------------------------------------------------------------------
+# perf -- where the time went, from the logs already being written
+# --------------------------------------------------------------------------
+
+def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
+    """Report call timing by joining the workspace's two logs.
+
+    activity.log times the handler inside Altium; bridge_trace.log times
+    the round trip the caller saw. Every existing view reads the first
+    one, so the difference between them -- IPC plus time queued behind
+    another command -- has never been visible.
+    """
+    import json as _json
+
+    from .config import get_config
+    from .diag.perf import format_report, report_from_workspace
+
+    workspace = get_config().workspace_dir
+    report = report_from_workspace(workspace)
+    if as_json:
+        print(_json.dumps(report, indent=2))
+        return 0
+
+    print(format_report(report, limit=limit))
+    if not report["calls"]:
+        print(f"  No calls logged yet in {workspace}.", file=sys.stderr)
+        print("  Run some tools against Altium, then try again.", file=sys.stderr)
+    return 0

@@ -730,11 +730,15 @@ def main() -> int:
     )
 
     # eco-execute -- EXPERIMENTAL, UNVERIFIED: auto-press the ECO dialog
+    # The full story lives in the epilog rather than in `help`: a
+    # paragraph here is reprinted in the top-level command list and
+    # swamps every other entry.
     eco_p = subparsers.add_parser(
         "eco-execute",
-        help=(
-            "EXPERIMENTAL, UNVERIFIED. Watch for Altium's Engineering "
-            "Change Order dialog and press Validate Changes / Execute "
+        help="EXPERIMENTAL. Auto-press Altium's ECO dialog (needs --confirm).",
+        epilog=(
+            "EXPERIMENTAL, UNVERIFIED. Watches for Altium's Engineering "
+            "Change Order dialog and presses Validate Changes / Execute "
             "Changes / Close on it automatically, via app_drive_dialogs' "
             "existing reactive driver. Off unless --confirm is passed. "
             "This automates the one step eda-agent's own guidance and "
@@ -769,6 +773,16 @@ def main() -> int:
         "--budget", type=float, default=300.0,
         help="Seconds before giving up on a wedged dialog sequence (default 300).",
     )
+
+    # perf -- where the time went, from logs already on disk
+    perf_p = subparsers.add_parser(
+        "perf",
+        help="Report where call time goes, from the workspace's own logs.",
+    )
+    perf_p.add_argument("--json", action="store_true", dest="json_out",
+                        help="Emit machine-readable JSON instead of the table.")
+    perf_p.add_argument("--limit", type=int, default=15,
+                        help="How many commands to list (default 15).")
 
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
@@ -826,9 +840,9 @@ def main() -> int:
     # dashboard -- local web UI for the MCP bridge
     dash_p = subparsers.add_parser(
         "dashboard",
-        help=(
-            "Launch the local web dashboard. Open http://127.0.0.1:8766 "
-            "to see live MCP activity, performance, and health. The "
+        help="Launch the local web dashboard (http://127.0.0.1:8766).",
+        epilog=(
+            "Shows live MCP activity, performance and health. The "
             "in-Altium status form has an 'Open Dashboard' button that "
             "auto-launches this server's URL via a workspace sentinel."
         ),
@@ -840,18 +854,18 @@ def main() -> int:
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
         "stop-dashboard",
-        help=("Stop the dashboard process (reads workspace/dashboard.pid). "
-              "Use this when the dashboard was launched detached by the "
-              "Altium script and you want to kill it without rebooting."),
+        help="Stop the dashboard process (reads workspace/dashboard.pid).",
+        epilog=("Use this when the dashboard was launched detached by the "
+                "Altium script and you want to kill it without rebooting."),
     )
 
     # vote -- pairwise-preference vote UI in the browser
     vote_p = subparsers.add_parser(
         "vote",
-        help=(
-            "Launch the pairwise layout-preference vote UI in your "
-            "browser. Generates two layouts of the same plan; you click "
-            "the better one. Builds training data for the quality model."
+        help="Launch the pairwise layout-preference vote UI in a browser.",
+        epilog=(
+            "Generates two layouts of the same plan; you click the "
+            "better one. Builds training data for the quality model."
         ),
     )
     vote_p.add_argument("--plan", required=True, type=Path,
@@ -868,11 +882,11 @@ def main() -> int:
     # reader can't. Disabled unless --offline / EDA_AGENT_HEADLESS_REVIEW=1.
     review_p = subparsers.add_parser(
         "review",
-        help=(
-            "Offline FALLBACK design review of a .SchDoc/.PrjPcb -- parses "
-            "the file directly (no running Altium, no license) for the "
-            "component-level subset only (missing MPN / datasheet, "
-            "placeholder values, designator collisions). NOT the preferred "
+        help="Offline fallback design review of a .SchDoc/.PrjPcb (needs --offline).",
+        epilog=(
+            "Parses the file directly (no running Altium, no license) for "
+            "the component-level subset only: missing MPN / datasheet, "
+            "placeholder values, designator collisions. NOT the preferred "
             "path -- prefer the live tools when Altium is available. Opt-in: "
             "requires --offline (or EDA_AGENT_HEADLESS_REVIEW=1)."
         ),
@@ -1086,6 +1100,8 @@ def main() -> int:
             budget=args.budget,
         )
 
+    if args.command == "perf":
+        return cli.cmd_perf(as_json=args.json_out, limit=args.limit)
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":
