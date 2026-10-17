@@ -20,6 +20,8 @@ import os
 import time
 from pathlib import Path
 
+from .atomicfile import replace_with_retry
+
 logger = logging.getLogger("eda_agent.housekeeping")
 
 #: A log past this size is renamed to ``<name>.1`` (replacing the previous
@@ -64,8 +66,8 @@ def rotate_log(path: Path, max_bytes: int = LOG_MAX_BYTES,
             # another server rotated it while the tail was read
             tmp.unlink()
             return False
-        os.replace(path, path.with_name(path.name + ".1"))
-        os.replace(tmp, path)
+        replace_with_retry(path, path.with_name(path.name + ".1"))
+        replace_with_retry(tmp, path)
         return True
     except OSError:
         try:
