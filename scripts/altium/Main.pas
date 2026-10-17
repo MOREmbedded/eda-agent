@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.16';
+    SCRIPT_VERSION = '2026.10.17.5';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -154,12 +154,6 @@ Var
       library, and the name is compared against this recorded string
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
-
-    { The symbol Lib_Redisplay switched away from, and its library's path, }
-    { held for the call that switches back. Only ever assigned back, never }
-    { read from, for the reason given above; cleared on a reopen.          }
-    RedisplayLibComponent : ISch_Component;
-    RedisplayLibPath : String;
 
     { Re-entry guard for LookupLibComponent's last-resort reopen. A
       reopen re-reads the document and the retry looks the name up

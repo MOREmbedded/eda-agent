@@ -94,6 +94,16 @@ def test_the_advertised_list_matches_what_resolves():
                   src, re.DOTALL)
     assert m, "SchObjectTypeNames is gone"
     advertised = set(re.findall(r"(e[A-Z][A-Za-z]+)", m.group(1)))
+    # Symbol graphics are advertised by the name that reaches them
+    # (sch_polygon), since ePolygon spells the board's pour; map each one
+    # through the resolver to the constant it returns.
+    body = re.search(r"Function ObjectTypeFromString\(.*?\).*?\n(.*?)\nEnd;",
+                     src, re.DOTALL).group(1)
+    by_name = dict(re.findall(r"N = '(\w+)'\s+Then Result := (e\w+)", body))
+    for spelled in re.findall(r"\b(sch_\w+)", m.group(1)):
+        assert spelled.replace("_", "") in by_name, (
+            f"{spelled} is advertised but does not resolve")
+        advertised.add(by_name[spelled.replace("_", "")])
     resolvable = _resolvable_types()
 
     missing = sorted(resolvable - advertised)

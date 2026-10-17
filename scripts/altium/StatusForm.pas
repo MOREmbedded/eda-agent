@@ -1557,8 +1557,6 @@ Begin
     { stopped the loop on "Undeclared identifier". Start with none held.   }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
-    RedisplayLibComponent := Nil;
-    RedisplayLibPath := '';
 
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';

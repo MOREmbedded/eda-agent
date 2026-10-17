@@ -246,7 +246,9 @@ def register_generic_tools(mcp):
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
                 "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
                 "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry",
-                "eNoERC", "eJunction"
+                "eNoERC", "eJunction"; symbol graphics as "sch_polygon",
+                "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
+                (plain "polygon" and "arc" are the board's)
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eConnectionObject" (the ratsnest: one line per unrouted
@@ -268,7 +270,8 @@ def register_generic_tools(mcp):
                 "Net,Layer,HoleSize,Size" for vias;
                 "Designator,Comment,Pattern,Rotation,X,Y" for
                 components; "Text,Height,StrokeWidth,IsDesignator" for
-                texts. An unknown PCB property is refused with the valid
+                texts, and "MirrorFlag" (settable with obj_modify; the text
+                is kept where it is). An unknown PCB property is refused with the valid
                 list. Lengths are decimal mils.
 
                 A board type returns EVERY primitive of that type;

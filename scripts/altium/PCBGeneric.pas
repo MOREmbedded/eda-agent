@@ -341,6 +341,10 @@ Begin
         Begin
             If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.UseTTFonts); End;
         End
+        Else If PropName = 'MirrorFlag' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.MirrorFlag); End;
+        End
         { WRITABLE AND UNREADABLE IS THE SAME BUG IN THE OTHER DIRECTION.
           These three were added to the writer and not to this reader, so
           a caller could set a pour option and had no way to confirm it,
@@ -480,6 +484,29 @@ Begin
     Txt.BeginModify;
     If Height Then Txt.Size := Coord Else Txt.Width := Coord;
     Txt.EndModify;
+    Txt.GraphicallyInvalidate;
+    If Owner <> Nil Then Owner.EndModify;
+End;
+
+{ Mirror or un-mirror a text WHERE IT STANDS. Altium flips a text about its }
+{ anchor, so the text would jump by its own width; it is moved back by the  }
+{ shift of its bounding box, which holds at any rotation.                   }
+Procedure SetTextMirrorInPlace(Txt : IPCB_Text; Mirror : Boolean);
+Var
+    Owner : IPCB_Component;
+    Before, After : TCoordRect;
+Begin
+    If Txt.MirrorFlag = Mirror Then Exit;
+    Owner := Nil;
+    If Txt.InComponent Then Owner := Txt.Component;
+    If Owner <> Nil Then Owner.BeginModify;
+    Before := Txt.BoundingRectangle;
+    Txt.BeginModify;
+    Txt.MirrorFlag := Mirror;
+    Txt.EndModify;
+    After := Txt.BoundingRectangle;
+    If (After.Left <> Before.Left) Or (After.Bottom <> Before.Bottom) Then
+        Txt.MoveByXY(Before.Left - After.Left, Before.Bottom - After.Bottom);
     Txt.GraphicallyInvalidate;
     If Owner <> Nil Then Owner.EndModify;
 End;
@@ -662,6 +689,18 @@ Begin
         Begin
             If Oid = eTextObject Then Begin Txt := Obj; Txt.Text := Value; End
             Else Matched := False;
+        End
+        Else If PropName = 'MirrorFlag' Then
+        Begin
+            If Oid <> eTextObject Then
+                Matched := False
+            Else If (LowerCase(Value) <> 'true') And (LowerCase(Value) <> 'false') Then
+                Refused := True
+            Else
+            Begin
+                Txt := Obj;
+                SetTextMirrorInPlace(Txt, LowerCase(Value) = 'true');
+            End;
         End
         { A pad's Name is its designator, written the way the footprint    }
         { tools write it. An empty name would leave a pad no pin can match }
@@ -911,7 +950,8 @@ Begin
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
         (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
-        (PropName = 'IsComment') Or (PropName = 'UseTTFonts');
+        (PropName = 'IsComment') Or (PropName = 'UseTTFonts') Or
+        (PropName = 'MirrorFlag');
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -960,7 +1000,7 @@ Begin
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
         + 'StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component, '
         + 'InPolygon, IsKeepout, TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
-        + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts';
+        + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts, MirrorFlag';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

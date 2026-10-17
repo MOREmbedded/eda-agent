@@ -161,6 +161,49 @@ Begin
     End;
 End;
 
+{ Add a new primitive to a library symbol where the editor will draw it.    }
+{                                                                            }
+{ A primitive added with Component.AddSchObject to the symbol on screen is  }
+{ in the data but not in the editor's view: not drawn, not selectable, not  }
+{ found by an iterator over the library, until something rebuilds the view }
+{ (switching symbols, or reopening). The symbol on screen takes new objects }
+{ through the LIBRARY, as Altium's own Import Pins example does; a symbol   }
+{ that is not shown still takes them through the component. Returns True   }
+{ when the library route was used.                                          }
+{                                                                            }
+{ MEASURED (AD 26.11): the library files the object on the part on screen,  }
+{ overwriting OwnerPartId, so a part-2 polygon and a shared (0) power pin   }
+{ both landed on part 1. The owner set by the caller is put back after.     }
+Function AddLibSymbolPrim(SchLib : ISch_Lib; Component : ISch_Component;
+    Obj : ISch_GraphicalObject) : Boolean;
+Var
+    Shown : ISch_Component;
+    OwnerPart, OwnerMode : Integer;
+Begin
+    Result := False;
+    Shown := Nil;
+    Try Shown := SchLib.CurrentSchComponent; Except Shown := Nil; End;
+    If (Shown <> Nil) And (Shown.I_ObjectAddress = Component.I_ObjectAddress) Then
+    Begin
+        OwnerPart := Obj.OwnerPartId;
+        OwnerMode := Obj.OwnerPartDisplayMode;
+        SchLib.RegisterSchObjectInContainer(Obj);
+        If (Obj.OwnerPartId <> OwnerPart) Or (Obj.OwnerPartDisplayMode <> OwnerMode) Then
+        Begin
+            SchBeginModify(Obj);
+            Obj.OwnerPartId := OwnerPart;
+            Obj.OwnerPartDisplayMode := OwnerMode;
+            SchEndModify(Obj);
+        End;
+        Result := True;
+    End
+    Else
+    Begin
+        Component.AddSchObject(Obj);
+        SchRegisterObject(Component, Obj);
+    End;
+End;
+
 { Mark the focused SchLib doc dirty without an immediate full-file save.    }
 { DoFileSave on a multi-MB SchLib costs hundreds of milliseconds to seconds }
 { per call, so doing it from every singular mutation (lib_add_pin,          }
@@ -386,8 +429,6 @@ Begin
     { component that no longer exists.                                    }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
-    RedisplayLibComponent := Nil;
-    RedisplayLibPath := '';
 
     ResetParameters;
     AddStringParameter('ObjectKind', 'Document');
@@ -1076,101 +1117,11 @@ Begin
         '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
 End;
 
-{..............................................................................}
-{ Lib_Redisplay - make the SchLib editor draw what was just written.          }
-{                                                                             }
-{ MEASURED (AD 26.11, 2026-10-16): a polygon added to the symbol on screen    }
-{ was not drawn, and a new symbol's shapes stayed off screen because the      }
-{ editor kept showing the previous symbol; GraphicallyInvalidate repaints     }
-{ what is shown, so neither helped. Switching to another symbol and back      }
-{ drew both, but only as TWO commands: the editor follows a change of         }
-{ current symbol while it processes its messages, between commands.          }
-{ phase=away switches to another symbol and holds the current one; phase=back }
-{ switches back to it. With no other symbol walkable, nothing is switched.    }
-{..............................................................................}
-
-Function Lib_Redisplay(Params : String; RequestId : String) : String;
-Var
-    SchLib : ISch_Lib;
-    Cur, Other, LibComp : ISch_Component;
-    Iter : ISch_Iterator;
-    Phase, CurName, LibPath : String;
-Begin
-    Phase := LowerCase(ExtractJsonValue(Params, 'phase'));
-    SchLib := Nil;
-    If SchServer <> Nil Then SchLib := SchServer.GetCurrentSchDocument;
-    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
-        Exit;
-    End;
-    LibPath := '';
-    Try LibPath := SchLib.DocumentName; Except LibPath := ''; End;
-
-    If Phase = 'back' Then
-    Begin
-        If (RedisplayLibComponent = Nil) Or (UpperCase(RedisplayLibPath) <> UpperCase(LibPath)) Then
-        Begin
-            RedisplayLibComponent := Nil;
-            RedisplayLibPath := '';
-            Result := BuildSuccessResponse(RequestId, '{"switched":false}');
-            Exit;
-        End;
-        Try SchLib.CurrentSchComponent := RedisplayLibComponent; Except End;
-        RedisplayLibComponent := Nil;
-        RedisplayLibPath := '';
-        Try Application.ProcessMessages; Except End;
-        Try SchLib.GraphicallyInvalidate; Except End;
-        Result := BuildSuccessResponse(RequestId, '{"switched":true}');
-        Exit;
-    End;
-
-    Cur := Nil;
-    Try Cur := SchLib.CurrentSchComponent; Except Cur := Nil; End;
-    If Cur = Nil Then
-    Begin
-        Result := BuildSuccessResponse(RequestId, '{"switched":false}');
-        Exit;
-    End;
-    CurName := '';
-    Try CurName := Cur.LibReference; Except CurName := ''; End;
-    Other := Nil;
-    Iter := SchLib.SchLibIterator_Create;
-    If Iter <> Nil Then
-    Begin
-        Try
-            Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
-            LibComp := Iter.FirstSchObject;
-            While LibComp <> Nil Do
-            Begin
-                If LibComp.LibReference <> CurName Then
-                Begin
-                    Other := LibComp;
-                    Break;
-                End;
-                LibComp := Iter.NextSchObject;
-            End;
-        Finally
-            SchLib.SchIterator_Destroy(Iter);
-        End;
-    End;
-    If Other = Nil Then
-    Begin
-        Result := BuildSuccessResponse(RequestId, '{"switched":false}');
-        Exit;
-    End;
-    RedisplayLibComponent := Cur;
-    RedisplayLibPath := LibPath;
-    Try SchLib.CurrentSchComponent := Other; Except End;
-    Try Application.ProcessMessages; Except End;
-    Result := BuildSuccessResponse(RequestId, '{"switched":true}');
-End;
-
 Function Lib_AddPin(Params : String; RequestId : String) : String;
 Var
     Designator, Name, ElecType : String;
     X, Y, Length, Rotation : Integer;
-    Hidden : Boolean;
+    Hidden, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Pin : ISch_Pin;
@@ -1218,12 +1169,13 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPart(Pin, Component);
-        Component.AddSchObject(Pin);
-        SchRegisterObject(Component, Pin);
+        ViaLib := AddLibSymbolPrim(SchLib, Component, Pin);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"' + EscapeJsonString(Designator) + '"}');
+        Try SchLib.GraphicallyInvalidate; Except End;
+        Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"'
+            + EscapeJsonString(Designator) + '","shown":' + BoolToJsonStr(ViaLib) + '}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pin');
@@ -1237,6 +1189,7 @@ Var
     Component : ISch_Component;
     Rect : ISch_Rectangle;
     Loc : TLocation;
+    ViaLib : Boolean;
 Begin
     X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
@@ -1298,13 +1251,13 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPartFrom(Rect, Component, ExtractJsonValue(Params, 'owner_part_id'));
-        Component.AddSchObject(Rect);
-        SchRegisterObject(Component, Rect);
+        ViaLib := AddLibSymbolPrim(SchLib, Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
         Try SchLib.GraphicallyInvalidate; Except End;
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"shown":' + BoolToJsonStr(ViaLib) + '}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create rectangle');
@@ -1317,6 +1270,7 @@ Var
     Component : ISch_Component;
     Line : ISch_Line;
     Loc : TLocation;
+    ViaLib : Boolean;
 Begin
     X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
@@ -1360,16 +1314,13 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPart(Line, Component);
-        Component.AddSchObject(Line);
-        SchRegisterObject(Component, Line);
+        ViaLib := AddLibSymbolPrim(SchLib, Component, Line);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
-        { Force the lib editor to redraw -- without this, primitives are    }
-        { committed but not visible until the user closes and reopens the   }
-        { symbol. Same fix applied to other lib_add_symbol_* helpers.       }
         Try SchLib.GraphicallyInvalidate; Except End;
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"shown":' + BoolToJsonStr(ViaLib) + '}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create line');
@@ -6174,6 +6125,7 @@ Var
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Arc : ISch_Arc;
+    ViaLib : Boolean;
 Begin
     XCenter := StrToIntDef(ExtractJsonValue(Params, 'x_center'), 0);
     YCenter := StrToIntDef(ExtractJsonValue(Params, 'y_center'), 0);
@@ -6209,12 +6161,13 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPart(Arc, Component);
-        Component.AddSchObject(Arc);
-        SchRegisterObject(Component, Arc);
+        ViaLib := AddLibSymbolPrim(SchLib, Component, Arc);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        Try SchLib.GraphicallyInvalidate; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"shown":' + BoolToJsonStr(ViaLib) + '}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc');
@@ -6233,6 +6186,7 @@ Var
     Polygon : ISch_Polygon;
     Remaining : String;
     CommaPos, X, Y, I : Integer;
+    ViaLib : Boolean;
     { Parallel TStringLists of stringified coords. Fixed-size local arrays }
     { of any type corrupt the return slot, see                              }
     { [[delphiscript_fixed_string_array_bug]] - originally documented for  }
@@ -6323,13 +6277,14 @@ Begin
 
             SchServer.ProcessControl.PreProcess(SchLib, '');
             SetOwnerPartFrom(Polygon, Component, OwnerStr);
-            Component.AddSchObject(Polygon);
-            SchRegisterObject(Component, Polygon);
+            ViaLib := AddLibSymbolPrim(SchLib, Component, Polygon);
             SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
             MarkLibDirty(SchLib);
+            Try SchLib.GraphicallyInvalidate; Except End;
             Result := BuildSuccessResponse(RequestId,
-                '{"success":true,"vertices":' + IntToStr(XValues.Count) + '}');
+                '{"success":true,"vertices":' + IntToStr(XValues.Count)
+                + ',"shown":' + BoolToJsonStr(ViaLib) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create polygon');
@@ -6793,12 +6748,13 @@ Var
     Designator, Name, ElecType, HiddenStr, OwnerStr : String;
     OuterStr, InnerStr, ShowNameStr, ShowDesigStr : String;
     X, Y, Length, Rotation, OwnerPartId : Integer;
-    Hidden, OwnerExplicit : Boolean;
+    Hidden, OwnerExplicit, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Pin : ISch_Pin;
     Loc : TLocation;
 Begin
+    ViaLib := False;
     PinsStr := ExtractJsonValue(Params, 'pins');
     If PinsStr = '' Then
     Begin
@@ -6905,8 +6861,7 @@ Begin
             Else
                 SetOwnerPart(Pin, Component);
 
-            Component.AddSchObject(Pin);
-            SchRegisterObject(Component, Pin);
+            ViaLib := AddLibSymbolPrim(SchLib, Component, Pin);
             Inc(Added);
         End;
     Finally
@@ -6914,10 +6869,11 @@ Begin
     End;
 
     MarkLibDirty(SchLib);
+    Try SchLib.GraphicallyInvalidate; Except End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount) + '}');
+        + ',"total":' + IntToStr(OpCount) + ',"shown":' + BoolToJsonStr(ViaLib) + '}');
 End;
 
 {..............................................................................}
@@ -6944,13 +6900,14 @@ Var
     OpCount, Added, Failed : Integer;
     Content, OwnerStr, FontName, BoldStr, ItalicStr : String;
     X, Y, Rotation, FontSize, OwnerPartId : Integer;
-    OwnerExplicit, Bold, Italic : Boolean;
+    OwnerExplicit, Bold, Italic, ViaLib : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Lbl : ISch_Label;
     Loc : TLocation;
     FontMgr : ISch_FontManager;
 Begin
+    ViaLib := False;
     TextsStr := ExtractJsonValue(Params, 'texts');
     If TextsStr = '' Then
     Begin
@@ -7046,8 +7003,7 @@ Begin
             Else
                 SetOwnerPart(Lbl, Component);
 
-            Component.AddSchObject(Lbl);
-            SchRegisterObject(Component, Lbl);
+            ViaLib := AddLibSymbolPrim(SchLib, Component, Lbl);
             Inc(Added);
         End;
     Finally
@@ -7055,10 +7011,11 @@ Begin
     End;
 
     MarkLibDirty(SchLib);
+    Try SchLib.GraphicallyInvalidate; Except End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount) + '}');
+        + ',"total":' + IntToStr(OpCount) + ',"shown":' + BoolToJsonStr(ViaLib) + '}');
 End;
 
 { Batch line authoring: same shape as Lib_AddPins. Receives a `lines` array }
@@ -7074,7 +7031,9 @@ Var
     Component : ISch_Component;
     Line : ISch_Line;
     Loc : TLocation;
+    ViaLib : Boolean;
 Begin
+    ViaLib := False;
     LinesStr := ExtractJsonValue(Params, 'lines');
     If LinesStr = '' Then
     Begin
@@ -7135,8 +7094,7 @@ Begin
             Line.LineWidth := Width;
 
             SetOwnerPartFrom(Line, Component, GetBatchField(Op, 'owner_part_id'));
-            Component.AddSchObject(Line);
-            SchRegisterObject(Component, Line);
+            ViaLib := AddLibSymbolPrim(SchLib, Component, Line);
             Inc(Added);
         End;
     Finally
@@ -7144,10 +7102,11 @@ Begin
     End;
 
     MarkLibDirty(SchLib);
+    Try SchLib.GraphicallyInvalidate; Except End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount) + '}');
+        + ',"total":' + IntToStr(OpCount) + ',"shown":' + BoolToJsonStr(ViaLib) + '}');
 End;
 
 {..............................................................................}
@@ -16333,7 +16292,6 @@ Begin
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
-        'redisplay':             Result := Lib_Redisplay(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);

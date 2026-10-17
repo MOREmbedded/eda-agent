@@ -87,7 +87,16 @@ Begin
     Else If N = 'probe'           Then Result := eProbe
     Else If N = 'harnessconnector' Then Result := eHarnessConnector
     Else If N = 'crosssheetconnector' Then Result := eCrossSheetConnector
-    Else If N = 'compilemask'     Then Result := eCompileMask;
+    Else If N = 'compilemask'     Then Result := eCompileMask
+    { Symbol graphics. The PCB resolver owns "polygon" and "arc" (a pour
+      and a copper arc), and this resolver runs first whatever document is
+      in front, so the schematic ones carry a sch_ prefix rather than
+      taking those words from the board. }
+    Else If N = 'schpolygon'      Then Result := ePolygon
+    Else If N = 'scharc'          Then Result := eArc
+    Else If N = 'schellipticalarc' Then Result := eEllipticalArc
+    Else If N = 'schellipse'      Then Result := eEllipse
+    Else If N = 'schbezier'       Then Result := eBezier;
 End;
 
 { What the refusal should have said. }
@@ -97,7 +106,8 @@ Begin
             + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, ePolyline, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
-            + 'eCrossSheetConnector, eCompileMask';
+            + 'eCrossSheetConnector, eCompileMask, sch_polygon, sch_arc, '
+            + 'sch_elliptical_arc, sch_ellipse, sch_bezier';
 End;
 
 { The refusal itself, in one place.                                          }
@@ -6498,6 +6508,11 @@ Begin
     Else If Id = eHarnessConnector Then Result := 'harness_connector'
     Else If Id = eCrossSheetConnector Then Result := 'cross_sheet_connector'
     Else If Id = eCompileMask Then Result := 'compile_mask'
+    Else If Id = ePolygon Then Result := 'sch_polygon'
+    Else If Id = eArc Then Result := 'sch_arc'
+    Else If Id = eEllipticalArc Then Result := 'sch_elliptical_arc'
+    Else If Id = eEllipse Then Result := 'sch_ellipse'
+    Else If Id = eBezier Then Result := 'sch_bezier'
     Else Result := 'type_' + IntToStr(Id);
 End;
 
