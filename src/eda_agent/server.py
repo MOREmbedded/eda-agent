@@ -256,9 +256,51 @@ def build_server_instructions(
 
 SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET, ACTIVE_BACKEND)
 
+
+def compact_text_blocks(blocks):
+    """Re-serialize JSON text blocks without the indentation.
+
+    FastMCP writes a returned dict as JSON with indent=2, which is 40-65%
+    more characters than the same JSON compact. A client that reads the
+    text copy (rather than structuredContent) sends all of that padding to
+    the model on every call. Only text that parses as JSON is rewritten, so
+    the data is unchanged; anything else passes through as it was.
+    """
+    import json
+    out = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text[:1] in ("{", "["):
+            try:
+                compact = json.dumps(json.loads(text), separators=(",", ":"),
+                                     ensure_ascii=False)
+            except ValueError:
+                compact = None
+            if compact is not None and len(compact) < len(text):
+                block = block.model_copy(update={"text": compact})
+        out.append(block)
+    return out
+
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text.
+
+    structuredContent is left exactly as FastMCP builds it: Claude Code
+    reads that copy, and only the text copy carried the indentation.
+    """
+
+    async def call_tool(self, name, arguments):
+        result = await super().call_tool(name, arguments)
+        if isinstance(result, tuple):
+            return (compact_text_blocks(result[0]), result[1])
+        if isinstance(result, list):
+            return compact_text_blocks(result)
+        return result
+
+
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.
-mcp = FastMCP(
+mcp = _CompactFastMCP(
     f"eda-agent-{ACTIVE_BACKEND.strip().lower() or DEFAULT_BACKEND}",
     instructions=SERVER_INSTRUCTIONS,
 )
@@ -394,6 +436,12 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     config = get_config()
     config.ensure_workspace()
     logger.info("Workspace directory: %s", config.workspace_dir)
+
+    # Trim the logs, old checkpoints and old screenshots. Off the main
+    # thread so a large prune never delays the MCP handshake.
+    from . import housekeeping
+    threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
+                     name="workspace-housekeeping", daemon=True).start()
 
     # Record this server and warn (stderr only) about others on the same
     # workspace. Never refuses and never stops anything: several sessions
