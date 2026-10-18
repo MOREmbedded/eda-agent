@@ -3,8 +3,18 @@
 """Distributor and aggregator catalogues.
 
 Five sources of part IDENTITY: manufacturer part number, datasheet,
-lifecycle and stock. None of them yields a symbol or a footprint, which
-is why they all declare ``kind = "catalogue"`` and no importable format.
+and -- from four of the five -- lifecycle, stock and the parametric
+map. None of them yields a symbol or a footprint, which is why they all
+declare ``kind = "catalogue"`` and no importable format.
+
+WHO ANSWERS WHAT, since this used to be stated once for all five and
+was wrong for four of them. Digi-Key, Mouser and Nexar return lifecycle,
+stock and parameters; element14 returns stock and parameters but no
+lifecycle; TME's Search.json returns neither, because stock lives behind
+Products/GetPrices, which this client does not call. Each class says so
+itself, and the shared key names are listed in
+``_distributor.EXTRA_KEYS``. An absent figure is an ABSENT KEY, never a
+zero: "no stock figure" and "none in stock" must not read alike.
 
 They matter because of what this project measures everything against.
 ``lib_audit_footprint_vs_datasheet`` and the design checks all want a
@@ -125,8 +135,47 @@ class DigiKeyProvider(DistributorProvider):
                     ("DetailedDescription",)),
                 datasheet=first_string(product, ("DatasheetUrl",),
                                        ("PrimaryDatasheet",)),
+                extra=self._catalogue_extra(product),
             ))
         return hits
+
+    @staticmethod
+    def _catalogue_extra(product: dict) -> dict[str, Any]:
+        """Lifecycle, stock and parameters, in the shared EXTRA_KEYS shape.
+
+        The class description has always promised "lifecycle and live
+        stock" and the parser asked for neither, so the promise was
+        wrong rather than the parser. Reading them is the fix that keeps
+        the description true.
+
+        Field names are Digi-Key's v4 product shape; like every other
+        response mapping in this module they are UNVERIFIED against a
+        credentialed reply (``verified_live = False``), so each one is
+        read defensively and an absent field omits its key instead of
+        publishing a zero that would read as "none in stock".
+        """
+        extra: dict[str, Any] = {}
+        status = first_string(product, ("ProductStatus", "Status"),
+                              ("ProductStatus",))
+        if status:
+            extra["lifecycle"] = status
+        quantity = product.get("QuantityAvailable")
+        # bool is an int in Python, so a True here would publish as one
+        # unit in stock rather than as the shape error it is.
+        if isinstance(quantity, (int, float)) and not isinstance(
+                quantity, bool):
+            extra["total_available"] = int(quantity)
+        parameters = {}
+        for row in product.get("Parameters") or []:
+            if not isinstance(row, dict):
+                continue
+            key = first_string(row, ("ParameterText",), ("Parameter",))
+            value = first_string(row, ("ValueText",), ("Value",))
+            if key:
+                parameters[key] = value
+        if parameters:
+            extra["parameters"] = parameters
+        return extra
 
 
 class MouserProvider(DistributorProvider):
@@ -175,8 +224,48 @@ class MouserProvider(DistributorProvider):
                 manufacturer=first_string(part, ("Manufacturer",)),
                 description=first_string(part, ("Description",)),
                 datasheet=first_string(part, ("DataSheetUrl",)),
+                extra=self._catalogue_extra(part),
             ))
         return hits
+
+    @staticmethod
+    def _catalogue_extra(part: dict) -> dict[str, Any]:
+        """Lifecycle, stock and attributes, in the shared EXTRA_KEYS shape.
+
+        Same correction as Digi-Key's: the class description promised
+        "lifecycle and stock" that the parser never read. Mouser states
+        availability as free text ("1,234 In Stock"), so the digits are
+        lifted out and the original string is kept alongside rather than
+        thrown away -- a figure that cannot be parsed must not silently
+        become a number that can.
+
+        UNVERIFIED against a credentialed reply, like the rest of this
+        module (``verified_live = False``).
+        """
+        extra: dict[str, Any] = {}
+        lifecycle = first_string(part, ("LifecycleStatus",),
+                                 ("ProductStatus",))
+        if lifecycle:
+            extra["lifecycle"] = lifecycle
+        availability = first_string(part, ("AvailabilityInStock",),
+                                    ("Availability",))
+        if availability:
+            extra["availability_text"] = availability
+            digits = "".join(c for c in availability.split(" ")[0]
+                             if c.isdigit())
+            if digits:
+                extra["total_available"] = int(digits)
+        parameters = {}
+        for row in part.get("ProductAttributes") or []:
+            if not isinstance(row, dict):
+                continue
+            key = first_string(row, ("AttributeName",))
+            value = first_string(row, ("AttributeValue",))
+            if key:
+                parameters[key] = value
+        if parameters:
+            extra["parameters"] = parameters
+        return extra
 
 
 class NexarProvider(DistributorProvider):
@@ -249,19 +338,29 @@ class NexarProvider(DistributorProvider):
 
     @staticmethod
     def _pricing_extra(part: dict) -> dict[str, Any]:
-        """Pricing, stock, lifecycle and similar-part data for PartHit.extra.
+        """Pricing, stock, lifecycle and parametric data for PartHit.extra.
 
         Read defensively (every field optional, no raw indexing) for the
         same reason first_string walks several paths: a renamed or
         absent field here must shrink this one hit's extra data, not
         raise and lose the hit.
+
+        The query has always asked for the full ``specs`` list and this
+        method has always built the map, but until now it published only
+        ``lifecyclestatus`` out of it and dropped the rest on the floor.
+        The whole map is what a parametric comparison runs on, so it is
+        published as ``parameters`` (see _distributor.EXTRA_KEYS).
         """
         specs = {}
+        labels = {}
         for s in part.get("specs") or []:
             attr = s.get("attribute") or {}
             key = attr.get("shortname") or attr.get("name")
             if key:
                 specs[key] = s.get("displayValue", "")
+                label = attr.get("name") or attr.get("shortname")
+                if label and label != key:
+                    labels[key] = label
         sellers = part.get("sellers") or []
         best_price = None
         for seller in sellers:
@@ -274,16 +373,27 @@ class NexarProvider(DistributorProvider):
                         best_price = {"price": price.get("price"),
                                       "currency": price.get("currency"),
                                       "seller": company}
+        # Kept as a pair rather than flattened to "<manufacturer> <mpn>":
+        # a replacement search has to look up the MPN on its own, and no
+        # split of that string is safe when either half can contain a
+        # space. The cap of 5 went with it, since Nexar bounds the list
+        # itself and truncating a candidate set silently is how the best
+        # answer goes missing.
         similar = [
-            f"{(x.get('manufacturer') or {}).get('name', '')} {x.get('mpn', '')}".strip()
-            for x in (part.get("similarParts") or [])[:5]
+            {"mpn": str(x.get("mpn") or "").strip(),
+             "manufacturer": str(
+                 (x.get("manufacturer") or {}).get("name") or "").strip()}
+            for x in (part.get("similarParts") or [])
         ]
+        similar = [x for x in similar if x["mpn"] or x["manufacturer"]]
         return {
             "total_available": part.get("totalAvail"),
             "median_price_1000": part.get("medianPrice1000"),
             "best_unit_price": best_price,
             "lifecycle": specs.get("lifecyclestatus", ""),
             "authorized_sellers": len(sellers),
+            "parameters": specs,
+            "parameter_names": labels,
             "similar_parts": similar,
         }
 
@@ -373,8 +483,39 @@ class Element14Provider(DistributorProvider):
                     product, ("displayName",),
                     ("productOverview", "description")),
                 datasheet=datasheet,
+                extra=self._catalogue_extra(product),
             ))
         return hits
+
+    @staticmethod
+    def _catalogue_extra(product: dict) -> dict[str, Any]:
+        """Stock and attributes, in the shared EXTRA_KEYS shape.
+
+        The search already asks for ``responseGroup=large``, which is
+        what carries ``stock`` and ``attributes``; both arrived and were
+        dropped, leaving the class description's "and stock" unbacked.
+
+        No lifecycle: element14 publishes a product status in its own
+        vocabulary that does not map onto the others cleanly, so it is
+        left out rather than guessed at. UNVERIFIED, as everywhere here.
+        """
+        extra: dict[str, Any] = {}
+        stock = product.get("stock")
+        level = stock.get("level") if isinstance(stock, dict) else None
+        if isinstance(level, (int, float)) and not isinstance(level, bool):
+            extra["total_available"] = int(level)
+        parameters = {}
+        for row in product.get("attributes") or []:
+            if not isinstance(row, dict):
+                continue
+            key = first_string(row, ("attributeLabel",))
+            value = first_string(row, ("attributeValue",))
+            unit = first_string(row, ("attributeUnit",))
+            if key:
+                parameters[key] = f"{value} {unit}".strip() if unit else value
+        if parameters:
+            extra["parameters"] = parameters
+        return extra
 
 
 class TmeProvider(DistributorProvider):
@@ -392,8 +533,10 @@ class TmeProvider(DistributorProvider):
 
     name = "tme"
     description = (
-        "TME catalogue: MPN, datasheet and stock, strongest on European "
-        "availability. Identity only, no symbol or footprint. Needs "
+        "TME catalogue: MPN and product page, strongest on European "
+        "availability. Identity only, no symbol or footprint, and NO "
+        "stock figure: Search.json does not return one, it comes from "
+        "Products/GetPrices, which this client does not call. Needs "
         "TME_TOKEN and TME_SECRET; requests are HMAC signed.")
     env_vars = ("TME_TOKEN", "TME_SECRET")
 

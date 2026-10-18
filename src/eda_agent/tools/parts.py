@@ -251,6 +251,169 @@ def register_parts_tools(mcp):
         return result
 
     @mcp.tool()
+    async def part_find_replacements(
+        mpn: str,
+        candidates: str = "",
+        max_candidates: int = 8,
+        rel_tol: float = 0.0,
+    ) -> dict[str, Any]:
+        """Judge replacements for a part on parameters, lifecycle and stock.
+
+        For each candidate: every parameter compared against the
+        original's with the direction a designer would apply (more
+        voltage rating is safe, more ESR is not, a narrower temperature
+        range is not, a different dielectric is not), plus its lifecycle
+        and what is in stock. Candidates are ordered by fewest blocking
+        findings; that is a mechanical order, not a ranking.
+
+        THIS DOES NOT APPROVE A SUBSTITUTION, and no wording in the
+        result will suggest it does. Four things are NOT checked and
+        every result repeats them:
+
+        * product-change notices and errata -- no distributor API serves
+          them, and a PCN is the commonest reason a part that passes
+          everything here is still wrong this month;
+        * pad geometry -- the package NAME is compared, never the land
+          pattern, so run ``lib_audit_footprint_vs_datasheet`` against
+          the candidate's datasheet before trusting the footprint;
+        * anything the catalogues do not publish, which routinely
+          includes the parameter that actually decides the swap;
+        * an attribute the candidate simply does not state, which is
+          reported as unreviewed and never as a pass.
+
+        Candidate sources: the MPNs you pass, else the aggregator's own
+        "similar parts" for the original. Each one costs a full search
+        across every enabled provider, so ``max_candidates`` caps it.
+
+        Args:
+            mpn: the part being replaced.
+            candidates: comma-separated MPNs to judge. Empty uses the
+                similar parts the original's catalogue entry names.
+            max_candidates: cap on how many are searched and judged.
+            rel_tol: relative tolerance for "the same value", e.g. 0.05
+                to accept 5%. The default 0 means exactly equal, which
+                is what a capacitance or an output voltage should be.
+
+        Returns:
+            ``{ok, original, candidates: [...], not_checked, note}``,
+            or ``{ok: False, reason}`` when the original itself cannot
+            be found or publishes no parameters to compare against.
+        """
+        from eda_agent.engineering.replacements import rank_replacements
+        from eda_agent.libimport.providers import normalise_mpn, search_all
+
+        wanted = str(mpn or "").strip()
+        if not wanted:
+            return {"ok": False, "reason": "no part number given"}
+
+        def collect(query: str) -> dict[str, Any]:
+            """Everything the catalogues say about one MPN, merged.
+
+            Merged rather than per-source because the sources are
+            complementary, not competing: Nexar may carry the
+            parametric map while Digi-Key carries the stock. First
+            non-empty value wins, with the richest parametric map
+            preferred, and ``sources`` records who answered so a
+            surprising figure can be traced back.
+            """
+            found = search_all(query, 10)
+            target = normalise_mpn(query)
+            matches = [h for h in found.get("hits") or []
+                       if normalise_mpn(h.get("mpn", "")) == target]
+            if not matches:
+                return {}
+            matches.sort(key=lambda h: -len(
+                (h.get("extra") or {}).get("parameters") or {}))
+            merged: dict[str, Any] = {"sources": [], "providers_status":
+                                      found.get("providers", {})}
+            for hit in matches:
+                extra = hit.get("extra") or {}
+                merged["sources"].append(hit.get("provider", ""))
+                for key, value in (("mpn", hit.get("mpn")),
+                                   ("manufacturer", hit.get("manufacturer")),
+                                   ("datasheet", hit.get("datasheet")),
+                                   ("provider", hit.get("provider")),
+                                   ("parameters", extra.get("parameters")),
+                                   ("parameter_names",
+                                    extra.get("parameter_names")),
+                                   ("lifecycle", extra.get("lifecycle")),
+                                   ("similar_parts",
+                                    extra.get("similar_parts"))):
+                    if value not in (None, "", {}, []) and not merged.get(key):
+                        merged[key] = value
+
+            # Stock is merged by MAXIMUM, not by first-wins. The figures
+            # mean different things per source -- Nexar's is an aggregate
+            # across distributors, Digi-Key's is Digi-Key's own shelf --
+            # so summing them would double-count, and taking whichever
+            # source happened to sort first would let a zero from one
+            # distributor hide five thousand at another. The largest
+            # credible figure answers the question actually being asked,
+            # which is whether the part can be bought.
+            #
+            # A zero is a figure and is kept; "no source said" stays
+            # absent, because _stock_note reads those two differently.
+            stocks = [h.get("extra", {}).get("total_available")
+                      for h in matches]
+            stocks = [s for s in stocks
+                      if isinstance(s, (int, float))
+                      and not isinstance(s, bool)]
+            if stocks:
+                merged["total_available"] = max(stocks)
+            return merged
+
+        original = collect(wanted)
+        if not original:
+            return {"ok": False, "reason":
+                    f"no catalogue returned {wanted!r}. That is not "
+                    f"evidence the part does not exist: check "
+                    f"part_search for which providers could answer."}
+        if not original.get("parameters"):
+            return {"ok": False, "reason":
+                    f"{wanted!r} was found but no source published any "
+                    f"parameters for it, so there is nothing to compare a "
+                    f"replacement against. Digi-Key, Mouser, Nexar and "
+                    f"element14 all publish them when credentialed; check "
+                    f"part_search for which of them answered.",
+                    "sources": original.get("sources", [])}
+
+        names = [c.strip() for c in str(candidates or "").split(",")
+                 if c.strip()]
+        used_similar = False
+        if not names:
+            used_similar = True
+            names = [s.get("mpn", "") for s in
+                     original.get("similar_parts") or [] if s.get("mpn")]
+        if not names:
+            return {"ok": False, "reason":
+                    f"no candidates to judge: none were given and no "
+                    f"source named a similar part for {wanted!r}. Pass "
+                    f"candidates='MPN1,MPN2'."}
+
+        judged = []
+        skipped = []
+        for name in names[:max(1, int(max_candidates))]:
+            data = collect(name)
+            if data:
+                judged.append(data)
+            else:
+                # A candidate nobody carries is worth naming: it is a
+                # lead that went nowhere, not a part that failed.
+                skipped.append(name)
+
+        result = rank_replacements(original, judged, rel_tol=float(rel_tol))
+        result["ok"] = True
+        result["candidates_requested"] = names
+        if skipped:
+            result["not_found"] = skipped
+        if used_similar:
+            result["note"] += (
+                " Candidates came from the aggregator's own 'similar "
+                "parts' list, which is a catalogue's idea of similar, "
+                "not an engineering judgement.")
+        return result
+
+    @mcp.tool()
     async def part_parse_lcsc_label(payload: str) -> dict[str, Any]:
         """Decode the QR payload printed on an LCSC reel or bag label.
 

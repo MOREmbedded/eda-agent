@@ -45,12 +45,36 @@ from eda_agent.libimport.providers.base import (
     ProviderUnavailable,
 )
 
-__all__ = ["DistributorProvider"]
+__all__ = ["DistributorProvider", "EXTRA_KEYS"]
 
 #: Network timeout. A part search is interactive, so a source that has
 #: not answered by now should be reported as slow rather than block the
 #: other providers in the fan-out.
 _TIMEOUT = 20
+
+#: The keys that mean the same thing in every provider's
+#: ``PartHit.extra``. Not the whole of it -- a provider may add its own
+#: besides these, as Nexar does with pricing and Mouser with the
+#: availability string it was given -- but a provider answering one of
+#: THESE questions must spell it this way.
+#: Shared across providers ON PURPOSE: ``part_find_replacements`` reads
+#: candidates from whichever source answered, and a per-provider spelling
+#: of "how many are in stock" would push that translation into every
+#: consumer. A provider that cannot answer one of these OMITS it rather
+#: than inventing a zero, because "no stock figure" and "none in stock"
+#: are different answers and only one of them should stop a design.
+#:
+#:   parameters       {attribute key: displayed value} - the parametric
+#:                    map a replacement is judged on
+#:   parameter_names  {attribute key: human label}, for reporting
+#:   lifecycle        free text, as the source words it ("Active",
+#:                    "Not Recommended for New Designs", ...)
+#:   total_available  int, units in stock across the offers seen
+#:   similar_parts    [{"mpn": ..., "manufacturer": ...}], the source's
+#:                    own suggestions, kept structured so the two halves
+#:                    can be searched separately
+EXTRA_KEYS = ("parameters", "parameter_names", "lifecycle",
+              "total_available", "similar_parts")
 
 #: Substrings that mark an error payload returned under HTTP 200.
 #: Mouser does exactly this: an invalid API key comes back as 200 with

@@ -56,6 +56,29 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### Finding a replacement part
+
+- `part_find_replacements`: judges candidate substitutes on
+  parameters, lifecycle and stock. Every attribute carries a direction,
+  because the direction is the whole safety argument: more voltage
+  rating is safe, more ESR is not, a narrower temperature range is not,
+  a different dielectric is not. Values parse into base SI with their
+  unit, so `100 nF` and `0.1 uF` compare equal while `16 V` and `16 A`
+  are refused rather than compared, and attribute names are matched
+  across catalogues so Nexar's `voltagerating_dc` meets Digi-Key's
+  `Voltage - Rated`.
+
+  It does not say two parts are equivalent. It reports evidence per
+  attribute and names what it did not check: **product-change notices
+  and errata** (no distributor API serves them), **pad geometry** (the
+  package name is compared, never the land pattern - that is
+  `lib_audit_footprint_vs_datasheet`'s job), anything the catalogues do
+  not publish, and any attribute the candidate does not state. An
+  attribute with no rule is reported as unreviewed, never as a pass,
+  and there is no default direction: defaulting to "equal" would block
+  harmless differences and defaulting to "at least" would approve
+  dangerous ones.
+
 #### Fab output verification, and finding where time goes
 
 - `pcb_check_fab_output`: reads an exported Gerber/Excellon package back
@@ -125,6 +148,26 @@ companies without re-stating their conventions on every call. See
 
 ### Fixed
 
+- **Four of the five distributor providers described data their parsers
+  never read.** Digi-Key's, Mouser's and element14's class descriptions
+  promised lifecycle or stock and none of the three requested any
+  field; TME's promised stock that `Search.json` does not return at
+  all. The three that can answer now do (lifecycle, stock and the full
+  parametric map, in one shared key shape), TME's description says
+  plainly that it cannot, and a guard test fails any description that
+  gets ahead of its parser again. An absent figure is an absent key
+  rather than a zero, because "no stock figure" and "none in stock"
+  must not read alike.
+- **Nexar's parametric map was built and then thrown away.** The query
+  always asked for every `spec`, and the parser always assembled them,
+  but only `lifecyclestatus` was published. The whole map is what a
+  parametric comparison runs on, so dropping it made the richest source
+  the least useful one.
+- **Nexar's similar parts were flattened and truncated.** They were
+  joined into `"<manufacturer> <mpn>"` strings, which cannot be split
+  back apart when either half contains a space, and capped at five,
+  which silently truncates the candidate set a replacement search runs
+  on. Both halves are kept separate now, and all of them.
 - The README claimed "~10 ms per call in active mode". That is the
   poll interval, not a measured round trip, and the Pascal side notes
   the timer floor is really about 16 ms. Both occurrences now say what

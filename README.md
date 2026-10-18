@@ -434,6 +434,21 @@ part's detail from a provider you name. **No provider is enabled by
 default**, and there is no fallback order, so a result always names its
 source.
 
+`part_find_replacements` judges substitutes for a part you already
+have. Every parameter is compared with the direction a designer would
+apply - more voltage rating is safe, more ESR is not, a narrower
+temperature range is not, a different dielectric is not - alongside
+lifecycle and what is in stock.
+
+It will not tell you two parts are equivalent, and that is deliberate.
+It reports evidence per attribute and names four things it did **not**
+check: product-change notices and errata (no distributor API serves
+them), pad geometry (the package *name* is compared, never the land
+pattern - use `lib_audit_footprint_vs_datasheet` for that), anything
+the catalogues do not publish, and any attribute the candidate simply
+does not state. An attribute nobody checked is reported as unchecked,
+never as a pass.
+
 Two tools sit alongside them: `part_parse_lcsc_label` decodes the QR
 payload on an LCSC reel or bag into part number, MPN and quantity, and
 `part_cache_datasheet` keeps a datasheet PDF on disk with its URL,

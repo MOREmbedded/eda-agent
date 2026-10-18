@@ -363,7 +363,14 @@ def test_nexar_search_surfaces_pricing_stock_and_lifecycle(monkeypatch):
             "medianPrice1000": {"quantity": 1000, "convertedPrice": 0.08},
             "sellers": [{"company": {"name": "Mouser"}, "offers": [
                 {"inventoryLevel": 500, "prices": [{"quantity": 1, "price": 0.5, "currency": "USD"}]}]}],
-            "specs": [{"attribute": {"shortname": "lifecyclestatus"}, "displayValue": "Active"}],
+            "specs": [
+                {"attribute": {"shortname": "lifecyclestatus",
+                               "name": "Lifecycle Status"},
+                 "displayValue": "Active"},
+                {"attribute": {"shortname": "supplyvoltage",
+                               "name": "Supply Voltage"},
+                 "displayValue": "4.5 V ~ 16 V"},
+            ],
             "similarParts": [{"mpn": "NE555D", "manufacturer": {"name": "TI"}}],
         }}]}},
     })
@@ -376,8 +383,47 @@ def test_nexar_search_surfaces_pricing_stock_and_lifecycle(monkeypatch):
     assert extra["best_unit_price"] == {"price": 0.5, "currency": "USD", "seller": "Mouser"}
     assert extra["lifecycle"] == "Active"
     assert extra["authorized_sellers"] == 1
-    assert extra["similar_parts"] == ["TI NE555D"]
+    assert extra["similar_parts"] == [{"mpn": "NE555D", "manufacturer": "TI"}]
     assert hits[0].to_dict()["extra"] == extra
+
+
+def test_nexar_publishes_the_whole_parametric_map_not_just_lifecycle(monkeypatch):
+    """The query has always asked for every spec and the parser has
+    always built the map; only lifecyclestatus was published and the
+    rest was dropped. That map IS the input to a parametric comparison,
+    so losing it made the richest source the least useful one."""
+    extra = NexarProvider._pricing_extra({
+        "specs": [
+            {"attribute": {"shortname": "lifecyclestatus",
+                           "name": "Lifecycle Status"},
+             "displayValue": "Active"},
+            {"attribute": {"shortname": "capacitance",
+                           "name": "Capacitance"}, "displayValue": "100 nF"},
+            {"attribute": {"shortname": "tolerance"}, "displayValue": "10%"},
+        ],
+    })
+    assert extra["parameters"] == {"lifecyclestatus": "Active",
+                                   "capacitance": "100 nF",
+                                   "tolerance": "10%"}
+    # The human label is kept beside the key, not instead of it: the key
+    # is what two parts are compared on, the label is what a report says.
+    assert extra["parameter_names"] == {"lifecyclestatus": "Lifecycle Status",
+                                        "capacitance": "Capacitance"}
+    assert extra["lifecycle"] == "Active"
+
+
+def test_nexar_keeps_every_similar_part_and_keeps_the_two_halves_apart():
+    """Flattening to "<manufacturer> <mpn>" cannot be undone: either half
+    may contain a space, so no split of the string is safe. The cap of
+    five went with it -- truncating a candidate set in silence is how the
+    best replacement goes missing."""
+    extra = NexarProvider._pricing_extra({"similarParts": [
+        {"mpn": f"PART-{i}", "manufacturer": {"name": "Texas Instruments"}}
+        for i in range(9)
+    ]})
+    assert len(extra["similar_parts"]) == 9
+    assert extra["similar_parts"][0] == {"mpn": "PART-0",
+                                         "manufacturer": "Texas Instruments"}
 
 
 def test_nexar_pricing_extra_degrades_rather_than_raises_on_missing_fields():
@@ -387,7 +433,7 @@ def test_nexar_pricing_extra_degrades_rather_than_raises_on_missing_fields():
     assert extra == {
         "total_available": None, "median_price_1000": None,
         "best_unit_price": None, "lifecycle": "", "authorized_sellers": 0,
-        "similar_parts": [],
+        "parameters": {}, "parameter_names": {}, "similar_parts": [],
     }
 
 
@@ -432,3 +478,99 @@ def test_the_base_refuses_to_be_used_directly():
 
     with pytest.raises(NotImplementedError):
         Incomplete().search("x")
+
+
+# ---- lifecycle / stock / parameters across the other sources -----------
+#
+# Each class description used to promise "lifecycle and stock" and three
+# of the four parsers asked for neither, so the promise was the thing
+# that was wrong. These cover the parsers that now back it, and the
+# guard at the bottom keeps a description from drifting ahead of its
+# parser again.
+
+def test_digikey_lifts_lifecycle_stock_and_parameters():
+    extra = DigiKeyProvider._catalogue_extra({
+        "ProductStatus": {"Id": 0, "Status": "Active"},
+        "QuantityAvailable": 42000,
+        "Parameters": [
+            {"ParameterText": "Capacitance", "ValueText": "100 nF"},
+            {"ParameterText": "Tolerance", "ValueText": "10%"},
+        ],
+    })
+    assert extra == {"lifecycle": "Active", "total_available": 42000,
+                     "parameters": {"Capacitance": "100 nF",
+                                    "Tolerance": "10%"}}
+
+
+def test_mouser_parses_its_free_text_availability_and_keeps_the_original():
+    """Mouser states stock as prose. The digits are lifted so a number
+    exists to compare, and the words are kept so a figure that did not
+    parse cleanly can still be read by a human."""
+    extra = MouserProvider._catalogue_extra({
+        "LifecycleStatus": "Not Recommended for New Designs",
+        "Availability": "1,234 In Stock",
+        "ProductAttributes": [
+            {"AttributeName": "Voltage Rating", "AttributeValue": "50 V"},
+        ],
+    })
+    assert extra["lifecycle"] == "Not Recommended for New Designs"
+    assert extra["total_available"] == 1234
+    assert extra["availability_text"] == "1,234 In Stock"
+    assert extra["parameters"] == {"Voltage Rating": "50 V"}
+
+
+def test_element14_lifts_stock_level_and_units_onto_its_attributes():
+    extra = Element14Provider._catalogue_extra({
+        "stock": {"level": 7},
+        "attributes": [
+            {"attributeLabel": "Capacitance", "attributeValue": "100",
+             "attributeUnit": "nF"},
+            {"attributeLabel": "Dielectric", "attributeValue": "X7R"},
+        ],
+    })
+    assert extra["total_available"] == 7
+    assert extra["parameters"] == {"Capacitance": "100 nF",
+                                   "Dielectric": "X7R"}
+    # No lifecycle: element14's status vocabulary does not map onto the
+    # others, so it is left out rather than guessed at.
+    assert "lifecycle" not in extra
+
+
+@pytest.mark.parametrize("cls,parser", [
+    (DigiKeyProvider, "_catalogue_extra"),
+    (MouserProvider, "_catalogue_extra"),
+    (Element14Provider, "_catalogue_extra"),
+])
+def test_a_missing_figure_is_an_absent_key_not_a_zero(cls, parser):
+    """"No stock figure" and "none in stock" are different answers, and
+    only one of them should stop a design. A parser that defaulted to 0
+    would make the first unreadable."""
+    extra = getattr(cls, parser)({})
+    assert extra == {}
+    assert "total_available" not in extra
+
+
+def test_no_provider_description_promises_data_its_parser_never_reads():
+    """The defect this section came out of: four of five descriptions
+    advertised lifecycle or stock, and only Nexar's parser asked for
+    any. A description is the only thing a caller reads before choosing
+    a source, so it drifting ahead of the parser is not cosmetic."""
+    import inspect
+
+    offenders = []
+    for cls in ALL_DISTRIBUTORS:
+        source = inspect.getsource(cls)
+        description = cls.description.lower()
+        # "NO stock" / "does not" are how a class states an absence; the
+        # check is for an unbacked PROMISE, not for the word appearing.
+        promises_stock = ("stock" in description
+                          and "no stock" not in description)
+        promises_lifecycle = ("lifecycle" in description
+                              and "no lifecycle" not in description)
+        if promises_stock and "total_available" not in source:
+            offenders.append(f"{cls.name}: description says stock, parser "
+                             f"never sets total_available")
+        if promises_lifecycle and '"lifecycle"' not in source:
+            offenders.append(f"{cls.name}: description says lifecycle, "
+                             f"parser never sets lifecycle")
+    assert not offenders, "\n  ".join([""] + offenders)

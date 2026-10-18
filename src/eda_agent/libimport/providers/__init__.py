@@ -59,6 +59,7 @@ __all__ = [
     "ProviderUnavailable",
     "available_providers",
     "get_provider",
+    "normalise_mpn",
     "search_all",
 ]
 
@@ -190,7 +191,7 @@ def _describe(hit: PartHit, provider: Any) -> dict[str, Any]:
     return out
 
 
-def _normalise_mpn(mpn: str) -> str:
+def normalise_mpn(mpn: str) -> str:
     """Fold ONLY the cosmetic differences in how sources spell an MPN.
 
     Case, spaces and punctuation carry no meaning, so they are dropped
@@ -207,6 +208,13 @@ def _normalise_mpn(mpn: str) -> str:
     return "".join(c for c in str(mpn).lower() if c.isalnum())
 
 
+#: The original spelling, kept because this module used it internally
+#: before anything outside needed it. part_find_replacements does, and
+#: it depends on the wildcard refusal above, so the function is public
+#: now and the underscore name is an alias rather than a second rule.
+_normalise_mpn = normalise_mpn
+
+
 def _correlate(hits: list[PartHit]) -> list[dict[str, Any]]:
     """Which providers carry each part, with no source preferred.
 
@@ -217,7 +225,7 @@ def _correlate(hits: list[PartHit]) -> list[dict[str, Any]]:
     """
     groups: dict[str, dict[str, Any]] = {}
     for hit in hits:
-        key = _normalise_mpn(hit.mpn) or hit.part_id.lower()
+        key = normalise_mpn(hit.mpn) or hit.part_id.lower()
         entry = groups.setdefault(key, {"mpn": hit.mpn, "providers": []})
         entry["providers"].append({
             "provider": hit.provider,
