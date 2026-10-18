@@ -248,7 +248,9 @@ def register_generic_tools(mcp):
                 "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry",
                 "eNoERC", "eJunction"; symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
-                (plain "polygon" and "arc" are the board's)
+                (plain "polygon" and "arc" are the board's), the bare
+                "ellipse" and "elliptical_arc", and "eDesignator" and
+                "eRoundRectangle"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eConnectionObject" (the ratsnest: one line per unrouted
@@ -1729,15 +1731,19 @@ def register_generic_tools(mcp):
     async def obj_set_grid(
         snap_grid: int = 0,
         visible_grid: int = 0,
+        snap_grid_on: Optional[bool] = None,
+        visible_grid_on: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Set the snap grid and/or visible grid size for the active schematic.
+        """Set the snap grid and/or visible grid for the active schematic.
 
         Args:
             snap_grid: Snap grid size in mils (0 = don't change)
             visible_grid: Visible grid size in mils (0 = don't change)
+            snap_grid_on: Switch the snap grid on or off (None = don't change)
+            visible_grid_on: Switch the visible grid on or off (None = don't change)
 
         Returns:
-            Dictionary with the resulting grid sizes
+            Dictionary with the resulting grid sizes and on/off state
         """
         bridge = get_bridge()
         params: dict[str, str] = {}
@@ -1745,6 +1751,10 @@ def register_generic_tools(mcp):
             params["snap_grid"] = str(snap_grid)
         if visible_grid > 0:
             params["visible_grid"] = str(visible_grid)
+        if snap_grid_on is not None:
+            params["snap_grid_on"] = "true" if snap_grid_on else "false"
+        if visible_grid_on is not None:
+            params["visible_grid_on"] = "true" if visible_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
         return result
 

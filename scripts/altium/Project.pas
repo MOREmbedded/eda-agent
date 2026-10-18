@@ -25,7 +25,8 @@ Begin
     If Focused = Nil Then Exit;
     FocusedPath := '';
     Try FocusedPath := Focused.DM_ProjectFullPath; Except End;
-    Result := UpperCase(FocusedPath) = UpperCase(ProjectPath);
+    Result := UpperCase(CanonicalPathValue('path', FocusedPath))
+        = UpperCase(CanonicalPathValue('path', ProjectPath));
 End;
 
 Function FindProjectByPath(Workspace : IWorkspace; ProjectPath : String) : IProject;

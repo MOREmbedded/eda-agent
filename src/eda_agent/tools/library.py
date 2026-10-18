@@ -2019,6 +2019,176 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
+    async def lib_add_footprint_via(
+        x: float,
+        y: float,
+        size: float = 40,
+        hole_size: float = 20,
+        footprint_name: str = "",
+        units: str = "mil",
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Add a through-stack via to a footprint: the named one, or the current one.
+
+        The via spans top to bottom. Its position is relative to the
+        footprint origin, like a pad's. It goes into the focused PCB
+        library; give ``library_path`` to refuse when that is not the one
+        you mean.
+
+        Args:
+            x, y: Via centre, relative to the footprint origin.
+            size: Via diameter (default 40 mil).
+            hole_size: Drill diameter (default 20 mil). Must be below size.
+            footprint_name: footprint to write into; empty uses the
+                current one.
+            units: "mil" (default) or "mm", for every length here.
+            library_path: Full path to the .PcbLib. When given, the call
+                refuses unless that library is the focused one.
+
+        Returns:
+            Dictionary confirming the via was added
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "x": format_length(x),
+            "y": format_length(y),
+            "size": format_length(size),
+            "hole_size": format_length(hole_size),
+        }
+        if footprint_name:
+            params["footprint_name"] = footprint_name
+        if library_path:
+            params["library_path"] = library_path
+        result = await bridge.send_command_async(
+            "library.add_footprint_via", _with_units(params, units))
+        return result
+
+    @mcp.tool()
+    async def lib_set_via_properties(
+        library_path: str,
+        x: float,
+        y: float,
+        footprint_name: str = "",
+        units: str = "mil",
+        hole_size: Optional[float] = None,
+        size: Optional[float] = None,
+        dia_mid: Optional[float] = None,
+        dia_bottom: Optional[float] = None,
+        tenting_top: Optional[bool] = None,
+        tenting_bottom: Optional[bool] = None,
+        mask_expansion: Optional[float] = None,
+        mask_bottom_expansion: Optional[float] = None,
+        mask_separate: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Modify one via inside a footprint of an open PCB library.
+
+        The via is found by its position relative to the footprint origin
+        (within 1 mil, whatever ``units``). No via there is an error, and so
+        is more than one: nothing is changed. Only the fields given are
+        written, and each is read back: one that did not take sets
+        ``all_writes_ran`` false. A middle or bottom diameter raises the via
+        to a local-stack via in the same call. The mask expansions are set
+        through the pad cache.
+
+        Tenting only persists while the via's mask expansion is manual
+        (measured on Altium 26.11). A via whose mask follows the design
+        rules is switched to a manual expansion at the value it already
+        has before tenting is written, and ``mask_made_manual`` says so.
+
+        Args:
+            library_path: Full path to the open .PcbLib. It must be the
+                focused library, or the call refuses.
+            x, y: The via centre, relative to the footprint origin.
+            footprint_name: footprint to change; empty uses the current one.
+            units: "mil" (default) or "mm".
+            hole_size: Drill diameter.
+            size: Top-layer diameter.
+            dia_mid: Middle-layer diameter (makes a local-stack via).
+            dia_bottom: Bottom-layer diameter (makes a local-stack via).
+            tenting_top, tenting_bottom: Solder mask tenting on each side.
+            mask_expansion: Top solder mask expansion (manual).
+            mask_bottom_expansion: Bottom solder mask expansion (manual).
+            mask_separate: Separate (True) or linked (False) mask expansions.
+
+        Returns:
+            Dictionary with ``all_writes_ran``, the via's drill and size,
+            its tenting and mask expansions read back, and
+            ``mask_made_manual``. A field this build cannot read comes back
+            null.
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        params: dict[str, Any] = {
+            "library_path": library_path,
+            "x": format_length(x),
+            "y": format_length(y),
+        }
+        if footprint_name:
+            params["footprint_name"] = footprint_name
+        for key, value in (("hole_size", hole_size), ("size", size),
+                           ("dia_mid", dia_mid), ("dia_bottom", dia_bottom)):
+            if value is not None:
+                params[key] = format_length(value)
+        for key, value in (("tenting_top", tenting_top),
+                           ("tenting_bottom", tenting_bottom),
+                           ("mask_separate", mask_separate)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        for key, value in (("mask_expansion", mask_expansion),
+                           ("mask_bottom_expansion", mask_bottom_expansion)):
+            if value is not None:
+                params[key] = format_length(value)
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_via_properties", _with_units(params, units))
+
+    @mcp.tool()
+    async def lib_count_layer_objects(library_path: str) -> dict[str, Any]:
+        """Count what is on each layer across every footprint of a PCB library.
+
+        Read only. Answers "is this layer empty in every footprint?" before a
+        layer is disabled or a layer scheme is tidied. Covers tracks, arcs,
+        text, regions, fills, 3D bodies, pads, vias, polygons and dimensions.
+        Coordinate markers are not counted. The library must already be open
+        and focused.
+
+        Args:
+            library_path: Full path to the open .PcbLib. It must be the
+                focused library, or the call refuses.
+
+        Returns:
+            Dictionary with ``layers`` (``{layer, count}`` for each layer that
+            holds anything), ``footprints`` and ``objects``
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.count_layer_objects", {"library_path": library_path},
+            timeout=60.0)
+
+    @mcp.tool()
+    async def lib_get_library_origin(library_path: str) -> dict[str, Any]:
+        """Report where a PCB library's origin marker sits.
+
+        Read from the library's backing board, the same one footprint
+        coordinates are written against. The library must already be open
+        and focused in Altium.
+
+        Args:
+            library_path: Full path to the open .PcbLib. It must be the
+                focused library, or the call refuses.
+
+        Returns:
+            Dictionary with origin_x_mil, origin_y_mil and library_path
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.get_library_origin", {"library_path": library_path})
+
+    @mcp.tool()
     async def lib_add_footprint_pads(
         pads: list[dict[str, Any]],
         footprint_name: str = "",
@@ -3010,6 +3180,12 @@ def register_library_tools(mcp):
             part_count, description, parameters?, designator?}]. Pass
             ``index`` as component_index to the details, delete and
             rename tools when a name has characters you cannot type.
+            The list is the SAVED file. When the library is open, two more
+            keys compare it with the symbols in memory:
+            ``unsaved_symbols`` (in the open library, not yet in the file,
+            for example renamed or new) and
+            ``saved_names_not_in_open_library`` (in the file, gone from the
+            open library). Name a symbol as the open library has it.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -4907,6 +5083,7 @@ def register_library_tools(mcp):
     async def lib_move_bodies_to_layer(
         layer: str,
         footprint_names: Optional[list[str]] = None,
+        keep_layers: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Put the 3D bodies of the focused PCB library on one mechanical
         layer.
@@ -4923,6 +5100,11 @@ def register_library_tools(mcp):
             footprint_names: Only these footprints. Empty means every
                 footprint in the library; names no footprint has come
                 back in ``not_found``.
+            keep_layers: Layers whose bodies stay where they are, by the
+                same names as ``layer``. A body already on one of them is
+                counted as already on the layer. Every other body moves.
+                An unknown name refuses the whole call, and nothing moves.
+                Empty keeps the old behaviour: every body moves.
 
         Does NOT save the library. A mechanical layer the library has not
         enabled is accepted, with ``layer_enabled`` false and a
@@ -4941,6 +5123,9 @@ def register_library_tools(mcp):
         names = [n.strip() for n in (footprint_names or []) if n.strip()]
         if names:
             params["footprint_names"] = "\t".join(names)
+        keep = [k.strip() for k in (keep_layers or []) if k.strip()]
+        if keep:
+            params["keep_layers"] = ",".join(keep)
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.move_bodies_to_layer", params, timeout=60.0)
@@ -5280,6 +5465,7 @@ def register_library_tools(mcp):
         mask_expansion: Optional[float] = None,
         mask_bottom_expansion: Optional[float] = None,
         mask_separate: Optional[bool] = None,
+        paste_top_enabled: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint: every pad named
         ``pad_name``, only the fields given, each read back. Expansions are
@@ -5305,6 +5491,10 @@ def register_library_tools(mcp):
             mask_bottom_expansion: Bottom mask expansion; unlinks sides.
             mask_separate: Link (False) or unlink (True) the mask sides
                 (the bottom value takes effect once unlinked).
+            paste_top_enabled: Switch the top paste opening on or off
+                (not its size). Altium 26.11 keeps this only while the
+                paste expansion is manual, so a rule-driven one is made
+                manual at its current value first, and ``note`` says so.
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
@@ -5334,6 +5524,9 @@ def register_library_tools(mcp):
             params["plated"] = bool(plated)
         if mask_separate is not None:
             params["mask_separate"] = "true" if mask_separate else "false"
+        if paste_top_enabled is not None:
+            # The top paste opening itself, not its expansion (issue #80).
+            params["paste_top_enabled"] = "true" if paste_top_enabled else "false"
         if len(params) == 3:
             return {"success": False,
                     "error": "give at least one property to change"}

@@ -47,9 +47,20 @@ End;
 
 Function ObjectTypeFromString(TypeStr : String) : Integer;
 Var
-    N : String;
+    N, Raw : String;
 Begin
     Result := -1;
+    { NormalizeTypeName drops a leading 'e', so 'ellipse' arrived as
+      'llipse' and matched nothing (issue #76). These two are read from the
+      name before that drop; the Altium spellings 'eEllipse' and
+      'eEllipticalArc' normalize to the bare names and match below. }
+    Raw := LowerCase(TypeStr);
+    Raw := StringReplace(Raw, ' ', '', -1);
+    Raw := StringReplace(Raw, '_', '', -1);
+    Raw := StringReplace(Raw, '-', '', -1);
+    If Raw = 'ellipse' Then Result := eEllipse
+    Else If Raw = 'ellipticalarc' Then Result := eEllipticalArc;
+    If Result <> -1 Then Exit;
     N := NormalizeTypeName(TypeStr);
     If N = 'netlabel'        Then Result := eNetLabel
     Else If N = 'port'            Then Result := ePort
@@ -96,7 +107,11 @@ Begin
     Else If N = 'scharc'          Then Result := eArc
     Else If N = 'schellipticalarc' Then Result := eEllipticalArc
     Else If N = 'schellipse'      Then Result := eEllipse
-    Else If N = 'schbezier'       Then Result := eBezier;
+    Else If N = 'schbezier'       Then Result := eBezier
+    Else If N = 'ellipse'         Then Result := eEllipse
+    Else If N = 'ellipticalarc'   Then Result := eEllipticalArc
+    Else If N = 'designator'      Then Result := eDesignator
+    Else If N = 'roundrectangle'  Then Result := eRoundRectangle;
 End;
 
 { What the refusal should have said. }
@@ -107,7 +122,8 @@ Begin
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask, sch_polygon, sch_arc, '
-            + 'sch_elliptical_arc, sch_ellipse, sch_bezier';
+            + 'sch_elliptical_arc, sch_ellipse, sch_bezier, ellipse, elliptical_arc, '
+            + 'eDesignator, eRoundRectangle';
 End;
 
 { The refusal itself, in one place.                                          }
@@ -230,6 +246,61 @@ Begin
         Result := False;
 End;
 
+{ Pin text settings (issue #77): the name and designator labels' visibility,
+  font and colour. Only a pin has them, so callers check ePin first. The
+  typed view is taken here because the generic Obj does not carry them. }
+Function IsSchPinProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'ShowName') Or (PropName = 'ShowDesignator')
+        Or (PropName = 'Name_FontMode') Or (PropName = 'Name_CustomFontID')
+        Or (PropName = 'Name_CustomColor') Or (PropName = 'Designator_FontMode')
+        Or (PropName = 'Designator_CustomFontID') Or (PropName = 'Designator_CustomColor');
+End;
+
+Function ReadSchPinProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    P : ISch_Pin;
+Begin
+    Result := '';
+    P := Obj;
+    Try
+        If PropName = 'ShowName' Then Result := BoolToJsonStr(P.ShowName)
+        Else If PropName = 'ShowDesignator' Then Result := BoolToJsonStr(P.ShowDesignator)
+        Else If PropName = 'Name_FontMode' Then Result := IntToStr(P.Name_FontMode)
+        Else If PropName = 'Name_CustomFontID' Then Result := IntToStr(P.Name_CustomFontID)
+        Else If PropName = 'Name_CustomColor' Then Result := IntToStr(P.Name_CustomColor)
+        Else If PropName = 'Designator_FontMode' Then Result := IntToStr(P.Designator_FontMode)
+        Else If PropName = 'Designator_CustomFontID' Then Result := IntToStr(P.Designator_CustomFontID)
+        Else If PropName = 'Designator_CustomColor' Then Result := IntToStr(P.Designator_CustomColor)
+        Else If PropName = 'Description' Then Result := P.Description;
+    Except
+        Result := '';
+    End;
+End;
+
+Function WriteSchPinProp(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    P : ISch_Pin;
+Begin
+    Result := True;
+    P := Obj;
+    Try
+        SchBeginModify(P);
+        If PropName = 'ShowName' Then P.ShowName := StrToBool(Value)
+        Else If PropName = 'ShowDesignator' Then P.ShowDesignator := StrToBool(Value)
+        Else If PropName = 'Name_FontMode' Then P.Name_FontMode := StrToIntDef(Value, 0)
+        Else If PropName = 'Name_CustomFontID' Then P.Name_CustomFontID := StrToIntDef(Value, 0)
+        Else If PropName = 'Name_CustomColor' Then P.Name_CustomColor := StrToIntDef(Value, 0)
+        Else If PropName = 'Designator_FontMode' Then P.Designator_FontMode := StrToIntDef(Value, 0)
+        Else If PropName = 'Designator_CustomFontID' Then P.Designator_CustomFontID := StrToIntDef(Value, 0)
+        Else If PropName = 'Designator_CustomColor' Then P.Designator_CustomColor := StrToIntDef(Value, 0)
+        Else If PropName = 'Description' Then P.Description := Value;
+        SchEndModify(P);
+    Except
+        Result := False;
+    End;
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -254,6 +325,19 @@ Begin
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
         Or (Obj.ObjectId = eHarnessEntry);
+End;
+
+{ Only these types answer to Name. Anything else (a free text, a note,
+  a net label) faults with an undeclared-identifier modal that
+  Try/Except cannot contain, which stops the bridge (issue #74). This is
+  an allowlist: an unknown type is treated as having no Name. }
+Function SchObjectHasName(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
+        Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName);
 End;
 
 { Preflight only the known unsupported property/type pairs. Preserve the
@@ -659,7 +743,16 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'Name'        Then Result := Obj.Name
+        Else If PropName = 'Name'        Then
+        Begin
+            If SchObjectHasName(Obj) Then
+                Result := Obj.Name
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
         Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
         Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
@@ -726,6 +819,9 @@ Begin
         // library symbol cannot tell which part a returned primitive is on.
         Else If PropName = 'OwnerPartId'        Then Result := IntToStr(Obj.OwnerPartId)
         Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
+        // A pin's own description (issue #75), not the component's.
+        Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
+            Result := ReadSchPinProp(Obj, 'Description')
         Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
         Else If PropName = 'CurrentPartID' Then
@@ -912,6 +1008,15 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
+        // Pin text settings (issue #77)
+        Else If IsSchPinProp(PropName) Then
+        Begin
+            If Obj.ObjectId = ePin Then
+                Result := ReadSchPinProp(Obj, PropName)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+
         // Boolean properties
         Else If PropName = 'IsHidden' Then
         Begin
@@ -1044,7 +1149,13 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'Name'        Then Obj.Name := Value
+        Else If PropName = 'Name'        Then
+        Begin
+            If SchObjectHasName(Obj) Then
+                Obj.Name := Value
+            Else
+                Matched := False;
+        End
         Else If PropName = 'LibReference'       Then Obj.LibReference := Value
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
@@ -1063,8 +1174,24 @@ Begin
         // `Description` is the natural name (matches get_component_info /
         // BOM column / lib_set_component_description); `ComponentDescription`
         // is what ISch_Component actually exposes -- both accepted.
+        { Only a component has a ComponentDescription. On a pin it used to
+          write that field and raise (issue #75): a pin's Description is its
+          own field, ISch_Pin.Description, which Altium's Import Pins example
+          writes. Anything else reports as not matched instead of faulting. }
         Else If (PropName = 'ComponentDescription') Or (PropName = 'Description') Then
-            Obj.ComponentDescription := Value
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Obj.ComponentDescription := Value;
+            End
+            Else
+            Begin
+                If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
+                    WroteOK := WriteSchPinProp(Obj, 'Description', Value)
+                Else
+                    Matched := False;
+            End;
+        End
         { UniqueId is how Altium groups multi-part sub-parts into one physical
           component for ECO. The UniqueId property setter remints when the
           value is already in the document; SetState_UniqueId is the SDK
@@ -1176,6 +1303,15 @@ Begin
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoord(StrToIntDef(Value, 0))
+
+        // Pin text settings (issue #77)
+        Else If IsSchPinProp(PropName) Then
+        Begin
+            If Obj.ObjectId = ePin Then
+                WroteOK := WriteSchPinProp(Obj, PropName, Value)
+            Else
+                Matched := False;
+        End
 
         // Boolean properties
         Else If PropName = 'IsHidden' Then
@@ -1721,7 +1857,8 @@ Var
     Obj, FoundObj : ISch_GraphicalObject;
     Sym : ISch_SheetSymbol;
     LibComp : ISch_Component;
-    Removed, ParamsOfSymbol : Boolean;
+    Removed, ParamsOfSymbol, IsLibDoc : Boolean;
+    SchLibDoc : ISch_Lib;
     ObjJson : String;
     First : Boolean;
     MaxIter : Integer;
@@ -1821,8 +1958,18 @@ Begin
             If LibComp = Nil Then ParamsOfSymbol := False;
         End;
     End;
+    IsLibDoc := False;
+    Try IsLibDoc := (SchDoc.ObjectId = eSchLib); Except End;
     If ParamsOfSymbol Then
         Iterator := LibComp.SchIterator_Create
+    { The symbols of a SchLib are not on its sheet iterator, so a component
+      query walked nothing (issue #87). The library's own iterator reaches
+      them, as Library.pas does. }
+    Else If IsLibDoc And (ObjTypeInt = eSchComponent) Then
+    Begin
+        SchLibDoc := SchDoc;
+        Iterator := SchLibDoc.SchLibIterator_Create;
+    End
     Else
         Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
@@ -6754,6 +6901,16 @@ Begin
         Except
         End;
 
+        // Whether each grid is switched on (issue #78)
+        Try
+            Data := Data + ',"snap_grid_on":' + BoolToJsonStr(SchDoc.SnapGridOn);
+        Except
+        End;
+        Try
+            Data := Data + ',"visible_grid_on":' + BoolToJsonStr(SchDoc.VisibleGridOn);
+        Except
+        End;
+
         // Unit system, ISch_Document.UnitSystem returns a TUnitSystem enum
         // (eImperial / eMetric). TUnit has finer granularity but UnitSystem is
         // the right read for a simple "metric vs imperial" field.
@@ -6796,10 +6953,16 @@ End;
 Function Gen_SetGrid(Params : String; RequestId : String) : String;
 Var
     SnapGrid, VisibleGrid : Integer;
+    SnapOnStr, VisibleOnStr : String;
+    SetSnapOn, SetVisibleOn : Boolean;
     SchDoc : ISch_Document;
 Begin
     SnapGrid := StrToIntDef(ExtractJsonValue(Params, 'snap_grid'), 0);
     VisibleGrid := StrToIntDef(ExtractJsonValue(Params, 'visible_grid'), 0);
+    SnapOnStr := LowerCase(ExtractJsonValue(Params, 'snap_grid_on'));
+    VisibleOnStr := LowerCase(ExtractJsonValue(Params, 'visible_grid_on'));
+    SetSnapOn := (SnapOnStr = 'true') Or (SnapOnStr = 'false');
+    SetVisibleOn := (VisibleOnStr = 'true') Or (VisibleOnStr = 'false');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -6808,9 +6971,9 @@ Begin
         Exit;
     End;
 
-    If (SnapGrid <= 0) And (VisibleGrid <= 0) Then
+    If (SnapGrid <= 0) And (VisibleGrid <= 0) And (Not SetSnapOn) And (Not SetVisibleOn) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'At least one of snap_grid or visible_grid is required (in mils)');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'Give snap_grid or visible_grid (mils) and/or snap_grid_on or visible_grid_on (true/false)');
         Exit;
     End;
 
@@ -6820,14 +6983,31 @@ Begin
         SchDoc.SnapGridSize := MilsToCoord(SnapGrid);
     If VisibleGrid > 0 Then
         SchDoc.VisibleGridSize := MilsToCoord(VisibleGrid);
+    { The on/off switches (issue #78). A write the SDK refuses is reported
+      back as the value it still holds, not hidden as success. }
+    If SetSnapOn Then
+    Begin
+        Try SchDoc.SnapGridOn := (SnapOnStr = 'true'); Except End;
+    End;
+    If SetVisibleOn Then
+    Begin
+        Try SchDoc.VisibleGridOn := (VisibleOnStr = 'true'); Except End;
+    End;
 
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    SnapOnStr := 'null';
+    Try SnapOnStr := BoolToJsonStr(SchDoc.SnapGridOn); Except End;
+    VisibleOnStr := 'null';
+    Try VisibleOnStr := BoolToJsonStr(SchDoc.VisibleGridOn); Except End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"success":true' +
         ',"snap_grid":' + IntToStr(CoordToMils(SchDoc.SnapGridSize)) +
-        ',"visible_grid":' + IntToStr(CoordToMils(SchDoc.VisibleGridSize)) + '}');
+        ',"visible_grid":' + IntToStr(CoordToMils(SchDoc.VisibleGridSize)) +
+        ',"snap_grid_on":' + SnapOnStr +
+        ',"visible_grid_on":' + VisibleOnStr + '}');
 End;
 
 {..............................................................................}
@@ -11437,6 +11617,37 @@ Begin
 End;
 
 {..............................................................................}
+{ TogglePinsOnComponent - set the pin name and/or designator flags on every  }
+{ pin of one component. Returns the number of pins changed.                  }
+Function TogglePinsOnComponent(Comp : ISch_Component; SetName : Boolean;
+    NameVal : Boolean; SetDesig : Boolean; DesigVal : Boolean) : Integer;
+Var
+    PinIter : ISch_Iterator;
+    Pin : ISch_Pin;
+Begin
+    Result := 0;
+    PinIter := Comp.SchIterator_Create;
+    PinIter.AddFilter_ObjectSet(MkSet(ePin));
+    Try
+        Pin := PinIter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Try
+                SchBeginModify(Pin);
+                If SetName Then Pin.ShowName := NameVal;
+                If SetDesig Then Pin.ShowDesignator := DesigVal;
+                SchEndModify(Pin);
+                Inc(Result);
+            Except
+            End;
+            Pin := PinIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(PinIter);
+    End;
+End;
+
+{..............................................................................}
 { Gen_TogglePinVisibility - Show/hide pin name and/or designator labels on a   }
 { single component (by designator) or on every component on the sheet.        }
 { Params: designator (optional), show_name ("true"/"false", optional),        }
@@ -11450,8 +11661,9 @@ Var
     Comp : ISch_Component;
     Pin : ISch_Pin;
     DesigFilter, ShowNameStr, ShowDesigStr, CompDesig : String;
-    SetName, SetDesig, NameVal, DesigVal, Matched : Boolean;
+    SetName, SetDesig, NameVal, DesigVal, Matched, IsLib : Boolean;
     Count : Integer;
+    LibComp : ISch_Component;
 Begin
     DesigFilter := ExtractJsonValue(Params, 'designator');
     ShowNameStr := LowerCase(ExtractJsonValue(Params, 'show_name'));
@@ -11476,6 +11688,41 @@ Begin
     End;
 
     Count := 0;
+    IsLib := False;
+    Try IsLib := (SchDoc.ObjectId = eSchLib); Except IsLib := False; End;
+    If IsLib Then
+    Begin
+        { A SchLib has no placed components to walk: the sheet iterator
+          returns nothing there, so the old code reported success with 0.
+          The symbol open in the editor is the one to change (issue #89).
+          The held reference is only a fallback: it can name a symbol
+          created earlier that is no longer the one on screen. }
+        LibComp := Nil;
+        Try LibComp := SchDoc.CurrentSchComponent; Except LibComp := Nil; End;
+        If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+        If LibComp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+                'No symbol is open in the SchLib editor. Open one and retry.');
+            Exit;
+        End;
+        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            Count := TogglePinsOnComponent(LibComp, SetName, NameVal, SetDesig, DesigVal);
+        Finally
+            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        End;
+        SchDoc.GraphicallyInvalidate;
+        If Count = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PINS',
+                'The open symbol has no pins to change');
+            Exit;
+        End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"pins_modified":' + IntToStr(Count) + '}');
+        Exit;
+    End;
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
         Iter := SchDoc.SchIterator_Create;
@@ -11519,6 +11766,12 @@ Begin
     End;
     SchDoc.GraphicallyInvalidate;
 
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MATCH',
+            'No component with pins matched; check the designator');
+        Exit;
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"pins_modified":' + IntToStr(Count) + '}');
 End;

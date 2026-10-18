@@ -1,4 +1,4 @@
-# Release verification: 2026.10.17.5
+# Release verification: 2026.10.18.17
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -97,6 +97,13 @@ works elsewhere cannot be an undeclared identifier:
 | 36, designator mirror | `Location` written on a placed designator | yes, `SetSchProperty` | low |
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
+| 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | no, nowhere | low, written and read back live both ways; dropped silently unless the mask is manual |
+| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
+| 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
+| 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
+| 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
+| 37, pin labels | `ShowName`, `ShowDesignator` on a pin | yes, `Library.pas` | low |
+| 37, pin text | `Name_FontMode`, `Name_CustomFontID`, `Name_CustomColor`, `Designator_FontMode`, `Designator_CustomFontID`, `Designator_CustomColor` on a pin | no, nowhere | medium, read live; the writes are not run live |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -272,7 +279,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.17.5`, `version_match` =
+Expect `altium_script_version` = `2026.10.18.17`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2196,6 +2203,76 @@ old. Item 6: two vias, 3 mil both sides from the hole edge, kept through
 save and restart. Item 8: 3 mm and then 2.5 mm read back. Item 9: the
 arc bubble moved from 210 to -210 mil about the part and back, and a
 90..270 degree arc became 270..90. Item 5 by mouse is not run.
+
+## 37. Field-report fixes #74 to #89, and one spelling per file path
+
+New: `lib_add_footprint_via` (#79), `lib_set_via_properties` (#84),
+`lib_count_layer_objects` (#81), `lib_get_library_origin` (#83),
+`keep_layers` on `lib_move_bodies_to_layer` (#82), `paste_top_enabled` on
+`lib_set_pad_properties` (#80), and the grid switches on `obj_set_grid`
+(#78). Fixes, measured on AD 26.11.1.5:
+
+* via tenting and the top paste flag are accepted and silently dropped
+  while the matching expansion follows the rules, and kept once it is
+  manual. Both writers make it manual first, at the value it holds, and
+  say so (`mask_made_manual`, `note`);
+* Altium keys an open document by the path text it was opened with, so
+  `C:/dir\x.PcbLib` and `C:\dir\x.PcbLib` were two open documents. A focus
+  by the other spelling loaded a second copy from disk, the edit went to
+  the stale copy, and the next one raised "Object accessed after being
+  destroyed" in ADVPCB. Every `*path` parameter now arrives with one
+  spelling, and focus checks compare the same way;
+* `Name` on a type without one stopped the bridge (#74); a pin's
+  `Description` wrote the component field and raised (#75); the bare and
+  Altium ellipse names did not resolve (#76); pin text settings were
+  unreachable (#77); a SchLib component query and the pin toggle in a
+  SchLib found nothing (#87, #89);
+* a by-name symbol lookup that missed saved, closed and reopened the
+  SchLib, every time (#88). It now answers from memory only and a miss is
+  `COMPONENT_NOT_FOUND`; `lib_get_components` adds `unsaved_symbols` and
+  `saved_names_not_in_open_library` when the library is open; a part
+  suffix that cannot be reached puts the editor back on part 1.
+
+1. **Path spelling.** Open a PcbLib as `C:/...\x.PcbLib`, add a pad, then
+   `lib_set_pad_properties` with the backslash path: the pad is found,
+   and the open document list holds the library once.
+2. **Tenting.** On a fresh footprint via, `lib_set_via_properties
+   tenting_top=true`: `tenting_top` reads true and `mask_made_manual`
+   true. Then false reads false.
+3. **Paste flag.** On a fresh SMD pad, `paste_top_enabled=false`, then
+   `true`: `lib_get_pad_geometry` reads each, `paste_expansion_source`
+   manual.
+4. **Via lookup.** `units=mm`, a via 0.5 mm from the given point is not
+   found (the window is 1 mil); hole and size written in mm read back.
+5. **Wrong library.** Any of the four new library tools with another
+   library's path: `WRONG_LIBRARY`, nothing changed.
+6. **Pins.** In a SchLib symbol: `obj_modify ePin set=Name=A`,
+   `ShowName=false` and `Description=X` read back; `sch_toggle_pin_visibility
+   show_name=true` reports every pin of the symbol on screen.
+7. **Names that would fault.** `Name` read and written on a net label:
+   empty and `unknown`, and `app_ping` still answers.
+8. **Grid.** `obj_set_grid snap_grid_on=false visible_grid_on=false`, read
+   back by `obj_get_document_info`, then on again.
+9. **Keep layers.** `lib_move_bodies_to_layer layer=Mechanical13
+   keep_layers=Mechanical15`: the body on Mechanical15 stays, the others
+   move; an unknown keep layer refuses and moves nothing.
+10. **No save on a miss.** In an open SchLib, `lib_get_pin_list` on a name
+    that is not there: `COMPONENT_NOT_FOUND` at once, and the file's
+    modified time does not change. A symbol created earlier in the session
+    (not the last one) is still found.
+11. **Unsaved names.** Create a symbol and do not save: `lib_get_components`
+    lists it in `unsaved_symbols`.
+12. **Unreachable part.** `obj_query` with `scope=lib_component:<one-part
+    symbol>@2`: not found, and the editor shows part 1.
+
+Recorded on AD 26.11.1.5 with the three builds before this one, scratch
+documents: items 1 to 9, except the pin `Description` write in item 6
+(the build before this one wrote and read it back; earlier ones
+reported it `unknown` without a fault). Before item 10's fix, the miss
+took 6.6 s and saved the file, while two symbols created earlier in the
+session were found in 0.05 s without a save. Item 1 left one open copy; before the fix the same steps left two
+and the pad was "not found". Items 2 and 3 were also read with the flag
+written back the other way. Nothing here was saved and reopened.
 
 ---
 

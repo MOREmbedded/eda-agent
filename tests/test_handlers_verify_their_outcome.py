@@ -481,17 +481,16 @@ def test_every_bridge_call_watches_for_a_modal_while_it_waits():
     assert every <= 5.0, f"dialog re-check every {every}s, too slow"
 
 
-def test_a_library_lookup_rereads_the_document_as_a_last_resort():
-    """Saving is NOT enough to make a new symbol findable by name.
+def test_an_explicit_refresh_saves_then_rereads_the_document():
+    """A refresh the caller asks for saves, closes and reopens.
 
-    MEASURED in order: lib_create_symbol succeeded and resolved its own
-    symbol inside the creating command; app_save_all reported
-    still_dirty 0 and the saved file provably contained the symbol;
-    every by-name lookup still missed; CloseObject then OpenObject and
-    the name resolved again.
-
-    So the reopen is the step that matters, and it belongs in the
-    save/read path rather than in the caller's head.
+    MEASURED earlier: saving alone did not make a new symbol findable by
+    name; CloseObject then OpenObject did. That reopen used to run on every
+    by-name miss. MEASURED 2026-10-18 on Altium 26.11: symbols created
+    earlier in the session are found in memory, and the automatic reopen
+    saved the user's library on every miss (#88), so the lookup no longer
+    calls it (test_library_lookup_never_saves). The reopen stays for a
+    caller that asks for it, and when it runs it must save first.
     """
     text = _decommented(_src("Library.pas"))
     assert "Function RefreshSchLibFromDisk" in text
@@ -503,11 +502,8 @@ def test_a_library_lookup_rereads_the_document_as_a_last_resort():
     assert "CloseObject" in refresh and "OpenObject" in refresh
 
     lookup = _body(text, "LookupLibComponent")
-    assert "RefreshSchLibFromDisk" in lookup, (
-        "the lookup must re-read the document when index and walk both "
-        "miss, which is the only thing measured to work")
-    assert "RefreshingLib" in lookup, (
-        "the reopen retry must be guarded against re-entering")
+    assert "RefreshSchLibFromDisk" not in lookup, (
+        "a by-name lookup must not save and reopen the user's library")
 
 
 def test_sim_run_runs_the_simulator_output_and_checks_for_results():

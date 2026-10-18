@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.17.5';
+    SCRIPT_VERSION = '2026.10.18.17';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -154,11 +154,6 @@ Var
       library, and the name is compared against this recorded string
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
-
-    { Re-entry guard for LookupLibComponent's last-resort reopen. A
-      reopen re-reads the document and the retry looks the name up
-      again; without this the retry could trigger another reopen. }
-    RefreshingLib : Boolean;
 
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
@@ -1504,6 +1499,28 @@ Begin
     End;
 End;
 
+{ One spelling for a file path a caller sends. Altium keys an open document  }
+{ by the path string it was opened with, so the same file opened as         }
+{ C:/dir\x.PcbLib and as C:\dir\x.PcbLib is TWO open documents. A later     }
+{ open or focus by the other spelling loaded a second copy from disk, the   }
+{ tool then edited that copy, and an edit after it raised "Object accessed  }
+{ after being destroyed" in ADVPCB (measured 2026-10-18). Only a value under }
+{ a key ending in "path" that is a drive or UNC path is rewritten, so a     }
+{ menu_path like "File|Open" passes untouched.                              }
+Function CanonicalPathValue(Key : String; Value : String) : String;
+Var
+    K : String;
+Begin
+    Result := Value;
+    K := LowerCase(Key);
+    If (Length(K) < 4) Or (Copy(K, Length(K) - 3, 4) <> 'path') Then Exit;
+    If (Length(Value) >= 3) And (Copy(Value, 2, 1) = ':')
+        And ((Copy(Value, 3, 1) = '/') Or (Copy(Value, 3, 1) = '\')) Then
+        Result := StringReplace(Value, '/', '\', -1)
+    Else If (Copy(Value, 1, 2) = '//') Or (Copy(Value, 1, 2) = '\\') Then
+        Result := StringReplace(Value, '/', '\', -1);
+End;
+
 Function ExtractJsonValue(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
@@ -1547,7 +1564,8 @@ Begin
                     End;
                     Inc(EndPos);
                 End;
-                Result := UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos));
+                Result := CanonicalPathValue(Key,
+                    UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos)));
             End
             Else If (Copy(Json, StartPos, 1) = '{') Or
                     (Copy(Json, StartPos, 1) = '[') Then

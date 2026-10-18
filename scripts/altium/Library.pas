@@ -319,7 +319,7 @@ Begin
     If Workspace = Nil Then Exit;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then Exit;
     If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
@@ -496,43 +496,26 @@ Begin
         Result := LastCreatedLibComponent;
 End;
 
-{ LookupLibComponent - the index, then the walk, then a reopen.               }
+{ LookupLibComponent - a symbol of the open library by name, from memory.    }
 {                                                                             }
-{ Use this everywhere instead of calling GetState_SchComponentByLibRef.       }
-{ The third step is the one that actually finds a symbol created earlier in   }
-{ the same session, see RefreshSchLibFromDisk for what was measured.          }
-{ RefreshingLib guards against re-entering: the retry must not be able to     }
-{ trigger another reopen.                                                     }
-{                                                                             }
-{ THE REOPEN INVALIDATES WHAT THE CALLER HOLDS. Fine for a read. Before an    }
-{ edit, ask FindLibComponentInMemory instead.                                 }
+{ Use this everywhere instead of calling GetState_SchComponentByLibRef: the  }
+{ index, then the walk, then the symbol created last. It never saves, closes }
+{ or reopens the library.                                                   }
 Function LookupLibComponent(SchLib : ISch_Lib; Name : String) : ISch_Component;
-Var
-    LibPath : String;
-    Fresh : ISch_Lib;
 Begin
     Result := Nil;
     If (SchLib = Nil) Or (Name = '') Then Exit;
 
-    { Everything that costs nothing and does not disturb the editor, where a }
-    { reopen changes focus and the current component.                        }
+    { The live library only. A miss is a miss: the caller reports it.        }
+    {                                                                         }
+    { This used to fall back to RefreshSchLibFromDisk, which SAVES the        }
+    { library, closes it and opens it again, on every miss (issue #88). A    }
+    { read wrote the user's file, and a stale name did it on every call.     }
+    { MEASURED 2026-10-18 (AD 26.11): symbols created earlier in the session, }
+    { not only the last one, are found here in memory, so the reopen no      }
+    { longer earns its cost; a miss took 6.6 s and saved the file. An        }
+    { explicit refresh stays available where a caller asks for it.           }
     Result := FindLibComponentInMemory(SchLib, Name);
-    If Result <> Nil Then Exit;
-
-    { Last resort: the document has not caught up with its own contents. }
-    If RefreshingLib Then Exit;
-    LibPath := '';
-    Try LibPath := SchLib.DocumentName; Except End;
-    If LibPath = '' Then Exit;
-
-    RefreshingLib := True;
-    Try
-        Fresh := RefreshSchLibFromDisk(LibPath);
-        If Fresh <> Nil Then
-            Result := FindLibComponentInMemory(Fresh, Name);
-    Finally
-        RefreshingLib := False;
-    End;
 End;
 
 Function Lib_CreateSymbol(Params : String; RequestId : String) : String;
@@ -1055,10 +1038,19 @@ Begin
               unsaid it compounds badly: the caller does not know which part
               is showing, and scope @1 is the one suffix that cannot be
               trusted to return to part 1. Reported GH #11, 2026-09-22. }
-            NoteNextStep('Part ' + IntToStr(Target) + ' was not reached, and '
-                + 'the displayed part has moved. Select a different '
-                + 'component and reselect this one to return to part 1; a '
-                + 'suffixed scope cannot reliably do it.');
+            { Put the editor back on part 1 rather than leave it on a part
+              nobody can name (issue #88: @2 on a one-part symbol moved the
+              display and failed). ReachLibPartOne bounces through another
+              component, the one route that verifiably lands on part 1. }
+            If ReachLibPartOne(SchLib, Component, Name) Then
+                NoteNextStep('Part ' + IntToStr(Target) + ' was not reached '
+                    + '(the symbol may have fewer parts); the editor is back '
+                    + 'on part 1.')
+            Else
+                NoteNextStep('Part ' + IntToStr(Target) + ' was not reached, and '
+                    + 'the displayed part has moved. Select a different '
+                    + 'component and reselect this one to return to part 1; a '
+                    + 'suffixed scope cannot reliably do it.');
             Result := Nil;
             Exit;
         End;
@@ -1556,6 +1548,541 @@ Begin
     End
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pad');
+
+    PCBServer.PostProcess;
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
+End;
+
+{ Why the focused PCB library is not the one the caller named, or '' when it }
+{ is (or when no path was given). PCBServer only hands out the focused       }
+{ library, so a tool that takes a path must refuse rather than read or write }
+{ some other open library.                                                  }
+Function PcbLibPathProblem(PcbLib : IPCB_Library; LibPath : String) : String;
+Var
+    Focused : String;
+Begin
+    Result := '';
+    If LibPath = '' Then Exit;
+    Focused := '';
+    Try Focused := PcbLib.Board.FileName; Except End;
+    If UpperCase(StringReplace(Focused, '/', '\', -1))
+        <> UpperCase(StringReplace(LibPath, '/', '\', -1)) Then
+        Result := 'The focused PCB library is ' + Focused + ', not ' + LibPath
+            + '. Focus the library you named and retry; nothing was changed.';
+End;
+
+{ Modify one via inside a footprint (issue #84). The via is addressed by its }
+{ footprint-relative position: none within 1 mil is an error, and so is more }
+{ than one. Every field is optional. Writes run in the order the reporter    }
+{ measured: drill, stack mode, sizes, tenting, then the mask through the     }
+{ pad cache, which the via interface does not reach. Each written field is   }
+{ read back, and one that did not take clears all_writes_ran. Tenting only  }
+{ sticks on a manual mask (AD 26.11), so it switches a rule mask to manual. }
+{ Params: x, y (required), library_path (required), footprint_name,          }
+{ units, hole_size, size, dia_mid, dia_bottom, tenting_top, tenting_bottom,  }
+{ mask_expansion, mask_bottom_expansion, mask_separate.                      }
+Function Lib_SetViaProperties(Params : String; RequestId : String) : String;
+Var
+    LibPath, UnitsStr, TargetProblem, Addr, HoleStr, SizeStr, MidStr, BotStr : String;
+    TentTopStr, TentBotStr, MaskStr, MaskBotStr, MaskSepStr, XStr, YStr : String;
+    ServerDoc : IServerDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    GrpIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Found, Via : IPCB_Via;
+    FoundPad : IPCB_Pad;
+    PadCache : TPadCache;
+    TargetX, TargetY, Tol, WantC : TCoord;
+    Matches, Seen : Integer;
+    SeenList : String;
+    MadeManual, Ok : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    XStr := ExtractJsonValue(Params, 'x');
+    YStr := ExtractJsonValue(Params, 'y');
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If (LibPath = '') Or (XStr = '') Or (YStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'library_path, x and y are required');
+        Exit;
+    End;
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    ServerDoc := Client.GetDocumentByPath(LibPath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            'Open the PCB library in Altium first: the PCB server loads with it.');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If PcbLibPathProblem(PcbLib, LibPath) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY', PcbLibPathProblem(PcbLib, LibPath));
+        Exit;
+    End;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
+        Exit;
+    End;
+
+    TargetX := FootprintOriginX(Footprint) + CoordFromUnits(StrToFloatDef(XStr, 0), UnitsStr);
+    TargetY := FootprintOriginY(Footprint) + CoordFromUnits(StrToFloatDef(YStr, 0), UnitsStr);
+    { 1 mil whatever the call's units: the docstring promises 1 mil, and
+      1 mm would reach a neighbouring via. }
+    Tol := MilsToCoord(1);
+
+    { Find the via. The same object can be listed twice, so matches are   }
+    { counted by address.                                                  }
+    Found := Nil;
+    Matches := 0;
+    SeenList := #9;
+    GrpIter := Footprint.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Prim := GrpIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Via := Prim;
+            Addr := IntToStr(Prim.I_ObjectAddress);
+            If (Pos(#9 + Addr + #9, SeenList) = 0)
+                And (Abs(Via.X - TargetX) <= Tol) And (Abs(Via.Y - TargetY) <= Tol) Then
+            Begin
+                SeenList := SeenList + Addr + #9;
+                Matches := Matches + 1;
+                Found := Via;
+            End;
+            Prim := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GrpIter);
+    End;
+    If Matches = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No via at x=' + XStr + ', y=' + YStr + ' (within 1 mil)');
+        Exit;
+    End;
+    If Matches > 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS',
+            IntToStr(Matches) + ' vias sit at that position; nothing was changed');
+        Exit;
+    End;
+
+    HoleStr := ExtractJsonValue(Params, 'hole_size');
+    SizeStr := ExtractJsonValue(Params, 'size');
+    MidStr := ExtractJsonValue(Params, 'dia_mid');
+    BotStr := ExtractJsonValue(Params, 'dia_bottom');
+    TentTopStr := LowerCase(ExtractJsonValue(Params, 'tenting_top'));
+    TentBotStr := LowerCase(ExtractJsonValue(Params, 'tenting_bottom'));
+    MaskStr := ExtractJsonValue(Params, 'mask_expansion');
+    MaskBotStr := ExtractJsonValue(Params, 'mask_bottom_expansion');
+    MaskSepStr := LowerCase(ExtractJsonValue(Params, 'mask_separate'));
+    Ok := True;
+    MadeManual := False;
+
+    PCBServer.PreProcess;
+    Try
+        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+        { 1. Drill. }
+        If HoleStr <> '' Then
+        Begin
+            Try
+                WantC := CoordFromUnits(StrToFloatDef(HoleStr, 0), UnitsStr);
+                Found.HoleSize := WantC;
+                If Abs(Found.HoleSize - WantC) > Tol Then Ok := False;
+            Except Ok := False; End;
+        End;
+        { 2. Stack mode. A simple via keeps no middle size, so a middle or
+          bottom diameter raises it first. }
+        If (MidStr <> '') Or (BotStr <> '') Then
+        Begin
+            Try Found.Mode := ePadMode_LocalStack;
+            Except Ok := False; End;
+        End;
+        { 3. Sizes, each read back. A simple via has one size, written as
+          Size; a local-stack via takes it per layer. }
+        If SizeStr <> '' Then
+        Begin
+            Try
+                WantC := CoordFromUnits(StrToFloatDef(SizeStr, 0), UnitsStr);
+                If Found.Mode = ePadMode_Simple Then
+                    Found.Size := WantC
+                Else
+                    Found.SizeOnLayer(eTopLayer) := WantC;
+                If Abs(Found.SizeOnLayer(eTopLayer) - WantC) > Tol Then Ok := False;
+            Except Ok := False; End;
+        End;
+        If MidStr <> '' Then
+        Begin
+            Try
+                WantC := CoordFromUnits(StrToFloatDef(MidStr, 0), UnitsStr);
+                Found.SizeOnLayer(eMidLayers) := WantC;
+                If Abs(Found.SizeOnLayer(eMidLayers) - WantC) > Tol Then Ok := False;
+            Except Ok := False; End;
+        End;
+        If BotStr <> '' Then
+        Begin
+            Try
+                WantC := CoordFromUnits(StrToFloatDef(BotStr, 0), UnitsStr);
+                Found.SizeOnLayer(eBottomLayer) := WantC;
+                If Abs(Found.SizeOnLayer(eBottomLayer) - WantC) > Tol Then Ok := False;
+            Except Ok := False; End;
+        End;
+        { 4. Tenting. MEASURED (AD 26.11): the write is kept only while the
+          via's mask expansion is manual. On a rule-driven via it is accepted
+          and dropped, linked or unlinked. So a rule-driven mask is switched
+          to manual first, at the value it already holds, and the response
+          says so in mask_made_manual. The read-back still decides Ok. }
+        If (TentTopStr = 'true') Or (TentTopStr = 'false')
+            Or (TentBotStr = 'true') Or (TentBotStr = 'false') Then
+        Begin
+            Try
+                FoundPad := Found;
+                PadCache := FoundPad.GetState_Cache;
+                If PadCache.SolderMaskExpansionValid <> eCacheManual Then
+                Begin
+                    PadCache.SolderMaskExpansionValid := eCacheManual;
+                    FoundPad.SetState_Cache := PadCache;
+                    MadeManual := True;
+                End;
+            Except Ok := False; End;
+            If (TentTopStr = 'true') Or (TentTopStr = 'false') Then
+            Begin
+                Try
+                    Found.SetState_IsTenting_Top(TentTopStr = 'true');
+                    If Found.GetState_IsTenting_Top <> (TentTopStr = 'true') Then Ok := False;
+                Except Ok := False; End;
+            End;
+            If (TentBotStr = 'true') Or (TentBotStr = 'false') Then
+            Begin
+                Try
+                    Found.SetState_IsTenting_Bottom(TentBotStr = 'true');
+                    If Found.GetState_IsTenting_Bottom <> (TentBotStr = 'true') Then Ok := False;
+                Except Ok := False; End;
+            End;
+        End;
+        { 5. Mask, through the pad cache. }
+        If (MaskStr <> '') Or (MaskBotStr <> '') Or (MaskSepStr = 'true') Or (MaskSepStr = 'false') Then
+        Begin
+            Try
+                FoundPad := Found;
+                PadCache := FoundPad.GetState_Cache;
+                If MaskStr <> '' Then
+                Begin
+                    PadCache.SolderMaskExpansionValid := eCacheManual;
+                    PadCache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(MaskStr, 0), UnitsStr);
+                End;
+                If MaskBotStr <> '' Then
+                    PadCache.SolderMaskBottomExpansion := CoordFromUnits(StrToFloatDef(MaskBotStr, 0), UnitsStr);
+                If (MaskSepStr = 'true') Or (MaskSepStr = 'false') Then
+                    PadCache.UseSeparateExpansions := (MaskSepStr = 'true');
+                FoundPad.SetState_Cache := PadCache;
+                { Read the cache back: a value it did not keep is a failed
+                  write, not a success. }
+                PadCache := FoundPad.GetState_Cache;
+                If MaskStr <> '' Then
+                    If Abs(PadCache.SolderMaskExpansion
+                        - CoordFromUnits(StrToFloatDef(MaskStr, 0), UnitsStr)) > Tol Then Ok := False;
+                If MaskBotStr <> '' Then
+                    If Abs(PadCache.SolderMaskBottomExpansion
+                        - CoordFromUnits(StrToFloatDef(MaskBotStr, 0), UnitsStr)) > Tol Then Ok := False;
+                If (MaskSepStr = 'true') Or (MaskSepStr = 'false') Then
+                    If PadCache.UseSeparateExpansions <> (MaskSepStr = 'true') Then Ok := False;
+            Except Ok := False; End;
+        End;
+        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
+
+    { Read everything back, so the caller sees what the via now is and not
+      only that the writes ran. Each read is guarded: a field this build
+      cannot read comes back null. }
+    TentTopStr := 'null';
+    Try TentTopStr := BoolToJsonStr(Found.IsTenting_Top); Except End;
+    TentBotStr := 'null';
+    Try TentBotStr := BoolToJsonStr(Found.IsTenting_Bottom); Except End;
+    MaskStr := 'null';
+    MaskBotStr := 'null';
+    MaskSepStr := 'null';
+    Try
+        FoundPad := Found;
+        PadCache := FoundPad.GetState_Cache;
+        MaskStr := FloatToJsonStr(CoordToMM(PadCache.SolderMaskExpansion));
+        MaskBotStr := FloatToJsonStr(CoordToMM(PadCache.SolderMaskBottomExpansion));
+        MaskSepStr := BoolToJsonStr(PadCache.UseSeparateExpansions);
+    Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"all_writes_ran":' + BoolToJsonStr(Ok)
+        + ',"hole_mm":' + FloatToJsonStr(CoordToMM(Found.HoleSize))
+        + ',"size_mm":' + FloatToJsonStr(CoordToMM(Found.Size))
+        + ',"tenting_top":' + TentTopStr
+        + ',"tenting_bottom":' + TentBotStr
+        + ',"mask_expansion_mm":' + MaskStr
+        + ',"mask_bottom_expansion_mm":' + MaskBotStr
+        + ',"mask_separate":' + MaskSepStr
+        + ',"mask_made_manual":' + BoolToJsonStr(MadeManual) + '}');
+End;
+
+{ Objects per layer across every footprint of a PcbLib (issue #81). Read     }
+{ only. Each footprint is walked with a FILTERED group iterator, and each    }
+{ object is counted once by address, since a footprint can list one twice.  }
+{ Params: library_path (required, the open .PcbLib).                         }
+Function Lib_CountLayerObjects(Params : String; RequestId : String) : String;
+Var
+    LibPath, Addr, Seen, Key, Done, OutJson : String;
+    ServerDoc : IServerDocument;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    GrpIter : IPCB_GroupIterator;
+    Footprint : IPCB_LibComponent;
+    Prim : IPCB_Primitive;
+    Lines : TStringList;
+    I, J, Count, Footprints, Objects : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library_path is required');
+        Exit;
+    End;
+    { The same guard as the origin read: the PCB server is not loaded until a
+      library is open, and touching it before that is a modal. }
+    ServerDoc := Client.GetDocumentByPath(LibPath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            'Open the PCB library in Altium first: the PCB server loads with it.');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If PcbLibPathProblem(PcbLib, LibPath) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY', PcbLibPathProblem(PcbLib, LibPath));
+        Exit;
+    End;
+
+    Lines := TStringList.Create;
+    Footprints := 0;
+    Objects := 0;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Footprint := Iter.FirstPCBObject;
+        While Footprint <> Nil Do
+        Begin
+            Footprints := Footprints + 1;
+            Seen := #9;
+            GrpIter := Footprint.GroupIterator_Create;
+            Try
+                GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+                    eTextObject, eRegionObject, eFillObject, eComponentBodyObject,
+                    ePadObject, eViaObject, ePolyObject, eDimensionObject));
+                Prim := GrpIter.FirstPCBObject;
+                While Prim <> Nil Do
+                Begin
+                    Addr := IntToStr(Prim.I_ObjectAddress);
+                    If Pos(#9 + Addr + #9, Seen) = 0 Then
+                    Begin
+                        Seen := Seen + Addr + #9;
+                        Lines.Add(GetLayerString(Prim.Layer) + #9);
+                        Objects := Objects + 1;
+                    End;
+                    Prim := GrpIter.NextPCBObject;
+                End;
+            Finally
+                Footprint.GroupIterator_Destroy(GrpIter);
+            End;
+            Footprint := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+
+    { Tally by layer name: each name once, counted over the lines. }
+    Done := #9;
+    OutJson := '';
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        Key := Copy(Lines.Strings[I], 1, Pos(#9, Lines.Strings[I]) - 1);
+        If Pos(#9 + Key + #9, Done) = 0 Then
+        Begin
+            Done := Done + Key + #9;
+            Count := 0;
+            For J := 0 To Lines.Count - 1 Do
+                If Copy(Lines.Strings[J], 1, Length(Key) + 1) = Key + #9 Then
+                    Count := Count + 1;
+            If OutJson <> '' Then OutJson := OutJson + ',';
+            OutJson := OutJson + '{"layer":"' + EscapeJsonString(Key) + '","count":' + IntToStr(Count) + '}';
+        End;
+    End;
+    Try Lines.Free; Except End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"layers":[' + OutJson + '],"footprints":' + IntToStr(Footprints)
+        + ',"objects":' + IntToStr(Objects) + '}');
+End;
+
+{ A pad's top paste opening flag, as JSON: true, false, or null when the     }
+{ flag cannot be read. The expansion is a separate control (issue #80).     }
+Function PadPasteTopJson(Pad : IPCB_Pad) : String;
+Begin
+    Result := 'null';
+    Try
+        If Pad.GetState_IsTopPasteEnabled Then Result := 'true'
+        Else Result := 'false';
+    Except
+        Result := 'null';
+    End;
+End;
+
+{ The PcbLib editor's origin marker (issue #83). Read off the library's      }
+{ backing board, the same board the footprints are written into. Document    }
+{ info does not cover a PcbLib, which has no schematic and no PCB board.     }
+Function Lib_GetLibraryOrigin(Params : String; RequestId : String) : String;
+Var
+    PcbLib : IPCB_Library;
+    LibPath : String;
+    ServerDoc : IServerDocument;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library_path is required');
+        Exit;
+    End;
+    { Touching PCBServer before any PCB document is open is an undeclared
+      identifier modal (measured, PCB.pas). A library that is open has its
+      document, so check that first and refuse honestly when it is not. }
+    ServerDoc := Client.GetDocumentByPath(LibPath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            'Open the PCB library in Altium first: the PCB server loads with it.');
+        Exit;
+    End;
+
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If PcbLibPathProblem(PcbLib, LibPath) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY', PcbLibPathProblem(PcbLib, LibPath));
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"origin_x_mil":' + IntToStr(CoordToMils(PcbLib.Board.XOrigin)) +
+        ',"origin_y_mil":' + IntToStr(CoordToMils(PcbLib.Board.YOrigin)) +
+        ',"library_path":"' + EscapeJsonString(PcbLib.Board.FileName) + '"}');
+End;
+
+{ Add a through-stack via to a footprint (issue #79). Same registration      }
+{ sequence as Lib_AddFootprintPad, which the save depends on. Params: x, y   }
+{ (footprint-relative, in the call's units), size (via diameter), hole_size, }
+{ footprint_name (optional), library_path (optional: when given, the focused }
+{ library must be that one), units. The via spans top to bottom.            }
+Function Lib_AddFootprintVia(Params : String; RequestId : String) : String;
+Var
+    UnitsStr, TargetProblem, LibPath : String;
+    X, Y, Size, HoleSize : Double;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Via : IPCB_Via;
+Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    Size := StrToFloatDef(ExtractJsonValue(Params, 'size'), MilsInUnits(40, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), MilsInUnits(20, UnitsStr));
+    If (Size <= 0) Or (HoleSize <= 0) Or (HoleSize >= Size) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SIZE',
+            'A via needs 0 < hole_size < size');
+        Exit;
+    End;
+
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        If Client.GetDocumentByPath(LibPath) = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+                'Open the PCB library in Altium first: the PCB server loads with it.');
+            Exit;
+        End;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If PcbLibPathProblem(PcbLib, LibPath) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY', PcbLibPathProblem(PcbLib, LibPath));
+        Exit;
+    End;
+
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+
+    Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+    If Via <> Nil Then
+    Begin
+        Via.X := FootprintOriginX(Footprint) + CoordFromUnits(X, UnitsStr);
+        Via.Y := FootprintOriginY(Footprint) + CoordFromUnits(Y, UnitsStr);
+        Via.Size := CoordFromUnits(Size, UnitsStr);
+        Via.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
+        Via.LowLayer := eTopLayer;
+        Via.HighLayer := eBottomLayer;
+
+        Footprint.AddPCBObject(Via);
+        { Same registration as the pad path: the backing board must see the
+          object too, or the save discards it. }
+        PcbLib.Board.AddPCBObject(Via);
+        PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+            c_Broadcast, PCBM_BoardRegisteration, Via.I_ObjectAddress);
+        PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
+            c_Broadcast, PCBM_BoardRegisteration, Via.I_ObjectAddress);
+
+        Result := BuildSuccessResponse(RequestId, '{"success":true,"kind":"via"}');
+    End
+    Else
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create via');
 
     PCBServer.PostProcess;
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -2680,7 +3207,7 @@ Begin
         End;
         FocusedPath := '';
         Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+        If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
         If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
         Begin
             ResetParameters;
@@ -2811,7 +3338,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -2905,7 +3432,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -3172,7 +3699,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -3509,7 +4036,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -3777,7 +4304,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -3976,7 +4503,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -4332,7 +4859,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
     Begin
@@ -4834,7 +5361,11 @@ Var
     LibPath, Data, CompName, ParamList, WithParamsStr : String;
     ParamLower, ParamText, WithDesigStr, DefDesig : String;
     Mpn, Manufacturer, Datasheet, FootprintName : String;
-    CompNum, I : Integer;
+    FileNames, LiveNames, Unsaved, Stale, Nm, Rest, DiffJson : String;
+    LiveLib : ISch_Lib;
+    LiveIter : ISch_Iterator;
+    LiveComp : ISch_Component;
+    CompNum, I, Tab : Integer;
     First, WithParams, WithDesignator : Boolean;
 Begin
     // Get library path from parameter or active document
@@ -4925,12 +5456,14 @@ Begin
 
     Data := '[';
     First := True;
+    FileNames := #9;
     For I := 0 To CompNum - 1 Do
     Begin
         If Not First Then Data := Data + ',';
         First := False;
         CompInfo := LibReader.ComponentInfos[I];
         CompName := CompInfo.CompName;
+        FileNames := FileNames + CompName + #9;
 
         { index is the stable addressing key: pass it as component_index to  }
         { any lib tool that resolves a component, to reach names with bytes   }
@@ -5017,7 +5550,59 @@ Begin
     SchServer.DestroyCompInfoReader(LibReader);
     Data := Data + ']';
 
-    Result := BuildSuccessResponse(RequestId, '{"count":' + IntToStr(CompNum) + ',"components":' + Data + '}');
+    { The list above is the SAVED file. When the library is open, compare it }
+    { with the symbols in memory (issue #88): a symbol renamed or added and  }
+    { not saved was listed under its old name, or not at all, and a caller   }
+    { naming it got a miss. Read only; nothing is saved or reopened.         }
+    DiffJson := '';
+    LiveLib := Nil;
+    Try LiveLib := SchServer.GetSchDocumentByPath(LibPath); Except LiveLib := Nil; End;
+    If (LiveLib <> Nil) And (LiveLib.ObjectId = eSchLib) Then
+    Begin
+        LiveNames := #9;
+        Unsaved := '';
+        LiveIter := LiveLib.SchLibIterator_Create;
+        Try
+            LiveIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            LiveComp := LiveIter.FirstSchObject;
+            While LiveComp <> Nil Do
+            Begin
+                Nm := '';
+                Try Nm := LiveComp.LibReference; Except End;
+                If (Nm <> '') And (Pos(#9 + Nm + #9, LiveNames) = 0) Then
+                Begin
+                    LiveNames := LiveNames + Nm + #9;
+                    If Pos(#9 + Nm + #9, FileNames) = 0 Then
+                    Begin
+                        If Unsaved <> '' Then Unsaved := Unsaved + ',';
+                        Unsaved := Unsaved + '"' + EscapeJsonString(Nm) + '"';
+                    End;
+                End;
+                LiveComp := LiveIter.NextSchObject;
+            End;
+        Finally
+            LiveLib.SchIterator_Destroy(LiveIter);
+        End;
+        Stale := '';
+        Rest := Copy(FileNames, 2, Length(FileNames));
+        While Rest <> '' Do
+        Begin
+            Tab := Pos(#9, Rest);
+            If Tab = 0 Then Tab := Length(Rest) + 1;
+            Nm := Copy(Rest, 1, Tab - 1);
+            Rest := Copy(Rest, Tab + 1, Length(Rest));
+            If (Nm <> '') And (Pos(#9 + Nm + #9, LiveNames) = 0) Then
+            Begin
+                If Stale <> '' Then Stale := Stale + ',';
+                Stale := Stale + '"' + EscapeJsonString(Nm) + '"';
+            End;
+        End;
+        DiffJson := ',"unsaved_symbols":[' + Unsaved + ']'
+            + ',"saved_names_not_in_open_library":[' + Stale + ']';
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{"count":' + IntToStr(CompNum)
+        + ',"components":' + Data + DiffJson + '}');
 End;
 
 { Lib_Search - case-insensitive substring search over all open SchLib docs. }
@@ -5479,7 +6064,7 @@ Begin
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
     If Doc <> Nil Then
-        Try FocusedPath := Doc.DM_FullPath; Except End;
+        Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
 
     If LibPath = '' Then
         LibPath := FocusedPath;
@@ -6533,7 +7118,7 @@ Begin
 
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If SourceLibPath = '' Then SourceLibPath := FocusedPath;
     If SourceLibPath = '' Then
     Begin
@@ -7187,7 +7772,7 @@ Begin
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
     If Doc <> Nil Then
-        Try FocusedPath := Doc.DM_FullPath; Except End;
+        Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
 
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
@@ -7595,7 +8180,7 @@ Begin
 
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -7876,7 +8461,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -9300,7 +9885,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -9383,7 +9968,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -9506,7 +10091,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -9689,7 +10274,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -10231,7 +10816,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -10857,7 +11442,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -11032,6 +11617,7 @@ Begin
                 End;
             Except End;
             PadsJson := PadsJson +
+                ',"paste_top_enabled":' + PadPasteTopJson(Pad) +
                 ',"paste_expansion_mm":' + FloatToJsonStr(ExpVal) +
                 ',"paste_expansion_source":"' + ExpSrc + '"' +
                 ',"paste_expansion_state":"'
@@ -11148,7 +11734,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -11264,6 +11850,36 @@ Begin
                     If PlatedStr <> '' Then
                     Begin
                         Try Pad.Plated := (PlatedStr = 'true') Or (PlatedStr = '1');
+                        Except Ok := False; End;
+                    End;
+
+                    { The top paste opening's on/off flag (issue #80). Set on
+                      its own, apart from the expansion below. }
+                    Str := LowerCase(ExtractJsonValue(Params, 'paste_top_enabled'));
+                    If (Str = 'true') Or (Str = 'false') Then
+                    Begin
+                        { Read back: this build accepts the write without
+                          error, so a flag that did not change is a failed
+                          write, not a success. MEASURED (AD 26.11): the flag
+                          is kept only while the paste expansion is manual,
+                          as via tenting is with the mask. A rule-driven
+                          paste is switched to manual first, at the value it
+                          already holds, and the note says so. }
+                        Try
+                            Cache := Pad.GetState_Cache;
+                            If Cache.PasteMaskExpansionValid <> eCacheManual Then
+                            Begin
+                                Cache.PasteMaskExpansionValid := eCacheManual;
+                                Pad.SetState_Cache := Cache;
+                                If Pos('paste manual', Notes) = 0 Then
+                                    Notes := Notes + 'paste manual: a rule-driven paste expansion '
+                                        + 'was made manual at its current value so the paste '
+                                        + 'flag would hold;';
+                            End;
+                        Except Ok := False; End;
+                        Try
+                            Pad.SetState_IsTopPasteEnabled(Str = 'true');
+                            If Pad.GetState_IsTopPasteEnabled <> (Str = 'true') Then Ok := False;
                         Except Ok := False; End;
                     End;
 
@@ -11427,7 +12043,7 @@ Begin
     End;
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -12843,7 +13459,7 @@ Begin
 
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -12865,7 +13481,7 @@ Begin
     { whichever one did.                                                     }
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
@@ -13198,7 +13814,9 @@ Var
     Footprint : IPCB_LibComponent;
     Body : IPCB_ComponentBody;
     LayerStr, Wanted, FpName, Found, Items, Seen, Addr, FromJson : String;
-    Want, Was : TLayer;
+    KeepStr, KeepIds, Tok : String;
+    Want, Was, KeepL : TLayer;
+    CommaPos : Integer;
     Footprints, Bodies, Moved, Already, NoBody, FpMoved, FpBodies : Integer;
 Begin
     LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
@@ -13234,6 +13852,39 @@ Begin
             LayerStr + ' is not a mechanical layer. A 3D body lives on a '
             + 'mechanical layer, the way Altium''s own body dialog offers it.');
         Exit;
+    End;
+
+    { keep_layers (issue #82): bodies already on one of these layers stay
+      where they are. The target is always kept. Every name is resolved
+      before anything is walked, so an unknown one refuses the whole call. }
+    KeepStr := ExtractJsonValue(Params, 'keep_layers');
+    KeepIds := #9 + IntToStr(Want) + #9;
+    While Trim(KeepStr) <> '' Do
+    Begin
+        CommaPos := Pos(',', KeepStr);
+        If CommaPos > 0 Then
+        Begin
+            Tok := Trim(Copy(KeepStr, 1, CommaPos - 1));
+            KeepStr := Copy(KeepStr, CommaPos + 1, Length(KeepStr));
+        End
+        Else
+        Begin
+            Tok := Trim(KeepStr);
+            KeepStr := '';
+        End;
+        If Tok <> '' Then
+        Begin
+            KeepL := eNoLayer;
+            Try KeepL := ResolveLayerId(PcbLib.Board, Tok); Except KeepL := eNoLayer; End;
+            If KeepL = eNoLayer Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+                    'Unknown keep layer: ' + Tok + '. Nothing was moved. '
+                    + BoardLayerNamesHint(PcbLib.Board));
+                Exit;
+            End;
+            KeepIds := KeepIds + IntToStr(KeepL) + #9;
+        End;
     End;
 
     Footprints := 0;
@@ -13275,7 +13926,7 @@ Begin
                                 Seen := Seen + Addr + #9;
                                 FpBodies := FpBodies + 1;
                                 Was := Body.Layer;
-                                If Was = Want Then
+                                If (Was = Want) Or (Pos(#9 + IntToStr(Was) + #9, KeepIds) > 0) Then
                                     Already := Already + 1
                                 Else
                                 Begin
@@ -13860,7 +14511,7 @@ Begin
 
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If LibPath = '' Then LibPath := FocusedPath;
     If LibPath = '' Then
     Begin
@@ -13879,7 +14530,7 @@ Begin
 
     FocusedPath := '';
     Doc := Workspace.DM_FocusedDocument;
-    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
     If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
@@ -16072,6 +16723,7 @@ End;
 Function LibActionAddsToFootprint(Action : String) : Boolean;
 Begin
     Result := (Action = 'add_footprint_pad')
+           Or (Action = 'add_footprint_via')
            Or (Action = 'add_footprint_pads')
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')
@@ -16253,6 +16905,10 @@ Begin
         'add_symbol_lines':     Result := Lib_AddSymbolLines(Params, RequestId);
         'create_footprint':     Result := Lib_CreateFootprint(Params, RequestId);
         'add_footprint_pad':    Result := Lib_AddFootprintPad(Params, RequestId);
+        'add_footprint_via':    Result := Lib_AddFootprintVia(Params, RequestId);
+        'get_library_origin':   Result := Lib_GetLibraryOrigin(Params, RequestId);
+        'count_layer_objects':  Result := Lib_CountLayerObjects(Params, RequestId);
+        'set_via_properties':   Result := Lib_SetViaProperties(Params, RequestId);
         'add_footprint_pads':   Result := Lib_AddFootprintPads(Params, RequestId);
         'add_footprint_track':  Result := Lib_AddFootprintTrack(Params, RequestId);
         'add_footprint_tracks': Result := Lib_AddFootprintTracks(Params, RequestId);

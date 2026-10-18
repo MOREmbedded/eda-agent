@@ -1392,7 +1392,9 @@ Begin
     Result := StringReplace(Result, '_', '', -1);
     Result := StringReplace(Result, '-', '', -1);
     { The leading 'e' is Altium's convention and the first thing a caller
-      drops. No type here is ambiguous once it is gone. }
+      drops. A name that itself starts with 'e' (ellipse) loses its own
+      first letter, so a caller that must match the bare name checks it
+      before normalizing. }
     If (Length(Result) > 1) And (Copy(Result, 1, 1) = 'e') Then
         Result := Copy(Result, 2, Length(Result));
 End;
