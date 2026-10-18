@@ -44,6 +44,24 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### Fab output verification, and finding where time goes
+
+- `pcb_check_fab_output`: reads an exported Gerber/Excellon package back
+  and compares it against the live board - copper layer count vs the
+  stackup, outline size, drill hits vs pads and vias, and minimum drill
+  and feature size against fab limits you supply. eda-agent could write
+  a fab package but never read one, so the artifact that actually gets
+  manufactured was unverified. Needs the optional `[gerber]` extra
+  (gerbonara, Apache-2.0, Python 3.12+). The outline check subtracts the
+  stroke width, since a Gerber bounding box spans the ink and a 20 mm
+  board drawn with a 0.2 mm pen measures 20.2 mm.
+- `eda-agent perf`: reports where call time goes by joining the two logs
+  already being written - `bridge_trace.log` (the round trip the caller
+  saw) and `activity.log` (the handler time inside Altium) - on the
+  request id. Every existing view read only the second, so the gap
+  between them, which is IPC plus time queued behind another call, had
+  never been visible.
+
 #### Board artwork, offline library reads, part labels and datasheets
 
 - `pcb_place_image`: raster artwork (silkscreen logo, QR code) as PCB
@@ -95,6 +113,14 @@ companies without re-stating their conventions on every call. See
 
 ### Fixed
 
+- The README claimed "~10 ms per call in active mode". That is the
+  poll interval, not a measured round trip, and the Pascal side notes
+  the timer floor is really about 16 ms. Both occurrences now say what
+  the number is, and point at `eda-agent perf` for the measured one.
+- Five CLI commands carried whole paragraphs in argparse's `help=`,
+  which it reprints in the top-level command list, making the list
+  unreadable. Moved to `epilog=`, so each subcommand's own `--help`
+  still carries every word.
 - Reading an owner profile no longer raises. It is read during server
   startup and on the pad-authoring path, where a malformed JSON file
   took the whole MCP server down and broke `lib_add_footprint_pad`, and

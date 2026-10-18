@@ -65,6 +65,15 @@ render = [
 kicad = [
     "kicad-python>=0.7",
 ]
+# Reading an exported fab package back (pcb_check_fab_output). gerbonara
+# handles Gerber and Excellon in one library and is Apache-2.0, like this
+# project. It is an extra rather than a core dependency for two reasons:
+# it requires Python 3.12 while eda-agent supports 3.11, and installing
+# it pulls a web-server stack (quart, hypercorn) plus native rtree for
+# its optional viewer, none of which the parsing path imports.
+gerber = [
+    "gerbonara>=1.6,<2; python_version >= '3.12'",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

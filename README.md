@@ -19,6 +19,8 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
 - [Tool count (clients that cap it)](#tool-count-clients-that-cap-it)
+- [Checking the fab package](#checking-the-fab-package) - verify what you are about to send
+- [Measuring performance](#measuring-performance) - where call time actually goes
 - [Part sourcing](#part-sourcing)
 - [Example use cases](#example-use-cases)
 - [Known limitations](#known-limitations) - read this before trusting it with a real design
@@ -81,6 +83,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - **DelphiScript trap linter**: `scripts/altium/lint.py` (wired into `build.py`) scans the Pascal sources for known parser hazards - `Cardinal()` casts, malformed hex literals, empty `.Add('')` arguments, braces inside comments, fixed-size arrays as function locals, reserved-word identifiers - and fails the build before a bad deploy
 - **Activity logs**: every command is appended to `workspace/activity.log` (CSV with timestamps, durations, command name, response size). The bridge also writes `bridge_trace.log` for IPC-level diagnostics. On the Python side, a rotating, size-capped, secret-redacting JSON-lines log (`%USERPROFILE%\EDA Agent\logs\eda_agent.log` by default) runs alongside the server's existing stderr logging - see [Configuration](#configuration)
 - **Engineering tools**: IPC-7351B footprint calculation and library validation (offline and against a live SchLib/PcbLib pair), owner naming/rules policies, design-intent validation, LTspice batch runs, pre-ECO schematic/PCB diff, and read/write access to an Altium 365 workspace through Nexar. Full detail, including which parts are offline-tested versus unverified against live Altium/Nexar, is in [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md)
+- **Fab output verification**: `pcb_check_fab_output` reads an exported Gerber/Excellon package back and compares it against the live board - copper layer count vs the stackup, outline size, drill hits vs pads and vias, and minimum drill/feature against your fab's limits. Closes a loop that was open: eda-agent could write a fab package but never read one. See [Checking the fab package](#checking-the-fab-package)
 - **Logo / artwork on the board**: `pcb_place_image` turns a PNG or BMP into PCB region primitives (silkscreen logo, QR code, artwork). The image is decomposed into non-overlapping rectangles rather than traced outlines, so nothing is approximated away from the source art and holes need no special handling. Plans by default (`dry_run=True`) and reports the primitive count first, because anti-aliased artwork can decompose into thousands of pieces, with a `max_regions` cap that a photograph will hit immediately. Verified on a live board: an asymmetric test glyph was placed and read back to confirm scale, origin corner and layer, and that the art is neither mirrored nor flipped
 - **Headless library reads**: `lib_read_pcblib_headers` parses a `.PcbLib`'s footprint names, pad counts, heights and descriptions straight out of the OLE container with Altium closed (the `.SchLib` side already backs the `altium_local` provider and the offline review). Pad geometry stays a live read: it lives in Altium's binary primitive region, which this project does not reverse-engineer without ground truth
 - **Owner profiles**: per-workspace house style (footprint-authoring defaults like pad corner rounding, design rules, fab/stackup profiles, naming conventions, schematic units/grid, project templates), auto-discovered from a project-local `.eda-agent/profile/` or a centrally-switched `eda-agent profile-use <name>`. See [docs/PROFILES.md](docs/PROFILES.md)
@@ -264,6 +267,46 @@ In short: the **workspace** is how the two halves of this server reach
 each other and you mostly set it once and forget it; a **profile** is
 what you want the output to look like, and is worth revisiting whenever
 you change who you are working for.
+
+## Checking the fab package
+
+`proj_run_outjob` writes Gerbers, NC drill and pick-and-place. Until
+recently nothing ever read them back, which left the one artifact that
+actually gets manufactured write-only and unverified.
+
+`pcb_check_fab_output` reads an exported folder and compares it against
+the live board:
+
+| Check | Against |
+|---|---|
+| copper layer count | the board stackup |
+| outline width and height | `pcb_get_board_outline` |
+| drill hit count | pads with holes, plus vias |
+| smallest drill | a fab minimum you supply |
+| smallest copper feature | a fab minimum you supply (warning only) |
+
+`checks_run` in the response names what was actually compared, so a
+check that could not run is never mistaken for one that passed. If a
+board read fails, that check is skipped and said so; the rest still run.
+
+Two details worth knowing. A Gerber bounding box spans the drawn ink,
+and a board outline is a stroked path whose centreline is the real
+edge, so a 20 mm board drawn with a 0.2 mm pen measures 20.2 mm. The
+stroke is subtracted and reported as `stroke_mm`, with the raw figure
+kept alongside. And the smallest-feature check is a **warning**, never
+an error, because apertures cover pads and text as well as tracks.
+
+Needs the optional extra, which brings in
+[gerbonara](https://pypi.org/project/gerbonara/) (Apache-2.0, Gerber and
+Excellon in one library):
+
+```bash
+pip install -e .[gerber]
+```
+
+It requires Python 3.12+, while eda-agent itself supports 3.11, which is
+why it is an extra rather than a core dependency. Without it the tool
+says so plainly instead of failing obscurely.
 
 ## Measuring performance
 

@@ -13,6 +13,7 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from ..bridge import get_bridge
+from ..bridge.exceptions import AltiumError
 from ..placement import (
     BoardRegion,
     PlaceComp,
@@ -7027,3 +7028,101 @@ def register_pcb_tools(mcp):
                 "layer": layer,
             },
         )
+
+    @mcp.tool()
+    async def pcb_check_fab_output(
+        directory: str,
+        min_drill_mm: float = 0.0,
+        min_feature_mm: float = 0.0,
+        board_name: str = "board",
+    ) -> dict[str, Any]:
+        """Read an exported fab package back and check it against the board.
+
+        Closes a loop that was open: `proj_run_outjob` writes Gerbers,
+        NC drill and pick-and-place, and until now nothing ever read
+        them again. The package is what actually gets manufactured, so
+        "does it match the board I designed" is worth asking before it
+        is sent.
+
+        Reads the directory with gerbonara (Gerber and Excellon), then
+        compares against live reads of this board: copper layer count
+        against the stackup, outline size against the board outline, and
+        drill hits against pads with holes plus vias.
+
+        Needs the optional extra: `pip install eda-agent[gerber]`
+        (Python 3.12+). Without it the tool says so rather than failing
+        obscurely.
+
+        Args:
+            directory: the exported fab folder.
+            min_drill_mm: the fab's smallest drill; 0 skips the check.
+            min_feature_mm: the fab's smallest track/space; 0 skips it.
+                Reported as a warning, never an error, because apertures
+                cover pads and text as well as tracks.
+            board_name: passed to the Gerber reader instead of letting it
+                infer one, which avoids an upstream crash on short file
+                names.
+
+        Returns:
+            ok, passed, checks_run, counts, findings and the package
+            summary. `checks_run` names what was actually compared, so a
+            check that could not run is never mistaken for a pass.
+        """
+        from ..fileio.gerber_check import compare_with_board, summarise_package
+
+        summary = summarise_package(directory, board_name=board_name)
+        if not summary.get("ok"):
+            return {"ok": False, "reason": summary.get("reason"),
+                    "files": summary.get("files", [])}
+
+        board: dict[str, Any] = {}
+        bridge = get_bridge()
+        try:
+            stackup = await bridge.send_command_async("pcb.get_layer_stackup", {})
+            layers = stackup.get("layers") if isinstance(stackup, dict) else None
+            if isinstance(layers, list):
+                copper = [l for l in layers
+                          if "copper" in str(l.get("type", "")).lower()
+                          or "signal" in str(l.get("type", "")).lower()
+                          or "plane" in str(l.get("type", "")).lower()]
+                if copper:
+                    board["copper_layers"] = len(copper)
+        except (AltiumError, KeyError, TypeError, ValueError, OSError):
+            pass  # a check without an input is simply not run
+
+        try:
+            outline = await bridge.send_command_async("pcb.get_board_outline", {})
+            if isinstance(outline, dict):
+                width = outline.get("width_mm") or outline.get("width")
+                height = outline.get("height_mm") or outline.get("height")
+                if width and height:
+                    board["outline_mm"] = {"width": float(width),
+                                           "height": float(height)}
+        except (AltiumError, KeyError, TypeError, ValueError, OSError):
+            pass
+
+        try:
+            holes = 0
+            vias = await bridge.send_command_async("pcb.get_vias", {})
+            if isinstance(vias, dict):
+                holes += len(vias.get("vias") or [])
+            pads = await bridge.send_command_async(
+                "pcb.get_pad_properties", {"limit": "5000"})
+            if isinstance(pads, dict):
+                holes += sum(1 for p in (pads.get("pads") or [])
+                             if float(p.get("hole_size") or p.get("hole_mm") or 0) > 0)
+            board["hole_count"] = holes
+        except (AltiumError, KeyError, TypeError, ValueError, OSError):
+            pass
+
+        if min_drill_mm > 0:
+            board["min_drill_mm"] = min_drill_mm
+        if min_feature_mm > 0:
+            board["min_feature_mm"] = min_feature_mm
+
+        result = compare_with_board(summary, board)
+        result["board"] = board
+        if not board:
+            result["note"] = ("no board data could be read, so only the "
+                              "package's own consistency was checked")
+        return result
