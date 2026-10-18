@@ -56,6 +56,38 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### Ten calculators, on the CLI as well as the tool surface
+
+`calc-spacing`, `calc-fusing`, `calc-via`, `calc-spiral`,
+`calc-reactance`, `calc-resonance`, `calc-wavelength`, `calc-pdn`,
+`calc-padstack` and `calc-wire`, each also an MCP tool
+(`pcb_calc_conductor_spacing` and so on). The maths lives in
+`engineering/pcb_calc.py` so it is testable without a tool surface, and
+the argparse subcommands are generated from one table so a flag cannot
+drift from the parameter it fills.
+
+- **Every result states how much to trust it**, in a `status` field:
+  `exact` for a definition, `published` for a named standard or
+  textbook closed form, `estimate` for a rule of thumb. The convention
+  is borrowed from pcb-toolkit, which had the right instinct: an
+  algebraic identity and a rule of thumb must not arrive looking alike,
+  or the rule of thumb ends up in a specification.
+- **Conductor spacing is transcribed from secondary reproductions** of
+  IPC-2221 Table 6-1, because the IPC document is not freely available,
+  and two reproductions disagree on two cells. The larger value is
+  taken wherever they conflict, since a wider spacing is never the
+  unsafe mistake, and both figures are reported in `disputed` rather
+  than the disagreement being settled silently.
+- **Fusing current says when it has left its range.** Onderdonk is
+  adiabatic; past a second or so a track sheds heat into the laminate
+  and the answer falls below the track's own continuous IPC-2221
+  rating, which is the formula failing rather than a result.
+- Implemented in Python rather than by calling
+  [pcb-toolkit](https://github.com/akiselev/pcb-toolkit) (Rust, MIT OR
+  Apache-2.0), whose coverage is wider and upstream-validated, because
+  its CLI is not published as a binary: using it would mean every user
+  installs a Rust toolchain and builds from source.
+
 #### Finding a replacement part
 
 - `part_find_replacements`: judges candidate substitutes on
@@ -148,6 +180,12 @@ companies without re-stating their conventions on every call. See
 
 ### Fixed
 
+- **Ten new calculators were invisible on the Altium backend.** They
+  were added to `register_calc_tools`, which runs only for KiCad and
+  EasyEDA because the names in it duplicate what `tools/pcb.py` already
+  gives Altium. These ten have no Altium counterpart, so the opposite
+  rule applies and they now register on every backend. Caught by the
+  generated tool reference, not by any test of the tools themselves.
 - **Four of the five distributor providers described data their parsers
   never read.** Digi-Key's, Mouser's and element14's class descriptions
   promised lifecycle or stock and none of the three requested any

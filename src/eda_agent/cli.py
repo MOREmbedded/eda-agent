@@ -497,3 +497,158 @@ def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
         print(f"  No calls logged yet in {workspace}.", file=sys.stderr)
         print("  Run some tools against Altium, then try again.", file=sys.stderr)
     return 0
+
+
+# --------------------------------------------------------------------------
+# Calculators
+# --------------------------------------------------------------------------
+#
+# One table drives three things: the argparse subcommands, the CLI
+# dispatch, and the test that checks the two agree. Ten calculators
+# wired up by hand would be ten chances for a flag name in the parser
+# to drift from the parameter it fills, and argparse reports that as a
+# TypeError at the moment the user runs it.
+#
+# Flat hyphenated verbs (calc-spacing, not "calc spacing") because that
+# is this CLI's existing shape; nesting would make these the only
+# nested commands in it.
+
+#: verb -> (function name in engineering.pcb_calc, one-line help,
+#:          [(flag, type, default, help), ...])
+#: A default of None marks a REQUIRED positional-style option.
+CALC_COMMANDS: dict = {
+    "calc-spacing": (
+        "ipc2221_spacing",
+        "Minimum conductor spacing for a voltage (IPC-2221 Table 6-1)",
+        [("voltage", float, None, "DC or AC peak BETWEEN CONDUCTORS, volts"),
+         ("environment", str, "B2",
+          "B1 internal, B2 external uncoated, B3 above 3050 m, "
+          "B4 polymer coated, A5 conformal coated, A6 bare leads, "
+          "A7 coated leads")],
+    ),
+    "calc-fusing": (
+        "fusing_current",
+        "Current that MELTS a track in a given time (Onderdonk)",
+        [("width_mils", float, None, "Track width, mils"),
+         ("copper_oz", float, 1.0, "Copper weight, oz/ft^2"),
+         ("time_s", float, 1.0, "Duration, seconds (trust under ~1 s)"),
+         ("ambient_c", float, 25.0, "Ambient temperature, degC")],
+    ),
+    "calc-via": (
+        "via_parasitics",
+        "Via inductance, capacitance and barrel resistance",
+        [("drill_mils", float, None, "Finished hole diameter, mils"),
+         ("length_mils", float, None, "Barrel length (board thickness), mils"),
+         ("pad_mils", float, 0.0, "Pad diameter, mils (needed for C)"),
+         ("antipad_mils", float, 0.0,
+          "Antipad diameter, mils; must exceed the pad"),
+         ("dielectric_constant", float, 4.3, "Relative permittivity"),
+         ("plating_mils", float, 1.0, "Barrel plating thickness, mils")],
+    ),
+    "calc-spiral": (
+        "spiral_inductor",
+        "Planar spiral inductance (Mohan's modified Wheeler)",
+        [("turns", float, None, "Number of turns"),
+         ("outer_diameter_mils", float, None, "Outer diameter, mils"),
+         ("inner_diameter_mils", float, None, "Inner diameter, mils"),
+         ("shape", str, "square", "square, hexagonal or octagonal")],
+    ),
+    "calc-reactance": (
+        "reactance",
+        "Capacitive and inductive reactance at a frequency",
+        [("frequency_hz", float, None, "Frequency, Hz"),
+         ("capacitance_f", float, 0.0, "Capacitance, farads"),
+         ("inductance_h", float, 0.0, "Inductance, henries")],
+    ),
+    "calc-resonance": (
+        "resonant_frequency",
+        "LC resonant frequency and characteristic impedance",
+        [("inductance_h", float, None, "Inductance, henries"),
+         ("capacitance_f", float, None, "Capacitance, farads")],
+    ),
+    "calc-wavelength": (
+        "wavelength_in_dielectric",
+        "Wavelength in a dielectric, with quarter- and twentieth-wave",
+        [("frequency_hz", float, None, "Frequency, Hz"),
+         ("dielectric_constant", float, 4.3, "Relative permittivity")],
+    ),
+    "calc-pdn": (
+        "pdn_target_impedance",
+        "Target power-distribution-network impedance",
+        [("voltage_v", float, None, "Rail voltage, volts"),
+         ("ripple_percent", float, None, "Allowed ripple, percent of rail"),
+         ("transient_current_a", float, None, "Transient step, amps")],
+    ),
+    "calc-padstack": (
+        "padstack_geometry",
+        "Pad and antipad diameters, and the gap between neighbours",
+        [("drill_mils", float, None, "Finished hole diameter, mils"),
+         ("annular_ring_mils", float, None, "Annular ring, mils"),
+         ("pitch_mils", float, 0.0, "Neighbour pitch, mils"),
+         ("clearance_mils", float, 0.0, "Plane clearance, mils")],
+    ),
+    "calc-wire": (
+        "awg_properties",
+        "AWG wire diameter, area and resistance",
+        [("awg", float, None, "Gauge; -1 is 00, -2 is 000, -3 is 0000"),
+         ("length_m", float, 1.0, "Length, metres"),
+         ("temperature_c", float, 20.0, "Conductor temperature, degC")],
+    ),
+}
+
+
+def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
+    """Run one calculator and print it.
+
+    Exit code 1 on a refusal, so a shell script can tell "this geometry
+    is impossible" from "here is your answer" without parsing the text.
+    """
+    import json as _json
+
+    from . import engineering as _eng  # noqa: F401  (package import)
+    from .engineering import pcb_calc
+
+    entry = CALC_COMMANDS.get(verb)
+    if entry is None:
+        print(f"unknown calculator {verb!r}", file=sys.stderr)
+        return 2
+    fn_name, _help, params = entry
+    kwargs = {name: values.get(name) for name, _t, _d, _h in params}
+    result = getattr(pcb_calc, fn_name)(**kwargs)
+
+    if as_json:
+        print(_json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+
+    if not result.get("ok"):
+        print(f"Cannot compute: {result.get('reason', 'no reason given')}",
+              file=sys.stderr)
+        return 1
+
+    # Ordered so the answer comes first and the caveats last, which is
+    # the order they matter in and the opposite of dict insertion for
+    # several of these.
+    skip = {"ok", "status", "source", "note", "warning", "out_of_range",
+            "disputed"}
+    print(f"{verb}  [{result['status']}]")
+    for key, value in result.items():
+        if key in skip:
+            continue
+        print(f"  {key:28} {value}")
+    if result.get("source"):
+        print(f"  source: {result['source']}")
+    # The caveats go to stderr so a shell can keep the figures alone on
+    # stdout, which means they are UNBUFFERED while the numbers above
+    # are not: without this flush they arrive first and read as a
+    # warning about the previous command.
+    sys.stdout.flush()
+    for key in ("note", "warning", "out_of_range"):
+        if result.get(key):
+            print(f"  {key.upper().replace('_', ' ')}: {result[key]}",
+                  file=sys.stderr)
+    if result.get("disputed"):
+        d = result["disputed"]
+        print(f"  DISPUTED: sources disagree; took {d['taken']} mm, the "
+              f"other reproduction says {d['other_source_says']} mm",
+              file=sys.stderr)
+    return 0

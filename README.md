@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 570 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 580 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -16,6 +16,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Requirements](#requirements)
 - [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
+- [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
 - [Tool count (clients that cap it)](#tool-count-clients-that-cap-it)
@@ -64,7 +65,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **~570 tools on the default Altium backend** (650+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
+- **~580 tools on the default Altium backend** (660+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
 - **Bulk batch primitives**: `obj_batch_modify`, `obj_batch_create`, `obj_batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `sch_place_wires`, `place_net_labels`, `place_power_ports`, `sch_place_components`, `sch_set_components_parameters`, `get_sch_doc_pins`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
@@ -426,6 +427,67 @@ argument names - some are not what they look like (`current_amps`, not
 `current_a`), and the same tool can differ between backends. Prefer `full`
 (the default) unless your client forces otherwise.
 
+## Calculators
+
+Ten calculators that this project did not have, each reachable as an MCP
+tool and as a CLI verb:
+
+```bash
+eda-agent calc-spacing --voltage 280 --environment B2
+```
+
+| CLI verb | Tool | Answers |
+|---|---|---|
+| `calc-spacing` | `pcb_calc_conductor_spacing` | Minimum conductor spacing for a voltage (IPC-2221 Table 6-1) |
+| `calc-fusing` | `pcb_calc_fusing_current` | Current that melts a track in a given time (Onderdonk) |
+| `calc-via` | `pcb_calc_via_parasitics` | Via inductance, capacitance, barrel resistance |
+| `calc-spiral` | `pcb_calc_spiral_inductor` | Planar spiral inductance (modified Wheeler) |
+| `calc-reactance` | `pcb_calc_reactance` | Capacitive and inductive reactance |
+| `calc-resonance` | `pcb_calc_resonance` | LC resonance and characteristic impedance |
+| `calc-wavelength` | `pcb_calc_wavelength` | Wavelength, quarter-wave, twentieth-wave |
+| `calc-pdn` | `pcb_calc_pdn_target` | Target power-distribution impedance |
+| `calc-padstack` | `pcb_calc_padstack` | Pad and antipad sizes, gap to neighbours |
+| `calc-wire` | `pcb_calc_wire_gauge` | AWG diameter, area, resistance |
+
+They join the ones already here: `pcb_calc_impedance`,
+`pcb_calc_trace_width_for_current`, `pcb_calc_trace_width_for_impedance`,
+`pcb_calc_track_current_capacity`, `pcb_calc_termination`,
+`pcb_calc_thermal_vias`, `pcb_calc_length_match`.
+
+**Every result states how much to trust it**, in a `status` field:
+`exact` for a definition or an identity, `published` for a named
+standard or textbook closed form, `estimate` for a rule of thumb. An
+algebraic identity and a rule of thumb must not arrive looking alike,
+or the rule of thumb ends up in a specification. Add `--json` for the
+full reply; caveats go to stderr so stdout is only the figures.
+
+Two of these carry caveats worth repeating here:
+
+- **Conductor spacing** is transcribed from secondary reproductions of
+  IPC-2221 Table 6-1, because the IPC document is not freely available,
+  and two reproductions disagree on two cells. The larger value is
+  taken wherever they conflict, since a wider spacing is never the
+  unsafe mistake, and the disagreement is reported rather than decided
+  silently. Verify against the IPC publication before a design review
+  relies on it. The voltage is the one **between conductors**, not the
+  supply rail.
+- **Fusing current** is the destruction limit, not a rating, and
+  Onderdonk is adiabatic: good under about a second, and far too low
+  beyond that, where a track sheds heat into the laminate. Results past
+  one second say so.
+
+### Why these are native Python
+
+The obvious way to get them was to call
+[pcb-toolkit](https://github.com/akiselev/pcb-toolkit) (Rust, MIT OR
+Apache-2.0), whose coverage is wider and whose figures are
+upstream-validated. But its CLI is not published as a binary, so using
+it means every user installs a Rust toolchain and builds from source.
+Calculators that only work for people who did that are not calculators
+this server can rely on, so they are implemented here instead, from the
+same published sources. The `status` convention is pcb-toolkit's own
+idea, and a good one.
+
 ## Part sourcing
 
 `part_search` queries every enabled provider and merges the results, each
@@ -722,6 +784,20 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent profile-show [--json]` | Show the profile actually in effect for the current directory |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
+| `eda-agent calc-spacing --voltage V [--environment B2]` | Minimum conductor spacing for a voltage (IPC-2221) |
+| `eda-agent calc-fusing --width-mils W [--copper-oz 1] [--time-s 1]` | Current that melts a track in a given time (Onderdonk) |
+| `eda-agent calc-via --drill-mils D --length-mils L` | Via inductance, capacitance and barrel resistance |
+| `eda-agent calc-spiral --turns N --outer-diameter-mils D --inner-diameter-mils d` | Planar spiral inductance |
+| `eda-agent calc-reactance --frequency-hz F [--capacitance-f C] [--inductance-h L]` | Reactance at a frequency |
+| `eda-agent calc-resonance --inductance-h L --capacitance-f C` | LC resonance and characteristic impedance |
+| `eda-agent calc-wavelength --frequency-hz F [--dielectric-constant 4.3]` | Wavelength, quarter-wave and twentieth-wave |
+| `eda-agent calc-pdn --voltage-v V --ripple-percent P --transient-current-a I` | Target power-distribution impedance |
+| `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
+| `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
+
+Every `calc-*` verb takes `--json` for the full reply and exits non-zero
+on a refusal, so a script can tell "this geometry is impossible" from
+"here is your answer". See [Calculators](#calculators).
 
 ## Configuration
 

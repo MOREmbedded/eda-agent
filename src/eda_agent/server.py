@@ -603,6 +603,14 @@ def main() -> int:
     IMPORTANT: when invoked with no arguments, this MUST start the MCP
     server on stdio -- MCP-compatible clients rely on that behaviour.
     """
+    # Lazy import, but earlier than the dispatch below needs it: the
+    # calculator subcommands are GENERATED from cli.CALC_COMMANDS, so
+    # the table has to exist before the parser is built. Still cheap --
+    # cli pulls in os/shutil/sys/pathlib only, and everything heavier
+    # in it is imported inside the function that needs it, so the
+    # no-argument MCP stdio path is unaffected.
+    from . import cli
+
     parser = argparse.ArgumentParser(
         prog="eda-agent",
         description=(
@@ -838,6 +846,30 @@ def main() -> int:
              "alone (this merges, it does not replace the directory).")
 
     # dashboard -- local web UI for the MCP bridge
+    # --- calculators -------------------------------------------------
+    # Generated from cli.CALC_COMMANDS so a flag cannot drift from the
+    # parameter it fills. Ten hand-written blocks would be ten chances
+    # for that, and argparse reports the mismatch as a TypeError at the
+    # moment the user runs the command.
+    for _verb, (_fn, _help, _params) in cli.CALC_COMMANDS.items():
+        _p = subparsers.add_parser(
+            _verb, help=_help,
+            epilog=("Every calculator reports a `status`: exact (a "
+                    "definition), published (a named standard or "
+                    "textbook closed form) or estimate (a rule of "
+                    "thumb). Use --json for the full reply."))
+        for _name, _type, _default, _phelp in _params:
+            if _default is None:
+                _p.add_argument(f"--{_name.replace('_', '-')}",
+                                dest=_name, type=_type, required=True,
+                                help=_phelp)
+            else:
+                _p.add_argument(f"--{_name.replace('_', '-')}",
+                                dest=_name, type=_type, default=_default,
+                                help=f"{_phelp} (default: {_default})")
+        _p.add_argument("--json", dest="json_out", action="store_true",
+                        help="Print the full reply as JSON.")
+
     dash_p = subparsers.add_parser(
         "dashboard",
         help="Launch the local web dashboard (http://127.0.0.1:8766).",
@@ -982,9 +1014,6 @@ def main() -> int:
         )
         return serve_mcp(no_dashboard=no_dash)
 
-    # Lazy import -- keeps the hot stdio path free of CLI-only deps.
-    from . import cli
-
     if args.command == "scripts-path":
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
@@ -1114,6 +1143,13 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
+
+    if args.command in cli.CALC_COMMANDS:
+        _, _, params = cli.CALC_COMMANDS[args.command]
+        return cli.cmd_calc(
+            args.command,
+            {name: getattr(args, name) for name, _t, _d, _h in params},
+            as_json=args.json_out)
 
     parser.print_help(sys.stderr)
     return 2

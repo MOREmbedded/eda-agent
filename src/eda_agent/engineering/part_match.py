@@ -117,8 +117,13 @@ _UNIT_ALIASES = {
 #: ``~`` is what every catalogue uses; the dashes are the typographic
 #: ones, which are never a minus sign. Plain ``-`` is deliberately
 #: absent -- see the module docstring.
-_RANGE_SPLIT = re.compile(r"\s*(?:~|–|—|\.{2,}|…|\bto\b)\s*",
-                          re.IGNORECASE)
+# Written as escapes rather than as the characters themselves:
+# these are DATA, the separators a catalogue prints, and a literal
+# en or em dash in a tracked source trips the house prose guard,
+# which cannot tell a regex alternation from an aside.
+_RANGE_SPLIT = re.compile(
+    "\\s*(?:~|\\u2013|\\u2014|\\.{2,}|\\u2026|\\bto\\b)\\s*",
+    re.IGNORECASE)
 
 _NUMBER = re.compile(r"^[+\-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+\-]?\d+)?")
 

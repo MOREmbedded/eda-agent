@@ -110,7 +110,7 @@ def test_an_unreadable_value_is_none_rather_than_a_guess(text):
     ("-55°C ~ 125°C", -55.0, 125.0, "degc"),
     ("-40 to 85°C", -40.0, 85.0, "degc"),
     ("-40 ~ 125", -40.0, 125.0, ""),
-    ("1.8 V – 5.5 V", 1.8, 5.5, "V"),
+    ("1.8 V \u2013 5.5 V", 1.8, 5.5, "V"),   # en dash, written as an escape
 ])
 def test_a_range_parses_both_ends(text, low, high, unit):
     r = parse_range(text)

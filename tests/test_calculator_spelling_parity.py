@@ -190,10 +190,75 @@ def test_every_shared_calculator_is_covered_or_known_different(registries):
 
     shared = set.intersection(*(set(registries[b].names) for b in _BACKENDS))
     calculators = {n for n in shared if "_calc_" in n}
-    unexamined = calculators - set(_CASES) - known_different - already_agreed
+    unexamined = (calculators - set(_CASES) - known_different
+                  - already_agreed - _single_registration_calculators())
     assert not unexamined, (
         f"these shared calculators have never been checked for spelling "
         f"parity: {sorted(unexamined)}")
+
+
+def _single_registration_calculators() -> set[str]:
+    """Calculators defined ONCE and registered on every backend.
+
+    The spelling problem this file exists for comes from a tool being
+    DEFINED TWICE -- once in the Altium surface, once in the shared one
+    -- and the two definitions drifting on argument names. A calculator
+    that has a single definition cannot drift from itself, so there is
+    no pair of spellings to reconcile and an alias entry would be
+    inventing one.
+
+    Read from the source rather than listed by hand, so a calculator
+    moved into or out of register_pcb_calc_tools is reclassified
+    without anyone remembering to edit this.
+    """
+    import ast
+    from pathlib import Path
+
+    calc_py = (Path(__file__).resolve().parents[1] / "src" / "eda_agent"
+               / "tools" / "calc.py")
+    tree = ast.parse(calc_py.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (isinstance(node, ast.FunctionDef)
+                and node.name == "register_pcb_calc_tools"):
+            return {
+                inner.name
+                for inner in ast.walk(node)
+                if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and inner.name != "register_pcb_calc_tools"
+            }
+    raise AssertionError(
+        "register_pcb_calc_tools is gone from tools/calc.py. If its "
+        "calculators moved somewhere that defines them per backend, they "
+        "CAN drift on spelling again and belong in _CASES.")
+
+
+def test_the_single_registration_set_is_not_silently_empty():
+    """The exemption above is only safe while it is derived. An empty
+    set would make it a no-op that still reads like a check."""
+    names = _single_registration_calculators()
+    assert len(names) >= 5, names
+    assert all(n.startswith("pcb_calc_") for n in names), names
+
+
+def test_a_single_registration_calculator_is_not_also_defined_elsewhere(
+        registries):
+    """The exemption rests on there being ONE definition. If one of
+    these names also appears in the Altium-only surface, two definitions
+    exist again and the drift this file guards against is back."""
+    import ast
+    from pathlib import Path
+
+    pcb_py = (Path(__file__).resolve().parents[1] / "src" / "eda_agent"
+              / "tools" / "pcb.py")
+    defined_in_pcb = {
+        node.name
+        for node in ast.walk(ast.parse(pcb_py.read_text(encoding="utf-8")))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    clashes = sorted(_single_registration_calculators() & defined_in_pcb)
+    assert not clashes, (
+        f"these are registered for every backend AND defined again in the "
+        f"Altium surface, so the two can drift apart: {clashes}")
 
 
 @pytest.mark.parametrize("name", sorted(_CASES))
