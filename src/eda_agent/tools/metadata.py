@@ -141,6 +141,18 @@ _SIMULATOR_TOOLS = frozenset({
 # running, which is what "offline" means here.
 _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 
+# Offline tools inside an otherwise bridge-backed category. Listed one by
+# one rather than by making the whole category offline: `profile` is
+# mixed, and an allowlist mislabels a NEW tool as live_only (annoying)
+# where a category rule would mislabel it as offline (a broken promise
+# to anyone filtering for "works with Altium closed"). The `design`
+# category took the other option and drifted three times; see
+# test_maturity_matches_reality.
+_OFFLINE_TOOLS = frozenset({
+    # Read a profile directory off local disk; Altium is not involved.
+    "profile_show", "profile_list",
+})
+
 _ENGINEERING_EXTERNAL = frozenset({
     "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
     "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
@@ -490,7 +502,7 @@ def category_of(name: str) -> str:
 def _is_offline(name: str, category: str) -> bool:
     if name in _ENGINEERING_EXTERNAL:
         return False
-    if category in _OFFLINE_CATEGORIES:
+    if category in _OFFLINE_CATEGORIES or name in _OFFLINE_TOOLS:
         return True
     if name in _CALC_NEEDS_BRIDGE:
         return False

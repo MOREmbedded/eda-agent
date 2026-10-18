@@ -27,9 +27,11 @@ profile/
   footprint_defaults.json    # {"pad_corner_radius_pct": 1}
   footprint_policy.json      # design.footprint_policy's explicit policy dict
   document_settings.json     # schematic units/grid (see below)
-  templates/                  # project starter kits (plain files, copied as-is)
-    default/
+  templates/                  # plain files, copied as-is
+    default/                   #   a whole project (profile-new-project)
       ...
+    documents/                 #   single sheets/boards (profile_new_document)
+      A4_Titleblock.SchDoc
 ```
 
 `naming.json`, `company_goals.json`, `rules/*.json` and `fab_profiles/*.json`
@@ -94,6 +96,11 @@ eda-agent profile-validate [name|--here]  # load everything, report errors
 eda-agent profile-new-project <template> <dest> [--force]
 ```
 
+Single documents are the `profile_new_document` tool rather than a CLI
+command, because the useful half of it is opening the new sheet in the
+Altium session you already have in front of you.
+
+
 `profile-init acme` scaffolds `~/.eda-agent/profiles/acme/` with commented
 example files; `profile-init acme --here` scaffolds `.eda-agent/profile/` in
 the current directory instead, named "acme" in its `profile.json`, meant to
@@ -135,6 +142,9 @@ being picked up at all. Keys starting with `_` are left alone, so
   dict, ready for `design_load_fab_profile` / `design_synthesize_rules`.
 - `profile_apply_document_settings()` -- apply `document_settings.json`'s
   schematic units/grid to the current schematic (Altium backend only).
+- `profile_new_document(template, destination)` -- create a schematic or
+  board from one of the profile's `templates/documents/` files and open it
+  (Altium backend only).
 
 ## `footprint_defaults.json`
 
@@ -207,13 +217,58 @@ auto-applied to a live PCB document. A project template (below) sidesteps
 this for brand-new projects, since a template's own documents already carry
 whatever unit/grid state was saved into them.
 
-## `templates/<name>/`
+## `templates/<name>/` and `templates/documents/`
 
-Plain files, copied as-is by `profile-new-project <name> <dest>` -- Altium
-project files are just files on disk, so no DelphiScript is involved. Build
-a template by setting up a project the way you want new ones to start
-(units, grid, a starter schematic sheet, whatever), then copy its files into
-`templates/<name>/` inside the profile.
+Two kinds, kept apart because they are used differently.
+
+**Whole projects** live in `templates/<name>/`, one directory each, copied
+as-is by `profile-new-project <name> <dest>`. Altium project files are just
+files on disk, so no DelphiScript is involved. Build one by setting up a
+project the way you want new ones to start (units, grid, a starter sheet,
+whatever) and copying its files in.
+
+**Single documents** live in `templates/documents/`, one file each, used by
+the `profile_new_document` tool:
+
+```
+templates/
+  StarterProject/        <- a whole project, for profile-new-project
+    Board.PrjPcb
+    Sheet1.SchDoc
+  documents/             <- single sheets and boards
+    A4_Titleblock.SchDoc
+    FourLayer.PcbDoc
+```
+
+`profile_new_document("A4_Titleblock", "D:/work/Sheet2.SchDoc")` copies the
+template to that path and opens it in Altium. Altium exposes **no API that
+applies a document template** -- its own New Document makes a blank sheet,
+and so does the bridge's `create_document` -- so copying the file and
+opening it is what applying a template amounts to. Altium's own sheet
+templates are `.SchDot`, but a saved `.SchDoc` works just as well as a
+starting point and is easier to edit, so both are listed.
+
+The template's own extension always wins: asking for a `.SchDoc` template
+at a `.PcbDoc` destination would write a file Altium cannot open. An
+existing destination is refused unless `overwrite=True`, and if the copy
+succeeds but Altium will not open it, the result still reports the file
+that was written rather than losing it.
+
+### Not covered: preferences and Draftsman
+
+**Altium preferences** cannot be templated from here. There is no scripting
+API for the Preferences dialog: `app_get_preferences` reads the active
+*document's* grid and units, not DXP preferences, there is no writer, and
+dispatching `Tools|Preferences` as a process returns without opening
+anything. Reaching it would mean UI automation, which this project keeps
+for cases with no alternative.
+
+**Draftsman** documents are not supported at all -- no tool, no bridge
+command, no handler. That is a feature in its own right rather than a
+gap in this one.
+
+Document units and grid are a separate mechanism that *does* work: see
+`document_settings.json` above.
 
 ## What this does not cover yet
 

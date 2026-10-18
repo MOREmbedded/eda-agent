@@ -229,3 +229,26 @@ def test_new_project_refuses_a_nonempty_destination_without_force(tmp_path):
     rc = cli.cmd_profile_new_project("default", str(dest), force=True)
     assert rc == 0
     assert (dest / "stub.PrjPcb").exists()
+
+
+def test_profile_show_lists_document_templates_apart_from_projects(tmp_path, capsys):
+    """A document template is not a starter project.
+
+    profile-new-project refuses anything that is not a directory, so
+    showing the two under one heading would advertise a template that
+    the command it implies then rejects.
+    """
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    root = tmp_path / "home" / ".eda-agent" / "profiles" / "acme" / "templates"
+    (root / "StarterProject").mkdir(parents=True, exist_ok=True)
+    (root / "documents").mkdir(parents=True, exist_ok=True)
+    (root / "documents" / "A4_Titleblock.SchDoc").write_text("x", encoding="utf-8")
+
+    assert cli.cmd_profile_show(as_json=False) == 0
+    out = capsys.readouterr().out
+    assert "StarterProject" in out
+    assert "A4_Titleblock.SchDoc" in out
+    templates_line = next(ln for ln in out.splitlines()
+                          if ln.strip().startswith("templates:"))
+    assert "A4_Titleblock" not in templates_line

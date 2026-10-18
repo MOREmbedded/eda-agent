@@ -177,6 +177,7 @@ class ActiveProfile:
             "rulesets": self.rulesets(),
             "fab_profiles": self.fab_profile_names(),
             "templates": self.template_names(),
+            "document_templates": [t["name"] for t in self.document_templates()],
             "errors": list(self.errors),
         }
 
@@ -191,9 +192,40 @@ class ActiveProfile:
         return sorted(p.stem for p in self.fab_profiles_dir.glob("*.json"))
 
     def template_names(self) -> list[str]:
+        """Whole-project templates: a directory per starter project.
+
+        ``documents`` is excluded: it is where single-document templates
+        live, and listing it here would offer it as a starter project.
+        """
         if not self.templates_dir or not self.templates_dir.is_dir():
             return []
-        return sorted(p.name for p in self.templates_dir.iterdir() if p.is_dir())
+        return sorted(p.name for p in self.templates_dir.iterdir()
+                      if p.is_dir() and p.name != "documents")
+
+    def document_templates(self) -> list[dict[str, str]]:
+        """Single-document templates from ``templates/documents/``.
+
+        Separate from the project templates above because they are used
+        differently: a project template seeds a whole folder, a document
+        template seeds one new sheet or board. Keeping them in their own
+        subdirectory means neither listing has to filter the other out.
+
+        Altium's own sheet templates are ``.SchDot``; a saved ``.SchDoc``
+        works just as well as a starting point and is easier to edit, so
+        both are listed and the extension is reported rather than
+        enforced.
+        """
+        if not self.templates_dir:
+            return []
+        documents = self.templates_dir / "documents"
+        if not documents.is_dir():
+            return []
+        # "suffix" is folded for comparison; "extension" keeps the
+        # template's own casing, because Altium writes ".SchDoc" and a
+        # copy named ".schdoc" looks wrong in every file listing.
+        return [{"name": p.stem, "file": p.name, "suffix": p.suffix.lower(),
+                 "extension": p.suffix, "path": str(p)}
+                for p in sorted(documents.iterdir()) if p.is_file()]
 
 
 def load_profile(directory: Path) -> ActiveProfile:

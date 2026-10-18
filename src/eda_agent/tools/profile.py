@@ -100,6 +100,83 @@ def register_profile_tools(mcp, *, altium: bool = False) -> None:
 
     if altium:
         @mcp.tool()
+        async def profile_new_document(template: str, destination: str,
+                                       open_in_altium: bool = True,
+                                       overwrite: bool = False) -> dict:
+            """Create a document from one of the active profile's templates.
+
+            Altium's own New Document makes a BLANK sheet, and the
+            bridge's create_document does the same: there is no API that
+            applies a template. So this copies the template file to
+            `destination` and opens that, which is what applying a
+            template amounts to on disk, and needs no scripting support
+            that does not exist.
+
+            Templates live in the profile's `templates/documents/`, one
+            file per template -- a saved `.SchDoc` or `.PcbDoc` works as
+            well as Altium's own `.SchDot` and is easier to edit. List
+            them with profile_show.
+
+            The template's extension is kept: asking for a `.SchDoc`
+            template at a `.PcbDoc` destination would produce a file
+            Altium cannot open, so the suffix comes from the template
+            rather than from the name you give it.
+
+            Refuses an existing destination unless overwrite=True.
+            """
+            from pathlib import Path
+            import shutil
+
+            profile = profile_mod.get_active_profile()
+            if not profile:
+                return {"ok": False, "reason": "no profile is active here"}
+            available = profile.document_templates()
+            if not available:
+                return {"ok": False, "reason":
+                        "the active profile has no templates/documents/ "
+                        "directory, so there is nothing to create from"}
+
+            match = next((t for t in available if t["name"] == template
+                          or t["file"] == template), None)
+            if match is None:
+                return {"ok": False, "reason":
+                        f"no document template named {template!r}; the "
+                        f"profile has {[t['name'] for t in available]}"}
+
+            source = Path(match["path"])
+            target = Path(destination)
+            if target.suffix.lower() != match["suffix"]:
+                target = target.with_suffix(match.get("extension")
+                                            or match["suffix"])
+            if target.exists() and not overwrite:
+                return {"ok": False, "reason":
+                        f"{target} already exists; pass overwrite=True to "
+                        f"replace it"}
+
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            except OSError as exc:
+                return {"ok": False, "reason": f"cannot write {target}: {exc}"}
+
+            result: dict[str, Any] = {"ok": True, "template": match["name"],
+                                      "path": str(target),
+                                      "opened": False}
+            if open_in_altium:
+                from ..bridge import get_bridge
+                try:
+                    opened = await get_bridge().send_command_async(
+                        "application.open_document", {"file_path": str(target)})
+                    result["opened"] = True
+                    result["open_result"] = opened
+                except Exception as exc:  # noqa: BLE001 - the file is written
+                    # The copy succeeded, so report the open failure rather
+                    # than losing the fact that the document now exists.
+                    result["opened"] = False
+                    result["open_error"] = str(exc)
+            return result
+
+        @mcp.tool()
         async def profile_apply_document_settings() -> dict:
             """Apply the active profile's document_settings.json (schematic
             units, snap/visible grid) to the current schematic, via the

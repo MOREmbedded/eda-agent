@@ -260,6 +260,17 @@ launches it from wherever it likes. **For an MCP setup, use
 always reports what actually applies from where you are standing, and
 `eda-agent profile-validate` checks a profile before you rely on it.
 
+A profile can also carry **templates**, which is the one place where
+"your conventions" turns into actual files. A whole starter project goes
+in `templates/<name>/` and is copied by
+`eda-agent profile-new-project <name> <dest>`; a single sheet or board
+goes in `templates/documents/` and is created, and opened in Altium, by
+the `profile_new_document` tool. Both are plain copies: Altium has no
+scripting API that applies a template, so a saved `.SchDoc` set up the
+way you like it *is* the template. This is also the only way to pin a
+new board's units and grid, since nothing can set those on a live PCB
+document.
+
 Full detail, and the format of each file, is in
 [`docs/PROFILES.md`](docs/PROFILES.md).
 

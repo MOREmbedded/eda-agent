@@ -276,6 +276,10 @@ def _profile_scaffold(directory, name: str) -> None:
     (directory / "rules").mkdir(exist_ok=True)
     (directory / "fab_profiles").mkdir(exist_ok=True)
     (directory / "templates").mkdir(exist_ok=True)
+    # Project templates are a directory each, under templates/; single
+    # documents live in templates/documents/ so neither listing has to
+    # filter the other out.
+    (directory / "templates" / "documents").mkdir(exist_ok=True)
 
 
 def cmd_profile_init(name: str, *, here: bool) -> int:
@@ -365,6 +369,12 @@ def cmd_profile_show(*, as_json: bool) -> int:
     print(f"  rulesets:           {p.rulesets() or '(none)'}")
     print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
     print(f"  templates:          {p.template_names() or '(none)'}")
+    # Listed separately from the project templates above: these seed one
+    # sheet or board (profile_new_document) rather than a whole folder,
+    # and folding them into one line would read as a project template
+    # that profile-new-project then refuses.
+    documents = [t["file"] for t in p.document_templates()]
+    print(f"  document templates: {documents or '(none)'}")
     for problem in p.errors:
         print(f"  UNREADABLE: {problem}", file=sys.stderr)
     return 0

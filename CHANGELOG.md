@@ -38,6 +38,18 @@ companies without re-stating their conventions on every call. See
 - Tools: `profile_show`, `profile_list`, `eng_list_rulesets`,
   `eng_load_ruleset`, `eng_profile_fab_profile`,
   `profile_apply_document_settings`.
+- `profile_new_document`: create a schematic or board from one of the
+  profile's `templates/documents/` files and open it. Altium's own New
+  Document makes a blank sheet and so does the bridge's
+  `create_document`; there is no API that applies a template, so this
+  copies the file, which is what applying one amounts to on disk. The
+  template's own extension wins over the destination's, an existing
+  file is refused unless `overwrite=True`, and a copy that Altium then
+  declines to open still reports the path it wrote. Altium
+  **preferences** stay out of reach (no scripting API at all) and
+  **Draftsman** is unsupported, both stated plainly in
+  [`docs/PROFILES.md`](docs/PROFILES.md) rather than left to be
+  discovered.
 - `lib_add_footprint_pad` / `lib_create_standard_footprint` /
   `lib_add_footprint_pads` take their pad corner radius from the active
   profile instead of a hardcoded 25%, and
