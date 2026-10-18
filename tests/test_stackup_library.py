@@ -142,6 +142,26 @@ def test_every_bundled_file_is_valid_json(path):
     assert json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_the_data_directory_is_not_empty():
+    """The parametrised test above collapses to ZERO cases if the data
+    directory is missing, and zero cases is a pass.
+
+    That is exactly what an installed wheel would look like if
+    packaging ever stopped carrying src/eda_agent/data/: every stackup
+    tool broken, and a green test file. The data ships as ordinary
+    package files rather than through pyproject's force-include list,
+    which is the mechanism the .pas files needed, so this is the check
+    that would notice.
+    """
+    found = sorted(path.name for path in data_dir().glob("*.json"))
+    assert found, (
+        f"no bundled data found under {data_dir()}. If this is an "
+        f"installed copy rather than a checkout, packaging has dropped "
+        f"src/eda_agent/data/ and every stackup tool is broken.")
+    for required in ("jlcpcb.json", "pcbway.json", "laminates.json"):
+        assert required in found, f"{required} is missing from {found}"
+
+
 def test_a_bundled_stackup_adds_up_to_the_thickness_it_claims():
     """JLC04161H-7628 is a 1.6 mm board; its plies must sum to roughly
     that, or one of them was transcribed wrong."""

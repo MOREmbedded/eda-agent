@@ -807,3 +807,54 @@ def cmd_laminates(*, as_json: bool = False) -> int:
           "impedance with.", file=sys.stderr)
     print(data["note"], file=sys.stderr)
     return 0
+
+
+def cmd_calc_cross_check(calculator: str, values: list,
+                         *, as_json: bool = False) -> int:
+    """Compare one calculator against a locally built pcb-toolkit."""
+    import json as _json
+
+    from .engineering.pcb_toolkit import cross_check
+
+    kwargs: dict = {}
+    for item in values or []:
+        if "=" not in item:
+            print(f"--arg wants name=value, got {item!r}", file=sys.stderr)
+            return 2
+        name, _, raw = item.partition("=")
+        name = name.strip()
+        try:
+            kwargs[name] = float(raw)
+        except ValueError:
+            kwargs[name] = raw
+
+    result = cross_check(calculator, kwargs)
+    if as_json:
+        print(_json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+    if not result.get("ok"):
+        print(result["reason"], file=sys.stderr)
+        return 1
+
+    print(f"{calculator}  via {result['binary']}")
+    print(f"  {' '.join(result['command'][1:])}")
+    if result["agreements"]:
+        print()
+        print(f"  agree ({len(result['agreements'])}):")
+        for row in result["agreements"]:
+            print(f"    {row['field']:28} {row['ours']}")
+    if result["disagreements"]:
+        print()
+        print(f"  DISAGREE ({len(result['disagreements'])}):")
+        for row in result["disagreements"]:
+            print(f"    {row['field']:28} ours {row['ours']}  "
+                  f"theirs {row['theirs']}  delta {row['delta']}")
+    if result["unpaired_ours"] or result["unpaired_theirs"]:
+        print()
+        print(f"  not compared: ours {result['unpaired_ours']}, "
+              f"theirs {result['unpaired_theirs']}")
+    sys.stdout.flush()
+    if result.get("caveat"):
+        print(f"  CAVEAT: {result['caveat']}", file=sys.stderr)
+    print(f"  {result['note']}", file=sys.stderr)
+    return 1 if result["disagreements"] else 0

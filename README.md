@@ -545,11 +545,42 @@ Two of these carry caveats worth repeating here:
   unsafe mistake, and the disagreement is reported rather than decided
   silently. Verify against the IPC publication before a design review
   relies on it. The voltage is the one **between conductors**, not the
-  supply rail.
+  supply rail. The classes are the IPC-2221 **A/B** ones (B1-B4, A5-A7):
+  revision C *redefines* those columns rather than renumbering them -
+  B4 becomes solder-mask covered, a new B5 appears, the A-series shifts
+  and the above-500 V step changes - so match the class on the
+  description the result gives you, never on its letter.
 - **Fusing current** is the destruction limit, not a rating, and
   Onderdonk is adiabatic: good under about a second, and far too low
   beyond that, where a track sheds heat into the laminate. Results past
   one second say so.
+
+### Cross-checking against pcb-toolkit
+
+If you *do* build pcb-toolkit, `calc-cross-check` runs a calculator
+through both and reports where they differ. Exits 1 on a
+disagreement, so CI can branch on it.
+
+```bash
+eda-agent calc-cross-check ipc2221_spacing --arg voltage=280 --arg environment=B2
+```
+
+Six calculators are mapped; the flags were read from pcb-toolkit's own
+clap definitions rather than guessed. Four are deliberately unmapped
+and say why when you ask for them - two because their flags were never
+read, one (`pdn_target_impedance`) because pcb-toolkit models a
+different quantity, and one because upstream folds resonance into
+`reactance`.
+
+Both replies come back in full, and fields pair **by name**, not
+through a translation this project has verified. A pair sharing a name
+and not a meaning reports as a disagreement, which is the safe
+direction for it to fail, and anything unpaired is listed as not
+compared.
+
+One disagreement is expected and is not an error: pcb-toolkit's spacing
+targets IPC-2221**C** and takes classes `b1`-`b5` / `a6`-`a8`, while
+this carries the A/B table.
 
 ### Why these are native Python
 
@@ -869,6 +900,7 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent calc-pdn --voltage-v V --ripple-percent P --transient-current-a I` | Target power-distribution impedance |
 | `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
 | `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
+| `eda-agent calc-cross-check <calculator> [--arg NAME=VALUE]` | Compare a calculator against a locally built pcb-toolkit |
 | `eda-agent stackup-vendors [--json]` | Bundled fab vendors, with source and age |
 | `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |
 | `eda-agent stackup-profile <vendor> [--fill NAME=MILS]` | Emit a fab profile JSON, or say what the vendor does not publish |

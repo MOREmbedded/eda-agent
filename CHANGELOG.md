@@ -56,6 +56,26 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### Cross-checking against pcb-toolkit
+
+`calc-cross-check` / `pcb_calc_cross_check` runs a calculator through
+this implementation and through a locally built
+[pcb-toolkit](https://github.com/akiselev/pcb-toolkit), and reports
+where they differ. Optional, and absent for most people, because
+upstream's CLI is not published as a binary; the refusal when it is
+missing says how to build it rather than just reporting a missing file.
+
+Six calculators are mapped, with every flag read from pcb-toolkit's own
+clap definitions rather than guessed, since a guessed flag name fails
+at the moment a user runs it. Four are deliberately unmapped and carry
+the reason, because "no mapping" and "I forgot" look identical
+otherwise.
+
+Fields pair BY NAME rather than through a translation this project has
+not verified: a pair sharing a name and not a meaning reports as a
+disagreement, which is the safe direction, and anything unpaired is
+listed as not compared.
+
 #### Fab capabilities, stackup templates and laminates
 
 JLCPCB and PCBWay capability figures and stackup templates ship with
@@ -222,6 +242,16 @@ drift from the parameter it fills.
 
 ### Fixed
 
+- **The IPC-2221 spacing table did not say which revision it was.**
+  Investigating pcb-toolkit's interface surfaced that it targets
+  IPC-2221**C**, whose classes are b1-b5 and a6-a8, while this carries
+  the A/B table with B1-B4 and A5-A7. Revision C does not renumber
+  those columns, it REDEFINES them: B4 becomes solder-mask covered, a
+  new B5 appears, the A-series shifts and the above-500 V step
+  changes. So a class letter does not carry across revisions, and
+  reading "B4" here against a Rev C document silently selects a
+  different environment. Every reply now names its revision and tells
+  the reader to match on `environment_meaning` rather than the letter.
 - **Setting a layer's copper thickness silently set it to ZERO.**
   `PCB_ModifyLayer` parsed `copper_thickness_mils` and
   `dielectric_height_mils` with `StrToIntDef`, and no real foil weight

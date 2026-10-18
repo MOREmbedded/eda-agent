@@ -55,6 +55,7 @@ works elsewhere cannot be an undeclared identifier:
 | 26, copied footprint | `MoveByXY` on a footprint's primitives | yes, `Library.pas`, on a 3D body | medium |
 | 27, lengths in mm | `TopXSize`, `TopYSize` on a pad, now from `CoordFromUnits` | yes, `Lib_AddFootprintPads` | low |
 | 27, new document | `ShowDocument` on the new document | yes, `App_SetActiveDocument` | low |
+| 28, layer thickness | `CopperThickness`, `DielectricHeight`, now from `StrToFloatDef` and `MilsToCoordF` | yes, `PCB_ModifyLayer` wrote both already | low to declare, but it fixes a SILENT failure |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking

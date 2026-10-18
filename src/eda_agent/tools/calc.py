@@ -603,3 +603,27 @@ def register_pcb_calc_tools(mcp) -> None:
         """
         from ..engineering.pcb_calc import awg_properties
         return awg_properties(awg, length_m, temperature_c)
+
+    @mcp.tool()
+    async def pcb_calc_cross_check(calculator: str,
+                                   arguments: dict) -> dict[str, Any]:
+        """Run a calculator here AND in pcb-toolkit, and compare.
+
+        OPTIONAL and absent for most people: pcb-toolkit's CLI is not
+        published as a binary, so it has to be built from source with
+        a Rust toolchain. Nothing here depends on it. When it is
+        missing this says how to get it rather than just failing.
+
+        `calculator` is the function name in engineering.pcb_calc
+        (ipc2221_spacing, fusing_current, wavelength_in_dielectric,
+        reactance, padstack_geometry, awg_properties). Four others are
+        deliberately unmapped and say why when asked.
+
+        Both replies come back in full. Fields are paired by NAME, not
+        through a mapping this project has verified, so a pair sharing
+        a name and not a meaning reports as a disagreement -- the safe
+        direction for it to fail. Unpaired fields are listed as not
+        compared.
+        """
+        from ..engineering.pcb_toolkit import cross_check
+        return cross_check(calculator, arguments or {})

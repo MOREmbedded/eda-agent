@@ -118,8 +118,20 @@ def _positive(**values: Any) -> Optional[dict[str, Any]]:
 # ``disputed`` so the caller sees the disagreement rather than a
 # confident number that was a coin toss.
 #
-# Check any value against the IPC publication itself before a design
-# review signs off on it. This is a starting point, not a citation.
+# WHICH REVISION. These are the IPC-2221 **A/B** classes and values:
+# B1-B4 for bare board and A5-A7 for assembly, with the above-500 V
+# step of 0.0025 mm/V on B1 and so on.
+#
+# IPC-2221**C** is NOT a renumbering of these. It REDEFINES the
+# columns: B3 is extended to vacuum, B4 becomes conductors covered
+# with solder mask, a new B5 covers coated external conductors, the
+# A-series shifts with it, and the above-500 V step is different. So a
+# class letter does not carry across revisions, and reading "B4" here
+# against a Rev C document silently selects a different environment.
+#
+# Match the class by its DESCRIPTION, which is why every reply carries
+# `environment_meaning`, and use the IPC publication itself for
+# compliance work. This is a starting point, not a citation.
 
 #: Minimum spacing in MILLIMETRES by voltage band and environment.
 #: Bands are upper-inclusive bounds on the DC voltage or AC peak
@@ -183,6 +195,13 @@ def ipc2221_spacing(voltage: float, environment: str = "B2") -> dict[str, Any]:
     are from secondary reproductions, the larger was taken wherever
     they conflicted, and none of it substitutes for the IPC document.
 
+    **IPC-2221 A/B classes.** Revision C redefines these columns rather
+    than renumbering them -- B4 becomes solder-mask covered, a new B5
+    appears, the A-series shifts, and the above-500 V step changes --
+    so a letter does not carry across revisions. Match on
+    ``environment_meaning``, not on the letter, and use the IPC
+    document for compliance work.
+
     status: published
     """
     bad = _positive(voltage=voltage)
@@ -211,8 +230,14 @@ def ipc2221_spacing(voltage: float, environment: str = "B2") -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": True,
         "status": PUBLISHED,
-        "source": ("IPC-2221 Table 6-1, transcribed from secondary "
+        "source": ("IPC-2221 A/B Table 6-1, transcribed from secondary "
                    "reproductions -- verify against the IPC document"),
+        "revision": ("A/B. Revision C REDEFINES these columns rather "
+                     "than renumbering them (B4 becomes solder-mask "
+                     "covered, a new B5 appears, the A-series shifts, "
+                     "and the above-500 V step differs), so match the "
+                     "class on environment_meaning rather than on its "
+                     "letter."),
         "voltage_v": float(voltage),
         "environment": env,
         "environment_meaning": IPC2221_ENVIRONMENTS[env],

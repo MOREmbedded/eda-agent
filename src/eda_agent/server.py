@@ -870,6 +870,22 @@ def main() -> int:
         _p.add_argument("--json", dest="json_out", action="store_true",
                         help="Print the full reply as JSON.")
 
+    cross_p = subparsers.add_parser(
+        "calc-cross-check",
+        help="Compare a calculator against a locally built pcb-toolkit",
+        epilog=("pcb-toolkit is OPTIONAL and is not published as a "
+                "binary, so it must be built from source with Rust. "
+                "Nothing in eda-agent needs it; it is a second opinion. "
+                "Exits 1 when the two disagree."),
+    )
+    cross_p.add_argument("calculator",
+                         help="Function name in engineering.pcb_calc, "
+                              "e.g. ipc2221_spacing")
+    cross_p.add_argument("--arg", action="append", metavar="NAME=VALUE",
+                         help="Argument to pass to both. Repeatable.")
+    cross_p.add_argument("--json", dest="json_out", action="store_true",
+                         help="Print the full comparison as JSON.")
+
     # --- fab capabilities, stackups, laminates -----------------------
     subparsers.add_parser(
         "stackup-vendors",
@@ -1176,6 +1192,9 @@ def main() -> int:
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
 
+    if args.command == "calc-cross-check":
+        return cli.cmd_calc_cross_check(args.calculator, args.arg,
+                                        as_json=args.json_out)
     if args.command == "stackup-vendors":
         return cli.cmd_stackup_vendors(as_json=args.json_out)
     if args.command == "stackup-show":

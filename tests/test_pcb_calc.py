@@ -178,6 +178,20 @@ def test_an_unknown_environment_lists_the_real_ones():
     assert "B1" in result["reason"] and "internal" in result["reason"]
 
 
+def test_the_result_names_its_ipc_revision():
+    """IPC-2221C REDEFINES these columns rather than renumbering them:
+    B4 becomes solder-mask covered, a new B5 appears, the A-series
+    shifts and the above-500 V step changes. So a class letter does not
+    carry across revisions, and reading "B4" here against a Rev C
+    document silently selects a different environment. The reply says
+    which revision it is and tells the reader to match on the
+    description instead."""
+    result = ipc2221_spacing(100, "B4")
+    assert "A/B" in result["revision"]
+    assert "environment_meaning" in result["revision"]
+    assert result["environment_meaning"]
+
+
 def test_the_source_admits_it_is_a_secondary_transcription():
     """A safety table nobody can check is worse than one that says so."""
     assert "secondary" in ipc2221_spacing(100, "B1")["source"]
