@@ -1,4 +1,4 @@
-# Release verification: 2026.10.13.5
+# Release verification: 2026.10.18.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -230,7 +230,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.13.5`, `version_match` =
+Expect `altium_script_version` = `2026.10.18.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1757,3 +1757,51 @@ Repeatable live acceptance on disposable documents:
    close the disposable documents at the end.
 
 Live results for this candidate are recorded below once performed.
+
+
+## 28. A layer's copper thickness, in fractions of a mil
+
+**Why this one matters more than its size.** `PCB_ModifyLayer` parsed
+`copper_thickness_mils` and `dielectric_height_mils` with
+`StrToIntDef`. No real foil weight is a whole number of mils: 1 oz is
+1.378, 0.5 oz is 0.689. `StrToIntDef` does not round a value it cannot
+read, it returns the DEFAULT, which was 0. So a request for 1 oz
+copper set the layer to **zero thickness** and the tool reported
+success. The same applied to any fractional prepreg height, which is
+every real one.
+
+Both now parse through `StrToFloatDef` (the locale-safe one, so a
+comma-decimal machine still reads `1.378`) and convert with
+`MilsToCoordF`, which keeps 1e-4 mil. The read-back verification uses
+the same parse; it previously compared a float read-back against an
+integer parse of the request and reported correct writes as rejected.
+
+Risk: low as a declaration, since `StrToFloatDef` and `MilsToCoordF`
+are both used elsewhere in shipped code. The reason to verify is that
+the failure it fixes is silent.
+
+**On a disposable 4-layer board. Do not use a real one: this writes
+the layer stack.**
+
+1. `pcb_get_layer_stackup`. Record every `copper_thickness_mils` and
+   `dielectric_height_mils` so the board can be put back.
+2. `pcb_modify_layer` with `layer="Top"`, `copper_thickness_mils=1.378`.
+3. `pcb_get_layer_stackup` again. Expect Top at **1.378**, not 0 and
+   not 1. A 0 means the old script is still loaded; go back to step 0.
+4. `pcb_modify_layer` with `layer="Top"`, `dielectric_height_mils=8.2835`,
+   `dielectric_constant=4.6`. Read back and expect both.
+5. Confirm the reply does not list `copper_thickness_mils` under
+   rejected: the read-back check is the part that used to disagree
+   with itself.
+6. `pcb_apply_stackup_template("jlcpcb", "JLC04161H-7628")` with the
+   default dry run. Expect four `modify` operations, fractional
+   thicknesses, and NO write (`dry_run: true`).
+7. Run it again with `dry_run=False` on the disposable board, then
+   `pcb_check_stackup("jlcpcb", "JLC04161H-7628")`. Expect
+   `matches: true`.
+8. On a board with a different copper-layer count, expect
+   `pcb_apply_stackup_template` to refuse and name the Layer Stack
+   Manager rather than attempting to add a layer.
+9. Ping and read the stackup once more. No dialog, no debugger stop,
+   no polling restart. Restore focus and close the disposable board
+   without saving.

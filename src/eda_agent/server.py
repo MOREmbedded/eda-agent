@@ -870,6 +870,38 @@ def main() -> int:
         _p.add_argument("--json", dest="json_out", action="store_true",
                         help="Print the full reply as JSON.")
 
+    # --- fab capabilities, stackups, laminates -----------------------
+    subparsers.add_parser(
+        "stackup-vendors",
+        help="List the bundled fab vendors, with source and age",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+    stackup_show_p = subparsers.add_parser(
+        "stackup-show",
+        help="Show one vendor's capabilities and stackup templates",
+    )
+    stackup_show_p.add_argument("vendor", help="e.g. jlcpcb, pcbway")
+    stackup_show_p.add_argument("--json", dest="json_out",
+                                action="store_true", help="Print as JSON.")
+    stackup_profile_p = subparsers.add_parser(
+        "stackup-profile",
+        help="Emit a fab profile JSON for a bundled vendor",
+        epilog=("Refuses when the vendor does not publish every minimum a "
+                "fab profile needs, and names them. Nothing here will "
+                "guess a design rule. Supply the missing ones with "
+                "--fill min_hole_to_hole_mils=17.7 once the fab has told "
+                "you; they are recorded as yours, not theirs."),
+    )
+    stackup_profile_p.add_argument("vendor", help="e.g. jlcpcb, pcbway")
+    stackup_profile_p.add_argument(
+        "--fill", action="append", metavar="NAME=MILS",
+        help="Supply a minimum the vendor does not publish. Repeatable.")
+    subparsers.add_parser(
+        "laminates",
+        help="Bundled laminate properties, with BOTH dielectric constants",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+
     dash_p = subparsers.add_parser(
         "dashboard",
         help="Launch the local web dashboard (http://127.0.0.1:8766).",
@@ -1143,6 +1175,15 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
+
+    if args.command == "stackup-vendors":
+        return cli.cmd_stackup_vendors(as_json=args.json_out)
+    if args.command == "stackup-show":
+        return cli.cmd_stackup_show(args.vendor, as_json=args.json_out)
+    if args.command == "stackup-profile":
+        return cli.cmd_stackup_profile(args.vendor, fill=args.fill)
+    if args.command == "laminates":
+        return cli.cmd_laminates(as_json=args.json_out)
 
     if args.command in cli.CALC_COMMANDS:
         _, _, params = cli.CALC_COMMANDS[args.command]

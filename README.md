@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 580 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 590 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -16,6 +16,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Requirements](#requirements)
 - [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
+- [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
 - [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
@@ -65,7 +66,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **~580 tools on the default Altium backend** (660+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
+- **~590 tools on the default Altium backend** (670+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
 - **Bulk batch primitives**: `obj_batch_modify`, `obj_batch_create`, `obj_batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `sch_place_wires`, `place_net_labels`, `place_power_ports`, `sch_place_components`, `sch_set_components_parameters`, `get_sch_doc_pins`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
@@ -426,6 +427,80 @@ tool's parameters and required list before invoking it, rather than guessing
 argument names - some are not what they look like (`current_amps`, not
 `current_a`), and the same tool can differ between backends. Prefer `full`
 (the default) unless your client forces otherwise.
+
+## Fab capabilities, stackups and laminates
+
+Capability figures and stackup templates for JLCPCB and PCBWay ship
+with eda-agent, each carrying **the page it was transcribed from and
+the date**, with a staleness flag after a year.
+
+```bash
+eda-agent stackup-vendors
+eda-agent stackup-show jlcpcb
+eda-agent laminates
+```
+
+| CLI verb | Tool | Does |
+|---|---|---|
+| `stackup-vendors` | `design_list_fab_vendors` | The bundled vendors, with source, age and what each does not publish |
+| `stackup-show` | `design_fab_vendor` | One vendor's minimums (mm and mils) and stackup templates |
+| `stackup-profile` | `design_fab_vendor_profile` | Emit a fab profile for `design_synthesize_rules` |
+| `laminates` | `design_list_laminates` | Laminate properties, with both dielectric constants |
+| - | `design_compare_stackup` | A template against a `pcb_get_layer_stackup` reply |
+| - | `pcb_check_stackup` | The same, reading the open board for you |
+| - | `pcb_apply_stackup_template` | Set the open board's stackup to a template (dry run by default) |
+
+**`design/fab_profile.py` ships zero capability numbers on purpose** -
+its own docstring says every value must come from the fab and be cited.
+This is a deliberate relaxation of that, not an abandonment: every
+number is dated and sourced, and three rules keep the original point
+intact.
+
+- **A figure the vendor does not publish stays unpublished.** JLCPCB
+  states no rigid hole-to-hole minimum and no mask sliver. Both are
+  `null`, both are listed with the reason, and converting to a fab
+  profile **refuses** and names them. Supply them yourself with
+  `--fill min_hole_to_hole_mils=17.7` once the fab has told you, and
+  they are recorded in the profile's `source` as yours rather than
+  theirs. Nothing here will guess a design rule.
+- **Nothing pretends to be current.** A transcription older than a year
+  is reported as stale, in the result rather than in a README.
+- **A fab's number for its own stack is not a material property.**
+  JLCPCB's er of 4.6 describes what JLCPCB presses; it is not carried
+  to anyone else's FR-4.
+
+A fab that is not bundled goes in your profile's `fab_profiles/`
+directory, where it travels with the project.
+
+### Two dielectric constants
+
+Manufacturers publish a **process** permittivity (one frequency,
+clamped stripline) and often a **design** one (over a band,
+differential phase length). RO4350B is 3.48 and 3.66 - about 5% apart,
+and the design value is the one to size an impedance with. A table
+carrying a single `er` silently picks one, so both are carried and
+`er_design` is null where none is published.
+
+The laminate list is deliberately short: only entries read off a
+datasheet are in it. pcb-toolkit carries 45 presets extracted from the
+Saturn PCB Toolkit binary, which its own README calls compatibility
+data rather than manufacturer data; copying them here would turn an
+acknowledged approximation into what looks like a reference table.
+
+### Applying one to a board
+
+`pcb_apply_stackup_template` sets the open board's ply table to a
+template, **dry run by default** because a stack change can invalidate
+routing. It modifies existing layers only and refuses when the layer
+counts differ: adding one means inventing the name Altium's own Layer
+Stack Manager would have chosen, on a board that has routing on it.
+
+This needed a bridge fix. `PCB_ModifyLayer` parsed copper thickness
+with `StrToIntDef`, and no real foil weight is a whole number of mils -
+1 oz is 1.378 - so asking for 1 oz copper silently set the layer to
+**zero** and reported success. Both thickness fields parse as floats
+now. **Redeploy the Altium scripts** (`eda-agent install-scripts`) to
+pick it up; `eda-agent health` reports the deployed version.
 
 ## Calculators
 
@@ -794,6 +869,10 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent calc-pdn --voltage-v V --ripple-percent P --transient-current-a I` | Target power-distribution impedance |
 | `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
 | `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
+| `eda-agent stackup-vendors [--json]` | Bundled fab vendors, with source and age |
+| `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |
+| `eda-agent stackup-profile <vendor> [--fill NAME=MILS]` | Emit a fab profile JSON, or say what the vendor does not publish |
+| `eda-agent laminates [--json]` | Laminate properties, with both dielectric constants |
 
 Every `calc-*` verb takes `--json` for the full reply and exits non-zero
 on a refusal, so a script can tell "this geometry is impossible" from

@@ -1,0 +1,82 @@
+{
+  "_comment": [
+    "Laminate electrical properties, transcribed from the sources named",
+    "per entry on the dates named per entry.",
+    "",
+    "SMALL ON PURPOSE. pcb-toolkit carries 45 substrate presets, and they",
+    "were extracted from the Saturn PCB Toolkit binary rather than taken",
+    "from manufacturer datasheets; its own README calls them compatibility",
+    "data and not manufacturer data. Copying them here would turn an",
+    "acknowledged approximation into what looks like a reference table. So",
+    "this holds only entries read off a datasheet, and the way to get the",
+    "rest is to add them to YOUR profile's own laminates file, where they",
+    "travel with the project and carry your source rather than someone",
+    "else's.",
+    "",
+    "TWO DIELECTRIC CONSTANTS, which is the trap this file exists to make",
+    "visible. Rogers publishes a PROCESS value (clamped stripline,",
+    "IPC-TM-650 2.5.5.5, at one frequency) and a DESIGN value",
+    "(differential phase length, over a band). They differ by about 5%,",
+    "the design value is the one to size an impedance with, and a table",
+    "carrying a single 'er' silently picks one. Both are carried, and",
+    "er_design is null where a manufacturer does not publish one."
+  ],
+  "laminates": [
+    {
+      "name": "RO4003C",
+      "manufacturer": "Rogers",
+      "family": "RO4000",
+      "er_process": 3.38,
+      "er_process_conditions": "10 GHz, 23 degC, IPC-TM-650 2.5.5.5 clamped stripline, +/- 0.05",
+      "er_design": 3.55,
+      "er_design_conditions": "8 to 40 GHz, differential phase length method",
+      "loss_tangent": 0.0027,
+      "loss_tangent_conditions": "10 GHz, 23 degC (0.0021 at 2.5 GHz)",
+      "tg_c": 280,
+      "tg_note": "Published as >280 degC by TMA, a lower bound rather than a single transition point",
+      "source": "Rogers RO4000 Laminates RO4003C and RO4350B data sheet",
+      "source_caveat": "Read from third-party reproductions of the Rogers data sheet, not from rogerscorp.com. Check the current revision before a design relies on it.",
+      "retrieved": "2026-10-18"
+    },
+    {
+      "name": "RO4350B",
+      "manufacturer": "Rogers",
+      "family": "RO4000",
+      "er_process": 3.48,
+      "er_process_conditions": "10 GHz, 23 degC, IPC-TM-650 2.5.5.5 clamped stripline, +/- 0.05",
+      "er_design": 3.66,
+      "er_design_conditions": "8 to 40 GHz, differential phase length method",
+      "loss_tangent": 0.0037,
+      "loss_tangent_conditions": "10 GHz, 23 degC (0.0031 at 2.5 GHz)",
+      "tg_c": 280,
+      "tg_note": "Published as >280 degC by TMA, a lower bound rather than a single transition point",
+      "source": "Rogers RO4000 Laminates RO4003C and RO4350B data sheet",
+      "source_caveat": "Read from third-party reproductions of the Rogers data sheet, not from rogerscorp.com. Check the current revision before a design relies on it.",
+      "retrieved": "2026-10-18"
+    },
+    {
+      "name": "JLCPCB 7628 prepreg",
+      "manufacturer": "JLCPCB (laminate supplier not stated)",
+      "family": "FR-4",
+      "er_process": 4.6,
+      "er_process_conditions": "As published on JLCPCB's impedance page for its 7628 templates; the measurement conditions are not stated there",
+      "er_design": null,
+      "er_design_conditions": null,
+      "loss_tangent": null,
+      "loss_tangent_conditions": null,
+      "tg_c": null,
+      "tg_note": "Not published alongside the impedance templates",
+      "source": "https://jlcpcb.com/impedance",
+      "source_caveat": "A fab's figure for its own stack, not a laminate datasheet. JLCPCB does not state which supplier's glass-epoxy this is, and the number has no measurement conditions attached, so it is usable for JLCPCB's own templates and should not be carried over to another fab's FR-4.",
+      "retrieved": "2026-10-18"
+    }
+  ],
+  "conventions": [
+    {
+      "name": "FR-4 (generic)",
+      "er_low": 4.2,
+      "er_high": 4.6,
+      "note": "NOT a material specification. 'FR-4' names a flammability rating, not a formulation, and its permittivity varies with the glass style, the resin content and the frequency. Carried as a RANGE so it cannot be mistaken for a datasheet figure. Use the laminate your fab actually presses, or the er in that fab's own stackup template."
+    }
+  ]
+}

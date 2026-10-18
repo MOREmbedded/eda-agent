@@ -36,6 +36,7 @@ from .easyeda import register_easyeda_tools
 from .kicad import register_kicad_tools
 from .eda import register_eda_tools
 from .calc import register_calc_tools, register_pcb_calc_tools
+from .stackup import register_stackup_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
@@ -283,6 +284,11 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # EVERYWHERE; scoping them to the KiCad path hid all ten from
     # Altium users, which is this project's main backend.
     register_pcb_calc_tools(mcp)
+    # Bundled fab capabilities, stackup templates and laminate data.
+    # Everywhere, for the same reason: four of the five are local file
+    # reads with no editor involved, and the fifth only needs Altium to
+    # fetch the board's own stackup.
+    register_stackup_tools(mcp, altium=backend in ("altium", "both"))
     if backend in ("kicad", "easyeda"):
         register_calc_tools(mcp)
         register_plan_tools(mcp)
@@ -317,6 +323,7 @@ __all__ = [
     "register_eda_tools",
     "register_calc_tools",
     "register_pcb_calc_tools",
+    "register_stackup_tools",
     "register_plan_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",

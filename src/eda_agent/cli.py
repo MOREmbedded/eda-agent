@@ -652,3 +652,158 @@ def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
               f"other reproduction says {d['other_source_says']} mm",
               file=sys.stderr)
     return 0
+
+
+# --------------------------------------------------------------------------
+# Fab capabilities, stackups and laminates
+# --------------------------------------------------------------------------
+
+def cmd_stackup_vendors(*, as_json: bool = False) -> int:
+    """List the bundled fab vendors with their provenance."""
+    import json as _json
+
+    from .design.stackup_library import STALE_AFTER_DAYS, list_vendors
+
+    vendors = list_vendors()
+    if as_json:
+        print(_json.dumps(vendors, indent=2))
+        return 0
+    if not vendors:
+        print("No vendor data is bundled.", file=sys.stderr)
+        return 1
+    for vendor in vendors:
+        age = ("unknown age" if vendor["age_days"] is None
+               else f"{vendor['age_days']}d old")
+        flag = "  STALE" if vendor["stale"] else ""
+        print(f"{vendor['vendor']:10} {vendor['display_name']}{flag}")
+        print(f"  {vendor['process']}")
+        print(f"  source     {vendor['source']}")
+        print(f"  read       {vendor['retrieved']} ({age}, stale after "
+              f"{STALE_AFTER_DAYS}d)")
+        print(f"  stackups   {vendor['stackups'] or '(none bundled)'}")
+        if vendor["missing"]:
+            print(f"  not published: {', '.join(vendor['missing'])}")
+    # stderr is unbuffered and stdout is not, so without this the
+    # caveat lands above the list it is a caveat about.
+    sys.stdout.flush()
+    print("\nA starting point, not an authority: a fab changes its "
+          "capabilities\nwithout changing this data. Confirm before "
+          "ordering.", file=sys.stderr)
+    return 0
+
+
+def cmd_stackup_show(vendor: str, *, as_json: bool = False) -> int:
+    """Print one vendor's capabilities and stackup templates."""
+    import json as _json
+
+    from .design.stackup_library import load_vendor
+
+    loaded = load_vendor(vendor)
+    if as_json:
+        print(_json.dumps(loaded, indent=2))
+        return 0 if loaded.get("ok") else 1
+    if not loaded.get("ok"):
+        print(loaded["reason"], file=sys.stderr)
+        return 1
+
+    print(f"{loaded['display_name']} -- {loaded['process']}")
+    print(f"  source {loaded['source']}")
+    print(f"  read   {loaded['retrieved']}")
+    print(f"  copper layer counts: {loaded['copper_layer_counts']}")
+    print(f"  board thickness mm:  {loaded['board_thickness_mm']}")
+    print("\n  minimums (mm / mils):")
+    for field, value_mm in loaded["capabilities_mm"].items():
+        mils = loaded["capabilities_mils"].get(
+            field.replace("_mm", "_mils"))
+        if value_mm is None:
+            print(f"    {field[4:-3]:22} NOT PUBLISHED")
+        else:
+            print(f"    {field[4:-3]:22} {value_mm:<8} {mils}")
+    for stackup in loaded["stackups"]:
+        print(f"\n  stackup {stackup['name']} "
+              f"({stackup.get('layer_count', '?')} layer, "
+              f"{stackup.get('finished_thickness_mm', '?')} mm)")
+        for ply in stackup["layers"]:
+            extra = ""
+            if ply.get("er") is not None:
+                extra = f"  er {ply['er']}"
+            if ply.get("copper_oz") is not None:
+                extra = f"  {ply['copper_oz']} oz"
+            print(f"    {ply['kind']:8} {ply['thickness_mm']:<9} mm  "
+                  f"{ply['name']}{extra}")
+    for field, why in (loaded["not_published"] or {}).items():
+        print(f"\n  {field} is NOT PUBLISHED: {why}", file=sys.stderr)
+    sys.stdout.flush()
+    for warning in loaded["warnings"]:
+        print(f"  ! {warning}", file=sys.stderr)
+    return 0
+
+
+def cmd_stackup_profile(vendor: str, *, fill: Optional[list] = None,
+                        as_json: bool = True) -> int:
+    """Emit a FabProfile JSON for a bundled vendor, or say what is missing."""
+    import json as _json
+
+    from .design.stackup_library import vendor_fab_profile
+
+    values = {}
+    for item in fill or []:
+        if "=" not in item:
+            print(f"--fill wants name=value, got {item!r}", file=sys.stderr)
+            return 2
+        name, _, raw = item.partition("=")
+        try:
+            values[name.strip()] = float(raw)
+        except ValueError:
+            print(f"--fill value for {name.strip()} is not a number: {raw!r}",
+                  file=sys.stderr)
+            return 2
+
+    result = vendor_fab_profile(vendor, fill=values or None)
+    if not result.get("ok"):
+        print(result["reason"], file=sys.stderr)
+        for field, why in (result.get("why") or {}).items():
+            print(f"  {field}: {why}", file=sys.stderr)
+        if result.get("missing"):
+            example = " ".join(f"--fill {f}=<mils>"
+                               for f in result["missing"])
+            print(f"\nOnce the fab tells you:\n  eda-agent stackup-profile "
+                  f"{vendor} {example}", file=sys.stderr)
+        return 1
+    print(_json.dumps(result["profile"], indent=2))
+    sys.stdout.flush()
+    for warning in result.get("warnings", []):
+        print(f"  ! {warning}", file=sys.stderr)
+    return 0
+
+
+def cmd_laminates(*, as_json: bool = False) -> int:
+    """Print the bundled laminate electrical properties."""
+    import json as _json
+
+    from .design.stackup_library import list_laminates
+
+    data = list_laminates()
+    if as_json:
+        print(_json.dumps(data, indent=2))
+        return 0 if data.get("ok") else 1
+    if not data.get("ok"):
+        print(data["reason"], file=sys.stderr)
+        return 1
+    print(f"{'laminate':24} {'er(proc)':>9} {'er(design)':>11} "
+          f"{'tan d':>8} {'Tg':>6}")
+    for lam in data["laminates"]:
+        design = "-" if lam["er_design"] is None else lam["er_design"]
+        loss = "-" if lam["loss_tangent"] is None else lam["loss_tangent"]
+        tg = "-" if lam["tg_c"] is None else lam["tg_c"]
+        print(f"{lam['name']:24} {lam['er_process']:>9} {design:>11} "
+              f"{loss:>8} {tg:>6}")
+    for conv in data["conventions"]:
+        print(f"{conv['name']:24} {conv['er_low']:>9} to {conv['er_high']}")
+    sys.stdout.flush()
+    print("\nTwo dielectric constants per laminate on purpose: the PROCESS "
+          "value is\nmeasured one way and the DESIGN value another, they "
+          "differ by about 5%,\nand the design value is the one to size an "
+          "impedance with.", file=sys.stderr)
+    print(data["note"], file=sys.stderr)
+    return 0

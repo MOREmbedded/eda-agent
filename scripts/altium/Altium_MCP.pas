@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.13.5';
+    SCRIPT_VERSION = '2026.10.18.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -29995,6 +29995,14 @@ Begin
     Try ResolvedName := LayerObj.Name; Except End;
 
     NewName := ExtractJsonValue(Params, 'name');
+    { Copper thickness and dielectric height are parsed as FLOATS.     }
+    { They used to go through StrToIntDef, which cannot represent any   }
+    { real foil weight: 1 oz copper is 1.378 mil and 0.5 oz is 0.689,   }
+    { and StrToIntDef('1.378', 0) returns the DEFAULT, so asking for    }
+    { 1 oz copper silently set the layer to zero thickness. The same    }
+    { applied to a 8.2835 mil prepreg. MilsToCoordF keeps 1e-4 mil, and }
+    { StrToFloatDef here is the locale-safe one from Main.pas, so a     }
+    { comma-decimal system still reads '1.378' correctly.               }
     ThickStr := ExtractJsonValue(Params, 'copper_thickness_mils');
     TypeStr := LowerCase(ExtractJsonValue(Params, 'dielectric_type'));
     HeightStr := ExtractJsonValue(Params, 'dielectric_height_mils');
@@ -30006,7 +30014,7 @@ Begin
         If NewName <> '' Then
             Try LayerObj.Name := NewName; Except End;
         If ThickStr <> '' Then
-            Try LayerObj.CopperThickness := MilsToCoord(StrToIntDef(ThickStr, 0)); Except End;
+            Try LayerObj.CopperThickness := MilsToCoordF(StrToFloatDef(ThickStr, 0)); Except End;
 
         If TypeStr = 'none' Then
             Try LayerObj.Dielectric.DielectricType := eNoDielectric; Except End
@@ -30018,7 +30026,7 @@ Begin
             Try LayerObj.Dielectric.DielectricType := eSurfaceMaterial; Except End;
 
         If HeightStr <> '' Then
-            Try LayerObj.Dielectric.DielectricHeight := MilsToCoord(StrToIntDef(HeightStr, 0)); Except End;
+            Try LayerObj.Dielectric.DielectricHeight := MilsToCoordF(StrToFloatDef(HeightStr, 0)); Except End;
         If ConstStr <> '' Then
             Try LayerObj.Dielectric.DielectricConstant := StrToFloatDef(ConstStr, 1.0); Except End;
         If Material <> '' Then
@@ -30060,7 +30068,7 @@ Begin
         Try ThickBack := LayerObj.CopperThickness / 10000; Except ThickBack := -1; End;
         If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
         AppliedJson := AppliedJson + '"copper_thickness_mils":' + FloatToJsonStr(ThickBack);
-        If Abs(ThickBack - StrToIntDef(ThickStr, 0)) > 0.01 Then
+        If Abs(ThickBack - StrToFloatDef(ThickStr, 0)) > 0.01 Then
         Begin
             If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
             RejectedJson := RejectedJson + '"copper_thickness_mils"';
@@ -30087,7 +30095,7 @@ Begin
         Try HeightBack := LayerObj.Dielectric.DielectricHeight / 10000; Except HeightBack := -1; End;
         If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
         AppliedJson := AppliedJson + '"dielectric_height_mils":' + FloatToJsonStr(HeightBack);
-        If Abs(HeightBack - StrToIntDef(HeightStr, 0)) > 0.01 Then
+        If Abs(HeightBack - StrToFloatDef(HeightStr, 0)) > 0.01 Then
         Begin
             If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
             RejectedJson := RejectedJson + '"dielectric_height_mils"';

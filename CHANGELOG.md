@@ -56,6 +56,48 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### Fab capabilities, stackup templates and laminates
+
+JLCPCB and PCBWay capability figures and stackup templates ship with
+eda-agent, each carrying the page it was transcribed from and the date,
+with a staleness flag after a year. CLI: `stackup-vendors`,
+`stackup-show`, `stackup-profile`, `laminates`. Tools:
+`design_list_fab_vendors`, `design_fab_vendor`,
+`design_fab_vendor_profile`, `design_list_laminates`,
+`design_compare_stackup`, plus `pcb_check_stackup` and
+`pcb_apply_stackup_template` on Altium.
+
+`design/fab_profile.py` ships zero capability numbers on purpose. This
+is a deliberate relaxation of that policy, and three rules keep its
+point intact:
+
+- **An unpublished figure stays unpublished.** JLCPCB states no rigid
+  hole-to-hole minimum and no mask sliver; both are null with a reason,
+  and converting to a fab profile REFUSES and names them. Supply them
+  with `--fill` once the fab has told you, and they are recorded in the
+  profile's `source` as yours rather than the vendor's. Nothing guesses
+  a design rule.
+- **Nothing pretends to be current**, with the staleness check in the
+  result rather than in a README.
+- **A fab's figure for its own stack is not a material property.**
+  JLCPCB's er of 4.6 is not carried to anyone else's FR-4.
+
+Laminates carry BOTH dielectric constants. Manufacturers publish a
+process value (one frequency, clamped stripline) and often a design
+value (over a band); RO4350B is 3.48 and 3.66, about 5% apart, and the
+design value is the one to size an impedance with. A table with a
+single `er` silently picks one. The list is short on purpose: only
+entries read off a datasheet are in it, rather than the 45 presets
+pcb-toolkit extracted from the Saturn binary and labels as
+compatibility data.
+
+`pcb_apply_stackup_template` sets a board's ply table from a template,
+dry run by default. It modifies existing layers only and refuses when
+the layer counts differ, because adding one means inventing the name
+Altium's Layer Stack Manager would have chosen on a board that has
+routing on it. A failure part way through reports which layers did
+change.
+
 #### Ten calculators, on the CLI as well as the tool surface
 
 `calc-spacing`, `calc-fusing`, `calc-via`, `calc-spiral`,
@@ -180,6 +222,19 @@ drift from the parameter it fills.
 
 ### Fixed
 
+- **Setting a layer's copper thickness silently set it to ZERO.**
+  `PCB_ModifyLayer` parsed `copper_thickness_mils` and
+  `dielectric_height_mils` with `StrToIntDef`, and no real foil weight
+  is a whole number of mils: 1 oz is 1.378, 0.5 oz is 0.689.
+  `StrToIntDef('1.378', 0)` does not round, it returns the DEFAULT, so
+  asking for 1 oz copper set the layer to zero and the tool reported
+  success. The same applied to any fractional prepreg height. Both now
+  parse as floats through the locale-safe helper and convert with
+  `MilsToCoordF`, which keeps 1e-4 mil, and the read-back verification
+  uses the same parse so a fractional value is no longer reported as
+  rejected. **Redeploy the Altium scripts to pick this up**;
+  SCRIPT_VERSION moved to 2026.10.18.1 and `eda-agent health` reports
+  the deployed one.
 - **Ten new calculators were invisible on the Altium backend.** They
   were added to `register_calc_tools`, which runs only for KiCad and
   EasyEDA because the names in it duplicate what `tools/pcb.py` already

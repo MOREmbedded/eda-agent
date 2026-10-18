@@ -1,0 +1,44 @@
+{
+  "vendor": "pcbway",
+  "display_name": "PCBWay",
+  "process": "standard rigid FR-4",
+  "source": "https://www.pcbway.com/capabilities.html",
+  "stackup_source": null,
+  "retrieved": "2026-10-18",
+  "units": "mm",
+  "_comment": [
+    "TRANSCRIBED from the page named above on the date named above.",
+    "The capabilities page separates a STANDARD process from an ADVANCED",
+    "one, and several figures differ between them. The standard figures",
+    "are carried here, because that is what an ordinary order gets; the",
+    "advanced ones are recorded in capability_notes rather than used, so",
+    "nothing here quotes a limit that costs extra without saying so."
+  ],
+  "copper_layer_counts": [1, 2, 4, 6, 8, 10, 12, 14],
+  "board_thickness_mm": [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.6, 2.0, 2.4, 3.2],
+  "capabilities": {
+    "min_track_mm": 0.1,
+    "min_gap_mm": 0.1,
+    "min_drill_mm": 0.15,
+    "min_annular_ring_mm": 0.15,
+    "min_hole_to_hole_mm": null,
+    "min_mask_sliver_mm": null,
+    "min_silk_width_mm": 0.15
+  },
+  "capability_notes": {
+    "min_track_mm": "0.1 mm (4 mil) standard. The advanced process reaches 4/4 mil inner and 4/5 mil outer at 18 um copper, 5/6 mil outer at 35 um.",
+    "min_drill_mm": "0.15 mm by CNC on the standard process. The advanced process quotes 0.20 mm as its minimum, which is the larger of the two and reads as a contradiction on the page itself.",
+    "min_annular_ring_mm": "0.15 mm (6 mil) for pads with vias on the standard process.",
+    "min_silk_width_mm": "0.15 mm character width standard, 0.8 mm minimum character height. The page gives character dimensions and no separate line-width figure, so this is the character width being reused.",
+    "board_thickness_mm": "0.2 to 3.2 mm standard. Minimum 0.3 mm for single and double sided, 0.6 mm for 4 layer. Above 3.2 mm is medium or high difficulty.",
+    "copper_layer_counts": "1 to 14 standard; 3 to 16 on the advanced normal process, 18 to 24 medium difficulty, 24+ high difficulty."
+  },
+  "not_published": {
+    "min_hole_to_hole_mm": "Not stated on the capabilities page for either process.",
+    "min_mask_sliver_mm": "Not stated for the standard process. The ADVANCED table gives a solder mask bridge of 4 mil under 2 oz copper and 5 mil at 2 oz or more, which is a different measurement and applies to a different process, so it is not reused here."
+  },
+  "stackups": [],
+  "more_stackups": {
+    "note": "PCBWay does not publish a named stackup table on its capabilities page the way JLCPCB publishes impedance templates, so none is carried. Ask PCBWay for the stackup for your layer count and finished thickness, then write it into your profile's fab_profiles/ directory where it travels with the project."
+  }
+}
