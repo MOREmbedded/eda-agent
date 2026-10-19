@@ -334,6 +334,31 @@ on disk.
 
 ### Fixed
 
+- **`install-scripts`, `health` and `update` reported on a folder
+  Altium might never read.** They all used
+  `%USERPROFILE%\EDA Agent\scripts\`, so with the Global Project
+  registered anywhere else they said "deployed scripts current" while
+  Altium compiled a build days old. They now use the folder Altium's
+  own Global Projects list (in the registry) loads `Altium_API.PrjScr`
+  from, falling back to the old default only when no install
+  registers it or several register different folders; `update` says
+  which. `install-scripts` also stopped deriving the workspace pointer
+  from the destination (`<dest>\..\workspace`), which was right only
+  for the old default and would have pointed Altium at a directory the
+  server never writes to.
+- **`pcb_modify_layer` advertised its thicknesses as integers.** The
+  Pascal fix below was unreachable from an MCP client that validates
+  against the schema: 1.378 was refused or rounded to 1 before the call
+  left it. Both are numbers now. Found by the live run of
+  `RELEASE_VERIFICATION.md`'s copper-thickness step, which also
+  confirmed the Pascal fix, `pcb_apply_stackup_template` and
+  `pcb_check_stackup` on Altium 26.11.1.5.
+- **A test for the merge's Pascal breaks.** Every routine in
+  `scripts/altium/` must close each `Begin`/`Try`/`Case`/`Record` it
+  opens and end on `End;`. Neither FPC nor the linter caught the four
+  breaks the 0.7.1 merge introduced; this does, including both that
+  reached a commit, and its self-tests delete real `End;` lines to
+  prove it.
 - **The IPC-2221 spacing table did not say which revision it was.**
   Investigating pcb-toolkit's interface surfaced that it targets
   IPC-2221**C**, whose classes are b1-b5 and a6-a8, while this carries

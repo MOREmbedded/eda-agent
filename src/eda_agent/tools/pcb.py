@@ -4182,9 +4182,9 @@ def register_pcb_tools(mcp):
     async def pcb_modify_layer(
         layer: str,
         name: str = "",
-        copper_thickness_mils: int = 0,
+        copper_thickness_mils: float = 0.0,
         dielectric_type: str = "",
-        dielectric_height_mils: int = 0,
+        dielectric_height_mils: float = 0.0,
         dielectric_constant: float = 0.0,
         dielectric_material: str = "",
     ) -> dict[str, Any]:
@@ -4203,9 +4203,11 @@ def register_pcb_tools(mcp):
         Args:
             layer: Target layer name, e.g. "MidLayer1"
             name: New layer name (optional)
-            copper_thickness_mils: New copper thickness in mils (optional)
+            copper_thickness_mils: New copper thickness in mils, fractional
+                (1 oz is 1.378) (optional)
             dielectric_type: "none" | "core" | "prepreg" | "surface" (optional)
-            dielectric_height_mils: New dielectric height in mils (optional)
+            dielectric_height_mils: New dielectric height in mils, fractional
+                (optional)
             dielectric_constant: New Dk value (optional)
             dielectric_material: New dielectric material string (optional)
 

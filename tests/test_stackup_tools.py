@@ -312,3 +312,42 @@ def test_the_json_forms_are_machine_readable(capsys):
                lambda: cli.cmd_laminates(as_json=True)):
         assert fn() == 0
         json.loads(capsys.readouterr().out)
+
+
+# ---- the tool surface in front of that parse -------------------------
+
+def test_a_fractional_thickness_reaches_the_bridge_through_mcp(monkeypatch):
+    """The Pascal fix is only reachable if the MCP schema lets 1.378 in.
+
+    pcb_modify_layer declared both thicknesses as ``int``, so a client
+    validating against the advertised schema refused 1.378 or rounded
+    it to 1 before the call left the client. Calling the tool function
+    directly, as the first live check did, skips that validation, which
+    is why this goes through FastMCP's own call_tool.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from eda_agent.tools import register_all_tools
+
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params):
+            sent.append((command, params))
+            return {"success": True}
+
+    monkeypatch.setattr("eda_agent.tools.pcb.get_bridge", lambda: _Bridge())
+    mcp = FastMCP("t")
+    register_all_tools(mcp)
+
+    tool = next(t for t in asyncio.run(mcp.list_tools())
+                if t.name == "pcb_modify_layer")
+    for key in ("copper_thickness_mils", "dielectric_height_mils"):
+        assert tool.inputSchema["properties"][key]["type"] == "number", key
+
+    asyncio.run(mcp.call_tool("pcb_modify_layer", {
+        "layer": "Top Layer", "copper_thickness_mils": 1.378,
+        "dielectric_height_mils": 8.2835}))
+    assert sent == [("pcb.modify_layer", {
+        "layer": "Top Layer", "copper_thickness_mils": "1.378",
+        "dielectric_height_mils": "8.2835"})]

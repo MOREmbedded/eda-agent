@@ -2471,3 +2471,29 @@ the layer stack.**
 9. Ping and read the stackup once more. No dialog, no debugger stop,
    no polling restart. Restore focus and close the disposable board
    without saving.
+
+**Live result, 2026-10-19, Altium 26.11.1.5, script 2026.10.19.1.**
+Run on a copy of the 2-layer test board, with two inner layers added
+for steps 6 and 7. Every step passed:
+
+| Step | Result |
+|---|---|
+| 0 | `version_match: true`, no stale units, script folder matches |
+| 2-3 | Top set to 1.378 mil, read back **1.378**, nothing rejected |
+| 4-5 | dielectric 8.2835 mil / 4.6 accepted and read back by the write itself. A 2-layer board's Top has no dielectric, so `pcb_get_layer_stackup` reports 0 there, by design; on the 4-layer board both read back |
+| 6 | dry run: four `modify` operations, fractional values, `dry_run: true`, nothing written |
+| 7 | applied, then `pcb_check_stackup`: `matches: true`, 62.4489 mil both sides |
+| 8 | on the 2-layer board, dry run and real run both refused, naming the Layer Stack Manager; nothing written |
+| 9 | ping healthy, no dialog open; board closed, file on disk unchanged |
+
+**Found by this run, and fixed:** the MCP tool declared
+`copper_thickness_mils` and `dielectric_height_mils` as integers, so a
+client validating against the schema refused 1.378 or rounded it to 1
+before the call reached the fixed Pascal. The run above called the
+tool function directly, which skips that validation. Both are numbers
+now, with a test that goes through FastMCP's own `call_tool`.
+
+Not explained: `app_close_document` with `discard_changes` reported
+`discarded: false` after the stack edits, so Altium did not mark the
+board modified. The file on disk was unchanged, which is the outcome
+wanted here, but an API stack edit may not prompt a save on close.
