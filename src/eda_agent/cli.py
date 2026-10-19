@@ -9,7 +9,9 @@ MCP server on stdio -- this is what MCP-compatible clients call.
 Other subcommands:
   - scripts-path      : print the path to the bundled DelphiScript sources
   - install-scripts   : copy bundled scripts to a user-chosen directory
-                        (default: %USERPROFILE%\EDA Agent\scripts\)
+                        (default: the folder Altium's Global Projects
+                        list loads them from, else
+                        %USERPROFILE%\EDA Agent\scripts\)
 """
 from __future__ import annotations
 
@@ -59,12 +61,97 @@ def get_bundled_scripts_path() -> Path:
 # User-profile paths
 # --------------------------------------------------------------------------
 
-def get_default_scripts_dest() -> Path:
-    """Default destination for `install-scripts`: %USERPROFILE%\\EDA Agent\\scripts\\."""
+#: Where each Altium install lists its Global Projects, under
+#: HKCU\Software\Altium\<install>. One value per project, named ItemN.
+_GLOBAL_PROJECTS_KEY = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
+
+def _read_global_projects() -> list[str]:
+    """Every Global Project path any Altium install on this machine lists.
+
+    Read from the registry, which is where Altium keeps the list the
+    Preferences dialog edits. Empty off Windows or when nothing is
+    readable: an Altium that was never installed is an ordinary state.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found: list[str] = []
+    try:
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Altium")
+    except OSError:
+        return []
+    with root:
+        index = 0
+        while True:
+            try:
+                install = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS_KEY)
+            except OSError:
+                continue
+            with key:
+                item = 0
+                while True:
+                    try:
+                        _, value, _ = winreg.EnumValue(key, item)
+                    except OSError:
+                        break
+                    item += 1
+                    if isinstance(value, str) and value.strip():
+                        found.append(value.strip())
+    return found
+
+
+def get_registered_scripts_dirs() -> list[Path]:
+    """Folders Altium loads Altium_API.PrjScr from, as its Global Projects say.
+
+    This is the folder that matters. `install-scripts` used to write to
+    %USERPROFILE%\\EDA Agent\\scripts\\ regardless, and `health` and
+    `update` reported on that folder, so with the project registered
+    anywhere else they said "deployed scripts current" while Altium
+    compiled a build days old. Distinct folders, in registry order.
+    """
+    folders: list[Path] = []
+    seen: set[str] = set()
+    for value in _read_global_projects():
+        path = Path(value)
+        if path.name.lower() != "altium_api.prjscr":
+            continue
+        key = os.path.normcase(str(path.parent))
+        if key not in seen:
+            seen.add(key)
+            folders.append(path.parent)
+    return folders
+
+
+def get_fallback_scripts_dest() -> Path:
+    """%USERPROFILE%\\EDA Agent\\scripts\\, for when Altium names no folder."""
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "scripts"
     return Path.home() / "EDA Agent" / "scripts"
+
+
+def get_default_scripts_dest() -> Path:
+    """Default destination for `install-scripts`, and what `health` and
+    `update` compare against.
+
+    The folder Altium's Global Projects list loads Altium_API.PrjScr
+    from, when exactly one is registered. Otherwise (none registered,
+    or several installs naming different folders, where picking one
+    would be a guess) %USERPROFILE%\\EDA Agent\\scripts\\.
+    """
+    registered = get_registered_scripts_dirs()
+    if len(registered) == 1:
+        return registered[0]
+    return get_fallback_scripts_dest()
 
 
 # --------------------------------------------------------------------------
@@ -302,8 +389,9 @@ def _stamp_deployed_unit(path: Path) -> None:
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project to a user-chosen directory.
 
-    Default destination: %USERPROFILE%\\EDA Agent\\scripts\\
-    Override with --dest PATH.
+    Default destination: the folder Altium's Global Projects list loads
+    Altium_API.PrjScr from (see get_default_scripts_dest), else
+    %USERPROFILE%\\EDA Agent\\scripts\\. Override with --dest PATH.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
@@ -370,10 +458,14 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
         copied += 1
 
     # Publish the workspace path for DelphiScript to pick up, even before
-    # the MCP server has ever run. Workspace lives alongside scripts: if
-    # scripts are at <dest>\, workspace is at <dest's parent>\workspace\.
-    from .config import write_workspace_pointer
-    workspace_dir = dst.parent / "workspace"
+    # the MCP server has ever run. It must be the workspace the SERVER
+    # will use, not one derived from the scripts folder: the script reads
+    # this pointer once, at startup, so pointing it anywhere else leaves
+    # Altium polling a directory no request is ever written to. Deriving
+    # it as <dest's parent>\workspace\ was only right for the default
+    # destination, and the destination now follows Altium's registration.
+    from .config import _default_workspace_dir, write_workspace_pointer
+    workspace_dir = _default_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
 

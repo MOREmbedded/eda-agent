@@ -764,7 +764,7 @@ def main() -> int:
     )
     install_p.add_argument(
         "--dest",
-        help=r"Destination directory (default: %%USERPROFILE%%\EDA Agent\scripts)",
+        help=r"Destination directory (default: the folder Altium's Global Projects list loads it from, else %%USERPROFILE%%\EDA Agent\scripts)",
     )
     install_p.add_argument(
         "--force",

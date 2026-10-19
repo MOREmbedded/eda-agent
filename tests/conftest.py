@@ -217,6 +217,21 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_altium_global_projects(monkeypatch):
+    """Keep this machine's Altium registry out of every test.
+
+    ``get_default_scripts_dest`` follows the folder Altium's Global
+    Projects list names, so on a developer's machine an unpatched test
+    would read, and an install-scripts without ``dest`` would WRITE, the
+    script folder a live Altium compiles from. A test that wants a
+    registered folder patches ``_read_global_projects`` itself.
+    """
+    from eda_agent import cli
+
+    monkeypatch.setattr(cli, "_read_global_projects", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _restore_active_backend():
     """Undo any backend a test registers, so the next one starts clean.
 

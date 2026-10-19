@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -117,7 +118,8 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
     need.
     """
     from eda_agent.cli import (get_bundled_scripts_path,
-                               get_default_scripts_dest)
+                               get_default_scripts_dest,
+                               get_registered_scripts_dirs)
     from eda_agent.diag.health import _script_version
 
     root = _repo_root()
@@ -163,6 +165,11 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
     deployed = get_default_scripts_dest() / "Main.pas"
     state["bundled_scripts"] = str(bundled.parent)
     state["deployed_scripts"] = str(deployed.parent)
+    # Which folder Altium itself loads the script project from. None off
+    # Windows, where there is no registry to ask and no Altium to run.
+    state["registered_scripts"] = (
+        [str(d) for d in get_registered_scripts_dirs()]
+        if sys.platform == "win32" else None)
     state["bundled_version"] = _script_version(bundled) if bundled.exists() \
         else None
     state["deployed_version"] = _script_version(deployed) \
@@ -517,6 +524,28 @@ def plan(state: dict[str, Any], *, pull: bool = False,
             "altium scripts", "action",
             f"deployed {deployed} differs from {where} {bundled}",
             action=fix))
+
+    # --- which folder Altium reads ------------------------------------
+    # Everything above compared against deployed_scripts. That is only
+    # the right folder if it is the one Altium's Global Projects list
+    # names; reporting on any other is how a stale build went unseen
+    # for days behind "deployed scripts current".
+    registered = state.get("registered_scripts")
+    if registered is not None and len(registered) > 1:
+        steps.append(Step(
+            "script folder", "action",
+            f"{len(registered)} Altium installs load Altium_API.PrjScr from "
+            f"different folders ({', '.join(registered)}), so the checks "
+            f"above used {state.get('deployed_scripts')}",
+            action="Deploy to each folder you use: `python -m eda_agent "
+                   "install-scripts --force --dest <folder>`.",
+            details={"registered": registered}))
+    elif registered is not None and not registered:
+        steps.append(Step(
+            "script folder", "unknown",
+            f"no Altium install lists Altium_API.PrjScr as a Global "
+            f"Project, so the checks above used "
+            f"{state.get('deployed_scripts')}, which Altium may not read"))
 
     # --- the copy Altium compiled -------------------------------------
     # Last on purpose: it is the only step whose fix is a GUI action, so

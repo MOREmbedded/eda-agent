@@ -883,15 +883,20 @@ default.
 
 ### Where the Altium scripts are deployed
 
-`install-scripts` writes to `%USERPROFILE%\EDA Agent\scripts\` by
-default, and `eda-agent health` and `eda-agent update` report on that
-folder. **If you registered the Global Project somewhere else, those
-commands are reporting a directory Altium never reads** - they will say
-"deployed scripts current" while Altium compiles something years old.
+`install-scripts`, `eda-agent health` and `eda-agent update` use the
+folder Altium itself loads `Altium_API.PrjScr` from, read from the
+Global Projects list Altium keeps in the registry
+(`HKCU\Software\Altium\<install>\DesignExplorer\Preferences\ScriptingSystem\Global Projects`).
+Only when no install registers it, or several installs register
+*different* folders, do they fall back to `%USERPROFILE%\EDA Agent\scripts\`,
+and `update` says which of those happened.
 
-`eda-agent update` catches it anyway, because it also pings Altium for
-the version it actually **compiled** and compares the two. When they
-disagree, deploy to the folder you registered:
+This used to be the fixed default regardless, so with the Global
+Project registered elsewhere those commands reported "deployed scripts
+current" about a folder Altium never reads, while Altium compiled
+something days old. `eda-agent update` still pings Altium for the
+version it actually **compiled** and compares the two, which catches
+any gap the registry cannot explain. To deploy somewhere specific:
 
 ```bash
 eda-agent install-scripts --force --dest <that folder>
