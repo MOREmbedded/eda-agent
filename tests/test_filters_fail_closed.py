@@ -152,6 +152,11 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
     problem = _routine(_code("Utils.pas"), "FilterProblem")
     sch = _routine(_code("Generic.pas"), "MatchesFilter")
     pcb = _routine(_code("PCBGeneric.pas"), "MatchesFilterPCB")
+    # What the PCB matcher compares a value with: a length as a number.
+    value = "\n".join([_routine(_code("Utils.pas"), "IsFloatStr"),
+                       _routine(_code("Utils.pas"), "StrToFloatDef"),
+                       _routine(_code("PCBGeneric.pas"), "IsLengthProperty"),
+                       _routine(_code("PCBGeneric.pas"), "FilterValueMatchesPCB")])
     checks = [(f, b) for f, b in [
         ("", ""), ("Layer=TopLayer", ""), ("Text=a=b", ""), ("Layer=TopLayer|", ""),
         ("Designator.Text=PWR IN", ""), (QUERY, QUERY), ("IsDesignator", "IsDesignator"),
@@ -185,7 +190,7 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
         "begin Result := ''; end;",
         "procedure NotePropertyDiag(Kind: String; PropName: String);",
         "begin end;",
-        problem, sch, pcb,
+        problem, sch, value, pcb,
         "var P: IPCB_Primitive; S: ISch_GraphicalObject;",
         "begin", "  P := IPCB_Primitive.Create; S := ISch_GraphicalObject.Create;",
         *lines, "end.",

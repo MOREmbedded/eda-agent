@@ -47,6 +47,26 @@ async def test_length_adds_resistance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_capacity_resistance_is_the_shared_figure(monkeypatch):
+    """pcb_calc_track_current_capacity computed resistance on its own
+    once, with the same wrong-unit constant; it now uses the shared one."""
+    monkeypatch.setattr(pcb_module, "get_bridge", lambda: None)
+    cap: dict = {}
+
+    class M:
+        def tool(self):
+            def d(fn):
+                cap[fn.__name__] = fn
+                return fn
+            return d
+
+    pcb_module.register_pcb_tools(M())
+    out = await cap["pcb_calc_track_current_capacity"](
+        10.0, copper_oz=1.0, length_mils=1000.0)
+    assert out["resistance_mohm"] == pytest.approx(49.26, rel=0.002)
+
+
+@pytest.mark.asyncio
 async def test_invalid_layer_returns_reason(monkeypatch):
     out = await _tool(monkeypatch)(1.0, layer="middle")
     assert out["ok"] is False

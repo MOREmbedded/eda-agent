@@ -113,8 +113,13 @@ from a table naming a tool nobody wrote.
 
 - Keep PRs focused. One concern per PR.
 - Include a clear description of the problem and the chosen approach.
-- If you touch Pascal: remember that Altium caches scripts. Reviewers will
-  need to restart Altium to see your changes in effect.
+- If you touch Pascal: Altium keeps compiled script units. Re-running
+  StartMCPServer does not recompile an edited unit, and restarting Altium
+  has not always done so either. Run `eda-agent install-scripts --force`,
+  then close the script project in the Projects panel (right-click
+  `Altium_API.PrjScr`, Close Project), reopen it and run StartMCPServer.
+  `app_ping` names any unit still running an older compile in
+  `stale_units`.
 - Add or update tests when behaviour changes.
 - Run `pytest --ignore=tests/integration` locally before requesting review.
 

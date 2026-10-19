@@ -677,7 +677,8 @@ class AltiumSimulator:
         # spin forever -- reporting an error response, so the caller
         # learns the reason rather than waiting out the deadline.
         try:
-            content = request_path.read_text(encoding="utf-8")
+            # utf-8-sig, as LoadFromStream does: the bridge writes a mark.
+            content = request_path.read_text(encoding="utf-8-sig")
         except (IOError, OSError, UnicodeDecodeError) as exc:
             key = str(request_path)
             attempts = self._read_failures.get(key, 0) + 1
@@ -1312,6 +1313,20 @@ class AltiumSimulator:
                                              "No schematic library is active")
             return _build_success_response(rid, '{"success":true}')
 
+        elif action == "add_symbol_polygon":
+            # Mirrors Lib_AddSymbolPolygon: a library must be active and
+            # the vertex list must hold at least three points.
+            if not self.lib_has_schlib:
+                return _build_error_response(rid, "NO_SCHLIB",
+                                             "No schematic library is active")
+            coords = [c for c in str(params.get("vertices", "")).split(",")
+                      if c.strip()]
+            if len(coords) < 6:
+                return _build_error_response(
+                    rid, "INVALID_PARAMS", "At least 3 vertices are required")
+            return _build_success_response(
+                rid, '{"success":true,"vertices":%d}' % (len(coords) // 2))
+
         elif action == "add_symbol_line":
             if not self.lib_has_schlib:
                 return _build_error_response(rid, "NO_SCHLIB",
@@ -1623,13 +1638,29 @@ class AltiumSimulator:
         elif action == "get_font_id":
             return _build_success_response(rid, '{"font_id":1}')
         elif action == "select_objects":
-            # Route through modify with Selection=true
+            # Mirrors Gen_SelectObjects: select through modify, then read
+            # the flag back and report matched and selected, never the
+            # property notes.
             obj_type_str = params.get("object_type", "")
             filter_str = params.get("filter", "")
-            return self._gen_modify_objects(
+            reply = self._gen_modify_objects(
                 {"scope": "active_doc", "object_type": obj_type_str,
                  "filter": filter_str, "set": "Selection=true"}, rid
             )
+            parsed = json.loads(reply)
+            if not parsed.get("success"):
+                return reply
+            matched = int(parsed["data"]["matched"])
+            type_int = self._resolve_object_type(obj_type_str)
+            selected = sum(
+                1 for obj in self.sch_objects
+                if obj.object_id == type_int
+                and self._matches_filter(obj, filter_str)
+                and obj.get_property("Selection").lower() == "true")
+            ok = "true" if selected >= matched else "false"
+            return _build_success_response(
+                rid, '{"matched":' + str(matched) + ',"selected":'
+                + str(selected) + ',"success":' + ok + '}')
         elif action == "deselect_all":
             return _build_success_response(rid, '{"deselected":true}')
         elif action == "zoom":

@@ -229,8 +229,8 @@ def test_verification_reports_pads_the_eco_left_unbound(tools, monkeypatch):
     check = res["pad_net_verification"]
     assert check["checked"] is True
     assert check["complete"] is False
-    assert check["pads_unbound_count"] == 2
-    assert check["pads_unbound_by_component"] == {"U15": 2}
+    assert check["unbound_count"] == 2
+    assert check["unbound_by_component"] == {"U15": 2}
 
 
 def test_verification_pages_past_the_first_pad_window(tools, monkeypatch):
@@ -252,7 +252,7 @@ def test_verification_pages_past_the_first_pad_window(tools, monkeypatch):
     pad_calls = [c for c in bridge.calls
                  if c[0] == "pcb.get_pad_properties"]
     assert len(pad_calls) == 3  # 500 + 500 + 200
-    assert res["pad_net_verification"]["pcb_pads_checked"] == 1200
+    assert res["pad_net_verification"]["pads_checked"] == 1200
 
 
 def test_verification_can_be_switched_off(tools, monkeypatch):

@@ -264,6 +264,17 @@ these rules before producing a plan; they bound your choices.
       application: BOOT next to PH on the right makes the
       bootstrap cap obvious; OSC pair on one side.
 
+    **18a. Standard symbols are the exception, and the default where they
+    exist.** A part with a conventional symbol gets that symbol, not a
+    rectangle. An op-amp, comparator, current-sense or instrumentation
+    amplifier is a TRIANGLE: IN+/IN- on the left with + and - marks,
+    the output at the apex on the right, V+ on the top edge and V- (or
+    GND) on the bottom edge; this is the one place pins leave the top
+    and bottom. A dual or quad is one triangle per part plus a power
+    part. Discretes (R, C, L, diodes, LEDs, TVS, zener, MOSFET/BJT,
+    fuse, switch, crystal) get their glyphs. The rectangle and the
+    left/right rule above are for ICs with no conventional symbol.
+
     The pin's package number goes into the `designator` field; the
     package pinout is for the PCB footprint, not the schematic. A
     sequential package-order symbol forces every reader to mentally
@@ -419,11 +430,19 @@ one design. They apply in every session.
      datasheet's recommended land-pattern dimensions (pitch, pad size,
      row_span); `hole>0` for through-hole, `exposed_pad>0` for a QFN
      thermal pad. Do NOT place pads one at a time.
+   - **Standard symbol first:** look in the user's own library for a part
+     already drawn the conventional way (a triangle op-amp, a MOSFET) and
+     copy it with `lib_copy_component`, renaming and renumbering the pins
+     to the new datasheet. That keeps the house style.
    - **IC symbol:** `lib_create_ic_symbol(name, left_pins, right_pins)` --
      you choose the functional grouping (inputs/power/control left, outputs
      right, rule 18); it lays out the body + pins grid-aligned in one call.
-   - **Passive symbol:** `lib_create_passive_symbol(name, kind)` for
-     resistor/capacitor/inductor/diode glyphs.
+     An op-amp, comparator, current-sense or instrumentation amplifier is
+     drawn as a TRIANGLE automatically (rule 18a).
+   - **Discrete symbol:** `lib_create_passive_symbol(name, kind)` draws the
+     conventional glyph: resistor, capacitor, inductor (arcs), diode, LED,
+     zener, schottky, TVS, crystal, fuse, switch, push button, N/P MOSFET,
+     NPN/PNP. Never a rectangle for a discrete.
    - If you must drop primitives by hand, ALWAYS use the BULK tools --
      `lib_add_footprint_pads`/`lib_add_footprint_tracks`/`lib_add_pins`/
      `lib_add_symbol_lines` -- one call for the whole set, never a loop of

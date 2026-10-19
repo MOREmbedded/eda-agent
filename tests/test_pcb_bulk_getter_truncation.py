@@ -179,8 +179,28 @@ def test_pas_pad_handler_counts_matches_outside_the_window():
 
 
 def test_pas_clearance_violations_still_reports_the_true_total():
-    # The neighbouring 200-cap: its counter is incremented outside the
-    # guard, so violation_count stays the real total. Guard that.
+    # The cap must not change the TOTAL: Count is incremented for every
+    # violation found, outside whatever guard decides which rows are
+    # emitted, so violation_count stays the real figure while the rows
+    # are paged. Asserted as that property rather than as one spelling
+    # of the guard -- the handler has since gained offset/limit paging,
+    # and a literal "If Count < 200" check failed on an implementation
+    # that satisfies the requirement perfectly well.
     src = _handler_source("PCB_GetClearanceViolations")
-    assert "If Count < 200 Then" in src
-    assert '"violation_count"' in src
+    assert 'violation_count' in src and 'IntToStr(Count)' in src, (
+        "violation_count must report Count, the unguarded total")
+
+    emit_guard = next((l for l in src.splitlines()
+                       if "Returned < Limit" in l or "Count < 200" in l), "")
+    assert emit_guard, "no emit guard found; has the cap gone entirely?"
+
+    lines = [l.strip() for l in src.splitlines()]
+    inc_count = next(i for i, l in enumerate(lines) if l == "Inc(Count);")
+    guard = next(i for i, l in enumerate(lines)
+                 if "Returned < Limit" in l or "Count < 200" in l)
+    # Same indentation depth as the guard, not nested inside it.
+    raw = src.splitlines()
+    depth = lambda i: len(raw[i]) - len(raw[i].lstrip())
+    assert depth(inc_count) <= depth(guard), (
+        "Inc(Count) is nested inside the emit guard, so violation_count "
+        "would report the page size rather than the true total")

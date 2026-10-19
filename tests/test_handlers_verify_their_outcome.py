@@ -177,6 +177,30 @@ def test_a_zero_drc_cannot_masquerade_as_a_clean_board():
         "actually ran")
 
 
+def test_drc_is_confirmed_by_a_fresh_report_not_an_old_one():
+    """A cancelled check on a board checked before read as confirmed.
+
+    The confirmation used to be that a .DRC report EXISTED, and any
+    earlier run leaves one. Only a report rewritten during the call
+    proves the check ran, so the report is stamped on both sides of
+    RunProcess.
+    """
+    text = _decommented(_src("PCB.pas"))
+    assert "Result := FileAge(ReportPath)" in _body(text, "DrcReportAge")
+    body = _body(text, "PCB_RunDRC")
+    run = body.index("RunProcess('PCB:DesignRuleCheck')")
+    before = body.index("ReportBefore := DrcReportAge(")
+    after = body.index("ReportAfter := DrcReportAge(")
+    assert before < run < after, (
+        "the report must be stamped before AND after the run")
+    fresh = body.index("If Not ReportFresh Then")
+    confirmed = body.index('"drc_confirmed":true')
+    assert confirmed > body.index("Else", fresh), (
+        "drc_confirmed true may only be emitted when the report is fresh")
+    assert "\"drc_confirmed\":' + BoolToJsonStr(ReportPresent)" not in body, (
+        "drc_confirmed must not be derived from the report's existence")
+
+
 # ---------------------------------------------------------------
 # Geometry.
 # ---------------------------------------------------------------
@@ -267,8 +291,10 @@ def test_the_press_tool_can_answer_a_handleless_dialog():
     """WPF dialogs expose no button handles, so click has no target.
 
     MEASURED: "Unsaved Changes" blocked the bridge for over two minutes
-    while app_press_dialog_button could only refuse. A plain Enter
-    cleared it.
+    while app_press_dialog_button could only refuse. The named button is
+    now invoked through UI Automation, and Escape stays as the fallback
+    for a dismiss. Enter does not: it cleared that dialog by pressing its
+    default, Save.
     """
     from eda_agent.ui import windows
     assert hasattr(windows, "press_key")
@@ -455,17 +481,16 @@ def test_every_bridge_call_watches_for_a_modal_while_it_waits():
     assert every <= 5.0, f"dialog re-check every {every}s, too slow"
 
 
-def test_a_library_lookup_rereads_the_document_as_a_last_resort():
-    """Saving is NOT enough to make a new symbol findable by name.
+def test_an_explicit_refresh_saves_then_rereads_the_document():
+    """A refresh the caller asks for saves, closes and reopens.
 
-    MEASURED in order: lib_create_symbol succeeded and resolved its own
-    symbol inside the creating command; app_save_all reported
-    still_dirty 0 and the saved file provably contained the symbol;
-    every by-name lookup still missed; CloseObject then OpenObject and
-    the name resolved again.
-
-    So the reopen is the step that matters, and it belongs in the
-    save/read path rather than in the caller's head.
+    MEASURED earlier: saving alone did not make a new symbol findable by
+    name; CloseObject then OpenObject did. That reopen used to run on every
+    by-name miss. MEASURED 2026-10-18 on Altium 26.11: symbols created
+    earlier in the session are found in memory, and the automatic reopen
+    saved the user's library on every miss (#88), so the lookup no longer
+    calls it (test_library_lookup_never_saves). The reopen stays for a
+    caller that asks for it, and when it runs it must save first.
     """
     text = _decommented(_src("Library.pas"))
     assert "Function RefreshSchLibFromDisk" in text
@@ -477,8 +502,46 @@ def test_a_library_lookup_rereads_the_document_as_a_last_resort():
     assert "CloseObject" in refresh and "OpenObject" in refresh
 
     lookup = _body(text, "LookupLibComponent")
-    assert "RefreshSchLibFromDisk" in lookup, (
-        "the lookup must re-read the document when index and walk both "
-        "miss, which is the only thing measured to work")
-    assert "RefreshingLib" in lookup, (
-        "the reopen retry must be guarded against re-entering")
+    assert "RefreshSchLibFromDisk" not in lookup, (
+        "a by-name lookup must not save and reopen the user's library")
+
+
+def test_sim_run_runs_the_simulator_output_and_checks_for_results():
+    """MEASURED on AD 26.10.1.6: Sim:RunMixedSim ran nothing.
+
+    No results document, no file, no message, and sim_run reported
+    success. The schematic's Simulate menu sends GenerateReport for the
+    project's simulator output, and a run that worked focuses its .sdf
+    results document. The success reply must sit behind that check.
+    """
+    body = _decommented(_body(_src("Generic.pas"), "Gen_RunSimulation"))
+    assert "Sim:RunMixedSim" not in body, "that process does not run on AD 26"
+    assert "WorkspaceManager:GenerateReport" in body
+    assert "'ObjectKind', 'Simulator'" in body and "'Action', 'Run'" in body
+    check = body.index("'.sdf'")
+    fail = body.index("SIM_NOT_RUN")
+    ok = body.index("BuildSuccessResponse")
+    assert check < fail < ok, (
+        "the success reply must come after a results check that can fail")
+
+
+def test_a_footprint_stamp_counts_only_when_it_reads_back():
+    """A Footprint key counted as applied and wrote nothing.
+
+    Both parameter handlers now go through SetPlacedFootprintName, which
+    writes the footprint implementation and reads its ModelName back.
+    """
+    text = _decommented(_src("Generic.pas"))
+    helper = _body(text, "SetPlacedFootprintName")
+    assert "Target.ModelName := NewName" in helper
+    assert "Result := (After = NewName)" in helper
+    assert "CurrentFootprintModelName :=" not in helper
+    for func in ("Gen_SetSchComponentParameters",
+                 "Gen_SetSchComponentsParameters"):
+        body = _body(text, func)
+        branch = body[body.index("Key = 'Footprint'"):]
+        branch = branch[:branch.index("Else")]
+        assert "SetPlacedFootprintName(" in branch, (
+            f"{func} must write the footprint, not skip it")
+        assert "If SetPlacedFootprintName(" in branch, (
+            f"{func} must count the footprint only on read-back")

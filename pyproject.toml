@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eda-agent"
-version = "0.6.1"
-description = "MCP server for EDA tool automation, currently supports Altium Designer. Around 570 tools for schematic, PCB, and library ops via DelphiScript bridge."
+version = "0.7.1"
+description = "MCP server for EDA tool automation, currently supports Altium Designer. Around 590 tools for schematic, PCB, and library ops via DelphiScript bridge."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -129,6 +129,15 @@ exclude = [
 "scripts/altium/Dispatcher.pas" = "eda_agent/scripts/Dispatcher.pas"
 "scripts/altium/SelfTest.pas" = "eda_agent/scripts/SelfTest.pas"
 "scripts/altium/Altium_API.PrjScr" = "eda_agent/scripts/Altium_API.PrjScr"
+# The EasyEDA extension source (not its build, which needs Node); see
+# eda_agent/easyeda_extension.py and `eda-agent easyeda-extension`.
+"extensions/easyeda/main.js" = "eda_agent/easyeda_extension/main.js"
+"extensions/easyeda/extension.json" = "eda_agent/easyeda_extension/extension.json"
+"extensions/easyeda/build.py" = "eda_agent/easyeda_extension/build.py"
+"extensions/easyeda/capabilities.json" = "eda_agent/easyeda_extension/capabilities.json"
+"extensions/easyeda/iframe_template.html" = "eda_agent/easyeda_extension/iframe_template.html"
+"extensions/easyeda/README.md" = "eda_agent/easyeda_extension/README.md"
+"extensions/easyeda/BUILD_STAMP.json" = "eda_agent/easyeda_extension/BUILD_STAMP.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -136,6 +145,11 @@ include = [
     "scripts/altium/*.pas",
     "scripts/altium/*.dfm",
     "scripts/altium/*.PrjScr",
+    "extensions/easyeda/*.js",
+    "extensions/easyeda/*.json",
+    "extensions/easyeda/*.py",
+    "extensions/easyeda/*.html",
+    "extensions/easyeda/README.md",
     "README.md",
     "LICENSE",
     "pyproject.toml",

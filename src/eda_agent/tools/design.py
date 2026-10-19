@@ -456,38 +456,34 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Measure a board for the layout stages' exit gates. Changes nothing.
 
-        Reads the focused board exactly, the way ``pcb_autoroute`` does
-        (``pcb.get_layout_model``), or a saved LayoutBoard JSON, and runs the
-        in-house checks over it. Every check returns counts and itemised
-        findings with coordinates in mils:
+        Reads the focused board (or a saved LayoutBoard JSON) and runs
+        these checks, each with counts and findings in mils:
 
-        - ``placement_audit``: overlapping bodies on one side, pads of
-          different nets closer than the clearance rule, parts on keepouts
-          or mounting holes, parts off the board.
-        - ``connectivity_summary``: nets routed / partly routed / not
-          started, and every unreached pad.
+        - ``placement_audit``: body overlaps, pads under clearance, parts
+          on keepouts or off the board.
+        - ``connectivity_summary``: routed / partial / unstarted nets.
         - ``drc``: the exact clearance check.
-        - ``corner_audit``: track junctions bending sharper than 45 degrees.
-        - ``return_via_audit``: signal vias with no ground or plane via
-          within ``max_distance_mils``.
-        - ``plane_region_audit``: pour and plane copper broken into islands.
+        - ``corner_audit``: bends sharper than 45 degrees.
+        - ``return_via_audit``: signal vias with no ground via within
+          ``max_distance_mils``.
+        - ``plane_region_audit``: pour copper broken into islands.
+        - ``loop_audit``: hot, gate-drive, decoupling, crystal and other
+          loops, worst first. Advisory.
+        - ``pad_entry_audit``: off-axis, off-centre, too-wide or uneven
+          pad entries. Fails only on high severity.
 
         Log the result as ``data`` on the stage_result
-        (``design_session_log``); ``design_next_action`` checks the numbers
-        against the stage's gate.
+        (``design_session_log``).
 
         Args:
             checks: names from the list above; None runs them all.
-            expect_file: full path of the focused board, for a live read.
-                The read refuses on the first reply if another board is
-                focused.
-            board_json_path: a saved LayoutBoard (.json or .json.gz) to audit
-                offline instead; nothing is read from the editor.
-            nets: the signal nets ``return_via_audit`` checks. None checks
-                differential-pair and high-speed-class nets, or every signal
-                via when the board names neither.
-            max_distance_mils: how near a return via must be (centre to
-                centre). Default 40.
+            expect_file: full path of the focused board, for a live read;
+                refused if another board is focused.
+            board_json_path: a saved LayoutBoard (.json or .json.gz) to
+                audit offline instead.
+            nets: nets for ``return_via_audit``; None checks diff-pair
+                and high-speed nets, or every signal via.
+            max_distance_mils: return via distance, centre to centre.
             limit: findings listed per kind; counts are never cut.
 
         Returns:
@@ -599,15 +595,11 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Open a list of SchLib files and return what components live in them.
 
-        NDA scope: only pass paths to the user's own neutral standard
-        libraries. Do NOT pass project-local library paths from another
-        client engagement, design knowledge cannot cross NDA boundaries.
+        NDA scope: pass only the user's own neutral standard libraries,
+        never project-local libraries from another client engagement.
 
-        Large libraries (passives/connectors can hold hundreds of parts)
-        easily exceed the tool-output token budget, so the RETURNED set is
-        filtered and capped. The FULL inventory is always cached to
-        ``<workspace>/inventory.json`` for the dashboard regardless of
-        these limits.
+        The returned set is filtered and capped; the full inventory is
+        always written to ``<workspace>/inventory.json``.
 
         Args:
             library_paths: Absolute paths to .SchLib files to scan.
@@ -617,8 +609,8 @@ def register_design_tools(mcp) -> None:
             limit_per_library: Cap components returned per library
                 (default 60; 0 = unlimited). Each library reports
                 ``total`` and ``returned`` so you know if it was capped.
-            include_descriptions: Drop the (often long) ``description``
-                field from the returned rows to save tokens. Default True.
+            include_descriptions: False drops the (often long)
+                ``description`` from each row. Default True.
 
         Returns:
             Inventory dict: ``{"libraries": [{"path", "total",
@@ -768,80 +760,42 @@ def register_design_tools(mcp) -> None:
         block: str,
         params: dict,
     ) -> dict[str, Any]:
-        """Fold a canonical circuit block into a DesignPlan in one call.
+        """Add a standard sub-circuit to a DesignPlan, wired, in one call.
 
-        Authoring boilerplate sub-circuits pin-by-pin in plan JSON is slow
-        and error-prone (a decoupling network is N caps, 2N pins, and two
-        net merges that must line up). This emits the canonical *topology*
-        of a common block and wires it into ``plan_json`` -- allocating
-        unique refdes, tying every pin to the right net, and tagging
-        power/ground and roles -- then returns the augmented plan plus an
-        inline re-validation so the next authoring step starts from a known
-        state.
+        It sets the topology (unique refdes, every pin on its net, power
+        and ground tagged) and re-validates the plan. You choose every
+        part: lib_ref, value, footprint, mpn, datasheet_url in ``params``.
+        Nets the block only touches (a pull-up's signal, a divider's rail)
+        should already exist in the plan.
 
-        It is **naming-agnostic**: it owns the wiring pattern, never the
-        part choice. YOU supply every part identity in ``params``
-        (``lib_ref``/``value``/``footprint``/``mpn``/``datasheet_url``),
-        picked semantically from the live inventory snapshot. Pass computed
-        values from ``design_compute_component_value`` where relevant.
-
-        Blocks and their required ``params`` (all also accept ``pins`` to
-        override default pin names, ``refdes_prefix``, ``sheet``):
-
-          * ``decoupling``      power_net, ground_net, lib_ref [, count,
-                                value, footprint] -- N bypass caps.
-          * ``pullup``          signal_net, rail_net, lib_ref [, value].
-          * ``pulldown``        signal_net, ground_net, lib_ref [, value].
-          * ``series_resistor`` net_a, net_b, lib_ref [, value].
-          * ``voltage_divider`` rail_net, ground_net, lib_ref_top,
-                                lib_ref_bottom [, value_top, value_bottom,
-                                output_net] -- fresh midpoint net.
-          * ``rc_lowpass``      input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net].
-          * ``rc_highpass``     input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net] -- series
-                                C + shunt R (AC coupling).
-          * ``led_indicator``   anode_net, cathode_net, lib_ref_r,
-                                lib_ref_led [, value_r, mid_net].
-          * ``crystal``         xin_net, xout_net, ground_net, lib_ref,
-                                cap_lib_ref [, value, cap_value] -- crystal
-                                + a matched pair of load caps (one shared
-                                cap_value keeps the legs equal).
-          * ``pi_filter``       input_net, ground_net, lib_ref_l, lib_ref_c
-                                [, value_l, value_c, output_net] -- shunt C,
-                                series L/ferrite, shunt C.
-          * ``mosfet_low_side`` control_net, load_net, ground_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pulldown, pulldown, fet_pins] --
-                                gate series R + gate pull-down + FET
-                                switching a load low-side.
-          * ``mosfet_high_side`` control_net, load_net, rail_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pullup, pullup, fet_pins] -- gate
-                                series R + gate pull-up + PMOS switching a
-                                load high-side (source at the rail).
-
-        Call ``design_list_circuit_blocks`` for the full per-block
-        parameter contract.
-
-        Net endpoints the block does NOT own (a pullup's signal, an RC
-        input, a divider rail) should already exist in the plan; the block
-        only creates the nets it fully populates. If you point a block at a
-        net that ends up with a single pin, the inline ERC reports it as a
-        floating net for you to complete.
+        Blocks and required params (all accept pins, refdes_prefix, sheet;
+        design_list_circuit_blocks gives the full contract):
+          ``decoupling``: power_net, ground_net, lib_ref [count, value]
+          ``pullup``: signal_net, rail_net, lib_ref
+          ``pulldown``: signal_net, ground_net, lib_ref
+          ``series_resistor``: net_a, net_b, lib_ref
+          ``voltage_divider``: rail_net, ground_net, lib_ref_top,
+            lib_ref_bottom [output_net]
+          ``rc_lowpass`` / ``rc_highpass``: input_net, ground_net,
+            lib_ref_r, lib_ref_c [output_net]
+          ``led_indicator``: anode_net, cathode_net, lib_ref_r,
+            lib_ref_led
+          ``crystal``: xin_net, xout_net, ground_net, lib_ref, cap_lib_ref
+          ``pi_filter``: input_net, ground_net, lib_ref_l, lib_ref_c
+          ``mosfet_low_side``: control_net, load_net, ground_net,
+            lib_ref_r, lib_ref_fet
+          ``mosfet_high_side``: control_net, load_net, rail_net,
+            lib_ref_r, lib_ref_fet
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
-            block: block name (see the list above).
-            params: block parameters (see per-block requirements above).
+            block: block name from the list.
+            params: block parameters.
 
         Returns:
-            ``{ok, plan, added: {refdes, nets, extended_nets}, notes,
-            validation}`` where ``plan`` is the augmented DesignPlan dict
-            ready for the next ``design_add_circuit_block`` or
-            ``design_execute_plan``, and ``validation`` is the same payload
-            ``design_validate_plan`` returns. ``ok`` is False on a bad
-            block name / missing param / schema error, with ``errors``.
+            {ok, plan, added: {refdes, nets, extended_nets}, notes,
+            validation}; ``plan`` is ready for the next block or
+            design_execute_plan. ``ok`` False comes with ``errors``.
         """
         if isinstance(plan_json, dict):
             payload = plan_json
@@ -925,18 +879,11 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Add one part and wire its pins to named nets, in one call.
 
-        The atomic authoring primitive under the block/bus tools: place a
-        single arbitrary part -- an MCU, a connector, a regulator -- and
-        fold each pin into a net. ``connections`` is a pin->net map, the
-        shape a datasheet pinout reads in; pins that map to the same net
-        (an IC's five VCC pins) merge onto one net automatically, so you
-        never hand-maintain a net's pin list. Chain with
-        ``design_add_circuit_block`` (peripherals) and
-        ``design_connect_bus`` (wide interfaces) to author a whole netlist
-        without writing raw net JSON.
-
-        Naming-agnostic: you supply the part identity and net names chosen
-        from the live inventory; this owns only the pin->net folding.
+        ``connections`` maps pin to net, as a datasheet pinout reads;
+        pins on the same net merge onto it. With
+        ``design_add_circuit_block`` and ``design_connect_bus`` this
+        builds a whole netlist without raw net JSON. You choose the part
+        and the net names.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1032,14 +979,9 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Wire a parallel bus across two+ parts in one call.
 
-        A wide interface -- an 8-bit data bus between an MCU and a display,
-        an address bus to a memory -- is otherwise N near-identical net
-        objects where bit i of one side is easily misaligned with bit i+1
-        of the other. This joins the i-th pin of every endpoint into one
-        net per bit, so alignment is structural and the whole bus is one
-        call. It creates NO parts: the endpoints reference parts already in
-        the plan. The nets share one part-set -- the signature the pipeline
-        uses to DRAW a >=4-bit bus as a bus glyph automatically.
+        Joins the i-th pin of every endpoint into one net per bit, so
+        bits cannot be misaligned. Creates no parts. A bus of 4 or more
+        bits is drawn as a bus.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1125,13 +1067,8 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Apply many authoring operations to a plan in ONE call.
 
-        The bulk form of the authoring primitives -- the same reason you
-        prefer a batch Altium tool over looping the singular one. Instead
-        of one round-trip per part/block/bus, pass an ordered list and this
-        threads the plan through all of them, then validates once. Each
-        operation sees the previous one's result, so a part added early is
-        available to a bus wired later. Build a whole board in a single
-        call.
+        Runs the operations in order, each seeing the last one's result,
+        and validates once at the end: a whole netlist in one call.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1270,14 +1207,10 @@ def register_design_tools(mcp) -> None:
         plan_json: Union[str, dict],
         operations: list,
     ) -> dict[str, Any]:
-        """Edit an existing plan -- the MODIFY complement to the add tools.
-
-        Authoring is iterative: a review turns up a wrong value, a part to
-        drop, two nets that should be one. Fix it with edits instead of
-        re-emitting the whole plan, and let the tool own the error-prone
-        bookkeeping (deleting a part scrubs it from every net; merging nets
-        moves and de-dupes pins). Ordered ops, each sees the previous
-        result; validates once at the end so a now-floating net surfaces.
+        """Edit an existing plan instead of re-emitting it. The tool does
+        the bookkeeping (a deleted part leaves every net; merged nets
+        de-dupe pins). Ops run in order and the result is validated once
+        at the end, so a newly floating net surfaces.
 
         Operations (each a dict keyed by ``"op"``):
 
@@ -1397,56 +1330,31 @@ def register_design_tools(mcp) -> None:
         t_ambient: float = 25.0,
         tj_max: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Compute a manufacturable component value, snapped to an E-series.
-
-        Use this instead of doing the arithmetic by hand: it applies the
-        standard sizing equation, snaps to the nearest IEC 60063 preferred
-        value, and reports the ACHIEVED result plus the error so you can see
-        if the snap is good enough or a tighter ``series`` is needed.
+        """Compute a component value snapped to an E-series, with the value
+        actually achieved and its error. Use it instead of hand arithmetic.
 
         Args:
-            kind: Which calculation:
-              - ``"nearest"``: snap ``value`` to the nearest preferred value.
-              - ``"feedback_divider"``: regulator FB divider
-                ``v_out = v_ref*(1+Rtop/Rbot)``; needs ``v_out``, ``v_ref``;
-                optional ``r_bottom_ohms`` to fix the low side.
-              - ``"resistor_divider"``: unloaded divider
-                ``v_out = v_in*Rb/(Rt+Rb)``; needs ``v_in``, ``v_out``.
-              - ``"led_resistor"``: series resistor; needs ``v_supply``,
-                ``v_forward``, ``i_led_ma``.
-              - ``"rc_lowpass"``: first-order RC; needs ``f_cutoff_hz`` and
-                exactly one of ``r_ohms`` / ``c_farads``.
-              - ``"crystal_load_caps"``: symmetric crystal load caps; needs
-                ``c_load_pf`` (datasheet CL), optional ``c_stray_pf`` (default
-                5 pF per leg).
-              - ``"i2c_pullup"``: bus pull-up window (NXP UM10204); needs
-                ``v_bus``, ``c_bus_pf``, ``t_rise_ns`` (1000 standard / 300
-                fast / 120 fast-plus).
-              - ``"divider_tolerance"``: worst-case output window of an
-                unloaded divider; needs ``v_in``, ``r_top_ohms``,
-                ``r_bottom_ohms``, optional ``tol_pct`` (default 1).
-              - ``"opamp_gain"``: Rf/Rin (or Rg) for a gain stage; needs
-                ``gain`` and ``config`` (``inverting`` / ``non_inverting``).
-              - ``"buck_inductor"``: buck inductor; needs ``v_in``, ``v_out``,
-                ``i_out_a``, ``f_sw_khz``, optional ``ripple_pct`` (default 30).
-              - ``"capacitor_energy"``: stored energy; needs ``c_farads``,
-                ``voltage``.
-              - ``"holdup_cap"``: bulk hold-up capacitance; needs ``i_load_a``,
-                ``t_s`` (hold-up time), ``v_drop`` (allowed sag).
-              - ``"discharge_resistor"``: bleeder; needs ``c_farads``,
-                ``v_initial``, ``v_final``, ``t_s`` (discharge time).
-              - ``"junction_temp"``: Tj = Ta + P*theta_JA; needs ``power_w``,
-                ``theta_ja``, optional ``t_ambient`` (default 25).
-              - ``"max_power"``: thermal derating; needs ``tj_max``,
-                ``theta_ja``, optional ``t_ambient``.
-              - ``"required_theta_ja"``: package/heatsink sizing; needs
-                ``power_w``, ``tj_max``, optional ``t_ambient``.
-            series: E-series name (E6/E12/E24/E48/E96). Default E96 for
-                dividers/precision, pass E24 for jellybean R/C.
+            kind and what it needs:
+              nearest: value
+              feedback_divider: v_out, v_ref [r_bottom_ohms]
+              resistor_divider: v_in, v_out
+              led_resistor: v_supply, v_forward, i_led_ma
+              rc_lowpass: f_cutoff_hz and one of r_ohms / c_farads
+              crystal_load_caps: c_load_pf [c_stray_pf, default 5]
+              i2c_pullup: v_bus, c_bus_pf, t_rise_ns (1000/300/120)
+              divider_tolerance: v_in, r_top_ohms, r_bottom_ohms [tol_pct]
+              opamp_gain: gain, config (inverting / non_inverting)
+              buck_inductor: v_in, v_out, i_out_a, f_sw_khz [ripple_pct]
+              capacitor_energy: c_farads, voltage
+              holdup_cap: i_load_a, t_s, v_drop
+              discharge_resistor: c_farads, v_initial, v_final, t_s
+              junction_temp: power_w, theta_ja [t_ambient, default 25]
+              max_power: tj_max, theta_ja [t_ambient]
+              required_theta_ja: power_w, tj_max [t_ambient]
+            series: E6/E12/E24/E48/E96 (default E96; E24 for jellybean).
 
         Returns:
-            ``{"ok": True, ...fields..., "summary": "..."}`` or
-            ``{"ok": False, "error": "..."}``.
+            {"ok": True, ...values..., "summary"} or {"ok": False, "error"}.
         """
         try:
             k = kind.strip().lower()
@@ -1737,23 +1645,12 @@ def register_design_tools(mcp) -> None:
     async def design_review_file(path: str) -> dict[str, Any]:
         """Offline FALLBACK review of a .SchDoc/.PrjPcb: OFF by default.
 
-        This is NOT the preferred way to review a design. It parses the
-        Altium file directly (OLE reader) with no running Altium and no
-        license, so it only covers the netlist-free, component-level subset
-        (missing MPN / datasheet / manufacturer, placeholder values,
-        designator collisions, missing / unannotated designators, incomplete
-        title block). It cannot compile a netlist or run ERC, and an offline
-        parser can misread a file.
-
-        Prefer the live-Altium tools whenever a session is available:
-        ``design_lint_report``, ``proj_run_erc``, ``design_review_snapshot``,
-        and the ``audit_*`` family run Altium's own engines and see
-        connectivity this reader cannot. Reach for this tool only when Altium
-        genuinely can't be opened (a file on disk, a CI runner).
-
-        Because of that, this surface is **disabled by default**. To enable
-        it, set the environment variable ``EDA_AGENT_HEADLESS_REVIEW=1``.
-        Without it the tool returns an ``error`` explaining the opt-in.
+        Reads the file without Altium, so it checks only component-level
+        items (MPN, datasheet, placeholder values, designators, title
+        block): no netlist, no ERC. With Altium running prefer
+        ``design_lint_report``, ``proj_run_erc``, ``design_review_snapshot``
+        and the ``audit_*`` tools. Disabled unless
+        ``EDA_AGENT_HEADLESS_REVIEW=1``.
 
         Args:
             path: a ``.SchDoc`` sheet or a ``.PrjPcb`` project (reviews all
@@ -1837,7 +1734,10 @@ def register_design_tools(mcp) -> None:
 
         Returns ``{file, line_count, part_count, lines}`` where each line is
         ``{quantity, designators, mpn, manufacturer, value, lib_reference,
-        datasheet}``: or ``{"error": ...}`` if disabled or unreadable.
+        datasheet}``: or ``{"error": ...}`` if disabled or unreadable
+        (missing file, a suffix other than .SchDoc/.PrjPcb, or a project
+        whose sheets cannot be resolved). A design read with zero parts
+        adds a ``warning``: an empty BOM is not proof of an empty design.
         """
         from ..fileio.review import (
             HEADLESS_DISABLED_MESSAGE,
@@ -1850,12 +1750,289 @@ def register_design_tools(mcp) -> None:
             lines = bom_from_file(path)
         except (ValueError, OSError) as e:
             return {"error": f"cannot read {path}: {e}"}
-        return {
+        result: dict[str, Any] = {
             "file": str(path),
             "line_count": len(lines),
             "part_count": sum(ln["quantity"] for ln in lines),
             "lines": lines,
         }
+        if not lines:
+            from ..fileio.bom import EMPTY_BOM_WARNING
+            result["warning"] = EMPTY_BOM_WARNING
+        return result
+
+    @mcp.tool()
+    async def design_find_loops(
+        plan_json: Union[str, dict, None] = None,
+        board_json_path: str = "",
+        expect_file: str = "",
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        kinds: Optional[list[str]] = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Find the circuit loops whose physical size matters, and measure
+        them on a placed board. Changes nothing.
+
+        Loops: a switching converter's HOT loop (input cap, switch, low side,
+        ground back to the cap; boost: switch, diode, output cap), its
+        output loop and bootstrap cap, a MOSFET gate drive, a decoupling cap
+        with the IC pins it serves, a crystal with its load caps, a
+        regulator FB divider or op-amp feedback network, and a current-sense
+        Kelvin connection. Each loop lists its parts and pins IN PATH ORDER
+        and says what found it: ``role`` (plan tags), ``pin_name`` (SW,
+        BOOT, FB, G/S/D, IN-/OUT, SENSE+) or ``structure`` (netlist shape).
+
+        Give ONE source:
+        - ``plan_json``: a DesignPlan; loops only, no geometry.
+        - ``board_json_path``: a saved LayoutBoard; loops measured on the
+          placement (area and an inductance estimate, or path length),
+          worst first.
+        - ``expect_file``: the focused board, read live (full path).
+
+        A board carries pad numbers, not pin functions, so pin-function loops
+        need ``pin_names``: {refdes: {pad_number: pin_name}}, e.g. from
+        lib_get_pin_list. Without them a board gives decoupling, crystal,
+        switching and shunt loops from structure alone.
+
+        Args:
+            kinds: restrict to these loop kinds.
+            limit: loops listed; counts are never cut.
+        """
+        import asyncio
+
+        from ..design.loops import find_loops, graph_from_plan
+
+        sources = [bool(plan_json), bool(board_json_path), bool(expect_file)]
+        if sum(sources) != 1:
+            return {"ok": False, "reason": "give exactly one of plan_json, "
+                    "board_json_path or expect_file"}
+        if plan_json:
+            payload = plan_json
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError as exc:
+                    return {"ok": False, "error": f"invalid JSON: {exc}"}
+            try:
+                plan = DesignPlan.model_validate(payload)
+            except ValidationError as exc:
+                return {"ok": False, "errors": [
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                    for e in exc.errors()]}
+            loops = [l.as_dict() for l in
+                     find_loops(graph_from_plan(plan, pin_names), kinds)]
+            source = "plan"
+        else:
+            from ..layout.loop_audit import analyze_loops
+            if board_json_path:
+                from ..layout.model import LayoutBoard
+                if not Path(board_json_path).is_file():
+                    return {"ok": False, "error": f"no such file: {board_json_path}"}
+                board = await asyncio.to_thread(LayoutBoard.load,
+                                                Path(board_json_path))
+                source = "file"
+            else:
+                from ..layout.read_altium import WrongBoard, read_live_board
+                try:
+                    board = await asyncio.to_thread(read_live_board, expect_file)
+                except WrongBoard as exc:
+                    return {"ok": False, "error": str(exc)}
+                source = "live"
+            loops = await asyncio.to_thread(analyze_loops, board, pin_names,
+                                            kinds)
+        by_kind: dict[str, int] = {}
+        for l in loops:
+            by_kind[l["kind"]] = by_kind.get(l["kind"], 0) + 1
+        return {"ok": True, "source": source, "count": len(loops),
+                "by_kind": by_kind, "loops": loops[:limit],
+                "truncated": len(loops) > limit}
+
+    @mcp.tool()
+    async def design_simulators() -> dict[str, Any]:
+        """Which circuit and field simulators are installed: ngspice
+        (batch build; KiCad's copy is a DLL only) and openEMS with its
+        Python bindings, with versions. Changes nothing, installs nothing.
+
+        A missing one comes back with an install offer (source, and the
+        scoop command where scoop is present). Put the offer to the user
+        and install only after they approve; a missing simulator never
+        fails a design, it only skips the simulation.
+        """
+        import asyncio
+
+        from ..sim.ngspice import simulator_backends
+
+        return await asyncio.to_thread(simulator_backends)
+
+    @mcp.tool()
+    async def design_simulate_loops(
+        plan_json: Union[str, dict],
+        models: Optional[dict[str, dict]] = None,
+        supplies: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        f_start: float = 1.0,
+        f_stop: float = 100e6,
+    ) -> dict[str, Any]:
+        """Loop gain, crossover, phase and gain margin of every feedback
+        loop in a plan, simulated in ngspice. Changes nothing.
+
+        The loops come from design_find_loops. Each is broken at the
+        driving pin (an op-amp's output) and measured by Middlebrook
+        double injection, so the real load on the output counts. A
+        switching regulator's FB loop runs only when its model is marked
+        ``"averaged": true``: a vendor's switching (transient) model has
+        no small-signal loop gain.
+
+        Models are the manufacturer's: ``models`` maps refdes to
+        ``{"file": path, "subckt": name, "pins": [plan pins in the
+        subckt's node order]}``. Without ``pins`` the .SUBCKT node names
+        are matched to the plan's pin names (and ``pin_names``). R, C and
+        L are SPICE primitives from their values. A part with no model is
+        listed in ``missing_models`` and nothing runs; nothing is ever
+        approximated. Rails take ``supplies`` ({net: volts}) or the
+        voltage in the net name (+12V, 3V3).
+
+        No ngspice: the reply carries the install offer and runs nothing.
+
+        A phase margin under 45 degrees is flagged ``low``: a common
+        design convention, not a datasheet limit; loops are ranked by
+        margin either way.
+        """
+        import asyncio
+
+        from ..design.loops import find_loops, graph_from_plan
+        from ..sim.deck import deck_from_plan
+        from ..sim.ngspice import find_ngspice, loop_gain, simulator_backends
+
+        payload = plan_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"invalid JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()]}
+        models = models or {}
+        loops = find_loops(graph_from_plan(plan, pin_names), ["feedback"])
+        if not loops:
+            return {"ok": True, "loops": [], "note": "no feedback loop found"}
+        if not find_ngspice():
+            return {"ok": True, "ran": False, "loops": [l.as_dict() for l in loops],
+                    "simulators": await asyncio.to_thread(simulator_backends)}
+
+        results = []
+        for loop in loops:
+            entry = loop.as_dict()
+            ic = loop.members[0][0]
+            if "FB with divider" in loop.note:
+                if not models.get(ic, {}).get("averaged"):
+                    entry.update(status="not_run", reason=(
+                        "a switching regulator's loop gain needs the vendor's "
+                        "averaged (AC) model; mark it \"averaged\": true"))
+                    results.append(entry)
+                    continue
+                # Break between the output rail and the divider's top pin.
+                top = next((k for k in loop.members[1:]), None)
+                if not top:
+                    entry.update(status="not_run", reason="no divider found")
+                    results.append(entry)
+                    continue
+                deck = deck_from_plan(plan, models, supplies, pin_names,
+                                      break_at=top)
+                drive, load = deck.get("load_node"), deck.get("driver_node")
+            else:
+                deck = deck_from_plan(plan, models, supplies, pin_names,
+                                      break_at=loop.members[0])
+                drive, load = deck.get("driver_node"), deck.get("load_node")
+            if not deck.get("ok"):
+                entry.update(status="not_run", **{
+                    k: deck[k] for k in ("missing_models", "needs_pin_map",
+                                         "bad_values", "unknown_supplies",
+                                         "problems", "model_policy", "reason")
+                    if deck.get(k)})
+                results.append(entry)
+                continue
+            run = await asyncio.to_thread(loop_gain, deck["netlist"], drive,
+                                          load, f_start, f_stop)
+            if not run.get("ok"):
+                entry.update(status="failed", errors=run.get("errors"),
+                             log_tail=run.get("log_tail"))
+                results.append(entry)
+                continue
+            pm = run.get("phase_margin_deg")
+            entry.update(status="ran", method=run["method"],
+                         dc_gain_db=run.get("dc_gain_db"),
+                         crossover_hz=run.get("crossover_hz"),
+                         phase_margin_deg=pm,
+                         gain_margin_db=run.get("gain_margin_db"),
+                         low=pm is not None and pm < 45)
+            if run.get("note"):
+                entry["note_sim"] = run["note"]
+            results.append(entry)
+        ran = [r for r in results if r.get("status") == "ran"]
+        ran.sort(key=lambda r: (r.get("phase_margin_deg") is None,
+                                r.get("phase_margin_deg") or 0))
+        return {"ok": True, "ran": bool(ran), "worst_first": ran,
+                "loops": results}
+
+    @mcp.tool()
+    async def pcb_smart_drc(
+        board_json_path: str = "",
+        expect_file: str = "",
+        spacing_mils: float = 40.0,
+        probe_mils: float = 100.0,
+        currents: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Design checks from TEMPORARY rules, evaluated offline. Writes no
+        rule and changes nothing on the board.
+
+        Asks what the board's own rules usually leave out, using the circuit
+        loops (design_find_loops) to know which nets matter:
+        - ``spacing``: sensitive nets (regulator/op-amp feedback, crystal)
+          closer than ``spacing_mils`` to noisy ones (switch node, bootstrap,
+          gate drive). Take ``spacing_mils`` from the datasheet layout
+          section where one is given; 40 is a starting value.
+        - ``tightest_pairs``: the actual gap of every sensitive/noisy pair
+          within ``probe_mils``, smallest first: how close the board runs to
+          trouble, not only where it fails.
+        - ``hot_loop_width``: hot-loop tracks narrower than the IPC-2221
+          width for the current given per net in ``currents`` (amps).
+
+        Gaps use the DRC's own geometry. Give ``board_json_path`` (saved
+        LayoutBoard) or ``expect_file`` (focused board, read live). A board
+        carries pad numbers only, so pass ``pin_names`` ({refdes: {pad:
+        pin_name}}) to find feedback, bootstrap and gate-drive nets.
+        """
+        import asyncio
+
+        from ..layout.smart_drc import smart_drc
+
+        if bool(board_json_path) == bool(expect_file):
+            return {"ok": False, "reason": "give exactly one of "
+                    "board_json_path or expect_file"}
+        if board_json_path:
+            from ..layout.model import LayoutBoard
+            if not Path(board_json_path).is_file():
+                return {"ok": False, "error": f"no such file: {board_json_path}"}
+            board = await asyncio.to_thread(LayoutBoard.load, Path(board_json_path))
+            source = "file"
+        else:
+            from ..layout.read_altium import WrongBoard, read_live_board
+            try:
+                board = await asyncio.to_thread(read_live_board, expect_file)
+            except WrongBoard as exc:
+                return {"ok": False, "error": str(exc)}
+            source = "live"
+        result = await asyncio.to_thread(
+            smart_drc, board, spacing_mils=spacing_mils, probe_mils=probe_mils,
+            currents=currents, pin_names=pin_names, limit=limit)
+        return {"ok": True, "source": source, **result}
 
     @mcp.tool()
     async def design_review_plan(
@@ -1948,47 +2125,27 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Compute the schematic layout for a DesignPlan, as pure data.
 
-        THE ONE SCHEMATIC ENGINE. Every schematic tool now runs the same
-        canvas pipeline, so whenever you are asked to draw or lay out a
-        schematic, reach for this family and nothing else: this tool for
-        the geometry as data, ``design_preview_plan`` for the same layout
-        rendered to SVG, ``design_execute_plan`` to place it in Altium.
-        There is no longer a second engine to choose between.
-
-        It used to run a second, standalone engine whose placements and
-        score described a layout nobody would ever see. That engine is no
-        longer reachable: measured over ten held-out corpus sheets it lost
-        the shared objective on seven and produced four pairs of
-        OVERLAPPING BODIES where this pipeline produced none, so the
-        shorter wire it appeared to draw was partly bought by stacking
-        parts on top of one another.
-
-        Runs OFFLINE and never reaches Altium, so it works on every
-        backend. That costs one thing and the result says which: symbol
-        geometry is synthesised from the plan's pin lists rather than
-        read from a library, so ``symbols`` comes back ``"synthetic"``
-        and ``execution_accurate`` is False. The placement and routing
-        RULES are the ones that execute. When you need the exact
-        geometry, use ``design_preview_plan`` (same pipeline, real
-        symbols, renders SVG) or ``design_execute_plan`` to emit.
+        The same engine as ``design_preview_plan`` (renders it) and
+        ``design_execute_plan`` (places it). Runs offline on every
+        backend, so symbol geometry is synthesised from the plan's pin
+        lists: ``symbols`` is ``"synthetic"`` and ``execution_accurate``
+        False. For exact geometry use ``design_preview_plan``.
 
         Args:
             plan_json: A DesignPlan as a JSON string or a JSON object/dict.
             sheet: Sheet name to report (default ``"main"``).
-            grid_mils: Accepted for compatibility; the canvas pipeline
-                snaps to its own 100-mil grid.
-            fr_iterations: Accepted for compatibility; the pipeline sweeps
-                its own force-directed budget and scores the results.
+            grid_mils: Ignored; the engine uses a 100-mil grid.
+            fr_iterations: Ignored; the engine sets its own budget.
             placement_hints: Optional ``{refdes: {"x", "y", "rotation"}}``
                 pinned positions, same as ``design_execute_plan``.
             render_png: Optional path for a preview image of the layout.
 
         Returns:
-            Dict with ``ok`` / ``sheet`` / ``engine`` ("canvas") /
-            ``execution_accurate`` (True) / ``summary`` / ``placements`` /
-            ``net_representation`` / ``wires`` / ``net_labels`` /
-            ``power_ports`` / ``junctions`` / ``score`` / ``notes`` /
-            ``failures``. On a bad plan: ``{"ok": False, "errors": [...]}``.
+            ``ok``, ``sheet``, ``engine``, ``symbols``,
+            ``execution_accurate``, ``summary``, ``placements``,
+            ``net_representation``, ``wires``, ``net_labels``,
+            ``power_ports``, ``junctions``, ``score``, ``notes``,
+            ``failures``; on a bad plan ``{"ok": False, "errors": [...]}``.
         """
         result = layout_plan_from_json(
             plan_json, sheet=sheet, placement_hints=placement_hints,
@@ -2008,33 +2165,19 @@ def register_design_tools(mcp) -> None:
         n_groups: int = 2,
         max_fanout: int = 8,
     ) -> dict[str, Any]:
-        """Suggest how to split a design into balanced functional groups.
+        """Split a plan's parts into ``n_groups`` balanced groups with the
+        fewest nets crossing between them (min-cut, Kernighan-Lin style),
+        for PCB rooms or schematic sheets. Pure data; touches nothing.
+        Assign the groups to part ``sheet`` or ``zone`` yourself.
 
-        Computes a min-cut partition (Kernighan-Lin style) of the plan's
-        components into ``n_groups`` balanced groups that MINIMISE the number
-        of nets crossing between groups -- so each group is internally
-        well-connected and few signals span the boundary. Use it to group a
-        PCB into functional ROOMS, or to decide how to break a design with
-        SEPARABLE blocks across schematic sheets.
-
-        Note: a HUB-centric design (one IC fanning out to many peripherals)
-        does not separate cleanly -- the hub is connected to everything, so
-        the cut stays high and per-sheet density barely drops. Partitioning
-        helps when the netlist has genuinely distinct functional blocks; read
-        ``cut_nets`` (low = clean) and ``group_sizes`` to judge before acting.
-
-        Power/ground rails (nets touching more than ``max_fanout`` parts) are
-        excluded from the connectivity graph -- they route as planes and
-        connect nearly everything, so the split follows the SIGNAL structure.
-
-        Pure data; touches nothing. Assign the returned groups to part
-        ``sheet`` (or ``zone``) fields yourself if you act on the suggestion.
+        A hub-centric design (one IC wired to everything) does not split
+        cleanly; check ``cut_nets`` and ``group_sizes`` before acting.
 
         Args:
             plan_json: A DesignPlan (dict or JSON string).
-            n_groups: Number of groups to split into (default 2).
-            max_fanout: Nets above this pin count are treated as rails and
-                ignored for partitioning (default 8).
+            n_groups: Number of groups.
+            max_fanout: Nets touching more than this many parts are
+                treated as rails and ignored.
 
         Returns:
             ``{ok, n_groups, groups: {idx: [refdes...]}, cut_nets,
@@ -2097,70 +2240,31 @@ def register_design_tools(mcp) -> None:
         placement_hints: Optional[dict[str, dict[str, int]]] = None,
         mode: str = "auto",
     ) -> dict[str, Any]:
-        """Instantiate a DesignPlan in Altium.
-
-        Two execution paths:
-
-        - ``use_canvas=True`` (default): the new canvas-based pipeline.
-          Plan -> SymbolExtractor -> SchematicCanvas (all in Python) ->
-          one-shot batched emit to Altium. Layout decisions are made
-          before any IPC; an SVG preview is written next to the project
-          file so you can sanity-check the schematic without opening it.
-
-        - ``use_canvas=False``: the legacy executor that interleaves
-          layout with Altium IPC. Kept as a fallback while the new path
-          stabilises.
-
-        Both halt early if the plan contains any needs_creation parts.
-        Resolve those first by either picking an existing-lib equivalent
-        or branching into a library-authoring sub-task.
+        """Draw a DesignPlan in Altium: places AND routes the sheet in one
+        call, and writes an SVG preview next to the project. Stops first if
+        the plan has needs_creation parts (pick existing ones or author
+        them).
 
         Args:
-            plan_json: Either a DesignPlan JSON string, or the DesignPlan
-                as a JSON object/dict. The MCP framework auto-deserializes
-                JSON-object literals to dicts before the tool sees them,
-                so both shapes are accepted.
-            project_path: Absolute path to the target .PrjPcb. Created
-                if it does not exist.
-            use_canvas: Pick the execution path. Default ``True`` runs
-                the new canvas pipeline; pass ``False`` to fall back to
-                the legacy executor.
-            placement_hints: Optional ``{refdes: {"x": int, "y": int,
-                "rotation": int}}`` partial anchors. Hinted refdes pin
-                to the supplied position; others run through the
-                algorithmic placement (Sugiyama + multi-try scoring).
-                Used by the agent-in-loop refinement workflow:
-                  1. Run ``design_preview_plan`` -> see SVG + score.
-                  2. If layout is bad, identify specific refdes that
-                     should sit elsewhere; build hints dict.
-                  3. Call ``design_preview_plan`` again with hints ->
-                     iterate until score is acceptable.
-                  4. Call ``design_execute_plan`` with the same hints
-                     to emit the refined layout.
-            mode: How to reach the sheet. ``"auto"`` (default) EDITS a
-                sheet this tool has drawn before, moving only the parts
-                whose position changed, placing the new ones, deleting
-                the ones the plan dropped, and leaving every other
-                component exactly as it is. It draws from scratch when
-                there is no prior sheet. This is what makes re-running a
-                changed plan safe on a schematic somebody has worked on.
-                ``"full"`` re-places every component, discarding any
-                hand edit; use it when you want the sheet redrawn.
-                ``"delta"`` refuses rather than redraw.
-
-                The edit path only knows what is in the plan. To keep a
-                part where a person dragged it, read the sheet back with
-                ``design_hints_from_sheet`` and pass the result as
-                ``placement_hints``.
+            plan_json: The DesignPlan as JSON text or a dict.
+            project_path: Target .PrjPcb (created if missing).
+            use_canvas: True (default) lays out in Python then emits once;
+                False uses the legacy executor.
+            placement_hints: {refdes: {"x", "y", "rotation"}} to pin parts;
+                the rest are placed by the engine. Iterate with
+                design_preview_plan, then execute with the same hints.
+            mode: "auto" (default) EDITS a sheet this tool drew before:
+                moves only changed parts, adds new ones, removes dropped
+                ones, leaves the rest; draws fresh when there is none.
+                "full" redraws everything (hand edits lost). "delta"
+                refuses rather than redraw. To keep hand-dragged parts,
+                pass design_hints_from_sheet's result as placement_hints.
 
         Returns:
-            Result dict with ok / project_path / sheets_touched / placed
-            (list of placements) / failures / needs_creation / notes.
-            Canvas-path additions: ``canvas`` (the SchematicCanvas dict
-            snapshot) and ``preview_svg_path`` (where the SVG was written).
-            On an edit, ``delta`` lists the refdes added, moved, replaced,
-            removed and untouched; ``placed`` then covers only the parts
-            actually placed, which on an edit is the new ones.
+            ok, project_path, sheets_touched, placed, failures,
+            needs_creation, notes, ``canvas``, ``preview_svg_path``; on an
+            edit, ``delta`` lists refdes added, moved, replaced, removed
+            and untouched.
         """
         if use_canvas:
             return execute_plan_via_canvas_from_json(
@@ -2183,25 +2287,12 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Capture your placement edits as training data.
 
-        Workflow:
-        1. Run ``design_execute_plan`` (canvas path): it writes a
-           ``<project>.canvas.json`` snapshot alongside the .PrjPcb.
-        2. Open the schematic in Altium, drag components to taste, save.
-        3. Call this tool. It reads the snapshot + current Altium
-           positions, diffs them, and appends one row per moved component
-           to ``%USERPROFILE%\\.eda-agent\\placement_edits.jsonl``.
-
-        Each row carries: design_id, refdes, part_role, part_lib_ref,
-        anchor_refdes, anchor_role, anchor_lib_ref, dx_mils, dy_mils,
-        rot_delta_deg, design_size, ts.
-
-        Anchor = highest-pin-count netlist neighbor on a non-power /
-        non-ground net (or spatial-nearest fallback). Captures the
-        relational placement preference, not just "I moved this 200 mils
-        right".
-
-        The accumulating log feeds ``placement_priors.json`` (the
-        relative-anchor priors used by the pipeline's placement pass).
+        After ``design_execute_plan`` (which writes
+        ``<project>.canvas.json``), move parts by hand in Altium and save,
+        then call this. Each moved part becomes a row in
+        ``%USERPROFILE%\\.eda-agent\\placement_edits.jsonl``, its move
+        recorded relative to an anchor (its busiest signal-net neighbour);
+        the log feeds the placement priors.
 
         Args:
             project_path: Same project path you passed to
@@ -2222,35 +2313,22 @@ def register_design_tools(mcp) -> None:
         project_path: str,
         sheet_document: str = "",
     ) -> dict[str, Any]:
-        """Read a DesignPlan back off a schematic, including one you did
-        not draw.
+        """Read a DesignPlan back off a schematic, including one drawn by
+        hand (no ``<project>.canvas.json``), so an edit becomes a plan
+        edit. Parts come from the components, nets from the compiled
+        netlist, rails from the power ports; the plan is validated.
 
-        Use this when you are asked to change a schematic that has no
-        ``<project>.canvas.json`` beside it: a sheet drawn by hand, or
-        one from an older project. It gives you the plan the rest of the
-        design tools take, so an edit becomes "change the plan, lay it
-        out again" instead of dragging symbols around one at a time.
+        A schematic does not record, so you supply:
 
-        The plan is reconstructed from what is actually drawn: the
-        components give the parts, the compiled netlist gives the nets,
-        and the power-port glyphs say which nets are rails. It is
-        validated before it is returned.
+        - ``role`` on each part (decoupling, crystal, op-amp motif...);
+          without roles the layout is noticeably worse.
+        - ``zone`` on each part, for functional blocks.
+        - Single-pin nets, which a plan cannot express; they come back
+          in ``dropped_pins``.
 
-        WHAT A SCHEMATIC DOES NOT RECORD, so you must supply it:
-
-        - ``role`` on each part. This is the tag that lets the placer
-          recognise a decoupling bank, a crystal cluster, an op-amp
-          motif. A plan without roles lays out noticeably worse. Read
-          the returned part list and netlist and assert the roles
-          yourself before laying it out.
-        - ``zone`` on each part, if you want functional blocks.
-        - Single-pin nets, which the plan schema cannot express. They
-          come back in ``dropped_pins``.
-
-        Then: edit the plan, call ``design_layout_schematic`` to see it,
-        and ``design_execute_plan`` to apply it. Pass
-        ``design_hints_from_sheet`` output as ``placement_hints`` if you
-        want the existing positions kept.
+        Then preview with ``design_layout_schematic`` and apply with
+        ``design_execute_plan``, passing ``design_hints_from_sheet``
+        output as ``placement_hints`` to keep existing positions.
 
         Args:
             project_path: The .PrjPcb the sheet belongs to. Its compiled
@@ -2407,21 +2485,19 @@ def register_design_tools(mcp) -> None:
     async def design_validate_requirement(
         requirement: dict,
     ) -> dict[str, Any]:
-        """Validate a structured DesignRequirement before planning starts.
+        """Validate a DesignRequirement before part selection and planning
+        (stage 1 of the autonomous flow). Pure Python, no Altium.
 
-        Stage 1 of the autonomous flow (requirement capture & architecture,
-        reference/autonomy-roadmap.md): capture what the board must do as a
-        ``DesignRequirement`` dict, run this gate, and only move on to part
-        selection / DesignPlan construction when it returns ok. Every fact
-        the requirement does NOT state goes into ``open_questions`` as a
-        question for the user -- it is never guessed -- and validation fails
-        while any question remains unresolved.
+        A fact the requirement does not state goes into ``open_questions``
+        for the user, never guessed; validation fails while any remain.
+        Also fails on: no outputs, no power source, inverted temperature or
+        IO-voltage ranges, comms IO without a protocol, and a rail or power
+        output larger than every power input (a boost or inverting stage
+        the user must confirm).
 
-        Checks beyond the schema: unresolved open questions, no outputs, no
-        power source, inverted temperature / IO-voltage ranges, comms IO
-        without a protocol, and supply rails or power outputs whose
-        magnitude exceeds every stated power input (a boost / inverting
-        stage the user must confirm). Pure Python, no Altium.
+        ``board_intent`` (stackup, impedance, peak currents, edges,
+        enclosure, assembly, finish, test) is optional; when one matters
+        and is missing, ``notes`` suggests a question.
 
         Args:
             requirement: DesignRequirement as a JSON object/dict. Units are
@@ -2430,9 +2506,9 @@ def register_design_tools(mcp) -> None:
                 MILLIMETRES (``board_size_mm``, ``height_max_mm``).
 
         Returns:
-            ``{"ok": True, "issues": [], "summary": "..."}`` when the
-            requirement is planning-ready (``summary`` is the labelled-line
-            block to embed in ``DesignPlan.summary``), or
+            ``{"ok": True, "issues": [], "notes": [...], "summary": "..."}``
+            when the requirement is planning-ready (``summary`` is the
+            labelled-line block to embed in ``DesignPlan.summary``), or
             ``{"ok": False, "issues": [...]}`` / ``{"ok": False,
             "errors": [...]}`` (schema problems) listing what to resolve.
         """
@@ -2497,15 +2573,12 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Synthesize PCB design rules + stackup ops from a fab profile.
 
-        Stage 8 of the autonomous flow (rules & stackup,
-        reference/autonomy-roadmap.md): turn the validated fab profile, the
-        plan's net classes, and a few board-level targets into the concrete
-        ``pcb_create_design_rule`` and ``pcb_modify_layer`` parameter dicts,
-        dispatched verbatim after ``pcb_create_net_class`` creates classes
-        named after the synthesized groups. Every number traces to a
-        profile field or a verified calculator (IPC-2221 width inverse,
-        IPC-2141 impedance inverse); a rule whose inputs are missing is
-        skipped with a note, never guessed. Pure Python, no Altium.
+        Returns ``pcb_create_design_rule`` and ``pcb_modify_layer``
+        parameter dicts to send as they are, after
+        ``pcb_create_net_class`` creates the classes they name. Every
+        number comes from a profile field or a calculator (IPC-2221
+        width, IPC-2141 impedance); a rule missing an input is skipped
+        with a note. Pure Python, no Altium.
 
         Args:
             profile: FabProfile as a dict (see ``design_load_fab_profile``).
@@ -2556,19 +2629,13 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Propose a multi-sheet hierarchy for a dense DesignPlan.
 
-        Stage 6 of the autonomous flow (schematic emit,
-        reference/autonomy-roadmap.md): a plan past ~20 parts stops fitting
-        one readable sheet and dense single sheets are the known short-risk
-        regime. This tool partitions the parts by signal connectivity
-        (min-cut, zones kept atomic), names each child sheet from its
-        dominant zone role, derives the inter-sheet ports from the signal
-        nets the cut severs (power/ground rails are continuous through
-        power ports and never become sheet entries), and emits the
-        top-sheet op list in the exact parameter shapes of
-        ``sch_place_sheet_symbol`` / ``sch_place_sheet_entry`` /
-        ``sch_generate_toc``. Apply the result to the plan with
-        ``design_apply_hierarchy`` before ``design_execute_plan``.
-        Deterministic; pure Python, no Altium.
+        Splits the parts by signal connectivity (min-cut, zones kept
+        whole), names each sheet from its main zone, makes ports from the
+        signal nets the cut severs (rails stay power ports), and returns
+        top-sheet ops shaped for ``sch_place_sheet_symbol``,
+        ``sch_place_sheet_entry`` and ``sch_generate_toc``. Apply with
+        ``design_apply_hierarchy`` before ``design_execute_plan``. Pure
+        Python, deterministic.
 
         Args:
             plan_json: DesignPlan as a JSON string or dict.

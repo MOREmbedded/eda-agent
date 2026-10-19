@@ -584,6 +584,149 @@ def _is_power_or_ground_net(net_name: str) -> bool:
     return False
 
 
+#: EasyEDA pad shape (the runtime value in a pad's ``pad`` tuple, or the
+#: enum member name the extension accepts) -> the shape words the
+#: land-pattern audit compares, which are Altium's. An oval is Altium's
+#: round with unequal sizes; a regular polygon of eight sides is the
+#: octagon. Values from EPCB_PrimitivePadShapeType in the official
+#: reference: ELLIPSE, OVAL (member OBLONG), RECT (RECTANGLE), NGON
+#: (REGULAR_POLYGON), POLYGON (POLYLINE_COMPLEX_POLYGON).
+_PAD_SHAPE_AS_AUDIT = {
+    "ELLIPSE": "round", "OVAL": "round", "OBLONG": "round",
+    "RECT": "rectangular", "RECTANGLE": "rectangular",
+}
+
+
+def _polygon_extent(source) -> tuple[float, float]:
+    """Width and height of a complex-polygon pad's source array.
+
+    The source is flat: numbers and command letters (``x, y, "L", x, y``),
+    possibly nested one level for several rings. Arc commands carry an
+    angle among the numbers, so this is an estimate from every number
+    pair after each letter, good for the axis-aligned outlines pads use.
+    """
+    flat: list = []
+
+    def walk(v):
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                walk(item)
+        else:
+            flat.append(v)
+
+    walk(source)
+    nums: list[float] = []
+    for v in flat:
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            nums.append(float(v))
+    xs, ys = nums[0::2], nums[1::2]
+    if not xs or not ys:
+        return 0.0, 0.0
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
+def _easyeda_pad_rows(raw: list) -> list[dict[str, Any]]:
+    """Pads read from the editor, as the land-pattern audit's mm rows.
+
+    The measured shape of a pad (``extensions/easyeda/verified.json``,
+    ``pcb.pads``): ``padNumber``, ``x``, ``y``, ``rotation``, ``pad`` as a
+    tuple ``[shape, w, h(, corner radius)]``, ``hole`` as ``[type, d]`` or
+    ``[SLOT, d, length]`` or null, and ``solderMaskAndPasteMaskExpansion``.
+    Lengths are mils, the PCB canvas unit, converted here; the expansions
+    are read in the same unit, which has not been measured separately.
+
+    Four things this used to get wrong, each of which made a correct
+    footprint read as wrong or a wrong one as right: the hole tuple was
+    passed whole to a number conversion and read as 0; the shape names
+    (RECT, ELLIPSE) never matched the audit's words; the rotation was
+    dropped, so a turned pad compared its sizes the wrong way round; and
+    a regular polygon's SIDE COUNT was read as its height. Paste and mask
+    expansion were not read at all, so the thermal paste check could not
+    see a windowed pad.
+    """
+    from eda_agent.units import MM_PER_MIL
+
+    def mm(value) -> float:
+        try:
+            return float(value) * MM_PER_MIL
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows: list[dict[str, Any]] = []
+    for pad in raw or []:
+        if not isinstance(pad, dict):
+            continue
+        spec = pad.get("pad")
+        shape_raw, width, height, radius = "", 0.0, 0.0, 0.0
+        if isinstance(spec, (list, tuple)) and spec:
+            shape_raw = str(spec[0] or "").upper()
+            if shape_raw in ("NGON", "REGULAR_POLYGON"):
+                # [NGON, diameter, sides]: the second number is a count.
+                width = height = spec[1] if len(spec) > 1 else 0.0
+            elif shape_raw in ("POLYGON", "POLYLINE_COMPLEX_POLYGON"):
+                width, height = _polygon_extent(spec[1:])
+            elif len(spec) > 2:
+                width, height = spec[1], spec[2]
+                if len(spec) > 3:
+                    radius = spec[3]
+            elif len(spec) == 2:
+                width = height = spec[1]
+        if shape_raw in ("NGON", "REGULAR_POLYGON"):
+            sides = spec[2] if isinstance(spec, (list, tuple)) and len(spec) > 2 else 0
+            shape = "octagonal" if sides == 8 else f"polygon{sides}"
+        elif shape_raw in ("RECT", "RECTANGLE"):
+            try:
+                rounded = float(radius or 0.0) > 0
+            except (TypeError, ValueError):
+                rounded = False
+            shape = "roundrectangle" if rounded else "rectangular"
+        else:
+            shape = _PAD_SHAPE_AS_AUDIT.get(shape_raw, shape_raw.lower())
+
+        hole = pad.get("hole")
+        hole_d, hole_len, hole_type = 0.0, 0.0, "round"
+        if isinstance(hole, (list, tuple)) and len(hole) > 1:
+            hole_d = mm(hole[1])
+            if str(hole[0]).upper() == "SLOT" and len(hole) > 2:
+                hole_type = "slot"
+                hole_len = mm(hole[2])
+        elif isinstance(hole, (int, float)) and not isinstance(hole, bool):
+            hole_d = mm(hole)
+
+        exp = pad.get("solderMaskAndPasteMaskExpansion")
+        paste_src, paste_mm, mask_src, mask_mm = "rule", 0.0, "rule", 0.0
+        if isinstance(exp, dict):
+            if exp.get("topPasteMask") is not None:
+                paste_src, paste_mm = "manual", mm(exp.get("topPasteMask"))
+            if exp.get("topSolderMask") is not None:
+                mask_src, mask_mm = "manual", mm(exp.get("topSolderMask"))
+
+        try:
+            rotation = float(pad.get("rotation") or 0.0)
+        except (TypeError, ValueError):
+            rotation = 0.0
+        rows.append({
+            "name": str(pad.get("padNumber") or pad.get("number") or ""),
+            "x_mm": mm(pad.get("x")),
+            "y_mm": mm(pad.get("y")),
+            "w_mm": mm(width),
+            "h_mm": mm(height),
+            "shape": shape,
+            "rotation": rotation,
+            "hole_mm": hole_d,
+            "hole_w_mm": hole_len,
+            "hole_type": hole_type,
+            "plated": pad.get("metallization", True) is not False,
+            "paste_expansion_mm": paste_mm,
+            "paste_expansion_source": paste_src,
+            "mask_expansion_mm": mask_mm,
+            "mask_expansion_source": mask_src,
+        })
+    return rows
+
+
 def register_easyeda_tools(mcp):
     """Register the EasyEDA-native tools."""
 
@@ -8401,6 +8544,60 @@ def register_easyeda_tools(mcp):
             prepared.append(entry)
         return _call("sch.add_pins", {"pins": prepared}, timeout=300.0)
 
+    async def _easyeda_amplifier_symbol(library_uuid: str, name: str,
+                                        description: str,
+                                        part: dict) -> dict[str, Any]:
+        """Triangle amplifier symbol: create, open, pins, triangle, marks."""
+        import math
+
+        created = await easyeda_create_symbol(
+            library_uuid=library_uuid, name=name, description=description)
+        if not created.get("ok"):
+            return created
+        uuid = str(created.get("uuid") or created.get("value") or "").strip()
+        if not uuid:
+            return {"ok": False, "reason": (
+                "the editor created the symbol but returned no uuid, so "
+                "it cannot be opened to draw into"), "created": created}
+        opened = await easyeda_open_symbol(uuid=uuid,
+                                           library_uuid=library_uuid)
+        if not opened.get("ok"):
+            return {"ok": False, "reason": (
+                "the symbol was created but could not be opened, so "
+                "nothing was drawn into it"), "created": created,
+                "opened": opened}
+        batch = []
+        for pin in part["pins"]:
+            length = float(pin["length"])
+            # symbol_gen gives the BODY end; the editor wants the
+            # ELECTRICAL end, one pin length along the pin's direction,
+            # which here includes straight up and straight down.
+            a = math.radians(float(pin["rotation"]))
+            discipline = str(pin.get("electrical_type") or "passive").lower()
+            batch.append({
+                "pin_number": pin["designator"], "name": pin["name"],
+                "x": float(pin["x"]) + round(length * math.cos(a)),
+                "y": float(pin["y"]) + round(length * math.sin(a)),
+                "rotation": float(pin["rotation"]), "length": length,
+                "pin_type": _PIN_TYPE_FROM_DISCIPLINE.get(
+                    discipline, "UNDEFINED"),
+            })
+        placed = await easyeda_add_pins(pins=batch)
+        if not placed.get("ok"):
+            return {"ok": False, "reason": (
+                "the symbol was created but its pins were not placed, so "
+                "it exists and is unusable"), "pins": placed}
+        drawn = [await easyeda_add_schematic_polygon(
+            points=[[float(x), float(y)] for x, y in poly["points"]])
+            for poly in part["polygons"]]
+        for t in part["texts"]:
+            drawn.append(await easyeda_add_schematic_text(
+                text=t["text"], x=float(t["x"]), y=float(t["y"])))
+        return {"ok": True, "name": name, "uuid": uuid, "body": "amplifier",
+                "pin_count": len(batch),
+                "steps": {"created": created, "pins": placed,
+                          "body": drawn}}
+
     @mcp.tool()
     async def easyeda_create_ic_symbol(
         library_uuid: str = "",
@@ -8408,8 +8605,17 @@ def register_easyeda_tools(mcp):
         left_pins: list[dict[str, Any]] | None = None,
         right_pins: list[dict[str, Any]] | None = None,
         description: str = "",
+        body: str = "auto",
     ) -> dict[str, Any]:
         """Create a COMPLETE IC symbol in one call.
+
+        STANDARD SYMBOLS FIRST: a single op-amp, comparator, current-sense
+        or instrumentation amplifier is drawn as a TRIANGLE (inputs left
+        with + and -, output at the apex, supplies top and bottom) when
+        ``body="auto"`` and the pin names form IN+/IN-/OUT. A dual or quad
+        stays a rectangle here, and the reply says so; multi-part symbols
+        are drawn as triangles on the Altium side. ``body="rectangle"``
+        forces the box.
 
         You decide the functional grouping, inputs and power on the
         LEFT, outputs on the RIGHT. This lays the pins out on the grid,
@@ -8445,6 +8651,30 @@ def register_easyeda_tools(mcp):
         if not left and not right:
             return {"ok": False, "reason": (
                 "a symbol needs at least one pin on one side")}
+
+        from eda_agent.design.symbol_gen import (
+            generate_amplifier_symbol, looks_like_amplifier)
+
+        wanted_body = str(body or "auto").strip().lower()
+        amp = None
+        amp_note = ""
+        if wanted_body == "auto" and looks_like_amplifier(left + right,
+                                                          description):
+            try:
+                candidate = generate_amplifier_symbol(left + right)
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.part_count == 1:
+                amp = candidate
+            elif candidate is not None:
+                amp_note = (
+                    f"{candidate.part_count - 1} amplifier units need one "
+                    "triangle per part, which is drawn on the Altium side; "
+                    "drew a rectangle here")
+        if amp is not None:
+            return await _easyeda_amplifier_symbol(
+                str(library_uuid).strip(), str(name).strip(),
+                str(description or ""), amp.parts[0])
 
         try:
             geometry = generate_ic_symbol(left, right)
@@ -8512,6 +8742,7 @@ def register_easyeda_tools(mcp):
             height=abs(float(body["y1"]) - float(body["y2"])))
 
         return {
+            **({"note": amp_note} if amp_note else {}),
             "ok": True,
             "name": str(name).strip(),
             "uuid": uuid,
@@ -8543,8 +8774,8 @@ def register_easyeda_tools(mcp):
         ONLY resistor and inductor for now, and the reason is a genuine
         limit rather than unfinished work. EasyEDA's schematic
         primitives are arc, circle, polygon, rectangle, text, wire, pin
-        and bus, with no LINE among them. A resistor and an inductor are
-        a rectangle. A capacitor is two plates, a diode a bar, a crystal
+        and bus, with no LINE among them. A resistor is a rectangle and
+        an inductor is a row of arcs. A capacitor is two plates, a diode a bar, a crystal
         two plates and a fuse a lead through a body, and every one of
         those is an open segment.
 
@@ -8642,6 +8873,19 @@ def register_easyeda_tools(mcp):
         for poly in geometry.polygons:
             drawn.append(await easyeda_add_schematic_polygon(
                 points=[[float(x), float(y)] for x, y in poly["points"]]))
+        # Arcs (an inductor's turns) go as three points on the curve, the
+        # form easyeda_add_schematic_arc takes: start, middle, end.
+        import math
+        for arc in geometry.arcs:
+            cx, cy, r = float(arc["x"]), float(arc["y"]), float(arc["radius"])
+            pts = [(cx + r * math.cos(math.radians(a)),
+                    cy + r * math.sin(math.radians(a)))
+                   for a in (arc["start"], (arc["start"] + arc["end"]) / 2,
+                             arc["end"])]
+            drawn.append(await easyeda_add_schematic_arc(
+                start_x=pts[0][0], start_y=pts[0][1],
+                reference_x=pts[1][0], reference_y=pts[1][1],
+                end_x=pts[2][0], end_y=pts[2][1]))
 
         return {
             "ok": True,
@@ -8737,6 +8981,10 @@ def register_easyeda_tools(mcp):
         pad_width: float = 24.0, pad_height: float = 30.0,
         row_span: float = 0.0, corner_radius: float = 0.0,
         hole_diameter: float = 0.0, description: str = "",
+        rows: int = 0, cols: int = 0, skip: "list[str] | None" = None,
+        tab_width: float = 0.0, tab_height: float = 0.0,
+        exposed_pad: float = 0.0, courtyard: float = 10.0,
+        body_width: float = 0.0, body_height: float = 0.0,
     ) -> dict[str, Any]:
         """Create a COMPLETE standard footprint in one call.
 
@@ -8757,9 +9005,14 @@ def register_easyeda_tools(mcp):
                 ``easyeda_list_libraries``.
             name: the footprint name.
             family: chip, sip, dual, header, tab, quad or bga.
-            pin_count: total pads.
+            pin_count: total pads; the signal pins for tab; ignored for
+                bga, whose count is rows x cols.
             pitch: centre-to-centre within a row, in mils.
-            pad_width: pad width, in mils.
+            pad_width: pad width, in mils. The shared generator's pad_w,
+                with its two meanings kept: the pad's X size in every
+                family but quad (so ACROSS the row in dual), and ALONG
+                the row in quad. For a land pattern from a package
+                drawing use easyeda_create_footprint_from_package.
             pad_height: pad height, in mils.
             row_span: centre-to-centre between opposing rows, in mils.
                 Required for dual and quad.
@@ -8772,6 +9025,16 @@ def register_easyeda_tools(mcp):
                 unsolderable without this, so it is not optional in
                 practice for the header family.
             description: the footprint description.
+            rows, cols: the ball grid, for bga.
+            skip: ball names to leave out of a bga, e.g. ["A1"].
+            tab_width, tab_height: the tab pad, for tab, in mils; the
+                tab takes the next number after the signal pins.
+            exposed_pad: a square centre pad for quad, in mils; 0 for
+                none. It takes the next number after the pins.
+            courtyard: courtyard clearance past the pads, in mils; 0
+                leaves the courtyard out.
+            body_width, body_height: the body for the silkscreen
+                outline, in mils; 0 draws it round the pads.
         """
         from eda_agent.design.footprint_gen import generate_footprint
 
@@ -8781,15 +9044,29 @@ def register_easyeda_tools(mcp):
                 "easyeda_list_libraries")}
         if not str(name).strip():
             return {"ok": False, "reason": "name is required"}
-        if pin_count <= 0:
+        fam = str(family or "").strip().lower()
+        # A bga is sized by rows and cols; demanding a pin count as well
+        # refused every bga before the generator was reached.
+        if pin_count <= 0 and fam != "bga":
             return {"ok": False, "reason": "pin_count must be positive"}
 
         try:
+            # Every shape the generator takes is passed through. Without
+            # tab_w/tab_h, rows/cols and exposed_pad, tab and bga were
+            # refused on every call and a quad could not have its thermal
+            # pad, though the Altium twin builds all three.
             geometry = generate_footprint(
-                str(family or "").strip().lower(), int(pin_count),
+                fam, int(pin_count),
                 pitch=float(pitch), pad_w=float(pad_width),
                 pad_h=float(pad_height), row_span=float(row_span),
-                hole=float(hole_diameter))
+                hole=float(hole_diameter), rows=int(rows or 0),
+                cols=int(cols or 0), skip=list(skip or []),
+                tab_w=float(tab_width or 0.0),
+                tab_h=float(tab_height or 0.0),
+                exposed_pad=float(exposed_pad or 0.0),
+                courtyard=float(courtyard),
+                body_w=float(body_width or 0.0),
+                body_h=float(body_height or 0.0))
         except (ValueError, KeyError) as exc:
             return {"ok": False, "reason": str(exc)}
 
@@ -8856,7 +9133,7 @@ def register_easyeda_tools(mcp):
             "ok": True,
             "name": str(name).strip(),
             "uuid": uuid,
-            "family": str(family or "").strip().lower(),
+            "family": fam,
             "pad_count": len(batch),
             "tracks_drawn": len(drawn),
             "unmapped_layers": sorted(unknown_layers),
@@ -8865,6 +9142,207 @@ def register_easyeda_tools(mcp):
             "note": ("a computed land pattern, not one from a datasheet; "
                      "check it against the manufacturer's recommendation"),
             "steps": {"created": created, "pads": placed},
+        }
+
+    #: Readback tolerance for the package footprint, mils. EasyEDA's stored
+    #: precision has not been measured, so this is a stated assumption: a
+    #: tenth of a mil (2.54 um), far below any land pattern tolerance.
+    _READBACK_TOL_MILS = 0.1
+
+    @mcp.tool()
+    async def easyeda_create_footprint_from_package(
+        library_uuid: str = "", package: Any = None, name: str = "",
+        density: str = "", description: str = "",
+        courtyard_layer: str = "DOCUMENT",
+        drafting: "dict | None" = None,
+    ) -> dict[str, Any]:
+        """Create a COMPLETE footprint from a datasheet package drawing.
+
+        The EasyEDA twin of ``lib_create_footprint_from_package``, from the
+        same engine: the lands come from IPC-7351B for the package's
+        terminal dimensions and tolerances, not from a pad list typed in.
+        Draws the pads (rounded rectangles with their corner radius,
+        circles, ovals, holes and slots), silkscreen kept clear of copper
+        with a pin 1 dot, the body outline and a reference text on
+        TOP_ASSEMBLY, the courtyard, and paste windows over an exposed
+        pad on TOP_PASTE_MASK. Then it reads the pads back from the
+        editor and compares count, centres and sizes.
+
+        What the extension cannot express is REFUSED before anything is
+        created, not drawn wrong: a non-plated hole (its pad call passes
+        no plating flag) and a manual paste or mask expansion. The
+        exposed pad's own full paste opening cannot be closed from here
+        either; the reply says so and names the pad.
+
+        DATASHEET DISCIPLINE: transcribe the package from the
+        manufacturer's drawing fetched in this conversation, each
+        dimension as min/nom/max with its page, and name the datasheet
+        in ``source``.
+
+        Args:
+            library_uuid: the library, from ``easyeda_list_libraries``.
+            package: the PackageSpec as an object or JSON text, in mm.
+                The same schema as lib_create_footprint_from_package:
+                ``family`` plus the dimensions it needs; two-row parts
+                have their rows left and right, ``lead_span_x`` across
+                them, ``lead_length`` the terminal along the span and
+                ``lead_width`` across it.
+            name: footprint name; default the package's name.
+            density: L, N or M; default the package's own (N).
+            description: appended to the generated description.
+            courtyard_layer: where the courtyard goes. DOCUMENT by
+                default, where easyeda_create_standard_footprint puts it;
+                nothing readable on this backend reports a courtyard, so
+                pick another layer only if your library uses one.
+            drafting: drafting rule overrides, as for the Altium tool.
+
+        Returns:
+            ``{ok, name, uuid, pad_count, drawn, readback, layers,
+            warnings, notes, steps}``. Coordinates go to the editor in
+            mils, converted from the model's mm.
+        """
+        import math
+
+        from eda_agent.design.landpattern.emit import (
+            easyeda_plan,
+            model_from_package,
+        )
+        from eda_agent.design.landpattern.spec import SpecError
+        from eda_agent.units import MM_PER_MIL
+
+        if not str(library_uuid).strip():
+            return {"ok": False, "reason": (
+                "library_uuid is required; list them with "
+                "easyeda_list_libraries")}
+        try:
+            model = model_from_package(package, density=density, name=name,
+                                       description=description,
+                                       drafting=drafting)
+        except SpecError as exc:
+            return {"ok": False, "reason": str(exc)}
+        plan = easyeda_plan(model, courtyard_layer=courtyard_layer)
+        if plan["unsupported"]:
+            return {"ok": False, "created": False, "reason": (
+                "this footprint needs what the EasyEDA extension cannot "
+                "draw, so nothing was created: "
+                + "; ".join(plan["unsupported"])),
+                "warnings": model.warnings}
+
+        lib = str(library_uuid).strip()
+        created = await easyeda_create_footprint(
+            library_uuid=lib, name=model.name, description=model.description)
+        if not created.get("ok"):
+            return created
+        uuid = str(created.get("uuid") or "").strip()
+        if not uuid:
+            return {"ok": False, "reason": (
+                "the editor created the footprint but returned no uuid, "
+                "so it cannot be opened to draw into"), "created": created}
+        opened = await easyeda_open_footprint(uuid=uuid, library_uuid=lib)
+        if not opened.get("ok"):
+            return {"ok": False, "reason": (
+                "the footprint was created but could not be opened, so "
+                "nothing was drawn into it"), "created": created,
+                "opened": opened}
+
+        steps: dict[str, Any] = {"created": created, "opened": opened}
+
+        def incomplete(what: str, reply: Any) -> dict[str, Any]:
+            return {"ok": False, "name": model.name, "uuid": uuid,
+                    "reason": (f"{what} failed; the footprint exists and is "
+                               "incomplete"),
+                    "failed_reply": reply, "steps": steps}
+
+        placed = await easyeda_add_pads(pads=plan["pads"])
+        steps["pads"] = placed
+        if not placed.get("ok") or int(placed.get("placed") or 0) != len(
+                plan["pads"]):
+            return incomplete("placing the pads", placed)
+
+        drawn = {"polylines": 0, "fills": 0, "arcs": 0, "texts": 0}
+        for line in plan["polylines"]:
+            reply = await easyeda_add_polyline(
+                points=line["points"], layer=line["layer"],
+                width=line["width"])
+            if not reply.get("ok"):
+                return incomplete(f"a polyline on {line['layer']}", reply)
+            drawn["polylines"] += 1
+        for fill in plan["fills"]:
+            reply = await easyeda_add_fill(points=fill["points"],
+                                           layer=fill["layer"])
+            if not reply.get("ok"):
+                return incomplete(f"a fill on {fill['layer']}", reply)
+            drawn["fills"] += 1
+        for arc in plan["arcs"]:
+            reply = await easyeda_add_arc(
+                start_x=arc["start_x"], start_y=arc["start_y"],
+                end_x=arc["end_x"], end_y=arc["end_y"], angle=arc["angle"],
+                layer=arc["layer"], width=arc["width"])
+            if not reply.get("ok"):
+                return incomplete(f"an arc on {arc['layer']}", reply)
+            drawn["arcs"] += 1
+        for text in plan["texts"]:
+            reply = await easyeda_add_text(
+                text=text["text"], x=text["x"], y=text["y"],
+                font_size=text["font_size"], width=text["width"],
+                layer=text["layer"], align=text["align"])
+            if not reply.get("ok"):
+                return incomplete(f"the text on {text['layer']}", reply)
+            drawn["texts"] += 1
+
+        # Read the pads back from the open footprint and compare.
+        back = _call("pcb.pads")
+        steps["readback"] = {"ok": back.get("ok"),
+                             "count": len(back.get("pads") or [])}
+        mismatches: list[dict] = []
+        if not back.get("ok") or not isinstance(back.get("pads"), list):
+            mismatches.append({"check": "readback", "read": back.get("reason")})
+            rows: list[dict] = []
+        else:
+            rows = _easyeda_pad_rows(back["pads"])
+        if rows and len(rows) != len(plan["pads"]):
+            mismatches.append({"check": "pad_count",
+                               "expected": len(plan["pads"]),
+                               "read": len(rows)})
+        tol_mm = _READBACK_TOL_MILS * MM_PER_MIL
+        unused = list(range(len(rows)))
+        for want in plan["pads"]:
+            cands = [i for i in unused
+                     if rows[i]["name"] == str(want["pad_number"])]
+            if not cands:
+                if rows:
+                    mismatches.append({"check": "pad_missing",
+                                       "pad": want["pad_number"]})
+                continue
+            wx, wy = want["x"] * MM_PER_MIL, want["y"] * MM_PER_MIL
+            i = min(cands, key=lambda k: math.hypot(
+                rows[k]["x_mm"] - wx, rows[k]["y_mm"] - wy))
+            unused.remove(i)
+            got = rows[i]
+            for key, value in (("x_mm", wx), ("y_mm", wy),
+                               ("w_mm", want["width"] * MM_PER_MIL),
+                               ("h_mm", want["height"] * MM_PER_MIL)):
+                if abs(got[key] - value) > tol_mm:
+                    mismatches.append({"check": key, "pad": want["pad_number"],
+                                       "expected": round(value, 6),
+                                       "read": round(got[key], 6)})
+        for i in unused:
+            mismatches.append({"check": "pad_extra", "pad": rows[i]["name"]})
+        return {
+            "ok": not mismatches,
+            "name": model.name,
+            "uuid": uuid,
+            "family": model.family,
+            "density": model.density,
+            "description": model.description,
+            "pad_count": len(plan["pads"]),
+            "drawn": drawn,
+            "readback": {"ok": not mismatches, "tolerance_mils":
+                         _READBACK_TOL_MILS, "mismatches": mismatches},
+            "layers": plan["layers"],
+            "warnings": model.warnings,
+            "notes": plan["notes"],
+            "steps": steps,
         }
 
     #: The spellings a pin or pad number has been seen under. Tried in
@@ -12404,7 +12882,6 @@ def register_easyeda_tools(mcp):
             LandPatternSpec,
             audit_footprint_against_spec,
         )
-        from eda_agent.units import MM_PER_MIL
 
         if isinstance(spec_json, str):
             try:
@@ -12432,37 +12909,13 @@ def register_easyeda_tools(mcp):
                 "read would report every datasheet pad as missing, "
                 "which says nothing about the footprint")}
 
-        def _mm(value):
-            try:
-                return float(value) * MM_PER_MIL
-            except (TypeError, ValueError):
-                return 0.0
-
         # Measured shape: pads carry `padNumber`, and `pad` is a list
         # like ["RECT", w, h, r] rather than separate width and height
         # fields. Reading `width`/`height` off a pad returns nothing and
         # every dimension compares as zero, which reports a perfect
-        # footprint as catastrophically wrong.
-        pads = []
-        for pad in raw:
-            if not isinstance(pad, dict):
-                continue
-            shape_spec = pad.get("pad")
-            shape, width, height = "", 0.0, 0.0
-            if isinstance(shape_spec, list) and shape_spec:
-                shape = str(shape_spec[0] or "")
-                if len(shape_spec) > 2:
-                    width, height = shape_spec[1], shape_spec[2]
-            pads.append({
-                "name": str(pad.get("padNumber")
-                            or pad.get("number") or ""),
-                "x_mm": _mm(pad.get("x")),
-                "y_mm": _mm(pad.get("y")),
-                "w_mm": _mm(width),
-                "h_mm": _mm(height),
-                "hole_mm": _mm(pad.get("hole") or 0.0),
-                "shape": shape,
-            })
+        # footprint as catastrophically wrong. The parsing is shared with
+        # the package footprint tool's readback.
+        pads = _easyeda_pad_rows(raw)
 
         report = audit_footprint_against_spec(spec, {"pads": pads})
         report["pad_count_read"] = len(pads)
@@ -12470,6 +12923,68 @@ def register_easyeda_tools(mcp):
         report["units_note"] = (
             "pad geometry was read in mils and converted to mm to match "
             "the datasheet spec")
+        return report
+
+    @mcp.tool()
+    async def easyeda_audit_footprint_vs_package(
+        package: Any,
+        density: str = "N",
+    ) -> dict[str, Any]:
+        """Audit the OPEN footprint against its package drawing, pads only.
+
+        The EasyEDA twin of ``lib_audit_footprint_vs_package``, running the
+        same comparison on the pads read from the document in front of
+        you (open it with ``easyeda_open_footprint``): pad count,
+        numbering, pin 1 and mirror images, pitch, row span, land sizes
+        and centres against the IPC-7351B pattern, land over terminal,
+        holes, paste and mask expansion fields, and the origin. Silkscreen,
+        courtyard, assembly outline, paste windows and height are NOT read
+        here: the footprint graphics are polylines and the extension has
+        no read for them, so those checks are listed under
+        ``not_examined`` rather than passed.
+
+        Args:
+            package: the PackageSpec as an object or JSON text.
+            density: L, N or M, the IPC pattern compared against.
+
+        Returns:
+            ``{ok, errors, warnings, findings, examined, not_examined,
+            alignment, metrics, notes}``.
+        """
+        from eda_agent.design.landpattern.audit import (
+            audit_footprint_vs_package,
+        )
+        from eda_agent.design.landpattern.check import read_package
+        from eda_agent.design.landpattern.emit import model_from_package
+        from eda_agent.design.landpattern.spec import SpecError
+
+        try:
+            spec = read_package(package)
+            model = model_from_package(spec, density=density or "N")
+        except SpecError as exc:
+            return {"ok": False, "reason": str(exc), "findings": []}
+        reply = _call("pcb.pads")
+        if not reply.get("ok"):
+            return reply
+        raw = reply.get("pads")
+        if not isinstance(raw, list) or not raw:
+            return {"ok": False, "reason": (
+                "the open document reports no pads. Open the footprint "
+                "with easyeda_open_footprint first; an empty read says "
+                "nothing about the footprint"), "findings": []}
+        pads = _easyeda_pad_rows(raw)
+        report = audit_footprint_vs_package(
+            spec, pads, model=model, primitives=None,
+            primitives_reason=(
+                "not read on EasyEDA: the footprint's silkscreen, courtyard "
+                "and assembly are polylines and the extension has no read "
+                "for them, and a footprint has no height field"))
+        report["notes"] = list(report.get("notes") or []) + [
+            "EasyEDA's footprint canvas has not been measured for its Y "
+            "direction; if it runs Y down, every footprint reads here as a "
+            "mirror image, so audit one known-good footprint first",
+            "pad geometry was read in mils and converted to mm"]
+        report["pad_count_read"] = len(pads)
         return report
 
     @mcp.tool()

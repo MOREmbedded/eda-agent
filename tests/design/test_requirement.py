@@ -186,7 +186,8 @@ def test_duplicate_io_name_rejected_within_list() -> None:
 
 def test_validate_clean_requirement_ok() -> None:
     result = validate_requirement(_full_requirement())
-    assert result == {"ok": True, "issues": []}
+    assert result["ok"] is True and result["issues"] == []
+    assert isinstance(result["notes"], list)
 
 
 def test_validate_open_questions_block_planning() -> None:
@@ -386,3 +387,44 @@ def test_summarize_open_questions_counted() -> None:
 def test_summarize_deterministic() -> None:
     req = _full_requirement()
     assert summarize_requirement(req) == summarize_requirement(req)
+
+
+# ------------------------------------------------- board intent
+
+
+def _minimal(**intent) -> DesignRequirement:
+    return DesignRequirement.model_validate({
+        "function": "Board under test.",
+        "inputs": [{"name": "VIN", "kind": "power", "voltage_v": 12,
+                    "current_a": 3}],
+        "outputs": [{"name": "USB", "kind": "comms", "protocol": "USB 2.0"}],
+        "board_intent": intent,
+    })
+
+
+def test_missing_board_intent_suggests_questions_but_never_blocks() -> None:
+    result = validate_requirement(_minimal())
+    assert result["ok"] is True
+    joined = " ".join(result["notes"])
+    assert "USB" in joined and "impedance" in joined
+    assert "VIN" in joined and "peak" in joined
+    assert "edge rate" in joined
+
+
+def test_stated_board_intent_answers_the_questions() -> None:
+    result = validate_requirement(_minimal(
+        impedance_targets_ohm={"USB": 90}, peak_currents_a={"VIN": 5},
+        fastest_edge_ns=1.5))
+    assert result["notes"] == []
+
+
+def test_board_intent_values_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        _minimal(impedance_targets_ohm={"USB": 0})
+
+
+def test_board_intent_reaches_the_summary() -> None:
+    text = summarize_requirement(_minimal(
+        stackup="4 layer 1.6 mm", impedance_targets_ohm={"USB": 90},
+        surface_finish="ENIG"))
+    assert "Board intent: 4 layer 1.6 mm; USB 90 ohm; ENIG" in text

@@ -3315,7 +3315,7 @@ End;
 { This is a quiet, common bug class: ERC sometimes catches it (no driver,    }
 { no load) but not always (other-sheet end provides a load). Cheap check:    }
 { for each ISch_NetLabel, spatial-iterate a tiny area at the label location  }
-{ for any eWire / eBus; absence → orphan.                                    }
+{ for any eWire / eBus; absence -> orphan.                                    }
 Function Audit_FindOrphanNetLabels(Params, RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -3689,16 +3689,16 @@ End;
 { Audit_FindAcuteAngles                                                       }
 {                                                                              }
 { Find pairs of same-net tracks that meet at an acute interior angle         }
-{ (< 90°). At an acute corner, the etchant pools and over-etches the inside }
+{ (< 90 deg). At an acute corner, the etchant pools and over-etches the inside }
 { of the bend -- the trace narrows or breaks during fabrication. Standard   }
-{ fab DFM rejects sub-90° corners on critical-thickness traces.              }
+{ fab DFM rejects sub-90 deg corners on critical-thickness traces.              }
 {                                                                              }
 { Algorithm (pure geometry, no IPC_AcuteAngleRule dependency):                }
 {   - For each Track, get its two endpoints.                                  }
 {   - Spatial-iterate a 1-mil square at each endpoint for other Tracks on   }
 {     the same net.                                                          }
 {   - Build direction vectors AWAY from the shared point.                    }
-{   - Compute dot product: positive dot = interior angle < 90° = acute.     }
+{   - Compute dot product: positive dot = interior angle < 90 deg = acute.     }
 {   - Compute actual angle for the report payload via arccos.                }
 {                                                                              }
 { Capped at 100 violations to keep responses manageable on dense boards.    }
@@ -3803,8 +3803,8 @@ Begin
                                         Continue;
                                     End;
                                     Dot := V1X * V2X + V1Y * V2Y;
-                                    { Positive dot product → vectors within 90°    }
-                                    { of each other → interior angle < 90°.        }
+                                    { Positive dot product -> vectors within 90 deg    }
+                                    { of each other -> interior angle < 90 deg.        }
                                     If Dot > 0 Then
                                     Begin
                                         CosTheta := Dot / (L1 * L2);
@@ -4557,4 +4557,11 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown audit action: ' + Action);
+End;
+
+{ UnitStamp_Audit - which build of Audit.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Audit(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

@@ -719,6 +719,21 @@ def plane_region_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
 # ---------------------------------------------------------------------------
 
 #: Every check ``run_audits`` knows, by the name a gate uses for it.
+def _loop_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
+    """Circuit loops (hot, gate drive, decoupling, crystal, feedback, Kelvin)
+    measured on the placement and ranked; advisory, see layout/loop_audit."""
+    from eda_agent.layout.loop_audit import loop_audit
+    return loop_audit(board, limit=limit)
+
+
+def _pad_entry_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
+    """How traces enter pads: off-axis, off-centre, wider than the pad,
+    crowded, crossing a pad, unbalanced two-pin parts; see
+    layout/pad_entry."""
+    from eda_agent.layout.pad_entry import pad_entry_audit
+    return pad_entry_audit(board, limit=limit)
+
+
 CHECKS: dict[str, Callable[..., dict]] = {
     "placement_audit": placement_audit,
     "connectivity_summary": connectivity_summary,
@@ -726,6 +741,8 @@ CHECKS: dict[str, Callable[..., dict]] = {
     "corner_audit": corner_audit,
     "return_via_audit": return_via_audit,
     "plane_region_audit": plane_region_audit,
+    "loop_audit": _loop_audit,
+    "pad_entry_audit": _pad_entry_audit,
 }
 
 

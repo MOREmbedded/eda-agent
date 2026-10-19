@@ -132,6 +132,26 @@ def test_sot23_is_dual_three_pin():
     assert len(left) == 2 and len(right) == 1    # 2+1 = SOT-23
 
 
+def test_sot23_5_pins_4_and_5_face_pins_3_and_1():
+    """SOT-23-5 / SC-70-5: pins 1, 2, 3 down the left at the pitch, pins 4
+    and 5 opposite pins 3 and 1, nothing opposite pin 2. Centring the
+    right column put 4 and 5 half a pitch off the pads they face."""
+    g = generate_footprint("dual", 5, pitch=37.4, pad_w=42, pad_h=24,
+                           row_span=102)
+    y = {p["designator"]: p["y"] for p in g.pads}
+    x = {p["designator"]: p["x"] for p in g.pads}
+    assert y["1"] == pytest.approx(37.4) and y["3"] == pytest.approx(-37.4)
+    assert y["4"] == pytest.approx(y["3"]) and y["5"] == pytest.approx(y["1"])
+    assert x["4"] == x["5"] == pytest.approx(51) and x["1"] == pytest.approx(-51)
+    # Unchanged: an even count, and the three-pin SOT-23 (pin 3 centred).
+    g3 = generate_footprint("dual", 3, pitch=75, pad_w=24, pad_h=40,
+                            row_span=200)
+    assert next(p["y"] for p in g3.pads if p["designator"] == "3") == 0
+    g8 = generate_footprint("dual", 8, pitch=50, pad_w=24, pad_h=60,
+                            row_span=200)
+    assert sorted(p["y"] for p in g8.pads if p["x"] > 0) == [-75, -25, 25, 75]
+
+
 def test_bga_grid_count_and_designators():
     g = generate_footprint("bga", 0, pitch=40, pad_w=20, rows=4, cols=5)
     assert len(g.pads) == 20

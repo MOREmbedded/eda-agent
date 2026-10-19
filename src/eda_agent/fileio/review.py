@@ -321,15 +321,15 @@ def review_project_file(path: str | Path) -> dict[str, Any]:
     ``sheet`` key per finding. Falls back to reviewing ``path`` directly if
     it is itself a .SchDoc.
     """
-    from .altium_project import read_project_sheets
+    from .altium_project import check_design_file, required_project_sheets
 
-    path = Path(path)
+    path = check_design_file(path, (".SchDoc", ".SchLib", ".PrjPcb"))
     if path.suffix.lower() == ".schdoc":
         return review_schematic_file(path)
     if path.suffix.lower() == ".schlib":
         return review_library_file(path)
 
-    sheets = read_project_sheets(path)
+    sheets = required_project_sheets(path)
     all_findings: list[dict] = []
     sheet_reports: list[dict] = []
     components_by_sheet: dict[str, list[dict]] = {}

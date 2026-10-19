@@ -54,10 +54,16 @@ def _pad(number: str, dx: float, dy: float, net_num: int, net_name: str,
 def build_pcb(parts: list[dict[str, Any]], nets: list[dict[str, Any]],
               uid: Optional[Callable[[], str]] = None,
               title: str = "",
-              mod_texts: Optional[dict[str, str]] = None) -> str:
+              mod_texts: Optional[dict[str, str]] = None,
+              placeholders: Optional[list[str]] = None) -> str:
     """Build a valid .kicad_pcb string with declared nets and placed footprints.
 
     ``parts``: ``[{refdes, value?}]``. ``nets``: ``[{name, nodes:[{refdes,pin}]}]``.
+
+    A part with no resolved footprint, or one whose text is not a
+    footprint, gets a generated ``eda:BOX`` of 1 mm pads instead. When
+    ``placeholders`` is given, each such refdes is appended to it, so the
+    caller can say so: a box is not a footprint anything can be built on.
     """
     if uid is None:
         _n = [0]
@@ -117,6 +123,8 @@ def build_pcb(parts: list[dict[str, Any]], nets: list[dict[str, Any]],
                 lines.append("\t" + embedded.strip())
                 continue
 
+        if placeholders is not None:
+            placeholders.append(ref)
         value = _esc(value)
         pad_lines = []
         for k, pin in enumerate(pins):

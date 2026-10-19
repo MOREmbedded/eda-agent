@@ -157,3 +157,40 @@ def test_design_review_file_bad_path_returns_error(monkeypatch):
     c = r[0] if isinstance(r, tuple) else r
     rep = json.loads(c[0].text)
     assert "error" in rep and not rep.get("disabled")
+
+
+def test_design_bom_file_warns_when_it_read_zero_parts(monkeypatch):
+    """A design read with no parts is reported, not passed as clean."""
+    monkeypatch.setenv("EDA_AGENT_HEADLESS_REVIEW", "1")
+    import asyncio
+    import json
+    from mcp.server.fastmcp import FastMCP
+    from eda_agent.fileio import bom
+    from eda_agent.tools import register_all_tools
+
+    monkeypatch.setattr(bom, "bom_from_file", lambda path: [])
+    m = FastMCP("t")
+    register_all_tools(m)
+    r = asyncio.run(m.call_tool("design_bom_file", {"path": str(PRJ)}))
+    c = r[0] if isinstance(r, tuple) else r
+    rep = json.loads(c[0].text)
+    assert rep["part_count"] == 0
+    assert rep["warning"] == bom.EMPTY_BOM_WARNING
+
+
+def test_design_bom_file_reports_a_wrong_suffix_as_an_error(monkeypatch,
+                                                            tmp_path):
+    monkeypatch.setenv("EDA_AGENT_HEADLESS_REVIEW", "1")
+    import asyncio
+    import json
+    from mcp.server.fastmcp import FastMCP
+    from eda_agent.tools import register_all_tools
+
+    board = tmp_path / "board.PcbDoc"
+    board.write_bytes(b"not a schematic")
+    m = FastMCP("t")
+    register_all_tools(m)
+    r = asyncio.run(m.call_tool("design_bom_file", {"path": str(board)}))
+    c = r[0] if isinstance(r, tuple) else r
+    rep = json.loads(c[0].text)
+    assert "error" in rep and "lines" not in rep

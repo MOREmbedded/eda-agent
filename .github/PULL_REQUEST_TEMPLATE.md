@@ -18,22 +18,23 @@ Closes #
 
 - [ ] Python MCP server (`src/eda_agent/`)
 - [ ] DelphiScript bridge (`scripts/altium/`)
-- [ ] Installer (`installer/`)
+- [ ] EasyEDA extension (`extensions/easyeda/`)
 - [ ] Tests
 - [ ] Docs
 
 ## Testing
 
-- [ ] `pytest` passes locally
+- [ ] `pytest --ignore=tests/integration` passes locally
 - [ ] Pascal cross-validation passes (if Pascal touched)
-- [ ] Manually exercised in Altium (if behaviour requires it): describe
-      what you ran below
+- [ ] Exercised in the EDA tool it drives (if behaviour requires it):
+      describe what you ran below
 
 Notes:
 
 ## Checklist
 
-- [ ] Commits follow the conventional-commit style used in this repo
+- [ ] Commit subjects are plain imperative sentences saying what changed,
+      with no `type(scope):` prefix (see CONTRIBUTING.md)
 - [ ] No secrets, customer designs, or proprietary library paths are
       included in the diff or test fixtures
 - [ ] If a Pascal file changed, the PR description notes that reviewers

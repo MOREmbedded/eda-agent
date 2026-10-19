@@ -379,7 +379,7 @@ Begin
     End;
 End;
 
-{ HexNibble / ByteToHex4 / EscapeJsonString MUST be defined before the JSON  }
+{ HexNibble / CodeUnitHex4 / EscapeJsonString MUST be defined before the JSON}
 { prop builders below, which call EscapeJsonString. DelphiScript resolves     }
 { identifiers top-down within a unit and has no Forward declarations, so a    }
 { callee defined later in the file is "Undeclared identifier" at the caller.  }
@@ -389,9 +389,14 @@ Begin
     Else Result := Chr(Ord('A') + (N - 10));
 End;
 
-Function ByteToHex4(B : Integer) : String;
+{ All four hex digits of one UTF-16 code unit. Strings are UTF-16 here, so  }
+{ Ord of a CJK character is above 255; writing '00' plus the low byte sent }
+{ U+4E2D back as U+002D. A character outside the BMP is two code units and }
+{ comes out as its surrogate pair, which JSON readers join.                }
+Function CodeUnitHex4(B : Integer) : String;
 Begin
-    Result := '00' + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
+    Result := HexNibble((B Shr 12) And $F) + HexNibble((B Shr 8) And $F)
+        + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
 End;
 
 Function EscapeJsonString(S : String) : String;
@@ -438,17 +443,16 @@ Begin
         Exit;
     End;
 
-    // Slow path: char-by-char with \u00XX for any non-ASCII byte. Non-ASCII
-    // input is treated as Latin-1 / CP1252 (Pascal's native single-byte
-    // encoding); the escape produces valid JSON consumable as UTF-8 by any
-    // reader. This is the single mechanism that lets us drop the Latin-1
-    // read kludge on the Python side, output is always pure ASCII.
+    // Slow path: char-by-char with \uXXXX for any non-ASCII character, all
+    // four digits of its UTF-16 code unit. The escape produces valid JSON
+    // consumable as UTF-8 by any reader, so the response file is always
+    // pure ASCII whatever codepage SaveToFile writes in.
     For I := 1 To Length(Tmp) Do
     Begin
         Ch := Copy(Tmp, I, 1);
         O := Ord(Ch[1]);
         If O >= 128 Then
-            Result := Result + '\u' + ByteToHex4(O)
+            Result := Result + '\u' + CodeUnitHex4(O)
         Else If O = Ord('\') Then Result := Result + '\\'
         Else If O = Ord('"') Then Result := Result + '\"'
         Else If O = 13 Then Result := Result + '\r'
@@ -456,7 +460,7 @@ Begin
         Else If O = 9 Then Result := Result + '\t'
         Else If O = 8 Then Result := Result + '\b'
         Else If O = 12 Then Result := Result + '\f'
-        Else If O < 32 Then Result := Result + '\u' + ByteToHex4(O)
+        Else If O < 32 Then Result := Result + '\u' + CodeUnitHex4(O)
         Else Result := Result + Ch;
     End;
 End;
@@ -1291,6 +1295,29 @@ Begin
     Else Result := 'Unknown';
 End;
 
+{ GetLayerString, plus Mechanical17 and up, which it calls Unknown. The     }
+{ number is taken from the layer's distance to Mechanical17 and kept only    }
+{ when LayerUtils.MechanicalLayer gives the same layer back for it.          }
+Function LayerDisplayName(Layer : TLayer) : String;
+Var
+    Base, Back : TLayer;
+    N : Integer;
+Begin
+    Result := GetLayerString(Layer);
+    If Result <> 'Unknown' Then Exit;
+    Try
+        Base := LayerUtils.MechanicalLayer(17);
+        N := 17 + (Layer - Base);
+        If (N >= 17) And (N <= 1024) Then
+        Begin
+            Back := LayerUtils.MechanicalLayer(N);
+            If Back = Layer Then Result := 'Mechanical' + IntToStr(N);
+        End;
+    Except
+        Result := 'Unknown';
+    End;
+End;
+
 Function ExtractJsonArray(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
@@ -1365,7 +1392,9 @@ Begin
     Result := StringReplace(Result, '_', '', -1);
     Result := StringReplace(Result, '-', '', -1);
     { The leading 'e' is Altium's convention and the first thing a caller
-      drops. No type here is ambiguous once it is gone. }
+      drops. A name that itself starts with 'e' (ellipse) loses its own
+      first letter, so a caller that must match the bare name checks it
+      before normalizing. }
     If (Length(Result) > 1) And (Copy(Result, 1, 1) = 'e') Then
         Result := Copy(Result, 2, Length(Result));
 End;
@@ -2070,4 +2099,11 @@ Begin
             + 'does not write, properties.failed lists writes that threw."'
     Else
         Result := Result + ',"success":true';
+End;
+
+{ UnitStamp_Utils - which build of Utils.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Utils(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

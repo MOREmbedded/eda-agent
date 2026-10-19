@@ -6,7 +6,10 @@
 
 Function App_Ping(RequestId : String) : String;
 Var
-    Ver : String;
+    Ver, ScriptProjects : String;
+    Workspace : IWorkspace;
+    Proj : IProject;
+    I : Integer;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
     // Altium script cache. cast_errors surfaces the silent-cast counter
@@ -28,11 +31,37 @@ Begin
     Except
         Ver := '';
     End;
+    // Where the script project is open from. Python compares
+    // SCRIPT_VERSION against a Main.pas it can see, and in a working-tree
+    // setup Altium can have the script project open from somewhere else,
+    // so the open Altium_API.PrjScr paths go back for it to compare.
+    // Read only; a failure costs this field and nothing else.
+    ScriptProjects := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            Begin
+                Proj := Workspace.DM_Projects(I);
+                If Proj = Nil Then Continue;
+                If Pos('ALTIUM_API.PRJSCR', UpperCase(Proj.DM_ProjectFullPath)) > 0 Then
+                Begin
+                    If ScriptProjects <> '' Then ScriptProjects := ScriptProjects + ',';
+                    ScriptProjects := ScriptProjects + '"'
+                        + EscapeJsonString(Proj.DM_ProjectFullPath) + '"';
+                End;
+            End;
+        End;
+    Except
+        ScriptProjects := '';
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"pong":true,"script_version":"' + SCRIPT_VERSION +
         '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
-        ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
+        ',"cast_errors":' + IntToStr(CastErrorCount) +
+        ',"script_projects":[' + ScriptProjects + ']}');
 End;
 
 Function App_GetVersion(RequestId : String) : String;
@@ -804,13 +833,91 @@ Begin
 End;
 
 {..............................................................................}
+{ App_SaveDocument - save ONE open document: file_path, or the focused one.    }
+{                                                                              }
+{ app_save_all writes every open document, so one that cannot be written (a   }
+{ sheet in a read-only folder) stops a save the caller never asked for. This  }
+{ touches only the named document, never focuses anything and never walks the }
+{ workspace. Whether it reached disk is measured by the file's age, because   }
+{ DoFileSave does not raise when the editor declines, and Modified is         }
+{ reported but not trusted, as App_SaveAll records.                           }
+{..............................................................................}
+
+Function App_SaveDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, Reason : String;
+    ServerDoc : IServerDocument;
+    WasModified, Saved : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath = '' Then FilePath := CurrentFocusedDocPath(0);
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No file_path given and no document is focused');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            FilePath + ' is not open in Altium, so it holds no unsaved edits');
+        Exit;
+    End;
+
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except End;
+    AgeBefore := -1;
+    Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
+    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.DoFileSave(''); Except End;
+    AgeAfter := -1;
+    Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+    Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
+    { Written, so a later stop has nothing of this edit left to save. }
+    If Saved Then ForgetDocEdited(FilePath);
+
+    Reason := '';
+    If Not Saved Then
+        Reason := 'The file did not get newer. Altium declines a save while a '
+            + 'command is active in the editor, which an abandoned edit can '
+            + 'leave behind with nothing on screen, and a read-only folder '
+            + 'refuses it. File ages tick every two seconds, so a save right '
+            + 'after another can also read as not written: try again.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"file_path":"' + EscapeJsonString(FilePath) + '"'
+        + ',"saved":' + BoolToJsonStr(Saved)
+        + ',"was_modified":' + BoolToJsonStr(WasModified)
+        + ',"reason":"' + EscapeJsonString(Reason) + '"}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
 
+{ Stop the polling loop. Documents a tool edited, or that the editor marks  }
+{ modified, are saved first; a clean document is not touched, so detaching  }
+{ never rewrites a file nobody changed. app_save_all keeps its full flush.  }
+Function App_StopServer(RequestId : String) : String;
+Begin
+    SaveScope := 'edited';
+    CleanLeftAlone := 0;
+    SaveAttempts := 0;
+    Try SaveAllDirty(0); Except End;
+    SaveScope := '';
+    Running := False;
+    Result := BuildSuccessResponse(RequestId, '{"stopped":true,"edited_saved":'
+        + IntToStr(SaveAttempts) + ',"clean_left_alone":'
+        + IntToStr(CleanLeftAlone) + '}');
+End;
+
 Function App_SaveAll(RequestId : String) : String;
 Var
-    StillDirty, Seen, Written : Integer;
-    Paths, AgesBefore, AgesAfter : String;
+    StillDirty, Seen, Written, P : Integer;
+    Paths, AgesBefore, AgesAfter, Skipped, Rest, Name : String;
 Begin
     Try
         // Iterate every IServerDocument the editor has open and DoFileSave
@@ -829,7 +936,36 @@ Begin
         AgesBefore := AgesForPaths(Paths);
 
         SaveAttempts := 0;
+        LibsSkippedClean := 0;
+        SkippedLibNames := '';
         SaveAllDirty(0);
+
+        { Libraries no tool edited are not written. Name them, so a caller
+          who edited one by hand in Altium can see it was not saved here. }
+        Skipped := '';
+        Rest := SkippedLibNames;
+        While Rest <> '' Do
+        Begin
+            P := Pos('|', Rest);
+            If P > 0 Then
+            Begin
+                Name := Copy(Rest, 1, P - 1);
+                Rest := Copy(Rest, P + 1, Length(Rest));
+            End
+            Else
+            Begin
+                Name := Rest;
+                Rest := '';
+            End;
+            If Skipped <> '' Then Skipped := Skipped + ',';
+            Skipped := Skipped + '"' + EscapeJsonString(Name) + '"';
+        End;
+        Skipped := ',"libraries_left_unedited":[' + Skipped + ']';
+        If LibsSkippedClean > 0 Then
+            Skipped := Skipped + ',"libraries_note":"These libraries were open '
+                + 'but no tool edited them, so they were not written. Edits '
+                + 'made by hand in Altium are not tracked: save those in '
+                + 'Altium or with app_save_document."';
 
         AgesAfter := AgesForPaths(Paths);
         Written := CountChangedAges(AgesBefore, AgesAfter);
@@ -849,9 +985,10 @@ Begin
             Result := BuildSuccessResponse(RequestId,
                 '{"saved":true,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":0,"documents_written":0'
-                + ',"still_dirty":' + IntToStr(StillDirty)
-                + ',"note":"nothing was open to save. Only a document open '
-                + 'in the editor has an IServerDocument; the rest are project '
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped
+                + ',"note":"nothing needed saving: no edited document was open. '
+                + 'Only a document open in the editor has an IServerDocument, '
+                + 'libraries no tool edited are skipped, and the rest are project '
                 + 'members that cannot be holding unsaved edits. Writing '
                 + 'nothing is the correct outcome here, not a failure."}')
         Else If Written = 0 Then
@@ -859,7 +996,7 @@ Begin
                 '{"saved":false,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":' + IntToStr(SaveAttempts)
                 + ',"documents_written":0'
-                + ',"still_dirty":' + IntToStr(StillDirty)
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped
                 + ',"reason":"every open document was written to and not one '
                 + 'got newer on disk. Altium declines a save while a command '
                 + 'is active in the editor, and an abandoned transaction '
@@ -870,7 +1007,7 @@ Begin
                 '{"saved":true,"documents_seen":' + IntToStr(Seen)
                 + ',"documents_attempted":' + IntToStr(SaveAttempts)
                 + ',"documents_written":' + IntToStr(Written)
-                + ',"still_dirty":' + IntToStr(StillDirty) + '}');
+                + ',"still_dirty":' + IntToStr(StillDirty) + Skipped + '}');
     Except
         Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'SaveAllDirty raised an exception');
     End;
@@ -1013,9 +1150,17 @@ Begin
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
         'create_document':     Result := App_CreateDocument(Params, RequestId);
         'save_all':            Result := App_SaveAll(RequestId);
+        'save_document':       Result := App_SaveDocument(Params, RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
-        'stop_server':         Begin SaveAllDirty(0); Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
+        'stop_server':         Result := App_StopServer(RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
+End;
+
+{ UnitStamp_Application - which build of Application.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Application(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

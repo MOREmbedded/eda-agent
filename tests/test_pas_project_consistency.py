@@ -435,3 +435,25 @@ def test_pcb_board_helper_calls_supply_required_argument():
             line = source.count("\n", 0, match.start()) + 1
             offenders.append(f"{name}:{line}")
     assert not offenders, f"missing GetPCBBoardAnywhere(0) argument: {offenders}"
+def test_statusform_defines_every_handler_its_form_names():
+    """StatusForm.dfm names its event handlers; StatusForm.pas must hold them.
+
+    A form looks its handlers up in its own unit only. One that is
+    missing or renamed binds to nothing, with no error: the click does
+    nothing, and if it is the poll timer the bridge looks alive and
+    answers nothing.
+    """
+    form = (SCRIPTS_DIR / "StatusForm.dfm").read_text(
+        encoding="utf-8", errors="replace")
+    named = set(re.findall(r"^\s*On\w+\s*=\s*(\w+)\s*$", form, re.MULTILINE))
+    assert len(named) > 10, f"read only {len(named)} handlers from the form"
+
+    unit = (SCRIPTS_DIR / "StatusForm.pas").read_text(
+        encoding="utf-8", errors="replace")
+    defined = {name.lower() for name in re.findall(
+        r"^\s*(?:Function|Procedure)\s+(\w+)", unit,
+        re.MULTILINE | re.IGNORECASE)}
+    missing = sorted(h for h in named if h.lower() not in defined)
+    assert not missing, (
+        f"StatusForm.dfm names handlers StatusForm.pas does not define: "
+        f"{missing}")

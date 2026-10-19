@@ -55,6 +55,7 @@ from contextlib import contextmanager
 from ctypes import POINTER, byref, c_long, wintypes
 
 from . import windows as win
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import comtypes
@@ -165,7 +166,7 @@ def _same(a: str, b: str) -> bool:
     the menu shows "Rules".
     """
     def flat(text):
-        return (str(text or "").replace("&", "").strip()
+        return (plain(text).replace("&", "").strip()
                 .rstrip(".").strip().lower())
     return flat(a) == flat(b)
 
@@ -518,7 +519,7 @@ def click_path(pid: int, path: str, settle: float = 1.2, expect_dialog: str = ""
         owned = False
     try:
         before = {d.hwnd for d in win.dialogs(pid)}
-        out = _click_path(pid, path, settle)
+        out = _click_path_read_twice(pid, path, settle)
         if not out.get("ok"):
             return out
 
@@ -596,6 +597,34 @@ def bring_to_front(pid: int) -> bool:
     return True
 
 
+def _click_path_read_twice(pid: int, path, settle: float) -> dict:
+    """``_click_path``, walked once more when a level's items read wrong.
+
+    MEASURED on AD 26.10.1.6: the first read of Tools came back "a menu
+    opened but exposed no items" one time in six. Reported on AD 25:
+    asked for Tools, the items read were the Design menu's about one time
+    in four, and the same call worked straight after. Nothing here can
+    tell which menu a popup belongs to, so "not found" is retried too.
+
+    Both failures happen before the last entry is pressed, so no command
+    has run and the walk can be made again. Once only, and when both
+    reads fail the reply carries both.
+    """
+    first = _click_path(pid, path, settle)
+    if first.get("ok") or not first.pop("_read_failed", False):
+        return first
+    close_open_menu(pid)
+    second = _click_path(pid, path, settle)
+    second.pop("_read_failed", None)
+    second["retried"] = True
+    second["first_read"] = {"reason": first.get("reason"),
+                            "offered": first.get("offered", [])}
+    if not second.get("ok"):
+        second["reason"] = (f"{second.get('reason')}. Read twice; the first "
+                            f"read said: {first.get('reason')}")
+    return second
+
+
 def _click_path(pid: int, path, settle: float) -> dict:
     levels = _levels(path)
     if not levels:
@@ -645,7 +674,7 @@ def _click_path(pid: int, path, settle: float) -> dict:
                 f"a menu opened but exposed no items, so {wanted!r} could "
                 f"not be looked for. The accessible layer returned "
                 f"nothing, which usually means COM is not initialised on "
-                f"this thread"), "offered": []}
+                f"this thread"), "offered": [], "_read_failed": True}
 
         hits = [e for e in entries if _same(_name(e), wanted)]
         if not hits:
@@ -653,7 +682,8 @@ def _click_path(pid: int, path, settle: float) -> dict:
             close_open_menu(pid)
             return {"ok": False,
                     "reason": f"{wanted!r} is not in {levels[depth - 1]!r}",
-                    "offered": [o for o in offered if o]}
+                    "offered": [o for o in offered if o],
+                    "_read_failed": True}
         if len({_visible_rect(h) for h in hits}) > 1:
             close_open_menu(pid)
             return {"ok": False, "reason": (
@@ -1060,7 +1090,7 @@ def click_toolbar(pid: int, name: str, settle: float = 0.8) -> dict:
         return listing
 
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     hit = next((b for b in listing["buttons"]
                 if flat(b["name"]) == flat(name)), None)

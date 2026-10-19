@@ -115,6 +115,40 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "the delete reach it."),
     },
     {
+        "task": "Create a schematic symbol: standard symbols, not rectangles",
+        "keywords": ("symbol", "create", "new", "draw", "author", "opamp",
+                     "op-amp", "amplifier", "comparator", "triangle",
+                     "current-sense", "resistor", "capacitor", "inductor",
+                     "diode", "zener", "tvs", "transistor", "mosfet", "bjt",
+                     "switch", "schlib"),
+        "when": (("create", "symbol"), ("new", "symbol"), ("draw", "symbol"),
+                 ("opamp",), ("op-amp",), ("amplifier",), ("comparator",),
+                 ("triangle",)),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_get_components", "lib_copy_component",
+                "lib_create_passive_symbol", "lib_create_ic_symbol"],
+        "avoid": [
+            ("lib_add_symbol_rectangle", "a rectangle body is only for an "
+                                         "IC with no conventional symbol. "
+                                         "Amplifiers get the triangle and "
+                                         "discretes their glyph"),
+        ],
+        "note": (
+            "Use the conventional symbol. First look in the user's own "
+            "library for a part already drawn that way (a triangle op-amp, "
+            "a MOSFET) and copy it with lib_copy_component, then rename and "
+            "renumber its pins to the new datasheet: it keeps the house "
+            "style. Otherwise lib_create_passive_symbol draws discretes "
+            "(R, C, L as arcs, diode, LED, zener, schottky, TVS, crystal, "
+            "fuse, switch, push button, N/P MOSFET, NPN/PNP), and "
+            "lib_create_ic_symbol draws an op-amp, comparator, current-sense "
+            "or instrumentation amplifier as a triangle automatically: "
+            "inputs left with + and -, output at the apex, supplies top and "
+            "bottom, one triangle per part for a dual or quad. A rectangle "
+            "is right only for an IC with no conventional symbol."),
+    },
+    {
         "task": "Read or change one part of a multi-part symbol",
         "keywords": ("multi-part", "multipart", "part", "gate", "section",
                      "symbol", "pins", "electrical"),
@@ -307,6 +341,81 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": (
             "Annotation is the supported route and keeps the schematic and "
             "board in step, which a direct rename would not."),
+    },
+    {
+        "task": "Add or adjust a 3D body in a footprint",
+        "keywords": ("3d", "body", "step", "model", "footprint", "height",
+                     "standoff", "opacity", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_link_3d_model", "lib_auto_link_3d_models",
+                "lib_update_footprint_heights_from_3d"],
+        "avoid": [
+            ("pcb_place_3d_body", "places a free body on a BOARD, not "
+                                  "inside the footprint in front"),
+            ("obj_run_process", "an Altium process this build does not "
+                                "know does nothing and reports no error, "
+                                "so a guessed 3D command looks like it ran"),
+        ],
+        "note": (
+            "lib_link_3d_model puts a STEP model in a footprint with its "
+            "offsets and rotations; lib_auto_link_3d_models matches models "
+            "to footprints by name across a library; and "
+            "lib_update_footprint_heights_from_3d sets each footprint's "
+            "height from its body. lib_get_footprint_primitives counts the "
+            "bodies a footprint carries and the layer each is on."),
+    },
+    {
+        "task": "Move every 3D body of a library onto one layer",
+        "keywords": ("3d", "body", "bodies", "layer", "mechanical", "move",
+                     "cleanup", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_move_bodies_to_layer"],
+        "avoid": [
+            ("obj_modify", "edits objects on a BOARD, not the footprints "
+                           "of the library in front"),
+        ],
+        "note": (
+            "Every footprint, or the named ones; a body already on the "
+            "layer is left alone. A mechanical layer the library has not "
+            "enabled is accepted with a warning, since Altium does not "
+            "draw what is on it."),
+    },
+    {
+        "task": "Redraw the assembly layer of a library's footprints",
+        "keywords": ("assembly", "outline", "designator", "mechanical",
+                     "redraw", "cleanup", "footprint", "library"),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_redraw_assembly"],
+        "avoid": [
+            ("lib_add_footprint_tracks", "draws one footprint by hand, "
+                                         "from coordinates you supply"),
+        ],
+        "note": (
+            "A rectangle round the 3D bodies, the courtyard or the pads, "
+            "and a .Designator in its middle. With replace (the default) "
+            "the tracks, arcs, texts, fills and regions already on that "
+            "layer are cleared first, never bodies or pads, so it needs "
+            "confirm=true."),
+    },
+    {
+        "task": "Place or adjust a 3D body on a board",
+        "keywords": ("3d", "body", "step", "model", "board", "opacity",
+                     "transparent", "standoff", "height"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_3d_body", "obj_query", "obj_modify"],
+        "avoid": [
+            ("lib_link_3d_model", "edits a footprint in a LIBRARY, not the "
+                                  "board"),
+        ],
+        "note": (
+            "pcb_place_3d_body puts a free STEP body on the board. On "
+            "eComponentBodyObject, obj_modify writes StandoffHeight and "
+            "OverallHeight in mils and BodyOpacity3D from 0 (clear) to 1 "
+            "(solid), not a percentage."),
     },
 )
 
@@ -783,29 +892,20 @@ def register_guidance_tools(mcp):
                          backend: str = "") -> dict[str, Any]:
         """How to do something correctly, and what is genuinely impossible.
 
-        USE THIS BEFORE CONCLUDING A CAPABILITY IS MISSING. The recorded
-        failures are not "could not find the tool name", which
-        ``tool_catalog`` already solves. They are aiming a board tool at
-        a library, and reporting a capability absent when it was
-        present. Both return a confident wrong answer rather than an
-        error.
+        USE THIS BEFORE CONCLUDING A CAPABILITY IS MISSING. The costly
+        mistakes are aiming a board tool at a library and reporting a
+        capability absent when it exists; both give a confident wrong
+        answer, not an error.
 
-        Answers three distinct things, kept apart on purpose: the tool
-        and its prerequisites, the tool you were probably reaching for
-        and why it acts on another document, and the short list of
-        things that are proven impossible with the reason.
+        Answers three things, kept apart: the tool and its
+        prerequisites, the tool you were probably reaching for and why
+        it acts on another document, and what is proven impossible,
+        with the reason. An empty result means only that this guide has
+        nothing on it; fall back to ``tool_catalog``.
 
-        An empty result means this guide has nothing on the subject. It
-        is not evidence that the server cannot do it: fall back to
-        ``tool_catalog``.
-
-        Search here for help when a tool seems missing, when you are not
-        sure which tool to use, when an operation seems not supported,
-        or when a call failed because the wrong document was open.
-        (``tool_catalog`` matches on this description, and searching the
-        obvious word, help, used to return four other tools and not this
-        one. The vocabulary of being stuck has to appear here, not only
-        the vocabulary of the answer.)
+        Ask here for help when a tool seems missing, you are not sure
+        which tool to use, an operation seems not supported, or a call
+        failed because the wrong document was open.
 
         Args:
             task: What you are trying to do, in your own words, e.g.

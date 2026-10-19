@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
@@ -347,6 +347,15 @@ def hints_from_sheet(
     return out
 
 
+def _altium_path(path: str) -> PureWindowsPath:
+    """A path Altium reported, read as the Windows path it always is.
+
+    On a Linux host, WSL included, ``Path`` does not split on
+    backslashes, so it takes a whole Windows path to be one file name.
+    """
+    return PureWindowsPath(path)
+
+
 def plan_from_live_sheet(
     project_path: str,
     sheet_document: str = "",
@@ -384,7 +393,7 @@ def plan_from_live_sheet(
         "ok": True, "plan": None, "notes": [], "dropped_pins": [],
         "parts_read": 0, "nets_read": 0,
     }
-    if not project_path or not Path(project_path).name:
+    if not project_path or not _altium_path(project_path).name:
         out["ok"] = False
         out["notes"].append(
             f"project_path must name a .PrjPcb file; got {project_path!r}")
@@ -397,11 +406,12 @@ def plan_from_live_sheet(
         return out
 
     scope = f"doc:{sheet_document}" if sheet_document else "active_doc"
-    sheet_name = (Path(sheet_document).stem if sheet_document else "main")
+    sheet_name = (_altium_path(sheet_document).stem if sheet_document
+                  else "main")
     # A sheet this engine drew is named "<project stem>__<sheet>"; keep
     # the plan-side name it would have had so a re-emit lands on the
     # same document instead of a second one beside it.
-    stem = Path(project_path).stem
+    stem = _altium_path(project_path).stem
     if sheet_name.startswith(f"{stem}__"):
         sheet_name = sheet_name[len(stem) + 2:]
 
@@ -494,6 +504,19 @@ def plan_from_live_sheet(
     return out
 
 
+def _same_altium_document(answered: str, asked: str) -> bool:
+    """Whether two paths name the same Altium document.
+
+    Two full paths have to match in full, since a sheet of the same name
+    in another folder is another document. A bare file name can only be
+    matched on the name. Case is ignored either way.
+    """
+    a, b = _altium_path(answered), _altium_path(asked)
+    if a.anchor and b.anchor:
+        return a == b
+    return a.name.lower() == b.name.lower()
+
+
 def _sheet_size(
     bridge: Any, sheet_document: str, out: dict[str, Any]
 ) -> str:
@@ -519,8 +542,7 @@ def _sheet_size(
     if not isinstance(info, dict):
         return ""
     answered = str(info.get("file_path", "") or "")
-    if sheet_document and (
-            Path(answered).name.lower() != Path(sheet_document).name.lower()):
+    if sheet_document and not _same_altium_document(answered, sheet_document):
         out["notes"].append(
             f"sheet size not read: the document info came back for "
             f"{answered!r}, not the sheet asked for; the plan carries the "

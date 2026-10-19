@@ -266,9 +266,51 @@ def build_server_instructions(
 
 SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET, ACTIVE_BACKEND)
 
+
+def compact_text_blocks(blocks):
+    """Re-serialize JSON text blocks without the indentation.
+
+    FastMCP writes a returned dict as JSON with indent=2, which is 40-65%
+    more characters than the same JSON compact. A client that reads the
+    text copy (rather than structuredContent) sends all of that padding to
+    the model on every call. Only text that parses as JSON is rewritten, so
+    the data is unchanged; anything else passes through as it was.
+    """
+    import json
+    out = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text[:1] in ("{", "["):
+            try:
+                compact = json.dumps(json.loads(text), separators=(",", ":"),
+                                     ensure_ascii=False)
+            except ValueError:
+                compact = None
+            if compact is not None and len(compact) < len(text):
+                block = block.model_copy(update={"text": compact})
+        out.append(block)
+    return out
+
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text.
+
+    structuredContent is left exactly as FastMCP builds it: Claude Code
+    reads that copy, and only the text copy carried the indentation.
+    """
+
+    async def call_tool(self, name, arguments):
+        result = await super().call_tool(name, arguments)
+        if isinstance(result, tuple):
+            return (compact_text_blocks(result[0]), result[1])
+        if isinstance(result, list):
+            return compact_text_blocks(result)
+        return result
+
+
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.
-mcp = FastMCP(
+mcp = _CompactFastMCP(
     f"eda-agent-{ACTIVE_BACKEND.strip().lower() or DEFAULT_BACKEND}",
     instructions=SERVER_INSTRUCTIONS,
 )
@@ -405,6 +447,22 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     config.ensure_workspace()
     logger.info("Workspace directory: %s", config.workspace_dir)
 
+    # Trim the logs, old checkpoints and old screenshots. Off the main
+    # thread so a large prune never delays the MCP handshake.
+    from . import housekeeping
+    threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
+                     name="workspace-housekeeping", daemon=True).start()
+
+    # Record this server and warn (stderr only) about others on the same
+    # workspace. Never refuses and never stops anything: several sessions
+    # at once are allowed. app_ping and app_get_status repeat the warning.
+    from . import server_registry
+    server_registry.register(config.workspace_dir)
+    duplicate = server_registry.duplicate_warning(
+        server_registry.others(config.workspace_dir))
+    if duplicate:
+        logger.warning("%s", duplicate)
+
     # Auto-launch the web dashboard in-process. Skip for headless / strict
     # MCP clients that can't tolerate dashboard side-effects.
     if no_dashboard or _dashboard_disabled_via_env():
@@ -428,6 +486,9 @@ def serve_mcp(no_dashboard: bool = False) -> int:
                     srv.shutdown()  # type: ignore[attr-defined]
             except Exception as e:
                 logger.debug("dashboard shutdown raised: %s", e)
+        # Before _exit, which skips atexit. A record left by a crash is
+        # removed by the next server that reads the folder.
+        server_registry.unregister(config.workspace_dir)
         import os as _os
         _os._exit(0)
     return 0
@@ -529,6 +590,9 @@ def _run_bom(args) -> int:
     except (ValueError, OSError) as e:
         print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
         return 2
+    if not lines:
+        from .fileio.bom import EMPTY_BOM_WARNING
+        print(f"WARNING: {args.file}: {EMPTY_BOM_WARNING}", file=sys.stderr)
 
     if getattr(args, "csv", False):
         print(bom_to_csv(lines), end="")
@@ -599,6 +663,8 @@ def main() -> int:
       serve             -- run the MCP server (default when no args given)
       scripts-path      -- print the path to the bundled DelphiScript files
       install-scripts   -- copy bundled scripts to a chosen directory
+      easyeda-extension -- locate or build the EasyEDA extension
+      relaunch          -- start the bridge script in the running Altium
 
     IMPORTANT: when invoked with no arguments, this MUST start the MCP
     server on stdio -- MCP-compatible clients rely on that behaviour.
@@ -705,6 +771,36 @@ def main() -> int:
         action="store_true",
         help="Overwrite existing scripts without prompting",
     )
+
+    # easyeda-extension -- where the editor half is, and building it
+    ext_p = subparsers.add_parser(
+        "easyeda-extension",
+        help=("Print where the EasyEDA extension source is (path), or "
+              "build the .eext to import into EasyEDA Pro (build; needs "
+              "Node.js)."),
+    )
+    ext_p.add_argument("action", choices=["path", "build"])
+    ext_p.add_argument(
+        "--out", default=None, metavar="DIR",
+        help=("Folder to build in. An installed copy is built beside the "
+              "default workspace unless this is given; a checkout builds "
+              "in place."),
+    )
+
+    # relaunch -- start the bridge script in the running Altium, on request
+    relaunch_p = subparsers.add_parser(
+        "relaunch",
+        help=("Ask the running Altium to run StartMCPServer from the "
+              "installed script project. Leaves pending requests alone and "
+              "does nothing if the bridge already answers."),
+    )
+    relaunch_p.add_argument("--prjscr", default=None, metavar="PATH",
+                            help="Script project to run (default: the "
+                                 "install-scripts destination).")
+    relaunch_p.add_argument("--dry-run", action="store_true",
+                            help="Print the command instead of running it.")
+    relaunch_p.add_argument("--force", action="store_true",
+                            help="Run it even when the bridge answers a ping.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -1137,6 +1233,11 @@ def main() -> int:
         except Exception as exc:
             print(f"Altium 365 authorization failed: {exc}", file=sys.stderr)
             return 1
+    if args.command == "easyeda-extension":
+        return cli.cmd_easyeda_extension(args.action, out=args.out)
+    if args.command == "relaunch":
+        return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
+                                force=args.force)
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([

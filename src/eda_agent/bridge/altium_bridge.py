@@ -9,6 +9,7 @@ race that the older single-file scheme had when keep-alive pings overlapped
 user tool calls.
 """
 
+import itertools
 import json
 import logging
 import os
@@ -65,6 +66,14 @@ PROTOCOL_VERSION = 2
 # this gives a 300 s ceiling per command -- plenty for heavy emit / compile
 # passes while still catching runaway handlers.
 _MAX_HEARTBEAT_EXTENSIONS = 30
+
+#: A request still waiting in Altium's queue behind another Claude
+#: session's slot. Extended while the queue is visibly alive (queue.json
+#: fresh, or another request's progress marker present), up to this many
+#: windows, so a queued call is not mistaken for a dead loop.
+_MAX_QUEUE_EXTENSIONS = 30
+#: How recent queue.json must be to count as a live queue, in seconds.
+_QUEUE_FRESH_S = 5.0
 
 #: How often to check whether a modal is what is holding a call up, and
 #: how long to wait before the first check.
@@ -180,9 +189,46 @@ def _close_dir_watcher(handle) -> None:
         pass
 
 
+#: This server's session tag. One eda-agent server runs per Claude session,
+#: so the tag tells Altium which session a request came from: it serves one
+#: session at a time in slots when several are waiting, and never slots a
+#: session that is alone (ScanForRequestFile in Main.pas).
+_SESSION_TAG = uuid.uuid4().hex[:8]
+_SEQUENCE = itertools.count(1)
+
+
+def _queue_is_alive(workspace_dir: Path) -> bool:
+    """Whether Altium is busy serving another Claude session right now.
+
+    Altium refreshes queue.json about once a second while sessions contend
+    between commands, and a progress marker exists while a request's
+    handler runs. Either one means a waiting request is queued, not lost.
+    Only ANOTHER session's marker counts: this session has one call in
+    flight at a time, so a marker of its own is a leftover, and treating
+    it as a queue would hide a dead loop from a session working alone.
+    """
+    try:
+        if time.time() - (workspace_dir / "queue.json").stat().st_mtime < _QUEUE_FRESH_S:
+            return True
+    except OSError:
+        pass
+    own = f"progress_{_SESSION_TAG}-"
+    try:
+        return any(not p.name.lower().startswith(own)
+                   for p in Path(workspace_dir).glob("progress_*.json"))
+    except OSError:
+        return False
+
+
 def _short_id() -> str:
-    """Compact ID safe for filenames: 32 hex chars, no hyphens."""
-    return uuid.uuid4().hex
+    """Filename-safe request id: ``<session tag>-<sequence>-<random>``.
+
+    The tag and the 8-digit sequence let Altium take each session's
+    requests in the order they were made, and take turns between sessions;
+    the random tail keeps ids unique across restarts.
+    """
+    seq = next(_SEQUENCE) % 100_000_000
+    return f"{_SESSION_TAG}-{seq:08d}-{uuid.uuid4().hex[:12]}"
 
 
 @dataclass
@@ -588,8 +634,13 @@ class AltiumBridge:
         self._ensure_workspace_fast()
         request_path = self._request_path(request.id)
         tmp_path = request_path.with_suffix(".json.tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(request.to_dict(), f, indent=2)
+        # Literal characters behind a UTF-8 byte-order mark. Pascal reads
+        # the file with TStringList.LoadFromStream, which takes the mark as
+        # UTF-8 and reads a file without one in the ANSI codepage. A \uXXXX
+        # escape is no way round that: UnescapeJsonString can only turn
+        # 0..255 into a character, so a Chinese path arrived as '?'.
+        with open(tmp_path, "w", encoding="utf-8-sig") as f:
+            json.dump(request.to_dict(), f, indent=2, ensure_ascii=False)
         # The rename can lose a race with a Windows scanner holding the
         # target. Retried, then allowed to raise: a request that is never
         # published leaves the caller waiting out the full poll timeout
@@ -669,6 +720,7 @@ class AltiumBridge:
         ext_cap = (_MAX_HEARTBEAT_EXTENSIONS if max_extensions is None
                    else max(0, int(max_extensions)))
         extensions = 0
+        queue_extensions = 0
         poll_count = 0
         first_appearance: Optional[float] = None
         parse_errors = 0
@@ -748,6 +800,8 @@ class AltiumBridge:
 
             if ready:
                 try:
+                    # utf-8-sig drops a byte-order mark at the start,
+                    # which json.load would otherwise reject.
                     with open(response_path, "r", encoding="utf-8-sig") as f:
                         data = json.load(f)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
@@ -806,6 +860,22 @@ class AltiumBridge:
                         f"POLL_EXTEND id={request_id[:8]} "
                         f"extensions={extensions}/{ext_cap} "
                         f"elapsed={elapsed:.0f}ms",
+                    )
+                    deadline = time.monotonic() + timeout
+                    continue
+                # Still queued behind another Claude session's slot: our
+                # request has not been taken and the loop is visibly
+                # serving someone else. Only possible while sessions
+                # contend, so a lone session never takes this branch.
+                if (not progress_path.exists()
+                        and queue_extensions < _MAX_QUEUE_EXTENSIONS
+                        and self._request_path(request_id).exists()
+                        and _queue_is_alive(workspace_dir)):
+                    queue_extensions += 1
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_QUEUED id={request_id[:8]} "
+                        f"waits={queue_extensions}/{_MAX_QUEUE_EXTENSIONS}",
                     )
                     deadline = time.monotonic() + timeout
                     continue

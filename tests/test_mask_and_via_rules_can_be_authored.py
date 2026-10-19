@@ -2,10 +2,10 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """pcb_create_design_rule authors the two rules the toolset points at.
 
-Two refusals used to end with "set it in the dialog". Tenting a via is
-a Solder Mask Expansion rule scoped IsVia, because
-pcb_set_via_soldermask_relief crashes the scripting engine on this
-build and cannot be fixed. Catching via-in-pad is a Vias Under SMD
+Two refusals used to end with "set it in the dialog". Tenting every
+via, including ones placed later, is a Solder Mask Expansion rule scoped
+IsVia; pcb_set_via_soldermask_relief writes the vias that exist, and
+points at the rule for the rest. Catching via-in-pad is a Vias Under SMD
 rule, which the routing discipline recommends. Neither could be
 created, so both pieces of advice ended somewhere this toolset could
 not follow.
@@ -199,7 +199,11 @@ def test_the_advice_that_used_to_end_in_a_dialog_now_names_the_tool():
     assert "cannot create that kind" not in src
     assert "cannot create that kind" not in text
 
-    relief = load(_PCB_PAS, minimum=100)["PCB_SetViaSoldermaskRelief"]
-    assert "solder_mask_expansion" in relief, (
-        "the via-relief refusal no longer names the rule kind that does "
-        "the job")
+    from eda_agent.tools import pcb as pcb_tools
+
+    relief = Path(pcb_tools.__file__).read_text(encoding="utf-8")
+    relief = relief[relief.index("async def pcb_set_via_soldermask_relief("):]
+    relief = relief[:relief.index("@mcp.tool()")]
+    assert 'rule_type="solder_mask_expansion"' in relief, (
+        "the via relief no longer names the rule kind that also covers "
+        "vias placed later")

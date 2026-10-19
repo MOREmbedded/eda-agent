@@ -442,6 +442,18 @@ def _no_bridge_left_pinging():
 
 
 def pytest_configure(config):
+    # Without pytest-asyncio every async test fails with "async def
+    # functions are not natively supported", hundreds of them across
+    # unrelated modules, and the only hint is a warning about an unknown
+    # ini option. Stop at once and name the missing package instead. The
+    # plugin is checked rather than the ini value, which raises on its
+    # own when the plugin is missing.
+    if not config.pluginmanager.hasplugin("asyncio"):
+        raise pytest.UsageError(
+            "pytest-asyncio is not installed, and the async tests cannot "
+            "run without it. Install the dev dependencies: "
+            'python -m pip install -e ".[dev]"')
+
     config.addinivalue_line(
         "markers",
         "network: test genuinely needs the internet; exempt from the "
