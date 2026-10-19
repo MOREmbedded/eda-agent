@@ -14,6 +14,36 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Merged from upstream 0.7.1
+
+This fork absorbed the 24 commits it was behind
+`salitronic/eda-agent`, which is where the version jumps 0.6.1 to
+0.7.1. What arrives with them: footprint vias and via edits, via
+tenting and the pad paste flag persisting, SchLib symbol shapes drawn
+through the library so they show and query at once, region create and
+delete on the geometry map, selective repour and the repour
+preference, board save-copy, Altium 21 support, Unicode across the
+bridge, library layer counts and origin reads, per-unit build stamps,
+session time-slotting between Claude sessions sharing one Altium, loop
+analysis, sheet fit, smart DRC and ngspice loop simulation.
+
+**None of it has run against a live Altium from this fork.** The
+suite passes and the Pascal guards pass; neither is the same claim.
+Treat the first session on this build as verification, and see
+[`docs/RELEASE_VERIFICATION.md`](docs/RELEASE_VERIFICATION.md).
+
+`SCRIPT_VERSION` is `2026.10.19.1`, ahead of both sides, because the
+merged script is neither of their builds and a session running either
+one must see a mismatch rather than a false match. **Redeploy and
+reload** before using it: `eda-agent update` reports the gap between
+what is on disk and what Altium has compiled.
+
+The merge commit records the decisions it needed, including three
+places where taking one side verbatim would have broken something
+quietly: the profile's pad corner radius, `Gen_BatchDelete`'s
+variable name, and the `truncated` field `proj_get_nets` pages on.
+
+
 ### Added
 
 #### Owner profiles
