@@ -8871,6 +8871,7 @@ Begin
                     + '","before":"' + EscapeJsonString(FpBefore)
                     + '","after":"' + EscapeJsonString(FpAfter)
                     + '","applied":' + BoolToJsonStr(FpAfter = Val) + '}';
+            End
             Else If Key = 'FootprintLibrary' Then
             Begin
                 { ECO resolves a model through the implementation data-file  }
