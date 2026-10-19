@@ -34,6 +34,26 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+
+def pad_position_mm(row: dict) -> tuple[float, float]:
+    """Where a pad's copper is, from a ``library.get_pad_geometry`` row.
+
+    ``x_mm``/``y_mm`` are the pad's origin, which a custom pad's copper
+    need not be centred on; ``copper_x_mm``/``copper_y_mm`` are the copper
+    centre, used when the read carries them. A datasheet gives copper.
+    """
+    def num(key: str) -> Optional[float]:
+        try:
+            value = row.get(key)
+            return None if value is None else float(value)
+        except (TypeError, ValueError):
+            return None
+
+    cx, cy = num("copper_x_mm"), num("copper_y_mm")
+    if cx is not None and cy is not None:
+        return cx, cy
+    return num("x_mm") or 0.0, num("y_mm") or 0.0
+
 __all__ = [
     "AuditFinding",
     "LandPatternSpec",
@@ -106,7 +126,9 @@ class LandPatternSpec(BaseModel):
         default=None,
         description=(
             "{count, pitch, span, pad_w, pad_h, shape?} -- count is "
-            "TOTAL pads, span is centre-to-centre between columns."
+            "TOTAL pads, span is centre-to-centre between columns. pad_w "
+            "is the pad's X size, ACROSS the row (along the span); note "
+            "quad uses pad_w the other way, along the row."
         ),
     )
     quad: Optional[dict[str, Any]] = Field(
@@ -114,7 +136,8 @@ class LandPatternSpec(BaseModel):
         description=(
             "{count, pitch, span_x, span_y, pad_w, pad_h, shape?} -- "
             "count is TOTAL pads divisible by 4; pad_w is the dimension "
-            "along the row."
+            "along the row (the opposite of dual_row, where pad_w runs "
+            "across it)."
         ),
     )
     thermal_pad: Optional[SpecPad] = Field(
@@ -291,7 +314,7 @@ def audit_footprint_against_spec(
 
     # --- alignment: centre both point sets, try the 4 rotations -------
     spec_pts_raw = [(p.x, p.y) for p in spec_pads]
-    fp_pts_raw = [(float(p["x_mm"]), float(p["y_mm"])) for p in fp_pads]
+    fp_pts_raw = [pad_position_mm(p) for p in fp_pads]
     scx, scy = _centroid(spec_pts_raw)
     fcx, fcy = _centroid(fp_pts_raw)
     spec_pts = [(x - scx, y - scy) for (x, y) in spec_pts_raw]
@@ -403,8 +426,7 @@ def audit_footprint_against_spec(
                 pad=str(fp.get("name")),
                 message="footprint pad has no counterpart in the "
                         "datasheet land pattern",
-                actual=(
-                    f"({float(fp['x_mm']):.3f}, {float(fp['y_mm']):.3f}) mm"),
+                actual="({:.3f}, {:.3f}) mm".format(*pad_position_mm(fp)),
             ))
 
     # --- thermal-pad paste policy ---------------------------------------

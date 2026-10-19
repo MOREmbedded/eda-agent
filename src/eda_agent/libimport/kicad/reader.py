@@ -676,7 +676,16 @@ def _footprint_shape(tag: str, node: list, k: float, fy):
             return None
         poly = EePolyline(kind="solid_region", raw="")
         poly.points = points
-        poly.fill = "solid"
+        # The polygon's own fill. KiCad 6 and later write (fill solid) or
+        # (fill none), and an outline-only polygon (a courtyard, a fab
+        # outline) must not arrive filled; KiCad 5 wrote no fill token and
+        # its polygons were filled.
+        fill_node = find(node, "fill")
+        fill_word = str(fill_node[1]).lower() if fill_node and len(fill_node) > 1 else ""
+        if fill_word in ("type",) and len(fill_node) > 2:
+            fill_word = str(fill_node[2]).lower()
+        poly.fill = "none" if fill_word in ("none", "no") else "solid"
+        poly.stroke_width = _num(_stroke_width(node)) * k
         # An fp_poly IS a closed area, and the loop above has just
         # stripped the repeated final vertex that said so. Without this
         # flag the consumer sees a plain open run of points and draws

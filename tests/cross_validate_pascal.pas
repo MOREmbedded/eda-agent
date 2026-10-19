@@ -511,6 +511,72 @@ begin
   end;
 end;
 
+{ GetBatchTail -- copied VERBATIM from Main.pas. }
+function GetBatchTail(Op : String; Key : String) : String;
+var
+  Marker : String;
+  P : Integer;
+begin
+  Result := '';
+  Marker := ';' + LowerCase(Key) + '=';
+  P := Pos(Marker, LowerCase(Op));
+  if P > 0 then
+    Result := Copy(Op, P + Length(Marker), Length(Op))
+  else if Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 then
+    Result := Copy(Op, Length(Key) + 2, Length(Op));
+end;
+
+{ PickSession -- copied VERBATIM from Main.pas (test_session_slots checks it). }
+Function PickSession(Tags : String; Current : String; ElapsedMs : Integer;
+    SlotMs : Integer) : String;
+Var
+    Rest, Tag, Lowest, After : String;
+    Bar, Count : Integer;
+    HasCurrent : Boolean;
+Begin
+    Result := '';
+    Lowest := '';
+    After := '';
+    Count := 0;
+    HasCurrent := False;
+    Rest := Tags;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Tag := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Tag := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Tag <> '' Then
+        Begin
+            Inc(Count);
+            If Tag = Current Then HasCurrent := True;
+            If (Lowest = '') Or (Tag < Lowest) Then Lowest := Tag;
+            If Tag > Current Then
+                If (After = '') Or (Tag < After) Then After := Tag;
+        End;
+    End;
+    If Count = 0 Then Exit;
+    If Count = 1 Then
+    Begin
+        Result := Lowest;
+        Exit;
+    End;
+    If HasCurrent And (ElapsedMs < SlotMs) Then
+    Begin
+        Result := Current;
+        Exit;
+    End;
+    If After <> '' Then Result := After
+    Else Result := Lowest;
+End;
+
 { ---------------------------------------------------------------------------
   IEEE pin-symbol converters, copied VERBATIM from scripts/altium/Utils.pas.
   These decide whether an active-low pin gets its inversion bubble and a clock
@@ -1034,6 +1100,20 @@ begin
     else if FnName = 'GetBatchField' then
     begin
       ResultStr := GetBatchField(B64Decode(Parts[1]), B64Decode(Parts[2]));
+    end
+
+    { --- PickSession: args = tags, current, elapsed_ms, slot_ms --- }
+    else if FnName = 'PickSession' then
+    begin
+      ResultStr := PickSession(B64Decode(Parts[1]), B64Decode(Parts[2]),
+                               StrToInt(B64Decode(Parts[3])),
+                               StrToInt(B64Decode(Parts[4])));
+    end
+
+    { --- GetBatchTail: args = op, key --- }
+    else if FnName = 'GetBatchTail' then
+    begin
+      ResultStr := GetBatchTail(B64Decode(Parts[1]), B64Decode(Parts[2]));
     end
 
     { --- BatchFieldSweep: args = payload, key --- }

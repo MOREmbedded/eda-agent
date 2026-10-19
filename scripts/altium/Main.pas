@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.18.1';
+    SCRIPT_VERSION = '2026.10.19.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -33,6 +33,11 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+
+    { How long one Claude session may run commands back to back while      }
+    { another session is waiting. See ScanForRequestFile. A session alone   }
+    { is never slotted.                                                     }
+    SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
 
@@ -57,6 +62,13 @@ Const
     // below it.
     MAX_INT = 1000000000;
 
+    // TLibIdentifierKind in declaration order: 0 Any, 1 NameNoType,
+    // 2 NameWithType, 3 FullPath, 4 VaultName (System API constants).
+    // VaultName is how SchServer.LoadComponent addresses a part in a
+    // Workspace. Written as a number so no enum name has to exist in
+    // this host; an unknown identifier stops the script.
+    LIB_IDENT_KIND_VAULT_NAME = 4;
+
 Var
     WorkspaceDir : String;
     Running : Boolean;
@@ -77,7 +89,32 @@ Var
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
+    { Libraries the last save pass left alone because no tool edited them,
+      and their names. See SaveOneDocByDocRef. }
+    LibsSkippedClean : Integer;
+    SkippedLibNames : String;
+    { File names, upper case, of every document a tool has flagged for
+      saving this session, each wrapped in '|'. See NoteDocEdited. }
+    EditedDocs : String;
+    { Documents the current save pass has already handled, wrapped in '|'.
+      A free document is reached once per project walk, and the second
+      visit would report a library it had just written as left alone. }
+    SavePassSeen : String;
+    { 'edited' while application.stop_server saves: only documents the  
+      editor marks modified or a tool recorded are written, and
+      CleanLeftAlone counts the rest. '' (as at startup) is the forced
+      flush app_save_all relies on. See SaveOneDocByDocRef. }
+    SaveScope : String;
+    CleanLeftAlone : Integer;
     LastCompiledProject : IProject;
+
+    { Time slots between Claude sessions sharing this Altium. SlotSession  }
+    { is the session tag whose slot is running, SlotStartTick when it      }
+    { began, QueueNoteTick when queue.json was last written. See           }
+    { ScanForRequestFile.                                                  }
+    SlotSession : String;
+    SlotStartTick : Integer;
+    QueueNoteTick : Integer;
 
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
@@ -118,11 +155,6 @@ Var
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
 
-    { Re-entry guard for LookupLibComponent's last-resort reopen. A
-      reopen re-reads the document and the retry looks the name up
-      again; without this the retry could trigger another reopen. }
-    RefreshingLib : Boolean;
-
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
 { dispatcher startup before LoadMCPConfig so a missing/corrupt config file    }
@@ -148,8 +180,8 @@ End;
 { unambiguous even when a single operation's property list contains '|'.       }
 {                                                                               }
 { Defined in Main.pas so Library.pas and Generic.pas can both use them,       }
-{ the Altium project compiles files in DesignN order (Main → ... → Library →  }
-{ ... → Generic) and a callee must come earlier than its caller.               }
+{ the Altium project compiles files in DesignN order (Main, ..., Library,     }
+{ ..., Generic) and a callee must come earlier than its caller.               }
 {..............................................................................}
 
 Function NextBatchOp(Var Remaining : String) : String;
@@ -204,6 +236,24 @@ Begin
             End;
         End;
     End;
+End;
+
+{ The value of an op's LAST field, everything after ';<key>='. GetBatchField  }
+{ stops at the next ';', which cut a batch_modify set of Text=first;second    }
+{ to Text=first. Python writes set last and refuses a ';' in the fields      }
+{ before it, so the first ';set=' is the real one.                           }
+Function GetBatchTail(Op : String; Key : String) : String;
+Var
+    Marker : String;
+    P : Integer;
+Begin
+    Result := '';
+    Marker := ';' + LowerCase(Key) + '=';
+    P := Pos(Marker, LowerCase(Op));
+    If P > 0 Then
+        Result := Copy(Op, P + Length(Marker), Length(Op))
+    Else If Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 Then
+        Result := Copy(Op, Length(Key) + 2, Length(Op));
 End;
 
 {..............................................................................}
@@ -382,11 +432,64 @@ End;
 { app_save_all or proj_save.                                                   }
 {..............................................................................}
 
+{..............................................................................}
+{ Record that a tool edited a document, so app_save_all knows to write it.     }
+{                                                                              }
+{ A library opened only to read from used to be rewritten by every save-all,   }
+{ because the save pass flushes every open document. MEASURED: a save-all      }
+{ after copying symbols out of ten user libraries rewrote all ten, untouched.  }
+{ Libraries are now written only when they appear here. The Modified flag      }
+{ cannot stand in for this list, because it reads False while the editor tab   }
+{ shows the document edited.                                                   }
+{                                                                              }
+{ Kept by FILE NAME, because DM_FullPath returns a bare name for a document    }
+{ that is open outside any project. Two libraries with the same name in        }
+{ different folders are both written, which errs on the side of saving.       }
+{..............................................................................}
+
+Procedure NoteDocEdited(FilePath : String);
+Var
+    Key : String;
+Begin
+    If FilePath = '' Then Exit;
+    Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
+    If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
+End;
+
+Function DocWasEdited(FilePath : String) : Boolean;
+Begin
+    Result := False;
+    If FilePath = '' Then Exit;
+    Result := Pos('|' + UpperCase(ExtractFileName(FilePath)) + '|', EditedDocs) > 0;
+End;
+
+Procedure ForgetDocEdited(FilePath : String);
+Var
+    Key : String;
+    P : Integer;
+Begin
+    If FilePath = '' Then Exit;
+    Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
+    P := Pos(Key, EditedDocs);
+    If P > 0 Then
+        EditedDocs := Copy(EditedDocs, 1, P - 1)
+            + Copy(EditedDocs, P + Length(Key), Length(EditedDocs));
+End;
+
+Function IsLibraryDocPath(FilePath : String) : Boolean;
+Var
+    Ext : String;
+Begin
+    Ext := UpperCase(ExtractFileExt(FilePath));
+    Result := (Ext = '.SCHLIB') Or (Ext = '.PCBLIB');
+End;
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
 Begin
     If FilePath = '' Then Exit;
+    NoteDocEdited(FilePath);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
     Try ServerDoc.SetModified(True); Except End;
@@ -502,14 +605,26 @@ End;
 { ResolvePCBBoard - get a SPECIFIC board by path when several PcbDocs are     }
 { open. GetPCBBoardAnywhere returns the focused/current board, which is the   }
 { WRONG one when the caller meant a different (e.g. newly created) board.     }
-{ PCBServer.GetPCBBoardByPath is undeclared on this build, so we open + show  }
-{ the target (which focuses it) and then read GetCurrentPCBBoard. Empty path  }
-{ falls back to GetPCBBoardAnywhere.                                          }
+{ PCBServer.GetPCBBoardByPath is undeclared on this build, so the target is   }
+{ shown (which focuses it) and GetCurrentPCBBoard read. Empty path means      }
+{ GetPCBBoardAnywhere.                                                        }
+{                                                                             }
+{ A loaded document is shown; an unloaded one is opened only when it is a    }
+{ document of an open project or a file that exists. A mangled path (no such }
+{ file) once opened as a "free document" and left the project unfocused. A   }
+{ path that does not resolve gives Nil, never some other board, and a board  }
+{ that did not come to the front is Nil too, so the caller reports it.       }
 {..............................................................................}
 
 Function ResolvePCBBoard(Path : String) : IPCB_Board;
 Var
     ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    DocPath : String;
+    I, P : Integer;
+    InProject : Boolean;
 Begin
     Result := Nil;
     If Path = '' Then
@@ -518,17 +633,48 @@ Begin
         Exit;
     End;
     ServerDoc := Nil;
-    Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
     If ServerDoc = Nil Then
     Begin
-        { Path didn't resolve to a loadable PcbDoc; fall back rather than    }
-        { silently returning Nil and erroring the whole call.                }
-        Result := GetPCBBoardAnywhere(0);
-        Exit;
+        InProject := False;
+        Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+        If Workspace <> Nil Then
+            For P := 0 To Workspace.DM_ProjectCount - 1 Do
+            Begin
+                Project := Workspace.DM_Projects(P);
+                If Project = Nil Then Continue;
+                For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+                Begin
+                    Doc := Project.DM_LogicalDocuments(I);
+                    If Doc = Nil Then Continue;
+                    DocPath := '';
+                    Try DocPath := Doc.DM_FullPath; Except End;
+                    If UpperCase(DocPath) = UpperCase(Path) Then InProject := True;
+                End;
+            End;
+        { A file in no project opens as a free document, which it is   }
+        { anyway (a scratch copy); a path naming no file is refused.   }
+        If Not InProject Then
+            If Not FileExists(Path) Then Exit;
+        Try ServerDoc := Client.OpenDocument('PCB', Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Exit;
     End;
     Try Client.ShowDocument(ServerDoc); Except End;
-    Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-    If Result = Nil Then Result := GetPCBBoardAnywhere(0);
+    Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
+    If Result <> Nil Then
+        If UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil;
+End;
+
+{ The path of the board in front, '' when none is. For a check that a focus }
+{ took; it is focus-dependent on purpose.                                    }
+Function FrontPCBBoardPath(Dummy : Integer) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Result := '';
+    Try Board := PCBServer.GetCurrentPCBBoard; Except Board := Nil; End;
+    If Board <> Nil Then
+        Try Result := Board.FileName; Except Result := ''; End;
 End;
 
 {..............................................................................}
@@ -629,6 +775,8 @@ End;
 Procedure SaveOneDocByDocRef(Doc : IDocument);
 Var
     ServerDoc : IServerDocument;
+    Path : String;
+    AgeBefore, AgeAfter : Integer;
 Begin
     If Doc = Nil Then Exit;
     Try
@@ -637,18 +785,53 @@ Begin
           cannot be holding unsaved edits. SaveAttempts counts the ones
           actually reached, so a pass that wrote nothing because nothing
           was open is not confused with one the editor declined. }
-        ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+        Path := Doc.DM_FullPath;
+        ServerDoc := Client.GetDocumentByPath(Path);
+    Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    If Pos('|' + UpperCase(Path) + '|', SavePassSeen) > 0 Then Exit;
+    SavePassSeen := SavePassSeen + '|' + UpperCase(Path) + '|';
+
+        { A LIBRARY NO TOOL EDITED IS LEFT ALONE. Libraries are opened to
+          read from and copy out of far more often than they are edited, and
+          the forced flush below rewrote every one of them. See
+          NoteDocEdited. }
+        If IsLibraryDocPath(Path) And (Not DocWasEdited(Path)) Then
+        Begin
+            LibsSkippedClean := LibsSkippedClean + 1;
+            If SkippedLibNames <> '' Then SkippedLibNames := SkippedLibNames + '|';
+            SkippedLibNames := SkippedLibNames + ExtractFileName(Path);
+            Exit;
+        End;
+
+        { STOPPING THE BRIDGE WRITES ONLY WHAT WAS EDITED. The forced flush   }
+        { below rewrote every clean schematic open in Altium on each detach. }
+        { An edit the Modified flag missed is not lost by skipping it: the   }
+        { editor still holds it and asks on close.                           }
+        If SaveScope = 'edited' Then
+        Begin
+            If (Not ServerDoc.Modified) And (Not DocWasEdited(Path)) Then
+            Begin
+                CleanLeftAlone := CleanLeftAlone + 1;
+                Exit;
+            End;
+        End;
+
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
         { Altium builds, so checking it can leave docs unsaved. DoFileSave    }
         { on a clean doc is a fast no-op.                                     }
-        If ServerDoc <> Nil Then
-        Begin
-            SaveAttempts := SaveAttempts + 1;
-            Try ServerDoc.SetModified(True); Except End;
-            Try ServerDoc.DoFileSave(''); Except End;
-        End;
-    Except End;
+        SaveAttempts := SaveAttempts + 1;
+        AgeBefore := -1;
+        Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
+        Try ServerDoc.SetModified(True); Except End;
+        Try ServerDoc.DoFileSave(''); Except End;
+        { Once written, a document has nothing pending until the next edit. }
+        { Any kind, not only libraries: a stop saves what was edited, and a  }
+        { sheet left marked would be rewritten by every later stop.          }
+        AgeAfter := -1;
+        Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -966,6 +1149,9 @@ Var
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
+    SavePassSeen := '';
+    LibsSkippedClean := 0;
+    SkippedLibNames := '';
 
     // Real projects + their member docs
     For I := 0 To Workspace.DM_ProjectCount - 1 Do
@@ -1029,49 +1215,72 @@ End;
 { JSON Helper Functions                                                        }
 {..............................................................................}
 
+Function LoadTextFile(SL : TStringList; FilePath : String) : Boolean;
+Var
+    Stream : THandleStream;
+    Attempt : Integer;
+    Handle : Integer;
+    Ok : Boolean;
+Begin
+    { Read every file through here, never SL.LoadFromFile. A sharing          }
+    { violation inside LoadFromFile's TFileStream arrived as a modal          }
+    { EFOpenError on Altium Designer 26.10.1.5 before the surrounding         }
+    { Try/Except ran, stalling the polling loop. FileOpen returns -1 on a     }
+    { sharing violation instead of raising, and once the handle is held       }
+    { LoadFromStream has no open left to fail. The lock is usually brief (a   }
+    { scanner touching a freshly written file), so retry for about 180 ms.    }
+    { False when the file is missing or stayed locked; SL is then empty.      }
+    Ok := False;
+    SL.Text := '';
+    If FileExists(FilePath) Then
+    Begin
+        Attempt := 0;
+        While Attempt < 12 Do
+        Begin
+            Inc(Attempt);
+            Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
+            If Handle <> -1 Then
+            Begin
+                Try
+                    Stream := THandleStream.Create(Handle);
+                    Try
+                        Try
+                            SL.LoadFromStream(Stream);
+                            Ok := True;
+                        Except
+                            Ok := False;
+                        End;
+                    Finally
+                        Stream.Free;
+                    End;
+                Finally
+                    FileClose(Handle);
+                End;
+            End;
+            If Ok Then Break;
+            Sleep(15);
+        End;
+    End;
+    Result := Ok;
+End;
+
 Function ReadFileContent(FilePath : String) : String;
 Var
     SL : TStringList;
     Content : String;
-    Attempt : Integer;
-    Ok : Boolean;
 Begin
-    { Read via TStringList.LoadFromFile, NOT TextFile Reset/ReadLn. The RTL    }
-    { Reset raises a low-level EInOutError on a sharing violation (I/O error   }
-    { 32) which the Altium script engine intercepts with a modal BEFORE the    }
-    { surrounding Try/Except can swallow it, stalling the polling loop.        }
-    { LoadFromFile opens through a TFileStream and raises an ordinary VCL      }
-    { EFOpenError that Try/Except catches cleanly -- no engine modal. The      }
-    { lock is transient (Defender scanning the freshly renamed request file,   }
-    { or a collision with Python's atomic replace), so retry briefly.          }
     { NOTE: stash the content in a LOCAL string and assign Result from it as }
     { the LAST statement. Assigning Result directly from SL.Text (an object  }
     { property) and then Exit-ing triggers the DelphiScript return-clobber    }
     { bug: the caller receives the FilePath argument instead of the file      }
     { content, so the dispatcher reads the request path as the command and    }
     { silently processes nothing. See delphiscript_result_clobber.            }
-    Result := '';
-    If Not FileExists(FilePath) Then Exit;
     Content := '';
-    Attempt := 0;
-    While Attempt < 12 Do
-    Begin
-        Inc(Attempt);
-        Ok := False;
-        SL := TStringList.Create;
-        Try
-            Try
-                SL.LoadFromFile(FilePath);
-                Content := SL.Text;
-                Ok := True;
-            Except
-                Ok := False;
-            End;
-        Finally
-            SL.Free;
-        End;
-        If Ok Then Break;
-        Sleep(15);
+    SL := TStringList.Create;
+    Try
+        If LoadTextFile(SL, FilePath) Then Content := SL.Text;
+    Finally
+        SL.Free;
     End;
     Result := Content;
 End;
@@ -1089,8 +1298,8 @@ Begin
     { SaveToFile goes through a TFileStream and raises an ordinary VCL         }
     { exception that Try/Except catches cleanly -- no engine modal. The lock   }
     { is transient (Defender scan, or Python reading the response mid-write),  }
-    { so retry briefly. Mirrors ReadFileContent and the proven sibling-MCP     }
-    { idiom (OutputLines.Text := json; SaveToFile).                           }
+    { so retry briefly. Same idiom as the proven sibling MCP                  }
+    { (OutputLines.Text := json; SaveToFile).                                 }
     { CLEAR THE DESTINATION FIRST, with calls that cannot raise.
 
       MEASURED: EFCreateError, "Cannot create file ... because it is
@@ -1243,10 +1452,11 @@ Begin
             Else If NextCh = 'f' Then Begin Result := Result + #12; Inc(I, 2); End
             Else If NextCh = 'u' Then
             Begin
-                // \uXXXX, 4 hex digits. Codepoints <= 255 are emitted as a
-                // single ANSI byte (Pascal native). Higher codepoints can't
-                // be represented in single-byte ANSI; replaced with '?' so
-                // downstream string handling doesn't see truncated bytes.
+                // \uXXXX, 4 hex digits. Codepoints <= 255 become one
+                // character; higher ones are replaced with '?'. The bridge
+                // sends non-ASCII as literal UTF-8 behind a byte-order mark
+                // (_publish_request), so only control characters arrive
+                // escaped from it.
                 If I + 5 <= L Then
                 Begin
                     HexStr := Copy(S, I + 2, 4);
@@ -1289,6 +1499,28 @@ Begin
             Inc(I);
         End;
     End;
+End;
+
+{ One spelling for a file path a caller sends. Altium keys an open document  }
+{ by the path string it was opened with, so the same file opened as         }
+{ C:/dir\x.PcbLib and as C:\dir\x.PcbLib is TWO open documents. A later     }
+{ open or focus by the other spelling loaded a second copy from disk, the   }
+{ tool then edited that copy, and an edit after it raised "Object accessed  }
+{ after being destroyed" in ADVPCB (measured 2026-10-18). Only a value under }
+{ a key ending in "path" that is a drive or UNC path is rewritten, so a     }
+{ menu_path like "File|Open" passes untouched.                              }
+Function CanonicalPathValue(Key : String; Value : String) : String;
+Var
+    K : String;
+Begin
+    Result := Value;
+    K := LowerCase(Key);
+    If (Length(K) < 4) Or (Copy(K, Length(K) - 3, 4) <> 'path') Then Exit;
+    If (Length(Value) >= 3) And (Copy(Value, 2, 1) = ':')
+        And ((Copy(Value, 3, 1) = '/') Or (Copy(Value, 3, 1) = '\')) Then
+        Result := StringReplace(Value, '/', '\', -1)
+    Else If (Copy(Value, 1, 2) = '//') Or (Copy(Value, 1, 2) = '\\') Then
+        Result := StringReplace(Value, '/', '\', -1);
 End;
 
 Function ExtractJsonValue(Json : String; Key : String) : String;
@@ -1334,7 +1566,8 @@ Begin
                     End;
                     Inc(EndPos);
                 End;
-                Result := UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos));
+                Result := CanonicalPathValue(Key,
+                    UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos)));
             End
             Else If (Copy(Json, StartPos, 1) = '{') Or
                     (Copy(Json, StartPos, 1) = '[') Then
@@ -1515,9 +1748,10 @@ Begin
     End;
 
     // Inline escape (EscapeJsonString is not yet declared in build order).
-    // Must also \u00XX-escape control and non-ASCII bytes: one raw byte
-    // >127 in an error message (an accented file path, say) makes the whole
-    // response unparseable on the Python side and hides the real error.
+    // Must also \uXXXX-escape control and non-ASCII characters: one raw
+    // byte >127 in an error message (an accented file path, say) makes the
+    // whole response unparseable on the Python side and hides the real
+    // error. All four digits: a CJK path is above 255.
     HexDigits := '0123456789abcdef';
     EscMsg := '';
     For I := 1 To Length(ErrorMsg) Do
@@ -1530,7 +1764,9 @@ Begin
         Else If O = 10 Then EscMsg := EscMsg + '\n'
         Else If O = 9 Then EscMsg := EscMsg + '\t'
         Else If (O < 32) Or (O >= 128) Then
-            EscMsg := EscMsg + '\u00'
+            EscMsg := EscMsg + '\u'
+                + Copy(HexDigits, ((O Shr 12) And $F) + 1, 1)
+                + Copy(HexDigits, ((O Shr 8) And $F) + 1, 1)
                 + Copy(HexDigits, ((O Shr 4) And $F) + 1, 1)
                 + Copy(HexDigits, (O And $F) + 1, 1)
         Else
@@ -1672,17 +1908,89 @@ End;
 { Per-request files on both sides, request_<id>.json + response_<id>.json, }
 { eliminate any cross-caller race: each caller publishes to its own filename }
 { and polls only its own response file.                                      }
+{                                                                              }
+{ TIME SLOTS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude   }
+{ session) writes ids <tag>-<seq>-<random>: an 8-character session tag and an }
+{ 8-digit sequence. Any other id is the 'legacy' session (a server from       }
+{ before this). Of the pending requests, each session's lowest sequence is    }
+{ its next. With one session pending it is served straight through: one      }
+{ session is never slotted. With several, the session whose slot is running  }
+{ keeps it for SESSION_SLOT_MS, then the next waiting session in tag order    }
+{ gets one slot, so no session has a second slot before every waiting one     }
+{ has had one. A command is never cut off: slots change between commands.    }
+{ While sessions contend, queue.json is refreshed about once a second, so a  }
+{ waiting client can tell a queue from a dead loop.                           }
+
+{ PickSession - which session's request goes next. Tags: the sessions with   }
+{ a pending request, joined by '|'. Current: the session whose slot is       }
+{ running, ElapsedMs how long it has run. A session alone always goes; the   }
+{ current session keeps its slot until SlotMs; otherwise the first tag after }
+{ Current in string order, wrapping to the lowest. Pure strings, so the Free }
+{ Pascal cross-check runs a verbatim copy.                                   }
+Function PickSession(Tags : String; Current : String; ElapsedMs : Integer;
+    SlotMs : Integer) : String;
+Var
+    Rest, Tag, Lowest, After : String;
+    Bar, Count : Integer;
+    HasCurrent : Boolean;
+Begin
+    Result := '';
+    Lowest := '';
+    After := '';
+    Count := 0;
+    HasCurrent := False;
+    Rest := Tags;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Tag := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Tag := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Tag <> '' Then
+        Begin
+            Inc(Count);
+            If Tag = Current Then HasCurrent := True;
+            If (Lowest = '') Or (Tag < Lowest) Then Lowest := Tag;
+            If Tag > Current Then
+                If (After = '') Or (Tag < After) Then After := Tag;
+        End;
+    End;
+    If Count = 0 Then Exit;
+    If Count = 1 Then
+    Begin
+        Result := Lowest;
+        Exit;
+    End;
+    If HasCurrent And (ElapsedMs < SlotMs) Then
+    Begin
+        Result := Current;
+        Exit;
+    End;
+    If After <> '' Then Result := After
+    Else Result := Lowest;
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
-    Files : TStringList;
-    I, NameLen : Integer;
-    Name, IdPart : String;
+    Files, Tags, BestSeq, BestName : TStringList;
+    I, NameLen, Pick, NowTick : Integer;
+    Name, IdPart, Tag, Seq, NextTag, Pending : String;
 Begin
     Result := False;
     FilePath := '';
     RequestId := '';
 
     Files := TStringList.Create;
+    Tags := TStringList.Create;
+    BestSeq := TStringList.Create;
+    BestName := TStringList.Create;
     Try
         FindFiles(WorkspaceDir, 'request_*.json', 63, False, Files);
         For I := 0 To Files.Count - 1 Do
@@ -1698,15 +2006,78 @@ Begin
                 IdPart := Copy(Name, 9, NameLen - 13);
                 If IsValidRequestId(IdPart) Then
                 Begin
-                    RequestId := IdPart;
-                    FilePath := WorkspaceDir + Name;
-                    Result := True;
-                    Exit;
+                    Tag := 'legacy';
+                    Seq := '';
+                    If (Length(IdPart) >= 19) And (Pos('-', IdPart) = 9)
+                        And (Copy(IdPart, 18, 1) = '-') Then
+                    Begin
+                        Tag := LowerCase(Copy(IdPart, 1, 8));
+                        Seq := Copy(IdPart, 10, 8);
+                    End;
+                    Pick := Tags.IndexOf(Tag);
+                    If Pick < 0 Then
+                    Begin
+                        Tags.Add(Tag);
+                        BestSeq.Add(Seq);
+                        BestName.Add(Name);
+                    End
+                    Else
+                    Begin
+                        If Seq < BestSeq[Pick] Then
+                        Begin
+                            BestSeq[Pick] := Seq;
+                            BestName[Pick] := Name;
+                        End;
+                    End;
                 End;
             End;
         End;
+
+        If Tags.Count > 0 Then
+        Begin
+            NowTick := GetTickCount;
+            Pending := '';
+            For I := 0 To Tags.Count - 1 Do
+            Begin
+                If Pending <> '' Then Pending := Pending + '|';
+                Pending := Pending + Tags[I];
+            End;
+            NextTag := PickSession(Pending, SlotSession, NowTick - SlotStartTick,
+                SESSION_SLOT_MS);
+            Pick := Tags.IndexOf(NextTag);
+            If Pick < 0 Then Pick := 0;
+            If Tags.Count > 1 Then
+            Begin
+                If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                Begin
+                    Pending := '';
+                    For I := 0 To Tags.Count - 1 Do
+                    Begin
+                        If Pending <> '' Then Pending := Pending + ',';
+                        Pending := Pending + '"' + Tags[I] + '"';
+                    End;
+                    Try
+                        WriteFileContent(WorkspaceDir + 'queue.json',
+                            '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
+                            + '],"slot_ms":' + IntToStr(SESSION_SLOT_MS) + '}');
+                    Except End;
+                    QueueNoteTick := NowTick;
+                End;
+            End;
+            If Tags[Pick] <> SlotSession Then
+            Begin
+                SlotSession := Tags[Pick];
+                SlotStartTick := NowTick;
+            End;
+            RequestId := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
+            FilePath := WorkspaceDir + BestName[Pick];
+            Result := True;
+        End;
     Finally
         Files.Free;
+        Tags.Free;
+        BestSeq.Free;
+        BestName.Free;
     End;
 End;
 
@@ -1846,3 +2217,10 @@ End;
 { Request dispatch and the poll timer are in StatusForm.pas (the pump's     }
 { handler must live in the form's own unit); the StartMCPServer entry point }
 { stays in Dispatcher.pas, which compiles last.                             }
+
+{ UnitStamp_Main - which build of Main.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Main(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

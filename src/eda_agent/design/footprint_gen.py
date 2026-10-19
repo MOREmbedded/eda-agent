@@ -20,7 +20,9 @@ not a placeholder. Seven families cover the bulk of parts:
 * ``dual`` -- two opposing rows (SOIC/SOP/SON/SOT23/DIP): ``pin_count`` pins
   split evenly, rows ``row_span`` apart on X, pins stepped by ``pitch`` on Y,
   counterclockwise numbering (left column top->bottom, right column
-  bottom->top).
+  bottom->top). An odd count whose left column is odd (5, 9, ...) puts the
+  right pins opposite the left column's outer pins, which is the SOT-23-5 /
+  SC-70-5 layout: pin 4 faces pin 3 and pin 5 faces pin 1.
 * ``header`` -- a 2-row pin/box header (IDC, SWD/JTAG): two parallel rows
   ``row_span`` apart, ``pitch`` along each row.
 * ``tab`` -- a power package with a thermal/mounting tab (SOT-223/DPAK/TO-220):
@@ -30,8 +32,18 @@ not a placeholder. Seven families cover the bulk of parts:
 * ``bga`` -- a ball grid array: a row/column matrix of round pads on ``pitch``.
 
 All lengths are mils. Pad centres are offsets from the footprint origin (0,0)
-at rotation 0. Pin 1 is bottom-left-ish per Altium/IPC convention; the silk
-pin-1 marker is a short tick by pin 1.
+at rotation 0, the middle of the pad grid (between the rows for dual, quad
+and tab, which puts a tab part's origin off its body). Pin 1 is at the top of
+the left column (dual, quad) or the left end of the row. No pin 1 mark is
+drawn: the silkscreen is the body or pad-extent rectangle only.
+
+``pad_w`` / ``pad_h`` are the pad's X and Y size in every family but quad,
+so in ``dual`` and ``chip`` ``pad_w`` runs ACROSS the row (along the span)
+while in ``sip``, ``header`` and ``tab`` it runs along the row. In ``quad``
+each side turns the pad and ``pad_w`` runs ALONG the row. Both meanings
+are kept for the callers that rely on them; the package-drawing engine in
+``design/landpattern`` names the terminal ``lead_length`` (along the span)
+and ``lead_width`` (across it) instead.
 """
 
 from __future__ import annotations
@@ -259,9 +271,21 @@ def _dual(n, pitch, pad_w, pad_h, row_span, shape, silk, courtyard,
                          pad_w, pad_h, shape, hole))
     # Right column: continue numbering bottom -> top.
     top_r = (n_right - 1) * pitch / 2.0
-    for j in range(n_right):
-        pads.append(_pad(str(n_left + j + 1), rh, -top_r + j * pitch,
-                         pad_w, pad_h, shape, hole))
+    if n % 2 and n_left % 2 and n_right >= 2:
+        # SOT-23-5 and its kin: the right pins stand opposite the left
+        # column's outer pins on the same pitch, not centred between them,
+        # so the middle left position has no partner. Centring put pins 4
+        # and 5 half a pitch off the pads they face.
+        left_ys = [top_l - i * pitch for i in range(n_left)]
+        right_ys = sorted(y for i, y in enumerate(left_ys)
+                          if i != n_left // 2)
+        for j, y in enumerate(right_ys):
+            pads.append(_pad(str(n_left + j + 1), rh, y,
+                             pad_w, pad_h, shape, hole))
+    else:
+        for j in range(n_right):
+            pads.append(_pad(str(n_left + j + 1), rh, -top_r + j * pitch,
+                             pad_w, pad_h, shape, hole))
     ext_x = row_span + pad_w
     ext_y = max(top_l, top_r) * 2 + pad_h
     return _finish(pads, ext_x, ext_y, silk, courtyard, body_w, body_h)

@@ -197,17 +197,11 @@ def register_live_tools(mcp):
                                    expect_file: str = "") -> dict[str, Any]:
         """Publish a board to the live view as its next version.
 
-        The placement and routing jobs publish on their own, and their
-        apply tools republish what they wrote. Use this for any other
-        board state: the board as it is in the EDA now (``expect_file``),
-        a board saved as LayoutBoard JSON (``LayoutBoard.save``, ``.json``
-        or ``.json.gz``), or the last board again with a note. The Layout
-        tab highlights what changed since the version before.
-
-        Only ``expect_file`` calls the bridge: it reads the focused board
-        exactly (``pcb.get_layout_model``), a few seconds on a large board.
-        It is never done on its own, because reading some boards has
-        crashed Altium's scripting engine.
+        Placement and routing jobs publish on their own; use this for any
+        other state: the live board (``expect_file``, a few seconds on a
+        large board, and never done unasked because reading some boards
+        has crashed Altium's scripting engine), a LayoutBoard JSON file,
+        or the last board again with a note.
 
         Args:
             note: what this snapshot shows; also logged as a decision.

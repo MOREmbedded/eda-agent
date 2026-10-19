@@ -582,6 +582,21 @@ def _symbol_art_steps(
     return steps
 
 
+def _is_real_region(shape) -> bool:
+    """Whether a SOLIDREGION is drawing to reproduce.
+
+    The same rule the KiCad emitter applies (``_is_real_pour``): not a
+    ``fill="cutout"``, and on a layer this importer maps. Real EasyEDA
+    footprints carry a region per pad on layer 100 (lead outlines) and the
+    body outline on layer 99, neither in the documented map; an RP2040
+    has 114 and 2. Drawn here through the TopOverlay fallback, each lead
+    outline became a silkscreen ring over its pad (#39.22).
+    """
+    if str(getattr(shape, "fill", "") or "").lower() == "cutout":
+        return False
+    return getattr(shape, "layer", None) in _ALTIUM_LAYER
+
+
 def _footprint_art_steps(
     comp: EasyEdaComponent, pcblib_path: str, fp_name: str,
     warnings: Optional[list[str]] = None,
@@ -591,8 +606,24 @@ def _footprint_art_steps(
     warned_elliptical: list[str] = []
 
     tracks: list[dict[str, Any]] = []
+    regions: list[dict[str, Any]] = []
+    skipped_regions = 0
     for s in comp.footprint.shapes:
         layer = _ALTIUM_LAYER.get(getattr(s, "layer", 3), "TopOverlay")
+        if s.kind == "solid_region" and not _is_real_region(s):
+            skipped_regions += 1
+            continue
+        if (s.kind == "solid_region" and len(s.points) >= 3
+                and str(getattr(s, "fill", "") or "").lower() == "solid"):
+            # Filled, as the source draws it: lib_add_footprint_regions
+            # places a region primitive inside the footprint. A polygon
+            # the source leaves unfilled is drawn as its closed outline
+            # below.
+            regions.append({
+                "layer": layer,
+                "points": [[int(round(px)), int(round(py))]
+                           for px, py in s.points]})
+            continue
         if s.kind in ("track", "polyline", "solid_region") \
                 and len(s.points) >= 2:
             pts = list(s.points)
@@ -677,33 +708,23 @@ def _footprint_art_steps(
             steps.append({"tool": "lib_add_footprint_text",
                           "args": text_args})
 
-    # Only genuine pours matter here. Real parts carry many
-    # fill="cutout" regions on undocumented layers (97 on an LQFP-48);
-    # warning about those would cry wolf on every import.
-    regions = [s for s in comp.footprint.shapes
-               if s.kind == "solid_region" and len(s.points) >= 3
-               and str(getattr(s, "fill", "") or "").lower() != "cutout"
-               and getattr(s, "layer", None) in _ALTIUM_LAYER]
-    if regions and warnings is not None:
-        # There is no lib_add_footprint_region: the library authoring API
-        # exposes pads, tracks, arcs and text only (pcb_place_region works
-        # on a BOARD, not inside a .PcbLib). So the fill cannot be
-        # reproduced and only its outline is drawn. Say so, because a
-        # missing copper pour is an electrical difference, not cosmetic.
-        warnings.append(
-            f"{len(regions)} filled copper region(s) drawn as an OUTLINE "
-            f"only; Altium library footprints have no region primitive in "
-            f"this API. Add the fill by hand, or the pad will be missing "
-            f"copper.")
-
     if warned_elliptical and warnings is not None:
         warnings.append(
             f"{len(warned_elliptical)} elliptical arc(s) approximated by "
             f"their mean radius; Altium arcs are circular. Check the "
             f"silkscreen against the datasheet outline.")
+    if regions:
+        steps.insert(0, {"tool": "lib_add_footprint_regions",
+                         "args": {"regions": regions}})
     if tracks:
         # One bulk call: lib_add_footprint_tracks exists precisely so a
         # silkscreen outline is not N round trips.
         steps.insert(0, {"tool": "lib_add_footprint_tracks",
                          "args": {"tracks": tracks}})
+    if skipped_regions and warnings is not None:
+        warnings.append(
+            f"{skipped_regions} region(s) not drawn: cutouts, or on EasyEDA "
+            f"layers with no Altium counterpart (99 is the body outline, 100 "
+            f"the outline of each lead). Drawn, they became silkscreen rings "
+            f"over the pads.")
     return steps

@@ -417,6 +417,68 @@ def _pour_nets(board: LayoutBoard) -> None:
             r.source = best.source
 
 
+def _foreign_copper(board: LayoutBoard, region: Region, net: str) -> bool:
+    """Whether copper of a net other than ``net`` (or of none) sits in the
+    body of ``region``: a via spanning its layer, a pad on it (a plated
+    hole counts on every layer) or a track on it, by its midpoint."""
+    body = region.shape()
+    x0, y0, x1, y1 = body.bbox
+    layer = region.layer
+
+    def inside(x, y):
+        return x0 <= x <= x1 and y0 <= y <= y1 and geom.point_in_poly(x, y, body)
+
+    for v in board.vias:
+        if v.net != net and layer in board.layers_between(v.low_layer, v.high_layer) \
+                and inside(v.x, v.y):
+            return True
+    for p in board.pads:
+        if p.net != net and (layer in p.layers() or (p.hole > 0 and p.plated)) \
+                and inside(p.x, p.y):
+            return True
+    for t in board.tracks:
+        if t.net != net and t.layer == layer and not t.keepout \
+                and inside((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2):
+            return True
+    return False
+
+
+def repair_pour_nets(board: LayoutBoard) -> int:
+    """Give poured copper the net its contents prove, where the pour it
+    was read with cannot have made it; returns how many regions changed.
+
+    A pour leaves a void round every piece of foreign copper and none round
+    its own net's, so another net's via standing in a poured region's body
+    says the region is not that net's. On two public boards with a small
+    pour nested in a larger one of another net, the inner pour's copper
+    came back named for the outer pour: the inner net's vias and tracks
+    stood in it as overlaps (32 and 6 false violations) and the inner net
+    read as unjoined. The region goes to the boundary on its layer that
+    holds all of it and whose net leaves no foreign copper in it, when
+    exactly one net's boundaries do; else it stays as read."""
+    signal = set(board.signal_layers())
+    bounds = [(b, b.shape(), abs(_area(b.outline))) for b in board.regions
+              if b.kind == "pour_boundary" and b.net]
+    changed = 0
+    for r in board.regions:
+        if r.kind != "pour" or not r.net or r.layer not in signal or len(r.outline) < 3:
+            continue
+        if not _foreign_copper(board, r, r.net):
+            continue
+        fits: dict[str, tuple] = {}
+        for b, shape, area in bounds:
+            if b.layer != r.layer or b.net == r.net:
+                continue
+            if all(_on_or_in(x, y, shape) for x, y in r.outline) \
+                    and (b.net not in fits or area < fits[b.net][1]):
+                fits[b.net] = (b, area)
+        good = [b for b, _ in fits.values() if not _foreign_copper(board, r, b.net)]
+        if len(good) == 1:
+            r.net, r.source = good[0].net, good[0].source
+            changed += 1
+    return changed
+
+
 def _rules(reply: dict) -> tuple[list[Rule], list[Room]]:
     typed: dict[str, dict] = {}
     for t in reply.get("typed") or []:
@@ -480,6 +542,7 @@ def read_board(send: Send, page: int = PAGE,
 
     _copper(_paged(send, "copper", "copper", page), board)
     _pour_nets(board)
+    repair_pour_nets(board)
     clean_cutouts(board)
 
     board.rules, board.rooms = _rules(send(COMMAND, {"section": "rules"}))

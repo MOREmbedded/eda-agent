@@ -928,7 +928,36 @@ Var
       opposed to Detach, the stop file, the stop command or auto-shutdown.
       The difference decides how much teardown is safe to attempt. }
     PumpQuitting         : Boolean;
+    { Set by the first tick, which logs _tick_first. A session that logs  }
+    { _session_start and never _tick_first armed a timer that never ran.  }
+    PumpTicked           : Boolean;
 
+
+{ UnitStamp_StatusForm - which build of StatusForm.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_StatusForm(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;
+
+{ UnitStampsResponse - every unit's stamp, so app_ping can name a unit that   }
+{ Altium is still running an older compile of. One version constant cannot:  }
+{ a unit that fails to compile keeps serving its previous image while         }
+{ Main.pas reads new.                                                         }
+Function UnitStampsResponse(RequestId : String) : String;
+Begin
+    Result := BuildSuccessResponse(RequestId,
+        '{"Main":"' + UnitStamp_Main(0) + '"'
+        + ',"Utils":"' + UnitStamp_Utils(0) + '"'
+        + ',"Application":"' + UnitStamp_Application(0) + '"'
+        + ',"Project":"' + UnitStamp_Project(0) + '"'
+        + ',"Library":"' + UnitStamp_Library(0) + '"'
+        + ',"PCBGeneric":"' + UnitStamp_PCBGeneric(0) + '"'
+        + ',"PCB":"' + UnitStamp_PCB(0) + '"'
+        + ',"Generic":"' + UnitStamp_Generic(0) + '"'
+        + ',"Audit":"' + UnitStamp_Audit(0) + '"'
+        + ',"StatusForm":"' + UnitStamp_StatusForm(0) + '"}');
+End;
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
@@ -945,6 +974,13 @@ Begin
     Begin
         Category := Command;
         Action := '';
+    End;
+
+    { Answered here, after every unit it asks, rather than in Application.pas. }
+    If Command = 'application.get_unit_stamps' Then
+    Begin
+        Result := UnitStampsResponse(RequestId);
+        Exit;
     End;
 
     Case Category Of
@@ -1336,6 +1372,12 @@ Begin
                 FinalisePump(0);
                 Exit;
             End;
+            If Not PumpTicked Then
+            Begin
+                PumpTicked := True;
+                AppendLog(FormatLogStamp(0) + ',0,_tick_first,interval='
+                          + IntToStr(PumpInterval));
+            End;
 
             { Altium is closing. The old loop could not get here, because the  }
             { close was dispatched inside its own ProcessMessages and never    }
@@ -1498,6 +1540,8 @@ End;
 {..............................................................................}
 
 Procedure StartMCPPump(Dummy : Integer);
+Var
+    Armed : Boolean;
 Begin
     If Running Then Exit;
 
@@ -1511,6 +1555,13 @@ Begin
     CleanupOrphanResponses(0);
     CleanupOrphanProgress(0);
 
+    { Script globals outlive a stop and a redeploy, but a design object    }
+    { held in one does not: MEASURED, the first symbol write after a       }
+    { relaunch read CurrentPartID off the old LastCreatedLibComponent and  }
+    { stopped the loop on "Undeclared identifier". Start with none held.   }
+    LastCreatedLibComponent := Nil;
+    LastCreatedLibComponentName := '';
+
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';
     If FileExists(PumpStopPath) Then DeleteFile(PumpStopPath);
@@ -1520,6 +1571,7 @@ Begin
     PumpInTick := False;
     PumpFinalised := False;
     PumpQuitting := False;
+    PumpTicked := False;
 
     StatusStartTick := GetTickCount;
     StatusRequestCount := 0;
@@ -1535,10 +1587,19 @@ Begin
               + ',protocol=' + IntToStr(PROTOCOL_VERSION));
 
     PumpInterval := PollIntervalActiveMs;
+    Armed := False;
     Try
         tmr_Poll.Interval := PumpInterval;
         tmr_Poll.Enabled := True;
     Except End;
+    { Read back: an arm that raised inside the Try used to leave a session }
+    { that logged _session_start and then served nothing, with no sign.    }
+    Try Armed := tmr_Poll.Enabled; Except Armed := False; End;
+    If Not Armed Then
+    Begin
+        AppendLog(FormatLogStamp(0) + ',0,_arm_failed,the poll timer did not start');
+        UpdateStatusHeader('MCP: poll timer did not start');
+    End;
 End;
 
 

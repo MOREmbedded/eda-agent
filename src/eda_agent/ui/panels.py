@@ -104,6 +104,27 @@ def list_open(pid: int) -> list:
     return sorted(seen.values(), key=lambda p: p["name"])
 
 
+#: What an empty scan does and does not say.
+EMPTY_SCAN_NOTE = (
+    "no panel tabs were found. Panels are found by the tab each one "
+    "carries, and this has been reported empty on AD 25 while the "
+    "Properties panel was open, so it does not prove no panel is open")
+
+
+def describe(panel: dict) -> dict:
+    """One panel as app_list_panels reports it.
+
+    Built from the keys list_open returns and read with .get, so a key
+    the scan stops returning costs that field and not the whole reply.
+    app_list_panels once read a 'holder_class' the scan no longer
+    produced and answered every call with a KeyError.
+    """
+    return {"name": panel.get("name", ""),
+            "rect": panel.get("rect"),
+            "button_hwnd": panel.get("button_hwnd"),
+            "content_count": len(panel.get("content") or [])}
+
+
 def _content_for(every: list, button) -> list:
     """Content controls sharing a panel button's column.
 
@@ -152,6 +173,12 @@ def open_panel(pid: int, name: str, settle: float = 1.2) -> dict:
     View > Panels entries are toggles, so clicking one that is already
     open CLOSES it, and a caller asking for a panel it already had would
     have lost it.
+
+    THE CHECK BEFORE THE CLICK CAN MISS. A panel is found by its tab,
+    and the scan has been reported to find no tab while Properties was
+    open, so the click closed it. A click that cannot be confirmed is
+    therefore made a second time: a toggle pressed twice is back where it
+    started, open or closed, so the user's panel is never left closed.
     """
     if not available():
         return {"ok": False, "reason": "UI automation is unavailable here"}
@@ -161,7 +188,8 @@ def open_panel(pid: int, name: str, settle: float = 1.2) -> dict:
         return {"ok": True, "name": existing["name"], "opened": False,
                 "note": "already open", "rect": existing["rect"]}
 
-    result = menu.click_path(pid, f"{_PANELS_MENU}|{name}", settle=settle)
+    path = f"{_PANELS_MENU}|{name}"
+    result = menu.click_path(pid, path, settle=settle)
     if not result.get("ok"):
         return {"ok": False, "reason": result.get("reason", "menu click failed"),
                 "offered": result.get("offered", [])}
@@ -169,10 +197,22 @@ def open_panel(pid: int, name: str, settle: float = 1.2) -> dict:
     win.wait_until(lambda: find(pid, name) is not None, settle * 2)
     panel = find(pid, name)
     if panel is None:
-        return {"ok": False, "name": name, "opened": False, "reason": (
-            "the menu entry was clicked and no panel by that name is on "
-            "screen afterwards. Altium's panel entries are toggles, so it "
-            "may have been open and is now closed")}
+        back = menu.click_path(pid, path, settle=settle)
+        restored = bool(back.get("ok"))
+        reason = (
+            "the menu entry was clicked and no panel by that name could be "
+            "seen afterwards. The entry is a toggle and the panel may "
+            "already have been open with no tab the scan could read, so ")
+        if restored:
+            reason += ("it was clicked a second time, which puts a toggle "
+                       "back where it started. Whether the panel is open "
+                       "could not be read either way.")
+        else:
+            reason += (f"it was clicked again to put it back, and that click "
+                       f"failed ({back.get('reason', 'menu click failed')}). "
+                       f"Check View > Panels: the panel may now be closed.")
+        return {"ok": False, "name": name, "opened": False,
+                "toggled_back": restored, "reason": reason}
     return {"ok": True, "name": panel["name"], "opened": True,
             "rect": panel["rect"]}
 

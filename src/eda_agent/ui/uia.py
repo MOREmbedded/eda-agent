@@ -35,6 +35,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Optional
 
+from .captions import plain
+
 try:                                            # pragma: no cover - platform
     import comtypes.client as _cc
 
@@ -194,9 +196,9 @@ def text_of(hwnd: int) -> list:
 
 
 def _find(hwnd: int, name: str, control_type: Optional[str] = None):
-    """One element by name, ignoring case and accelerators."""
+    """One element by name, ignoring case, accelerators and curly quotes."""
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     root = _element(hwnd)
     if root is None:
@@ -227,7 +229,7 @@ def _find_pressable(hwnd: int, name: str):
     implements Invoke, then the first match.
     """
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     root = _element(hwnd)
     if root is None:

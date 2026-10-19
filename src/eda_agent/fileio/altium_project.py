@@ -54,3 +54,37 @@ def read_project_sheets(prjpcb_path: str | Path) -> list[Path]:
             if resolved.exists():
                 sheets.append(resolved)
     return sheets
+
+
+def required_project_sheets(prjpcb_path: str | Path) -> list[Path]:
+    """The project's sheets, or ValueError when there are none to read.
+
+    An empty sheet list reads as an empty design, so a BOM or review of
+    it would come back clean. Altium writes the .PrjPcbStructure when it
+    compiles the project, so a project never compiled has none.
+    """
+    prjpcb_path = Path(prjpcb_path)
+    sheets = read_project_sheets(prjpcb_path)
+    if not sheets:
+        structure = prjpcb_path.with_suffix(".PrjPcbStructure").name
+        raise ValueError(
+            f"found no sheets for {prjpcb_path}: {structure} is missing, "
+            f"lists no sheets, or the sheets it lists are not there. "
+            f"Compiling the project in Altium writes it.")
+    return sheets
+
+
+def check_design_file(path: str | Path, suffixes: tuple[str, ...]) -> Path:
+    """``path`` as a Path, after checking it exists and has a suffix we read.
+
+    Any other file (a .PcbDoc, say) parses to nothing, which would be
+    reported as an empty design rather than as the wrong file.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} does not exist")
+    if path.suffix.lower() not in {s.lower() for s in suffixes}:
+        raise ValueError(
+            f"{path} is not a {', '.join(suffixes)} file, so it cannot be "
+            f"read here")
+    return path

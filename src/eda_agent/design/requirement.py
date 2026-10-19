@@ -188,6 +188,66 @@ class Constraints(BaseModel):
         return v
 
 
+class BoardIntent(BaseModel):
+    """What the board needs electrically and for manufacture, all optional.
+
+    None of this blocks planning. A field left out while the design
+    depends on it comes back from ``validate_requirement`` as a suggested
+    question in ``notes``, for the capturing agent to ask or leave.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stackup: Optional[str] = Field(
+        default=None,
+        description="Layer stack as the fab or user states it, e.g. "
+        "'4 layer, 1.6 mm, signal/GND/PWR/signal'. Free-form.",
+    )
+    impedance_targets_ohm: dict[str, float] = Field(
+        default_factory=dict,
+        description="Controlled-impedance targets by interface or net "
+        "class, e.g. {'USB': 90, 'ETH': 100, 'RF': 50}.",
+    )
+    peak_currents_a: dict[str, float] = Field(
+        default_factory=dict,
+        description="Peak current by net or rail in amps, e.g. "
+        "{'VMOTOR': 8}. Sizes copper, vias and connectors.",
+    )
+    fastest_edge_ns: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Fastest signal rise time on the board in ns. Decides "
+        "which traces need termination and length matching.",
+    )
+    enclosure: Optional[str] = Field(
+        default=None,
+        description="Enclosure or mounting, e.g. 'DIN rail', 'Hammond "
+        "1591', 'none'. Free-form.",
+    )
+    assembly: Optional[str] = Field(
+        default=None,
+        description="Assembly style, e.g. 'single-sided SMT', 'SMT both "
+        "sides plus THT', 'hand assembled'.",
+    )
+    surface_finish: Optional[str] = Field(
+        default=None,
+        description="Board finish, e.g. 'ENIG', 'HASL lead-free'.",
+    )
+    test_strategy: Optional[str] = Field(
+        default=None,
+        description="How boards are tested, e.g. 'flying probe', 'bed of "
+        "nails', 'functional only'. Decides test point placement.",
+    )
+
+    @field_validator("impedance_targets_ohm", "peak_currents_a")
+    @classmethod
+    def _positive_values(cls, v: dict[str, float]) -> dict[str, float]:
+        for name, value in v.items():
+            if value <= 0:
+                raise ValueError(f"{name}: {value} must be positive")
+        return v
+
+
 class DesignRequirement(BaseModel):
     """Complete requirement capture the planner consumes.
 
@@ -230,6 +290,12 @@ class DesignRequirement(BaseModel):
     constraints: Constraints = Field(
         default_factory=Constraints,
         description="Physical/fab/cost limits. Defaults to unconstrained.",
+    )
+    board_intent: BoardIntent = Field(
+        default_factory=BoardIntent,
+        description="Stackup, impedance, currents, edge rates, enclosure, "
+        "assembly, finish and test strategy. All optional; gaps the "
+        "design depends on come back as suggested questions.",
     )
     quantities: list[int] = Field(
         default_factory=list,
@@ -287,6 +353,47 @@ def _power_input_max_v(req: DesignRequirement) -> Optional[float]:
             if v is not None and (best is None or abs(v) > best):
                 best = abs(v)
     return best
+
+
+#: Interfaces whose traces usually need a controlled impedance.
+_IMPEDANCE_PROTOCOLS = ("usb", "ethernet", "eth", "hdmi", "pcie", "lvds",
+                        "mipi", "sata", "can")
+
+
+def board_intent_questions(req: DesignRequirement) -> list[str]:
+    """Questions for board-intent facts the stated design depends on.
+
+    Only asked where something in the requirement makes the answer
+    matter, so a simple board gets none.
+    """
+    intent = req.board_intent
+    ios = [*req.inputs, *req.outputs]
+    questions: list[str] = []
+    fast = [io.name for io in ios if io.protocol and any(
+        p in io.protocol.lower() for p in _IMPEDANCE_PROTOCOLS)]
+    if fast and not intent.impedance_targets_ohm:
+        questions.append(
+            f"{', '.join(fast)} usually need controlled-impedance traces: "
+            f"what impedance targets apply, and is the stackup fixed?")
+    if (any(io.kind == IOKind.RF for io in ios)
+            and "RF" not in {k.upper() for k in intent.impedance_targets_ohm}):
+        questions.append("What impedance do the RF traces need (usually 50 ohm)?")
+    heavy = [io.name for io in ios
+             if io.kind == IOKind.POWER and (io.current_a or 0) >= 2.0
+             and io.name not in intent.peak_currents_a]
+    if heavy:
+        questions.append(
+            f"{', '.join(heavy)} carry 2 A or more: what are their peak "
+            f"currents, which size the copper and vias?")
+    if fast and intent.fastest_edge_ns is None:
+        questions.append("What is the fastest edge rate on the board, in ns?")
+    if req.quantities and max(req.quantities) >= 100 and not intent.test_strategy:
+        questions.append(
+            "At these quantities, how will boards be tested (flying probe, "
+            "bed of nails, functional)? It decides test points.")
+    if req.constraints.height_max_mm is not None and not intent.enclosure:
+        questions.append("What enclosure or mounting is the height limit for?")
+    return questions
 
 
 def validate_requirement(req: DesignRequirement) -> dict:
@@ -370,7 +477,9 @@ def validate_requirement(req: DesignRequirement) -> dict:
                     )
                     break
 
-    return {"ok": not issues, "issues": issues}
+    # Board intent never blocks: its gaps are suggestions, not issues.
+    return {"ok": not issues, "issues": issues,
+            "notes": board_intent_questions(req)}
 
 
 def _fmt_num(x: float) -> str:
@@ -448,6 +557,21 @@ def summarize_requirement(req: DesignRequirement) -> str:
 
     if req.quantities:
         lines.append("Quantities: " + ", ".join(str(q) for q in req.quantities))
+
+    intent = req.board_intent
+    intent_bits = [text for text in (
+        intent.stackup,
+        ", ".join(f"{k} {_fmt_num(v)} ohm"
+                  for k, v in intent.impedance_targets_ohm.items()),
+        ", ".join(f"{k} {_fmt_num(v)}A peak"
+                  for k, v in intent.peak_currents_a.items()),
+        (f"edges {_fmt_num(intent.fastest_edge_ns)} ns"
+         if intent.fastest_edge_ns is not None else None),
+        intent.enclosure, intent.assembly, intent.surface_finish,
+        intent.test_strategy,
+    ) if text]
+    if intent_bits:
+        lines.append("Board intent: " + "; ".join(intent_bits))
     if req.open_questions:
         lines.append(f"Open questions: {len(req.open_questions)} unresolved")
 

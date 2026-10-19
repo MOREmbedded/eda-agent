@@ -211,70 +211,30 @@ def register_project_tools(mcp):
     async def proj_close(
         project_path: Optional[str] = None, save: bool = True
     ) -> dict[str, Any]:
-        """Close a project, saving its documents or discarding their edits.
+        """Close a project, saving its documents (default) or discarding
+        their unsaved edits (save=False).
 
-        ``save=True`` (default) writes this project's modified documents,
-        then closes it. ``save=False`` closes it without saving.
-
-        WITHOUT SAVING, TWO LAYERS KEEP THE BRIDGE FROM WEDGING. A close
-        with a modified member raises Altium's save prompt inside the
-        polling loop, where the bridge cannot answer it. MEASURED on AD
-        26.10.1.6: after an edit IServerDocument.Modified reads False while
-        the tab shows the sheet modified, so nothing gated on that read
-        works.
-
-        First, the handler clears the modified flag on every loaded member
-        without reading it. MEASURED on a local scratch project: the close
-        then raised no prompt and the file on disk was byte-identical.
-
-        Second, if a prompt appears anyway, this answers it through UI
-        Automation: "Save None", then "OK" once the dialog has retitled to
-        "Confirm Not Saving", which is what shows the decisions changed.
-        Pressing OK before that would save. The sequence was measured by
-        hand; this tool running it has not run live.
-
-        ALTIUM CLOSES THE FOCUSED PROJECT. MEASURED: a close naming a
-        project with no loaded document, while another project's board was
-        focused, closed that other project first. So the handler makes the
-        named project focused by showing one of its loaded documents, and
-        refuses, changing nothing, when it cannot. Every attempt compares
-        the open projects before and after: if anything else closed, it
-        stops without retrying and returns those paths as
-        ``closed_instead``, with ``success`` false.
-
-        IT ANSWERS ONLY FOR THIS PROJECT. It records the project's member
-        paths before closing and reads every path the prompt lists. If any
-        listed document is outside the project it presses nothing and
-        returns them, because answering would discard work in a project
-        nobody named. It also presses nothing when membership cannot be
-        established: no ``project_path``, or a deployed script that
-        reports member file names rather than paths.
-
-        A document shared with another open project is a member of both,
-        so its unsaved edits are discarded here too. ``save=True`` prompts
-        are never answered for you.
-
-        IF A PROMPT IS LEFT OPEN, answer it with ``app_invoke_element``
-        (``Save None``, then ``OK``) or ``app_press_dialog_button``. Both
-        work while the bridge is blocked, because they go through Win32
-        rather than through the loop.
+        Altium closes the FOCUSED project, so this focuses the named one
+        first and refuses if it cannot; if any other project closes, it
+        stops and reports it as ``closed_instead``. Without saving, it
+        clears each member's modified flag so no save prompt appears; if
+        one appears anyway it answers "Save None" then "OK" (untested
+        live), but only when every listed document belongs to this
+        project, else it presses nothing. A document shared with another
+        open project loses its edits too. A prompt left open blocks the
+        bridge: answer it with app_press_dialog_button.
 
         Args:
-            project_path: project to close. Omit for the focused project;
-                ``save=False`` then leaves any prompt for a human.
-            save: write modified documents first (True), or discard their
-                unsaved edits (False).
+            project_path: Project to close; omit for the focused one (a
+                save=False prompt is then left for a human).
+            save: Write modified documents first (True) or discard (False).
 
         Returns:
-            ``success`` and ``closed``, checked by looking the project up
-            again, and ``project_path``. When a prompt was answered,
-            ``prompts_answered`` and ``discarded``, the paths it listed.
-            When one was left, ``prompt`` and ``reason``: the bridge stays
-            blocked until it is answered. Without a prompt, ``discarded``
-            lists the loaded members closed without saving and
-            ``attempts`` how many closes it took. The modified flag cannot
-            be read reliably, so a path in ``discarded`` is not proof that
-            document had edits.
+            ``success``, ``closed`` (checked by looking again),
+            ``project_path``; ``prompts_answered`` and ``discarded`` when a
+            prompt was answered, ``prompt`` and ``reason`` when one was
+            left; otherwise ``discarded`` (members closed unsaved, not
+            proof of edits) and ``attempts``.
         """
         import asyncio as _asyncio
 
@@ -612,32 +572,26 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get net-to-pin connectivity from the compiled project netlist.
 
-        CRITICAL for bulk queries, if you need connectivity for MORE
-        THAN ONE component or net, do NOT loop this tool. Call it
-        ONCE with no filters (`component=""`, `net_name=""`, raise
-        `limit` if needed) to pull the entire pin-net table in a
-        single round-trip, then slice the result locally. Each
-        filtered call is ~700 ms and compiles the project.
-
-        Compiles the project and returns pin-level net assignments.
+        For more than one component or net, do NOT loop: call once with
+        no filters (raise ``limit``) and slice locally. Each call
+        compiles the project, about 700 ms.
 
         Args:
             component: Filter by component designator. Empty = all.
             net_name: Filter by net name. Empty = all.
             project_path: Optional project path. If None, uses active.
             limit: Max pin records (default 500). Raise for big boards.
-            force_recompile: Save all dirty docs, invalidate the
-                SmartCompile cache, recompile. Costs one extra
-                compile (~5-10 s on real designs). Use when you need
-                a guaranteed-fresh netlist (e.g., after the user
-                edited schematics in the UI). Pair with
-                `proj_get_compile_freshness` to confirm no docs are dirty.
+            force_recompile: Save dirty docs and recompile from scratch
+                (5-10 s more), for a netlist that is surely fresh, e.g.
+                after the user edited sheets. ``proj_get_compile_freshness``
+                tells whether any doc is dirty.
 
         Returns:
-            Dict with "pins", "count" (rows RETURNED), "limit" and
-            "truncated". ``truncated`` True means the cap cut the list
-            short -- raise ``limit`` or filter, and do not read the
-            absence of a pin as evidence it has no net.
+            Dict with "pins", "count" (rows RETURNED), "limit",
+            "truncated" / "limit_hit" (the same flag under both names:
+            the cap cut the list short) and "skipped_nil" (entries
+            Altium returned empty). Raise ``limit`` or filter, and do
+            not read the absence of a pin as evidence it has no net.
 
         Examples:
             # PREFERRED, one unfiltered call, then filter locally:
@@ -832,7 +786,8 @@ def register_project_tools(mcp):
 
         Returns:
             Dictionary with "components" array, "count" (rows
-            RETURNED), "limit" and "truncated", plus
+            RETURNED), "limit", "truncated" / "limit_hit" (the same
+            flag under both names) and "skipped_nil", plus
             `_datasheet_guidance` + `_datasheet_parts`. A True
             ``truncated`` means the BOM is incomplete at this limit.
         """
@@ -851,61 +806,28 @@ def register_project_tools(mcp):
         with_parameters: bool = True,
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Get full information about a single component.
+        """Get full information about one placed component.
 
-        IMPORTANT, if you need info for MORE THAN ONE component, use
-        `proj_get_component_info_many` (batch). Looping this tool is a
-        large wall-time sink, especially with `with_pin_nets=True`
-        because each call compiles the project.
+        IMPORTANT: for more than one, use proj_get_component_info_many.
+        Pin nets need a project compile (30-60 s on a large project);
+        with_pin_nets=False answers in under a second.
 
-        Performance note: pin nets are the only field that needs a
-        project compile, and a stale-cache compile on a multi-sheet
-        hierarchical project can take 30-60s. When you only need the
-        component's value, footprint, library reference, sheet, or
-        pin numbers/names (no nets), pass ``with_pin_nets=False`` and
-        the call drops to sub-second by skipping ``Project.DM_Compile``
-        entirely. Use the default ``with_pin_nets=True`` only when you
-        actually need to know what each pin is wired to.
-
-        ``with_parameters=False`` further skips the parameter iterator
-        (Manufacturer / MPN / Value / Footprint paths). Marginal win
-        compared to skipping the compile, but useful for the cheapest
-        possible "is this designator placed?" probe.
-
-        ``timeout`` overrides the bridge's default poll timeout. The
-        compile-bound full-fat call can legitimately need 60-90s on
-        large projects, raise this when you keep `with_pin_nets=True`.
-
-        DATASHEET DISCIPLINE: Before making any claim about this
-        component's pin function, voltage rating, timing, or electrical
-        behavior, fetch its datasheet (WebSearch + WebFetch if needed).
-        The parameters / comment / library metadata returned here are
-        NOT authoritative, only the manufacturer datasheet is.
-        `_datasheet_guidance` in the response carries the rule and a
-        suggested search query.
-
-        Returns the component's designator, comment, footprint, library
-        reference, parameters (when with_parameters=True), and every pin
-        with name/number (and net assignment when with_pin_nets=True).
+        DATASHEET DISCIPLINE: parameters and comment are not
+        authoritative; fetch the datasheet before stating pin functions
+        or ratings.
 
         Args:
-            designator: Component designator (e.g., "U1", "R8", "C3")
-            project_path: Optional project path. If None, uses active project.
-            with_pin_nets: When True (default) compile the project and
-                emit the flattened net for each pin. Set to False to
-                skip the compile and get a sub-second metadata-only
-                response.
-            with_parameters: When True (default) include the parameter
-                dict. Set to False for the cheapest possible probe.
-            timeout: Optional bridge poll-timeout override (seconds).
-                Use a higher value (e.g., 90) when keeping with_pin_nets
-                True on large hierarchical projects.
+            designator: e.g. "U1".
+            project_path: Project (default: the active one).
+            with_pin_nets: Compile and give each pin's net (default True).
+            with_parameters: Include parameters (default True).
+            timeout: Poll timeout in seconds (raise to ~90 with pin nets
+                on large projects).
 
         Returns:
-            Dictionary with designator, comment, footprint, lib_ref,
-            sheet, pins array (each with pin/name and, when requested,
-            net), and (when requested) parameters dict, plus
-            `_datasheet_guidance` + `_datasheet_parts`.
+            designator, comment, footprint, lib_ref, sheet, ``pins``
+            [{pin, name, net?}], ``parameters`` when asked, and
+            ``_datasheet_guidance``.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"designator": designator}
@@ -956,20 +878,13 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Full per-component info for MANY designators in ONE round-trip.
 
-        PREFER THIS over looping `proj_get_component_info`. The compile
-        (when `with_pin_nets=True`) happens once for the whole batch,
-        not once per designator.
+        PREFER THIS over looping `proj_get_component_info`: one compile
+        for the batch. ``with_pin_nets=False`` skips the compile for a
+        sub-second metadata read.
 
-        Set ``with_pin_nets=False`` to skip the compile entirely for
-        a sub-second metadata-only response (footprint, lib_ref,
-        parameters, pin numbers/names, sheet). Set
-        ``with_parameters=False`` for the cheapest possible probe.
-
-        DATASHEET DISCIPLINE: parameters / comment / library metadata
-        in the response are NOT authoritative. Before reasoning about
-        any component's pin function, voltage rating, timing, or
-        electrical behavior, fetch its manufacturer datasheet. The
-        response carries `_datasheet_guidance` + `_datasheet_parts`.
+        Parameters and library metadata are not authoritative: read the
+        manufacturer datasheet before reasoning about pin functions,
+        ratings or behaviour (see `_datasheet_guidance`).
 
         Args:
             designators: List of component designators.
@@ -1175,13 +1090,9 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Annotate schematic designators programmatically, no dialog, no user interaction.
 
-        Compiles the project, iterates every schematic sheet, collects all
-        unlocked components, sorts them by the chosen order, and assigns
-        sequential designators per alpha prefix (R1, R2, ... C1, C2, ... U1,
-        U2, ...). Designator prefixes are preserved from the current value
-        (e.g., "R?" or "R13" both keep the "R" prefix). Locked designators
-        (Designator.IsLocked = True) are skipped. All changes are wrapped in
-        SchServer.ProcessControl.PreProcess/PostProcess for undo support.
+        Numbers every unlocked component on every sheet in the chosen
+        order, per prefix (R1, R2, ... C1, ...), keeping each prefix ("R?"
+        and "R13" both stay R). Locked designators are skipped. Undoable.
 
         Args:
             order: Annotation traversal order:
@@ -1309,23 +1220,12 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Export the active schematic / PCB document, silent (no dialog).
 
-        Only ``format="pdf"`` is currently supported as a silent path.
-        Raster formats (png/jpg/bmp) require a hand-configured OutJob with
-        a Schematic Print -> Multimedia (Image) container; the Pascal side
-        rejects them with ``IMAGE_FORMAT_UNSUPPORTED`` and points the
-        caller at ``proj_run_outjob`` instead.
-
-        The PDF path uses Altium's
-        ``WorkspaceManager:Print`` server process with ``FileName=`` - the
-        same machinery as ``proj_export_pdf``. No OutJob is loaded. The print
-        runs against ``Client.CurrentView`` (the focused document), so
-        ensure the schematic or PCB you want exported is the active tab
-        before calling.
-
-        The Pascal side deletes any pre-existing file at ``output_path``
-        before running so the post-run FileExists probe is a true
-        existence check. Python verifies again here and downgrades a
-        Pascal "success" to ``EXPORT_FILE_MISSING`` if no file landed.
+        Only PDF is silent; it prints the focused document, as
+        ``proj_export_pdf`` does, so make the wanted tab active first.
+        png/jpg/bmp return ``IMAGE_FORMAT_UNSUPPORTED``: they need an
+        OutJob with an image container, run by ``proj_run_outjob``.
+        An old file at ``output_path`` is deleted first, and a run that
+        leaves no file is ``EXPORT_FILE_MISSING``.
 
         Args:
             output_path: Full path for the output file. The directory must
@@ -1412,18 +1312,11 @@ def register_project_tools(mcp):
         containers, then run the desired one by name. Supports both GeneratedFiles
         (Gerber, drill, BOM, etc.) and Publish (PDF) container types.
 
-        SUCCESS MEANS A FILE WAS WRITTEN. Running a container proves only
-        that Altium was asked to. One bound to a managed release, or with
-        its outputs switched off, runs cleanly and writes nothing, and
-        this used to report ``success: true`` with an ``output_dir`` that
-        had never been created. ``output_dir`` is now checked afterwards,
-        and ``success`` is true only when a file under it was written or
-        changed after the run started.
-
-        That check covers ``output_dir`` and nothing else. A container
-        that writes somewhere else reads as ``success: false``, and
-        ``reason`` says what was examined, so a caller who knows where
-        the output really goes can look there.
+        SUCCESS MEANS A FILE WAS WRITTEN under ``output_dir`` after the
+        run started; a container bound to a managed release or with its
+        outputs off runs cleanly and writes nothing. Output written
+        elsewhere reads as ``success: false``, and ``reason`` says what
+        was examined.
 
         Args:
             container_name: Name of the output container to execute
@@ -1527,23 +1420,16 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Run every container in an OutJob and report what each produced.
 
-        Lists containers via ``proj_list_outjob_containers``, then runs each
-        through ``proj_run_outjob`` in order. For each run, scans the
-        OutJob's resolved ``output_dir`` afterwards and flags files
-        whose mtime is later than the run started (``newly_produced``)
-        so the caller can tell which files this particular container
-        wrote.
+        Each container runs through ``proj_run_outjob`` in order, and its
+        ``output_dir`` files written since it started are flagged
+        ``newly_produced``.
 
         Args:
             outjob_path: Path to the .OutJob. Omit to use the first one
                 in the focused project.
-            include_files: When True (default) the response includes a
-                per-container file listing with sizes / mtimes / a
-                ``newly_produced`` flag.
-            fresh_window_seconds: Files modified within this many
-                seconds before the container started are still
-                considered "newly produced" (some output processes
-                touch existing files instead of rewriting). Default 5s.
+            include_files: List each container's files (default True).
+            fresh_window_seconds: Files modified up to this long before a
+                container started still count as new. Default 5 s.
 
         Returns:
             Dict with ``ok``, ``outjob_path``, ``containers_run``
@@ -1625,16 +1511,10 @@ def register_project_tools(mcp):
         """Generate a fabrication package from an OutJob (Gerbers, NC drill,
         IPC-356, pick-and-place, assembly, BOM) and report every file produced.
 
-        Altium has no per-format export process for Gerber / NC-drill /
-        IPC-356 / P&P: those exist only as OutJob output containers. This runs
-        every container in the project's OutJob, scans each container's output
-        directory, and returns a consolidated manifest. Optionally also exports
-        a STEP 3D model and a DXF (which are separate PCB export processes, not
-        OutJob containers).
-
-        Prerequisite: the project must have an OutJob whose fab containers are
-        configured and enabled: the script cannot enable outputs that are off
-        in the OutJob editor.
+        Those formats exist only as OutJob containers, so this runs every
+        container in the OutJob and lists the files each wrote; STEP and
+        DXF are optional extra exports. The OutJob's outputs must already
+        be enabled: a script cannot switch them on.
 
         Args:
             outjob_path: path to the .OutJob; omit to use the first one in the
@@ -1861,11 +1741,8 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Export a PDF for every project variant.
 
-        Loops the project's variants; for each it sets that variant active and
-        runs the (silent) PDF export, writing one ``<variant>.pdf`` per
-        variant. The originally-active variant is restored at the end. Composes
-        the existing ``proj_set_active_variant`` + ``proj_export_pdf`` paths --
-        no new export machinery.
+        One ``<variant>.pdf`` per variant, each made active in turn; the
+        original variant is restored at the end.
 
         Args:
             output_dir: Folder for the per-variant PDFs. Defaults to the
@@ -1876,13 +1753,10 @@ def register_project_tools(mcp):
         Returns:
             {"exported": [{variant, output_path, ok, error}], "count"} plus
             ``restored``: the variant put back, or null if putting it
-            back FAILED. Null is not cosmetic. This loop leaves the
-            project on the last variant it exported, so a null means the
-            active variant is not the one you started with, and anything
-            variant-sensitive run afterwards (an export, a BOM,
-            ``pcb_apply_dnp_paste_exclusion``) will act on the wrong
-            set. A failure also carries ``restore_error``,
-            ``active_variant_unknown`` and a ``note``.
+            back FAILED: the project is then on another variant, and any
+            variant-sensitive call (a BOM, an export,
+            ``pcb_apply_dnp_paste_exclusion``) acts on the wrong set. A
+            failure also carries ``restore_error`` and a ``note``.
         """
         from pathlib import Path
 
@@ -1998,19 +1872,11 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Delete a project variant, with every component variation in it.
 
-        THIS IS NOT REVERSIBLE FROM HERE. A variant's entries record which
-        components are not fitted and which carry an alternate part, and
-        ``DM_RemoveProjectVariant`` is the ONLY write in Altium's whole
-        variant API. There is no scripted way to add a variation entry
-        back, so deleting a variant with fifty entries costs fifty
-        decisions that have to be re-made in the Variant Management
-        dialog. The reply reports ``entries_removed`` so the size of that
-        is on the record; read it with ``proj_list_variants`` first if
-        the variant is not one you created.
-
-        The variant is addressed by name rather than index, because
-        removing one renumbers the rest: two deletions by index taken
-        from a single listing would remove the wrong second variant.
+        NOT REVERSIBLE FROM HERE: no script can add variation entries
+        back, so each one has to be redone by hand in Variant Management.
+        Read the variant with ``proj_list_variants`` first if you did not
+        create it; ``entries_removed`` reports how many went. Addressed
+        by name, since deleting one renumbers the rest.
 
         Args:
             variant_name: name of the variant to remove.
@@ -2130,13 +1996,9 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get pin-to-net connectivity for a specific component.
 
-        IMPORTANT, if you need connectivity for MORE THAN ONE
-        component, use `proj_get_connectivity_many` (batch). Looping this
-        tool for a set of designators is the biggest wall-time sink
-        in design-review workflows.
-
-        Compiles the project and returns every pin with number, name,
-        net assignment, and electrical type.
+        For more than one component prefer `proj_get_connectivity_many`.
+        Compiles the project and returns every pin with number, name, net
+        and electrical type.
 
         Args:
             designator: Component designator (e.g., "U1", "R8")
@@ -2145,12 +2007,9 @@ def register_project_tools(mcp):
                 before reading. Use when you need a guaranteed-fresh
                 netlist.
 
-        DATASHEET DISCIPLINE: pin_name in the response comes from the
-        symbol, which can be wrong. Before reasoning about the pin's
-        function (input vs output, drive strength, voltage range,
-        active level), fetch the manufacturer datasheet and verify
-        against its pin-description table. The response carries
-        `_datasheet_guidance` + `_datasheet_parts`.
+        Pin names come from the symbol and can be wrong: check a pin's
+        function against the manufacturer datasheet before relying on it
+        (see `_datasheet_guidance`).
 
         Returns:
             Dict with designator, comment, sheet, pin_count, pins[],
@@ -2474,7 +2333,7 @@ def register_project_tools(mcp):
                 only if you will verify by other means.
 
         Returns:
-            Dictionary with success, pcb_path, before/after mapping counts,
+            success, pcb_path, before/after mapping counts,
             components_added_to_pcb, components_removed_from_pcb,
             components_in_sync (component presence only), and
             dialog_outcome_verified; plus ``pad_net_verification`` (with

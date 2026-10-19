@@ -19,13 +19,18 @@ import json
 import pathlib
 from typing import Any, Optional
 
-#: The extension source, present when the server runs from a checkout.
-#: An installed wheel has no extensions directory; the check then
-#: reports nothing rather than guessing.
-_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_EXTENSION_DIR = _ROOT / "extensions" / "easyeda"
-_MAIN_JS = _EXTENSION_DIR / "main.js"
-_MANIFEST = _EXTENSION_DIR / "extension.json"
+
+
+def _extension_dir() -> pathlib.Path:
+    """The extension source, a checkout's or the wheel's copy.
+
+    With neither, the paths below do not exist and every check reports
+    nothing rather than guessing.
+    """
+    from ..easyeda_extension import source_dir
+
+    found = source_dir()
+    return found if found is not None else pathlib.Path("extensions/easyeda")
 
 #: EasyEDA blocks extension network access until this permission is
 #: granted. Until then the editor never opens a socket, which on this
@@ -50,7 +55,7 @@ def _source_stamp() -> float:
     match while the tree has moved on.
     """
     try:
-        return _MAIN_JS.stat().st_mtime
+        return (_extension_dir() / "main.js").stat().st_mtime
     except OSError:
         return 0.0
 
@@ -63,18 +68,20 @@ def expected_build() -> Optional[str]:
     _cache.clear()
     _cache["stamp"] = stamp
     value = None
-    if _MAIN_JS.exists():
+    folder = _extension_dir()
+    main_js = folder / "main.js"
+    if main_js.exists():
         import sys
 
-        sys.path.insert(0, str(_EXTENSION_DIR))
+        sys.path.insert(0, str(folder))
         try:
             from build import build_id            # type: ignore[import]
 
-            value = build_id(_MAIN_JS.read_text(encoding="utf-8"))
+            value = build_id(main_js.read_text(encoding="utf-8"))
         except Exception:                          # noqa: BLE001
             value = None
         finally:
-            if sys.path and sys.path[0] == str(_EXTENSION_DIR):
+            if sys.path and sys.path[0] == str(folder):
                 sys.path.pop(0)
     _cache["build"] = value
     return value
@@ -86,10 +93,11 @@ def expected_version() -> Optional[str]:
     if "version" in _cache:
         return _cache["version"]
     value = None
-    if _MANIFEST.exists():
+    manifest = _extension_dir() / "extension.json"
+    if manifest.exists():
         try:
             value = str(json.loads(
-                _MANIFEST.read_text(encoding="utf-8")).get("version") or "")
+                manifest.read_text(encoding="utf-8")).get("version") or "")
         except Exception:                          # noqa: BLE001
             value = None
     _cache["version"] = value or None
@@ -98,7 +106,12 @@ def expected_version() -> Optional[str]:
 
 def package_path() -> Optional[str]:
     """The .eext to import, so the message names a file to open."""
-    candidate = _EXTENSION_DIR / "eda-agent-bridge.eext"
+    from ..easyeda_extension import default_build_dir, is_packaged
+
+    folder = _extension_dir()
+    if is_packaged(folder):
+        folder = default_build_dir()
+    candidate = folder / "eda-agent-bridge.eext"
     return str(candidate) if candidate.exists() else None
 
 

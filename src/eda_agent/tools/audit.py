@@ -317,28 +317,9 @@ def register_audit_tools(mcp):
         """Find pairs of same-net tracks meeting at < 90° interior
         angle.
 
-        Classic fab DFM check: at an acute corner the etchant pools
-        and over-etches the inside of the bend -- the trace narrows
-        or breaks during fabrication. Most fab houses reject sub-90°
-        corners on critical-thickness traces in their automated DRC,
-        but the rejection comes back days into the schedule; catching
-        it on the desk is much cheaper.
-
-        Algorithm (pure geometry, no rule dependency):
-          - Walk every track on signal layers
-          - At each endpoint, spatial-iterate for other tracks on the
-            SAME net sharing that endpoint
-          - Build direction vectors AWAY from the shared point
-          - Dot product positive → interior angle < 90° → acute
-
-        Capped at 100 violations to keep responses manageable on
-        dense boards. Per-violation: net, layer, x_mils / y_mils
-        of the corner, and the actual angle in degrees.
-
-        Pattern: SDK-derived. The Altium `IPCB_AcuteAngleRule`
-        exists but isn't always enabled by default and its
-        violations only surface during DRC; this audit runs
-        independently of rule state.
+        An acute inside corner can over-etch. Pure geometry on signal
+        layers, independent of Altium's acute-angle rule, which is often
+        off; at most 100 are listed.
 
         Returns:
             Dict with ``{checked, violations, items[]}`` where each
@@ -363,19 +344,8 @@ def register_audit_tools(mcp):
           - ``PLACEHOLDER``, ``FILLER``, ``ASK``, ``UNKNOWN``
           - ``N/A``, ``NA``
 
-        Classic bug pattern: an EE drops a 100nF cap as a temporary
-        placeholder while working out a regulator topology, types
-        "TBD" in the Comment, moves on, never comes back. Six months
-        later the board ships to fab with "TBD" on the assembly
-        drawing. The fab calls confused, the schedule slips.
-
-        Checks every parameter (Comment, Value, Manufacturer, MPN,
-        Description, etc.) on every component across the project.
-        Skips empty values -- those are caught by other audits
-        (e.g. ``audit_find_missing_datasheets``).
-
-        Pattern: SDK-derived. No community-script reference; this is
-        a defensive sanity check we should always run before release.
+        Every parameter of every component in the project; empty values
+        are left to other audits such as ``audit_find_missing_datasheets``.
 
         Returns:
             Dict with ``{checked, violations, items[]}`` where each
@@ -453,35 +423,20 @@ def register_audit_tools(mcp):
     async def audit_find_net_label_conflicts() -> dict[str, Any]:
         """Find net labels that silently merge, short, or do nothing.
 
-        Three failure modes that all look correct on a printed sheet:
+        All three look correct on a printed sheet:
 
-        1. ``conflicting_labels`` -- two labels with DIFFERENT text at
-           the same Location (x, y), not merely overlapping text boxes.
-           Altium merges both names into one net and one name wins; the
-           losing net ceases to exist and everything on it is absorbed.
-           This is a real short between two named nets, and the usual
-           symptom is "net X has zero pins" while some unrelated pin
-           turns up on net Y. Adjacent labels on a 100-mil pin pitch
-           are not conflicts.
+        1. ``conflicting_labels``: different text at the same point.
+           Altium merges the nets under one name, a real short; the
+           symptom is a net with zero pins.
+        2. ``labels_on_pin_root``: a label on a pin's body-side root
+           instead of its electrical end, so it connects nothing. Each
+           item gives ``connect_x_mils`` / ``connect_y_mils`` to move it
+           to.
+        3. ``duplicate_labels``: the same text twice at one point;
+           harmless, but it can hide a conflict.
 
-        2. ``labels_on_pin_root`` -- a label sitting on a pin's
-           ``Location`` instead of its electrical end. ``Location`` is
-           the BODY-side root; a pin connects at
-           ``Location + PinLength`` along ``Orientation``
-           (0=right, 1=up, 2=left, 3=down). A label on the root is
-           inert, so the sheet reads as fully wired while the pin
-           floats on an auto-generated net. Each item reports the
-           label's coordinates AND the ``connect_x_mils`` /
-           ``connect_y_mils`` the label should move to.
-
-        3. ``duplicate_labels`` -- same text twice at one point.
-           Harmless electrically, but it is clutter and it hides
-           class 1 underneath.
-
-        Complements ``audit_find_orphan_net_labels``, which only asks
-        whether a wire sits under the label and therefore reports
-        genuinely-connected labels (those on a pin end, with no wire)
-        as orphans.
+        ``audit_find_orphan_net_labels`` checks only for a wire under
+        the label, so it calls a label on a pin end an orphan.
 
         Returns:
             Dict with ``{checked, conflicts, on_pin_root, duplicates,
@@ -802,28 +757,15 @@ def register_audit_tools(mcp):
         """Check that every placed component shows the parameters its class
         requires for a legible schematic and a procurable BOM.
 
-        Per-class rules:
+        Per class, by designator: C* shows a value ending in ``F`` and a
+        voltage ending in ``V``; R* a value ending in ``R``, ``k``, ``M``
+        or ``m``; L* an inductance ending in ``H`` and a saturation
+        current ending in ``A``; U* a visible parameter whose name starts
+        with ``Manufacturer Part Number``.
 
-          - **Capacitor** (designator C*): must show a value ending in
-            ``F`` (e.g. ``10uF``) AND a voltage rating ending in ``V``
-            (e.g. ``16V``). Missing voltage = catastrophic failure risk on
-            transient overvoltage.
-          - **Resistor** (R*): must show a value ending in ``R``, ``k``,
-            ``M``, or ``m``. Missing value = BOM ambiguity, can't order.
-          - **Inductor** (L*): must show inductance ending in ``H``
-            (e.g. ``10uH``) AND saturation current ending in ``A``
-            (e.g. ``2A``). Missing saturation current = core-saturation
-            failure on power-supply inductors.
-          - **IC** (U*): must show a visible parameter whose name starts
-            with ``Manufacturer Part Number``. Missing MPN = unprocurable
-            and unverifiable footprint.
-
-        The check looks at component parameter slots and the on-canvas
-        Comment field; either is acceptable. Hidden values (IsHidden=True)
-        do NOT satisfy the rule because they're invisible during review.
-
-        Operates on the compiled / flattened doc tree (same as the BOM)
-        so multichannel and hierarchical designs are covered.
+        A visible parameter or the Comment satisfies a rule; a hidden one
+        does not. Runs on the compiled (flattened) tree, so hierarchical
+        and multichannel designs are covered.
 
         Returns:
             Dict with:
@@ -931,20 +873,11 @@ def register_audit_tools(mcp):
         """Find PCB tracks / arcs with endpoints that are close to another
         same-net primitive but don't actually touch.
 
-        Walks every track / arc on a signal layer. For each endpoint, looks
-        for ANOTHER same-net primitive (track / arc / pad / via) within
-        ``tolerance_mils``. If nothing same-net is in range, the endpoint
-        is "dangling": Altium may show it as connected in the analyser
-        (centre-point heuristic) but the photoplot will not bridge it,
-        producing a real open on the fab side.
-
-        Visual review misses these because at 100% zoom the gap is invisible;
-        DRC sometimes catches them under a "Clearance" or "Modified Polygon"
-        rule but not reliably.
-
-        Skipped: teardrops (intentionally offset), primitives inside
-        components (they ride the pad), primitives without a net, full
-        circle arcs (no anchor endpoint).
+        An end of a signal-layer track or arc with no same-net track,
+        arc, pad or via within ``tolerance_mils`` is dangling: it can look
+        connected and still be an open on the fabricated board, and DRC
+        does not reliably catch it. Teardrops, component primitives,
+        unnetted copper and full circles are skipped.
 
         Args:
             tolerance_mils: Coord tolerance in mils. 0 = exact match required
@@ -973,24 +906,14 @@ def register_audit_tools(mcp):
         """Find signal vias that have no nearby ground / power via for
         return-current flow.
 
-        For every via NOT on a ground/power net (heuristic: net name
-        starts with GND / V / + / - or contains "GND"), look for at least
-        one ground/power via within ``radius_mils``. If none is found,
-        the signal via likely lacks a return-current path -- when a
-        high-speed signal changes layers, the return current needs to
-        cross the dielectric somewhere, and a nearby ground via shortens
-        that path.
-
-        Tradeoff: this is a SIMPLIFIED proximity heuristic, not a stackup-
-        aware analyser. The full check (reference-layer tagging, stripline
-        vs microstrip rules, paired-reference handling) is a much larger
-        GUI-driven analysis. For first-pass review,
-        proximity flags the obvious cases.
+        A signal via changing layers needs its return current to cross
+        too; this flags signal vias with no ground or power via within
+        ``radius_mils``. Ground and power are guessed from the name
+        (starts with GND, V, + or -, or contains GND). A proximity check
+        only, not aware of the stackup.
 
         Args:
-            radius_mils: How close a return via must be. Default 50 mils
-                (~1.3mm) -- typical "good practice" is within 1-2 mm of
-                the signal via.
+            radius_mils: How close a return via must be. Default 50.
 
         Returns:
             Dict with:
@@ -1013,21 +936,13 @@ def register_audit_tools(mcp):
         """Find PCB pads / vias closer than ``clearance_mils`` to the
         board outline (depaneling damage hazard).
 
-        Copper too close to the routed edge gets scuffed / scored /
-        torn during v-cut + mouse-bite break. IPC-2221 and typical
-        fab houses want at least 20-50mil clearance for critical
-        components, more for connectors. Worth tightening to 50+ for
-        boards going to depaneling rather than rounded-corner
-        manufacture.
-
-        The gap is measured from the outline's own segments, lines and
-        arcs, to the pad's copper: a via or round pad by its radius, a
-        rectangle by its nearest corner or edge midpoint, at whatever
-        rotation. Round and other curved outlines are covered.
+        Copper near a routed or scored edge can be damaged when the board
+        is separated; take the limit from the fab's rules. The gap is
+        measured from the outline's lines and arcs to the pad's copper
+        at any rotation.
 
         Args:
-            clearance_mils: Minimum gap to flag as a violation
-                (default 25). Try 50 if your fab depanels by v-cut.
+            clearance_mils: Minimum gap to flag (default 25).
 
         Returns:
             Dict with:
@@ -1171,25 +1086,10 @@ def register_audit_tools(mcp):
     async def audit_find_via_antennas() -> dict[str, Any]:
         """Find vias connected on only one layer (resonating stubs).
 
-        At RF / high data rates the unused side of a one-layer-connected
-        via acts as an open-ended transmission-line stub: it resonates
-        at frequencies whose quarter-wavelength matches the stub
-        length, reflecting signal back into the trace and degrading
-        rise time + EMC compliance. Common after iterative editing
-        where a layer-change via gets stranded when the destination
-        trace was later rerouted on a different layer.
-
-        Counts a via "connected" on a layer when:
-          - it's a signal layer with a track/arc/pad/fill/region
-            touching the via (``Board.PrimPrimDistance = 0``), OR
-          - it's a plane layer and ``Via.IsConnectedToPlane`` returns
-            True.
-
-        Returns a JSON list (rather than selecting and highlighting).
-
-        Cost: O(vias × layers × spatial-prims-near-via). Typical
-        boards finish in 1-3 seconds; very dense boards may take
-        longer.
+        A via connected on one layer is an open stub, often left when the
+        trace on its other side was rerouted. Connected means copper
+        touching it on a signal layer, or a plane connection. Lists them;
+        selects nothing.
 
         Returns:
             Dict with:
@@ -1240,18 +1140,9 @@ def register_audit_tools(mcp):
     async def audit_variant_not_fitted() -> dict[str, Any]:
         """List components marked Not Fitted in the project's CURRENT variant.
 
-        Manufacturing context: a Not-Fitted component is on the BOM as a
-        placeholder but should NOT receive paste on the stencil, otherwise
-        the SMT line deposits paste on empty pads and bridging forms on
-        rework. Many houses also want a "DNP" silkscreen marker on the
-        artwork. This tool returns the list of components the agent
-        should consider for those treatments.
-
-        This is the identify half. ``pcb_apply_dnp_paste_exclusion`` is
-        the remediation half: it takes this list (or re-derives it) and
-        collapses the stencil aperture on each Not-Fitted component's
-        surface pads. Kept as two calls so the detection can be reviewed
-        before anything on the board is edited.
+        Not-fitted parts should get no stencil paste.
+        ``pcb_apply_dnp_paste_exclusion`` removes it, after this list has
+        been reviewed.
 
         Returns:
             Dict with:

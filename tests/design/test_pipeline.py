@@ -1832,13 +1832,16 @@ def _build_board_uncached(name: str, upgrade: bool):
         json.loads((plans / f"{name}.json").read_text()))
     extractor = SyntheticSymbolExtractor(plan)
 
-    if upgrade:
-        canvas = build_best_canvas_from_plan(plan, extractor).canvas
-    else:
-        with mock.patch(
-                "eda_agent.design.pipeline.upgrade_repair_ports_to_stubs",
-                return_value=0):
+    # The sheet fit runs last and may shift a whole drawing whose stubs reach
+    # the border margin; these tests compare the two builds part by part.
+    with mock.patch("eda_agent.design.sheet_fit.fit_canvas", return_value=[]):
+        if upgrade:
             canvas = build_best_canvas_from_plan(plan, extractor).canvas
+        else:
+            with mock.patch(
+                    "eda_agent.design.pipeline.upgrade_repair_ports_to_stubs",
+                    return_value=0):
+                canvas = build_best_canvas_from_plan(plan, extractor).canvas
     return canvas, plan, neatness_report(canvas, plan)
 
 

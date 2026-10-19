@@ -1,0 +1,258 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""Nothing is drawn outside the sheet; a full sheet grows within its family."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from eda_agent.design.pipeline import build_canvas_from_plan
+from eda_agent.design.sheet_fit import (ALTIUM_FRAMES, Box, altium_frame,
+                                        canvas_boxes, check_canvas,
+                                        fit_report, next_size)
+from tests.design.test_pipeline import (_BASE_SYMBOLS, MockExtractor,
+                                        _basic_rc_plan)
+
+
+def _canvas():
+    result = build_canvas_from_plan(_basic_rc_plan(), MockExtractor(_BASE_SYMBOLS))
+    assert result.ok, result
+    return result.canvas
+
+
+def test_altium_frames_are_not_paper_sizes():
+    assert altium_frame("A4") == (11500, 7600)
+    assert altium_frame("A3") == (15500, 11100)       # paper is 16540 x 11690
+    assert altium_frame("ANSI B") == (15000, 9500)
+
+
+def test_families_grow_in_order_and_stop_at_the_top():
+    assert next_size("A4") == "A3" and next_size("A1") == "A0"
+    assert next_size("A0") is None
+    assert next_size("ANSI A") == "B"
+    assert next_size("OrCAD B") == "ORCADC"
+
+
+def test_the_engine_layout_fits_its_sheet():
+    reports = check_canvas(_canvas())
+    assert reports and all(r["verdict"] == "fits" for r in reports), reports
+
+
+def test_a_part_past_the_border_is_found_and_shifted_back():
+    canvas = _canvas()
+    inst = canvas.instances[0]
+    canvas.instances[0] = replace(inst, x=inst.x + 20000)
+    (rep,) = check_canvas(canvas)
+    assert any(o["ref"] == inst.refdes for o in rep["outside"])
+    assert rep["verdict"] in ("shift", "enlarge")
+
+
+def test_a_drawing_too_wide_for_a4_enlarges_to_a3():
+    boxes = [Box("part", "U1", 300, 2000, 300 + 13000, 4000)]
+    rep = fit_report(boxes, "A4")
+    assert rep["verdict"] == "enlarge" and rep["to_size"] == "A3"
+
+
+def test_a_drawing_that_fits_after_a_shift_is_not_enlarged():
+    boxes = [Box("part", "U1", -2000, 3000, 2000, 4000)]   # 4000 wide, off-left
+    rep = fit_report(boxes, "A4")
+    assert rep["verdict"] == "shift" and rep["dx"] > 0
+
+
+def test_the_title_block_is_kept_clear():
+    w, h = ALTIUM_FRAMES["A4"]
+    boxes = [Box("part", "U1", w - 1500, 300, w - 400, 900)]   # on the block
+    rep = fit_report(boxes, "A4")
+    assert rep["outside"] and rep["outside"][0].get("over_title_block")
+
+
+def test_nothing_in_the_family_holds_it():
+    boxes = [Box("part", "U1", 0, 0, 60000, 40000)]
+    assert fit_report(boxes, "A4")["verdict"] == "too_big"
+
+
+def _audit(frame_reply):
+    import asyncio
+
+    import eda_agent.tools.generic as g
+
+    class _B:
+        async def send_command_async(self, cmd, params=None, **kw):
+            assert cmd == "generic.get_sheet_frame"
+            return frame_reply
+
+    tools = {}
+
+    class _M:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (lambda fn: fn)
+
+    orig = g.get_bridge
+    g.get_bridge = lambda: _B()
+    try:
+        g.register_generic_tools(_M())
+        return asyncio.run(tools["sch_audit_outside_sheet"]())
+    finally:
+        g.get_bridge = orig
+
+
+def _frame(objects, template_boxes=(), style=1):
+    return {"file_path": "x.SchDoc", "frame_x": 15500, "frame_y": 11100,
+            "sheet_style": style, "use_custom": False, "title_block_on": True,
+            "template": "C:/T/Co_A3.SchDot", "objects": objects,
+            "template_boxes": list(template_boxes), "count": len(objects),
+            "truncated": False}
+
+
+def test_audit_reads_the_live_frame_and_flags_a_part_past_it():
+    out = _audit(_frame([
+        {"type": "component", "label": "U1", "bbox": [1000, 3000, 2000, 4000]},
+        {"type": "component", "label": "U2", "bbox": [15000, 3000, 15700, 4000]},
+    ]))
+    assert out["ok"] and out["size"] == "A3" and out["frame"] == [15500, 11100]
+    assert [o["ref"] for o in out["outside"]] == ["U2"]
+    assert out["verdict"] == "shift"          # 14700 wide fits the 15100 usable
+    wide = _audit(_frame([
+        {"type": "component", "label": "U1", "bbox": [1000, 3000, 2000, 4000]},
+        {"type": "component", "label": "U2", "bbox": [15000, 3000, 16500, 4000]},
+    ]))
+    assert wide["verdict"] == "enlarge" and wide["to_size"] == "A2"
+
+
+def test_document_parameters_are_not_drawn_objects():
+    # Measured: a blank A4 SchDoc lists its Title/Date fields at 0,0.
+    out = _audit(_frame([
+        {"type": "parameter", "label": "", "bbox": [0, 0, 5571, 100]},
+        {"type": "component", "label": "U1", "bbox": [1000, 3000, 2000, 4000]},
+    ]))
+    assert out["objects"] == 1 and out["verdict"] == "fits", out
+
+
+def test_audit_takes_the_title_block_from_the_template_graphics():
+    tb = [[11000, 200, 15300, 1700], [12000, 500, 15000, 900]]
+    out = _audit(_frame([
+        {"type": "text", "label": "", "bbox": [13000, 800, 14000, 1000]},
+    ], template_boxes=tb))
+    assert out["title_block"] == [4500, 1700]
+    assert out["outside"] and out["outside"][0].get("over_title_block")
+
+
+def test_template_family_swaps_the_size_token(tmp_path):
+    from eda_agent.design.sheet_fit import template_for_size, template_size_token
+
+    for name in ("Co_Sheet_A4.SchDot", "Co_Sheet_A3.SchDot",
+                 "Co_Sheet_A2.SchDot", "Other_A3.SchDot", "ANSI B.SchDot",
+                 "ANSI C.SchDot"):
+        (tmp_path / name).write_text("")
+    a4 = str(tmp_path / "Co_Sheet_A4.SchDot")
+    assert template_size_token(a4) == "A4"
+    assert template_for_size(a4, "A3").endswith("Co_Sheet_A3.SchDot")
+    assert template_for_size(a4, "A1") is None            # not in the set
+    assert template_for_size(str(tmp_path / "ANSI B.SchDot"), "C").endswith(
+        "ANSI C.SchDot")
+
+
+def test_fit_canvas_shifts_the_whole_drawing_with_its_wiring():
+    from eda_agent.design.sheet_fit import fit_canvas, translate_sheet
+
+    canvas = _canvas()
+    sheet = canvas.sheets[0].name
+    translate_sheet(canvas, sheet, -9000, 0)        # push it off the left edge
+    before = {(w.x1, w.y1, w.x2, w.y2) for w in canvas.wires}
+    (act,) = fit_canvas(canvas)
+    assert act["verdict"] == "shift" and act["still_outside"] == 0
+    dx, dy = act["shifted"]
+    after = {(w.x1, w.y1, w.x2, w.y2) for w in canvas.wires}
+    assert {(a + dx, b + dy, c + dx, d + dy) for a, b, c, d in before} == after
+
+
+def test_fit_canvas_enlarges_within_the_family():
+    from eda_agent.design.sheet_fit import fit_canvas
+
+    canvas = _canvas()
+    inst = canvas.instances[-1]
+    canvas.instances[-1] = replace(inst, x=inst.x + 14000)    # far right
+    (act,) = fit_canvas(canvas)
+    assert act["enlarged_to"] in ("A3", "A2")
+    assert canvas.sheets[0].size == act["enlarged_to"]
+
+
+def test_a_shift_is_whole_grid_steps():
+    # 150 past the left margin moves 200, so pins stay on the 100 mil grid.
+    boxes = [Box("part", "U1", 50, 3000, 2050, 4000)]
+    rep = fit_report(boxes, "A4")
+    assert rep["verdict"] == "shift" and (rep["dx"], rep["dy"]) == (200, 0)
+    assert fit_report(boxes, "A4", grid=0)["dx"] == 150
+
+
+def _apply_audit(replies):
+    """Run sch_audit_outside_sheet(apply=True) against scripted replies."""
+    import asyncio
+
+    import eda_agent.tools.generic as g
+
+    sent = []
+
+    class _B:
+        async def send_command_async(self, cmd, params=None, **kw):
+            sent.append((cmd, params))
+            return replies[cmd].pop(0)
+
+    tools = {}
+
+    class _M:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (lambda fn: fn)
+
+    orig = g.get_bridge
+    g.get_bridge = lambda: _B()
+    try:
+        g.register_generic_tools(_M())
+        return asyncio.run(tools["sch_audit_outside_sheet"](apply=True)), sent
+    finally:
+        g.get_bridge = orig
+
+
+def test_apply_shifts_everything_back_inside():
+    off = _frame([{"type": "wire", "label": "", "bbox": [-510, 500, 10800, 5000]}])
+    back = _frame([{"type": "wire", "label": "", "bbox": [290, 500, 11600, 5000]}])
+    out, sent = _apply_audit({"generic.get_sheet_frame": [off, back],
+                              "generic.shift_sheet": [{"moved": 1}]})
+    assert ("generic.shift_sheet", {"dx": "800", "dy": "0"}) in sent
+    assert out["verdict"] == "fits" and out["verdict_before"] == "shift"
+
+
+def test_apply_enlarges_an_untemplated_sheet_then_rechecks():
+    # The live run: a line, a rectangle past the A4 edge, one off the block.
+    a4 = dict(_frame([
+        {"type": "line", "label": "", "bbox": [990, 2990, 3010, 3010]},
+        {"type": "rectangle", "label": "", "bbox": [10800, 4000, 12300, 5000]},
+        {"type": "rectangle", "label": "", "bbox": [10000, 500, 10600, 900]}]),
+              frame_x=11500, frame_y=7600, sheet_style=0, template="")
+    a3 = dict(a4, frame_x=15500, frame_y=11100, sheet_style=1)
+    out, sent = _apply_audit({"generic.get_sheet_frame": [a4, a3],
+                              "generic.set_sheet_size": [{"success": True}]})
+    assert [c for c, _ in sent] == ["generic.get_sheet_frame",
+                                    "generic.set_sheet_size",
+                                    "generic.get_sheet_frame"]
+    assert sent[1][1]["style"] == "A3" and out["verdict"] == "fits"
+
+
+def test_apply_leaves_a_templated_sheet_to_the_caller():
+    wide = _frame([{"type": "component", "label": "U2",
+                    "bbox": [1000, 3000, 16500, 4000]}])
+    out, sent = _apply_audit({"generic.get_sheet_frame": [wide]})
+    assert [c for c, _ in sent] == ["generic.get_sheet_frame"]
+    assert out["verdict"] == "enlarge" and "template" in out["not_applied"]

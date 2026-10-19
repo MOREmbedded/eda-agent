@@ -12,6 +12,11 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+# The jobs only read the repository. A token that can write is one a
+# compromised step could use.
+permissions:
+  contents: read
+
 jobs:
   # The Pascal cross-validation needs a 300 MB compiler that takes seven
   # minutes to install, and nothing else in the suite touches it. Run it
@@ -21,6 +26,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -146,6 +153,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -221,3 +229,55 @@ jobs:
           --ignore=tests/test_cross_validate.py
           --ignore=tests/test_pascal_runner.py
           --durations=25
+
+  # pyproject says Python 3.11 is supported and everything else runs on
+  # 3.12, so a 3.12-only construct went unnoticed for weeks: a multi-line
+  # f-string in a test failed to even parse on 3.11. Compiling every file
+  # and importing the server on 3.11 catches that class for a minute of
+  # runner time, without running the whole suite twice.
+  python-311:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package
+        run: python -m pip install -e .
+
+      - name: Every file compiles on 3.11
+        run: python -m compileall -q src tests scripts extensions
+
+      - name: The server imports and answers on 3.11
+        run: |
+          python -c "import eda_agent.server, eda_agent.tools"
+          eda-agent --version
+
+  # Nothing built a wheel before a release, so a file the wheel left out
+  # showed up only after someone installed it. Build both artifacts,
+  # check the wheel's contents, install it in a clean environment and
+  # run the first commands a user runs.
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel and the sdist
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Check and install the wheel
+        run: python scripts/verify_distribution.py dist

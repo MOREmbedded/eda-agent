@@ -10,6 +10,7 @@ output can be validated offline by rendering it with ``kicad-cli fp export svg``
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Optional
 
@@ -202,7 +203,11 @@ def _pad_sexpr(p: dict[str, Any]) -> str:
 
 def build_footprint(name: str, pads: list[dict[str, Any]],
                     descr: str = "", tags: str = "") -> str:
-    """Build a valid .kicad_mod s-expression for a footprint with pads."""
+    """Build a valid .kicad_mod s-expression for a footprint with pads.
+
+    Pads only: no silkscreen, courtyard or fabrication outline. A complete
+    footprint from a package drawing is :func:`build_footprint_from_model`.
+    """
     lines = [
         f'(footprint "{_esc(name)}"',
         "\t(version 20240108)",
@@ -225,3 +230,224 @@ def build_footprint(name: str, pads: list[dict[str, Any]],
         lines.append(_pad_sexpr(p))
     lines.append(")")
     return "\n".join(lines) + "\n"
+
+
+# --- a complete footprint from a land pattern model ---------------------------
+
+#: Graphic roles of the land pattern model -> KiCad layers, by the KiCad
+#: library convention: silkscreen, fabrication (assembly) and courtyard.
+KICAD_ROLE_LAYERS = {"silk": "F.SilkS", "assembly": "F.Fab",
+                     "courtyard": "F.CrtYd"}
+
+#: Model pad shape -> KiCad pad shape.
+_KICAD_SHAPE = {"roundrect": "roundrect", "rect": "rect", "rectangle": "rect",
+                "rectangular": "rect", "circle": "circle", "round": "circle",
+                "oval": "oval", "ellipse": "oval"}
+
+
+def _mm(v: Any) -> str:
+    # Fixed point, never an exponent: the same formatter the bridge uses.
+    from ..units import format_length
+    return format_length(round(float(v), 6))
+
+
+def _xy(x: float, y: float) -> str:
+    # KiCad's Y axis points down; the model's points up.
+    return f"{_mm(x)} {_mm(-y)}"
+
+
+def _stroke(width: float) -> str:
+    return f"(stroke (width {_mm(width)}) (type solid))"
+
+
+def _kicad_pad(p) -> str:
+    shape = _KICAD_SHAPE.get(str(p.shape or "").strip().lower())
+    if shape is None:
+        raise ValueError(f"pad {p.number} has shape {p.shape!r}, which KiCad "
+                         f"cannot draw")
+    ratio = float(p.corner_ratio or 0.0)
+    if shape == "roundrect" and ratio <= 0:
+        shape = "rect"
+    rot = float(p.rotation or 0.0) % 360.0
+    at = f"(at {_xy(p.x, p.y)}{' ' + _mm(rot) if rot else ''})"
+    size = f"(size {_mm(p.width)} {_mm(p.height)})"
+    extra: list[str] = []
+    if p.kind == "smd":
+        kind = "smd"
+        layers = ['"F.Cu"', '"F.Mask"']
+        if p.paste and not p.paste_apertures:
+            layers.insert(1, '"F.Paste"')
+        drill = ""
+    else:
+        kind = "np_thru_hole" if (p.kind == "npth" or not p.plated) else "thru_hole"
+        layers = ['"*.Cu"', '"*.Mask"']
+        if p.hole_length > p.hole > 0:
+            drill = f"(drill oval {_mm(p.hole_length)} {_mm(p.hole)})"
+        else:
+            drill = f"(drill {_mm(p.hole)})"
+    if shape == "roundrect":
+        extra.append(f"(roundrect_rratio {_mm(min(ratio, 0.5))})")
+    if p.mask_expansion:
+        extra.append(f"(solder_mask_margin {_mm(p.mask_expansion)})")
+    if p.kind == "smd" and p.paste_expansion and not p.paste_apertures:
+        extra.append(f"(solder_paste_margin {_mm(p.paste_expansion)})")
+    parts = [f'(pad "{_esc(p.number)}" {kind} {shape}', at, size]
+    if drill:
+        parts.append(drill)
+    parts.append(f"(layers {' '.join(layers)})")
+    parts.extend(extra)
+    return "\t" + "\n\t\t".join(parts) + "\n\t)"
+
+
+def _kicad_graphic(g, layer: str) -> list[str]:
+    from ..design.landpattern.model import Arc, Circle, Line, Polygon, Text
+    if isinstance(g, Line):
+        return [f"\t(fp_line (start {_xy(g.x1, g.y1)}) (end {_xy(g.x2, g.y2)}) "
+                f'{_stroke(g.width)} (layer "{layer}"))']
+    if isinstance(g, Circle):
+        fill = "solid" if g.filled else "none"
+        return [f"\t(fp_circle (center {_xy(g.x, g.y)}) "
+                f"(end {_xy(g.x + g.r, g.y)}) "
+                f'{_stroke(g.width)} (fill {fill}) (layer "{layer}"))']
+    if isinstance(g, Arc):
+        a0 = math.radians(g.start)
+        am = math.radians(g.start + g.sweep / 2.0)
+        a1 = math.radians(g.start + g.sweep)
+        pts = [(g.x + g.r * math.cos(a), g.y + g.r * math.sin(a))
+               for a in (a0, am, a1)]
+        return [f"\t(fp_arc (start {_xy(*pts[0])}) (mid {_xy(*pts[1])}) "
+                f'(end {_xy(*pts[2])}) {_stroke(g.width)} (layer "{layer}"))']
+    if isinstance(g, Polygon):
+        if g.closed or g.filled:
+            pts = " ".join(f"(xy {_xy(x, y)})" for x, y in g.points)
+            fill = "solid" if g.filled else "none"
+            return [f"\t(fp_poly (pts {pts}) {_stroke(g.width)} (fill {fill}) "
+                    f'(layer "{layer}"))']
+        out = []
+        for (x1, y1), (x2, y2) in zip(g.points, g.points[1:]):
+            out.append(f"\t(fp_line (start {_xy(x1, y1)}) (end {_xy(x2, y2)}) "
+                       f'{_stroke(g.width)} (layer "{layer}"))')
+        return out
+    if isinstance(g, Text):
+        return [f'\t(fp_text user "{_esc(g.text)}" (at {_xy(g.x, g.y)} 0) '
+                f'(layer "{layer}") (effects (font (size {_mm(g.height)} '
+                f"{_mm(g.height)}) (thickness {_mm(g.thickness)}))))"]
+    raise ValueError(f"no KiCad form for {type(g).__name__}")
+
+
+def build_footprint_from_model(model, name: str = "", descr: str = "",
+                               tags: str = "") -> str:
+    """A complete .kicad_mod from a land pattern :class:`FootprintModel`.
+
+    Pads with their shape, corner ratio, rotation, drill or slot and
+    plating; paste windows over exposed pads as unnumbered F.Paste pads
+    (the KiCad library's own convention), with the thermal pad's full
+    paste opening left out; silkscreen with the pin 1 dot on F.SilkS; the
+    body outline and a ``${REFERENCE}`` text on F.Fab; the courtyard on
+    F.CrtYd. Origin at the model's origin, the package centroid. Y flips,
+    because KiCad's axis points down.
+
+    No 3D body: KiCad draws one only from a model file, which a package
+    drawing does not supply. Manual mask and paste margins are written
+    only when non-zero, so a 1:1 opening leaves KiCad's own setting in
+    charge.
+    """
+    from ..design.landpattern.model import Text
+
+    fp_name = name or model.name
+    description = (descr or model.description or "").replace("\n", " ")
+    x0, y0, x1, y1 = model.courtyard_bbox()
+    cx = (x0 + x1) / 2.0
+    lines = [
+        f'(footprint "{_esc(fp_name)}"',
+        "\t(version 20240108)",
+        '\t(generator "eda-agent")',
+        '\t(layer "F.Cu")',
+    ]
+    if description:
+        lines.append(f'\t(descr "{_esc(description)}")')
+    if tags:
+        lines.append(f'\t(tags "{_esc(tags)}")')
+    lines.append(
+        f'\t(property "Reference" "REF**"\n\t\t(at {_xy(cx, y1 + 1.0)} 0)\n'
+        '\t\t(layer "F.SilkS")\n'
+        '\t\t(effects (font (size 1 1) (thickness 0.15)))\n\t)')
+    lines.append(
+        f'\t(property "Value" "{_esc(fp_name)}"\n'
+        f'\t\t(at {_xy(cx, y0 - 1.0)} 0)\n'
+        '\t\t(layer "F.Fab")\n'
+        '\t\t(effects (font (size 1 1) (thickness 0.15)))\n\t)')
+    kinds = {p.kind for p in model.pads}
+    if "tht" in kinds:
+        lines.append("\t(attr through_hole)")
+    elif "smd" in kinds:
+        lines.append("\t(attr smd)")
+    for g in model.graphics:
+        lines.extend(_kicad_graphic(g, KICAD_ROLE_LAYERS[g.layer]))
+    lines.extend(_kicad_graphic(model.courtyard, KICAD_ROLE_LAYERS["courtyard"]))
+    ref = model.ref
+    lines.extend(_kicad_graphic(
+        Text(ref.layer, "${REFERENCE}", ref.x, ref.y, ref.height, ref.thickness),
+        KICAD_ROLE_LAYERS[ref.layer]))
+    for p in model.pads:
+        lines.append(_kicad_pad(p))
+    for p in model.pads:
+        for a in p.paste_apertures:
+            lines.append(
+                f'\t(pad "" smd rect\n\t\t(at {_xy(a.x, a.y)})\n'
+                f"\t\t(size {_mm(a.width)} {_mm(a.height)})\n"
+                '\t\t(layers "F.Paste")\n\t)')
+    lines.append(")")
+    return "\n".join(lines) + "\n"
+
+
+def footprint_pads_mm(text: str) -> list[dict[str, Any]]:
+    """The pads of a .kicad_mod, read back with the library reader's parser.
+
+    Each: number, type, shape, x and y in the Y-UP frame (flipped back),
+    rotation, w, h, drill (diameter), slot (length, 0 when round), layers,
+    roundrect_rratio and the mask and paste margins (0 when absent).
+    """
+    from ..libimport.kicad.sexpr import loads
+
+    root = loads(text)
+    if not root or root[0] != "footprint":
+        raise ValueError("not a footprint")
+
+    def child(node: list, tag: str):
+        for c in node[1:]:
+            if isinstance(c, list) and c and c[0] == tag:
+                return c
+        return None
+
+    out: list[dict[str, Any]] = []
+    for node in root[1:]:
+        if not (isinstance(node, list) and node and node[0] == "pad"):
+            continue
+        at = child(node, "at") or ["at", "0", "0"]
+        size = child(node, "size") or ["size", "0", "0"]
+        drill = child(node, "drill")
+        layers = child(node, "layers") or ["layers"]
+        d, slot = 0.0, 0.0
+        if drill:
+            vals = [v for v in drill[1:] if not isinstance(v, list)]
+            if vals and vals[0] == "oval":
+                slot, d = float(vals[1]), float(vals[2])
+            elif vals:
+                d = float(vals[0])
+
+        def num(tag: str, node: list = node) -> float:
+            c = child(node, tag)
+            return float(c[1]) if c and len(c) > 1 else 0.0
+
+        out.append({
+            "number": node[1], "type": node[2], "shape": node[3],
+            "x": float(at[1]), "y": -float(at[2]),
+            "rotation": float(at[3]) if len(at) > 3 else 0.0,
+            "w": float(size[1]), "h": float(size[2]),
+            "drill": d, "slot": slot, "layers": list(layers[1:]),
+            "roundrect_rratio": num("roundrect_rratio"),
+            "solder_mask_margin": num("solder_mask_margin"),
+            "solder_paste_margin": num("solder_paste_margin"),
+        })
+    return out

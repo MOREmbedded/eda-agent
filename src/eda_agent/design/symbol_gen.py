@@ -135,6 +135,7 @@ class PassiveSymbol:
     lines: tuple[dict, ...]        # {x1,y1,x2,y2}
     rectangles: tuple[dict, ...]   # {x1,y1,x2,y2}
     polygons: tuple[dict, ...]     # {points: [(x,y),...]}
+    arcs: tuple[dict, ...] = ()    # {x,y,radius,start,end} degrees
 
 
 # Standard 2-pin horizontal frame (rule-14 origin at pin-1 wire-end).
@@ -171,24 +172,34 @@ def generate_passive_symbol(kind: str) -> PassiveSymbol:
     lines: list[dict] = []
     rects: list[dict] = []
     polys: list[dict] = []
+    arcs: list[dict] = []
 
     # All glyph features sit on the 100-mil grid: the symbol primitive tools
     # snap to 100, so sub-100 detail (e.g. plates 40 mils apart) would
     # collapse. Body spans x in [100, 300] (the pin body-attach points),
     # y in [-100, 100].
-    if k in ("resistor", "r", "res", "inductor", "l", "ind"):
+    if k in ("resistor", "r", "res"):
         rects.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_R, "y2": 100})
+    elif k in ("inductor", "l", "ind"):
+        # Four half-turn humps across the body, the conventional coil.
+        for cx in (125, 175, 225, 275):
+            arcs.append({"x": cx, "y": 0, "radius": 25, "start": 0, "end": 180})
     elif k in ("capacitor", "c", "cap"):
-        # Two parallel plates at the body edges; the pin stubs are the leads.
-        lines.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_L, "y2": 100})
-        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R, "y2": 100})
+        # Two plates a narrow gap apart in the middle, leads in from the
+        # pins. Plates at the body edges read as two unrelated bars.
+        lines.append({"x1": _BODY_L, "y1": 0, "x2": 175, "y2": 0})
+        lines.append({"x1": 225, "y1": 0, "x2": _BODY_R, "y2": 0})
+        lines.append({"x1": 175, "y1": -100, "x2": 175, "y2": 100})
+        lines.append({"x1": 225, "y1": -100, "x2": 225, "y2": 100})
     elif k in ("polarized_capacitor", "cap_pol", "electrolytic", "cp"):
-        # Two plates plus a '+' by the positive (pin-1) plate -- the
+        # Same plates plus a '+' by the positive (pin-1) plate -- the
         # unambiguous polarity marker for an electrolytic / tantalum.
-        lines.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_L, "y2": 100})
-        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R, "y2": 100})
-        lines.append({"x1": 25, "y1": 150, "x2": 75, "y2": 150})   # + horiz
-        lines.append({"x1": 50, "y1": 125, "x2": 50, "y2": 175})   # + vert
+        lines.append({"x1": _BODY_L, "y1": 0, "x2": 175, "y2": 0})
+        lines.append({"x1": 225, "y1": 0, "x2": _BODY_R, "y2": 0})
+        lines.append({"x1": 175, "y1": -100, "x2": 175, "y2": 100})
+        lines.append({"x1": 225, "y1": -100, "x2": 225, "y2": 100})
+        lines.append({"x1": 115, "y1": 75, "x2": 155, "y2": 75})   # + horiz
+        lines.append({"x1": 135, "y1": 55, "x2": 135, "y2": 95})   # + vert
     elif k in ("diode", "d"):
         # Triangle (anode at the base, apex pointing right) + cathode bar.
         polys.append({"points": [(_BODY_L, -100), (_BODY_L, 100), (_BODY_R, 0)]})
@@ -203,23 +214,433 @@ def generate_passive_symbol(kind: str) -> PassiveSymbol:
             lines.append({"x1": x0 + 75, "y1": 200, "x2": x0 + 50, "y2": 200})
             lines.append({"x1": x0 + 75, "y1": 200, "x2": x0 + 75, "y2": 175})
     elif k in ("crystal", "xtal", "y"):
-        # Two plates (the electrodes) with the resonator rectangle between.
-        lines.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_L, "y2": 100})
-        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R, "y2": 100})
-        rects.append({"x1": 150, "y1": -75, "x2": 250, "y2": 75})
+        # Two plates (the electrodes) close around the resonator.
+        lines.append({"x1": _BODY_L, "y1": 0, "x2": 150, "y2": 0})
+        lines.append({"x1": 250, "y1": 0, "x2": _BODY_R, "y2": 0})
+        lines.append({"x1": 150, "y1": -100, "x2": 150, "y2": 100})
+        lines.append({"x1": 250, "y1": -100, "x2": 250, "y2": 100})
+        rects.append({"x1": 175, "y1": -75, "x2": 225, "y2": 75})
     elif k in ("fuse", "f"):
         # IEC fuse: a rectangle with the lead passing straight through.
         rects.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_R, "y2": 100})
         lines.append({"x1": _BODY_L, "y1": 0, "x2": _BODY_R, "y2": 0})
+    elif k in ("zener", "z", "tvs", "tvs_uni"):
+        # Diode with the cathode bar's ends hooked in opposite directions.
+        # A unidirectional TVS is drawn the same way.
+        polys.append({"points": [(_BODY_L, -100), (_BODY_L, 100), (_BODY_R, 0)]})
+        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R, "y2": 100})
+        lines.append({"x1": _BODY_R, "y1": 100, "x2": _BODY_R - 25, "y2": 100})
+        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R + 25, "y2": -100})
+    elif k in ("schottky", "sd"):
+        # Diode with an S-shaped cathode bar.
+        polys.append({"points": [(_BODY_L, -100), (_BODY_L, 100), (_BODY_R, 0)]})
+        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R, "y2": 100})
+        lines.append({"x1": _BODY_R, "y1": 100, "x2": _BODY_R - 25, "y2": 100})
+        lines.append({"x1": _BODY_R - 25, "y1": 100, "x2": _BODY_R - 25, "y2": 75})
+        lines.append({"x1": _BODY_R, "y1": -100, "x2": _BODY_R + 25, "y2": -100})
+        lines.append({"x1": _BODY_R + 25, "y1": -100, "x2": _BODY_R + 25, "y2": -75})
+    elif k in ("tvs_bidirectional", "tvs_bi", "bidirectional_tvs"):
+        # Two diodes tip to tip on a shared, hooked bar: conducts both ways.
+        polys.append({"points": [(_BODY_L, -100), (_BODY_L, 100), (200, 0)]})
+        polys.append({"points": [(_BODY_R, -100), (_BODY_R, 100), (200, 0)]})
+        lines.append({"x1": 200, "y1": -100, "x2": 200, "y2": 100})
+        lines.append({"x1": 200, "y1": 100, "x2": 175, "y2": 100})
+        lines.append({"x1": 200, "y1": -100, "x2": 225, "y2": -100})
+    elif k in ("switch", "spst", "sw"):
+        # Open single-throw contact: a blade lifted off the right contact.
+        lines.append({"x1": _BODY_L, "y1": 0, "x2": 275, "y2": 75})
+        lines.append({"x1": _BODY_R, "y1": 0, "x2": _BODY_R, "y2": 25})
+    elif k in ("push_button", "pushbutton", "button", "tactile"):
+        # Normally-open push button: contacts, a bridging bar above, plunger.
+        lines.append({"x1": _BODY_L, "y1": 0, "x2": _BODY_L, "y2": 25})
+        lines.append({"x1": _BODY_R, "y1": 0, "x2": _BODY_R, "y2": 25})
+        lines.append({"x1": 75, "y1": 75, "x2": 325, "y2": 75})
+        lines.append({"x1": 200, "y1": 75, "x2": 200, "y2": 150})
+        lines.append({"x1": 150, "y1": 150, "x2": 250, "y2": 150})
+    elif k in _TRANSISTOR_KINDS:
+        return _transistor_symbol(_TRANSISTOR_KINDS[k])
     else:
         raise ValueError(
-            f"unknown passive kind {kind!r}; use resistor/capacitor/"
-            f"polarized_capacitor/inductor/diode/led/crystal/fuse")
+            f"unknown passive kind {kind!r}; use one of: "
+            f"{', '.join(PASSIVE_KINDS)}")
 
     return PassiveSymbol(pins=pins, lines=tuple(lines),
-                         rectangles=tuple(rects), polygons=tuple(polys))
+                         rectangles=tuple(rects), polygons=tuple(polys),
+                         arcs=tuple(arcs))
+
+
+#: Canonical kinds, for messages and docs. Aliases are accepted too.
+PASSIVE_KINDS = (
+    "resistor", "capacitor", "polarized_capacitor", "inductor", "diode",
+    "led", "crystal", "fuse", "zener", "schottky", "tvs",
+    "tvs_bidirectional", "switch", "push_button", "nmos", "pmos", "npn",
+    "pnp",
+)
+
+_TRANSISTOR_KINDS = {
+    "nmos": "nmos", "nfet": "nmos", "n_mosfet": "nmos", "mosfet_n": "nmos",
+    "pmos": "pmos", "pfet": "pmos", "p_mosfet": "pmos", "mosfet_p": "pmos",
+    "npn": "npn", "bjt_npn": "npn",
+    "pnp": "pnp", "bjt_pnp": "pnp",
+}
+
+#: Default pin numbers by role, the common SOT-23 assignment: a MOSFET is
+#: 1=G 2=S 3=D and a BJT 1=B 2=E 3=C. Check the datasheet; the caller can
+#: override with ``pin_map``.
+TRANSISTOR_DEFAULT_PINS = {
+    "nmos": {"G": "1", "S": "2", "D": "3"},
+    "pmos": {"G": "1", "S": "2", "D": "3"},
+    "npn": {"B": "1", "E": "2", "C": "3"},
+    "pnp": {"B": "1", "E": "2", "C": "3"},
+}
+
+
+def _arrowhead(tip: tuple[float, float], tail: tuple[float, float],
+               length: float = 40, half_width: float = 18) -> dict:
+    """A filled arrowhead at ``tip`` pointing away from ``tail``."""
+    dx, dy = tip[0] - tail[0], tip[1] - tail[1]
+    n = (dx * dx + dy * dy) ** 0.5 or 1.0
+    ux, uy = dx / n, dy / n
+    bx, by = tip[0] - ux * length, tip[1] - uy * length
+    px, py = -uy * half_width, ux * half_width
+    pts = [tip, (bx + px, by + py), (bx - px, by - py)]
+    return {"points": [(int(round(x)), int(round(y))) for x, y in pts]}
+
+
+def _transistor_symbol(kind: str,
+                       pin_map: dict[str, str] | None = None) -> PassiveSymbol:
+    """MOSFET or BJT: control pin on the left, the other two top and bottom.
+
+    The control pin's wire end is the origin (rule 14). Top and bottom pins
+    leave at x=300 and land their wire ends on the 100-mil grid at
+    (300, +/-300). Glyph detail is finer than the pin grid, so emit lines
+    and polygons without snapping them to 100.
+    """
+    roles = dict(TRANSISTOR_DEFAULT_PINS[kind])
+    roles.update({k.upper(): str(v) for k, v in (pin_map or {}).items()})
+    lines: list[dict] = []
+    polys: list[dict] = []
+
+    def pin(role, x, y, rotation):
+        return {"designator": roles[role], "name": role, "x": x, "y": y,
+                "length": 200, "rotation": rotation,
+                "electrical_type": "passive", "show_name": False}
+
+    if kind in ("nmos", "pmos"):
+        # Drain on top, source below, gate on the left (an N device's drain
+        # is the higher potential; a P device conventionally flips that,
+        # so its source is on top).
+        top, bottom = ("D", "S") if kind == "nmos" else ("S", "D")
+        pins = (pin("G", 200, 0, 180), pin(top, 300, 100, 90),
+                pin(bottom, 300, -100, 270))
+        lines.append({"x1": 200, "y1": -100, "x2": 200, "y2": 100})   # gate
+        for y1, y2 in ((50, 100), (-25, 25), (-100, -50)):             # channel
+            lines.append({"x1": 250, "y1": y1, "x2": 250, "y2": y2})
+        lines.append({"x1": 250, "y1": 75, "x2": 300, "y2": 75})
+        lines.append({"x1": 300, "y1": 75, "x2": 300, "y2": 100})
+        lines.append({"x1": 250, "y1": -75, "x2": 300, "y2": -75})
+        lines.append({"x1": 300, "y1": -75, "x2": 300, "y2": -100})
+        # Body tied to the source, with the arrow on the body connection:
+        # into the channel for N, out of it for P.
+        src_y = -75 if kind == "nmos" else 75
+        lines.append({"x1": 250, "y1": 0, "x2": 300, "y2": 0})
+        lines.append({"x1": 300, "y1": 0, "x2": 300, "y2": src_y})
+        if kind == "nmos":
+            polys.append(_arrowhead((252, 0), (300, 0)))
+        else:
+            polys.append(_arrowhead((298, 0), (250, 0)))
+    else:
+        # Collector on top for NPN, emitter on top for PNP; arrow on the
+        # emitter, out of the base for NPN, into it for PNP.
+        top, bottom = ("C", "E") if kind == "npn" else ("E", "C")
+        pins = (pin("B", 200, 0, 180), pin(top, 300, 100, 90),
+                pin(bottom, 300, -100, 270))
+        lines.append({"x1": 200, "y1": -100, "x2": 200, "y2": 100})   # base
+        lines.append({"x1": 200, "y1": 50, "x2": 300, "y2": 100})
+        lines.append({"x1": 200, "y1": -50, "x2": 300, "y2": -100})
+        if kind == "npn":
+            polys.append(_arrowhead((300, -100), (200, -50)))
+        else:
+            polys.append(_arrowhead((210, 55), (300, 100)))
+    return PassiveSymbol(pins=pins, lines=tuple(lines), rectangles=(),
+                         polygons=tuple(polys))
+
+
+def generate_transistor_symbol(kind: str,
+                               pin_map: dict[str, str] | None = None
+                               ) -> PassiveSymbol:
+    """Public entry for a MOSFET/BJT with an optional role->pin override."""
+    k = _TRANSISTOR_KINDS.get(kind.strip().lower())
+    if k is None:
+        raise ValueError(f"unknown transistor kind {kind!r}; use "
+                         f"nmos/pmos/npn/pnp")
+    bad = set(k_.upper() for k_ in (pin_map or {})) - set(
+        TRANSISTOR_DEFAULT_PINS[k])
+    if bad:
+        raise ValueError(f"pin_map roles for {k} are "
+                         f"{sorted(TRANSISTOR_DEFAULT_PINS[k])}, not "
+                         f"{sorted(bad)}")
+    return _transistor_symbol(k, pin_map)
+
+
+# ---------------------------------------------------------------------------
+# Amplifiers: the triangle
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_AMP_WORDS = _re.compile(
+    r"op[\s\-_]?amp|operational amplifier|comparator|current[\s\-_]?sense|"
+    r"current[\s\-_]?shunt|instrumentation amplifier|difference amplifier|"
+    r"differential amplifier|in[\s\-_]?amp\b|amplifier", _re.I)
+
+# Role patterns are matched against the pin NAME with an optional unit
+# letter or number (A/B/C/D or 1-4) before or after, e.g. "+INA", "INA+",
+# "IN1-", "OUTB", "VOUT_A".
+_IN_POS = _re.compile(r"^(?:\+IN|IN\+|INP|IN_?P|VIN\+|\+VIN|NONINV|NI|\+)$",
+                      _re.I)
+_IN_NEG = _re.compile(r"^(?:-IN|IN-|INN|IN_?N|VIN-|-VIN|INV|-)$", _re.I)
+_OUT = _re.compile(r"^(?:V?OUT|VO|O|OUTPUT)$", _re.I)
+_SUPPLY_POS = _re.compile(
+    r"^(?:V\+|\+V|VCC\+?|VDD|AVDD|VS\+?|\+VS|VPOS|V_?POS|VCC|VS|PWR)$", _re.I)
+_SUPPLY_NEG = _re.compile(
+    r"^(?:V-|-V|VEE|VSS|AVSS|VS-|-VS|VNEG|V_?NEG|GND|AGND|DGND|PGND)$", _re.I)
+_UNIT = _re.compile(r"^(?P<a>[A-D1-4])?(?P<core>.+?)(?P<b>[A-D1-4])?$", _re.I)
+
+
+def _norm(name: str) -> str:
+    return str(name).strip().replace(" ", "").replace("_", "").upper()
+
+
+def _role(name: str) -> tuple[str | None, str]:
+    """(role, unit) for one pin name; role None when it is not an amp pin."""
+    n = _norm(name)
+    for pattern, role in ((_SUPPLY_POS, "v+"), (_SUPPLY_NEG, "v-")):
+        if pattern.match(n):
+            return role, ""
+    for pattern, role in ((_IN_POS, "in+"), (_IN_NEG, "in-"), (_OUT, "out")):
+        if pattern.match(n):
+            return role, ""
+    # Unit suffix or prefix: OUTA, INA+, +INA, IN1-, OUT2, A_OUT ...
+    for core, unit in ((n[:-1], n[-1]), (n[1:], n[0])):
+        if unit in "ABCD1234" and core:
+            core = core.rstrip("_")
+            for pattern, role in ((_IN_POS, "in+"), (_IN_NEG, "in-"),
+                                  (_OUT, "out")):
+                if pattern.match(core):
+                    return role, unit
+    # "+INA" style: sign first, unit last.
+    m = _re.match(r"^([+-])IN([A-D1-4])$", n)
+    if m:
+        return ("in+" if m.group(1) == "+" else "in-"), m.group(2)
+    m = _re.match(r"^IN([A-D1-4])([+-])$", n)
+    if m:
+        return ("in+" if m.group(2) == "+" else "in-"), m.group(1)
+    return None, ""
+
+
+def classify_amplifier_pins(pins: list[dict]) -> dict | None:
+    """Group pins into amplifier units, or None when they do not form one.
+
+    Returns ``{"units": [{"unit", "in+", "in-", "out", "extra": [...]}],
+    "v+": [...], "v-": [...], "extra": [...]}``. A unit needs both inputs
+    and an output. Pins that fit no role go to ``extra``: on a single
+    amplifier they join the left side under the inputs; on a multi-unit
+    part they go on the power part.
+    """
+    units: dict[str, dict] = {}
+    supply_pos: list[dict] = []
+    supply_neg: list[dict] = []
+    extra: list[dict] = []
+    for p in pins:
+        role, unit = _role(p.get("name", ""))
+        if role == "v+":
+            supply_pos.append(p)
+        elif role == "v-":
+            supply_neg.append(p)
+        elif role in ("in+", "in-", "out"):
+            u = units.setdefault(unit, {"unit": unit})
+            if role in u:
+                extra.append(p)          # a second OUT etc. is not a unit role
+            else:
+                u[role] = p
+        else:
+            extra.append(p)
+    whole = [u for u in units.values()
+             if all(r in u for r in ("in+", "in-", "out"))]
+    if not whole:
+        return None
+    for u in units.values():
+        if u not in whole:
+            extra.extend(u[r] for r in ("in+", "in-", "out") if r in u)
+    whole.sort(key=lambda u: u["unit"])
+    for u in whole:
+        u["extra"] = []
+    return {"units": whole, "v+": supply_pos, "v-": supply_neg,
+            "extra": extra}
+
+
+def looks_like_amplifier(pins: list[dict], description: str = "") -> bool:
+    """True when the description names an amplifier/comparator, or when the
+    pin names form at least one complete IN+/IN-/OUT unit."""
+    if description and _AMP_WORDS.search(description):
+        return classify_amplifier_pins(pins) is not None
+    return classify_amplifier_pins(pins) is not None
+
+
+@dataclass(frozen=True)
+class AmplifierSymbol:
+    """Triangle amplifier symbol, possibly multi-part.
+
+    ``parts`` holds one entry per Altium part, each with ``polygons``,
+    ``rectangles``, ``lines``, ``texts`` and ``pins``, all carrying
+    ``owner_part_id``."""
+
+    parts: tuple[dict, ...]
+    part_count: int
+    body_fill: int = 8454143
+
+
+#: Altium's standard light-yellow functional-block fill (discipline rule 17).
+BODY_FILL = 8454143
+
+
+_ROLE_TYPES = {"in+": "input", "in-": "input", "out": "output",
+               "v+": "power", "v-": "power"}
+
+
+def _pin(p: dict, x: int, y: int, rotation: int, part: int,
+         show_name: bool) -> dict:
+    # The caller's electrical type wins; otherwise the role decides it, so
+    # ERC sees inputs, an output and power pins rather than all passive.
+    etype = p.get("electrical_type")
+    if not etype:
+        etype = _ROLE_TYPES.get(_role(p.get("name", ""))[0] or "", "passive")
+    return {"designator": str(p.get("designator", "")),
+            "name": str(p.get("name", "")), "x": x, "y": y, "length": 200,
+            "rotation": rotation, "electrical_type": etype,
+            "owner_part_id": part, "show_name": show_name}
+
+
+def _triangle_part(unit: dict, part: int, supply_pos: list[dict],
+                   supply_neg: list[dict], extra_left: list[dict],
+                   invert_on_top: bool) -> dict:
+    """One triangle: inputs left, output at the apex, supplies top/bottom.
+
+    Geometry, all pins on the 100-mil grid with the top-left input's wire
+    end at the origin (rule 14):
+
+    * inputs (and any extra left pins) at y = 0, -200, -400 ...
+      pointing left from x=200;
+    * the base of the triangle on x=200 from y=+200 down to one pitch
+      below the last left pin; the apex at the base's mid-height, as far
+      right as the base is tall;
+    * the output leaves the apex pointing right;
+    * supply pins leave the slanted edges straight up and down at
+      x = 400, 600 ..., where the edge crosses the grid exactly.
+    """
+    first, second = ((unit["in-"], unit["in+"]) if invert_on_top
+                     else (unit["in+"], unit["in-"]))
+    left = [first, second, *extra_left]
+    y_top = 200
+    y_bot = -(len(left) - 1) * 200 - 200
+    height = y_top - y_bot
+    yc = (y_top + y_bot) // 2
+    apex_x = 200 + height
+    pins = []
+    for i, p in enumerate(left):
+        is_input = p is unit["in+"] or p is unit["in-"]
+        pins.append(_pin(p, 200, -i * 200, 180, part, show_name=not is_input))
+    pins.append(_pin(unit["out"], apex_x, yc, 0, part, show_name=False))
+
+    # Slanted edges: y = y_top - (x-200)/2 on top, y_bot + (x-200)/2 below.
+    slots = [x for x in range(400, apex_x - 100, 200)]
+    if len(supply_pos) > len(slots) or len(supply_neg) > len(slots):
+        raise ValueError(
+            f"{max(len(supply_pos), len(supply_neg))} supply pins on one "
+            f"edge do not fit a triangle this size ({len(slots)} places)")
+    for x, p in zip(slots, supply_pos):
+        pins.append(_pin(p, x, y_top - (x - 200) // 2, 90, part,
+                         show_name=True))
+    for x, p in zip(slots, supply_neg):
+        pins.append(_pin(p, x, y_bot + (x - 200) // 2, 270, part,
+                         show_name=True))
+
+    # "+" and "-" just inside the base, beside each input.
+    texts = []
+    for i, p in enumerate((first, second)):
+        texts.append({"text": "+" if p is unit["in+"] else "-",
+                      "x": 230, "y": -i * 200 - 40, "font_size": 12,
+                      "owner_part_id": part})
+    return {
+        "part": part,
+        "polygons": [{"points": [(200, y_top), (200, y_bot), (apex_x, yc)],
+                      "fill_color": BODY_FILL, "owner_part_id": part}],
+        "rectangles": [], "lines": [], "texts": texts, "pins": pins,
+    }
+
+
+def _power_part(part: int, supply_pos: list[dict], supply_neg: list[dict],
+                extra: list[dict]) -> dict:
+    """Power part of a multi-unit amplifier: a small block, supplies leaving
+    the top and bottom, anything else on the left. The first supply's wire
+    end is at the origin."""
+    n = max(len(supply_pos), len(supply_neg), 1)
+    width = 200 * n
+    pins = []
+    for i, p in enumerate(supply_pos):
+        pins.append(_pin(p, i * 200, -200, 90, part, show_name=True))
+    body_bot = -600 - 200 * max(len(extra) - 1, 0)
+    for i, p in enumerate(supply_neg):
+        pins.append(_pin(p, i * 200, body_bot, 270, part, show_name=True))
+    for i, p in enumerate(extra):
+        pins.append(_pin(p, -100, -400 - i * 200, 180, part, show_name=True))
+    rect = {"x1": -100, "y1": -200, "x2": width - 100, "y2": body_bot,
+            "fill_color": BODY_FILL, "owner_part_id": part}
+    return {"part": part, "polygons": [], "rectangles": [rect], "lines": [],
+            "texts": [], "pins": pins}
+
+
+def generate_amplifier_symbol(pins: list[dict], *,
+                              invert_on_top: bool = False
+                              ) -> AmplifierSymbol:
+    """Triangle symbol for an op-amp, comparator, current-sense or
+    instrumentation amplifier, from its pins (``designator`` + ``name``).
+
+    One unit: a single triangle carries every pin; supplies on the slanted
+    edges, anything else on the left under the inputs. Several units
+    (dual/quad): one triangle per part, plus a last part holding the
+    supplies and any shared pins. ``invert_on_top`` puts IN- above IN+.
+
+    Raises ValueError when the names do not give a complete IN+/IN-/OUT
+    unit, so the caller can fall back to a rectangle.
+    """
+    groups = classify_amplifier_pins(pins)
+    if groups is None:
+        raise ValueError(
+            "no complete amplifier unit (IN+, IN- and OUT) in these pin names")
+    designators = [str(p.get("designator", "")).strip() for p in pins]
+    if not all(designators):
+        raise ValueError("every pin needs a non-empty 'designator'")
+    dupes = sorted({d for d in designators if designators.count(d) > 1})
+    if dupes:
+        raise ValueError(f"duplicate pin designator(s): {dupes}")
+    units = groups["units"]
+    if len(units) == 1:
+        part = _triangle_part(units[0], 1, groups["v+"], groups["v-"],
+                              groups["extra"], invert_on_top)
+        return AmplifierSymbol(parts=(part,), part_count=1)
+    parts = [_triangle_part(u, i + 1, [], [], [], invert_on_top)
+             for i, u in enumerate(units)]
+    if groups["v+"] or groups["v-"] or groups["extra"]:
+        parts.append(_power_part(len(units) + 1, groups["v+"], groups["v-"],
+                                 groups["extra"]))
+    return AmplifierSymbol(parts=tuple(parts), part_count=len(parts))
 
 
 __all__ = ["SymbolGeometry", "generate_ic_symbol",
-           "PassiveSymbol", "generate_passive_symbol",
+           "PassiveSymbol", "generate_passive_symbol", "PASSIVE_KINDS",
+           "generate_transistor_symbol", "TRANSISTOR_DEFAULT_PINS",
+           "AmplifierSymbol", "generate_amplifier_symbol",
+           "classify_amplifier_pins", "looks_like_amplifier", "BODY_FILL",
            "PIN_LENGTH", "PIN_PITCH"]

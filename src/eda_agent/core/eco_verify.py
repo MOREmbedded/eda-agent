@@ -1,35 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Verify that an ECO actually finished binding the board's pad nets.
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""Check that the board's pads carry the nets the schematic gives their pins.
 
-Altium's Update-PCB ECO can report success and still leave pads unbound:
-observed live on a real board where U15 came back with 10 of its 13 pads
-carrying no net while its sibling U14 was complete. Nothing in the ECO
-response said so, so the omission only surfaced much later as phantom
-"unrouted" nets and a manual repair with ``pcb_bind_pad_nets``.
+Update PCB can report success and still leave pads with no net: one part
+came back with 10 of its 13 pads unbound while its twin was complete, and
+nothing in the reply said so. It showed up later as unrouted nets.
 
-This module turns that silent partial failure into data. It is pure: it
-takes the compiled schematic's (designator, pin, net) triples and the
-board's pad records and reports which pads the ECO left unbound, which
-disagree with the schematic, and which exist on only one side. Keeping it
-free of Altium means the comparison itself is unit-testable, and only the
-two data fetches remain live-dependent.
+This compares the two sides offline. The schematic side is the
+``components`` list from proj_get_connectivity_many (``pins`` with
+``pin_number`` and ``net``); the board side is the ``pads`` list from
+pcb_get_pad_properties (``component``, ``name`` and ``net``). Pins and
+pads are matched on designator and pin number, ignoring case and
+surrounding spaces, since pad names like "a1" and "A1" both occur.
 
-Matching rules, and why:
-
-* Pins are matched to pads by ``(designator, pin)`` with both sides
-  upper-cased and whitespace-stripped. Altium is inconsistent about pad
-  name case for alphanumeric BGA pins ("A1" vs "a1"), and a case-only
-  mismatch reported as "unbound" would be a false alarm.
-* A schematic pin with an EMPTY net is not a defect -- an unconnected pin
-  legitimately has no net -- so those are excluded from the unbound set
-  and counted separately.
-* Power pins hidden in the symbol still appear in the compiled netlist,
-  so they are compared like any other pin.
+A pin with no net is unconnected on the schematic and is only counted.
+A pad with no component (a fiducial, a mounting hole) has no pin to
+match and is left out. A pad name can repeat on one part, a thermal pad
+split in several pieces for example, and each copy is checked.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
+
+DEFAULT_LIMIT = 200
 
 
 def _key(designator: Any, pin: Any) -> tuple[str, str]:
@@ -37,142 +31,104 @@ def _key(designator: Any, pin: Any) -> tuple[str, str]:
             str(pin or "").strip().upper())
 
 
-def _clean(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def netlist_pin_map(components: Iterable[dict[str, Any]]
-                    ) -> dict[tuple[str, str], str]:
-    """(designator, pin) -> net, from ``proj_get_connectivity_many``.
-
-    Accepts the per-component records that handler returns:
-    ``{"designator": "U15", "pins": [{"pin_number": "1", "net": "GND"},
-    ...]}``. Records without a designator, and pins without a number, are
-    skipped -- they cannot be matched to a pad either way.
-    """
-    out: dict[tuple[str, str], str] = {}
+def schematic_pin_nets(components: Iterable[Any]) -> dict[tuple[str, str], str]:
+    """``(designator, pin) -> net`` from proj_get_connectivity_many."""
+    nets: dict[tuple[str, str], str] = {}
     for comp in components or []:
         if not isinstance(comp, dict):
-            continue
-        desig = _clean(comp.get("designator"))
-        if not desig:
             continue
         for pin in comp.get("pins") or []:
             if not isinstance(pin, dict):
                 continue
-            number = _clean(pin.get("pin_number") or pin.get("pin"))
-            if not number:
-                continue
-            out[_key(desig, number)] = _clean(pin.get("net"))
-    return out
+            key = _key(comp.get("designator"), pin.get("pin_number"))
+            if all(key):
+                nets[key] = str(pin.get("net") or "").strip()
+    return nets
 
 
-def pad_net_map(pads: Iterable[dict[str, Any]]
-                ) -> dict[tuple[str, str], str]:
-    """(designator, pad) -> net, from ``pcb_get_pad_properties``.
-
-    Pads with no parent component are free pads (fiducials, tooling,
-    stitching) and are dropped: they have no schematic counterpart, so
-    including them would manufacture false "extra on the PCB" findings.
-    """
-    out: dict[tuple[str, str], str] = {}
+def board_pad_nets(pads: Iterable[Any]) -> dict[tuple[str, str], list[str]]:
+    """``(designator, pad) -> [net of each pad of that name]``."""
+    nets: dict[tuple[str, str], list[str]] = {}
     for pad in pads or []:
         if not isinstance(pad, dict):
             continue
-        comp = _clean(pad.get("component"))
-        name = _clean(pad.get("name"))
-        if not comp or not name:
-            continue
-        out[_key(comp, name)] = _clean(pad.get("net"))
-    return out
+        key = _key(pad.get("component"), pad.get("name"))
+        if all(key):
+            nets.setdefault(key, []).append(str(pad.get("net") or "").strip())
+    return nets
 
 
-def compare_netlist_to_pads(
-    netlist_pins: dict[tuple[str, str], str],
-    pad_nets: dict[tuple[str, str], str],
-    *,
-    limit: int = 200,
-) -> dict[str, Any]:
-    """Compare compiled schematic pins against board pad nets.
+def _listed(out: dict[str, Any], name: str, rows: list[dict], limit: int):
+    out[name] = rows[:limit]
+    out[f"{name}_count"] = len(rows)
+    out[f"{name}_truncated"] = len(rows) > limit
 
-    Args:
-        netlist_pins: ``(designator, pin) -> net`` from the schematic.
-        pad_nets: ``(designator, pad) -> net`` from the board.
-        limit: Cap on each reported list. The counts are always the true
-            totals and each list carries its own ``*_truncated`` flag, so
-            a capped list can never be mistaken for a complete one.
 
-    Returns:
-        Dict with ``complete`` plus:
-          - ``pads_unbound``: pin has a net in the schematic, the matching
-            pad has none. This is the ECO-left-it-behind case.
-          - ``pads_mismatched``: both sides have a net and they differ.
-          - ``pins_missing_pad``: schematic pin with no pad on the board.
-          - ``pads_not_in_schematic``: component pad with no schematic pin.
-          - ``pins_unconnected``: schematic pins with no net at all (not a
-            defect; reported so the numbers reconcile).
+def verify_eco(components: Iterable[Any], pads: Iterable[Any], *,
+               limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
+    """Compare schematic pin nets with board pad nets.
+
+    Returns ``complete`` (true only when both sides were read and every
+    pin with a net has pads carrying that net) and four lists, each
+    with a ``_count`` and a ``_truncated`` flag past ``limit``:
+
+    - ``unbound``: the pin has a net and a pad of that name has none.
+      This is what an unfinished ECO leaves.
+    - ``mismatched``: the pad carries a different net.
+    - ``pins_without_pad``: a pin with a net has no pad on the board.
+    - ``pads_without_pin``: a part's pad has no pin on the schematic.
+
+    ``unbound_by_component`` counts the unbound pads per part, which is
+    how a pcb_bind_pad_nets repair is laid out. ``nothing_compared`` is
+    true when either side came back empty, from the wrong project, an
+    uncompiled one, or no board; that is never reported as complete.
     """
-    unbound: list[dict[str, str]] = []
-    mismatched: list[dict[str, str]] = []
-    missing_pad: list[dict[str, str]] = []
-    unconnected = 0
+    pins = schematic_pin_nets(components)
+    board = board_pad_nets(pads)
 
-    for (desig, pin), sch_net in sorted(netlist_pins.items()):
-        if not sch_net:
+    unbound: list[dict] = []
+    mismatched: list[dict] = []
+    without_pad: list[dict] = []
+    unconnected = 0
+    for (designator, pin), net in sorted(pins.items()):
+        if not net:
             unconnected += 1
             continue
-        if (desig, pin) not in pad_nets:
-            missing_pad.append(
-                {"designator": desig, "pin": pin, "net": sch_net})
+        if (designator, pin) not in board:
+            without_pad.append(
+                {"designator": designator, "pin": pin, "net": net})
             continue
-        pcb_net = pad_nets[(desig, pin)]
-        if not pcb_net:
-            unbound.append(
-                {"designator": desig, "pin": pin, "expected_net": sch_net})
-        elif pcb_net != sch_net:
-            mismatched.append({
-                "designator": desig, "pin": pin,
-                "schematic_net": sch_net, "pcb_net": pcb_net,
-            })
-
-    extra = [
-        {"designator": d, "pin": p, "net": n}
-        for (d, p), n in sorted(pad_nets.items())
-        if (d, p) not in netlist_pins
+        for pad_net in board[(designator, pin)]:
+            if not pad_net:
+                unbound.append(
+                    {"designator": designator, "pin": pin, "net": net})
+            elif pad_net != net:
+                mismatched.append({"designator": designator, "pin": pin,
+                                   "schematic_net": net, "pad_net": pad_net})
+    without_pin = [
+        {"designator": designator, "pin": pin, "net": pad_net}
+        for (designator, pin), pad_nets in sorted(board.items())
+        if (designator, pin) not in pins
+        for pad_net in pad_nets
     ]
 
-    # Per-component rollup: "U15 has 10 unbound pads" is the actionable
-    # sentence, and it is what a pcb_bind_pad_nets repair is organised by.
     by_component: dict[str, int] = {}
     for row in unbound:
-        by_component[row["designator"]] = (
-            by_component.get(row["designator"], 0) + 1)
+        by_component[row["designator"]] = by_component.get(
+            row["designator"], 0) + 1
 
-    return {
-        "complete": not unbound and not mismatched and not missing_pad,
-        "schematic_pins_checked": len(netlist_pins),
-        "pcb_pads_checked": len(pad_nets),
-        "pins_unconnected_in_schematic": unconnected,
-        "pads_unbound_count": len(unbound),
-        "pads_unbound": unbound[:limit],
-        "pads_unbound_truncated": len(unbound) > limit,
-        "pads_unbound_by_component": dict(sorted(by_component.items())),
-        "pads_mismatched_count": len(mismatched),
-        "pads_mismatched": mismatched[:limit],
-        "pads_mismatched_truncated": len(mismatched) > limit,
-        "pins_missing_pad_count": len(missing_pad),
-        "pins_missing_pad": missing_pad[:limit],
-        "pins_missing_pad_truncated": len(missing_pad) > limit,
-        "pads_not_in_schematic_count": len(extra),
-        "pads_not_in_schematic": extra[:limit],
-        "pads_not_in_schematic_truncated": len(extra) > limit,
+    nothing_compared = not pins or not board
+    out: dict[str, Any] = {
+        "complete": not (nothing_compared or unbound or mismatched
+                         or without_pad),
+        "nothing_compared": nothing_compared,
+        "pins_checked": len(pins),
+        "pads_checked": sum(len(v) for v in board.values()),
+        "pins_unconnected": unconnected,
+        "unbound_by_component": dict(sorted(by_component.items())),
     }
-
-
-def verify_eco(components: Iterable[dict[str, Any]],
-               pads: Iterable[dict[str, Any]],
-               *,
-               limit: int = 200) -> dict[str, Any]:
-    """Convenience wrapper: raw handler payloads in, comparison out."""
-    return compare_netlist_to_pads(
-        netlist_pin_map(components), pad_net_map(pads), limit=limit)
+    _listed(out, "unbound", unbound, limit)
+    _listed(out, "mismatched", mismatched, limit)
+    _listed(out, "pins_without_pad", without_pad, limit)
+    _listed(out, "pads_without_pin", without_pin, limit)
+    return out

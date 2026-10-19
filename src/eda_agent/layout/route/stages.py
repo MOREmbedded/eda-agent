@@ -48,7 +48,14 @@ class StageOptions:
     before the stages, two boards fewer at 100%, all DRC-clean, the same
     vias, about 29% more time, and bends sharper than 45 degrees down from
     105 to 9. Plane fanout cost 8 boards at 100% and a via ban on IC pins
-    cost 5, so both are off unless asked for.
+    cost 5, so both are off unless asked for. The switches B3 added
+    (2026-10-07) are on where the benchmark measured them no worse and
+    off, waiting, where it did not: a repair that keeps its clean reroute
+    cost two boards a connection each and took longer on them; with the
+    repair that negotiates among the blockers as well, one board more was
+    fully routed for 27% more board time; and stopping a stalled
+    negotiation (stall_stop) left 11 boards worse and 4 better. The exact
+    room for a via in a pad (exact_pad_via) is off too (see below).
     """
 
     diff_pairs: bool = True
@@ -82,6 +89,33 @@ class StageOptions:
     fallback: bool = True
     # Cut every corner the router lays to bends of 45 degrees or less.
     bends: bool = True
+    # Lay each run between its bends as one straight piece, or a straight
+    # and a 45 degree piece, not the grid's staircase of cell steps.
+    straight: bool = True
+    # Stop the global routing's negotiation once its overflow stops
+    # falling (GlobalRouter.STALL_*), not after a fixed number of rounds.
+    # MEASURED on the 160 (2026-10-07): the same completion and boards
+    # fully routed, 0.4% less copper, 14% less routing time.
+    global_stall: bool = True
+    # Keep a repair's reroute that crosses no other net and joins more,
+    # instead of putting the net back for want of anything to rip up.
+    # Off: measured worse (see above).
+    repair_clean: bool = False
+    # When ripping up what blocks a failing net and routing each again in
+    # turn does not join more, negotiate them among themselves. Off:
+    # measured slower (see above).
+    repair_negotiate: bool = False
+    # Judge the room for a via at a pad's centre from the exact shapes
+    # round it, not from the nearest cell less the distance to it. Off:
+    # MEASURED on the 160, two boards more fully routed (inside the noise
+    # band) and 0.6% more vias; with it on, RT_SUPER_C1 lost three
+    # connections.
+    exact_pad_via: bool = False
+    # An attempt that stalls with a plane to give back goes straight to the
+    # next attempt, its routes unsettled (Router.run). MEASURED: the same
+    # completion on all 160; on the public boards bunny_brain_D 99.57% in
+    # 920 s became 100% in 378 s.
+    quick_release: bool = True
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -90,6 +124,8 @@ class StageOptions:
         """Nothing the stages brought is asked for: the router exactly as
         it was before them, corners, fanout vias and warm start included."""
         return not (self.any() or self.class_order or self.stall_stop or self.bends
+                    or self.straight or self.global_stall or self.repair_clean
+                    or self.repair_negotiate or self.quick_release or self.exact_pad_via
                     or self.pad_vias != "any")
 
     @classmethod
@@ -102,7 +138,9 @@ class StageOptions:
             return cls()
         if value is False:
             return cls(diff_pairs=False, plane_fanout=False, pin_lanes=False, bus_lanes=False,
-                       class_order=False, pad_vias="any", fallback=False, bends=False)
+                       class_order=False, pad_vias="any", fallback=False, bends=False,
+                       straight=False, global_stall=False, exact_pad_via=False,
+                       quick_release=False)
         known = {f.name for f in fields(cls)}
         bad = set(value) - known
         if bad:

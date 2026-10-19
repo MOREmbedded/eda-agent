@@ -80,6 +80,12 @@ _CATEGORY_BY_PREFIX = (
     ("easyeda_", "easyeda"),
     ("eng_", "engineering"),
     ("profile_", "profile"),
+    # Package checks and renders work on a footprint before it exists in any
+    # library; filed with the library tools that draw it.
+    ("footprint_", "library"),
+    # A datasheet is a part's document, fetched like part_fetch fetches a
+    # part, and with no editor involved.
+    ("datasheet_", "parts"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -100,35 +106,36 @@ _CATEGORY_BY_PREFIX = (
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
     "app_context", "app_detach", "app_get_active_document",
-    "app_get_version",
-    "app_list_documents", "app_restart_altium_bridge",
-    "app_set_active_document", "app_visual_context",
-    "audit_find_missing_decoupling",
+    "app_get_version", "app_list_documents",
+    "app_restart_altium_bridge", "app_set_active_document",
+    "app_visual_context", "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
-    "lib_add_footprint_arc", "lib_add_footprint_pad",
-    "lib_add_footprint_pads", "lib_add_footprint_track",
-    "lib_add_footprint_tracks", "lib_add_pins",
+    "eng_eco_preview_live", "lib_add_footprint_arc",
+    "lib_add_footprint_pad", "lib_add_footprint_pads",
+    "lib_add_footprint_track", "lib_add_footprint_tracks",
+    "lib_add_pins", "lib_add_symbol_polygon",
     "lib_add_symbol_rectangle", "lib_add_symbol_text",
-    "lib_batch_rename", "lib_batch_set_params", "lib_create_footprint",
-    "lib_create_ic_symbol", "lib_create_standard_footprint",
-    "lib_create_symbol", "lib_diff_libraries",
-    "lib_get_component_details", "lib_get_components",
-    "lib_link_3d_model", "lib_link_footprint", "lib_search",
-    "obj_batch_delete", "obj_batch_modify",
-    "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
-    "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
-    "obj_select", "obj_zoom", "pcb_bind_pad_nets",
-    "pcb_build_from_project", "pcb_create_nets_from_list",
-    "pcb_get_board_outline", "pcb_get_board_statistics",
-    "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
-    "pcb_get_unrouted_nets",
-    "pcb_get_vias", "pcb_move_components", "pcb_place_components",
-    "pcb_place_diff_pair_vias", "pcb_place_tracks", "pcb_place_via",
-    "pcb_plan_bga_fanout", "pcb_plan_return_vias",
-    "pcb_rebuild_connectivity", "pcb_route_diff_pair", "pcb_run_drc",
-    "proj_add_document", "proj_annotate", "proj_compile",
-    "proj_create", "proj_cross_probe", "proj_export_bom_html",
+    "lib_batch_rename", "lib_batch_set_params",
+    "lib_create_footprint", "lib_create_ic_symbol",
+    "lib_create_standard_footprint", "lib_create_symbol",
+    "lib_diff_libraries", "lib_get_component_details",
+    "lib_get_components", "lib_link_3d_model", "lib_link_footprint",
+    "obj_batch_delete", "obj_batch_modify", "obj_create",
+    "obj_delete", "obj_deselect_all", "obj_get_font_id",
+    "obj_get_font_spec", "obj_modify", "obj_query",
+    "obj_run_process", "obj_select", "obj_zoom",
+    "pcb_bind_pad_nets", "pcb_build_from_project",
+    "pcb_create_nets_from_list", "pcb_get_board_outline",
+    "pcb_get_board_statistics", "pcb_get_components",
+    "pcb_get_nets", "pcb_get_pad_properties",
+    "pcb_get_unrouted_nets", "pcb_get_vias", "pcb_move_components",
+    "pcb_place_components", "pcb_place_diff_pair_vias",
+    "pcb_place_tracks", "pcb_place_via", "pcb_plan_bga_fanout",
+    "pcb_plan_return_vias", "pcb_rebuild_connectivity",
+    "pcb_route_diff_pair", "pcb_run_drc", "proj_add_document",
+    "proj_annotate", "proj_compile", "proj_create",
+    "proj_cross_probe", "proj_export_bom_html",
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
@@ -169,6 +176,12 @@ _ENGINEERING_EXTERNAL = frozenset({
 # Tools that are pure Python regardless of their prefix (deterministic, no
 # bridge round-trip). Substring match keeps the calculators in one rule.
 _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
+
+# Pure Python tools filed under a category that is otherwise bridge-backed:
+# the package checks compute over a package description and never reach an
+# editor, so they work with nothing running.
+_OFFLINE_BY_NAME = frozenset({"footprint_check_package",
+                              "footprint_render_package"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
@@ -281,13 +294,16 @@ INTERACTION_OVERRIDES = {
     # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
-    # Refuses on this Altium build: the via soldermask write raises an
-    # access violation inside ScriptingSystem.DLL, so the handler
-    # answers NOT_SCRIPTABLE and touches nothing. The pcb_set_ prefix
-    # defaults to "silent" (mutates), which tells a caller filtering for
-    # safe operations the opposite of the truth. If a build is ever
-    # found where the write works, this goes back to SILENT with it.
-    "pcb_set_via_soldermask_relief": READONLY,
+    # Writes the downloaded PDF and its sidecar into the workspace cache.
+    # Filed under parts, which is offline and so falls back to READONLY;
+    # a tool that writes files is SILENT here, as part_fetch is.
+    "datasheet_fetch": SILENT,
+    # Writes the SVG (and a PNG) it draws, as pcb_render_svg does.
+    "footprint_render_package": SILENT,
+    # Reads the footprint's pads, primitives and the library's layers and
+    # writes nothing. The lib_ prefix says nothing about that, and the
+    # default would publish an audit as a tool that edits the library.
+    "lib_audit_footprint_vs_package": READONLY,
 }
 
 # --- explicit maturity overrides -------------------------------------------
@@ -418,6 +434,9 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     "easyeda_create_ic_symbol": "library",
     "easyeda_create_passive_symbol": "library",
     "easyeda_create_standard_footprint": "library",
+    # Delegates the drawing like the one above; its only command of its
+    # own is the pad readback, a pcb read the deriver would file it under.
+    "easyeda_create_footprint_from_package": "library",
     # Bundles five reads through a helper that takes the command as an
     # argument, so there is no literal for the deriver to see. Every
     # one of those reads is a pcb command.
@@ -503,6 +522,8 @@ def _is_offline(name: str, category: str) -> bool:
     if name in _ENGINEERING_EXTERNAL:
         return False
     if category in _OFFLINE_CATEGORIES or name in _OFFLINE_TOOLS:
+        return True
+    if name in _OFFLINE_BY_NAME:
         return True
     if name in _CALC_NEEDS_BRIDGE:
         return False

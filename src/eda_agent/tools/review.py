@@ -280,76 +280,32 @@ def register_review_tools(mcp):
         run_erc: bool = False,
         force_recompile: bool = False,
     ) -> dict[str, Any]:
-        """Fetch a comprehensive design-review snapshot in ONE tool call.
+        """Fetch a whole design-review snapshot in ONE call: the compiled
+        netlist and part data that are the BASIS of a review. Judge
+        connectivity, values and pin functions from this and the
+        datasheets, never from a render (renders are geometry only).
 
-        THIS -- the compiled netlist + part data it returns -- is the
-        BASIS of a design review, not a render. Judge connectivity, part
-        values, ratings, and pin functions from these sections (and the
-        cited datasheets), never from `sch_render_svg` / `pcb_render_svg`
-        / `design_visual_review`, which are geometry-only and exist for
-        when an image is genuinely needed (layout/placement). A picture
-        can show a wire that shares no net, or hide a net that is
-        electrically correct -- so the review reads the data here.
-
-        PREFER THIS over running 8-12 individual review queries.
-        A normal review (components, nets, rules, diff, messages, stats,
-        unrouted, BOM) is one round-trip instead of one LLM turn per
-        section. That's the single biggest time cost on a full review.
-
-        CRITICAL, datasheet discipline (enforced via _review_guidance):
-        Before drawing ANY conclusion about a component's pin
-        function, voltage rating, or electrical spec, fetch the
-        actual manufacturer datasheet and verify. The schematic
-        symbol, footprint, and parameter fields are NOT ground
-        truth - they are often wrong or outdated. Every proposed
-        fix must cite the datasheet section or page you relied on.
-
-        The response's ``_unique_parts`` field is the checklist of
-        components whose datasheets you must have read before
-        reviewing. Do not skip this step.
-
-        CRITICAL, review-quality discipline (enforced via _review_guidance):
-        A finding must ADD analysis the raw sections do not. Run ERC
-        and DRC, but do NOT relay their raw output as findings -
-        investigate each violation after the datasheet review, drop
-        the false positives, and surface the real ones as specific,
-        traced findings (a genuine ERC/DRC violation can be a top
-        finding - never dropped). Do NOT emit "verify X" / "confirm
-        X" as a finding - that hands the analysis back to the user.
-        Every finding names the exact parts/pins/nets, is backed by a
-        netlist fact or a cited datasheet, states a concrete
-        consequence and fix, and is something you would raise in a
-        real design review. The full rules are in
-        _review_guidance["review_quality_rules"].
+        CRITICAL: read the datasheet of every part in ``_unique_parts``
+        before concluding anything about its pins or ratings, and cite it.
+        Turn ERC/DRC output into traced findings, not relayed lists, and
+        never hand back "verify X". The full rules come in
+        ``_review_guidance`` and must be followed.
 
         Args:
-            sections: Which snapshot sections to include. Defaults to
-                the standard review set (project_info, design_stats,
-                components, nets, design_rules, unrouted, diff,
-                messages, board_stats, fab_stats). Available extras: "bom",
+            sections: Sections to include. Default: project_info,
+                design_stats, components, nets, design_rules, unrouted,
+                diff, messages, board_stats, fab_stats. Extras: "bom",
                 "drc", "erc", "unconnected_pins", "project_options".
-            include_bom: Convenience - adds "bom" to sections if True
-                (default). BOM is the best source of manufacturer
-                part numbers for datasheet lookup.
-            run_drc: If True, runs DRC (slow, 30-90 s) and includes
-                results. Off by default - assume the user already
-                ran it, or run it separately when asked.
-            run_erc: If True, runs ERC and includes results. Off by
-                default.
-            force_recompile: SaveAll + invalidate SmartCompile cache
-                + recompile before gathering any sections. Use this
-                when the user has been editing schematics in the
-                Altium UI and you need a guaranteed-fresh netlist.
-                Costs one extra ~5-10 s compile up-front.
+            include_bom: Add "bom" (default True; best source of MPNs).
+            run_drc: Run DRC too (slow, 30-90 s; default off).
+            run_erc: Run ERC too (default off).
+            force_recompile: Save, drop the compile cache and recompile
+                first (~5-10 s) when the user has edited in Altium.
 
         Returns:
-            Dict with one key per requested section, plus:
-              - _review_guidance: datasheet + review-quality rules
-                Claude must follow when turning sections into findings
-              - _unique_parts: list of {manufacturer, part_number,
-                designators} to fetch datasheets for
-              - _sections_failed: sections that errored (partial results
-                are still usable)
+            One key per section, plus ``_review_guidance``,
+            ``_unique_parts`` [{manufacturer, part_number, designators}]
+            and ``_sections_failed`` (the rest is still usable).
         """
         bridge = get_bridge()
 
@@ -455,51 +411,28 @@ def register_review_tools(mcp):
         bad_connection_tolerance_mils: float = 1.0,
         checks: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Run all design-lint checks and return a consolidated violation
-        report.
+        """Run every design-lint audit and return one report.
 
-        Sequences the individual ``audit.*`` checks the way a pre-release
-        review would: compile-gate first, then schematic-side rules, then
-        PCB-side rules, then optional ERC/DRC. Each section's raw result
-        is preserved so an agent can drill in; a top-level ``summary``
-        gives counts per check.
-
-        Returns structured JSON instead of dumping to the Messages panel
-        (Altium's panel is fine for human review but the agent needs a
-        machine-readable shape).
-
-        Checks executed:
-          - ``component_param_visibility`` -- per-class parameter
-            visibility (cap voltage, IC MPN, etc).
-          - ``power_port_orientation`` -- ground down / rails up.
-          - ``find_floating_ports`` -- SCH ports not connected to a pin
-            or sheet entry.
-          - ``tented_via_ratio`` -- PCB tented vs untented via surfaces.
-          - ``find_bad_connections`` -- PCB tracks / arcs with dangling
-            endpoints within ``bad_connection_tolerance_mils``.
-          - ``find_signal_vias_without_return`` -- PCB signal vias with
-            no nearby ground/power via for return-current.
-          - ``drc`` (only if ``run_drc=True``) -- Altium's Design Rule
-            Check, full project.
+        Runs the schematic and PCB audits (the same ones as the
+        standalone ``audit_*`` tools) plus the BOM-side pin and
+        decoupling checks, each section in the shape its audit tool
+        returns.
 
         Args:
-            run_drc: If True, also runs Altium's DRC and includes its
-                violations. Off by default because DRC mutates the .DRC
-                report file and can take ~5-10s on a busy board.
-            bad_connection_tolerance_mils: Coord tolerance for
-                ``find_bad_connections``. Default 1.0; raise to surface
-                only gross misalignments.
+            run_drc: Also run Altium's DRC (off by default; it rewrites
+                the .DRC report).
+            bad_connection_tolerance_mils: Tolerance for
+                ``find_bad_connections`` (default 1.0).
+            checks: Run only these section names, e.g.
+                ``["find_floating_ports", "find_missing_decoupling"]``;
+                None runs all. Unknown names come back in
+                ``_unknown_checks``.
 
         Returns:
-            Dict with:
-              - ``summary``: per-check `{checked, violations}` (best
-                effort -- missing/failed checks listed under ``_failed``)
-              - ``sections``: per-check raw result objects under their
-                section name
-              - ``totals``: overall ``violations`` count across all
-                sections (does NOT include DRC raw count -- DRC items
-                are listed separately because severity / fix-cost
-                differs)
+            ``summary`` (per check ``{checked, violations, severity}``),
+            ``sections`` (raw results), ``totals`` (violations, by
+            severity, checks run and failed; DRC not counted),
+            ``_failed``.
         """
         bridge = get_bridge()
         sections: dict[str, Any] = {}

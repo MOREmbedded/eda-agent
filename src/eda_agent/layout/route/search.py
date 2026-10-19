@@ -15,12 +15,11 @@ a million), so a long diagonal connection searched over its whole
 bounding box, on six layers, paid for a million nodes it had no use for.
 A band or corridor round the route holds a tenth of them.
 
-The graph is built as a fixed-degree CSR matrix with numpy (no Python
-loop per node) and searched from the new terminal towards the tree
-already routed, stopping at a distance limit. A cell that may not be
-used carries a weight far above any limit, so it is never entered; a move
-out of the region is an edge back to the same cell with that weight,
-which keeps every row the same length.
+The graph is built as a CSR matrix with numpy (no Python loop per node)
+and searched from the new terminal towards the tree already routed,
+stopping at a distance limit. Only arcs a search can take are in it: a
+cell that may not be used, a move out of the region and a via that does
+not fit have none.
 
 scipy has no A*, but Dijkstra on reduced weights w - h(u) + h(v) IS A*
 when h is a consistent estimate of the cost still to go. Here h is the
@@ -109,38 +108,47 @@ def build_graph(win: Window, cell_cost: np.ndarray, via_cost: np.ndarray,
     which is how a layer prefers one direction. ``potential`` (M,), in
     the same units as the costs, turns the search into A* (see above);
     it must never exceed the true cost to go.
+
+    An arc whose weight reaches BLOCKED (a barred cell, a move out of the
+    region, a via that does not fit) is left out of the graph: no search
+    with a limit under BLOCKED can take it, so the paths are the same, and
+    on a crowded board more than half the arcs were such.
     """
-    L, M, h, w = win.L, win.M, win.h, win.w
-    cy, cx = win.cy, win.cx
+    L, M = win.L, win.M
+    cy1, cx1 = win.cy + 1, win.cx + 1
     cc = np.minimum(cell_cost, BLOCKED)
     vc = np.minimum(via_cost, BLOCKED)
+    nL = L * M
     idx = np.empty((L, M, 9), dtype=np.int32)
     wt = np.empty((L, M, 9), dtype=np.float64)
-    selfid = np.arange(M, dtype=np.int64)
-    layer_base = (np.arange(L, dtype=np.int64) * M)[:, None]
+    selfid = np.arange(M, dtype=np.int32)
+    layer_base = (np.arange(L, dtype=np.int32) * M)[:, None]
+    # The region's ranks with a border of -1: a move off the box reads it.
+    rank = np.full((win.h + 2, win.w + 2), -1, dtype=np.int32)
+    rank[1:-1, 1:-1] = win.rank
     for k, (dx, dy, length) in enumerate(MOVES):
-        ny, nx = cy + dy, cx + dx
-        ok = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
-        r = np.full(M, -1, dtype=np.int64)
-        r[ok] = win.rank[ny[ok], nx[ok]]
-        ok &= r >= 0
-        nb = np.where(ok, r, selfid)
-        idx[:, :, k] = layer_base + nb[None, :]
+        r = rank[cy1 + dy, cx1 + dx]
+        out = r < 0
+        nb = np.where(out, selfid, r)
+        idx[:, :, k] = layer_base + nb
         wk = cc[:, nb] * ((length * pitch) * move_factor[:, k][:, None])
         if potential is not None:
             wk += (potential[nb] - potential)[None, :]
             np.maximum(wk, 0.0, out=wk)
-        wt[:, :, k] = np.where(ok[None, :], wk, BLOCKED)
+        wk[:, out] = BLOCKED
+        wt[:, :, k] = wk
     blocked_cell = cc >= BLOCKED
-    idx[:, :, 8] = win.n_layer + selfid[None, :]
+    idx[:, :, 8] = nL + selfid[None, :]
     wt[:, :, 8] = vc[None, :] / 2.0 + blocked_cell * BLOCKED
     hidx = (layer_base + selfid[None, :]).T                 # (M, L)
     hwt = vc[:, None] / 2.0 + blocked_cell.T * BLOCKED
-    data = np.concatenate([wt.reshape(-1), hwt.reshape(-1)])
-    indices = np.concatenate([idx.reshape(-1), hidx.reshape(-1).astype(np.int32)])
-    nL = L * M
-    indptr = np.concatenate([np.arange(0, nL * 9, 9, dtype=np.int32),
-                             nL * 9 + np.arange(0, M * L + 1, L, dtype=np.int32)])
+    keep = wt < BLOCKED
+    hkeep = hwt < BLOCKED
+    data = np.concatenate([wt[keep], hwt[hkeep]])
+    indices = np.concatenate([idx[keep], hidx[hkeep]])
+    indptr = np.zeros(win.size + 1, dtype=np.int32)
+    np.cumsum(np.concatenate([keep.sum(axis=2).reshape(-1), hkeep.sum(axis=1)]),
+              out=indptr[1:])
     return csr_matrix((data, indices, indptr), shape=(win.size, win.size), copy=False)
 
 
@@ -149,6 +157,9 @@ def shortest_path(graph: csr_matrix, sources: np.ndarray, targets: np.ndarray,
     """Cheapest path from any source to any target, as graph node ids."""
     if len(sources) == 0 or len(targets) == 0:
         return None
+    # Arcs of BLOCKED or more are not in the graph (build_graph): a limit
+    # past it would find nothing more.
+    limit = min(limit, BLOCKED / 2)
     dist, pred, _ = dijkstra(graph, directed=True, indices=np.unique(sources),
                              return_predecessors=True, min_only=True, limit=limit)
     td = dist[targets]

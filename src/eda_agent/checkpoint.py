@@ -249,6 +249,36 @@ class CheckpointStore:
         self._gc_blobs()
         return removed_ids
 
+    def prune_aged(self, keep: int, max_age_days: float,
+                   keep_per_project: int = 3) -> list[str]:
+        """Delete checkpoints that are past the ``keep`` newest overall,
+        older than ``max_age_days`` AND past the ``keep_per_project``
+        newest of their own project; then collect orphan blobs.
+
+        Any one condition keeps a checkpoint: recent work is never
+        pruned, and a project left alone for months keeps its last few
+        restore points however many other projects were checkpointed
+        since. A manifest whose date does not parse is kept.
+        """
+        cutoff = datetime.now().timestamp() - max_age_days * 86400
+        removed_ids = []
+        seen: dict[str, int] = {}
+        for i, c in enumerate(self.list()):
+            seen[c.project_file] = seen.get(c.project_file, 0) + 1
+            if i < keep or seen[c.project_file] <= keep_per_project:
+                continue
+            try:
+                created = datetime.fromisoformat(c.created).timestamp()
+            except (ValueError, TypeError):
+                continue
+            if created >= cutoff:
+                continue
+            (self.manifests / f"{c.id}.json").unlink(missing_ok=True)
+            removed_ids.append(c.id)
+        if removed_ids:
+            self._gc_blobs()
+        return removed_ids
+
     #: A blob younger than this is never collected. ``create`` promotes
     #: each blob to its final name BEFORE writing the manifest that
     #: references it, so between those two steps the blob is a real file

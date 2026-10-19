@@ -87,7 +87,9 @@ def test_review_errors_exit_one(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         "eda_agent.fileio.review.read_schematic_document_info",
         lambda p: {"title": "T", "revision": "1", "sheet": {}})
-    rc = _run_review(_ns(file=Path("whatever.SchDoc"), json=False))
+    sheet = tmp_path / "whatever.SchDoc"
+    sheet.write_bytes(b"")  # a missing file is refused before any read
+    rc = _run_review(_ns(file=sheet, json=False))
     assert rc == 1
     assert "designator_collision" in capsys.readouterr().out
 

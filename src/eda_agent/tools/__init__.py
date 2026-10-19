@@ -42,6 +42,7 @@ from .parts import register_parts_tools
 from .live import register_live_tools
 from .engineering import register_engineering_tools
 from .profile import register_profile_tools
+from .footprint import register_footprint_tools
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -312,6 +313,9 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # The live layout view draws the engine's board model and the decision
     # log, neither of which belongs to one EDA tool, so every backend gets it.
     register_live_tools(mcp)
+    # Datasheet fetch and the package checks work on the package, not on an
+    # editor, so every backend gets them.
+    register_footprint_tools(mcp)
     return backend
 
 
@@ -339,6 +343,7 @@ __all__ = [
     "register_meta_tools",
     "register_parts_tools",
     "register_live_tools",
+    "register_footprint_tools",
     "register_project_tools",
     "register_library_tools",
     "register_generic_tools",
