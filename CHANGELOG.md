@@ -56,6 +56,49 @@ companies without re-stating their conventions on every call. See
   `lib_audit_footprint_policies` uses the profile's footprint policy
   when none is passed.
 
+#### `eda-agent update`
+
+Updating meant four manual steps and no way to tell which of them you
+had missed. The checkout, the installed package, the deployed
+DelphiScript files and the copy Altium has COMPILED each go stale
+independently, and the symptom of all four is the same: a tool
+behaving like an older build.
+
+`update` reports all four and fixes the one it safely can, redeploying
+the scripts when they differ from the tree. Two it deliberately does
+not do:
+
+- **Only your own remote is checked**, the one you push to. A checkout
+  can have your fork, the project it was forked from and a colleague's
+  copy all configured at once, and reporting a third party's commits
+  every run turns the to-do list into something nobody reads. Name one
+  with `--from <remote>` when you want it.
+- **`--from <folder>` updates from a local copy**, with no git and no
+  network in it: another checkout, a copy on a share, a release
+  directory. It reads that folder's package version and
+  `SCRIPT_VERSION`, compares both, and deploys its Altium scripts.
+  Both a checkout layout and an unpacked package are accepted. It will
+  not `pip install` for you, which is a bigger change than copying a
+  script, so it prints the command.
+- **It will not pull** unless asked. A command called "update"
+  silently rebasing someone's uncommitted work is a bad trade, so
+  being behind is reported and `--pull` opts in. A pull onto a dirty
+  tree is refused outright rather than handing back a conflict.
+- **It cannot reload Altium's script project.** There is no API for
+  it, so that step is reported as an action for you rather than
+  quietly omitted, which would leave you on an old build believing
+  you were current.
+
+The Altium check is a plain ping. `doctor`'s canary calls
+`application.save_all`, which saves every open document; an update
+that silently did that to read a version number would be a worse trade
+than not reading it.
+
+Exit codes: 0 current, 1 something needs you, 2 an error, so CI can
+branch without parsing prose. `--check` changes nothing, `--fetch`
+refreshes remote refs so "up to date" is not an answer from last
+week's fetch, and `--json` gives the steps as data.
+
 #### Cross-checking against pcb-toolkit
 
 `calc-cross-check` / `pcb_calc_cross_check` runs a calculator through

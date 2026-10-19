@@ -858,3 +858,44 @@ def cmd_calc_cross_check(calculator: str, values: list,
         print(f"  CAVEAT: {result['caveat']}", file=sys.stderr)
     print(f"  {result['note']}", file=sys.stderr)
     return 1 if result["disagreements"] else 0
+
+
+def cmd_update(*, pull: bool = False, fetch: bool = False,
+               check_only: bool = False, force_scripts: bool = False,
+               source: str = "", as_json: bool = False) -> int:
+    """Bring this installation up to date, and say what is left to do.
+
+    Exit 0 when everything is current, 1 when a step needs a human, 2
+    when a step this command owns failed. A script can branch on that
+    without parsing the text.
+    """
+    import json as _json
+
+    from .diag.update import format_report, run_update
+
+    # --from takes either a remote name or a folder. A path is what it
+    # usually is, so anything that exists on disk is treated as one and
+    # the rest is passed to git as a remote name.
+    from pathlib import Path as _Path
+
+    source = (source or "").strip()
+    is_dir = bool(source) and _Path(source).expanduser().is_dir()
+    steps, code = run_update(pull=pull, fetch=fetch, check_only=check_only,
+                             force_scripts=force_scripts,
+                             compare_remote="" if is_dir else source,
+                             source_dir=source if is_dir else "")
+    if as_json:
+        print(_json.dumps({
+            "ok": code != 2,
+            "exit_code": code,
+            "steps": [{"name": s.name, "status": s.status,
+                       "message": s.message, "action": s.action,
+                       "details": s.details} for s in steps],
+        }, indent=2))
+        return code
+
+    print(format_report(steps))
+    if check_only:
+        sys.stdout.flush()
+        print("\n(--check: nothing was changed)", file=sys.stderr)
+    return code

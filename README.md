@@ -174,6 +174,70 @@ From then on, every Altium startup compiles the script project and the polling l
 
 The polling loop starts and your MCP client can drive Altium.
 
+### Keeping it up to date
+
+```bash
+eda-agent update
+```
+
+Checks **your own remote** - the one you push to - and the three other
+things that go stale independently, then fixes the one it safely can:
+
+| | |
+|---|---|
+| your remote | reported if you are behind; **not pulled** unless you pass `--pull`, and refused outright on a dirty tree |
+| the installed package | an editable install needs no reinstall; a copied one does, and a `git pull` into it changes nothing |
+| the deployed DelphiScript files | **redeployed automatically** when they differ |
+| the copy Altium has **compiled** | reported, and left to you |
+
+**Other remotes are not checked** unless you ask. A checkout can have
+your fork, the project it was forked from and a colleague's copy all
+configured at once, and reporting someone else's commits every run
+makes the to-do list something nobody reads:
+
+```bash
+eda-agent update --from upstream
+```
+
+That fetch passes `--no-tags`. Fetching another remote normally imports
+its **release tags** too, so a fork checking the project it came from
+quietly acquires that project's version tags - which is how this repo
+briefly ended up holding a `v0.7.0` it had never released. Comparing
+commits needs no tags.
+
+### Updating from a local folder
+
+No git and no network needed - point it at another eda-agent folder on
+disk, a copy on a share, or a release directory:
+
+```bash
+eda-agent update --from D:\builds\eda-agent-0.7.1
+```
+
+It reads that folder's package version and `SCRIPT_VERSION`, compares
+both against what you have, and **deploys its Altium scripts**. It will
+not `pip install` for you - that is a bigger change than copying a
+script, so it prints the exact command instead. Both a checkout
+(`src/eda_agent/`) and an unpacked package (`eda_agent/`) are accepted.
+
+`--from` takes a folder or a git remote name; anything that exists on
+disk is treated as a folder.
+
+### What it will not do
+
+A `.pas` on disk is not compiled until Altium reloads the script
+project, and there is **no API to do that**. So `update` finishes by
+telling you to reload, rather than quietly leaving you on an old build.
+
+`--check` changes nothing, `--fetch` refreshes remote refs so "up to
+date" is current rather than from your last fetch, and `--json` gives
+the steps as data. Exit code is 0 when everything is current, 1 when
+something needs you, 2 on an error - so CI can branch on it without
+parsing text.
+
+The Altium check is a plain ping. Unlike `doctor` it never saves a
+document, so it is safe to run mid-edit.
+
 ### Check that it worked
 
 Two commands answer "is this set up correctly", so you find out here
@@ -900,6 +964,7 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent calc-pdn --voltage-v V --ripple-percent P --transient-current-a I` | Target power-distribution impedance |
 | `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
 | `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
+| `eda-agent update [--check] [--pull] [--fetch] [--from FOLDER\|REMOTE] [--json]` | Bring the install up to date from your remote, or from a local folder |
 | `eda-agent calc-cross-check <calculator> [--arg NAME=VALUE]` | Compare a calculator against a locally built pcb-toolkit |
 | `eda-agent stackup-vendors [--json]` | Bundled fab vendors, with source and age |
 | `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |

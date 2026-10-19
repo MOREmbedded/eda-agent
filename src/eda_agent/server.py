@@ -846,6 +846,59 @@ def main() -> int:
              "alone (this merges, it does not replace the directory).")
 
     # dashboard -- local web UI for the MCP bridge
+    update_p = subparsers.add_parser(
+        "update",
+        help=("Update from your remote or a local folder, and say "
+              "what is left to do"),
+        epilog=(
+            "Checks four things that go stale independently: your git remote, the\n"
+            "installed package, the deployed DelphiScript files, and the copy Altium\n"
+            "has COMPILED. Redeploys the scripts when they differ.\n"
+            "\n"
+            "Only the remote you PUSH to is checked. Other remotes are opt-in, because\n"
+            "a checkout can have your fork, the project it came from and a colleague's\n"
+            "copy configured at once:\n"
+            "\n"
+            "    eda-agent update --from upstream\n"
+            "\n"
+            "--from <folder> updates from a local copy, with no git and no network in\n"
+            "it: another checkout, a copy on a share, a release directory. It reads\n"
+            "that folder's version and SCRIPT_VERSION and deploys its Altium scripts.\n"
+            "\n"
+            "    eda-agent update --from D:\\builds\\eda-agent-0.7.1\n"
+            "\n"
+            "It will NOT pull (that touches your tree; pass --pull, and it is refused\n"
+            "on a dirty tree), it will NOT pip install for you, and it CANNOT reload\n"
+            "Altium's script project because there is no API for it, so that step is\n"
+            "reported for you to do.\n"
+            "\n"
+            "Exits 0 when current, 1 when something needs you, 2 on an error.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    update_p.add_argument(
+        "--pull", action="store_true",
+        help="Also run `git pull --ff-only`. Refused on a dirty tree.")
+    update_p.add_argument(
+        "--fetch", action="store_true",
+        help="Refresh remote refs first, so 'behind by N' is current "
+             "rather than from your last fetch.")
+    update_p.add_argument(
+        "--check", dest="check_only", action="store_true",
+        help="Report only; change nothing.")
+    update_p.add_argument(
+        "--force-scripts", action="store_true",
+        help="Redeploy the Altium scripts even when the versions match.")
+    update_p.add_argument(
+        "--from", dest="source", metavar="FOLDER|REMOTE", default="",
+        help="Update from a local eda-agent folder (a checkout, a copy "
+             "on a share, a release directory), or compare against "
+             "another git remote by name. A path that exists is "
+             "treated as a folder.")
+    update_p.add_argument(
+        "--json", dest="json_out", action="store_true",
+        help="Print the steps as JSON.")
+
     # --- calculators -------------------------------------------------
     # Generated from cli.CALC_COMMANDS so a flag cannot drift from the
     # parameter it fills. Ten hand-written blocks would be ten chances
@@ -1192,6 +1245,11 @@ def main() -> int:
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
 
+    if args.command == "update":
+        return cli.cmd_update(pull=args.pull, fetch=args.fetch,
+                              check_only=args.check_only,
+                              force_scripts=args.force_scripts,
+                              source=args.source, as_json=args.json_out)
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,
                                         as_json=args.json_out)
