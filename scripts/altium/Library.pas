@@ -1943,11 +1943,29 @@ Begin
         + ',"objects":' + IntToStr(Objects) + '}');
 End;
 
+{ The pad paste on/off flag (IsTopPasteEnabled) is measured on Altium       }
+{ Designer 26. On AD 23.2 it is an undeclared identifier, which a Try does  }
+{ not catch: the script halts in the debugger. Gate on the major version,   }
+{ the way via templates are gated in PCB.pas; lower the bound once the flag }
+{ is measured on 24 or 25.                                                  }
+Function PadPasteFlagSupported : Boolean;
+Var
+    Ver : String;
+    Major : Integer;
+Begin
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    Result := Major >= 26;
+End;
+
 { A pad's top paste opening flag, as JSON: true, false, or null when the     }
 { flag cannot be read. The expansion is a separate control (issue #80).     }
 Function PadPasteTopJson(Pad : IPCB_Pad) : String;
 Begin
     Result := 'null';
+    If Not PadPasteFlagSupported Then Exit;
     Try
         If Pad.GetState_IsTopPasteEnabled Then Result := 'true'
         Else Result := 'false';
@@ -11856,7 +11874,14 @@ Begin
                     { The top paste opening's on/off flag (issue #80). Set on
                       its own, apart from the expansion below. }
                     Str := LowerCase(ExtractJsonValue(Params, 'paste_top_enabled'));
-                    If (Str = 'true') Or (Str = 'false') Then
+                    If ((Str = 'true') Or (Str = 'false')) And (Not PadPasteFlagSupported) Then
+                    Begin
+                        Ok := False;
+                        If Pos('paste flag', Notes) = 0 Then
+                            Notes := Notes + 'paste flag: the pad paste on/off flag needs '
+                                + 'Altium Designer 26 or later; it was not changed;';
+                    End
+                    Else If (Str = 'true') Or (Str = 'false') Then
                     Begin
                         { Read back: this build accepts the write without
                           error, so a flag that did not change is a failed
