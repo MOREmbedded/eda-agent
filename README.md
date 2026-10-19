@@ -25,7 +25,8 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Measuring performance](#measuring-performance) - where call time actually goes
 - [Part sourcing](#part-sourcing)
 - [Example use cases](#example-use-cases)
-- [Known limitations](#known-limitations) - read this before trusting it with a real design
+- [Known limitations](#known-limitations)
+- [What the bundled data does not cover](#what-the-bundled-data-does-not-cover) - the figures nobody publishes, and why they are null - read this before trusting it with a real design
 - [Timeout and server lifecycle](#timeout-and-server-lifecycle)
 - [Tool reference](#tool-reference) - and the other documents
 - [Architecture](#architecture)
@@ -843,6 +844,58 @@ That clicks the menu and answers the dialogs in one call, which matters because 
 ### Tools vary in maturity
 
 Not every one of these tools has been exercised on every Altium version or design size. The generic primitives (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
+
+### What the bundled data does not cover
+
+The data this project ships is transcribed, dated and sourced, and
+several figures are **missing on purpose** because nobody publishes
+them. They come back `null` with a reason rather than filled in with a
+plausible number, and the tools that need them refuse rather than
+default.
+
+- **No product-change notices and no errata.** `part_find_replacements`
+  compares parameters, lifecycle and stock. No distributor API serves
+  PCNs or errata, so nothing checks them, and every result repeats that.
+  A PCN is the commonest reason a part that passes every check is still
+  the wrong choice this month.
+- **No pad geometry in a replacement check.** The package *name* is
+  compared; a catalogue states "SOIC-8" and never states the pads. Use
+  `lib_audit_footprint_vs_datasheet` against the candidate's datasheet.
+- **JLCPCB publishes no rigid hole-to-hole minimum and no mask sliver.**
+  Both are `null`, and `stackup-profile` refuses to build a fab profile
+  without them. Supply them with `--fill` once the fab has told you, and
+  they are recorded as yours, not theirs.
+- **PCBWay publishes no named stackup**, so none is bundled.
+- **The IPC-2221 spacing table is a secondary transcription.** The IPC
+  document is not freely available, and two reproductions **disagree on
+  two cells** (B2 at 251-300 V, A6 at 31-50 V). The larger value is
+  taken, since a wider spacing is never the unsafe mistake, and both
+  figures are reported in `disputed`. The classes are the **A/B** ones;
+  revision C *redefines* those columns rather than renumbering them, so
+  match on the description the result gives you, never on the letter.
+- **The laminate list is deliberately short** - only entries read off a
+  datasheet. Add your own to your profile.
+- **Altium preferences cannot be templated.** There is no scripting API
+  for the Preferences dialog. **Draftsman is unsupported entirely.**
+- **PCB-side units and grid are documentation only.** No bridge command
+  sets a board's display units or default snap grid; a project template
+  sidesteps this for new projects.
+
+### Where the Altium scripts are deployed
+
+`install-scripts` writes to `%USERPROFILE%\EDA Agent\scripts\` by
+default, and `eda-agent health` and `eda-agent update` report on that
+folder. **If you registered the Global Project somewhere else, those
+commands are reporting a directory Altium never reads** - they will say
+"deployed scripts current" while Altium compiles something years old.
+
+`eda-agent update` catches it anyway, because it also pings Altium for
+the version it actually **compiled** and compares the two. When they
+disagree, deploy to the folder you registered:
+
+```bash
+eda-agent install-scripts --force --dest <that folder>
+```
 
 ## Timeout and server lifecycle
 

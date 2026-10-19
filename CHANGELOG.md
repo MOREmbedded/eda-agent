@@ -283,6 +283,25 @@ drift from the parameter it fills.
   that auto-presses Altium's Engineering Change Order dialog via the
   existing reactive dialog driver. Off unless `--confirm`.
 
+#### Documented gaps
+
+A README section listing what the bundled data does NOT cover, because
+a missing figure that is simply absent reads as an oversight rather
+than as a decision: no PCNs or errata (no API serves them), no pad
+geometry in a replacement check, JLCPCB's unpublished hole-to-hole and
+mask sliver, PCBWay's absent stackup table, the IPC-2221 table's
+secondary provenance and its two disputed cells, Altium preferences
+and Draftsman, and PCB-side units and grid.
+
+Also where the Altium scripts are deployed, and the trap behind it: if
+the Global Project is registered somewhere other than the default,
+`health` and `install-scripts` report a directory Altium never reads
+and will say "deployed scripts current" while Altium compiles
+something years old. `eda-agent update` catches it because it pings
+for the version Altium actually COMPILED and compares the two, which
+is how a stale 2026.10.13.5 was found running against a 2026.10.18.1
+on disk.
+
 ### Fixed
 
 - **The IPC-2221 spacing table did not say which revision it was.**
