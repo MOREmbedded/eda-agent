@@ -1500,6 +1500,8 @@ Begin
     { Repaint separately: a failed repaint must not mask a successful         }
     { recompute, and vice versa.                                              }
     Try Board.ViewManager_FullUpdate; Except End;
+End;
+
 { UnitStamp_PCBGeneric - which build of PCBGeneric.pas Altium compiled; 'dev' here. }
 { install-scripts writes the hash of this file into the deployed copy. }
 Function UnitStamp_PCBGeneric(Dummy : Integer) : String;
