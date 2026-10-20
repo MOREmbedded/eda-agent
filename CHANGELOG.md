@@ -46,6 +46,16 @@ variable name, and the `truncated` field `proj_get_nets` pages on.
 
 ### Added
 
+- `rotation_audit`, an advisory check in `pcb_layout_audit`: each
+  two-pad top-side part is tried at 0/90/180/270 degrees about its
+  origin, scored by net airline (minimum spanning tree) for routable
+  nets and by distance to the nearest return pad for plane nets, and
+  reported when another rotation beats the current one by 25 mils.
+  The idea comes from coffeenmusic/altium-mcp's `check_orientation`,
+  reimplemented on the LayoutBoard model. Bottom-side parts are skipped
+  until the rotation sign of a mirrored part is checked. **UNVERIFIED
+  against a live board**: covered by tests on synthetic boards only.
+
 #### Owner profiles
 
 A per-workspace house style, so one machine can work for several

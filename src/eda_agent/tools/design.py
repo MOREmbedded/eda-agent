@@ -471,6 +471,8 @@ def register_design_tools(mcp) -> None:
           loops, worst first. Advisory.
         - ``pad_entry_audit``: off-axis, off-centre, too-wide or uneven
           pad entries. Fails only on high severity.
+        - ``rotation_audit``: two-pad top-side parts whose airline would
+          be shorter at another right angle. Advisory.
 
         Log the result as ``data`` on the stage_result
         (``design_session_log``).
