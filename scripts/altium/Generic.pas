@@ -2904,13 +2904,52 @@ End;
 
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
-    Action : String;
+    Action, FocusedKind, ZoomProcess : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    Doc : IDocument;
 Begin
     Action := ExtractJsonValue(Params, 'action');
     If Action = '' Then Action := 'fit';
 
+    { The focused tab decides which editor zooms. Probing SchServer and the  }
+    { board first missed a focused PcbLib ("no schematic or PCB document")   }
+    { and sent Sch:Zoom whenever any schematic was current, even with a     }
+    { footprint in front. Sch:Zoom serves SchDoc and SchLib, PCB:Zoom serves  }
+    { PcbDoc and PcbLib.                                                      }
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    End;
+
+    ZoomProcess := '';
+    If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then ZoomProcess := 'Sch:Zoom'
+    Else If (FocusedKind = 'PCB') Or (FocusedKind = 'PCBLIB') Then ZoomProcess := 'PCB:Zoom';
+
+    If ZoomProcess <> '' Then
+    Begin
+        If (Action <> 'fit') And (Action <> 'selection') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+                'action must be "fit" or "selection", got "' + Action + '"');
+            Exit;
+        End;
+        ResetParameters;
+        If Action = 'fit' Then AddStringParameter('Action', 'All')
+        Else AddStringParameter('Action', 'Selected');
+        RunProcess(ZoomProcess);
+        Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '",'
+            + '"document_kind":"' + FocusedKind + '","dispatched":true}');
+        Exit;
+    End;
+
+    { No focused design document (a project or text tab): the old probe. }
     SchDoc := SchServer.GetCurrentSchDocument;
     Board := GetPCBBoardAnywhere(0);
 
@@ -6119,6 +6158,15 @@ Begin
         Exit;
     End;
 
+    { An unknown style used to fall through to a circle and report success. }
+    If StyleStr = '' Then StyleStr := 'circle';
+    If Not IsPowerPortStyle(StyleStr) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_STYLE',
+            'Unknown power port style "' + StyleStr + '". Use one of: ' + PowerPortStyleNames(0));
+        Exit;
+    End;
+
     SchDoc := Nil;
     If SheetPath <> '' Then
     Begin
@@ -6164,13 +6212,12 @@ Begin
     Else If StyleStr = 'gnd_earth' Then PowerObj.Style := ePowerGndEarth
     Else PowerObj.Style := ePowerCircle;
 
-    { Default orientation: VCC-style points UP, GND-style points DOWN.   }
+    { Default orientation: supply styles (circle, arrow, bar, wave) point  }
+    { UP, ground styles point DOWN.                                        }
     { Override via the 'orientation' param (0=right, 1=up, 2=left, 3=down). }
     If OrientationVal < 0 Then
     Begin
-        If (StyleStr = 'gnd_power') Or (StyleStr = 'gnd_signal') Or
-           (StyleStr = 'gnd_earth') Or (StyleStr = 'bar') Or
-           (StyleStr = 'wave') Then
+        If IsGroundPortStyle(StyleStr) Then
             OrientationVal := 3
         Else
             OrientationVal := 1;
@@ -9717,8 +9764,9 @@ Begin
             Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
             StyleStr := GetBatchField(Op, 'style');
             OrientationVal := StrToIntDef(GetBatchField(Op, 'orientation'), -1);
+            If StyleStr = '' Then StyleStr := 'circle';
 
-            If Text = '' Then
+            If (Text = '') Or (Not IsPowerPortStyle(StyleStr)) Then
             Begin
                 Inc(Failed);
                 Continue;
@@ -9748,9 +9796,7 @@ Begin
 
             If OrientationVal < 0 Then
             Begin
-                If (StyleStr = 'gnd_power') Or (StyleStr = 'gnd_signal') Or
-                   (StyleStr = 'gnd_earth') Or (StyleStr = 'bar') Or
-                   (StyleStr = 'wave') Then
+                If IsGroundPortStyle(StyleStr) Then
                     OrientationVal := 3
                 Else
                     OrientationVal := 1;

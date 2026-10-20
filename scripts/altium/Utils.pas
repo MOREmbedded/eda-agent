@@ -781,6 +781,23 @@ Begin
     Else Result := ePowerBar;  { sensible default for a supply rail }
 End;
 
+{ The style names the place_power_port handlers accept, exactly as sent. }
+Function PowerPortStyleNames(Dummy : Integer) : String;
+Begin
+    Result := 'circle, arrow, bar, wave, gnd_power, gnd_signal, gnd_earth';
+End;
+
+Function IsGroundPortStyle(S : String) : Boolean;
+Begin
+    Result := (S = 'gnd_power') Or (S = 'gnd_signal') Or (S = 'gnd_earth');
+End;
+
+Function IsPowerPortStyle(S : String) : Boolean;
+Begin
+    Result := (S = 'circle') Or (S = 'arrow') Or (S = 'bar') Or (S = 'wave') Or
+              IsGroundPortStyle(S);
+End;
+
 Function StrToBool(S : String) : Boolean;
 Begin
     Result := (LowerCase(S) = 'true') Or (S = '1');

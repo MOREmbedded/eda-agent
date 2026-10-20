@@ -23,6 +23,7 @@ import pytest
 from eda_agent.design.footprint_audit import (
     LandPatternSpec,
     audit_footprint_against_spec,
+    copper_clearance_findings,
     expand_spec_pads,
 )
 
@@ -227,3 +228,68 @@ def test_spec_requires_source_citation():
             "dual_row": {"count": 8, "pitch": 1.27, "span": 5.4,
                          "pad_w": 2.0, "pad_h": 0.6},
         })
+
+
+# --- copper clearance, independent of the spec ------------------------------
+
+def _qfn16_spec(span: float) -> LandPatternSpec:
+    return LandPatternSpec(
+        source=_SRC,
+        quad={"count": 16, "pitch": 0.5, "span_x": span, "span_y": span,
+              "pad_w": 0.24, "pad_h": 0.6},
+        thermal_pad={"name": "17", "x": 0.0, "y": 0.0, "w": 1.68, "h": 1.68},
+    )
+
+
+def _as_footprint(spec: LandPatternSpec) -> dict:
+    return {"pads": [
+        {"name": p.name, "x_mm": p.x, "y_mm": p.y, "w_mm": p.w, "h_mm": p.h,
+         "rotation": 0, "shape": "rectangular", "hole_mm": 0}
+        for p in expand_spec_pads(spec)]}
+
+
+def test_lands_shorted_to_the_exposed_pad_fail_even_when_they_match_the_spec():
+    # A 2.8 mm centre span misread as 2.2 puts every land on the 1.68 mm
+    # exposed pad. The footprint matches that wrong spec pad for pad, so
+    # only the copper check can catch it.
+    spec = _qfn16_spec(span=2.2)
+    report = audit_footprint_against_spec(spec, _as_footprint(spec))
+    shorts = [f for f in report["findings"] if f["check"] == "pad_clearance"
+              and f["severity"] == "error"]
+    assert not report["ok"]
+    shorted_to_ep = {f["pad"] for f in shorts if "pad 17" in f["message"]}
+    assert shorted_to_ep == {str(n) for n in range(1, 17)}
+
+
+def test_the_correct_span_has_no_clearance_findings():
+    spec = _qfn16_spec(span=2.8)
+    report = audit_footprint_against_spec(spec, _as_footprint(spec))
+    assert report["ok"], report["findings"]
+    assert not [f for f in report["findings"] if f["check"] == "pad_clearance"]
+
+
+def test_pads_sharing_a_name_may_touch():
+    pads = [
+        {"name": "EP", "x_mm": -0.5, "y_mm": 0, "w_mm": 1.0, "h_mm": 1.0, "rotation": 0},
+        {"name": "EP", "x_mm": 0.5, "y_mm": 0, "w_mm": 1.0, "h_mm": 1.0, "rotation": 0},
+    ]
+    assert copper_clearance_findings(pads) == []
+
+
+def test_a_rotated_pad_that_reaches_its_neighbour_is_caught():
+    # 2.0 x 0.3 mm pads 0.8 mm apart are clear; turn one by 90 degrees and
+    # its 2 mm length reaches across the gap.
+    upright = {"name": "1", "x_mm": 0, "y_mm": 0, "w_mm": 0.3, "h_mm": 2.0, "rotation": 0}
+    turned = {"name": "2", "x_mm": 0.8, "y_mm": 0, "w_mm": 0.3, "h_mm": 2.0, "rotation": 90}
+    clear = dict(turned, rotation=0)
+    assert copper_clearance_findings([upright, clear]) == []
+    hits = copper_clearance_findings([upright, turned])
+    assert [f["severity"] for f in hits] == ["error"]
+
+
+def test_a_narrow_gap_is_a_warning_with_the_measured_distance():
+    a = {"name": "1", "x_mm": 0, "y_mm": 0, "w_mm": 0.5, "h_mm": 0.5, "rotation": 0}
+    b = {"name": "2", "x_mm": 0.55, "y_mm": 0, "w_mm": 0.5, "h_mm": 0.5, "rotation": 0}
+    (hit,) = copper_clearance_findings([a, b])
+    assert hit["severity"] == "warning"
+    assert hit["actual"] == "0.050 mm"

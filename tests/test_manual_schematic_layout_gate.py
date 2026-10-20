@@ -2,10 +2,11 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Drawing a schematic by hand through sch_place_components is refused.
 
-An LLM asked to draw a schematic ignores the layout engine and places
-every part itself, choosing each coordinate. The result is netlist
-correct and reads like nothing a person would draw, and steering it with
-docstrings is persuasion. This is the enforcing half.
+An LLM asked to draw a schematic places every part on its own and wires
+it segment by segment. The result is netlist correct and reads like
+nothing a person would draw. The refusal sends it to sch_draw_template,
+which draws a planned block with the pin ends worked out and the wiring
+checked.
 
 The refusal is deliberately narrow: BULK placement onto an EMPTY sheet.
 Adding parts to a sheet with work on it is ordinary editing, one or two
@@ -50,9 +51,10 @@ def test_bulk_placement_onto_an_empty_sheet_is_refused():
     out = _run(bridge, _MANUAL_LAYOUT_BULK)
     assert out is not None and out["refused"] is True
     assert out["placed"] == 0
-    assert out["use_instead"] == "design_execute_plan"
+    assert out["use_instead"] == "sch_draw_template"
     # The refusal has to say what to do instead, or it is just a wall.
-    assert "design_execute_plan" in out["error"]
+    assert "sch_draw_template" in out["error"]
+    assert "sch_preview_template" in out["error"]
     assert "allow_manual_layout" in out["error"]
 
 
@@ -93,20 +95,18 @@ def test_the_count_is_scoped_to_the_target_sheet():
         "caller named one")
 
 
-def test_the_gate_cannot_block_the_engine_it_points_at():
-    """design_execute_plan must not route through the gated tool.
+def test_the_gate_cannot_block_the_tool_it_points_at():
+    """sch_draw_template must not route through the gated tool.
 
-    The refusal names design_execute_plan, so if the emitter placed parts
-    by calling this tool the gate would cut off the only path it offers.
-    It does not: the emitter sends the bridge command directly. Asserted
-    here because that is a property someone could quietly change.
+    The refusal names sch_draw_template, so if it placed parts by calling
+    sch_place_components the gate would cut off the path it offers. It
+    sends the bridge command directly. Asserted because that is a
+    property someone could quietly change.
     """
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src" / "eda_agent"
-    emitter = (src / "design" / "emitter.py").read_text(encoding="utf-8")
-    assert "place_sch_components_from_library" in emitter, (
-        "the emitter no longer sends the placement command directly; if it "
-        "now goes through sch_place_components, the manual-layout gate will "
-        "refuse the engine's own placements")
-    assert "sch_place_components(" not in emitter
+    tool = (src / "tools" / "sch_template.py").read_text(encoding="utf-8")
+    assert "place_sch_components_from_library" in tool
+    assert "sch_place_components(" not in tool
+    assert "_refuse_manual_sheet_layout" not in tool

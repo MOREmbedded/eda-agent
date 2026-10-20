@@ -416,6 +416,12 @@ def altium_plan(model: FootprintModel, layers: dict[str, dict]) -> dict:
         "assembly designator: Altium places stroke text from its lower left "
         "corner, so the anchor sits half a text height below and to the left "
         "of the body centre; it is not re-centred on the designator's width")
+    notes.append(
+        f"assembly designator: the library editor shows the literal "
+        f"'.Designator' placeholder, which runs past a small body; on a board "
+        f"it prints the part's designator (U1, R12) at {model.ref.height:g} mm, "
+        f"which is the size to judge. To change it, pass drafting "
+        f"ref_height_max (and ref_height_min) in mm")
 
     suppressed = [p.number for p in model.pads if _suppress_paste(p)]
     if suppressed:

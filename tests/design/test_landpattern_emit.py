@@ -211,6 +211,16 @@ def test_a_mask_expansion_is_written_only_when_asked():
     assert not any("1:1" in n for n in plan["notes"])
 
 
+def test_the_designator_note_gives_the_printed_height_and_the_rule():
+    """The literal '.Designator' runs past a small body in the library
+    editor; an agent once regenerated a correct footprint over it."""
+    plan = altium_plan(_model("soic8"), LAYERS)
+    ref = next(t for t in plan["texts"] if t["text"] == ".Designator")
+    note = next(n for n in plan["notes"] if "literal '.Designator'" in n)
+    assert f"{ref['size']:g} mm" in note
+    assert "ref_height_max" in note
+
+
 def test_a_shape_altium_cannot_draw_is_refused():
     m = _model("custom_sot23_vendor")
     m.pads[0].shape = "trapezoid"

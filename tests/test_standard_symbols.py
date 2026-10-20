@@ -103,6 +103,16 @@ def test_every_discrete_kind_draws_on_the_pin_grid(kind):
         assert _on_grid(p["x"]) and _on_grid(p["y"]), p
 
 
+@pytest.mark.parametrize("kind", ["resistor", "fuse"])
+def test_a_resistor_body_is_long_and_narrow(kind):
+    # A 200 x 200 square read as a box, not a resistor.
+    (body,) = generate_passive_symbol(kind).rectangles
+    length = abs(body["x2"] - body["x1"])
+    height = abs(body["y2"] - body["y1"])
+    assert length >= 2 * height, body
+    assert body["y1"] == -body["y2"]  # centred on the lead
+
+
 def test_inductor_is_arcs_and_capacitor_plates_are_close():
     """Asked for: the inductor as humps, not a box, and the capacitor
     plates close together rather than at the body edges."""
@@ -186,6 +196,28 @@ def test_passive_tool_emits_inductor_arcs(monkeypatch):
     tools, bridge = _tools(monkeypatch)
     asyncio.run(tools["lib_create_passive_symbol"](name="L1", kind="inductor"))
     assert sum(c == "library.add_symbol_arc" for c, _ in bridge.sent) == 4
+
+
+@pytest.mark.parametrize("kind", ["capacitor", "polarized_capacitor", "diode",
+                                  "led", "crystal", "fuse"])
+def test_passive_glyph_lines_use_a_line_size_code_not_mils(monkeypatch, kind):
+    # Altium reads a symbol line's width as its size code (0..3). The tool
+    # once sent 10, and every capacitor came out as a solid blob.
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools["lib_create_passive_symbol"](name="X1", kind=kind))
+    lines = [p["lines"] for c, p in bridge.sent if c == "library.add_symbol_lines"]
+    assert lines
+    widths = {int(op.split("width=")[1].split(";")[0])
+              for op in lines[0].split("~~")}
+    assert widths <= {0, 1, 2, 3}, widths
+
+
+def test_a_discrete_hides_its_pin_names_and_numbers(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools["lib_create_passive_symbol"](name="C1", kind="capacitor"))
+    pins = next(p["pins"] for c, p in bridge.sent if c == "library.add_pins")
+    for op in pins.split("~~"):
+        assert "show_name=false" in op and "show_designator=false" in op, op
 
 
 def test_body_primitives_can_target_a_part():

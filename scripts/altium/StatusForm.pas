@@ -562,6 +562,32 @@ Begin
 End;
 
 
+{ A themed TPanel left on ParentBackground paints its parent's colour and
+  ignores its own Color. Started through -RScriptingSystem:RunScript, every
+  panel here drew in the base colour: no blue Open Dashboard, no red
+  Detach, no status dot. Each panel owns its background from here on. }
+Procedure OwnPanelColours(Pnl : TPanel);
+Begin
+    Try Pnl.ParentBackground := False; Except End;
+End;
+
+Procedure OwnAllPanelColours(Dummy : Integer);
+Begin
+    OwnPanelColours(pnl_Header);    OwnPanelColours(pnl_StatusDot);
+    OwnPanelColours(pnl_KPIs);      OwnPanelColours(pnl_K1);
+    OwnPanelColours(pnl_K2);        OwnPanelColours(pnl_K3);
+    OwnPanelColours(pnl_K4);        OwnPanelColours(pnl_ErrBar);
+    OwnPanelColours(pnl_Primary);   OwnPanelColours(btn_OpenWeb);
+    OwnPanelColours(pnl_Controls);  OwnPanelColours(btn_Pause);
+    OwnPanelColours(btn_Renew);     OwnPanelColours(btn_ClearLog);
+    OwnPanelColours(btn_Detach);    OwnPanelColours(chk_HidePings);
+    OwnPanelColours(chk_OnlySlow);  OwnPanelColours(chk_OnTop);
+    OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
+    OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
+    OwnPanelColours(btn_CopyCmd);
+End;
+
+
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -583,6 +609,7 @@ Begin
         LastPingMs      := 0;
         OpenWebEnabled  := False;
 
+        OwnAllPanelColours(0);
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');

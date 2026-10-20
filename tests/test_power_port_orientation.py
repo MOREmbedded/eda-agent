@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""sch_place_power_port must be able to aim the glyph.
+"""sch_place_power_port must be able to aim the glyph, and must refuse a
+style it cannot draw.
 
-The bridge has always accepted an ``orientation`` param (Generic.pas
-reads it and falls back to a style-based default when it is negative),
-but the Python tool never passed one. That left a direct caller unable
-to override the default, and the default is wrong for one common case:
-it groups ``bar`` and ``wave`` with the ground styles and sends them
-DOWN, so a VCC rail drawn as a bar comes out looking like a ground.
+The bridge accepts an ``orientation`` param (Generic.pas reads it and
+falls back to a style-based default when it is negative). That default
+used to group ``bar`` and ``wave`` with the ground styles and send them
+DOWN, so a VCC rail drawn as a bar came out looking like a ground; now
+only the three ground styles point down.
+
+An unknown style (``"power_ground"``) used to fall through to a circle
+and report success, so a ground came out as a supply symbol.
 
 The design engine was never affected -- its emitter computes the
 orientation itself and sends it explicitly -- so this is about the raw
@@ -98,9 +101,8 @@ def test_engine_emitter_aims_rails_up_and_grounds_down(style, expected):
     Calls the REAL emitter and reads what it puts on the wire. Restating
     its rule inline here would assert nothing about the code.
 
-    Note "bar" and "wave": the bridge's own style-based fallback sends
-    both DOWN, so the emitter must keep sending an explicit orientation
-    rather than ever relying on that default.
+    The emitter sends an explicit orientation for every port, so a
+    change to the bridge's style-based fallback cannot move its glyphs.
     """
     from eda_agent.design import emitter as emitter_mod
 
@@ -124,3 +126,62 @@ def test_engine_emitter_aims_rails_up_and_grounds_down(style, expected):
                   for kv in sent["params"]["ports"].split(";"))
     assert fields["style"] == style
     assert int(fields["orientation"]) == expected
+
+
+@pytest.mark.parametrize("style", ["power_ground", "gnd", "vcc", "bars"])
+def test_unknown_style_is_refused_before_the_bridge(tools, style):
+    """A misspelt ground used to be drawn as a circle and reported placed."""
+    fns, bridge = tools
+    result = asyncio.run(fns["sch_place_power_port"](text="GND", x=0, y=0,
+                                                     style=style))
+    assert result["success"] is False
+    assert "gnd_power" in result["error"]
+    assert bridge.calls == []
+
+
+def test_style_is_case_normalised(tools):
+    fns, bridge = tools
+    asyncio.run(fns["sch_place_power_port"](text="GND", x=0, y=0,
+                                            style=" GND_Power "))
+    assert _params(bridge)["style"] == "gnd_power"
+
+
+def _pascal(name):
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "scripts" / "altium"
+    return (root / name).read_text(encoding="utf-8")
+
+
+def _pascal_function(src, name):
+    start = src.index(f"Function {name}(")
+    return src[start:src.index("End;", start)]
+
+
+def test_bridge_accepts_exactly_the_python_styles():
+    """The Python list and the bridge's must agree, or one side refuses
+    what the other accepts."""
+    import re
+
+    from eda_agent.tools.generic import POWER_PORT_STYLES
+
+    utils = _pascal("Utils.pas")
+    accepted = set(re.findall(r"S = '(\w+)'",
+                              _pascal_function(utils, "IsPowerPortStyle")
+                              + _pascal_function(utils, "IsGroundPortStyle")))
+    assert accepted == set(POWER_PORT_STYLES)
+    grounds = set(re.findall(r"S = '(\w+)'",
+                             _pascal_function(utils, "IsGroundPortStyle")))
+    assert grounds == {"gnd_power", "gnd_signal", "gnd_earth"}
+
+
+def test_both_bridge_handlers_check_style_and_aim_by_ground_only():
+    """The single and the batch handler are twins; each must refuse an
+    unknown style and derive the default orientation from the ground test
+    alone, so bar and wave rails point up."""
+    gen = _pascal("Generic.pas")
+    for name in ("Gen_PlacePowerPort", "Gen_PlacePowerPorts"):
+        start = gen.index(f"Function {name}(")
+        body = gen[start:gen.index("\nFunction ", start + 1)]
+        assert "IsPowerPortStyle(StyleStr)" in body, name
+        assert "If IsGroundPortStyle(StyleStr) Then" in body, name
+        assert "(StyleStr = 'bar')" not in body, name

@@ -107,13 +107,17 @@ def test_every_tool_the_preamble_names_exists(backend):
 
 
 @pytest.mark.parametrize("backend", _BACKENDS)
-def test_a_backend_with_the_engine_says_so(backend):
-    """The paragraph is dropped when the engine is absent, not faked."""
+def test_a_backend_says_how_it_draws_a_schematic(backend):
+    """The template route where the template tools exist, the layout
+    engine where only it does, and nothing where neither does."""
     text = build_server_instructions("full", backend)
+    has_template = "sch_draw_template" in _SURFACES[backend]
     has_engine = "design_layout_schematic" in _SURFACES[backend]
-    assert ("DO NOT DRAW A SCHEMATIC BY HAND" in text) is has_engine, (
-        f"{backend} {'has' if has_engine else 'does not have'} the layout "
-        f"engine, and its preamble says the opposite")
+    assert ("A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE" in text) is has_template
+    assert ("DO NOT DRAW A SCHEMATIC BY HAND" in text) is (
+        has_engine and not has_template), (
+        f"{backend}: the preamble's schematic paragraph does not match "
+        f"its tools")
 
 
 def test_it_names_at_least_the_two_it_is_for():
@@ -130,10 +134,12 @@ def test_every_namespace_it_teaches_is_real(namespace):
         f"uses any more")
 
 
-def test_it_names_the_tool_that_draws_a_schematic():
-    """The preamble's whole point is redirecting a by-hand schematic."""
+def test_it_names_the_tools_that_draw_a_schematic():
+    """The preamble's whole point is sending a schematic down the
+    template route, checked before it is drawn."""
     named = _tools_named(SERVER_INSTRUCTIONS)
-    assert "design_execute_plan" in named
+    assert {"sch_preview_template", "sch_draw_template",
+            "lib_get_pin_list"} <= named
 
 
 def test_the_minimal_wording_does_not_name_an_unadvertised_tool():

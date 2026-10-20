@@ -54,12 +54,119 @@ def pad_position_mm(row: dict) -> tuple[float, float]:
         return cx, cy
     return num("x_mm") or 0.0, num("y_mm") or 0.0
 
+#: Copper closer than this between two different pads is reported, mm.
+MIN_PAD_GAP_MM = 0.1
+
+
+def _pad_outline(row: dict) -> list[tuple[float, float]]:
+    """A pad's copper as a convex polygon, mm, in footprint coordinates.
+
+    A round pad is a circle when square and an obround (a stadium: two
+    half circles joined along the long side) otherwise, as Altium draws
+    it; everything else is its rotated rectangle (a rounded rectangle's
+    corners are counted, which can only make a gap read slightly smaller,
+    never hide an overlap).
+    """
+    cx, cy = pad_position_mm(row)
+    w = float(row.get("w_mm") or 0.0)
+    h = float(row.get("h_mm") or 0.0)
+    a = math.radians(float(row.get("rotation") or 0.0))
+    ca, sa = math.cos(a), math.sin(a)
+    if str(row.get("shape") or "").lower() == "round":
+        r = min(w, h) / 2.0
+        off = (max(w, h) - min(w, h)) / 2.0
+        local = []
+        for end, sign in ((0, 1.0), (1, -1.0)):
+            for k in range(9):  # a half circle per end, 8 segments
+                t = math.pi * (end + k / 8.0) - math.pi / 2.0
+                local.append((sign * off + r * math.cos(t), r * math.sin(t)))
+        if h > w:  # long axis along Y
+            local = [(-y, x) for x, y in local]
+    else:
+        local = [(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)]
+    return [(cx + x * ca - y * sa, cy + x * sa + y * ca) for x, y in local]
+
+
+def _overlap(p: list, q: list) -> bool:
+    """Separating-axis test for two convex polygons; touching counts."""
+    for poly in (p, q):
+        for i in range(len(poly)):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % len(poly)]
+            nx, ny = y1 - y2, x2 - x1
+            pa = [nx * x + ny * y for x, y in p]
+            qa = [nx * x + ny * y for x, y in q]
+            if max(pa) < min(qa) - 1e-9 or max(qa) < min(pa) - 1e-9:
+                return False
+    return True
+
+
+def _seg_dist(px: float, py: float, a: tuple, b: tuple) -> float:
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    L = dx * dx + dy * dy
+    t = 0.0 if L == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _gap(p: list, q: list) -> float:
+    """Shortest copper-to-copper distance between two disjoint polygons."""
+    best = math.inf
+    for src, dst in ((p, q), (q, p)):
+        for x, y in src:
+            for i in range(len(dst)):
+                best = min(best, _seg_dist(x, y, dst[i], dst[(i + 1) % len(dst)]))
+    return best
+
+
+def copper_clearance_findings(pads: list[dict],
+                              min_gap: float = MIN_PAD_GAP_MM) -> list[dict]:
+    """Pads of different names whose copper overlaps (error) or nearly does.
+
+    Independent of any spec: a footprint built faithfully to a wrongly
+    transcribed land pattern still shorts, and matching that spec proves
+    nothing. Pads sharing a name (a split exposed pad) may touch.
+    """
+    rows = [p for p in pads if isinstance(p, dict)
+            and float(p.get("w_mm") or 0) > 0 and float(p.get("h_mm") or 0) > 0]
+    outlines = [_pad_outline(p) for p in rows]
+    out: list[dict] = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            a, b = str(rows[i].get("name")), str(rows[j].get("name"))
+            if a == b:
+                continue
+            if _overlap(outlines[i], outlines[j]):
+                out.append({
+                    "check": "pad_clearance", "severity": "error",
+                    "pad": a,
+                    "message": f"pad {a} and pad {b} overlap: their copper "
+                               "is shorted together",
+                    "expected": f">= {min_gap:.2f} mm between pads",
+                    "actual": "overlapping"})
+                continue
+            g = _gap(outlines[i], outlines[j])
+            if g < min_gap:
+                out.append({
+                    "check": "pad_clearance", "severity": "warning",
+                    "pad": a,
+                    "message": f"pad {a} and pad {b} are only {g:.3f} mm "
+                               "apart, too close for a reliable solder-mask "
+                               "web or copper clearance",
+                    "expected": f">= {min_gap:.2f} mm",
+                    "actual": f"{g:.3f} mm"})
+    return out
+
+
 __all__ = [
     "AuditFinding",
     "LandPatternSpec",
+    "MIN_PAD_GAP_MM",
     "SpecPad",
     "SpecSource",
     "audit_footprint_against_spec",
+    "copper_clearance_findings",
     "expand_spec_pads",
 ]
 
@@ -135,9 +242,11 @@ class LandPatternSpec(BaseModel):
         default=None,
         description=(
             "{count, pitch, span_x, span_y, pad_w, pad_h, shape?} -- "
-            "count is TOTAL pads divisible by 4; pad_w is the dimension "
-            "along the row (the opposite of dual_row, where pad_w runs "
-            "across it)."
+            "count is TOTAL pads divisible by 4; span_x / span_y are pad "
+            "CENTRE to pad CENTRE across the part (C on a vendor land "
+            "pattern), not the outer extent Z and not a package lead span; "
+            "pad_w is the dimension along the row (the opposite of "
+            "dual_row, where pad_w runs across it)."
         ),
     )
     thermal_pad: Optional[SpecPad] = Field(
@@ -458,6 +567,9 @@ def audit_footprint_against_spec(
                         expected="windowed apertures",
                         actual=f"paste source={src}, expansion={exp} mm",
                     ))
+
+    # --- copper clearance, whatever the spec says -----------------------
+    findings += [AuditFinding(**f) for f in copper_clearance_findings(fp_pads)]
 
     ok = not any(f.severity == "error" for f in findings)
     return {

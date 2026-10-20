@@ -134,26 +134,26 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 #: a paragraph naming tools that are not there. A preamble that names a
 #: missing tool is read first and trusted most, which is the worst place
 #: for a dead end.
+#: Altium draws from a hand template (decided 2026-10-20: the automatic
+#: layout is being retired; a planned template came out clean first time
+#: where the engine did not after many rounds).
 _ENGINE_ALTIUM = (
-    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
-    "with sch_place_components and joining them with sch_place_wires\n"
-    "gives a netlist-correct sheet that reads like nothing a person\n"
-    "would draw, and it is the most common way this server is misused.\n"
-    "A schematic comes from a DesignPlan: build the plan, then\n"
-    "design_execute_plan places AND routes the whole sheet in one\n"
-    "call, through a layout engine measured against hand-drawn boards.\n"
-    "design_layout_schematic returns that same layout as data and\n"
-    "design_preview_plan renders it, both without touching the EDA.\n"
-    "One engine sits behind all three.\n"
+    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Plan the sheet the way\n"
+    "an engineer draws it, every coordinate on the 100 mil grid: the IC\n"
+    "in the middle, supply rails as straight wires with their capacitors\n"
+    "hanging straight down to ground, a feedback divider as a vertical\n"
+    "stack whose midpoint runs straight across to its pin, net labels\n"
+    "only where a signal leaves the block. Read each symbol's pins with\n"
+    "lib_get_pin_list, write the template (parts, wires through pin\n"
+    "anchors like U1.EN, power ports, labels and the expected nets),\n"
+    "check it with sch_preview_template and look at its PNG, then draw\n"
+    "it with sch_draw_template. That places the parts, works out every\n"
+    "pin end, checks the wiring against the placed pins and refuses a\n"
+    "short or a misplaced part before the first wire.\n"
     "\n"
-    "CHANGING an existing sheet goes the same way. Re-running\n"
-    "design_execute_plan on a project it drew before moves only what\n"
-    "the plan changed and leaves every other component alone, so an\n"
-    "edit is a plan edit. For a sheet it did not draw,\n"
-    "design_plan_from_sheet reads a plan back off the schematic and\n"
-    "design_hints_from_sheet reads the current positions to pass as\n"
-    "placement_hints. The sch_ and obj_ tools are for the few glyphs a\n"
-    "plan cannot express, and for repairs too small to re-lay-out.\n"
+    "To CHANGE a block, redraw it from a template on a fresh sheet\n"
+    "rather than moving parts one at a time. The sch_ and obj_ tools\n"
+    "are for small repairs.\n"
     "\n"
 )
 

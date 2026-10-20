@@ -1047,6 +1047,16 @@ async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
             "pins": total_pins, "create": created, "steps": steps}
 
 
+#: Line-size code for symbol glyph lines: Altium's TSize, 0 smallest,
+#: 1 small (its default), 2 medium, 3 large. Not mils.
+SYMBOL_LINE_WIDTH = 1
+
+#: Outline colour of a discrete glyph's body (resistor, fuse, crystal), as
+#: Altium's BGR integer: the same blue its symbol lines default to, so a
+#: resistor box does not come out black beside blue capacitor plates.
+SYMBOL_LINE_COLOR = 0xFF0000
+
+
 #: Every key lib_set_label_formats encodes into an op.
 _LABEL_OP_KEYS = frozenset({
     "target", "font_id", "color", "is_hidden", "orientation",
@@ -1309,11 +1319,15 @@ def register_library_tools(mcp):
             steps[f"rect{i}"] = await bridge.send_command_async(
                 "library.add_symbol_rectangle",
                 {"x1": r["x1"], "y1": r["y1"], "x2": r["x2"], "y2": r["y2"],
-                 "fill_color": -1, "border_color": 0})
+                 "fill_color": -1, "border_color": SYMBOL_LINE_COLOR})
         if geom.lines:
+            # width is Altium's line-size code (0 smallest .. 3 large), not
+            # mils: 10 drew every plate and lead as a fat bar, so a
+            # capacitor read as a blue blob.
             line_ops = [
                 ";".join([f"x1={l['x1']}", f"y1={l['y1']}",
-                          f"x2={l['x2']}", f"y2={l['y2']}", "width=10"])
+                          f"x2={l['x2']}", f"y2={l['y2']}",
+                          f"width={SYMBOL_LINE_WIDTH}"])
                 for l in geom.lines
             ]
             steps["lines"] = await bridge.send_command_async(
@@ -5596,7 +5610,14 @@ def register_library_tools(mcp):
 
         dual_row numbers like SOIC and quad like QFN (pin 1 top-left,
         CCW); otherwise give ``pads``. pad_w runs ACROSS the row in
-        dual_row but ALONG it in quad.
+        dual_row but ALONG it in quad. span / span_x / span_y are pad
+        CENTRE to pad CENTRE (C on a vendor land pattern), never the
+        outer extent Z or the package's lead span.
+
+        Whatever the spec says, pads of different names whose copper
+        overlaps are an error and a gap under 0.1 mm a warning
+        (check ``pad_clearance``): a footprint that faithfully matches a
+        misread spec still shorts.
 
         Returns:
             {ok, rotation_applied_deg, findings: [{check, severity,

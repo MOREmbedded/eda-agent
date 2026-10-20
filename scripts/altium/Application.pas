@@ -607,6 +607,20 @@ Begin
     End;
     If DocName = '' Then DocName := ExtractFileName(FilePath);
 
+    { A DOCUMENT ALREADY OPEN AT THIS PATH IS REFUSED. Creating a blank over }
+    { it raised "object accessed after being destroyed" in ADVPCB and halted }
+    { the script (a PcbLib, 2026-10-20). The caller wants the open one.      }
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except ServerDoc := Nil; End;
+    If ServerDoc <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',
+            'A document is already open at ' + FilePath +
+            '. Focus it with app_set_active_document instead of creating it again,' +
+            ' or close it first.');
+        Exit;
+    End;
+
     { Client.OpenNewDocument creates a blank in-memory IServerDocument of the
       given kind. Pass False for ReuseExisting so we don't accidentally grab
       a stale load of the same path. }

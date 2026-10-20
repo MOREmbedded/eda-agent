@@ -179,7 +179,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  ("place", "schlib"), ("place", "part")),
         "document_kind": "schematic",
         "backends": ("altium",),
-        "use": ["sch_place_components", "design_execute_plan",
+        "use": ["sch_place_components", "sch_draw_template",
                 "lib_get_components"],
         "avoid": [
             ("app_run_ui_command", "driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
@@ -194,8 +194,37 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "an .IntLib is resolved to its source .SchLib, including the "
             "library-package layout where it compiles into a Project "
             "Outputs folder. Adding parts to a sheet that exists is this "
-            "tool; drawing a whole sheet is design_execute_plan, which "
-            "places and routes to measured conventions."),
+            "tool; drawing a whole block or sheet is sch_draw_template."),
+    },
+    {
+        "task": "Draw a schematic sheet or block",
+        "keywords": ("draw", "schematic", "sheet", "block", "circuit",
+                     "wire", "wiring", "neat", "tidy", "redraw", "template"),
+        "when": (("draw", "schematic"), ("draw", "sheet"),
+                 ("draw", "block"), ("redraw", "schematic"),
+                 ("wire", "schematic")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["lib_get_pin_list", "sch_preview_template",
+                "sch_draw_template"],
+        "avoid": [
+            ("design_execute_plan", "the automatic layout is being retired: "
+                                    "its sheets came out untidy where a planned "
+                                    "template came out clean"),
+            ("sch_place_wires", "segment by segment, with pin ends worked out "
+                                "by hand; the template tool computes them and "
+                                "checks the wiring"),
+        ],
+        "note": (
+            "Plan the block as an engineer draws it, every coordinate on "
+            "the 100 mil grid: IC in the middle, rails as straight wires, "
+            "capacitors hanging straight down to ground, a divider whose "
+            "midpoint runs straight to its pin, labels only where a signal "
+            "leaves the block. Wire paths take pin anchors (U1.EN, U1.11), "
+            "so pin ends are never computed by hand. Supply ports are "
+            "style bar pointing up, grounds gnd_power pointing down. Give "
+            "the expected nets so the netlist is checked pin by pin. "
+            "Preview, read the PNG, fix, then draw on a fresh sheet."),
     },
     {
         "task": "Delete an object placed on a schematic",

@@ -141,14 +141,20 @@ class PassiveSymbol:
 # Standard 2-pin horizontal frame (rule-14 origin at pin-1 wire-end).
 _BODY_L = 100
 _BODY_R = 300
+#: Half height of the resistor and fuse bodies, mil: 80 mil tall over a
+#: 200 mil length.
+_SLIM_HALF = 40
 
 
 def _two_pins(et1="passive", et2="passive"):
+    # A discrete shows neither pin name nor number: left visible, the
+    # names "1" and "2" print inside the glyph, across a capacitor's plates.
+    hidden = {"show_name": False, "show_designator": False}
     return (
         {"designator": "1", "name": "1", "x": _BODY_L, "y": 0,
-         "length": _BODY_L, "rotation": 180, "electrical_type": et1},
+         "length": _BODY_L, "rotation": 180, "electrical_type": et1, **hidden},
         {"designator": "2", "name": "2", "x": _BODY_R, "y": 0,
-         "length": _BODY_L, "rotation": 0, "electrical_type": et2},
+         "length": _BODY_L, "rotation": 0, "electrical_type": et2, **hidden},
     )
 
 
@@ -179,7 +185,9 @@ def generate_passive_symbol(kind: str) -> PassiveSymbol:
     # collapse. Body spans x in [100, 300] (the pin body-attach points),
     # y in [-100, 100].
     if k in ("resistor", "r", "res"):
-        rects.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_R, "y2": 100})
+        # A long, narrow body (200 x 80 mil, 2.5:1) reads as a resistor; the
+        # full 200 x 200 square it used to be reads as a box.
+        rects.append({"x1": _BODY_L, "y1": -_SLIM_HALF, "x2": _BODY_R, "y2": _SLIM_HALF})
     elif k in ("inductor", "l", "ind"):
         # Four half-turn humps across the body, the conventional coil.
         for cx in (125, 175, 225, 275):
@@ -222,7 +230,7 @@ def generate_passive_symbol(kind: str) -> PassiveSymbol:
         rects.append({"x1": 175, "y1": -75, "x2": 225, "y2": 75})
     elif k in ("fuse", "f"):
         # IEC fuse: a rectangle with the lead passing straight through.
-        rects.append({"x1": _BODY_L, "y1": -100, "x2": _BODY_R, "y2": 100})
+        rects.append({"x1": _BODY_L, "y1": -_SLIM_HALF, "x2": _BODY_R, "y2": _SLIM_HALF})
         lines.append({"x1": _BODY_L, "y1": 0, "x2": _BODY_R, "y2": 0})
     elif k in ("zener", "z", "tvs", "tvs_uni"):
         # Diode with the cathode bar's ends hooked in opposite directions.

@@ -12870,7 +12870,13 @@ def register_easyeda_tools(mcp):
             spec_json: the land-pattern spec, as an object or its JSON
                 text. Same schema as the Altium tool: ``source``
                 (required), plus explicit ``pads`` or a ``dual_row`` /
-                ``quad`` generator.
+                ``quad`` generator. Spans are pad centre to pad centre
+                (C), never the outer extent Z or a package lead span.
+
+        Whatever the spec says, overlapping copper between pads of
+        different names is an error and a gap under 0.1 mm a warning
+        (``pad_clearance``), so a footprint matching a misread spec still
+        fails.
 
         Returns:
             ``{ok, rotation_applied_deg, findings: [...]}``; ok is true
