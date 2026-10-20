@@ -6,9 +6,9 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 
 ## Demo
 
-Claude Code reviewing a buck converter through eda-agent. The feedback resistor divider on this schematic is intentionally wrong; Claude catches it among other recommendations.
+Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
 
-[![eda-agent demo: Claude Code reviewing a buck converter](https://img.youtube.com/vi/snRyCx3OlxM/maxresdefault.jpg)](https://youtu.be/snRyCx3OlxM)
+[![eda-agent demo: a schematic from a one-line spec in Altium Designer](assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
 
 ## Support the project
 
