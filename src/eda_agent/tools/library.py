@@ -2890,6 +2890,144 @@ def register_library_tools(mcp):
                 "footprint_count": len(footprints), "footprints": footprints}
 
     @mcp.tool()
+    async def lib_extract_step_models(
+        library_path: str,
+        out_dir: str = "",
+        model_names: Optional[list[str]] = None,
+        overwrite: bool = False,
+        list_only: bool = False,
+    ) -> dict[str, Any]:
+        """List or extract the STEP models embedded in a .PcbLib, WITHOUT
+        Altium running.
+
+        Reads the OLE container directly: each embedded model is a zlib
+        stream holding a STEP file, named by an ASCII table that also gives
+        its rotation and Z offset. Use it to reuse a vendor's 3D body
+        elsewhere, check which models a library carries, or recover a
+        model whose source file is gone. Which footprint uses which model
+        is not read (that link is in the binary footprint data).
+
+        Args:
+            library_path: the .PcbLib file.
+            out_dir: where to write; default
+                ``<workspace>/step_models/<library name>``.
+            model_names: only these model names (case-insensitive).
+            overwrite: replace files already in ``out_dir``.
+            list_only: report the models and write nothing.
+
+        Returns:
+            ``{ok, library_path, models: [{index, name, id, embedded,
+            rotation_deg, dz_mm, checksum, stream}]}``, plus ``out_dir``,
+            ``written``, ``skipped``, ``failed`` and ``not_found`` when
+            extracting.
+        """
+        from ..fileio.altium_pcblib import extract_pcblib_models, read_pcblib_models
+
+        try:
+            models = await asyncio.to_thread(read_pcblib_models, library_path)
+            out: dict[str, Any] = {"ok": True, "library_path": library_path,
+                                   "model_count": len(models), "models": models}
+            if list_only:
+                return out
+            target = Path(out_dir) if out_dir else (
+                Path(get_config().workspace_dir) / "step_models" / Path(library_path).stem)
+            out["out_dir"] = str(target)
+            out.update(await asyncio.to_thread(
+                extract_pcblib_models, library_path, target, model_names, overwrite))
+            return out
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def lib_write_libpkg(
+        libpkg_path: str,
+        documents: list[str],
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Write an integrated library package (.LibPkg) grouping libraries.
+
+        A LibPkg is the project Altium compiles into one .IntLib. It is a
+        plain text file, written in the layout Altium saves: each library
+        path relative to the package when on the same drive. Open it in
+        Altium and compile to get the IntLib; Altium adds its default
+        settings on first save.
+
+        Args:
+            libpkg_path: the .LibPkg to write.
+            documents: the .SchLib / .PcbLib (or .PcbLib3D / .DbLib) files
+                to group, each existing.
+            overwrite: replace an existing package.
+
+        Returns:
+            ``{ok, libpkg_path, documents}`` with each path as stored, or
+            ``{ok: False, reason}``.
+        """
+        from ..fileio.altium_libpkg import write_libpkg
+
+        try:
+            return {"ok": True, **write_libpkg(libpkg_path, documents, overwrite)}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def lib_backup_library(library_path: str, label: str = "") -> dict[str, Any]:
+        """Copy one library file into the workspace before editing it.
+
+        ``app_checkpoint`` covers the focused project; this covers a single
+        library, including one opened on its own or kept outside the
+        project. Take one before a delete, a batch rename or a plan that
+        rewrites a library. It copies the file ON DISK: save first
+        (``app_save_all``) if the editor holds changes you want kept. A copy
+        identical to the newest backup is not stored twice.
+
+        Returns:
+            ``{ok, backup_path, created, sha256, bytes, deduplicated}``.
+        """
+        from ..library_backup import backup_library
+
+        try:
+            return {"ok": True, **await asyncio.to_thread(
+                backup_library, library_path, get_config().workspace_dir, label)}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def lib_list_library_backups(library_path: str = "") -> dict[str, Any]:
+        """List the library backups, oldest first; one library's when
+        ``library_path`` is given. Each: ``{source, created, label, sha256,
+        bytes, backup_path}``."""
+        from ..library_backup import list_backups
+
+        backups = await asyncio.to_thread(
+            list_backups, get_config().workspace_dir, library_path or None)
+        return {"ok": True, "count": len(backups), "backups": backups}
+
+    @mcp.tool()
+    async def lib_restore_library_backup(backup_path: str, confirm: bool = False) -> dict[str, Any]:
+        """Put a library backup back over the library it was taken from.
+
+        CLOSE the library in Altium first: Altium keeps an open library in
+        memory and its next save would overwrite the restored file. Reopen
+        it afterwards (``lib_reload_library``). The file being replaced is
+        backed up first, so the restore can be undone the same way.
+
+        Requires confirm=True: this overwrites a library file.
+
+        Returns:
+            ``{ok, restored_to, from_backup, previous}``.
+        """
+        if not confirm:
+            return {"ok": False, "reason": "confirm=True is required: this overwrites "
+                    "the library file with the backup"}
+        from ..library_backup import restore_backup
+
+        try:
+            return {"ok": True, **await asyncio.to_thread(
+                restore_backup, backup_path, get_config().workspace_dir)}
+        except (ValueError, OSError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
     async def lib_convert_designators_to_stroke(
         library_path: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -5808,6 +5946,120 @@ def register_library_tools(mcp):
         return await bridge.send_command_async(
             "library.get_footprint_primitives",
             {"footprint_name": footprint_name, "library_path": library_path})
+
+    async def _read_footprint(footprint_name: str, library_path: str):
+        """(pads, primitives, problem) for one footprint, read live."""
+        from ..bridge.exceptions import AltiumCommandError
+
+        bridge = get_bridge()
+        args = {"footprint_name": footprint_name, "library_path": library_path}
+        try:
+            pads = await bridge.send_command_async("library.get_pad_geometry", args)
+            problem = _pad_geometry_problem(pads)
+            if problem:
+                return None, None, problem
+            prims = await bridge.send_command_async(
+                "library.get_footprint_primitives", args)
+        except AltiumCommandError as e:
+            return None, None, str(e)
+        if not isinstance(prims, dict) or prims.get("success") is False:
+            return None, None, "the primitive read was refused"
+        return pads, prims, ""
+
+    @mcp.tool()
+    async def lib_render_footprint(
+        footprint_name: str,
+        library_path: str = "",
+        output_path: str = "",
+        png: bool = True,
+    ) -> dict[str, Any]:
+        """Draw one library footprint to an SVG (and a PNG) to look at.
+
+        For checking a part just made: pin 1 where it should be, silkscreen
+        clear of the copper, a courtyard around everything. Pads (with pad
+        names, holes and corner radius), tracks, arcs, fills and vias are
+        drawn per layer, viewed from the top with Y up, the origin marked
+        with a cross. A region is drawn as its bounding box, dashed: the
+        read carries no outline. Never judge sizes from the picture; the
+        numbers are in ``lib_get_pad_geometry`` and the audits check them.
+
+        Args:
+            footprint_name: the footprint's name in the library.
+            library_path: optional .PcbLib; defaults to the focused one.
+            output_path: SVG path; default the workspace ``renders`` folder.
+            png: also rasterize to a PNG next to it (needs a Chromium-family
+                browser; skipped with a note when there is none).
+
+        Returns:
+            ``{ok, svg_path, png_path?, bbox_mm, pads, by_layer,
+            regions_as_boxes}``.
+        """
+        from ..render.footprint_svg import render_footprint_svg
+
+        pads, prims, problem = await _read_footprint(footprint_name, library_path)
+        if problem:
+            return {"ok": False, "reason": f"could not read footprint "
+                    f"{footprint_name!r}: {problem}"}
+        svg, summary = render_footprint_svg(pads, prims)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", footprint_name).strip("._") or "footprint"
+        target = Path(output_path) if output_path else (
+            Path(get_config().workspace_dir) / "renders" / f"footprint_{safe}.svg")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(svg, encoding="utf-8")
+        out: dict[str, Any] = {"ok": True, "footprint": footprint_name,
+                               "svg_path": str(target), **summary}
+        if png:
+            from ..render.rasterize import rasterize_svg
+            png_path = target.with_suffix(".png")
+            bb = summary["bbox_mm"]
+            span_w = max(bb["x2"] - bb["x1"], 0.1) + 1.0
+            span_h = max(bb["y2"] - bb["y1"], 0.1) + 1.0
+            width = 1200
+            height = max(200, min(2400, int(width * span_h / span_w)))
+            try:
+                res = await asyncio.to_thread(rasterize_svg, str(target), str(png_path),
+                                              width, height)
+            except Exception as exc:  # noqa: BLE001 - the SVG is still there
+                res = {"ok": False, "reason": str(exc)}
+            if isinstance(res, dict) and res.get("ok") is False:
+                out["png_note"] = res.get("reason") or "rasterizing failed"
+            elif png_path.is_file():
+                out["png_path"] = str(png_path)
+        return out
+
+    @mcp.tool()
+    async def lib_compare_footprints(
+        footprint_a: str,
+        footprint_b: str,
+        library_a: str = "",
+        library_b: str = "",
+        tol_mm: float = 0.001,
+    ) -> dict[str, Any]:
+        """Compare two footprints pad by pad and layer by layer. Read-only.
+
+        The two can be in one library or two (both open in Altium): a
+        vendor revision against your copy, a generated land pattern against
+        the one you trust. Pads match by name; each matched pair lists the
+        fields that differ (position, size, shape, corner, rotation, hole,
+        layer, paste and mask expansion), lengths within ``tol_mm``.
+        Primitives compare as counts per layer and kind.
+
+        Returns:
+            ``{ok, identical, pad_counts, pads: {only_a, only_b, changed:
+            {pad: {field: [a, b]}}, duplicate_names}, primitives:
+            {"layer/kind": [count_a, count_b]}, height_mm}``.
+        """
+        from ..design.footprint_compare import compare_footprints
+
+        pa, ra, problem = await _read_footprint(footprint_a, library_a)
+        if problem:
+            return {"ok": False, "reason": f"could not read {footprint_a!r}: {problem}"}
+        pb, rb, problem = await _read_footprint(footprint_b, library_b)
+        if problem:
+            return {"ok": False, "reason": f"could not read {footprint_b!r}: {problem}"}
+        return {"ok": True, "a": {"footprint": footprint_a, "library": pa.get("library_path")},
+                "b": {"footprint": footprint_b, "library": pb.get("library_path")},
+                **compare_footprints(pa, ra, pb, rb, tol_mm)}
 
     @mcp.tool()
     async def lib_audit_footprint_vs_datasheet(

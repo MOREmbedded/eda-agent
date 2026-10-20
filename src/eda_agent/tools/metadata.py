@@ -158,6 +158,11 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 _OFFLINE_TOOLS = frozenset({
     # Read a profile directory off local disk; Altium is not involved.
     "profile_show", "profile_list",
+    # Read or write library FILES directly (OLE streams, LibPkg text,
+    # byte copies); the bridge is never called.
+    "lib_read_pcblib_headers", "lib_extract_step_models", "lib_write_libpkg",
+    "lib_backup_library", "lib_list_library_backups",
+    "lib_restore_library_backup",
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
@@ -222,6 +227,11 @@ INTERACTION_OVERRIDES = {
     # Pure geometry computed in DelphiScript; no document state is read or
     # changed. Its verb does not match the generic readonly name rules.
     "obj_measure_distance": READONLY,
+    # Offline, but it overwrites a library file Altium may have open, so
+    # "readonly with respect to the session" would undersell it.
+    "lib_restore_library_backup": SILENT,
+    # Two library reads and a file in the workspace; the library is untouched.
+    "lib_render_footprint": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog

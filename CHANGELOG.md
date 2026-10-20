@@ -46,6 +46,35 @@ variable name, and the `truncated` field `proj_get_nets` pages on.
 
 ### Added
 
+- Library file tools, the gaps found comparing against
+  embedded-society/altium-designer-mcp, written here rather than taken
+  from it (it is GPL-3.0 and writes Altium's binary formats, which this
+  project does not). None writes a .SchLib or .PcbLib:
+  - `lib_extract_step_models` lists or extracts the STEP models embedded
+    in a .PcbLib with Altium closed (zlib streams indexed by an ASCII
+    table). **Checked on two vendor libraries written by Altium** (one
+    model and eleven): every model came out as a STEP file.
+  - `lib_write_libpkg` writes a .LibPkg grouping libraries, in the layout
+    measured from 44 packages Altium saved. **UNVERIFIED**: not yet opened
+    and compiled in Altium.
+  - `lib_backup_library`, `lib_list_library_backups` and
+    `lib_restore_library_backup` keep byte copies of one library file,
+    for libraries `app_checkpoint` does not reach. A restore backs up the
+    file it replaces first and needs `confirm=True`.
+  - `lib_render_footprint` draws a footprint to SVG and PNG from the live
+    pad and primitive reads; `lib_compare_footprints` diffs two footprints
+    pad by pad and counts primitives per layer. **UNVERIFIED against a
+    live library**: covered by tests on canned reads only.
+- `rotation_audit`, an advisory check in `pcb_layout_audit`: each
+  two-pad top-side part is tried at 0/90/180/270 degrees about its
+  origin, scored by net airline (minimum spanning tree) for routable
+  nets and by distance to the nearest return pad for plane nets, and
+  reported when another rotation beats the current one by 25 mils.
+  The idea comes from coffeenmusic/altium-mcp's `check_orientation`,
+  reimplemented on the LayoutBoard model. Bottom-side parts are skipped
+  until the rotation sign of a mirrored part is checked. **UNVERIFIED
+  against a live board**: covered by tests on synthetic boards only.
+
 #### Owner profiles
 
 A per-workspace house style, so one machine can work for several
