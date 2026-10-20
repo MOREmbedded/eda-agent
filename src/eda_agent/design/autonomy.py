@@ -418,7 +418,7 @@ _EQUIVALENTS = {
     "pcb_place_components": "easyeda_place_pcb_components",
     "pcb_move_components": "easyeda_snap_components_to_grid",
     "proj_compare_sch_pcb": "easyeda_compare_schematic_pcb",
-    "design_execute_plan": "easyeda_run_plan",
+    "sch_draw_template": "easyeda_emit_template",
     "design_lint_report": "easyeda_review_board",
     "design_audit_schematic": "easyeda_review_board",
     "pcb_run_drc": "run_drc",
@@ -504,10 +504,6 @@ _EQUIVALENTS = {
     # Stitching is geometry plus one via call, and both existed. The
     # pours_tuning stage named the Altium tool and reported it absent.
     "pcb_place_stitching_vias": "easyeda_place_stitching_vias",
-    # A power port is a net flag here, not a sheet port; net ports are
-    # EasyEDA's cross-sheet connector and would be the wrong glyph.
-    "sch_place_power_port": "easyeda_create_net_flag",
-    "sch_place_net_label": "easyeda_create_net_label",
 }
 
 

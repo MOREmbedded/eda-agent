@@ -12,9 +12,8 @@ only the three ground styles point down.
 An unknown style (``"power_ground"``) used to fall through to a circle
 and report success, so a ground came out as a supply symbol.
 
-The design engine was never affected -- its emitter computes the
-orientation itself and sends it explicitly -- so this is about the raw
-tool being usable on its own.
+The template drawer sends an explicit orientation for every port, so
+this is about the raw tool being usable on its own.
 """
 
 from __future__ import annotations
@@ -95,37 +94,22 @@ def test_all_four_orientations_pass_through(tools, orientation):
     ("bar", 1), ("circle", 1), ("arrow", 1), ("wave", 1),
     ("gnd_power", 3), ("gnd_signal", 3), ("gnd_earth", 3),
 ])
-def test_engine_emitter_aims_rails_up_and_grounds_down(style, expected):
-    """Guard the path that was already correct, so it stays correct.
+def test_the_template_aims_rails_up_and_grounds_down(style, expected):
+    """The template drawer sends an explicit orientation for every port,
+    so a change to the bridge's style-based fallback cannot move its
+    glyphs. Built by the REAL builder; restating its rule here would
+    assert nothing about the code."""
+    from eda_agent.design.sch_template import build, place_symbol_pins
 
-    Calls the REAL emitter and reads what it puts on the wire. Restating
-    its rule inline here would assert nothing about the code.
-
-    The emitter sends an explicit orientation for every port, so a
-    change to the bridge's style-based fallback cannot move its glyphs.
-    """
-    from eda_agent.design import emitter as emitter_mod
-
-    sent: dict = {}
-
-    class _Bridge:
-        def send_command(self, command, params=None, **kwargs):
-            sent["command"] = command
-            sent["params"] = dict(params or {})
-            return {"success": True}
-
-    class _Port:
-        def __init__(self, style):
-            self.text, self.x, self.y, self.style = "NET", 10, 20, style
-
-    result = emitter_mod.EmitResult()
-    emitter_mod._emit_power_ports([_Port(style)], _Bridge(), result, "main")
-
-    assert sent["command"] == "generic.place_power_ports"
-    fields = dict(kv.split("=", 1)
-                  for kv in sent["params"]["ports"].split(";"))
-    assert fields["style"] == style
-    assert int(fields["orientation"]) == expected
+    pins = {"R1": place_symbol_pins("R1", [
+        {"designator": "1", "name": "1", "x": -100, "y": 0,
+         "orientation": 2, "length": 100}], 0, 0)}
+    drawing = build({"parts": [{"designator": "R1"}],
+                     "ports": [{"net": "NET", "at": "R1.1", "style": style}]},
+                    pins)
+    (port,) = drawing.ports
+    assert port["style"] == style
+    assert port["orientation"] == expected
 
 
 @pytest.mark.parametrize("style", ["power_ground", "gnd", "vcc", "bars"])

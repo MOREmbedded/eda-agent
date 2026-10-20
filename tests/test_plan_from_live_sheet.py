@@ -10,7 +10,7 @@ schematic does not record.
 """
 from __future__ import annotations
 
-from eda_agent.design.orchestrator import plan_from_live_sheet
+from eda_agent.design.sheet_plan import plan_from_live_sheet
 
 
 class _Sheet:
@@ -293,14 +293,14 @@ def test_unreadable_power_glyphs_cost_the_rails_not_the_plan():
 def test_no_bridge_is_a_refusal_not_a_crash(monkeypatch):
     """No bridge is simulated, never looked for.
 
-    This used to pass bridge=None and let the orchestrator resolve the
+    This used to pass bridge=None and let the module resolve the
     global bridge, skipping "if a live bridge answered". On a machine with
     Altium running that is a real request to the user's session: on
     2026-09-23 it sent four queries to one, mid-work.
     """
-    from eda_agent.design import orchestrator
+    from eda_agent.design import sheet_plan
 
-    monkeypatch.setattr(orchestrator, "_resolve_bridge", lambda: None)
+    monkeypatch.setattr(sheet_plan, "_resolve_bridge", lambda: None)
     out = plan_from_live_sheet("p.PrjPcb", bridge=None)
     assert out["ok"] is False
     assert out["plan"] is None

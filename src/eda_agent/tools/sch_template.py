@@ -110,6 +110,28 @@ async def _symbol_pins(bridge, parts: list[dict]) -> tuple[dict, list[str]]:
     return out, problems
 
 
+def _with_plan(template: Any, plan_json: str, sheet: str
+               ) -> tuple[Any, dict, list[dict], list[str]]:
+    """The template with the plan's parts and nets merged in; stamps per
+    designator; notes; and problems that stop the call."""
+    if not plan_json.strip():
+        return template, {}, [], []
+    if not isinstance(template, dict):
+        return template, {}, [], ["the template must be an object with parts and wires"]
+    from pydantic import ValidationError
+
+    from ..design.plan import DesignPlan
+    try:
+        plan = DesignPlan.model_validate_json(plan_json)
+    except ValidationError as exc:
+        return template, {}, [], [
+            f"plan_json: {'.'.join(str(x) for x in e['loc'])}: {e['msg']}"
+            for e in exc.errors()][:10]
+    merged, stamps, notes = st.merge_plan(template, plan, sheet)
+    errors = [f"{n['where']}: {n['detail']}" for n in notes if n["level"] == "error"]
+    return merged, stamps, [n for n in notes if n["level"] != "error"], errors
+
+
 def _render(d: st.Drawing, png_path: str, title: str) -> dict[str, Any]:
     path = png_path or str(_renders_dir() / "template_preview.png")
     try:
@@ -128,6 +150,8 @@ def register_sch_template_tools(mcp):
         template: dict[str, Any],
         png_path: str = "",
         grid: int = 100,
+        plan_json: str = "",
+        sheet: str = "",
     ) -> dict[str, Any]:
         """Check a schematic template and draw it to a PNG, without
         touching any sheet. Read the PNG to look at it.
@@ -159,6 +183,12 @@ def register_sch_template_tools(mcp):
             png_path: where to write the picture; default the workspace's
                 renders folder.
             grid: the grid in mils every vertex should sit on.
+            plan_json: the DesignPlan, if there is one. Parts then need
+                only designator and position (symbol, library and value
+                come from the plan) and the plan's nets are checked pin
+                by pin. A part the plan lacks is an error.
+            sheet: the plan sheet this template draws, to list the plan
+                parts it leaves out.
 
         Returns:
             ``ok``, ``errors`` (shorts, overlapping wires, bad anchors,
@@ -167,7 +197,8 @@ def register_sch_template_tools(mcp):
             points, stacked labels), ``netlist``, ``unconnected_pins``,
             ``auto_junctions`` and ``preview_png``.
         """
-        problems = _part_problems(template)
+        template, _, plan_notes, problems = _with_plan(template, plan_json, sheet)
+        problems = problems or _part_problems(template)
         if problems:
             return {"ok": False, "errors": problems}
         bridge = get_bridge()
@@ -178,7 +209,10 @@ def register_sch_template_tools(mcp):
             d = st.build(template, pins, grid=grid)
         except st.TemplateError as exc:
             return {"ok": False, "errors": [str(exc)]}
-        return {**d.report(), **_render(d, png_path, "template preview")}
+        out = {**d.report(), **_render(d, png_path, "template preview")}
+        if plan_notes:
+            out["plan_notes"] = plan_notes
+        return out
 
     @mcp.tool()
     async def sch_draw_template(
@@ -186,6 +220,8 @@ def register_sch_template_tools(mcp):
         document_path: str,
         png_path: str = "",
         grid: int = 100,
+        plan_json: str = "",
+        sheet: str = "",
     ) -> dict[str, Any]:
         """Draw a schematic sheet from a hand template: THE way to draw
         or redraw a block. Same template as sch_preview_template; run that
@@ -205,13 +241,19 @@ def register_sch_template_tools(mcp):
             document_path: the .SchDoc to draw on (it is focused first).
             png_path: where to write a picture of what was drawn.
             grid: grid in mils for the off-grid check.
+            plan_json: the DesignPlan, as for sch_preview_template. Its
+                Value, Manufacturer, Manufacturer Part Number and
+                Footprint are stamped on every drawn part.
+            sheet: the plan sheet this template draws.
 
         Returns:
             The same report as sch_preview_template, plus ``placed``,
             ``wires``, ``ports``, ``labels``, ``values`` counts and
             ``stage`` (where it stopped, or "done").
         """
-        problems = _part_problems(template)
+        template, plan_stamps, plan_notes, problems = _with_plan(
+            template, plan_json, sheet)
+        problems = problems or _part_problems(template)
         if problems:
             return {"ok": False, "stage": "template", "errors": problems}
         parts = template.get("parts") or []
@@ -291,13 +333,28 @@ def register_sch_template_tools(mcp):
                 "generic.place_net_labels", {"labels": "~~".join(
                     f"text={payload_safe(o['net'])};x={o['x']};y={o['y']};"
                     f"orientation={o['orientation']}" for o in d.labels)})
-        stamps = [f"designator={payload_safe(p['designator'])};"
-                  f"Comment={payload_safe(p['value'])}"
-                  for p in parts if str(p.get("value", "")).strip()]
+        stamps = []
+        for p in parts:
+            ref = str(p["designator"])
+            fields = dict(plan_stamps.get(ref, {}))
+            if str(p.get("value", "")).strip():
+                fields["Comment"] = str(p["value"])
+            if fields:
+                stamps.append(";".join([f"designator={payload_safe(ref)}"] + [
+                    f"{k}={payload_safe(v)}" for k, v in fields.items()]))
         if stamps:
             counts["values"] = await _send(
                 bridge, "generic.set_sch_components_parameters",
                 {"stamps": "~~".join(stamps), "sheet_path": document_path},
                 timeout=60.0)
-        return {**d.report(), **counts, "stage": "done",
-                **_render(d, png_path, "drawn")}
+        failed = [k for k, v in counts.items()
+                  if isinstance(v, dict) and (_failed(v) or v.get("failed"))]
+        out = {**d.report(), **counts, "stage": "done",
+               **_render(d, png_path, "drawn")}
+        if failed:
+            out["ok"] = False
+            out["errors"] = out["errors"] + [
+                f"{k}: not all placed ({counts[k]})" for k in failed]
+        if plan_notes:
+            out["plan_notes"] = plan_notes
+        return out

@@ -33,24 +33,34 @@ def _for(backend, monkeypatch):
 
 def test_the_easyeda_planner_is_told_the_right_editor(monkeypatch):
     text = _for("easyeda", monkeypatch)
-    assert "instantiate in EasyEDA Pro" in text
-    assert "easyeda_run_plan" in text, (
-        "the planner is not told which tool runs its plan here")
+    assert "draw in EasyEDA Pro" in text
+    assert "easyeda_emit_template" in text, (
+        "the planner is not told which tool draws its plan here")
+    assert "easyeda_run_plan" in text
+    assert "sch_preview_template" not in text, (
+        "the Altium drawing steps reached the EasyEDA planner")
 
 
 def test_the_easyeda_planner_is_not_told_it_is_using_altium(monkeypatch):
     text = _for("easyeda", monkeypatch)
     opening = text[:800]
-    assert "instantiate in Altium Designer" not in opening, (
+    assert "draw in Altium Designer" not in opening, (
         "the opening still says the plan goes into Altium")
 
 
-def test_the_altium_text_is_untouched(monkeypatch):
-    """It was written for Altium; changing it there would be a
-    regression, not a fix."""
+def test_altium_draws_from_a_template(monkeypatch):
+    """Altium draws a plan from a hand template (2026-10-20)."""
     text = _for("altium", monkeypatch)
-    assert "instantiate in Altium Designer." in text
+    assert "draw in Altium Designer from a hand" in text
+    assert "sch_draw_template(template, document_path, plan_json=...)" in text
+    assert "design_execute_plan" not in text
     assert "could not be adapted" not in text
+
+
+def test_kicad_is_told_how_it_draws(monkeypatch):
+    text = _for("kicad", monkeypatch)
+    assert "draw in KiCad (via kicad_generate_schematic)" in text
+    assert "sch_preview_template" not in text
 
 
 def test_a_failed_substitution_says_so_instead_of_pretending(monkeypatch):
@@ -71,7 +81,7 @@ def test_a_failed_substitution_says_so_instead_of_pretending(monkeypatch):
         "the substitution silently did nothing and the doc claimed "
         "nothing was wrong")
     assert "EasyEDA Pro" in text
-    assert "easyeda_run_plan" in text
+    assert "easyeda_emit_template" in text
 
 
 def test_the_schema_still_follows_the_text(monkeypatch):
@@ -195,6 +205,10 @@ def test_altium_keeps_its_own_eco_rules(monkeypatch):
     text = _for("altium", monkeypatch)
     assert "Engineering Change Order" in text
     assert "Execute Changes" in text
-    assert text == _DISCIPLINE + text[len(_DISCIPLINE):], (
-        "the Altium document is no longer the source text plus the "
-        "schema; something adapted a backend that needs no adapting")
+    import eda_agent.design.discipline as mod
+
+    eco = _DISCIPLINE[_DISCIPLINE.index(mod._ECO_ANCHOR):
+                      _DISCIPLINE.index(mod._RULE_8_ANCHOR)]
+    assert eco in text, (
+        "the Altium ECO rules were changed; only the drawing steps are "
+        "adapted for Altium")

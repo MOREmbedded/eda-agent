@@ -69,6 +69,11 @@ KNOWN_UNREACHABLE = {
     "set_sch_component_parameters",
     "attach_spice_primitive",
     "zoom_to_xy",
+    # Callers were the retired schematic layout engine (2026-10-20).
+    # get_sch_doc_pins covers the first; the second places designator
+    # and value text and is a candidate for the template drawer.
+    "get_sch_component_pins",
+    "set_sch_text_positions",
     # Genuinely unexposed.
     "fillet_corners",
     "measure_distance",

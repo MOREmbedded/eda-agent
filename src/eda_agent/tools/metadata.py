@@ -162,23 +162,18 @@ _CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
 # design tools are the explicit exceptions in _DESIGN_BRIDGE below.
 _DESIGN_BRIDGE = frozenset(
     {
-        "design_execute_plan",
         "design_audit_schematic",
         "design_validate",
         "design_review_snapshot",
         "design_snapshot_inventory",
         "design_datasheet_checklist",
-        "design_learn_from_layout",
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
-        # These three extract symbol geometry, or read the live sheet,
-        # over the bridge. Each CATCHES the failure and answers anyway,
-        # so with no Altium running they return a degraded result rather
-        # than an error, and calling them offline is what sends somebody
-        # to rely on that result.
-        "design_preview_plan",
-        "design_hints_from_sheet",
+        # Reads the live sheet over the bridge. It CATCHES the failure
+        # and answers anyway, so with no Altium running it returns a
+        # degraded result rather than an error, and calling it offline
+        # is what sends somebody to rely on that result.
         "design_plan_from_sheet",
     }
 )
@@ -408,8 +403,8 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     # other record-reading tool, list_checkpoints.
     "easyeda_get_measured_shapes": "application",
     # Pure computation over a plan; they send nothing.
-    "easyeda_emit_plan": "design",
-    "easyeda_emit_connections": "design",
+    "easyeda_emit_template": "design",
+    "easyeda_emit_template_connections": "design",
     # Sends nothing directly either: it dispatches to whichever tools an
     # emitted plan names, so there is no command namespace to read.
     "easyeda_run_plan": "design",

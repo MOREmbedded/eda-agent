@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 
-from eda_agent.design.buses import detect_buses
 from eda_agent.design.plan import DesignPlan
 from eda_agent.design.plan_blocks import connect_bus
 
@@ -150,14 +149,3 @@ def test_repeated_bus_pin_is_a_detectable_short():
     erc = check_plan_erc(DesignPlan.model_validate(res.plan.model_dump()))
     assert not erc.passed
     assert any(i.code == "shorted_pin" for i in erc.errors)
-
-
-def test_authored_bus_is_detected_as_a_bus():
-    """An 8-bit bus authored here is recognised by the bus drawer."""
-    res = connect_bus(_two_ic_plan(), [
-        {"refdes": "U1", "pins": [10, 11, 12, 13, 14, 15, 16, 17]},
-        {"refdes": "U2", "pins": [3, 4, 5, 6, 7, 8, 9, 20]},
-    ])
-    buses = detect_buses(res.plan)
-    assert len(buses) == 1
-    assert len(buses[0].nets) == 8

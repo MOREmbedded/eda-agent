@@ -105,6 +105,8 @@ class Drawing:
     netlist: dict[str, list[str]] = field(default_factory=dict)
     unconnected_pins: list[str] = field(default_factory=list)
     auto_junctions: list[tuple[int, int]] = field(default_factory=list)
+    #: Netlist names made up for groups nothing names (N001, ...).
+    unnamed: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -184,9 +186,24 @@ def pins_from_sheet(rows: Iterable[dict]) -> dict[str, list[PinEnd]]:
     return out
 
 
+def pins_from_positions(positions: dict[str, Any]) -> dict[str, list[PinEnd]]:
+    """Pins known only by their wire end, ``"REFDES.PIN": [x, y]`` in mils,
+    as an editor that reports no pin direction gives them. Without the
+    body side there is no body box, so the through-body check is skipped
+    for these parts."""
+    out: dict[str, list[PinEnd]] = {}
+    for key, xy in positions.items():
+        ref, _, pin = str(key).partition(".")
+        if not pin or not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            raise TemplateError(f"pin_positions[{key!r}] must be REFDES.PIN: [x, y]")
+        x, y = int(round(float(xy[0]))), int(round(float(xy[1])))
+        out.setdefault(ref, []).append(PinEnd(ref, pin, "", x, y, x, y, 0))
+    return out
+
+
 def body_box(pins: list[PinEnd]) -> Optional[tuple[int, int, int, int]]:
     """The part body estimated from where its pins meet it."""
-    if not pins:
+    if not pins or all((p.x, p.y) == (p.root_x, p.root_y) for p in pins):
         return None
     xs = [p.root_x for p in pins]
     ys = [p.root_y for p in pins]
@@ -533,6 +550,7 @@ def _connectivity(d: Drawing, expected: Optional[dict]) -> None:
         else:
             anon += 1
             name = f"N{anon:03d}"
+            d.unnamed.add(name)
         d.netlist.setdefault(name, []).extend(sorted(members))
     d.unconnected_pins.sort()
 
@@ -566,6 +584,10 @@ def _compare_netlist(d: Drawing, expected: dict) -> None:
                              "detail": "these pins are not all joined", "drawn": split})
             continue
         got = drawn.pop()
+        if got != net and got not in d.unnamed:
+            d.errors.append({"check": "netlist", "where": net,
+                             "detail": f"these pins are drawn as net {got}"})
+            continue
         extra = sorted(set(d.netlist.get(got, [])) - set(resolved))
         if extra:
             d.errors.append({"check": "netlist", "where": net,
@@ -623,3 +645,56 @@ def render_png(d: Drawing, path: str, *, title: str = "") -> str:
     fig.savefig(path, dpi=120)
     plt.close(fig)
     return path
+
+
+# --- the design plan --------------------------------------------------------
+
+
+def merge_plan(template: dict, plan: Any, sheet: str = "") -> tuple[dict, dict, list[dict]]:
+    """Take what the plan already knows into the template.
+
+    The plan stays the netlist truth: each template part is looked up by
+    designator and gets the plan's symbol, library and value where the
+    template leaves them out, and the plan's nets over the template's parts
+    become ``nets``, so the drawing is checked against the plan pin by pin.
+    Returns the merged template, the parameters to stamp per designator
+    (Value, Manufacturer, Manufacturer Part Number, Footprint) and notes:
+    a template part the plan lacks is an error, a plan part on this sheet
+    that the template does not draw is a warning.
+    """
+    from ._wiring import _bom_lookup, _part_parameters
+
+    notes: list[dict] = []
+    by_ref = {p.refdes: p for p in plan.parts}
+    merged = dict(template)
+    parts = []
+    for raw in template.get("parts") or []:
+        part = dict(raw)
+        ref = str(part.get("designator", ""))
+        pp = by_ref.get(ref)
+        if pp is None:
+            notes.append({"level": "error", "check": "plan", "where": ref,
+                          "detail": f"{ref} is not a part of the plan"})
+        else:
+            part.setdefault("lib_reference", pp.lib_ref)
+            if pp.lib_path:
+                part.setdefault("library_path", pp.lib_path)
+            if pp.value:
+                part.setdefault("value", pp.value)
+        parts.append(part)
+    merged["parts"] = parts
+    drawn = {str(p.get("designator", "")) for p in parts}
+    on_sheet = [p.refdes for p in plan.parts if not sheet or p.sheet == sheet]
+    missing = sorted(set(on_sheet) - drawn)
+    if missing:
+        notes.append({"level": "warning", "check": "plan", "where": ", ".join(missing),
+                      "detail": "plan parts this template does not draw"})
+    nets = dict(template.get("nets") or {})
+    for net in plan.nets:
+        pins = [f"{r.refdes}.{r.pin}" for r in net.pins if r.refdes in drawn]
+        if pins:
+            nets[net.name] = pins
+    merged["nets"] = nets
+    bom = _bom_lookup(plan)
+    stamps = {ref: _part_parameters(by_ref[ref], bom) for ref in drawn if ref in by_ref}
+    return merged, {k: v for k, v in stamps.items() if v}, notes

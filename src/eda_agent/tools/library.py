@@ -3476,7 +3476,7 @@ def register_library_tools(mcp):
         cursor or click. The DbLib must be installed (lib_install_library)
         or in the project, or the call is refused. ``database_linked``
         says whether the placed part kept its link. For a whole sheet use
-        a DesignPlan and design_execute_plan instead.
+        sch_draw_template instead.
 
         Args:
             library_path: Full path of the .DbLib file.

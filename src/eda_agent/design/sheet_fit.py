@@ -122,45 +122,6 @@ def usable_area(frame: tuple[float, float], margin: float = DEFAULT_MARGIN,
     return Area(margin, margin, w - margin, h - margin, keep)
 
 
-_LABEL_CHAR_W = 70        # mils per character at the default label font
-_PORT_HALF = 150          # a power port glyph's half extent
-
-
-def canvas_boxes(canvas, sheet: str) -> list[Box]:
-    """Every drawn object on ``sheet`` as an axis-aligned box."""
-    boxes: list[Box] = []
-    for inst in canvas.instances:
-        if inst.sheet != sheet:
-            continue
-        bb = inst.world_bbox()
-        xs = [bb.x_min, bb.x_max] + [p.x for p in inst.all_pin_endpoints()]
-        ys = [bb.y_min, bb.y_max] + [p.y for p in inst.all_pin_endpoints()]
-        for pos in (inst.designator_pos, inst.value_pos):
-            if pos:
-                xs += [pos[0], pos[0] + 600]
-                ys += [pos[1], pos[1] + 100]
-        boxes.append(Box("part", inst.refdes, min(xs), min(ys), max(xs), max(ys)))
-    for w in canvas.wires:
-        if w.sheet == sheet:
-            boxes.append(Box("wire", w.net, min(w.x1, w.x2), min(w.y1, w.y2),
-                             max(w.x1, w.x2), max(w.y1, w.y2)))
-    for lb in canvas.labels:
-        if lb.sheet != sheet:
-            continue
-        length = len(lb.text) * _LABEL_CHAR_W
-        x1 = lb.x - length if getattr(lb, "justification", 0) == 2 else lb.x
-        boxes.append(Box("label", lb.text, x1, lb.y, x1 + length, lb.y + 100))
-    for pp in canvas.power_ports:
-        if pp.sheet == sheet:
-            boxes.append(Box("power_port", pp.text, pp.x - _PORT_HALF,
-                             pp.y - _PORT_HALF, pp.x + _PORT_HALF,
-                             pp.y + _PORT_HALF))
-    for j in canvas.junctions:
-        if j.sheet == sheet:
-            boxes.append(Box("junction", "", j.x, j.y, j.x, j.y))
-    return boxes
-
-
 def _overlaps(b: Box, k: tuple[float, float, float, float]) -> bool:
     return not (b.x2 <= k[0] or b.x1 >= k[2] or b.y2 <= k[1] or b.y1 >= k[3])
 
@@ -284,25 +245,9 @@ def fit_report(boxes: list[Box], size: str,
     return report
 
 
-def check_canvas(canvas, sheet: Optional[str] = None,
-                 frames: Optional[dict[str, tuple[float, float]]] = None,
-                 **kw) -> list[dict]:
-    """fit_report for every sheet of a canvas (or one)."""
-    out = []
-    for s in canvas.sheets:
-        if sheet and s.name != sheet:
-            continue
-        frame = (frames or {}).get(s.name)
-        rep = fit_report(canvas_boxes(canvas, s.name), s.size, frame, **kw)
-        rep["sheet"] = s.name
-        out.append(rep)
-    return out
-
-
 __all__ = ["ALTIUM_FRAMES", "FAMILIES", "altium_frame", "next_size",
-           "usable_area", "canvas_boxes", "outside", "fit_report",
-           "check_canvas", "normalise", "template_size_token",
-           "template_for_size", "fit_canvas", "translate_sheet"]
+           "usable_area", "outside", "fit_report", "normalise",
+           "template_size_token", "template_for_size"]
 
 
 # ---------------------------------------------------------------------------
@@ -356,79 +301,3 @@ def template_for_size(template_path: str, size: str,
             if same_family and template_size_token(str(entry)) == want:
                 return str(entry)
     return None
-
-
-# ---------------------------------------------------------------------------
-# Fixing the engine's own canvas
-# ---------------------------------------------------------------------------
-
-def translate_sheet(canvas, sheet: str, dx: int, dy: int) -> None:
-    """Move everything on ``sheet`` by (dx, dy) together, wiring included,
-    so connectivity is untouched."""
-    from dataclasses import replace
-
-    if not dx and not dy:
-        return
-
-    def mv(obj, *pairs):
-        upd = {}
-        for fx, fy in pairs:
-            upd[fx] = getattr(obj, fx) + dx
-            upd[fy] = getattr(obj, fy) + dy
-        return replace(obj, **upd)
-
-    insts = []
-    for i in canvas.instances:
-        if i.sheet != sheet:
-            insts.append(i)
-            continue
-        upd = {"x": i.x + dx, "y": i.y + dy}
-        for f in ("designator_pos", "value_pos"):
-            pos = getattr(i, f)
-            if pos:
-                upd[f] = (pos[0] + dx, pos[1] + dy)
-        insts.append(replace(i, **upd))
-    canvas.instances[:] = insts
-    for name, pairs in (("wires", (("x1", "y1"), ("x2", "y2"))),
-                        ("buses", (("x1", "y1"), ("x2", "y2"))),
-                        ("bus_entries", (("x1", "y1"), ("x2", "y2"))),
-                        ("labels", (("x", "y"),)),
-                        ("power_ports", (("x", "y"),)),
-                        ("junctions", (("x", "y"),))):
-        items = getattr(canvas, name)
-        items[:] = [mv(o, *pairs) if o.sheet == sheet else o for o in items]
-
-
-def fit_canvas(canvas, frames: Optional[dict[str, tuple[float, float]]] = None,
-               grid: int = 100) -> list[dict]:
-    """Bring every sheet of the engine's canvas inside its frame.
-
-    ``shift`` moves the whole drawing (snapped to ``grid``); ``enlarge``
-    sets the sheet to the first larger size of its family that holds the
-    drawing, then shifts it onto that frame. A full sheet is never spilled
-    onto another. Returns what was done per sheet."""
-    actions = []
-    for s in canvas.sheets:
-        frame = (frames or {}).get(s.name)
-        rep = fit_report(canvas_boxes(canvas, s.name), s.size, frame,
-                         grid=grid)
-        action = {"sheet": s.name, "verdict": rep["verdict"],
-                  "size": rep["size"]}
-        if rep["verdict"] == "enlarge":
-            s.size = rep["to_size"]
-            s.width_mils, s.height_mils = ALTIUM_FRAMES[rep["to_size"]]
-            action["enlarged_to"] = rep["to_size"]
-            rep = fit_report(canvas_boxes(canvas, s.name), s.size, grid=grid)
-        if rep["verdict"] == "shift":
-            # fit_report already moves in whole grid steps, away from zero:
-            # rounding to the NEAREST step left a drawing up to half a step
-            # past the margin where it was.
-            dx, dy = int(rep["dx"]), int(rep["dy"])
-            translate_sheet(canvas, s.name, dx, dy)
-            action.update(shifted=[dx, dy])
-        left = outside(canvas_boxes(canvas, s.name),
-                       usable_area(frame or altium_frame(s.size)
-                                   or ALTIUM_FRAMES["A4"]))
-        action["still_outside"] = len(left)
-        actions.append(action)
-    return actions

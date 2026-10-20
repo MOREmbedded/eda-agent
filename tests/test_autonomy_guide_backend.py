@@ -6,10 +6,8 @@ MEASURED against a live editor: the stage playbooks were written against Altium
 and name Altium tools. On the EasyEDA backend 33 of the 50 named
 across 13 stages were not registered, and SIX stages named nothing
 that existed there. An agent following the guide was told to call
-pcb_place_components, proj_compare_sch_pcb and design_execute_plan on
-a backend that has none of them: the same dead end the README explains
-this project avoids when it declines to expose design_execute_plan on
-EasyEDA.
+pcb_place_components, proj_compare_sch_pcb and the Altium plan
+executor on a backend that has none of them.
 
 The fix has two halves and this file guards both. Tools with a known
 equivalent are SUBSTITUTED, and the substitute must be a tool the

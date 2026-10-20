@@ -14,7 +14,7 @@ MEASURED, not theorised: two failures in eight tight renames on this
 machine. That rate is survivable for a write that happens once, and
 fatal for one in a loop. The symbol cache rewrites its library file once
 per symbol, so a 38-symbol extraction was near-certain to hit it, and
-the exception killed the whole ``design_execute_plan`` run.
+the exception killed the whole schematic run that needed it.
 
 WHAT THIS DOES NOT DECIDE. The helper retries and then raises. Whether a
 failed write should be swallowed is the CALLER's judgement and it is not

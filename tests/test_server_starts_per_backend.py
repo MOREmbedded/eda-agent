@@ -97,7 +97,7 @@ def test_the_backends_do_not_advertise_each_others_tools():
 
     assert not {n for n in easyeda if n.startswith("kicad_")}
     assert not {n for n in altium if n.startswith("easyeda_")}
-    assert "design_execute_plan" in altium
-    assert "design_execute_plan" not in easyeda, (
-        "the Altium-only plan executor is advertised on EasyEDA, where "
+    assert "sch_draw_template" in altium
+    assert "sch_draw_template" not in easyeda, (
+        "the Altium template drawer is advertised on EasyEDA, where "
         "it would fail at its first bridge call")

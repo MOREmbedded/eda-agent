@@ -140,16 +140,16 @@ async def _refuse_manual_sheet_layout(
 ) -> "Optional[dict[str, Any]]":
     """Refuse a bulk placement that is really a schematic being hand-drawn.
 
-    An LLM asked to draw a schematic reaches for this tool and picks every
-    coordinate itself, which produces a netlist-correct sheet that reads
-    like nothing a person would draw. The layout engine exists for exactly
-    this and is measured against hand-drawn boards, so the refusal names
-    it. Returns the refusal payload, or None to let the placement proceed.
+    An LLM asked to draw a schematic reaches for this tool and places
+    parts one call at a time, then wires them segment by segment, which
+    produces a netlist-correct sheet that reads like nothing a person
+    would draw. sch_draw_template draws a planned block with the pin ends
+    worked out and the wiring checked, so the refusal names it. Returns
+    the refusal payload, or None to let the placement proceed.
 
-    DOES NOT BLOCK THE ENGINE. ``design_execute_plan`` emits through
-    ``bridge.send_command("generic.place_sch_components_from_library")``
-    directly, not through this tool, so the gate cannot cut off the path
-    it is pointing at. Checked before building it.
+    DOES NOT BLOCK THE TEMPLATE TOOL. ``sch_draw_template`` sends
+    ``generic.place_sch_components_from_library`` directly, not through
+    this tool, so the gate cannot cut off the path it is pointing at.
 
     Only fires on a BULK placement into an EMPTY sheet: adding parts to a
     sheet that already has work on it is ordinary editing, and one or two

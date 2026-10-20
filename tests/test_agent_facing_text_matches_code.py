@@ -206,7 +206,7 @@ def test_the_scan_sees_real_tool_names():
     assert len(referenced & real) > 30, (
         f"only {len(referenced & real)} of the names resolve to real "
         f"tools; the scan or the registry has changed shape")
-    for expected in ("design_execute_plan", "design_validate",
+    for expected in ("sch_draw_template", "design_validate",
                      "lib_add_pins"):
         assert expected in referenced, (
             f"discipline.py no longer mentions {expected}; if the rules "

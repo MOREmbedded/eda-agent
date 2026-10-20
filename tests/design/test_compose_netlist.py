@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 
-from eda_agent.design.buses import detect_buses
 from eda_agent.design.plan import DesignPlan
 from eda_agent.design.plan_blocks import compose_netlist
 from eda_agent.design.plan_erc import check_plan_erc
@@ -58,8 +57,6 @@ def test_whole_board_in_one_pass():
     assert final.cross_check() == []
     erc = check_plan_erc(final)
     assert erc.passed, [i.code for i in erc.errors]
-    # the 4-bit bus is recognised for drawing
-    assert any(len(b.nets) == 4 for b in detect_buses(final))
     # accumulated reporting across all ops
     assert "U1" in res.added_refdes and "Y1" in res.added_refdes
 

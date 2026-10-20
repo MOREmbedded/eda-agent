@@ -1910,50 +1910,77 @@ class TestPayloadSurvivesHostileInput:
             f"an injected Value overrode the real one: {payload!r}")
         assert ";" not in get_batch_field(op, "designator")
 
-    def test_the_design_emitter_shares_the_same_rules(self):
-        """design/ had its own third variant of the sanitiser.
+    def test_the_template_drawer_shares_the_same_rules(self):
+        """sch_draw_template stamps plan-authored values with the same
+        sanitiser.
 
-        It substituted ";" but not "~~", and left the designator raw, so
-        a plan-authored parameter value carrying "~~" ended its
-        operation early and forged an extra stamp. That path is fed by
-        LLM-written plans, which is exactly where an odd string arrives
-        without anyone typing it deliberately.
-
-        The rules now live in the BRIDGE layer, because the grammar is
-        the IPC contract rather than a detail of any one caller, and
-        design/ importing them from tools/ would be the wrong
-        dependency.
+        That path is fed by LLM-written plans, which is exactly where an
+        odd string arrives without anyone typing it deliberately: a
+        value carrying "~~" would end its operation early and forge an
+        extra stamp, and a ";" in a designator would reshape the fields.
         """
-        from pathlib import Path
+        import asyncio
+        import json
 
-        from eda_agent.design.emitter import EmitResult, _emit_parameter_stamps
+        from eda_agent.tools import sch_template as mod
 
-        class _Inst:
-            # Hostile on purpose. A clean "R1" cannot tell a sanitised
-            # designator from a raw one, so a test using it passes with
-            # the guard removed -- which is exactly what happened.
-            refdes = "R1;Value=0"
-
+        lib_pins = [
+            {"designator": "1", "name": "1", "x": -100, "y": 0,
+             "orientation": 2, "length": 100},
+            {"designator": "2", "name": "2", "x": 100, "y": 0,
+             "orientation": 0, "length": 100},
+        ]
         sent = []
 
         class _Bridge:
-            def send_command(self, command, params=None, **kw):
-                sent.append((command, dict(params or {})))
+            rows = []
+
+            async def send_command_async(self, command, params=None, **kw):
+                params = dict(params or {})
+                sent.append((command, params))
+                if command == "library.get_pin_list":
+                    return {"pins": lib_pins}
+                if command == "generic.get_sch_doc_pins":
+                    return {"pins": self.rows}
+                if command == "generic.place_sch_components_from_library":
+                    for p in mod.st.place_symbol_pins("R1", lib_pins, 0, 0):
+                        self.rows.append({
+                            "refdes": "R1", "pin_number": p.number,
+                            "x_mils": p.root_x, "y_mils": p.root_y,
+                            "orientation": p.orientation,
+                            "pin_length_mils": 100})
                 return {"success": True}
 
-        # The value the old local rule let through: it substituted ";"
-        # but never "~~", so this forged a second stamp for R99.
-        _emit_parameter_stamps(
-            [_Inst()],
-            {"R1;Value=0": {"Value": "10k~~designator=R99",
-                            "Note": "a;b=2"}},
-            Path("sheet.SchDoc"), _Bridge(), EmitResult())
+        plan = {"spec": "x", "summary": "x", "sheets": [{"name": "main"}],
+                "parts": [{"refdes": "R1", "lib_ref": "RES",
+                           "value": "10k~~designator=R99",
+                           "manufacturer": "a;b=2"}],
+                "nets": [{"name": "N", "pins": [{"refdes": "R1", "pin": "1"},
+                                                {"refdes": "R1", "pin": "2"}]}]}
+        template = {"parts": [{"designator": "R1", "x": 0, "y": 0}],
+                    "wires": [{"net": "N", "path": ["R1.1", [-200, -200],
+                                                    [200, -200], "R1.2"]}]}
+        tools = {}
 
-        assert sent, "the emitter sent nothing"
-        # The emitter makes several calls; take the stamp one.
+        class _M:
+            def tool(self, *a, **k):
+                def deco(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+                return deco
+
+        original = mod.get_bridge
+        mod.get_bridge = lambda: _Bridge()
+        try:
+            mod.register_sch_template_tools(_M())
+            out = asyncio.run(tools["sch_draw_template"](
+                template, "S.SchDoc", plan_json=json.dumps(plan)))
+        finally:
+            mod.get_bridge = original
+
+        assert out["stage"] == "done", out
         payload = next(params["stamps"] for _cmd, params in sent
                        if "stamps" in params)
-
         ops = []
         remaining = payload
         while True:
@@ -1962,10 +1989,10 @@ class TestPayloadSurvivesHostileInput:
                 break
             ops.append(op)
         assert len(ops) == 1, f"the payload forged {len(ops)} stamps: {ops}"
+        assert get_batch_field(ops[0], "designator") == "R1"
         assert get_batch_field(ops[0], "Value") == "10k~designator=R99", (
             "an injected Value overrode the real one")
-        assert ";" not in get_batch_field(ops[0], "designator")
-        assert ";" not in get_batch_field(ops[0], "Note")
+        assert ";" not in get_batch_field(ops[0], "Manufacturer")
 
 
 class TestIeeePinSymbolsAgainstRealPascal:

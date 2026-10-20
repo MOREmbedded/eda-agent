@@ -95,8 +95,8 @@ def test_it_actually_reaches_the_client():
 def test_every_tool_the_preamble_names_exists(backend):
     """Each backend's own wording, against its own surface.
 
-    The wording is not shared: design_execute_plan is Altium-only, and
-    the paragraph that names it was going out to KiCad clients too,
+    The wording is not shared: the schematic tools differ per backend,
+    and a paragraph naming Altium's once went out to KiCad clients too,
     telling them to call five tools that backend never registers.
     """
     text = build_server_instructions("full", backend)
@@ -108,16 +108,15 @@ def test_every_tool_the_preamble_names_exists(backend):
 
 @pytest.mark.parametrize("backend", _BACKENDS)
 def test_a_backend_says_how_it_draws_a_schematic(backend):
-    """The template route where the template tools exist, the layout
-    engine where only it does, and nothing where neither does."""
+    """The template route where the template tools exist, nothing
+    where they do not."""
     text = build_server_instructions("full", backend)
-    has_template = "sch_draw_template" in _SURFACES[backend]
-    has_engine = "design_layout_schematic" in _SURFACES[backend]
-    assert ("A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE" in text) is has_template
-    assert ("DO NOT DRAW A SCHEMATIC BY HAND" in text) is (
-        has_engine and not has_template), (
+    has_template = bool({"sch_draw_template", "easyeda_emit_template"}
+                        & set(_SURFACES[backend]))
+    assert ("A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE" in text) is has_template, (
         f"{backend}: the preamble's schematic paragraph does not match "
         f"its tools")
+    assert "DO NOT DRAW A SCHEMATIC BY HAND" not in text
 
 
 def test_it_names_at_least_the_two_it_is_for():

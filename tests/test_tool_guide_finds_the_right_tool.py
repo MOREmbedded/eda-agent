@@ -91,9 +91,9 @@ QUESTIONS = [
     ("repour polygons", {"pcb_repour_polygons"}),
     # The week of 2026-09-19.
     ("place a component from a library onto a schematic sheet",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("place a part from an IntLib",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("delete a text frame from a schematic", {"obj_delete"}),
     ("remove a note or text box from a sheet", {"obj_delete"}),
     ("set the design item id on many library components",
@@ -111,7 +111,7 @@ QUESTIONS = [
     # reflect, duplicate) were then fixed by adding those words, which
     # spent the set as a measure. All ten stay here as regressions.
     ("put a resistor from my schlib on the sheet",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("how do I remove a text box I placed", {"obj_delete"}),
     ("parts show Not Found in the properties panel",
      {"lib_clear_source_library", "sch_clear_source_library"}),
@@ -122,7 +122,7 @@ QUESTIONS = [
      {"lib_clear_source_library"}),
     ("delete a note from the schematic", {"obj_delete"}),
     ("place a symbol from an integrated library",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("set the electrical type of a pin in section B of a multi part component",
      {"obj_modify"}),
 ]
@@ -134,7 +134,7 @@ QUESTIONS = [
 #: and has to be replaced the same way.
 HELD_OUT = [
     ("add a capacitor from the library to my schematic",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("get rid of a text frame on the sheet", {"obj_delete"}),
     ("symbols say not found after I moved the library",
      {"lib_clear_source_library", "sch_clear_source_library"}),
@@ -147,7 +147,7 @@ HELD_OUT = [
      {"lib_clear_source_library"}),
     ("erase a note on a schematic sheet", {"obj_delete"}),
     ("drop an opamp from an intlib onto the sheet",
-     {"sch_place_components", "design_execute_plan"}),
+     {"sch_place_components", "sch_draw_template"}),
     ("clone a schlib component with a new name", {"lib_copy_component"}),
 ]
 

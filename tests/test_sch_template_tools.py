@@ -139,3 +139,71 @@ def test_unknown_part_keys_are_refused(tools):
     bad = {"parts": [{"designator": "R1", "lib_reference": "RES", "rot": 90}]}
     out = asyncio.run(fns["sch_preview_template"](bad))
     assert not out["ok"] and "unknown keys" in out["errors"][0]
+
+
+def _plan(**over):
+    import json
+    plan = {
+        "spec": "divider", "summary": "two resistors",
+        "sheets": [{"name": "main"}],
+        "parts": [
+            {"refdes": "R1", "lib_ref": "RES", "lib_path": "L.SchLib", "value": "10k",
+             "manufacturer": "Yageo", "mpn": "RC0603FR-0710KL", "footprint": "R0603"},
+            {"refdes": "R2", "lib_ref": "RES", "lib_path": "L.SchLib", "value": "4k7"},
+            {"refdes": "R3", "lib_ref": "RES", "lib_path": "L.SchLib", "value": "1k"},
+        ],
+        "nets": [
+            {"name": "MID", "pins": [{"refdes": "R1", "pin": "1"}, {"refdes": "R2", "pin": "1"}]},
+            {"name": "VCC", "pins": [{"refdes": "R1", "pin": "2"}, {"refdes": "R3", "pin": "2"}]},
+        ],
+    }
+    plan.update(over)
+    return json.dumps(plan)
+
+
+# Only positions: the plan supplies symbol, library, value and the nets.
+POSITIONS = {
+    "parts": [{"designator": "R1", "x": 1000, "y": 1000},
+              {"designator": "R2", "x": 1000, "y": 600}],
+    "wires": [{"net": "MID", "path": ["R1.1", [800, 600], "R2.1"]}],
+    "ports": [{"net": "VCC", "at": "R1.2"}, {"net": "GND", "at": "R2.2"}],
+}
+
+
+def test_the_plan_fills_the_parts_and_stamps_its_part_data(tools):
+    fns, mod, mp, tmp = tools
+    bridge = _Bridge()
+    mp.setattr(mod, "get_bridge", lambda: bridge)
+    out = asyncio.run(fns["sch_draw_template"](POSITIONS, "S.SchDoc",
+                                               png_path=str(tmp / "p.png"),
+                                               plan_json=_plan(), sheet="main"))
+    assert out["stage"] == "done" and out["ok"], out
+    stamps = dict(bridge.calls)["generic.set_sch_components_parameters"]["stamps"]
+    r1 = next(s for s in stamps.split("~~") if s.startswith("designator=R1;"))
+    for field in ("Manufacturer=Yageo", "Manufacturer Part Number=RC0603FR-0710KL",
+                  "Footprint=R0603", "Value=10k", "Comment=10k"):
+        assert field in r1
+    # R3 is on the plan's sheet and not drawn: said, not refused.
+    assert any("R3" in n["where"] for n in out["plan_notes"])
+
+
+def test_a_drawing_that_differs_from_the_plan_is_not_wired(tools):
+    fns, mod, mp, tmp = tools
+    bridge = _Bridge()
+    mp.setattr(mod, "get_bridge", lambda: bridge)
+    wrong = dict(POSITIONS, ports=[{"net": "VCC", "at": "R2.2"},
+                                   {"net": "GND", "at": "R1.2"}])
+    out = asyncio.run(fns["sch_draw_template"](wrong, "S.SchDoc",
+                                               png_path=str(tmp / "p.png"),
+                                               plan_json=_plan()))
+    assert out["stage"] == "template" and not out["ok"]
+    assert any(e["check"] == "netlist" and e["where"] == "VCC" for e in out["errors"])
+    assert "generic.place_sch_components_from_library" not in _commands(bridge)
+
+
+def test_a_part_the_plan_lacks_is_refused(tools):
+    fns, mod, mp, tmp = tools
+    extra = dict(POSITIONS, parts=POSITIONS["parts"] + [
+        {"designator": "C9", "lib_reference": "CAP", "x": 0, "y": 0}])
+    out = asyncio.run(fns["sch_preview_template"](extra, plan_json=_plan()))
+    assert not out["ok"] and "C9 is not a part of the plan" in out["errors"][0]

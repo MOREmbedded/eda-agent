@@ -64,32 +64,22 @@ DEFAULT_TOOLSET = "full"
 #: Design tools that compute over a plan and never touch a bridge, so
 #: they work on any backend.
 #:
-#: The design family was Altium-only because ``design_execute_plan``
-#: emits Altium commands. That is still true of the executor, but it was
-#: never true of the tools that BUILD and check a plan, and on EasyEDA
-#: they now have somewhere to go: ``easyeda_emit_plan`` turns a plan into
-#: EasyEDA calls and ``easyeda_run_plan`` runs them.
+#: The tools that BUILD and check a plan are not Altium's; on EasyEDA a
+#: plan is drawn with ``easyeda_emit_template`` and
+#: ``easyeda_emit_template_connections`` and run with ``easyeda_run_plan``.
 #:
 #: MEASURED, not judged by name. Each was called with the Altium bridge
 #: replaced by a tripwire, and only the ones that never reached it are
-#: here. That mattered: ``design_preview_plan`` reads like pure
-#: computation and does use the bridge, catching the failure and
-#: returning a degraded result, so on a backend with no Altium it would
-#: quietly answer with less than it appears to.
+#: here: a tool that catches a bridge failure and answers anyway would
+#: quietly answer with less than it appears to on a backend with no
+#: Altium.
 #:
 #: A test re-runs that measurement, so this list cannot go stale by
-#: someone adding a bridge call to a tool named here.
-#:
-#: The test only ever asks whether a NAMED tool stays offline, since it
-#: iterates this list, so in principle a tool that stopped touching the
-#: bridge would stay withheld. Re-measuring one is worth doing, but do
-#: it against the RIGHT symbol: ``design_preview_plan`` looks offline to
-#: a tripwire on ``eda_agent.bridge.get_bridge`` and is not, because
-#: orchestrator._resolve_bridge imports
-#: ``eda_agent.bridge.altium_bridge.get_bridge`` instead. It reaches the
-#: bridge for symbol extraction, and on a backend with no Altium it
-#: returns ok False with every count at zero, which is the degraded
-#: answer this list exists to prevent shipping.
+#: someone adding a bridge call to a tool named here. It only asks
+#: whether a NAMED tool stays offline, so a tool that stopped touching
+#: the bridge stays withheld until someone re-measures it; when doing
+#: that, trip every route to the bridge, not only
+#: ``eda_agent.bridge.get_bridge``.
 OFFLINE_DESIGN_TOOLS = (
     "design_add_circuit_block",
     "design_add_part",
@@ -103,8 +93,6 @@ OFFLINE_DESIGN_TOOLS = (
     "design_edit_plan",
     "design_generate_bom",
     "design_get_discipline",
-    "design_layout_schematic",
-    "design_learn_from_layout",
     "design_list_circuit_blocks",
     "design_load_fab_profile",
     "design_next_action",
@@ -270,10 +258,8 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # double-registering under "both".
     if backend == "easyeda":
         register_easyeda_tools(mcp)
-        # The plan-building half of the design family. Not the executor:
-        # design_execute_plan emits Altium commands and stays Altium-only,
-        # which is why the whole family was excluded before EasyEDA had a
-        # path of its own to run a plan.
+        # The plan-building half of the design family; EasyEDA draws the
+        # plan with its own template tools.
         register_offline_design_tools(mcp)
     if backend in ("kicad", "easyeda"):
         register_calc_tools(mcp)

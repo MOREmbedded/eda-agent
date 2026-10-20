@@ -2,15 +2,14 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The design tools registered on EasyEDA must never need Altium.
 
-The design family was Altium-only because ``design_execute_plan`` emits
-Altium bridge commands. That was never true of the tools that BUILD and
-check a plan, and on EasyEDA they now have somewhere to go.
+The tools that BUILD and check a plan are not Altium's, and on EasyEDA
+a plan is drawn with easyeda_emit_template.
 
 Which ones are safe is MEASURED here, not judged by name, because the
-names do not tell you: ``design_preview_plan`` reads like pure
-computation over a plan and does reach the bridge, catching the failure
-and returning a degraded answer. On a backend with no Altium it would
-quietly report less than it appears to, and nothing would say so.
+names do not tell you: a tool can read like pure computation over a plan
+and still reach the bridge, catching the failure and returning a
+degraded answer. On a backend with no Altium it would quietly report
+less than it appears to, and nothing would say so.
 
 A static scan cannot answer this either. Every one of these tools looks
 bridge-free in its own source; the call is one or two modules down,
@@ -270,32 +269,25 @@ def test_the_sweep_actually_reaches_a_tool_that_reads_the_sheet():
     if it also excludes every case worth checking."""
     from eda_agent.tools.metadata import maturity_of
 
-    for name in ("design_hints_from_sheet", "design_plan_from_sheet",
-                 "design_preview_plan"):
+    for name in ("design_plan_from_sheet",):
         assert name in _design_tool_names()
         assert maturity_of(name) == "live_only", (
             f"{name} reaches the bridge; publishing it as offline tells "
             f"a caller it works with no Altium running")
 
 
-def test_the_executor_is_not_offered_on_easyeda():
-    """The one that genuinely cannot work here.
-
-    ``design_execute_plan`` emits Altium bridge commands, so a plan run
-    through it on EasyEDA fails at the first step. That is the whole
-    reason the family was excluded, and it must stay excluded even as
-    the rest is let in.
-    """
+def test_easyeda_draws_with_its_own_template_tools():
+    """Altium's template drawer emits Altium bridge commands and must not
+    be offered on EasyEDA; EasyEDA's own template tools are there, with
+    the plan-building half of the design family."""
     from eda_agent.tools import register_backend
     from eda_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     register_backend(registry, "easyeda", "full")
 
-    assert "design_execute_plan" not in registry.names
-    assert "design_preview_plan" not in registry.names, (
-        "design_preview_plan reaches the bridge and swallows the failure, "
-        "so on EasyEDA it answers with less than it appears to")
-    # And the plan-building half IS there, or this split achieved nothing.
-    assert "design_layout_schematic" in registry.names
-    assert "easyeda_emit_plan" in registry.names
+    assert "sch_draw_template" not in registry.names
+    assert "design_plan_from_sheet" not in registry.names, (
+        "design_plan_from_sheet reads a live Altium sheet")
+    assert {"easyeda_emit_template", "easyeda_emit_template_connections",
+            "design_validate_plan"} <= set(registry.names)

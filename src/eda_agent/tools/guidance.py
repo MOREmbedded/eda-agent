@@ -208,9 +208,6 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "use": ["lib_get_pin_list", "sch_preview_template",
                 "sch_draw_template"],
         "avoid": [
-            ("design_execute_plan", "the automatic layout is being retired: "
-                                    "its sheets came out untidy where a planned "
-                                    "template came out clean"),
             ("sch_place_wires", "segment by segment, with pin ends worked out "
                                 "by hand; the template tool computes them and "
                                 "checks the wiring"),

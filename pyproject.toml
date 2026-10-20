@@ -77,8 +77,8 @@ dev = [
     # for the same reason.
     "flask>=3.0",
 ]
-# Local HTTP vote UI for pairwise layout preference capture. Flask is
-# the only runtime dep; the rest is stdlib. ~70 KB on disk.
+# The local web dashboard. Flask is the only runtime dep; the rest is
+# stdlib.
 web = [
     "flask>=3.0",
 ]
