@@ -11822,6 +11822,198 @@ Begin
             + 'Mask Expansion rule scoped IsVia covers every via at once '
             + 'instead, including vias placed later.')));
 End;
+
+{..............................................................................}
+{ PCB_SetViaTenting - set a board via's own Tenting Top / Bottom flags.        }
+{                                                                              }
+{ MEASURED on AD 26.11 (lib_set_via_properties): the tenting write is kept     }
+{ only while the via's mask expansion is manual; on a rule-driven via it is    }
+{ accepted and dropped. So a rule-driven mask is switched to manual first, at  }
+{ the values the cache already holds, through the pad cache (assigning        }
+{ SolderMaskExpansion on a via faults, see PCB_SetViaSoldermaskRelief), and    }
+{ every via reports mask_made_manual. The read-back decides ok.               }
+{                                                                              }
+{ Params: points ('x,y;x,y' in mils: the via whose pad covers each point,     }
+{ nearest centre wins) and/or net; top, bottom ('true'/'false'; empty leaves  }
+{ that side). Vias inside footprints are left to lib_set_via_properties.      }
+{..............................................................................}
+
+Function PCB_SetViaTenting(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Via, Best : IPCB_Via;
+    Prim : IPCB_Primitive;
+    All, Targets : TInterfaceList;
+    Cache : TPadCache;
+    I, J, Changed, Failed, InFootprint : Integer;
+    NetFilter, NetName, TopStr, BotStr, PointsStr, Rest, Pt, Missed, Items : String;
+    PX, PY : TCoord;
+    D, BestD : Double;
+    MadeManual, Ok, Dup : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    PointsStr := ExtractJsonValue(Params, 'points');
+    TopStr := LowerCase(ExtractJsonValue(Params, 'top'));
+    BotStr := LowerCase(ExtractJsonValue(Params, 'bottom'));
+    If (TopStr <> 'true') And (TopStr <> 'false') And (BotStr <> 'true') And (BotStr <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'top and/or bottom (true or false) say what to set. Nothing was changed.');
+        Exit;
+    End;
+    If (PointsStr = '') And (NetFilter = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'points or net say which vias. Nothing was changed.');
+        Exit;
+    End;
+
+    { Collect every free via first; nothing is written during the walk. }
+    All := CreateObject(TInterfaceList);
+    InFootprint := 0;
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Via := Iterator.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            If Via.InComponent Then
+                Inc(InFootprint)
+            Else
+            Begin
+                NetName := '';
+                Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+                If (NetFilter = '') Or (UpperCase(NetName) = UpperCase(NetFilter)) Then
+                    All.Add(Via);
+            End;
+            Via := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+
+    { Points pick one via each; without points the net picks them all. }
+    Targets := CreateObject(TInterfaceList);
+    Missed := '';
+    If PointsStr = '' Then
+    Begin
+        For I := 0 To All.Count - 1 Do Targets.Add(All.Items[I]);
+    End
+    Else
+    Begin
+        Rest := PointsStr + ';';
+        While Pos(';', Rest) > 0 Do
+        Begin
+            Pt := Trim(Copy(Rest, 1, Pos(';', Rest) - 1));
+            Rest := Copy(Rest, Pos(';', Rest) + 1, Length(Rest));
+            If Pt = '' Then Continue;
+            PX := MilsToCoordF(StrToFloatDef(Trim(Copy(Pt, 1, Pos(',', Pt) - 1)), -1e9));
+            PY := MilsToCoordF(StrToFloatDef(Trim(Copy(Pt, Pos(',', Pt) + 1, Length(Pt))), -1e9));
+            Best := Nil;
+            BestD := 1e30;
+            For I := 0 To All.Count - 1 Do
+            Begin
+                Prim := All.Items[I];
+                Via := Prim;
+                D := Sqrt(((Via.x - PX) * 1.0) * (Via.x - PX) + ((Via.y - PY) * 1.0) * (Via.y - PY));
+                If (D <= Via.Size / 2.0) And (D < BestD) Then
+                Begin
+                    BestD := D;
+                    Best := Via;
+                End;
+            End;
+            If Best = Nil Then
+            Begin
+                If Missed <> '' Then Missed := Missed + ',';
+                Missed := Missed + '"' + EscapeJsonString(Pt) + '"';
+                Continue;
+            End;
+            Dup := False;
+            For J := 0 To Targets.Count - 1 Do
+            Begin
+                Prim := Targets.Items[J];
+                If Prim.I_ObjectAddress = Best.I_ObjectAddress Then Dup := True;
+            End;
+            If Not Dup Then Targets.Add(Best);
+        End;
+    End;
+
+    Changed := 0;
+    Failed := 0;
+    Items := '';
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Targets.Count - 1 Do
+        Begin
+            Prim := Targets.Items[I];
+            If Prim = Nil Then Continue;
+            Via := Prim;
+            Ok := True;
+            MadeManual := False;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_BeginModify, c_NoEventData);
+            Try
+                Cache := Via.GetState_Cache;
+                If Cache.SolderMaskExpansionValid <> eCacheManual Then
+                Begin
+                    Cache.SolderMaskExpansionValid := eCacheManual;
+                    Via.SetState_Cache := Cache;
+                    MadeManual := True;
+                End;
+            Except Ok := False; End;
+            If (TopStr = 'true') Or (TopStr = 'false') Then
+            Begin
+                Try
+                    Via.SetState_IsTenting_Top(TopStr = 'true');
+                    If Via.GetState_IsTenting_Top <> (TopStr = 'true') Then Ok := False;
+                Except Ok := False; End;
+            End;
+            If (BotStr = 'true') Or (BotStr = 'false') Then
+            Begin
+                Try
+                    Via.SetState_IsTenting_Bottom(BotStr = 'true');
+                    If Via.GetState_IsTenting_Bottom <> (BotStr = 'true') Then Ok := False;
+                Except Ok := False; End;
+            End;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+            Via.GraphicallyInvalidate;
+            If Ok Then Inc(Changed) Else Inc(Failed);
+            NetName := '';
+            Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"x_mils":' + FloatToJsonStr(CoordToMilsF(Via.x))
+                + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Via.y))
+                + ',"net":"' + EscapeJsonString(NetName) + '"'
+                + ',"tenting_top":' + BoolToJsonStr(Via.GetState_IsTenting_Top)
+                + ',"tenting_bottom":' + BoolToJsonStr(Via.GetState_IsTenting_Bottom)
+                + ',"mask_made_manual":' + BoolToJsonStr(MadeManual)
+                + ',"ok":' + BoolToJsonStr(Ok) + '}';
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Targets.Count > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr((Failed = 0) And (Missed = '') And (Targets.Count > 0))
+        + ',"matched":' + IntToStr(Targets.Count)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"points_without_a_via":[' + Missed + ']'
+        + ',"footprint_vias_skipped":' + IntToStr(InFootprint)
+        + ',"vias":[' + Items + ']}');
+End;
+
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -17408,6 +17600,7 @@ Begin
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
+        'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);
         'get_mech_layer_names':    Result := PCB_GetMechLayerNames(Params, RequestId);
         'modify_polygon':          Result := PCB_ModifyPolygon(Params, RequestId);
         'get_room_rules':          Result := PCB_GetRoomRules(Params, RequestId);

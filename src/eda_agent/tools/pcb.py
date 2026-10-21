@@ -4900,6 +4900,56 @@ def register_pcb_tools(mcp):
             "pcb.set_via_soldermask_relief", params)
 
     @mcp.tool()
+    async def pcb_set_via_tenting(
+        points: Optional[list[dict[str, float]]] = None,
+        net: str = "",
+        top: Optional[bool] = None,
+        bottom: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Set a board via's own Tenting Top / Bottom flags.
+
+        Altium keeps the tenting flag only while the via's solder mask
+        expansion is manual; on a rule-driven via the write is accepted
+        and dropped. So a rule-driven via is switched to a manual mask at
+        the values it already has, and each via says so in
+        ``mask_made_manual``. Every flag is read back. Vias inside
+        footprints are skipped: use ``lib_set_via_properties`` in the
+        PcbLib.
+
+        Args:
+            points: ``[{x, y}]`` in mils; each picks the via whose pad
+                covers that point (nearest centre wins).
+            net: Without points, every free via on this net; with points,
+                only vias on this net are considered.
+            top, bottom: True tents that side, False opens it; leave one
+                out to keep it as it is.
+
+        Returns:
+            ``matched``, ``changed``, ``failed``, ``points_without_a_via``,
+            ``footprint_vias_skipped`` and ``vias`` [{x_mils, y_mils, net,
+            tenting_top, tenting_bottom, mask_made_manual, ok}].
+        """
+        if top is None and bottom is None:
+            return {"ok": False, "reason": "top and/or bottom say what to set"}
+        if not points and not net.strip():
+            return {"ok": False, "reason": "points or net say which vias"}
+        params: dict[str, Any] = {}
+        if points:
+            try:
+                params["points"] = ";".join(
+                    f"{float(p['x'])},{float(p['y'])}" for p in points)
+            except (KeyError, TypeError, ValueError):
+                return {"ok": False, "reason": "each point is {x, y} in mils"}
+        if net.strip():
+            params["net"] = net.strip()
+        if top is not None:
+            params["top"] = "true" if top else "false"
+        if bottom is not None:
+            params["bottom"] = "true" if bottom else "false"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.set_via_tenting", params)
+
+    @mcp.tool()
     async def pcb_get_mech_layer_names(
         count_primitives: bool = True,
     ) -> dict[str, Any]:
