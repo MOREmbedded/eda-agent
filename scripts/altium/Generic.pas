@@ -1861,7 +1861,7 @@ Var
     SchLibDoc : ISch_Lib;
     ObjJson : String;
     First : Boolean;
-    MaxIter : Integer;
+    MaxIter, LastAddr, ThisAddr : Integer;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -1883,6 +1883,7 @@ Begin
         End;
 
         MaxIter := 100000;
+        LastAddr := 0;
         While MaxIter > 0 Do
         Begin
             Iterator := SchDoc.SchIterator_Create;
@@ -1900,6 +1901,17 @@ Begin
             End;
             SchDoc.SchIterator_Destroy(Iterator);
             If FoundObj = Nil Then Break;
+            { The same object found again means the last remove did nothing.
+              Counting on would report up to 100000 deletions of one object. }
+            ThisAddr := 0;
+            Try ThisAddr := FoundObj.I_ObjectAddress; Except End;
+            If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then
+            Begin
+                Dec(TotalMatched);
+                NoteDeleteFault('an object stayed on the sheet after it was removed');
+                Break;
+            End;
+            LastAddr := ThisAddr;
             { Sheet entries belong to their parent sheet symbol's child       }
             { container, not the SchDoc. SchDoc.RemoveSchObject silently      }
             { no-ops on them, leaving the entry placed. Walk sheet symbols    }
@@ -1928,7 +1940,22 @@ Begin
                     Try SchDoc.RemoveSchObject(FoundObj); Except End;
             End
             Else
-                SchDoc.RemoveSchObject(FoundObj);
+            Begin
+                { A remove that raises used to end the whole request as an
+                  error, with the objects already removed uncounted: 25 net
+                  labels gone and the reply said deleted 0 (issue #94). }
+                Removed := True;
+                Try
+                    SchDoc.RemoveSchObject(FoundObj);
+                Except
+                    Removed := False;
+                End;
+                If Not Removed Then
+                Begin
+                    NoteDeleteFault('removing an object raised an error');
+                    Break;
+                End;
+            End;
             Inc(TotalMatched);
             Dec(MaxIter);
         End;
@@ -2617,6 +2644,7 @@ Begin
     Scope := ExtractJsonValue(Params, 'scope');
     ObjTypeStr := ExtractJsonValue(Params, 'object_type');
     FilterStr := ExtractJsonValue(Params, 'filter');
+    ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
@@ -3559,7 +3587,9 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"path":"' + EscapeJsonString(NewDocPath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
-        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
+        ',"added_to_project":' + BoolToJsonStr(Added) +
+        { Written now, or the add is gone after a reopen. }
+        ',"project_saved":' + BoolToJsonStr(Added And SaveProjectFile(Project)) + '}');
 End;
 
 {..............................................................................}
@@ -3573,8 +3603,9 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
+    ServerDoc : IServerDocument;
     I, SchCount : Integer;
-    Found : Boolean;
+    Found, WasModified : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     If FilePath = '' Then
@@ -3627,20 +3658,29 @@ Begin
         Exit;
     End;
 
-    // Close the document first
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', FilePath);
-    RunProcess('WorkspaceManager:CloseObject');
+    { THE SAME REMOVAL AS proj_remove_document. This ran                     }
+    { WorkspaceManager:CloseObject and RemoveObjectFromProject, which act on  }
+    { the FOCUSED object (a close by path once closed another project) and   }
+    { left the .PrjPcb listing the sheet, so it was back after a reopen      }
+    { (issue #94). Proj_RemoveDocument removes it, writes the project file   }
+    { and reads it back.                                                     }
+    Result := Proj_RemoveDocument('{"document_path":"' + EscapeJsonString(FilePath)
+        + '","project_path":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"}',
+        RequestId);
 
-    // Remove from project
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', FilePath);
-    RunProcess('WorkspaceManager:RemoveObjectFromProject');
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"removed":"' + EscapeJsonString(FilePath) + '"}');
+    { Then close the sheet itself, by its document object, unless it holds }
+    { unsaved edits; a modified sheet is left open rather than lost.        }
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc <> Nil Then
+    Begin
+        WasModified := True;
+        Try WasModified := ServerDoc.Modified; Except End;
+        If Not WasModified Then
+        Begin
+            Try Client.CloseDocument(ServerDoc); Except End;
+        End;
+    End;
 End;
 
 {..............................................................................}
@@ -3779,12 +3819,15 @@ Var
     Project : IProject;
     Violation : IViolation;
     RelObj : IDMObject;
-    I, J, VCount, MaxItems, RelCount : Integer;
+    I, J, VCount, MaxItems, Offset, Returned, NextOffset, RelCount : Integer;
     JsonItems, RelItems : String;
-    First, FirstRel : Boolean;
+    First, FirstRel, Truncated : Boolean;
     Desc, Detail, Kind, DocName, Probe : String;
 Begin
+    { limit 0 = every violation; offset pages through a long list. }
     MaxItems := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    If Offset < 0 Then Offset := 0;
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -3803,10 +3846,18 @@ Begin
     VCount := Project.DM_ViolationCount;
     JsonItems := '';
     First := True;
+    Returned := 0;
+    NextOffset := 0;
+    Truncated := False;
 
-    For I := 0 To VCount - 1 Do
+    For I := Offset To VCount - 1 Do
     Begin
-        If (MaxItems > 0) And (I >= MaxItems) Then Break;
+        If (MaxItems > 0) And (Returned >= MaxItems) Then
+        Begin
+            Truncated := True;
+            NextOffset := I;
+            Break;
+        End;
 
         Violation := Project.DM_Violations(I);
         If Violation = Nil Then Continue;
@@ -3880,11 +3931,22 @@ Begin
             '","detail":"' + EscapeJsonString(Detail) +
             '","related_object_count":' + IntToStr(RelCount) +
             ',"related_objects":[' + RelItems + ']}';
+        Inc(Returned);
     End;
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"violation_count":' + IntToStr(VCount) +
-        ',"violations":[' + JsonItems + ']}');
+    If Truncated Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"violation_count":' + IntToStr(VCount) +
+            ',"offset":' + IntToStr(Offset) +
+            ',"returned":' + IntToStr(Returned) +
+            ',"truncated":true,"next_offset":' + IntToStr(NextOffset) +
+            ',"violations":[' + JsonItems + ']}')
+    Else
+        Result := BuildSuccessResponse(RequestId,
+            '{"violation_count":' + IntToStr(VCount) +
+            ',"offset":' + IntToStr(Offset) +
+            ',"returned":' + IntToStr(Returned) +
+            ',"truncated":false,"violations":[' + JsonItems + ']}');
 End;
 
 {..............................................................................}
@@ -7181,24 +7243,316 @@ Begin
 End;
 
 {..............................................................................}
+{ Pin map of a placed part: ';D=x,y;' per pin of the part shown, with x,y the }
+{ connection point in mils, where a wire has to touch for the pin to connect. }
+{..............................................................................}
+
+Function SchPinMap(Comp : ISch_Component) : String;
+Var
+    PIter : ISch_Iterator;
+    Pin : ISch_Pin;
+    PartId, Owner, Orient, PLen, PX, PY : Integer;
+Begin
+    Result := ';';
+    PartId := 0;
+    Try PartId := Comp.CurrentPartID; Except End;
+    PIter := Comp.SchIterator_Create;
+    Try
+        PIter.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := PIter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Owner := 0;
+            Try Owner := Pin.OwnerPartId; Except End;
+            If (Owner = 0) Or (Owner = PartId) Then
+            Begin
+                Orient := 0; PLen := 0; PX := 0; PY := 0;
+                Try Orient := Pin.Orientation; Except End;
+                Try PLen := Pin.PinLength; Except End;
+                Try PX := Pin.Location.X; Except End;
+                Try PY := Pin.Location.Y; Except End;
+                Result := Result + Pin.Designator + '='
+                    + IntToStr(CoordToMils(PinEndX(PX, Orient, PLen))) + ','
+                    + IntToStr(CoordToMils(PinEndY(PY, Orient, PLen))) + ';';
+            End;
+            Pin := PIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(PIter);
+    End;
+End;
+
+{ The x,y a pin map gives for one pin designator, or '' when it has none. }
+Function PinMapValue(Map : String; Desig : String) : String;
+Var
+    P : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    P := Pos(';' + Desig + '=', Map);
+    If P = 0 Then Exit;
+    Rest := Copy(Map, P + Length(Desig) + 2, Length(Map));
+    Result := Copy(Rest, 1, Pos(';', Rest) - 1);
+End;
+
+{ Names of the parameters on Comp, as ';Name;Name;'. }
+Function SchParamNames(Comp : ISch_Component) : String;
+Var
+    PIter : ISch_Iterator;
+    Param : ISch_Parameter;
+Begin
+    Result := ';';
+    PIter := Comp.SchIterator_Create;
+    Try
+        PIter.AddFilter_ObjectSet(MkSet(eParameter));
+        Param := PIter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            Try Result := Result + Param.Name + ';'; Except End;
+            Param := PIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(PIter);
+    End;
+End;
+
+{ ',"D"' for each entry of an ';X;Y;' list, without the leading comma. }
+Function NameListJson(List : String) : String;
+Var
+    Rest, Item : String;
+    P : Integer;
+Begin
+    Result := '';
+    Rest := Copy(List, 2, Length(List));
+    While Rest <> '' Do
+    Begin
+        P := Pos(';', Rest);
+        If P = 0 Then Break;
+        Item := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If Item = '' Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Item) + '"';
+    End;
+End;
+
+{..............................................................................}
+{ Swap a placed part's symbol for one from a .SchLib, in place.               }
+{                                                                             }
+{ proj_replace_component used to rewrite LibReference, DesignItemId and the   }
+{ library name and report success, while the symbol and its pins on the sheet }
+{ stayed exactly as they were (issue #94). This places the new symbol where   }
+{ the old one is, compares every pin's connection point, and only then        }
+{ removes the old part, so wires still land on pins. A pin that would move or }
+{ vanish refuses the swap with nothing changed, unless allow_pin_changes.     }
+{ The designator and UniqueId carry over, so the board keeps its link.        }
+{..............................................................................}
+
+Function SwapSchSymbol(SchDoc : ISch_Document; OldComp : ISch_Component;
+    Designator, LibPath, LibRef : String; AllowPinChanges : Boolean;
+    RequestId : String) : String;
+Var
+    NewComp : ISch_Component;
+    SrvDoc : IServerDocument;
+    ResolvedLib, Reason, AvailHint : String;
+    OldMap, NewMap, Rest, Entry, D, V, NV : String;
+    Missing, Moved, Added, OldParams, NewParams, Dropped : String;
+    OldId, NewId, OldLibRef : String;
+    OldX, OldY, Orient, PartId, P, Kept : Integer;
+    Mirrored : Boolean;
+Begin
+    ResolvedLib := ResolveSchLibForLoad(LibPath, Reason);
+    If ResolvedLib = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_LOADABLE', Reason);
+        Exit;
+    End;
+    LibPath := ResolvedLib;
+    If Not ResolveLibRef(LibPath, LibRef, AvailHint) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'lib_reference "' + LibRef + '" not found in ' + LibPath +
+            '. Sample of available names: ' + AvailHint + '. Nothing was changed.');
+        Exit;
+    End;
+
+    { Load before the sheet's transaction, as placement does: the retry can
+      open the library document, which must not nest inside the edit. }
+    NewComp := Nil;
+    Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
+    If NewComp = Nil Then
+    Begin
+        If FocusSchLib(LibPath) <> Nil Then
+        Begin
+            Try NewComp := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except NewComp := Nil; End;
+        End;
+        Try
+            SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
+            If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
+        Except End;
+    End;
+    If NewComp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LOAD_FAILED',
+            'LoadComponentFromLibrary returned nil for ' + LibRef + ' from ' +
+            LibPath + '. Nothing was changed.');
+        Exit;
+    End;
+
+    OldX := 0; OldY := 0; Orient := 0; PartId := 1; Mirrored := False;
+    OldId := ''; OldLibRef := '';
+    Try OldX := OldComp.Location.X; Except End;
+    Try OldY := OldComp.Location.Y; Except End;
+    Try Orient := OldComp.Orientation; Except End;
+    Try Mirrored := OldComp.IsMirrored; Except End;
+    Try PartId := OldComp.CurrentPartID; Except End;
+    Try OldId := OldComp.UniqueId; Except End;
+    Try OldLibRef := OldComp.LibReference; Except End;
+    OldMap := SchPinMap(OldComp);
+    OldParams := SchParamNames(OldComp);
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        Try SchDoc.AddSchObject(NewComp); Except End;
+        SchRegisterObject(SchDoc, NewComp);
+        If PartId > 1 Then
+        Begin
+            Try NewComp.CurrentPartID := PartId; Except End;
+        End;
+        Try NewComp.MoveToXY(OldX, OldY); Except End;
+        Try NewComp.SetState_Orientation(Orient); Except End;
+        If Mirrored Then
+        Begin
+            Try NewComp.SetState_IsMirrored(True); Except End;
+        End;
+        Try NewComp.Designator.Text := Designator; Except End;
+
+        NewMap := SchPinMap(NewComp);
+        Missing := ';'; Moved := ';'; Added := ';'; Kept := 0;
+        Rest := Copy(OldMap, 2, Length(OldMap));
+        While Rest <> '' Do
+        Begin
+            P := Pos(';', Rest);
+            If P = 0 Then Break;
+            Entry := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+            P := Pos('=', Entry);
+            If P = 0 Then Continue;
+            D := Copy(Entry, 1, P - 1);
+            V := Copy(Entry, P + 1, Length(Entry));
+            NV := PinMapValue(NewMap, D);
+            If NV = '' Then
+            Begin
+                Missing := Missing + D + ';';
+            End
+            Else If NV <> V Then
+            Begin
+                Moved := Moved + D + ';';
+            End
+            Else
+            Begin
+                Inc(Kept);
+            End;
+        End;
+        Rest := Copy(NewMap, 2, Length(NewMap));
+        While Rest <> '' Do
+        Begin
+            P := Pos(';', Rest);
+            If P = 0 Then Break;
+            Entry := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+            P := Pos('=', Entry);
+            If P = 0 Then Continue;
+            D := Copy(Entry, 1, P - 1);
+            If PinMapValue(OldMap, D) = '' Then Added := Added + D + ';';
+        End;
+
+        If ((Missing <> ';') Or (Moved <> ';')) And (Not AllowPinChanges) Then
+        Begin
+            Try SchDoc.RemoveSchObject(NewComp); Except End;
+            Result := BuildErrorResponse(RequestId, 'PIN_MISMATCH',
+                'The new symbol''s pins do not land where the old ones did, so '
+                + 'wires would come off them. Nothing was changed. Missing: '
+                + NameListJson(Missing) + '. Moved: ' + NameListJson(Moved)
+                + '. Pass allow_pin_changes to swap anyway.');
+            Exit;
+        End;
+
+        Try SchDoc.RemoveSchObject(OldComp); Except End;
+        { The old part is gone, so its UniqueId is free and the stamp sticks;
+          AddSchObject remints an id that is still on the sheet. }
+        If OldId <> '' Then
+        Begin
+            Try NewComp.SetState_UniqueId(OldId); Except End;
+            Try NewComp.UniqueId := OldId; Except End;
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    End;
+    { AGAIN AFTER THE COMMIT. Measured: the stamp inside the transaction    }
+    { held on one swap and was reminted at PostProcess on another (the new  }
+    { part came out with a fresh id), which unlinks it from the board.      }
+    NewId := '';
+    Try NewId := NewComp.UniqueId; Except End;
+    If (OldId <> '') And (NewId <> OldId) Then
+    Begin
+        Try NewComp.SetState_UniqueId(OldId); Except End;
+        Try NewComp.UniqueId := OldId; Except End;
+    End;
+    SchDoc.GraphicallyInvalidate;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    NewId := '';
+    Try NewId := NewComp.UniqueId; Except End;
+    NewParams := SchParamNames(NewComp);
+    Dropped := ';';
+    Rest := Copy(OldParams, 2, Length(OldParams));
+    While Rest <> '' Do
+    Begin
+        P := Pos(';', Rest);
+        If P = 0 Then Break;
+        D := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If (D <> '') And (Pos(';' + D + ';', NewParams) = 0) Then
+            Dropped := Dropped + D + ';';
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"symbol_replaced":true,"designator":"' + EscapeJsonString(Designator)
+        + '","old_lib_ref":"' + EscapeJsonString(OldLibRef)
+        + '","new_lib_ref":"' + EscapeJsonString(LibRef)
+        + '","library_path":"' + EscapeJsonString(LibPath)
+        + '","pins_kept":' + IntToStr(Kept)
+        + ',"pins_missing":[' + NameListJson(Missing)
+        + '],"pins_moved":[' + NameListJson(Moved)
+        + '],"pins_added":[' + NameListJson(Added)
+        + '],"parameters_not_on_new_symbol":[' + NameListJson(Dropped)
+        + '],"unique_id_kept":' + BoolToJsonStr((OldId <> '') And (NewId = OldId))
+        + ',"unique_id":"' + EscapeJsonString(NewId) + '"}');
+End;
+
+{..............................................................................}
 { Replace a component with a different library part                           }
-{ Keeps connections, swaps the symbol.                                        }
-{ Params: designator, new_lib_ref, new_library                                }
+{ With library_path: swaps the symbol on the sheet (SwapSchSymbol).           }
+{ Without: relinks the part to another library item, leaving its symbol.      }
+{ Params: designator, new_lib_ref, new_library, library_path,                 }
+{         allow_pin_changes                                                   }
 {..............................................................................}
 
 Function Gen_ReplaceComponent(Params : String; RequestId : String) : String;
 Var
     AmbigTotal : Integer;
-    Designator, NewLibRef, NewLibrary : String;
+    Designator, NewLibRef, NewLibrary, LibPath : String;
     SchDoc : ISch_Document;
     Iterator : ISch_Iterator;
     Obj : ISch_GraphicalObject;
-    Comp : ISch_Component;
+    Comp, Target : ISch_Component;
     Found : Boolean;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     NewLibRef := ExtractJsonValue(Params, 'new_lib_ref');
     NewLibrary := ExtractJsonValue(Params, 'new_library');
+    LibPath := ExtractJsonValue(Params, 'library_path');
 
     If Designator = '' Then
     Begin
@@ -7238,6 +7592,12 @@ Begin
         Try
             Comp := Obj;   // cast through the strongly-typed local so
                            // Comp.Designator.Text resolves correctly
+            If (Comp.Designator.Text = Designator) And (LibPath <> '') Then
+            Begin
+                Target := Comp;
+                Found := True;
+                Break;
+            End;
             If Comp.Designator.Text = Designator Then
             Begin
                 SchServer.ProcessControl.PreProcess(SchDoc, '');
@@ -7260,13 +7620,27 @@ Begin
     End;
     SchDoc.SchIterator_Destroy(Iterator);
 
+    If Found And (LibPath <> '') Then
+    Begin
+        { After the iterator is gone: the swap adds and removes parts. }
+        Result := SwapSchSymbol(SchDoc, Target, Designator, LibPath, NewLibRef,
+            ExtractJsonValue(Params, 'allow_pin_changes') = 'true', RequestId);
+        Exit;
+    End;
+
     If Found Then
     Begin
         SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+        { symbol_replaced false: this path rewrites the library link only.
+          The symbol, pins and graphics on the sheet are the old part's
+          until it is swapped (library_path) or updated from the library. }
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"designator":"' + EscapeJsonString(Designator) +
+            '{"success":true,"symbol_replaced":false,"designator":"' + EscapeJsonString(Designator) +
             '","new_lib_ref":"' + EscapeJsonString(NewLibRef) +
-            '","new_library":"' + EscapeJsonString(NewLibrary) + '"}');
+            '","new_library":"' + EscapeJsonString(NewLibrary) +
+            '","note":"Only the library link changed; the symbol and pins on the '
+            + 'sheet are still the old part. Pass library_path to swap the symbol."}');
     End
     Else
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
@@ -7814,7 +8188,7 @@ Begin
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":' + BoolToJsonStr(Shared = MasterId)
+        '{"success":' + BoolToJsonStr(Shared = 'true')
         + ',"source_designator":"' + EscapeJsonString(Designator)
         + '","new_designator":"' + EscapeJsonString(NewDesig)
         + '","part_id":' + IntToStr(PartId)
@@ -9093,7 +9467,7 @@ End;
 Function Gen_BatchDelete(Params : String; RequestId : String) : String;
 Var
     Operations, Remaining : String;
-    OpCount, OpsRun, OpMatched, TotalMatched : Integer;
+    OpCount, OpsRun, OpsPartial, OpMatched, TotalMatched : Integer;
     Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
     OpResult, Note, ResultsJson : String;
     ObjTypeInt : Integer;
@@ -9106,6 +9480,7 @@ Begin
         Exit;
     End;
 
+    OpsPartial := 0;
     OpsRun := 0;
     OpCount := 0;
     TotalMatched := 0;
@@ -9123,6 +9498,7 @@ Begin
         FilterStr := GetBatchField(Op, 'filter');
         Note := '';
         OpMatched := 0;
+        ResetPropertyDiag(0);
 
         { A BOARD TYPE WAS SKIPPED HERE WITHOUT A WORD. Only the schematic  }
         { table was looked up, so eTrackObject fell to the unknown-type      }
@@ -9161,13 +9537,21 @@ Begin
                 OpResult := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
             Else
                 OpResult := ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
-            If Pos('"success":false', OpResult) > 0 Then
+            { A delete that stopped part way still removed what it counted:
+              read matched on a failure too, or the reply says nothing was
+              deleted and the caller repeats it. }
+            OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+            If Pos('"partial":true', OpResult) > 0 Then
+            Begin
+                Note := 'partial: ' + ExtractJsonValue(OpResult, 'delete_error');
+                Inc(OpsPartial);
+            End
+            Else If Pos('"success":false', OpResult) > 0 Then
             Begin
                 Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
             End
             Else
             Begin
-                OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
                 If OpMatched = 0 Then Note := 'no_objects_matched';
             End;
             TotalMatched := TotalMatched + OpMatched;
@@ -9185,6 +9569,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"operations_processed":' + IntToStr(OpsRun) + ',"total":' + IntToStr(OpCount)
         + ',"total_deleted":' + IntToStr(TotalMatched)
+        + ',"operations_partial":' + IntToStr(OpsPartial)
         + ',"results":[' + ResultsJson + ']}');
 End;
 
@@ -12283,9 +12668,17 @@ Var
     OtherLen, OtherOri, VtxI, VtxN : Integer;
     ItemText : String;
     V1, V2 : TLocation;
+    SheetPathParam, ProjectPathParam, FoundPath, ProjectFile, CandPath : String;
+    Paths : TStringList;
+    NExplicit : Integer;
+    CurDoc : ISch_Document;
+    ActiveInProject : Boolean;
 Begin
+    ActiveInProject := False;
     WantDesig := ExtractJsonValue(Params, 'designator');
     WantPin := ExtractJsonValue(Params, 'pin');
+    SheetPathParam := ExtractJsonValue(Params, 'sheet_path');
+    ProjectPathParam := ExtractJsonValue(Params, 'project_path');
     If (WantDesig = '') Or (WantPin = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
@@ -12299,11 +12692,59 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
         Exit;
     End;
-    Project := Workspace.DM_FocusedProject;
-    If Project = Nil Then
+    If ProjectPathParam <> '' Then
+        Project := FindProjectByPath(Workspace, ProjectPathParam)
+    Else
+        Project := Workspace.DM_FocusedProject;
+    If (Project = Nil) And ((ProjectPathParam <> '') Or (SheetPathParam = '')) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project focused');
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'No project found: ' + ProjectPathParam);
         Exit;
+    End;
+
+    { WHERE TO LOOK, IN ORDER. Walking only the focused project answered for
+      that project's U1 while the caller was looking at another sheet with
+      its own U1 (issue #94). A named sheet is searched alone; otherwise the
+      active sheet comes first, then the project's sheets. }
+    Paths := TStringList.Create;
+    NExplicit := 0;
+    If SheetPathParam <> '' Then
+    Begin
+        Paths.Add(SheetPathParam);
+        NExplicit := 1;
+    End
+    Else
+    Begin
+        If ProjectPathParam = '' Then
+        Begin
+            CurDoc := Nil;
+            Try CurDoc := SchServer.GetCurrentSchDocument; Except End;
+            If CurDoc <> Nil Then
+            Begin
+                If CurDoc.ObjectId = eSheet Then
+                Begin
+                    Paths.Add(CurDoc.DocumentName);
+                    NExplicit := 1;
+                End;
+            End;
+        End;
+        For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Document := Nil;
+            Try Document := Project.DM_LogicalDocuments(DocI); Except End;
+            If Document = Nil Then Continue;
+            DocKind := '';
+            Try DocKind := Document.DM_DocumentKind; Except End;
+            If DocKind <> 'SCH' Then Continue;
+            CandPath := Document.DM_FullPath;
+            If (NExplicit = 1) And (UpperCase(CandPath) = UpperCase(Paths.Strings[0])) Then
+            Begin
+                ActiveInProject := True;
+                Continue;
+            End;
+            Paths.Add(CandPath);
+        End;
     End;
 
     Found := False;
@@ -12315,20 +12756,19 @@ Begin
     Tol := MilsToCoord(1);
     Sheet := Nil;
 
-    For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    For DocI := 0 To Paths.Count - 1 Do
     Begin
         If Found Then Break;
-        Document := Nil;
-        Try Document := Project.DM_LogicalDocuments(DocI); Except End;
-        If Document = Nil Then Continue;
-        DocKind := '';
-        Try DocKind := Document.DM_DocumentKind; Except End;
-        If DocKind <> 'SCH' Then Continue;
+        CandPath := Paths.Strings[DocI];
         Sheet := Nil;
-        Sheet := ProjectSheet(Document.DM_FullPath);
+        If DocI < NExplicit Then
+        Begin
+            Try Sheet := SchServer.GetSchDocumentByPath(CandPath); Except End;
+        End
+        Else
+            Sheet := ProjectSheet(CandPath);
         If Sheet = Nil Then Continue;
-        SheetName := '';
-        Try SheetName := Document.DM_FileName; Except End;
+        SheetName := ExtractFileName(CandPath);
 
         CompIter := Sheet.SchIterator_Create;
         If CompIter = Nil Then Continue;
@@ -12357,6 +12797,7 @@ Begin
                                         Begin
                                             Found := True;
                                             FoundSheet := SheetName;
+                                            FoundPath := CandPath;
                                             Try PinName := Pin.Name; Except End;
                                             Loc := Pin.GetState_Location;
                                             RX := Loc.X;
@@ -12385,6 +12826,29 @@ Begin
             Sheet.SchIterator_Destroy(CompIter);
         End;
     End;
+
+    { Where the pin was found, for the reply: a sheet named by the caller,
+      the active sheet, or one of the project's sheets. }
+    ProjectFile := '';
+    If Found Then
+    Begin
+        If SheetPathParam <> '' Then
+        Begin
+            ProjectFile := 'named_sheet';
+        End
+        Else If (NExplicit = 1) And (UpperCase(FoundPath) = UpperCase(Paths.Strings[0])) Then
+        Begin
+            If ActiveInProject Then
+                ProjectFile := 'active_sheet_in_project'
+            Else
+                ProjectFile := 'active_sheet_outside_project';
+        End
+        Else
+        Begin
+            ProjectFile := 'project';
+        End;
+    End;
+    Paths.Free;
 
     If Not Found Then
     Begin
@@ -12554,6 +13018,8 @@ Begin
             JsonStr('pin', WantPin) + ',' +
             JsonStr('pin_name', PinName) + ',' +
             JsonStr('sheet', FoundSheet) + ',' +
+            JsonStr('sheet_path', FoundPath) + ',' +
+            JsonStr('found_on', ProjectFile) + ',' +
             JsonInt('orientation', PinOrient) + ',' +
             JsonInt('pin_length_mils', CoordToMils(PinLen)) + ',' +
             JsonInt('root_x_mils', CoordToMils(RX)) + ',' +

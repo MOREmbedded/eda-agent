@@ -349,24 +349,46 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_remove_document(
-        document_path: str, project_path: Optional[str] = None
+        document_path: str,
+        project_path: Optional[str] = None,
+        save_project: bool = True,
     ) -> dict[str, Any]:
         """Remove a document from a project.
 
         Note: This only removes the document from the project, it doesn't delete the file.
 
+        The project file is saved and read back: a removal held only in
+        memory comes back when the project is reopened. Altium's own save
+        leaves the old [DocumentN] sections past the new count in the file,
+        so those are taken out here (only past the count, only when the rest
+        match the project's documents, after a backup to the workspace).
+
         Args:
             document_path: Full path to the document to remove
             project_path: Optional project path. If None, uses active project.
+            save_project: Write the .PrjPcb so the removal lasts (default).
+                False leaves it for a later proj_save.
 
         Returns:
-            Dictionary confirming the operation
+            ``removed`` (gone from the project in memory),
+            ``project_saved``, ``in_project_file`` (the file on disk
+            still lists it, with ``project_file_entry``) and
+            ``stale_sections`` when leftovers were taken out (with the
+            backup path). ``success`` is true only when the file no longer
+            lists it.
         """
         bridge = get_bridge()
         params = {"document_path": document_path}
         if project_path:
             params["project_path"] = project_path
+        if not save_project:
+            params["save_project"] = "false"
         result = await bridge.send_command_async("project.remove_document", params)
+        if save_project:
+            from ..config import get_config
+            from ..prjpcb import finish_removal
+            result = finish_removal(
+                result, str(get_config().workspace_dir / "backups" / "prjpcb"))
         return result
 
     @mcp.tool()
@@ -1081,6 +1103,21 @@ def register_project_tools(mcp):
                     result["file_size_bytes"] = os.path.getsize(output_path)
                 except OSError:
                     pass
+                # A file that is there is not yet a PDF: an empty or cut
+                # off print job leaves one too (issue #94 asks that the
+                # output decode). Every PDF starts with %PDF-.
+                head = b""
+                try:
+                    with open(output_path, "rb") as fh:
+                        head = fh.read(5)
+                except OSError:
+                    pass
+                if str(format).lower() == "pdf" and head != b"%PDF-":
+                    result["success"] = False
+                    result["error"] = "EXPORT_FILE_INVALID"
+                    result["details"] = (
+                        f"{output_path} exists but is not a PDF (it starts "
+                        f"with {head!r}). The print did not complete.")
             else:
                 # Pascal claimed success but file is missing - downgrade
                 # to an explicit error so callers don't trust a phantom

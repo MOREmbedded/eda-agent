@@ -58,6 +58,29 @@ def test_the_sheet_becomes_a_plan_the_pipeline_accepts():
     DesignPlan.model_validate(plan)
 
 
+def test_a_full_read_is_marked_complete():
+    out = plan_from_live_sheet("p.PrjPcb", bridge=_Sheet())
+    assert out["complete"] is True
+    assert out["interfaces_not_in_plan"] == []
+
+
+def test_a_lost_connection_comes_back_as_data():
+    """A single-pin net (a port, an off-sheet label) cannot be a plan net.
+    It used to be named in a string only; the redraw then lost it, and
+    restoring it meant parsing prose (issue #94: 32 pins on 5 nets)."""
+    sheet = _Sheet(pins=[
+        {"component": "R1", "pin": "2", "net": "MID"},
+        {"component": "R2", "pin": "1", "net": "MID"},
+        {"component": "R1", "pin": "1", "net": "SENSE_OUT"},
+    ])
+    out = plan_from_live_sheet("p.PrjPcb", bridge=sheet)
+    assert out["ok"] is True and out["complete"] is False
+    assert out["interfaces_not_in_plan"] == [
+        {"refdes": "R1", "pin": "1", "net": "SENSE_OUT",
+         "why": "single_pin_net", "is_rail": False}]
+    assert any(n.startswith("INCOMPLETE") for n in out["notes"])
+
+
 def test_the_missing_roles_are_stated_not_guessed():
     """A role is a planner assertion, and inventing one is a wrong answer.
 

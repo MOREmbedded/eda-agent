@@ -81,6 +81,43 @@ def _require():
             "pywin32 is not importable, so no dialog can be inspected or "
             "driven. It is a declared dependency on win32, so this usually "
             "means a non-Windows host or a broken install.")
+    _make_dpi_aware()
+
+
+_DPI_DONE = False
+
+
+def _make_dpi_aware() -> None:
+    """Read and click in physical pixels, once per process.
+
+    A process that does not declare DPI awareness is handed rectangles
+    scaled down by the display scale, while Altium (DPI aware) draws in
+    physical pixels. At 200% every rectangle read was half size and a
+    click aimed by one landed in the wrong place (issue #94). Per-monitor
+    v2 first, then the older per-monitor and system calls for older
+    Windows builds. Called before any window is read, and harmless for
+    a server process that owns no windows.
+    """
+    global _DPI_DONE
+    if _DPI_DONE:
+        return
+    _DPI_DONE = True
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (HANDLE)-4.
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(
+                ctypes.c_void_p(-4)):
+            return
+    except Exception:                            # pragma: no cover - platform
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:                            # pragma: no cover - platform
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:                            # pragma: no cover - platform
+        pass
 
 
 #: Class-name fragments that mark a pressable pushbutton.
@@ -835,8 +872,18 @@ _KEYS = {
     "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
     "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74,
     "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79,
-    "f11": 0x7A, "f12": 0x7B,
+    "f11": 0x7A, "f12": 0x7B, "insert": 0x2D, "ins": 0x2D,
 }
+# Letters and digits: their virtual-key codes are the upper-case ASCII
+# codes. send_keys documented "ctrl+s" while the table had no letters,
+# so every letter chord was refused (issue #94).
+_KEYS.update({chr(c).lower(): c for c in range(ord("A"), ord("Z") + 1)})
+_KEYS.update({str(d): 0x30 + d for d in range(10)})
+
+#: How a refusal names the known keys, without listing 36 letters.
+_KEYS_HELP = ("a-z, 0-9, enter, escape, tab, space, backspace, delete, "
+              "insert, up, down, left, right, home, end, pageup, pagedown, "
+              "f1-f12")
 
 #: Modifier virtual-key codes, held down around a key in a chord.
 _MODIFIERS = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10}
@@ -870,7 +917,7 @@ def press_key(hwnd: int, key: str) -> bool:
     code = _KEYS.get(key.lower())
     if code is None:
         raise ValueError(f"unsupported key {key!r}; use one of "
-                         f"{sorted(_KEYS)}")
+                         f"{_KEYS_HELP}")
     try:
         win32gui.SetForegroundWindow(hwnd)
     except Exception:                            # pragma: no cover - guard
@@ -946,7 +993,7 @@ def send_keys(sequence: str, hold: float = 0.03, target=None) -> dict:
         if key not in _KEYS:
             return {"ok": False, "reason": (
                 f"{key!r} is not a known key. Known: "
-                f"{', '.join(sorted(_KEYS))}"), "sent": sent}
+                f"{_KEYS_HELP}"), "sent": sent}
 
         for code in codes:
             if target is not None:

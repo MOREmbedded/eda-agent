@@ -31,7 +31,8 @@ class _FakeMcp:
 
 def _tools(monkeypatch):
     from eda_agent.tools import uiauto
-    monkeypatch.setattr(uiauto, "_altium_pid", lambda: (4242, None))
+    monkeypatch.setattr(uiauto, "_altium_pid",
+                        lambda reads_only=False: (4242, None))
     mcp = _FakeMcp()
     uiauto.register_uiauto_tools(mcp)
     return mcp.tools

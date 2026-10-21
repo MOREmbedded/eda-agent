@@ -184,18 +184,24 @@ class AltiumBackend:
     async def run_erc(self) -> dict[str, Any]:
         bridge, AltiumError = await self._bridge()
         try:
-            await bridge.send_command_async("generic.run_erc", {})
             raw = await bridge.send_command_async(
-                "generic.get_erc_violations", {})
+                "generic.run_erc", {"limit": "200"})
+            # A script from before 2026.10.21 answers the run with a
+            # message only; the list is read separately there.
+            if not isinstance(raw, dict) or "violation_count" not in raw:
+                raw = await bridge.send_command_async(
+                    "generic.get_erc_violations", {"limit": "200"})
         except AltiumError as e:
             raise BackendUnavailableError(str(e)) from None
         raw = raw or {}
         violations = raw.get("violations", raw.get("items", [])) or []
+        count = raw.get("violation_count", len(violations))
         return {
             "ok": True,
             "source": "altium",
-            "violation_count": raw.get("violation_count", len(violations)),
+            "violation_count": count,
             "violations": violations[:200],
+            "truncated": len(violations[:200]) < count,
         }
 
 

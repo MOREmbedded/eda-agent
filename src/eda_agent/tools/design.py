@@ -2181,7 +2181,13 @@ def register_design_tools(mcp) -> None:
 
         Returns:
             ``ok`` / ``plan`` (a DesignPlan dict, or None on a refusal) /
-            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``.
+            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``,
+            and ``complete``: false when anything on the sheet is not in
+            the plan. ``interfaces_not_in_plan`` lists each lost
+            connection as ``{refdes, pin, net, why, is_rail}`` and
+            ``skipped_components`` the parts left out. A redraw from an
+            incomplete plan drops them: restore each one and compare the
+            netlists before keeping it.
         """
         return plan_from_live_sheet(project_path, sheet_document)
 

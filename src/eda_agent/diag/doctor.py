@@ -134,25 +134,29 @@ def _check_script_version_match(ping: Optional[dict]) -> Check:
     )
 
 
-def _check_save_all_canary() -> Check:
-    """Round-trip a no-op IPC call to confirm the bridge handles a real
-    command, not just ping."""
+def _check_command_canary() -> Check:
+    """Round-trip a real command, not just ping, that changes nothing.
+
+    This was application.save_all, described as a no-op: it writes every
+    open document, so running the doctor rewrote files in every open
+    project. Listing the open documents exercises the same dispatch.
+    """
     try:
         from eda_agent.bridge import get_bridge
         bridge = get_bridge()
-        bridge.send_command("application.save_all", {}, timeout=15.0)
+        bridge.send_command("application.get_open_documents", {}, timeout=15.0)
     except Exception as exc:
         return Check(
-            name="application.save_all canary",
+            name="command canary",
             status=Status.FAIL,
-            message=f"save_all round-trip failed: {exc}",
+            message=f"get_open_documents round-trip failed: {exc}",
             fix=(
                 "Script may be hung behind a modal Altium dialog, "
                 "check Altium for a popup and click OK, then re-run."
             ),
         )
     return Check(
-        name="application.save_all canary",
+        name="command canary",
         status=Status.PASS,
     )
 
@@ -255,6 +259,6 @@ def run_doctor_checks(library_paths: Optional[Sequence[str]] = None) -> list[Che
     if ping is None:
         return checks
 
-    checks.append(_check_save_all_canary())
+    checks.append(_check_command_canary())
     checks.extend(_check_lib_paths(library_paths or []))
     return checks

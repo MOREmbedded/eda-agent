@@ -2003,6 +2003,7 @@ End;
 
 Var
     _PropertyDiagStr : String;
+    _DeleteFaultStr : String;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -2015,6 +2016,15 @@ Var
 Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
+    _DeleteFaultStr := '';
+End;
+
+{ Why a delete loop stopped early. The objects removed before it stopped are }
+{ gone and counted; the reply must say both, or a caller reads the failure   }
+{ as "nothing changed" and repeats a delete that already happened.           }
+Procedure NoteDeleteFault(Msg : String);
+Begin
+    If _DeleteFaultStr = '' Then _DeleteFaultStr := Msg;
 End;
 
 Procedure NotePropertyDiag(Kind : String; PropName : String);
@@ -2110,6 +2120,14 @@ End;
 Function ModifyOutcomeJson(Dummy : Integer): String;
 Begin
     Result := ',"properties":' + RenderPropertyDiagJson(0);
+    If _DeleteFaultStr <> '' Then
+    Begin
+        Result := Result + ',"success":false,"partial":true,"delete_error":"'
+            + EscapeJsonString(_DeleteFaultStr) + '","reason":"the delete '
+            + 'stopped part way. matched counts the objects already removed; '
+            + 'query again before repeating it."';
+        Exit;
+    End;
     If _PropertyDiagStr <> '' Then
         Result := Result + ',"success":false,"reason":"one or more properties '
             + 'were not written. properties.unknown lists names this build '

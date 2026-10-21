@@ -6041,6 +6041,31 @@ Begin
     End;
 End;
 
+{ The highest part number any pin of the symbol is drawn on, 0 for none.   }
+{ Pins belonging to every part (OwnerPartId 0) do not count.               }
+Function SymbolPartsWithPins(Component : ISch_Component) : Integer;
+Var
+    PIter : ISch_Iterator;
+    Pin : ISch_Pin;
+    Owner : Integer;
+Begin
+    Result := 0;
+    PIter := Component.SchIterator_Create;
+    Try
+        PIter.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := PIter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Owner := 0;
+            Try Owner := Pin.OwnerPartId; Except End;
+            If Owner > Result Then Result := Owner;
+            Pin := PIter.NextSchObject;
+        End;
+    Finally
+        Component.SchIterator_Destroy(PIter);
+    End;
+End;
+
 Function Lib_GetComponentDetails(Params : String; RequestId : String) : String;
 Var
     ComponentName, LibPath, FocusedPath : String;
@@ -6057,7 +6082,7 @@ Var
     CompNum, I, PinCount : Integer;
     Data, PinList, ParamList, StyleList, ElecStr : String;
     DesignatorJson, CommentJson, Description, AliasName : String;
-    PartCount : Integer;
+    PartCount, LivePartCount, PartsWithPins : Integer;
     PinLabelHidden : Boolean;
     First, FirstStyle, FoundInfo : Boolean;
 Begin
@@ -6266,6 +6291,20 @@ Begin
     Data := Data + ',"description":"' + EscapeJsonString(Description) + '"';
     Data := Data + ',"alias_name":"' + EscapeJsonString(AliasName) + '"';
     Data := Data + ',"part_count":' + IntToStr(PartCount);
+    { THREE READINGS, NOT ONE. The file reader's PartCount read 2 where the  }
+    { live symbol said 1 (issue #88), and a placed part once read 4 against }
+    { a library's correct 5, so neither source is trusted alone. The live   }
+    { count and the highest part with pins go alongside, and a mismatch is  }
+    { named instead of one number being picked.                             }
+    LivePartCount := 0;
+    Try LivePartCount := Component.PartCount; Except End;
+    PartsWithPins := SymbolPartsWithPins(Component);
+    Data := Data + ',"part_count_live":' + IntToStr(LivePartCount);
+    Data := Data + ',"parts_with_pins":' + IntToStr(PartsWithPins);
+    If (LivePartCount <> PartCount) Or ((PartsWithPins > 0) And (PartsWithPins <> PartCount)) Then
+        Data := Data + ',"part_count_note":"the file reader, the open symbol and its '
+            + 'pins disagree on the number of parts. parts_with_pins is the highest '
+            + 'part that has pins; a part with no pins yet is not counted there."';
     Data := Data + ',"pin_count":' + IntToStr(PinCount);
     Data := Data + ',"pins":[' + PinList + ']';
     Data := Data + ',"parameters":{' + ParamList + '}';

@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.21.3';
+    SCRIPT_VERSION = '2026.10.21.9';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -72,6 +72,11 @@ Const
 Var
     WorkspaceDir : String;
     Running : Boolean;
+
+    { The last error reply built, unescaped: request id, code and message.  }
+    { The status window shows this instead of re-reading the JSON, which    }
+    { turns non-Latin text into '?'. See BuildErrorResponseDetailed.        }
+    LastErrorId, LastErrorCode, LastErrorMsg : String;
 
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
@@ -835,6 +840,35 @@ Begin
         AgeAfter := -1;
         Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
         If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
+End;
+
+{ Write the project FILE itself. Adding or removing a document changes the  }
+{ project in memory without marking it modified, so a save that waits for   }
+{ the flag never writes the .PrjPcb and the change is gone after a reopen   }
+{ (issue #94; measured: two documents added, proj_save, file listed none).  }
+{ Called where membership changes, and by proj_save for the named project;  }
+{ never by the save-everything passes, which must not rewrite projects      }
+{ nobody touched.                                                           }
+Function SaveProjectFile(Project : IProject) : Boolean;
+Var
+    ProjDoc : IServerDocument;
+    Path : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
+    If ProjDoc = Nil Then Exit;
+    Try ProjDoc.SetModified(True); Except End;
+    Try
+        ProjDoc.DoFileSave('');
+        Result := True;
+    Except
+        Result := False;
+    End;
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -1828,6 +1862,13 @@ Begin
                   ',"id":"' + RequestId + '","success":false,"data":null,' +
                   '"error":{"code":"' + ErrorCode + '","message":"' + EscMsg +
                   '","details":' + DetailsJson + '}}';
+
+    { The message as written, for the status window. Read back out of the
+      JSON it loses every character above 255 to '?', since the unescaper
+      cannot build one in this script host (issue #91). }
+    LastErrorId := RequestId;
+    LastErrorCode := ErrorCode;
+    LastErrorMsg := ErrorMsg;
 End;
 
 Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : String) : String;

@@ -226,6 +226,30 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
                      f"not understood.{hint} Nothing was sent.", **extra}
 
 
+def _mark_erc_page(result: Any) -> Any:
+    """Say plainly when an ERC list is only part of the violations.
+
+    The list used to stop at 100 with nothing on the reply to say so: 240
+    violations came back as violation_count 240 and 100 entries. A script
+    from before 2026.10.21 sends no ``returned`` and ignores ``offset``,
+    so the page is worked out here from what it did send.
+    """
+    if not isinstance(result, dict) or "violation_count" not in result:
+        return result
+    items = result.get("violations")
+    if not isinstance(items, list):
+        return result
+    if "returned" not in result:
+        result["returned"] = len(items)
+        result["truncated"] = len(items) < int(result["violation_count"] or 0)
+    if result.get("truncated"):
+        result["warning"] = (
+            f"{result['returned']} of {result['violation_count']} violations "
+            "returned. Pass limit=0 for all of them, or offset=next_offset "
+            "for the next page.")
+    return result
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -327,7 +351,12 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def obj_explain_pin(designator: str, pin: str) -> dict[str, Any]:
+    async def obj_explain_pin(
+        designator: str,
+        pin: str,
+        sheet_path: str = "",
+        project_path: str = "",
+    ) -> dict[str, Any]:
         """Explain WHY a schematic pin is on the net it is on.
 
         Lists every object at the pin's CONNECTION point (what drives its
@@ -337,26 +366,53 @@ def register_generic_tools(mcp):
         ``connect_y_mils``. Objects match by exact location, not
         bounding box.
 
+        Without ``sheet_path`` the active sheet is searched first, then
+        the sheets of the project (``project_path``, or the focused one),
+        so two open projects that both have a U1 answer for the sheet
+        in front of you.
+
         Args:
             designator: Component designator, e.g. "U10".
             pin: Pin NUMBER (not pin name), e.g. "5".
+            sheet_path: Search only this open SchDoc.
+            project_path: Search this project's sheets (.PrjPcb path)
+                instead of the focused project's; the active sheet is
+                then not searched first.
 
         Returns:
-            ``designator, pin, pin_name, sheet, orientation,
+            ``designator, pin, pin_name, sheet, sheet_path`` (the full
+            path of the sheet the pin is on), ``found_on``
+            (named_sheet, active_sheet_in_project,
+            active_sheet_outside_project or project), ``orientation,
             pin_length_mils, root_x/y_mils, connect_x/y_mils,
-            compiled_net`` (from the netlist), and ``at_connection`` /
+            compiled_net`` (from the project's netlist, only when the
+            sheet is in that project), and ``at_connection`` /
             ``at_root`` lists of ``{kind, text, x_mils, y_mils}``.
         """
         bridge = get_bridge()
+        params = {"designator": designator, "pin": pin}
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        if project_path:
+            params["project_path"] = project_path
         result = await bridge.send_command_async(
-            "generic.explain_pin",
-            {"designator": designator, "pin": pin},
+            "generic.explain_pin", params,
         )
-        if isinstance(result, dict) and "error" not in result:
+        # The compiled net comes from a project's netlist, so it is only
+        # read when the pin was found in that project. A sheet outside it
+        # (or one the caller named with no project) has its own U1.
+        # A script from before 2026.10.21 sends no found_on and searched
+        # the focused project only, as the netlist read does.
+        found_on = result.get("found_on") if isinstance(result, dict) else None
+        in_project = found_on in (None, "project", "active_sheet_in_project") or (
+            found_on == "named_sheet" and bool(project_path))
+        if isinstance(result, dict) and "error" not in result and in_project:
             try:
+                conn_params = {"designator": designator}
+                if project_path:
+                    conn_params["project_path"] = project_path
                 conn = await bridge.send_command_async(
-                    "project.get_connectivity",
-                    {"designator": designator},
+                    "project.get_connectivity", conn_params,
                 )
                 for p in conn.get("pins", []) if isinstance(conn, dict) else []:
                     if str(p.get("pin_number")) == str(pin):
@@ -485,7 +541,11 @@ def register_generic_tools(mcp):
         and nothing is deleted.
 
         Returns:
-            Dictionary with "matched" count (number deleted)
+            Dictionary with "matched" count (number deleted). When a
+            removal fails part way, ``partial`` is true, ``delete_error``
+            says why, and ``matched`` still counts the objects already
+            removed. Query before repeating a delete that failed or timed
+            out: the first part of it may already have happened.
         """
         bad = filter_problem(filter)
         if bad:
@@ -799,25 +859,31 @@ def register_generic_tools(mcp):
             return {"success": True, "process": process_name}
 
     @mcp.tool()
-    async def proj_run_erc() -> dict[str, Any]:
+    async def proj_run_erc(limit: int = 100) -> dict[str, Any]:
         """Run Electrical Rules Check on the focused project.
 
         Compiles the project first (required), runs ERC, and returns
         what it found, the same list ``proj_get_erc_violations`` reads.
 
+        Args:
+            limit: How many violations to return; 0 returns all of them.
+
         Returns:
-            ``violation_count`` and ``violations`` (first 100): each with
-            its kind, document, detail and the related objects, whose
-            cross-probe string names the exact pin or net.
+            ``violation_count`` and ``violations``: each with its kind,
+            document, detail and the related objects, whose cross-probe
+            string names the exact pin or net. ``truncated`` is true when
+            the list stops short of ``violation_count``; read the rest
+            with ``proj_get_erc_violations(offset=next_offset)``.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("generic.run_erc", {})
+        params = {"limit": str(max(0, int(limit)))}
+        result = await bridge.send_command_async("generic.run_erc", params)
         # A script from before 2026.10.21 answers the run with a message
         # only; read the list it left behind instead of returning nothing.
         if isinstance(result, dict) and "violation_count" not in result:
             result = await bridge.send_command_async(
-                "generic.get_erc_violations", {})
-        return result
+                "generic.get_erc_violations", params)
+        return _mark_erc_page(result)
 
     @mcp.tool()
     async def sch_set_components_parameters(
@@ -873,7 +939,10 @@ def register_generic_tools(mcp):
             "generic.set_sch_components_parameters", params, timeout=60.0)
 
     @mcp.tool()
-    async def proj_get_erc_violations() -> dict[str, Any]:
+    async def proj_get_erc_violations(
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
 
@@ -885,14 +954,23 @@ def register_generic_tools(mcp):
         tells a violation with no objects from one whose objects could
         not be read.
 
+        Args:
+            limit: How many violations to return; 0 returns all of them.
+            offset: Index of the first violation, to page through a long
+                list without running ERC again.
+
         Returns:
-            ``{"violation_count", "violations": [{"index",
+            ``{"violation_count", "offset", "returned", "truncated",
+            "next_offset" (when truncated), "violations": [{"index",
             "description", "detail", "related_object_count",
             "related_objects": [{"kind", "document", "cross_probe"}]}]}``
         """
         bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.get_erc_violations", {})
+        params = {"limit": str(max(0, int(limit))),
+                  "offset": str(max(0, int(offset)))}
+        result = await bridge.send_command_async(
+            "generic.get_erc_violations", params)
+        return _mark_erc_page(result)
 
     @mcp.tool()
     async def obj_highlight_net(
@@ -1006,20 +1084,27 @@ def register_generic_tools(mcp):
         """Remove a schematic sheet from the focused project.
 
         Safety check: refuses to remove the last remaining schematic sheet.
-        The file is closed and removed from the project but not deleted from disk.
+        The file is removed from the project but not deleted from disk, and
+        closed unless it has unsaved edits. The project file is saved, its
+        leftover sections taken out and read back, as proj_remove_document
+        does.
 
         Args:
             file_path: Full path to the .SchDoc file to remove
 
         Returns:
-            Dictionary confirming removal
+            ``removed``, ``project_saved`` and ``in_project_file`` (the
+            file on disk still lists it); ``success`` only when it does not.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.delete_sheet",
             {"file_path": file_path},
         )
-        return result
+        from ..config import get_config
+        from ..prjpcb import finish_removal
+        return finish_removal(
+            result, str(get_config().workspace_dir / "backups" / "prjpcb"))
 
     @mcp.tool()
     async def obj_switch_view(
@@ -1895,19 +1980,37 @@ def register_generic_tools(mcp):
         designator: str,
         new_lib_ref: str,
         new_library: str = "",
+        library_path: str = "",
+        allow_pin_changes: bool = False,
     ) -> dict[str, Any]:
-        """Replace a component with a different library part.
+        """Replace a part on the active sheet with another library part.
 
-        Keeps existing connections and designator, swaps the symbol and library
-        reference. The component must exist on the active schematic sheet.
+        With ``library_path`` (a .SchLib) the symbol itself is swapped: the
+        new symbol goes where the old one is, every pin's connection point
+        is compared, and only then is the old part removed. The designator
+        and UniqueId carry over, so the board keeps its link. A pin that
+        would move or disappear refuses the swap with nothing changed
+        (``PIN_MISMATCH``), unless ``allow_pin_changes``.
+
+        Without ``library_path`` only the library link changes
+        (LibReference, DesignItemId, library name); the symbol, pins and
+        graphics on the sheet stay the old part's, and the reply says
+        ``symbol_replaced: false``.
 
         Args:
             designator: Component designator to replace (e.g., "U1", "R3")
             new_lib_ref: New library reference / component name
-            new_library: New source library name (optional, keeps current if empty)
+            new_library: New source library name for the relink (optional,
+                keeps current if empty)
+            library_path: .SchLib holding ``new_lib_ref``; swaps the symbol.
+            allow_pin_changes: Swap even when pins move or disappear; the
+                wires on those pins are then left unconnected.
 
         Returns:
-            Dictionary confirming the replacement
+            ``symbol_replaced``. After a swap: ``pins_kept``,
+            ``pins_missing``, ``pins_moved``, ``pins_added``,
+            ``parameters_not_on_new_symbol`` (old parameters the new
+            symbol lacks, not copied) and ``unique_id_kept``.
         """
         bridge = get_bridge()
         params = {
@@ -1916,6 +2019,9 @@ def register_generic_tools(mcp):
         }
         if new_library:
             params["new_library"] = new_library
+        if library_path:
+            params["library_path"] = library_path
+            params["allow_pin_changes"] = "true" if allow_pin_changes else "false"
         result = await bridge.send_command_async(
             "generic.replace_component", params
         )
@@ -2531,7 +2637,10 @@ def register_generic_tools(mcp):
         Returns:
             operations_processed, total, total_deleted and ``results``
             (per operation ``deleted`` and a ``note`` when it deleted
-            nothing).
+            nothing). An operation that stopped part way has a note
+            starting ``partial:`` and its ``deleted`` counts what it
+            removed; ``operations_partial`` counts them. Query before
+            repeating a batch that failed or timed out.
         """
         op_strs: list[str] = []
         sweeping: list[str] = []

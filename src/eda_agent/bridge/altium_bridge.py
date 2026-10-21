@@ -982,6 +982,44 @@ class AltiumBridge:
             f"app_press_dialog_button; both work while the bridge does not."
         )
 
+    def _withdraw_or_warn(self, request: CommandRequest,
+                          exc: AltiumTimeoutError) -> None:
+        """After a timeout, take back our request if Altium never took it.
+
+        A timed-out request used to stay in the queue. When the modal that
+        blocked it was dismissed, Altium ran it, minutes later and with
+        nobody waiting: 26 stranded reads were seen in one session (issue
+        #94), and a stranded WRITE would apply an edit the caller had
+        already been told failed. Only this caller's own request file is
+        touched, never another session's.
+
+        Not there any more means Altium has read it, and then the edit may
+        still land; the error says which of the two happened.
+        """
+        workspace_dir = self.config.workspace_dir
+        request_path = self._request_path(request.id)
+        withdrawn = False
+        try:
+            if request_path.exists():
+                request_path.unlink()
+                withdrawn = True
+        except OSError:
+            withdrawn = False
+        details = exc.details if isinstance(exc.details, dict) else {}
+        details["request_withdrawn"] = withdrawn
+        exc.details = details
+        if withdrawn:
+            note = (" The request was withdrawn before Altium read it, so "
+                    "it will not run later.")
+        else:
+            note = (" Altium had already read the request, so it may still "
+                    "finish: read the design back before repeating a change.")
+        exc.message = f"{exc.message}{note}"
+        exc.args = (exc.message,)
+        _trace_log(workspace_dir,
+                   f"WITHDRAW id={request.id[:8]} cmd={request.command} "
+                   f"withdrawn={withdrawn}")
+
     def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
         """Execute a command synchronously (blocking)."""
         request = CommandRequest(command=command, params=params)
@@ -994,6 +1032,9 @@ class AltiumBridge:
         response_path = self._response_path(request.id)
         try:
             response = self._poll_response(request.id, timeout)
+        except AltiumTimeoutError as exc:
+            self._withdraw_or_warn(request, exc)
+            raise
         finally:
             # Always sweep our own response file on the way out,_poll_response
             # already deletes it on success, but a timeout or a late-arriving

@@ -89,9 +89,14 @@ def plan_from_live_sheet(
     The plan is validated before it is returned, so what comes back is
     either a valid plan or a refusal saying why.
     """
+    # interfaces_not_in_plan carries each dropped connection as data (part,
+    # pin, net, why), enough to put it back after a redraw; dropped_pins
+    # only named them. complete is false whenever anything on the sheet
+    # did not make it into the plan (issue #94: 32 pins on 5 nets).
     out: dict[str, Any] = {
         "ok": True, "plan": None, "notes": [], "dropped_pins": [],
-        "parts_read": 0, "nets_read": 0,
+        "interfaces_not_in_plan": [], "skipped_components": [],
+        "complete": False, "parts_read": 0, "nets_read": 0,
     }
     if not project_path or not _altium_path(project_path).name:
         out["ok"] = False
@@ -137,10 +142,12 @@ def plan_from_live_sheet(
             out["notes"].append(
                 f"skipped a component with designator={refdes!r} "
                 f"lib_ref={lib_ref!r}: the plan needs both")
+            out["skipped_components"].append(refdes or lib_ref or "?")
             continue
         if not re.match(_REFDES_PATTERN, refdes):
             out["notes"].append(
                 f"skipped {refdes!r}: not a designator the plan accepts")
+            out["skipped_components"].append(refdes)
             continue
         on_sheet.add(refdes)
         part: dict[str, Any] = {"refdes": refdes, "lib_ref": lib_ref,
@@ -196,6 +203,16 @@ def plan_from_live_sheet(
             "above name the parts or nets that could not be expressed")
         return out
     out["plan"] = payload
+    out["complete"] = not (out["interfaces_not_in_plan"]
+                           or out["skipped_components"])
+    if not out["complete"]:
+        out["notes"].append(
+            f"INCOMPLETE: {len(out['interfaces_not_in_plan'])} connection(s) "
+            f"and {len(out['skipped_components'])} component(s) on the sheet "
+            f"are not in this plan. A sheet redrawn from it loses them; put "
+            f"each entry of interfaces_not_in_plan back (a port, power port "
+            f"or label on that pin) and compare the netlists before keeping "
+            f"the redraw")
     out["notes"].append(
         "role and zone are NOT on a schematic and are absent from this "
         "plan; assert them before laying it out or the placer loses the "
@@ -396,10 +413,18 @@ def _nets_on_sheet(
             # a silently dropped connection reads as a wiring change.
             out["dropped_pins"].append(
                 f"{pins[0]['refdes']}.{pins[0]['pin']} on {name}")
+            out["interfaces_not_in_plan"].append(
+                {"refdes": pins[0]["refdes"], "pin": pins[0]["pin"],
+                 "net": name, "why": "single_pin_net",
+                 "is_rail": name in rails})
             continue
         if not re.match(_NET_PATTERN, name):
             out["dropped_pins"].extend(
                 f"{p['refdes']}.{p['pin']} on {name}" for p in pins)
+            out["interfaces_not_in_plan"].extend(
+                {"refdes": p["refdes"], "pin": p["pin"], "net": name,
+                 "why": "net_name_not_accepted", "is_rail": name in rails}
+                for p in pins)
             out["notes"].append(
                 f"net {name!r} is not a name the plan accepts; its "
                 f"{len(pins)} pins are unconnected in this plan")

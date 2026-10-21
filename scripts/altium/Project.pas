@@ -407,9 +407,12 @@ Begin
             { client projects included. app_save_all is the tool for that,    }
             { and its name says so.                                           }
             SaveProjectMembers(Project);
+            { The project file too: its document list changes without the }
+            { modified flag, so SaveProjectMembers alone left it unwritten. }
             Result := BuildSuccessResponse(RequestId,
                 '{"success":true,"project_path":"'
-                + EscapeJsonString(Project.DM_ProjectFullPath) + '"}');
+                + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+                + ',"project_file_saved":' + BoolToJsonStr(SaveProjectFile(Project)) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -640,7 +643,9 @@ Begin
         If Project <> Nil Then
         Begin
             Project.DM_AddSourceDocument(DocumentPath);
-            Result := BuildSuccessResponse(RequestId, '{"success":true}');
+            { Written now, or the add is gone after a reopen. }
+            Result := BuildSuccessResponse(RequestId, '{"success":true,"project_saved":'
+                + BoolToJsonStr(SaveProjectFile(Project)) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -649,7 +654,45 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
 End;
 
+{ The DocumentPath= line of the project FILE that names DocPath's file, or   }
+{ ''. Matched on the file name alone, so a same-named document in another    }
+{ folder reads as still listed: the error falls on "not removed", never on   }
+{ a false "removed".                                                          }
+Function ProjectFileEntryFor(ProjPath, DocPath : String) : String;
+Var
+    SL : TStringList;
+    I : Integer;
+    Line, Value, Want : String;
+Begin
+    Result := '';
+    Want := UpperCase(ExtractFileName(DocPath));
+    SL := TStringList.Create;
+    Try
+        If LoadTextFile(SL, ProjPath) Then
+        Begin
+            For I := 0 To SL.Count - 1 Do
+            Begin
+                Line := Trim(SL.Strings[I]);
+                If UpperCase(Copy(Line, 1, 13)) <> 'DOCUMENTPATH=' Then Continue;
+                Value := Copy(Line, 14, Length(Line));
+                If UpperCase(ExtractFileName(Value)) = Want Then
+                Begin
+                    Result := Line;
+                    Exit;
+                End;
+            End;
+        End;
+    Finally
+        SL.Free;
+    End;
+End;
+
 { Remove a document FROM A PROJECT. It does not delete the file.             }
+{                                                                             }
+{ THE PROJECT FILE IS WRITTEN AND READ BACK. Removal changed the project in  }
+{ memory only, so the .PrjPcb kept the [DocumentN] entry and the document    }
+{ was back after a reopen (issue #94). The project is saved, unless          }
+{ save_project is false, and the file itself is checked for the entry.       }
 {                                                                             }
 { This used to run WorkspaceManager:CloseObject on the document, which closes }
 { the editor WINDOW and leaves project membership untouched. Measured: the    }
@@ -662,12 +705,12 @@ End;
 { the tool and "I issued it" is not the same as "it happened".                }
 Function Proj_RemoveDocument(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, DocumentPath, DocPath : String;
+    ProjectPath, DocumentPath, DocPath, ProjPath, Entry, Members : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
     I : Integer;
-    StillMember, WasMember : Boolean;
+    StillMember, WasMember, ProjSaved : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     DocumentPath := ExtractJsonValue(Params, 'document_path');
@@ -701,7 +744,11 @@ Begin
             Begin
                 Try Project.DM_RemoveSourceDocument(DocumentPath); Except End;
 
+                { Members as Altium holds them now. The reply carries them so }
+                { the server can take leftover sections out of the file: only }
+                { sections past this count, and only when the rest match it.  }
                 StillMember := False;
+                Members := '';
                 For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
                 Begin
                     DocPath := '';
@@ -709,17 +756,57 @@ Begin
                     If Doc <> Nil Then Try DocPath := Doc.DM_FullPath; Except End;
                     If UpperCase(DocPath) = UpperCase(DocumentPath) Then
                         StillMember := True;
+                    If DocPath <> '' Then
+                    Begin
+                        If Members <> '' Then Members := Members + ',';
+                        Members := Members + '"' + EscapeJsonString(DocPath) + '"';
+                    End;
                 End;
 
                 If StillMember Then
+                Begin
                     Result := BuildSuccessResponse(RequestId,
                         '{"success":false,"removed":false,"reason":"the '
                         + 'document is still a member of the project after '
-                        + 'DM_RemoveSourceDocument was called"}')
+                        + 'DM_RemoveSourceDocument was called"}');
+                    Exit;
+                End;
+
+                ProjPath := '';
+                Try ProjPath := Project.DM_ProjectFullPath; Except End;
+                ProjSaved := False;
+                Entry := '';
+                { ALTIUM'S WRITER LEAVES THE OLD SECTIONS. Measured on AD 26: }
+                { it rewrites [Document1]..[DocumentN] for the new count and   }
+                { leaves every section past N in the file, so a removal leaves }
+                { an entry (or a shifted duplicate) behind and a reopen loads  }
+                { it again. Saving more does not help. The file is read back,  }
+                { and a leftover is reported with the members, for the server  }
+                { to take out (eda_agent.prjpcb); never called removed here.   }
+                If ExtractJsonValue(Params, 'save_project') <> 'false' Then
+                    ProjSaved := SaveProjectFile(Project);
+                Entry := ProjectFileEntryFor(ProjPath, DocumentPath);
+
+                If Entry <> '' Then
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":false,"removed":true,"project_saved":'
+                        + BoolToJsonStr(ProjSaved) + ',"in_project_file":true'
+                        + ',"project_file_entry":"' + EscapeJsonString(Entry)
+                        + '","document_path":"' + EscapeJsonString(DocumentPath)
+                        + '","project_path":"' + EscapeJsonString(ProjPath)
+                        + '","members":[' + Members + ']'
+                        + ',"reason":"removed in memory, but the project file '
+                        + 'on disk still lists it, so it comes back when the '
+                        + 'project is reopened. Altium rewrites only as many '
+                        + '[DocumentN] sections as the project now has and leaves '
+                        + 'the rest; another save does not remove them."}')
                 Else
                     Result := BuildSuccessResponse(RequestId,
-                        '{"success":true,"removed":true,"document_path":"'
-                        + EscapeJsonString(DocumentPath) + '"}');
+                        '{"success":true,"removed":true,"project_saved":'
+                        + BoolToJsonStr(ProjSaved) + ',"in_project_file":false'
+                        + ',"document_path":"' + EscapeJsonString(DocumentPath)
+                        + '","project_path":"' + EscapeJsonString(ProjPath)
+                        + '","members":[' + Members + ']}');
             End;
         End
         Else
@@ -3878,11 +3965,9 @@ Begin
     { Add to project }
     Project.DM_AddSourceDocument(DestPath);
 
-    { Save the project to persist the change }
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Project');
-    AddStringParameter('FileName', Project.DM_ProjectFullPath);
-    RunProcess('WorkspaceManager:SaveObject');
+    { Save the project to persist the change. WorkspaceManager:SaveObject }
+    { acts on the focused object, which need not be this project.         }
+    SaveProjectFile(Project);
 
     Result := BuildSuccessResponse(RequestId, '{"success":true,"source_path":"' + EscapeJsonString(SourcePath) + '","dest_path":"' + EscapeJsonString(DestPath) + '"}');
 End;

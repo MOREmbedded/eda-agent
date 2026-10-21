@@ -150,6 +150,15 @@ def _unit_stamp_check(bridge: Any, loaded: Any) -> tuple[dict, list[str]]:
             "unstamped_units": unstamped, "stamps_compared_with": str(folder)}, warnings
 
 
+def _server_workspace_dir() -> str:
+    """The folder this server writes its requests to, or '' unknown."""
+    try:
+        from ..config import get_config
+        return str(get_config().workspace_dir)
+    except Exception:                              # noqa: BLE001
+        return ""
+
+
 def _other_servers() -> tuple[list, Optional[str]]:
     """Other eda-agent servers on this workspace, and the warning for them."""
     from .. import server_registry
@@ -612,10 +621,17 @@ def register_application_tools(mcp):
         """
         saved: Optional[bool] = None
         save_error = ""
+        project_dir, project_file, err = await _resolve_project_dir()
+        if err:
+            return err
         if save_first:
+            # THE PROJECT BEING CHECKPOINTED, not the workspace. save_all
+            # wrote every open document, other projects' included, to
+            # snapshot one (issue #94 reports unrelated sheets rewritten).
+            # Both this and the path lookup above take the focused project.
             try:
                 await get_bridge().send_command_async(
-                    "application.save_all", timeout=60.0
+                    "project.save", {}, timeout=60.0
                 )
                 saved = True
             except Exception as exc:  # noqa: BLE001 - reported, not raised
@@ -626,9 +642,6 @@ def register_application_tools(mcp):
                 # protecting.
                 saved = False
                 save_error = str(exc)
-        project_dir, project_file, err = await _resolve_project_dir()
-        if err:
-            return err
         from pathlib import Path
         store = _checkpoint_store()
         info = store.create(Path(project_dir), project_file=project_file or "", label=label)
@@ -736,7 +749,9 @@ def register_application_tools(mcp):
             ``bundled_script_version`` and ``bundled_script_path``,
             ``version_match``, ``altium_version``, ``message``,
             ``script_projects_open`` and ``script_location_match`` (False:
-            Altium loaded scripts from elsewhere), ``unit_stamps``,
+            Altium loaded scripts from elsewhere), ``loop_workspace_dir``
+            (the folder the answering loop takes requests from) and
+            ``server_workspace_dir`` (this server's), ``unit_stamps``,
             ``stale_units``, ``unstamped_units``, ``other_servers`` (other
             eda-agent servers on this workspace) and ``warnings``.
         """
@@ -816,6 +831,10 @@ def register_application_tools(mcp):
             "altium_version": result.get("altium_version") or "",
             "script_projects_open": loaded if isinstance(loaded, list) else None,
             "script_location_match": location_match,
+            # Whose loop answered: the folder it polls, as the script
+            # reports it. Empty from a script older than 2026.10.21.
+            "loop_workspace_dir": result.get("workspace_dir") or "",
+            "server_workspace_dir": _server_workspace_dir(),
             **stamp_fields,
             "other_servers": servers,
             "warnings": warnings,
@@ -898,11 +917,15 @@ def register_application_tools(mcp):
         file_path: str,
         name: Optional[str] = None,
         add_to_project: bool = True,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Create a new blank document of a given kind and save it to disk.
 
         Saved to `file_path` and, by default, added to the focused
-        project.
+        project, or to ``project_path`` when given. With several projects
+        open, name the project: the focused one is whichever was clicked
+        last, and a scratch sheet added to a production project stays in
+        it. ``member_of`` reads back which projects now list the file.
 
         Args:
             kind: Document kind, 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
@@ -911,8 +934,10 @@ def register_application_tools(mcp):
             file_path: Absolute path where the new document should live.
                 Use Windows backslashes.
             name: Optional display name. Defaults to the filename.
-            add_to_project: Attach the new file to the focused project.
-                Default True. Set False to leave it as a free document.
+            add_to_project: Attach the new file to a project. Default
+                True. Set False to leave it as a free document.
+            project_path: The .PrjPcb to attach it to. An unknown path is
+                refused before anything is created.
 
         The new document is focused, and ``focused`` says whether that
         took, since the next tool acts on the focused one. A save that
@@ -925,7 +950,7 @@ def register_application_tools(mcp):
 
         Returns:
             Dictionary with kind, file_path, saved, focused,
-            added_to_project.
+            added_to_project and member_of (project paths).
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -935,6 +960,8 @@ def register_application_tools(mcp):
         }
         if name:
             params["name"] = name
+        if project_path:
+            params["project_path"] = project_path
         result = await bridge.send_command_async(
             "application.create_document", params
         )

@@ -61,6 +61,10 @@ Begin
         '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
         ',"cast_errors":' + IntToStr(CastErrorCount) +
+        { The folder this loop takes requests from. Two script projects, or }
+        { two servers on one machine, are told apart by it: a request only  }
+        { reaches the loop whose folder it was written to (issue #94).      }
+        ',"workspace_dir":"' + EscapeJsonString(WorkspaceDir) + '"' +
         ',"script_projects":[' + ScriptProjects + ']}');
 End;
 
@@ -570,30 +574,118 @@ Begin
     End;
 End;
 
+{ The open project at ProjectPath, under either slash spelling, or Nil. }
+Function OpenProjectAt(Workspace : IWorkspace; ProjectPath : String) : IProject;
+Var
+    I : Integer;
+    Proj : IProject;
+    Want, Have : String;
+Begin
+    Result := Nil;
+    Want := UpperCase(CanonicalPathValue('path', ProjectPath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        Have := '';
+        Try Have := Proj.DM_ProjectFullPath; Except End;
+        If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+        Begin
+            Result := Proj;
+            Exit;
+        End;
+    End;
+End;
+
+{ The projects that list FilePath among their documents, as a JSON array    }
+{ of project paths. What membership IS, read back, rather than what the     }
+{ create call was asked to do.                                              }
+Function ProjectsHoldingJson(FilePath : String) : String;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have, ProjPath : String;
+Begin
+    Result := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Want := UpperCase(CanonicalPathValue('path', FilePath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        For J := 0 To Proj.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Proj.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Have := '';
+            Try Have := Doc.DM_FullPath; Except End;
+            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+            Begin
+                ProjPath := '';
+                Try ProjPath := Proj.DM_ProjectFullPath; Except End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '"' + EscapeJsonString(ProjPath) + '"';
+                Break;
+            End;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { Create a new blank document of a given kind (PCB, SCH, PCBLIB, SCHLIB,       }
-{ OUTPUTJOB, ...). Saves it to disk and optionally adds it to the focused      }
-{ project. Uses IClient.OpenNewDocument, the documented API for this.          }
+{ OUTPUTJOB, ...). Saves it to disk and optionally adds it to a project.       }
+{ Uses IClient.OpenNewDocument, the documented API for this.                   }
 {                                                                               }
 { Params: kind (required, e.g. 'PCB' or 'SCH'),                                }
 {         file_path (required, absolute path where the doc should live),       }
 {         name (optional display name, defaults to the filename),             }
-{         add_to_project (optional bool, defaults to true)                    }
+{         add_to_project (optional bool, defaults to true),                   }
+{         project_path (optional: the project to add it to, rather than       }
+{         whichever project has focus)                                         }
 {..............................................................................}
 
 Function App_CreateDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, DocName, AddStr : String;
+    FilePath, DocKind, DocName, AddStr, ProjectPath : String;
     ServerDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
-    AddToProject, Saved, Added, Focused : Boolean;
+    AddToProject, Saved, Added, Focused, ProjSaved : Boolean;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocName := ExtractJsonValue(Params, 'name');
     AddStr := ExtractJsonValue(Params, 'add_to_project');
     AddToProject := (AddStr = '') Or (AddStr = 'true');
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+
+    { THE PROJECT IS NAMED OR IT IS THE FOCUSED ONE, decided before anything }
+    { is created. A temporary sheet went into whichever project had focus,   }
+    { a production project, while the caller meant another (issue #94).     }
+    Project := Nil;
+    If AddToProject Then
+    Begin
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            If ProjectPath <> '' Then
+                Project := OpenProjectAt(Workspace, ProjectPath)
+            Else
+                Project := Workspace.DM_FocusedProject;
+        End;
+        If (Project = Nil) And (ProjectPath <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+                'No open project at ' + ProjectPath + '. Nothing was created.');
+            Exit;
+        End;
+    End;
 
     If DocKind = '' Then
     Begin
@@ -664,20 +756,15 @@ Begin
     { documented project-side API and the approach that works reliably        }
     { across workspace states.                                                }
     Added := False;
-    If AddToProject Then
+    ProjSaved := False;
+    If AddToProject And (Project <> Nil) Then
     Begin
-        Workspace := GetWorkspace;
-        If Workspace <> Nil Then
-        Begin
-            Project := Workspace.DM_FocusedProject;
-            If Project <> Nil Then
-            Begin
-                Try
-                    Project.DM_AddSourceDocument(FilePath);
-                    Added := True;
-                Except Added := False; End;
-            End;
-        End;
+        Try
+            Project.DM_AddSourceDocument(FilePath);
+            Added := True;
+        Except Added := False; End;
+        { Written now, or the add is gone after a reopen. }
+        If Added Then ProjSaved := SaveProjectFile(Project);
     End;
 
     { NOT SAVED IS NOT CREATED. It answered success with saved:false, which }
@@ -707,7 +794,9 @@ Begin
         ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
         ',"focused":' + BoolToJsonStr(Focused) +
-        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
+        ',"added_to_project":' + BoolToJsonStr(Added) +
+        ',"project_saved":' + BoolToJsonStr(ProjSaved) +
+        ',"member_of":[' + ProjectsHoldingJson(FilePath) + ']}');
 End;
 
 {..............................................................................}

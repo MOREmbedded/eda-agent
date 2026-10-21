@@ -192,6 +192,28 @@ def _same_plan(a, b) -> bool:
     return bool(a) and key(a) == key(b)
 
 
+async def _save_library(bridge, library_path) -> tuple[bool, str]:
+    """Write ONE library to disk: (saved, reason).
+
+    These passes used application.save_all, which writes every open
+    document, so fixing one library's designators rewrote sheets and
+    boards in other projects (issue #94). save_document measures the save
+    by the file getting newer, and file times tick every two seconds, so
+    a save right after the previous one is tried once more.
+    """
+    params = {"file_path": library_path} if library_path else {}
+    reply: dict = {}
+    for attempt in range(2):
+        reply = await bridge.send_command_async(
+            "application.save_document", params, timeout=_GEOMETRY_TIMEOUT)
+        reply = reply if isinstance(reply, dict) else {}
+        if reply.get("saved"):
+            return True, ""
+        if attempt == 0:
+            await asyncio.sleep(2.1)
+    return False, str(reply.get("reason") or "the library did not get newer on disk")
+
+
 async def _reload_library(bridge, library_path) -> bool:
     """Close and reopen the PcbLib so Altium rebuilds its caches from disk.
 
@@ -2696,9 +2718,9 @@ def register_library_tools(mcp):
         if res.get("converted"):
             resolved = res.get("library_path") or library_path
             try:
-                await bridge.send_command_async(
-                    "application.save_all", {}, timeout=_GEOMETRY_TIMEOUT)
-                saved = True
+                saved, why = await _save_library(bridge, resolved)
+                if not saved:
+                    res.setdefault("errors", []).append(f"save failed: {why}")
             except Exception as e:
                 res.setdefault("errors", []).append(f"save failed: {e}")
             await _reload_library(bridge, resolved)
@@ -2838,11 +2860,11 @@ def register_library_tools(mcp):
                 break
 
             try:
-                await bridge.send_command_async(
-                    "application.save_all", {}, timeout=_GEOMETRY_TIMEOUT)
-                saved = True
+                saved, why = await _save_library(bridge, resolved_path)
             except Exception as e:
-                failed.append({"footprint": "*", "error": f"save failed: {e}"})
+                saved, why = False, str(e)
+            if not saved:
+                failed.append({"footprint": "*", "error": f"save failed: {why}"})
                 break
 
             if not await _reload_library(bridge, resolved_path):
@@ -3545,8 +3567,11 @@ def register_library_tools(mcp):
                 name or index.
 
         Returns:
-            name, library_path, description, alias_name, part_count,
-            pin_count; ``designator`` and ``comment`` (text plus style);
+            name, library_path, description, alias_name, part_count (the
+            file reader's), part_count_live (the open symbol's),
+            parts_with_pins (highest part that has pins) and a
+            part_count_note when they disagree, pin_count;
+            ``designator`` and ``comment`` (text plus style);
             ``pins`` [{designator, name, electrical_type, x, y,
             orientation, hidden, label_hidden}]; ``parameters`` (name ->
             value); ``parameter_styles``; ``models`` [{model_name,

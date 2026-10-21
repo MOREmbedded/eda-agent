@@ -1057,7 +1057,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
-    First : Boolean;
+    First, Removed : Boolean;
     I : Integer;
     Victims : TInterfaceList;
 Begin
@@ -1114,9 +1114,21 @@ Begin
             Begin
                 FoundObj := Victims.Items[I];
                 If FoundObj = Nil Then Continue;
-                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-                    PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
-                Board.RemovePCBObject(FoundObj);
+                { A raise here used to end the request as an error with the  }
+                { objects already removed uncounted. Stop, and report both.  }
+                Removed := True;
+                Try
+                    PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                        PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
+                    Board.RemovePCBObject(FoundObj);
+                Except
+                    Removed := False;
+                End;
+                If Not Removed Then
+                Begin
+                    NoteDeleteFault('removing an object raised an error');
+                    Break;
+                End;
                 Inc(TotalMatched);
             End;
         Finally

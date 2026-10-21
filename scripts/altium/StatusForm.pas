@@ -1194,6 +1194,9 @@ Begin
     { out on a legitimately-slow handler. Delete only AFTER writing the       }
     { response, so at no point are both files missing.                        }
     StartProgress(RequestId);
+    LastErrorId := '';
+    LastErrorCode := '';
+    LastErrorMsg := '';
     Try
         Try
             ResponseContent := ProcessCommand(Command, Params, RequestId);
@@ -1263,6 +1266,11 @@ Begin
         DashIsError := True;
         DashCode    := ExtractJsonValue(DashErrPayload, 'code');
         DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+        { The message as the handler wrote it, when this reply is the error }
+        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
+        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
+            And (LastErrorMsg <> '') Then
+            DashDetail := LastErrorMsg;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then
