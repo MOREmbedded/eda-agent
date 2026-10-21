@@ -552,3 +552,9 @@ Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any damage to your designs, projects, data, or installation.
 
 This project is not affiliated with, endorsed by, or sponsored by Altium Limited, the KiCad project, or EasyEDA. "Altium" and "Altium Designer" are trademarks of Altium Limited; "KiCad" and "EasyEDA" are trademarks of their respective owners. `eda-agent` is an independent community tool that interoperates with each of these applications through its own published API: Altium Designer via its scripting API, KiCad via its IPC API and command line, and EasyEDA Pro via its extension API.
+
+## About
+
+eda-agent was created and is maintained by [George Saliba](https://salitronic.com), an independent electronics design engineer. Thanks to everyone who has contributed, see the [contributors](https://github.com/salitronic/eda-agent/graphs/contributors).
+
+If you need hardware designed, I take on design work, see [salitronic.com](https://salitronic.com).
