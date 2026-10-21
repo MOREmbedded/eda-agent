@@ -24,6 +24,8 @@ import time
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable
 
+from .atomicfile import discard, replace_with_retry
+
 _HEADER = re.compile(r"^\[(?P<name>[^\]\r\n]+)\]\s*$")
 _DOCUMENT = re.compile(r"^Document(?P<n>\d+)$", re.IGNORECASE)
 _BOM = b"\xef\xbb\xbf"
@@ -154,7 +156,11 @@ def prune_stale_documents(project_path: str, members: Iterable[str],
     shutil.copy2(path, backup)
     tmp = path.with_name(path.name + ".eda-tmp")
     tmp.write_bytes((_BOM if bom else b"") + new_text.encode("utf-8"))
-    os.replace(tmp, path)
+    try:
+        replace_with_retry(tmp, path)
+    except OSError:
+        discard(tmp)
+        raise
     return {"pruned": len(stale),
             "removed_sections": [f"Document{d[0]}" for d in stale],
             "removed_paths": [d[3] for d in stale],
