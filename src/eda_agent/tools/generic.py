@@ -802,15 +802,21 @@ def register_generic_tools(mcp):
     async def proj_run_erc() -> dict[str, Any]:
         """Run Electrical Rules Check on the focused project.
 
-        Compiles the project first (required), then runs ERC.
-        Call ``proj_get_erc_violations()`` afterwards to retrieve the
-        structured list of violations.
+        Compiles the project first (required), runs ERC, and returns
+        what it found, the same list ``proj_get_erc_violations`` reads.
 
         Returns:
-            Dictionary confirming ERC execution
+            ``violation_count`` and ``violations`` (first 100): each with
+            its kind, document, detail and the related objects, whose
+            cross-probe string names the exact pin or net.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.run_erc", {})
+        # A script from before 2026.10.21 answers the run with a message
+        # only; read the list it left behind instead of returning nothing.
+        if isinstance(result, dict) and "violation_count" not in result:
+            result = await bridge.send_command_async(
+                "generic.get_erc_violations", {})
         return result
 
     @mcp.tool()

@@ -2084,10 +2084,10 @@ Begin
         // clutters the UI and breaks project-member semantics.
         //
         // Instead, only iterate documents that SchServer already has in
-        // memory. If a project sheet isn't loaded (DM_Compile didn't wake
-        // it up for some reason), silently skip it. The user can open it
-        // manually in Altium and re-run the query.
-        SchDoc := SchServer.GetSchDocumentByPath(FilePath);
+        // memory. A project sheet that isn't loaded (DM_Compile didn't wake
+        // it up for some reason) is skipped, and ProjectSheet counts it so
+        // the reply says so; proj_load_sheets loads them.
+        SchDoc := ProjectSheet(FilePath);
         If SchDoc = Nil Then Continue;
 
         JsonItems := JsonItems + ProcessSchDocObjects(SchDoc, ObjTypeInt,
@@ -3225,41 +3225,6 @@ Begin
 End;
 
 {..............................................................................}
-{ Run Electrical Rules Check on the focused project                          }
-{ Compiles the project then runs ERC via the DM API.                         }
-{..............................................................................}
-
-Function Gen_RunERC(Params : String; RequestId : String) : String;
-Var
-    Workspace : IWorkspace;
-    Project : IProject;
-Begin
-    Workspace := GetWorkspace;
-    If Workspace = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
-        Exit;
-    End;
-
-    Project := Workspace.DM_FocusedProject;
-    If Project = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
-        Exit;
-    End;
-
-    // Compile the project first (required before ERC)
-    SmartCompile(Project);
-
-    // Run ERC via RunProcess
-    ResetParameters;
-    RunProcess('Sch:ERC');
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"message":"ERC completed on project"}');
-End;
-
-{..............................................................................}
 { Highlight a net by name in the active document (schematic or PCB)          }
 {..............................................................................}
 
@@ -3920,6 +3885,40 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(VCount) +
         ',"violations":[' + JsonItems + ']}');
+End;
+
+{..............................................................................}
+{ Run Electrical Rules Check on the focused project and return what it found }
+{ Compiles first (required), runs Sch:ERC, then answers with the violation   }
+{ list. It used to answer "ERC completed" and nothing else, so a caller      }
+{ reading violation_count off the run got none. Defined after                }
+{ Gen_GetErcViolations because DelphiScript has no forward declarations.     }
+{..............................................................................}
+
+Function Gen_RunERC(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
+        Exit;
+    End;
+
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Exit;
+    End;
+
+    SmartCompile(Project);
+    ResetParameters;
+    RunProcess('Sch:ERC');
+
+    Result := Gen_GetErcViolations(Params, RequestId);
 End;
 
 {..............................................................................}
@@ -6435,8 +6434,9 @@ Begin
 
             FilePath := Doc.DM_FullPath;
             // Don't force-open, that creates free documents. Skip
-            // sheets that aren't currently loaded into SchServer.
-            SchDoc := SchServer.GetSchDocumentByPath(FilePath);
+            // sheets that aren't currently loaded into SchServer;
+            // ProjectSheet counts them for the reply.
+            SchDoc := ProjectSheet(FilePath);
             If SchDoc = Nil Then Continue;
 
             Iterator := SchDoc.SchIterator_Create;
@@ -12325,7 +12325,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
         SheetName := '';
         Try SheetName := Document.DM_FileName; Except End;

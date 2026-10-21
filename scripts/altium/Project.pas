@@ -2088,8 +2088,9 @@ Begin
 
             { Don't force-open, RunProcess Client:OpenDocument strips
               project association and creates a free document in the UI.
-              Skip sheets that aren't currently loaded. }
-            SchDoc := SchServer.GetSchDocumentByPath(FilePath);
+              Skip sheets that aren't currently loaded; ProjectSheet counts
+              them, so the reply says how many were left out. }
+            SchDoc := ProjectSheet(FilePath);
             If SchDoc = Nil Then Continue;
 
             Inc(ProcessedDocs);
@@ -2722,7 +2723,7 @@ Var
     IniFile : TIniFile;
     FoundContainerName, ContainerType, RelativePath, OutputDir : String;
     G, J : Integer;
-    Found : Boolean;
+    Found, OutJobOpened, OutJobActive : Boolean;
     OutJobDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
@@ -2767,18 +2768,37 @@ Begin
         Exit;
     End;
 
-    { Open/focus the OutJob document }
-    Try
-        If Not Client.IsDocumentOpen(OutJobPath) Then
+    { The container writes nothing unless the OutJob is the ACTIVE document: }
+    { focused but not shown, it ran cleanly and wrote 0 files (AD25, AD26).  }
+    { Open it the way the Projects panel does, then show it, then focus it.  }
+    OutJobOpened := False;
+    OutJobDoc := Nil;
+    Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+    If OutJobDoc = Nil Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', OutJobPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+        If OutJobDoc = Nil Then
         Begin
-            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
-        End
-        Else
-        Begin
-            OutJobDoc := Client.GetDocumentByPath(OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
+            Try OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath); Except OutJobDoc := Nil; End;
         End;
+        OutJobOpened := OutJobDoc <> Nil;
+    End;
+    If OutJobDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(OutJobDoc); Except End;
+        Try OutJobDoc.Focus; Except End;
+    End;
+    OutJobActive := False;
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+            If Workspace.DM_FocusedDocument <> Nil Then
+                OutJobActive := UpperCase(Workspace.DM_FocusedDocument.DM_FullPath)
+                    = UpperCase(OutJobPath);
     Except
     End;
 
@@ -2870,7 +2890,10 @@ Begin
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
-        ',"output_dir":"' + EscapeJsonString(OutputDir) + '"}');
+        ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
+        ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
+        ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
+        ',"outjob_active":' + BoolToJsonStr(OutJobActive) + '}');
 End;
 
 {..............................................................................}

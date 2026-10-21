@@ -1006,6 +1006,8 @@ Begin
         Exit;
     End;
 
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -1019,6 +1021,7 @@ Begin
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
     End;
+    Result := SheetCoverage(Result);
 End;
 
 {..............................................................................}

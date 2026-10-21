@@ -1137,6 +1137,13 @@ def register_project_tools(mcp):
         elsewhere reads as ``success: false``, and ``reason`` says what
         was examined.
 
+        The OutJob is opened if needed and made the ACTIVE document
+        first: Altium writes nothing for a container whose OutJob is
+        not active. A dialog Altium raises during the run (an error
+        after the files are out, say) comes back as ``dialog`` with the
+        files found so far, not as a bare failure; close it before the
+        next call.
+
         Args:
             container_name: Name of the output container to execute
             outjob_path: Path to the .OutJob file. If omitted, uses the
@@ -1158,10 +1165,63 @@ def register_project_tools(mcp):
         if outjob_path:
             params["outjob_path"] = outjob_path
         started_at = _time.time()
-        result = await bridge.send_command_async(
-            "project.run_outjob", params, timeout=120.0
-        )
+        result = await _send_run(bridge, params, 120.0)
         return _judge_outjob_run(result, started_at, fresh_window_seconds)
+
+    async def _send_run(bridge, params, timeout):
+        """One container run. A dialog Altium raises during or after the
+        run comes back as a reply to judge, not an exception: the output is
+        often written already (a NullReference error after a full Gerber
+        set, 2026-10-21), and only the folder can say so."""
+        from ..bridge.exceptions import AltiumTimeoutError
+
+        try:
+            return await bridge.send_command_async(
+                "project.run_outjob", params, timeout=timeout)
+        except AltiumTimeoutError as exc:
+            dialogs = (exc.details or {}).get("dialogs")
+            if not dialogs:
+                raise
+            outjob = params.get("outjob_path", "")
+            return {
+                "process_issued": True,
+                "container_name": params["container_name"],
+                "output_dir": _outjob_output_dir(
+                    outjob, params["container_name"]) if outjob else "",
+                "outjob_path": outjob,
+                "dialog": dialogs.get("summary", ""),
+                "dialog_message": [line for d in dialogs.get("dialogs", [])
+                                   for line in d.get("message", [])][:6],
+            }
+
+    def _outjob_output_dir(outjob_path, container_name):
+        """The container's output folder, read from the OutJob as the
+        handler reads it: the medium's index J in its OutputGroup picks
+        OutputBasePathJ in PublishSettings, relative to the OutJob."""
+        import configparser
+        from pathlib import Path
+
+        ini = configparser.ConfigParser(interpolation=None, strict=False)
+        ini.optionxform = str
+        try:
+            ini.read(outjob_path, encoding="utf-8-sig")
+        except (OSError, configparser.Error, UnicodeDecodeError):
+            return ""
+        for section in ini.sections():
+            if not section.startswith("OutputGroup"):
+                continue
+            j = 1
+            while ini.has_option(section, f"OutputMedium{j}"):
+                if ini.get(section, f"OutputMedium{j}") == container_name:
+                    rel = ini.get("PublishSettings", f"OutputBasePath{j}",
+                                  fallback="")
+                    if not rel:
+                        return ""
+                    base = (Path(rel) if len(rel) >= 2 and rel[1] == ":"
+                            else Path(outjob_path).parent / rel)
+                    return str(base) + "\\"
+                j += 1
+        return ""
 
     # Shared by the three OutJob tools, so they cannot disagree about what
     # "produced" means. Defined after proj_run_outjob in this scope, which
@@ -1211,8 +1271,25 @@ def register_project_tools(mcp):
         out["files_written"] = len(fresh)
         out["written"] = fresh[:50]
         out["success"] = bool(fresh)
+        if run.get("dialog"):
+            out["reason"] = (
+                f"Altium raised a dialog during the run and the bridge "
+                f"stopped waiting: {run['dialog']}. "
+                + (f"{len(fresh)} file(s) were written under {out_dir} "
+                   f"anyway. " if fresh else
+                   "Nothing new was found in the output folder. "
+                   if out_dir else
+                   "Pass outjob_path so the output folder can be checked. ")
+                + "Close the dialog (app_list_open_dialogs) before the "
+                  "next call")
+            return out
         if not fresh:
-            if not out_dir:
+            if run.get("outjob_active") is False:
+                out["reason"] = (
+                    "the container ran, but the OutJob was not the active "
+                    "document, and Altium writes nothing then. Make it "
+                    "active with app_set_active_document and run again")
+            elif not out_dir:
                 out["reason"] = (
                     "the container ran, but the OutJob gives it no output "
                     "path, so there was no folder to check and no file is "
@@ -1282,9 +1359,7 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-            run = await bridge.send_command_async(
-                "project.run_outjob", params, timeout=300.0,
-            )
+            run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
             out_dir = judged.get("output_dir")
@@ -1301,13 +1376,19 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files if include_files else [],
             }
-            if not entry["ok"]:
+            if not entry["ok"] or judged.get("dialog"):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
+            # A dialog blocks every later run; stop and say so.
+            if judged.get("dialog"):
+                break
 
         produced = [r for r in per_container if r["ok"]]
+        names = [c.get("name") if isinstance(c, dict) else str(c)
+                 for c in containers]
         return {
             "ok": bool(produced),
+            "not_run": names[len(per_container):],
             "containers_with_output": len(produced),
             "reason": "" if produced else (
                 "no container wrote a file under its output_dir; each "
@@ -1378,9 +1459,7 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-            run = await bridge.send_command_async(
-                "project.run_outjob", params, timeout=300.0,
-            )
+            run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
             out_dir = judged.get("output_dir")
@@ -1398,9 +1477,23 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files,
             }
-            if not entry["ok"]:
+            if not entry["ok"] or judged.get("dialog"):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
+            # A dialog blocks every later run, and the extras too.
+            if judged.get("dialog"):
+                return {
+                    "ok": False,
+                    "reason": ("stopped at " + name + ": "
+                               + entry.get("reason", "")),
+                    "outjob_path": outjob_path,
+                    "containers_run": [r["container"] for r in per_container],
+                    "not_run": [c.get("name") if isinstance(c, dict) else str(c)
+                                for c in containers][len(per_container):],
+                    "results": per_container,
+                    "extras": {},
+                    "all_files": sorted(set(all_files)),
+                }
 
         extras: dict[str, Any] = {}
         if include_step:

@@ -5509,6 +5509,8 @@ def register_library_tools(mcp):
                 (not its size). Altium 26.11 keeps this only while the
                 paste expansion is manual, so a rule-driven one is made
                 manual at its current value first, and ``note`` says so.
+                Before Altium Designer 26 the flag does not exist: the
+                write is refused per pad and reads give null.
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note``,

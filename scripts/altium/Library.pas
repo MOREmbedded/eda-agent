@@ -1948,7 +1948,7 @@ End;
 { not catch: the script halts in the debugger. Gate on the major version,   }
 { the way via templates are gated in PCB.pas; lower the bound once the flag }
 { is measured on 24 or 25.                                                  }
-Function PadPasteFlagSupported : Boolean;
+Function PadPasteFlagSupported(Dummy : Integer) : Boolean;
 Var
     Ver : String;
     Major : Integer;
@@ -1965,7 +1965,7 @@ End;
 Function PadPasteTopJson(Pad : IPCB_Pad) : String;
 Begin
     Result := 'null';
-    If Not PadPasteFlagSupported Then Exit;
+    If Not PadPasteFlagSupported(0) Then Exit;
     Try
         If Pad.GetState_IsTopPasteEnabled Then Result := 'true'
         Else Result := 'false';
@@ -11874,7 +11874,7 @@ Begin
                     { The top paste opening's on/off flag (issue #80). Set on
                       its own, apart from the expansion below. }
                     Str := LowerCase(ExtractJsonValue(Params, 'paste_top_enabled'));
-                    If ((Str = 'true') Or (Str = 'false')) And (Not PadPasteFlagSupported) Then
+                    If ((Str = 'true') Or (Str = 'false')) And (Not PadPasteFlagSupported(0)) Then
                     Begin
                         Ok := False;
                         If Pos('paste flag', Notes) = 0 Then

@@ -1279,6 +1279,40 @@ Begin
     Try Result := FileAge(ReportPath); Except Result := -1; End;
 End;
 
+{ AD25 writes the report into the project's output folder instead of beside }
+{ the board: "Design Rule Check - <board>.drc". '' when the board is in no  }
+{ open project.                                                              }
+Function DrcOutputsReportPath(Board : IPCB_Board) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    P, I : Integer;
+    BoardPath, OutDir : String;
+Begin
+    Result := '';
+    BoardPath := '';
+    Try BoardPath := Board.FileName; Except End;
+    If BoardPath = '' Then Exit;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Workspace.DM_Projects(P);
+        If Project = Nil Then Continue;
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+            If UpperCase(Project.DM_LogicalDocuments(I).DM_FullPath) = UpperCase(BoardPath) Then
+            Begin
+                OutDir := '';
+                Try OutDir := Project.DM_GetOutputPath; Except End;
+                If OutDir = '' Then Exit;
+                If Copy(OutDir, Length(OutDir), 1) <> '\' Then OutDir := OutDir + '\';
+                Result := OutDir + 'Design Rule Check - '
+                    + ChangeFileExt(ExtractFileName(BoardPath), '') + '.drc';
+                Exit;
+            End;
+    End;
+End;
+
 {..............................................................................}
 { PCB_RunDRC - Run design rule check, return violation count                  }
 {..............................................................................}
@@ -1374,9 +1408,10 @@ Var
     ViolationCount : Integer;
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
-    JsonItems, ReportPath, AllowStr : String;
+    JsonItems, ReportPath, AllowStr, OutputsPath : String;
     First, ReportPresent, AllowModal, ReportFresh : Boolean;
-    ReportBefore, ReportAfter : Integer;
+    ReportBefore, ReportAfter, OutputsBefore, OutputsAfter : Integer;
+    BoardDoc : IServerDocument;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1414,15 +1449,35 @@ Begin
     { missing file, so a report that appears during the call counts too.   }
     { File ages tick every two seconds, so a run that lands in the same     }
     { tick as the last one reads as not confirmed. That errs the safe way.  }
+    { Two places are watched: beside the board, and the project output     }
+    { folder where AD25 writes it. The one that changed is reported.       }
     ReportPath := '';
     Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
     ReportBefore := DrcReportAge(ReportPath);
+    OutputsPath := DrcOutputsReportPath(Board);
+    OutputsBefore := DrcReportAge(OutputsPath);
+
+    { PCB:DesignRuleCheck acts on the CURRENT board. The first run opens   }
+    { its report, which takes the focus, so every later run in a session   }
+    { checked nothing and returned the old report. Show the board first.   }
+    BoardDoc := Nil;
+    Try BoardDoc := Client.GetDocumentByPath(Board.FileName); Except BoardDoc := Nil; End;
+    If BoardDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(BoardDoc); Except End;
+    End;
 
     ResetParameters;
     RunProcess('PCB:DesignRuleCheck');
 
     ReportAfter := DrcReportAge(ReportPath);
     ReportFresh := (ReportAfter >= 0) And (ReportAfter > ReportBefore);
+    OutputsAfter := DrcReportAge(OutputsPath);
+    If (Not ReportFresh) And (OutputsAfter >= 0) And (OutputsAfter > OutputsBefore) Then
+    Begin
+        ReportFresh := True;
+        ReportPath := OutputsPath;
+    End;
 
     // Count violations by iterating
     ViolationCount := 0;
@@ -10964,13 +11019,16 @@ Begin
             Try
                 Via := Obj;
                 Inc(ViasTotal);
-                { Classify by start/stop layer -- through if Top to Bottom; }
+                { Classify by the layer span -- through if Top to Bottom;   }
                 { blind if one side is outer (Top or Bottom) but not both;  }
-                { buried if both endpoints are inner layers.                 }
-                If (Via.StartLayer = eTopLayer) And (Via.StopLayer = eBottomLayer) Then
+                { buried if both endpoints are inner layers. LowLayer and   }
+                { HighLayer are TLayer values. StartLayer / StopLayer are   }
+                { layer OBJECTS: compared with eTopLayer they never matched, }
+                { and every via was counted as buried.                       }
+                If (Via.LowLayer = eTopLayer) And (Via.HighLayer = eBottomLayer) Then
                     Inc(ViasThrough)
-                Else If (Via.StartLayer = eTopLayer) Or (Via.StartLayer = eBottomLayer)
-                     Or (Via.StopLayer = eTopLayer) Or (Via.StopLayer = eBottomLayer) Then
+                Else If (Via.LowLayer = eTopLayer) Or (Via.LowLayer = eBottomLayer)
+                     Or (Via.HighLayer = eTopLayer) Or (Via.HighLayer = eBottomLayer) Then
                     Inc(ViasBlind)
                 Else
                     Inc(ViasBuried);

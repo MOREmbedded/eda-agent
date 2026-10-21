@@ -1308,11 +1308,15 @@ End;
 { After the outline is rewritten: Altium's own refresh of the cached size,   }
 { as the community outline scripts do (PolygonReFitBO.pas). Apart from the  }
 { caller, so these two calls are the only new identifiers in one place.      }
+{ The layer stack regions (Board Planning Mode) are separate objects cut   }
+{ from the board shape. Without the rebuild they keep the OLD shape: a     }
+{ board reshaped from a copy of another kept that board's region.         }
 Procedure RefreshBoardOutline(Board : IPCB_Board);
 Begin
     Board.BoardOutline.SetState_XSizeYSize;
     Board.BoardOutline.GraphicallyInvalidate;
     Board.UpdateBoardOutline;
+    Board.RebuildSplitBoardRegions(True);
 End;
 
 { A polygon or board outline holds one segment past PointCount: the closing }

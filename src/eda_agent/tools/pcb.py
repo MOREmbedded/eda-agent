@@ -5388,7 +5388,12 @@ def register_pcb_tools(mcp):
             component_count, fill_count, text_count, polygon_count,
             unrouted_connections, total_trace_length_mils,
             board_width_mils, board_height_mils, board_area_sq_mils,
-            layer_count, and board_name
+            layer_count, and board_name. ``unrouted_connections``
+            counts the ratsnest lines stored on the board, not a
+            connectivity verdict, and stored lines can be out of date,
+            so it can disagree with the DRC's un-routed net check.
+            pcb_get_unrouted_nets with reanalyze=True re-derives them
+            first.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_board_statistics", {})

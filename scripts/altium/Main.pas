@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.20.3';
+    SCRIPT_VERSION = '2026.10.21.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -107,6 +107,11 @@ Var
     SaveScope : String;
     CleanLeftAlone : Integer;
     LastCompiledProject : IProject;
+    { Sheets a project-wide read asked for in the current request, and how }
+    { many were not loaded and so not read. Reset per request by           }
+    { ProcessCommand; see ProjectSheet and SheetCoverage.                  }
+    SheetsSeen : Integer;
+    SheetsSkipped : Integer;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -1635,6 +1640,49 @@ Begin
     Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
               ',"id":"' + RequestId + '","success":true,"data":' +
               Data + ',"error":null}';
+End;
+
+{..............................................................................}
+{ ProjectSheet - a project sheet for a project-wide read, counted.            }
+{                                                                              }
+{ SchServer.GetSchDocumentByPath returns Nil for a sheet the editor has not    }
+{ loaded, and every project loop skipped it with Continue. An audit over a    }
+{ partly loaded project then answered checked:0 / violations:0, the same as   }
+{ "looked and found nothing". Each lookup through here is counted, and        }
+{ SheetCoverage puts the counts on the reply at the one dispatch point, so a  }
+{ loop added later is covered without remembering to.                         }
+{..............................................................................}
+Function ProjectSheet(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    Inc(SheetsSeen);
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+    If Result = Nil Then Inc(SheetsSkipped);
+End;
+
+{ The reply with the sheet counts added when a project-wide read skipped a   }
+{ sheet. Only a success whose data is an object is touched; an error, or a   }
+{ reply that read no project sheet, goes back unchanged.                     }
+Function SheetCoverage(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If SheetsSkipped = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
+        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
+        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
+        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
+        + 'and were NOT read, so counts and findings cover only the rest. '
+        + 'Run proj_load_sheets and ask again."';
+    { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
 {..............................................................................}
