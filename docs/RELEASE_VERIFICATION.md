@@ -97,7 +97,7 @@ works elsewhere cannot be an undeclared identifier:
 | 36, designator mirror | `Location` written on a placed designator | yes, `SetSchProperty` | low |
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
-| 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | no, nowhere | low, written and read back live both ways; dropped silently unless the mask is manual |
+| 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | yes, `PCB_SetViaTenting` | low, written and read back live both ways; dropped silently unless the mask is manual |
 | 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
 | 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
 | 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
