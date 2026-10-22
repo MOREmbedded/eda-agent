@@ -1258,6 +1258,11 @@ main > section.full-bleed {
           style="font-weight:700;">?</button>
   <button class="iconbtn" id="theme-toggle"
           title="Toggle light / dark theme (T)" aria-label="Toggle theme"></button>
+  <select id="lang-select" class="iconbtn" aria-label="Language"
+          title="Language: follows Altium unless you pick one"
+          style="width:auto;padding:0 4px;">
+    <option value="auto">Altium</option>
+  </select>
 </header>
 
 <nav class="tabs" id="tabs">
@@ -1471,7 +1476,7 @@ main > section.full-bleed {
          propagation when the section was position:fixed. -->
     <div id="assembly-stage" style="flex:1 1 auto; min-height:0; position:relative; background:var(--bg); display:flex; overflow:hidden;">
       <div id="assembly-host" style="flex:1; min-width:0; min-height:0; overflow:auto; position:relative;">
-          <div class="empty" style="padding:24px;">Open a PCB and click <b>refresh</b> to load the assembly sequence.</div>
+          <div class="empty" data-i18n="whole" style="padding:24px;">Open a PCB and click <b>refresh</b> to load the assembly sequence.</div>
         </div>
         <div id="assembly-sidebar"
              style="width:420px; flex:0 0 420px; min-height:0;
@@ -1754,7 +1759,7 @@ main > section.full-bleed {
           </label>
           <span class="hint" id="lint-status"></span>
         </div>
-        <div id="lint-body"><div class="empty">Click "Run lint sweep" to run all <code>audit.*</code> checks (parametric validators, port direction, tented vias, near-miss connections, via antennas, etc) in one pass.</div></div>
+        <div id="lint-body"><div class="empty" data-i18n="whole">Click "Run lint sweep" to run all <code>audit.*</code> checks (parametric validators, port direction, tented vias, near-miss connections, via antennas, etc) in one pass.</div></div>
       </div>
     </div>
   </section>
@@ -1844,7 +1849,7 @@ main > section.full-bleed {
         <h4>Navigate</h4>
         <dl>
           <dt><kbd>/</kbd></dt><dd>focus search</dd>
-          <dt><kbd>1</kbd>-<kbd>9</kbd></dt><dd>switch tabs (Drawing - Status); <kbd>7</kbd> = Assembly, <kbd>0</kbd> also = Status</dd>
+          <dt><kbd>1</kbd>-<kbd>9</kbd></dt><dd data-i18n="whole">switch tabs (Drawing - Status); <kbd>7</kbd> = Assembly, <kbd>0</kbd> also = Status</dd>
           <dt><kbd>R</kbd></dt><dd>refresh current tab</dd>
           <dt><kbd>T</kbd></dt><dd>toggle theme</dd>
           <dt><kbd>Shift</kbd>+<kbd>L</kbd></dt><dd>run design-lint sweep (jumps to Status &rarr; Health)</dd>
@@ -10338,6 +10343,164 @@ window.addEventListener("DOMContentLoaded", function dlPlaceholder(){
     syncBackToTop();
   }
 });
+</script>
+<script>
+// Language. The dashboard follows the language Altium's interface is in
+// (/api/language reads Altium's own preference and Windows' language)
+// unless the user picks one. Labels are translated in place: the English
+// original of every text node and attribute is kept, so switching back
+// needs no reload, and content added later (a refreshed panel) is
+// translated as it arrives when its text is a known label.
+(function () {
+  "use strict";
+  var KEY = "eda-dashboard-lang";
+  var ATTRS = ["title", "placeholder", "aria-label"];
+  var table = {};
+  // Labels with {0}, {1} in them ("Filter to {0}") are messages the
+  // script builds around a value; each becomes a pattern that keeps the
+  // value and translates the words around it.
+  var patterns = [];
+  var sel = document.getElementById("lang-select");
+
+  function compile(t) {
+    patterns = [];
+    Object.keys(t).forEach(function (key) {
+      if (!/\{\d\}/.test(key)) return;
+      var order = [];
+      var src = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/\\\{(\d)\\\}/g, function (_, n) { order.push(n); return "(.+?)"; });
+      patterns.push({ re: new RegExp("^" + src + "$"), order: order, out: t[key] });
+    });
+  }
+
+  function stored() {
+    // ?lang=de in the address wins, so a link can open in a language.
+    var forced = new URLSearchParams(location.search).get("lang");
+    if (forced) return forced;
+    try { return localStorage.getItem(KEY) || "auto"; } catch (e) { return "auto"; }
+  }
+  function store(v) {
+    try { localStorage.setItem(KEY, v); } catch (e) { /* private window */ }
+  }
+  function tr(text) {
+    var key = text.trim();
+    if (!key) return null;
+    if (Object.prototype.hasOwnProperty.call(table, key)) {
+      return text.replace(key, table[key]);
+    }
+    for (var i = 0; i < patterns.length; i++) {
+      var m = patterns[i].re.exec(key);
+      if (!m) continue;
+      var p = patterns[i];
+      var out = p.out.replace(/\{(\d)\}/g, function (_, n) {
+        var at = p.order.indexOf(n);
+        return at < 0 ? "" : m[at + 1];
+      });
+      return text.replace(key, out);
+    }
+    return null;
+  }
+  function doText(node) {
+    if (node.__en === undefined) node.__en = node.nodeValue;
+    var out = tr(node.__en);
+    node.nodeValue = out === null ? node.__en : out;
+  }
+  function doElement(el) {
+    if (!el.__enAttrs) el.__enAttrs = {};
+    ATTRS.forEach(function (a) {
+      if (!el.hasAttribute(a) && !(a in el.__enAttrs)) return;
+      if (!(a in el.__enAttrs)) el.__enAttrs[a] = el.getAttribute(a);
+      var out = tr(el.__enAttrs[a]);
+      el.setAttribute(a, out === null ? el.__enAttrs[a] : out);
+    });
+  }
+  // A sentence broken up by inline elements (data-i18n="whole") is
+  // translated as one: its key has {0}, {1} where the elements are, and
+  // the translation puts the same elements back where its {n} are, since
+  // another language orders the sentence differently.
+  function doWhole(el) {
+    if (!el.__enParts) {
+      el.__enParts = [];
+      for (var c = el.firstChild; c; c = c.nextSibling) {
+        el.__enParts.push(c.nodeType === 1 ? c : (c.nodeValue || ""));
+      }
+    }
+    var elems = el.__enParts.filter(function (p) { return typeof p !== "string"; });
+    var n = 0;
+    var key = el.__enParts.map(function (p) {
+      return typeof p === "string" ? p : "{" + (n++) + "}";
+    }).join("").replace(/\s+/g, " ").trim();
+    var out = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+    while (el.firstChild) el.removeChild(el.firstChild);
+    if (out === null) {
+      el.__enParts.forEach(function (p) {
+        el.appendChild(typeof p === "string" ? document.createTextNode(p) : p);
+      });
+    } else {
+      out.split(/(\{\d\})/).forEach(function (bit) {
+        var m = /^\{(\d)\}$/.exec(bit);
+        if (m && elems[+m[1]]) el.appendChild(elems[+m[1]]);
+        else if (bit) el.appendChild(document.createTextNode(bit));
+      });
+    }
+    elems.forEach(walk);
+  }
+  function walk(root) {
+    if (root.nodeType === 3) { doText(root); return; }
+    if (root.nodeType !== 1 || root.tagName === "SCRIPT" ||
+        root.tagName === "STYLE" || root.tagName === "svg") return;
+    doElement(root);
+    if (root.getAttribute("data-i18n") === "whole") { doWhole(root); return; }
+    for (var c = root.firstChild; c; c = c.nextSibling) walk(c);
+  }
+  var observer = new MutationObserver(function (records) {
+    observer.disconnect();
+    records.forEach(function (r) {
+      r.addedNodes.forEach(function (n) { n.__en = undefined; walk(n); });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+  var latest = 0;
+  function apply(lang) {
+    var load = lang === "en" ? Promise.resolve({}) :
+      fetch("/api/i18n/" + encodeURIComponent(lang))
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .catch(function () { return {}; });
+    // The first table of a language is slow (it reads Altium's install),
+    // so a quick second pick can land first; only the last pick applies.
+    var mine = ++latest;
+    return load.then(function (t) {
+      if (mine !== latest) return;
+      table = t || {};
+      compile(table);
+      document.documentElement.lang = lang;
+      walk(document.body);
+    });
+  }
+  fetch("/api/language").then(function (r) { return r.json(); }).then(function (info) {
+    (info.available || []).forEach(function (l) {
+      var o = document.createElement("option");
+      o.value = l.code;
+      o.textContent = l.name;
+      sel.appendChild(o);
+    });
+    var auto = sel.options[0];
+    auto.textContent = "Altium (" + (info.name || info.language) + ")";
+    auto.title = info.why || "";
+    sel.value = stored();
+    if (sel.selectedIndex < 0) sel.value = "auto";
+    function current() {
+      return sel.value === "auto" ? (info.language || "en") : sel.value;
+    }
+    sel.addEventListener("change", function () {
+      store(sel.value);
+      apply(current());
+    });
+    apply(current()).then(function () {
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }).catch(function () { /* no language endpoint: stay English */ });
+})();
 </script>
 </body>
 </html>

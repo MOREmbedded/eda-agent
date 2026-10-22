@@ -1138,6 +1138,26 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e), "checks": []})
 
+    @app.route("/api/language")
+    def language() -> Response:
+        """The language Altium's interface is in, and the ones offered."""
+        from eda_agent.web import i18n
+        try:
+            info = i18n.altium_language()
+        except Exception as e:  # noqa: BLE001 - English is always right
+            info = {"language": "en", "why": f"not read: {e}"}
+        info["name"] = i18n.NAMES.get(info["language"], info["language"])
+        info["available"] = i18n.available()
+        return jsonify(info)
+
+    @app.route("/api/i18n/<lang>")
+    def i18n_table(lang: str) -> Response:
+        """{English label: translation} for one language."""
+        from eda_agent.web import i18n
+        if lang not in i18n.NAMES:
+            return jsonify({})
+        return jsonify(i18n.catalog(lang))
+
     @app.route("/api/artifacts")
     def artifacts() -> Response:
         """List recent files produced by tools (preview SVGs, exports).
