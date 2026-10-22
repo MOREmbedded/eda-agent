@@ -282,7 +282,7 @@ def test_stackup_ops_two_layer():
     assert [op["layer"] for op in ops] == ["TopLayer", "BottomLayer"]
     top = ops[0]
     assert top["name"] == "Top"
-    assert top["copper_thickness_mils"] == 1        # round(1.4)
+    assert top["copper_thickness_mils"] == 1.4      # not rounded to a mil
     assert top["dielectric_type"] == "core"
     assert top["dielectric_height_mils"] == 6
     assert top["dielectric_constant"] == 4.0

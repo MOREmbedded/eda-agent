@@ -4366,7 +4366,7 @@ Begin
         If NewName <> '' Then
             Try LayerObj.Name := NewName; Except End;
         If ThickStr <> '' Then
-            Try LayerObj.CopperThickness := MilsToCoord(StrToIntDef(ThickStr, 0)); Except End;
+            Try LayerObj.CopperThickness := MilsToCoordF(StrToFloatDef(ThickStr, 0)); Except End;
 
         If TypeStr = 'none' Then
             Try LayerObj.Dielectric.DielectricType := eNoDielectric; Except End
@@ -4378,7 +4378,7 @@ Begin
             Try LayerObj.Dielectric.DielectricType := eSurfaceMaterial; Except End;
 
         If HeightStr <> '' Then
-            Try LayerObj.Dielectric.DielectricHeight := MilsToCoord(StrToIntDef(HeightStr, 0)); Except End;
+            Try LayerObj.Dielectric.DielectricHeight := MilsToCoordF(StrToFloatDef(HeightStr, 0)); Except End;
         If ConstStr <> '' Then
             Try LayerObj.Dielectric.DielectricConstant := StrToFloatDef(ConstStr, 1.0); Except End;
         If Material <> '' Then
@@ -4420,7 +4420,7 @@ Begin
         Try ThickBack := LayerObj.CopperThickness / 10000; Except ThickBack := -1; End;
         If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
         AppliedJson := AppliedJson + '"copper_thickness_mils":' + FloatToJsonStr(ThickBack);
-        If Abs(ThickBack - StrToIntDef(ThickStr, 0)) > 0.01 Then
+        If Abs(ThickBack - StrToFloatDef(ThickStr, 0)) > 0.01 Then
         Begin
             If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
             RejectedJson := RejectedJson + '"copper_thickness_mils"';
@@ -4447,7 +4447,7 @@ Begin
         Try HeightBack := LayerObj.Dielectric.DielectricHeight / 10000; Except HeightBack := -1; End;
         If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
         AppliedJson := AppliedJson + '"dielectric_height_mils":' + FloatToJsonStr(HeightBack);
-        If Abs(HeightBack - StrToIntDef(HeightStr, 0)) > 0.01 Then
+        If Abs(HeightBack - StrToFloatDef(HeightStr, 0)) > 0.01 Then
         Begin
             If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
             RejectedJson := RejectedJson + '"dielectric_height_mils"';

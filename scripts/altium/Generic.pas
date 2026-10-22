@@ -5056,7 +5056,7 @@ End;
 Function Gen_SetSheetSize(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
-    StyleStr, OrientStr : String;
+    StyleStr, OrientStr, Data : String;
     CustomW, CustomH : Integer;
 Begin
     StyleStr := UpperCase(ExtractJsonValue(Params, 'style'));
@@ -5087,6 +5087,7 @@ Begin
         If StyleStr = '' Then
         Begin
             SchDoc.GraphicallyInvalidate;
+            MarkDocDirtyByPath(SchDoc.DocumentName);
             Result := BuildSuccessResponse(RequestId,
                 '{"success":true,"orientation":"' + EscapeJsonString(OrientStr) + '"}');
             Exit;
@@ -5107,7 +5108,10 @@ Begin
         Else If StyleStr = 'TABLOID' Then SchDoc.SheetStyle := eSheetTabloid
         Else If StyleStr = 'CUSTOM' Then
         Begin
-            SchDoc.SheetStyle := eSheetCustom;
+            { There is no eSheetCustom: naming it halted the script with
+              "Undeclared identifier". A custom size is a flag beside the
+              style, the way Altium's own template scripts set it. }
+            SchDoc.UseCustomSheet := True;
             If CustomW > 0 Then SchDoc.CustomX := MilsToCoord(CustomW);
             If CustomH > 0 Then SchDoc.CustomY := MilsToCoord(CustomH);
         End
@@ -5117,13 +5121,24 @@ Begin
                 'Unknown sheet style: ' + StyleStr);
             Exit;
         End;
+        { A named style is ignored while the custom flag is on. }
+        If StyleStr <> 'CUSTOM' Then SchDoc.UseCustomSheet := False;
     Finally
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     End;
+    { Without it SheetSizeX/Y still read the previous size (measured on AD
+      26.11); ExtractTemplate.pas calls it after the same writes. }
+    SchDoc.UpdateDocumentProperties;
     SchDoc.GraphicallyInvalidate;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"style":"' + EscapeJsonString(StyleStr) + '"}');
+    Data := '{"success":true,"style":"' + EscapeJsonString(StyleStr) + '"';
+    Try Data := Data + ',"use_custom":' + BoolToJsonStr(SchDoc.UseCustomSheet); Except End;
+    Try Data := Data + ',"custom_x":' + IntToStr(CoordToMils(SchDoc.GetState_CustomX))
+        + ',"custom_y":' + IntToStr(CoordToMils(SchDoc.GetState_CustomY)); Except End;
+    Try Data := Data + ',"frame_x":' + IntToStr(CoordToMils(SchDoc.SheetSizeX))
+        + ',"frame_y":' + IntToStr(CoordToMils(SchDoc.SheetSizeY)); Except End;
+    Result := BuildSuccessResponse(RequestId, Data + '}');
 End;
 
 {..............................................................................}
