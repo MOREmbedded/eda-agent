@@ -339,6 +339,8 @@ class AltiumBridge:
         # first successful command so a server restart can't strand a stale
         # recovery banner; steady-state healthy calls then touch no disk.
         self._stale_fault_checked = False
+        # The last non-ping command and when, for the FRAME_SHOWN trace line.
+        self._last_command: Optional[tuple] = None
 
     def _note_fault(self, workspace_dir, guidance: dict) -> None:
         """Persist a fault for the dashboard recovery banner (best-effort)."""
@@ -1020,6 +1022,36 @@ class AltiumBridge:
                    f"WITHDRAW id={request.id[:8]} cmd={request.command} "
                    f"withdrawn={withdrawn}")
 
+    def _reshow_hidden_frame(self, command: str, request_id: str) -> list:
+        """Show Altium's main window again if it is hidden. Never raises.
+
+        Run after every reply, keep-alive pings included, so a hidden
+        window comes back within one ping interval even when no tool is
+        called. Only after a reply: the loop answering means Altium is
+        neither starting up nor closing, the two times it hides its own
+        window. The FRAME_SHOWN line names the last command so the cause
+        can be found; UI tools log a UI line of their own.
+        """
+        if command not in ("application.ping", "application.stop_server"):
+            self._last_command = (command, time.time())
+        try:
+            from ..ui import windows
+            shown = windows.reshow_hidden_frames_of(
+                self.process_manager.STATUS_FORM_TITLE)
+        except Exception:                                # noqa: BLE001
+            return []
+        if shown:
+            last, at = (getattr(self, "_last_command", None)
+                        or ("none", time.time()))
+            _trace_log(
+                self.config.workspace_dir,
+                f"FRAME_SHOWN id={request_id[:8]} cmd={command} "
+                f"hwnd={','.join(hex(h) for h in shown)} last_cmd={last} "
+                f"last_cmd_age={time.time() - at:.0f}s")
+            logger.warning("Altium's main window was hidden; shown again "
+                           "after %s (last command %s)", command, last)
+        return shown
+
     def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
         """Execute a command synchronously (blocking)."""
         request = CommandRequest(command=command, params=params)
@@ -1051,11 +1083,19 @@ class AltiumBridge:
                 server_version=response.protocol_version,
             )
 
+        shown = self._reshow_hidden_frame(command, request.id)
+
         if response.success:
             logger.info("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
-            return self._maybe_attach_detach_hint(
-                command, _with_envelope_notes(response.data, response))
+            data = _with_envelope_notes(response.data, response)
+            if shown and isinstance(data, dict):
+                data = dict(data)
+                data["altium_window_shown_again"] = (
+                    "Altium's main window was hidden and has been shown "
+                    "again. bridge_trace.log has a FRAME_SHOWN line naming "
+                    "what ran before it.")
+            return self._maybe_attach_detach_hint(command, data)
 
         error = response.error or {}
         code = error.get("code", "UNKNOWN_ERROR")

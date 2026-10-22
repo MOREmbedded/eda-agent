@@ -21,6 +21,7 @@ nobody reaches one by accident while looking for the other.
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 from ..ui import controls, dialog_driver, dialog_report, menu, windows
@@ -99,7 +100,21 @@ def _altium_pid(reads_only: bool = False):
                       "candidate_pids": status.get("candidate_pids", [])}
     if not status.get("running") or not status.get("pid"):
         return None, {"ok": False, "reason": "Altium is not running"}
+    _trace_ui_call(sys._getframe(1).f_code.co_name)
     return int(status["pid"]), None
+
+
+def _trace_ui_call(name: str) -> None:
+    """Log a UI tool in bridge_trace.log, which only bridge commands
+    reached before. A hidden Altium window followed a menu walk once, and
+    the FRAME_SHOWN line can only point at what the trace holds."""
+    from ..bridge import get_bridge
+    from ..bridge.altium_bridge import _trace_log
+
+    try:
+        _trace_log(get_bridge().config.workspace_dir, f"UI tool={name}")
+    except Exception:                            # noqa: BLE001
+        pass
 
 
 def _resolve_dialog_control(pid, control_label: str, dialog_title: str):

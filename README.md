@@ -535,6 +535,8 @@ At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` in
 
 **Some Altium buttons don't respond while the server is running**: expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode within ~1 s of the last AI command; if a button is still unresponsive after that, call `app_detach` from the MCP client to fully release the scripting engine.
 
+**Altium's main window disappears while the status window stays up**: the main window has been found hidden, not minimized, with no taskbar button. The bridge checks after every reply, keep-alive pings included, and shows it again without taking the focus, so it comes back within about 30 s. Each time, `bridge_trace.log` gets a `FRAME_SHOWN` line naming the last command, and UI tools log `UI tool=<name>` lines so they can be named too. If it keeps happening, report that line as an issue.
+
 **Command timeouts on very large boards**: default is 10 s so stalls surface fast. Tools known to take longer (`app_save_all`, `pcb_get_unrouted_nets`, `stop_server`) set their own internal timeouts up to 60 s. If you hit a timeout on a custom long-running operation, embed the bridge directly and pass a higher `timeout=` to `send_command_async`. The polling loop itself adapts (10 ms active, 100 ms idle) so it doesn't add latency.
 
 ## License
