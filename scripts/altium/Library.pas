@@ -12117,7 +12117,13 @@ Var
     NTracks, NArcs, NRegions, NFills, NTexts, NBodies, NVias : Integer;
     RegionArcs, SegI : Integer;
     HeightMM, AreaMM2 : Double;
+    Body : IPCB_ComponentBody;
+    BodyModel : IPCB_Model;
+    BodyModelsJson, BodyIdStr, ModelFile : String;
+    ModelKind : Integer;
+    ModelRot, BodyTop, BodyStandoff : Double;
 Begin
+    BodyModelsJson := '';
     LibPath := ExtractJsonValue(Params, 'library_path');
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     If FpWanted = '' Then
@@ -12496,6 +12502,37 @@ Begin
                     If BodyLayersJson <> '' Then BodyLayersJson := BodyLayersJson + ',';
                     BodyLayersJson := BodyLayersJson + '"'
                         + EscapeJsonString(GetLayerString(Prim.Layer)) + '"';
+                    { The model behind the body, the members ReportComp3DModels.pas
+                      reads: its source file name, type (T3DModelType; 1 for a
+                      STEP model, measured on AD 26.11), rotation, heights. }
+                    Body := Prim;
+                    BodyModel := Nil;
+                    Try BodyModel := Body.Model; Except BodyModel := Nil; End;
+                    BodyIdStr := '';
+                    Try BodyIdStr := Body.Identifier; Except End;
+                    ModelFile := '';
+                    ModelKind := -1;
+                    ModelRot := 0;
+                    If BodyModel <> Nil Then
+                    Begin
+                        Try ModelFile := BodyModel.FileName; Except End;
+                        Try ModelKind := BodyModel.ModelType; Except End;
+                        Try ModelRot := BodyModel.Rotation; Except End;
+                    End;
+                    BodyTop := 0;
+                    BodyStandoff := 0;
+                    Try BodyTop := CoordToMM(Body.OverallHeight); Except End;
+                    Try BodyStandoff := CoordToMM(Body.StandoffHeight); Except End;
+                    If BodyModelsJson <> '' Then BodyModelsJson := BodyModelsJson + ',';
+                    BodyModelsJson := BodyModelsJson
+                        + '{"layer":"' + EscapeJsonString(GetLayerString(Prim.Layer)) + '"'
+                        + ',"identifier":"' + EscapeJsonString(BodyIdStr) + '"'
+                        + ',"has_model":' + BoolToJsonStr(BodyModel <> Nil)
+                        + ',"model_file":"' + EscapeJsonString(ModelFile) + '"'
+                        + ',"model_type":' + IntToStr(ModelKind)
+                        + ',"rotation":' + FloatToJsonStr(ModelRot)
+                        + ',"overall_height_mm":' + FloatToJsonStr(BodyTop)
+                        + ',"standoff_mm":' + FloatToJsonStr(BodyStandoff) + '}';
                 End;
                 Prim := GrpIter.NextPCBObject;
             End;
@@ -12512,6 +12549,7 @@ Begin
         ',"height_mm":' + FloatToJsonStr(HeightMM) +
         ',"bodies":' + IntToStr(NBodies) +
         ',"body_layers":[' + BodyLayersJson + ']' +
+        ',"body_models":[' + BodyModelsJson + ']' +
         ',"tracks":[' + TracksJson + ']' +
         ',"arcs":[' + ArcsJson + ']' +
         ',"regions":[' + RegionsJson + ']' +

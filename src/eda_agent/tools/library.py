@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..bridge.payload import payload_safe
+from ..fileio import pcblib_models
 from ..libimport import extract_cse_zip, inspect_cse_zip
 from ..library_db import (
     dblib_path_refusal, is_dblib_path, redact_connection_text, redact_reply,
@@ -5598,7 +5599,11 @@ def register_library_tools(mcp):
 
         Returns:
             {name, library_path, height_mm, bodies (a count),
-            body_layers (the layer of each body), tracks
+            body_layers (the layer of each body), body_models [{layer,
+            identifier, has_model, model_file (the file the model was
+            embedded from), model_type (Altium's T3DModelType; 1 for a
+            STEP model), rotation,
+            overall_height_mm, standoff_mm}], tracks
             [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
             layer_id, xc, yc, r, start, end, width}], regions and fills
             [{layer, layer_id, x1, y1, x2, y2, area and arc_edges
@@ -5611,6 +5616,72 @@ def register_library_tools(mcp):
         return await bridge.send_command_async(
             "library.get_footprint_primitives",
             {"footprint_name": footprint_name, "library_path": library_path})
+
+    @mcp.tool()
+    async def lib_extract_embedded_models(
+        library_path: str,
+        footprint_name: str = "",
+        model_names: Optional[list] = None,
+        out_dir: str = "",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Get back the ORIGINAL 3D model files (STEP) embedded in a .PcbLib.
+
+        Byte for byte the file Altium took in: each is written only when
+        its checksum equals the one Altium stored when it embedded it.
+        No Altium API saves an embedded model, so this reads the saved
+        library file directly, read only (it never writes the library).
+        A model added in Altium and not saved yet is not in the file.
+
+        With ``footprint_name``, Altium is asked which model files that
+        footprint's bodies use and only those are extracted; with
+        ``model_names``, those; otherwise every embedded model.
+
+        Args:
+            library_path: The .PcbLib on disk.
+            footprint_name: Extract only this footprint's models (asks
+                Altium, so the library must be reachable over the bridge).
+            model_names: Model file names, e.g. ["NE555DR.stp"].
+            out_dir: Folder to write to (default: the workspace's
+                models/<library name>).
+            overwrite: Replace files already there.
+
+        Returns:
+            ``written`` [{name, path, bytes, sha256, checksum_verified,
+            step_header, rotation_deg}], ``refused`` [{name, reason}],
+            ``not_in_saved_file`` (asked for, not in the saved file).
+        """
+        path = Path(library_path)
+        if not path.is_file():
+            return {"ok": False, "reason": f"no such library file: {library_path}"}
+        names = list(model_names or [])
+        asked_altium = None
+        if footprint_name:
+            prims = await get_bridge().send_command_async(
+                "library.get_footprint_primitives",
+                {"footprint_name": footprint_name, "library_path": str(path)})
+            if not isinstance(prims, dict) or "body_models" not in prims:
+                return {"ok": False, "reason": "Altium could not list the "
+                        "footprint's 3D bodies", "altium": prims}
+            from_altium = [b.get("model_file", "") for b in prims["body_models"]
+                           if b.get("has_model") and b.get("model_file")]
+            asked_altium = from_altium
+            if not from_altium:
+                return {"ok": False, "reason": f"{footprint_name} has no 3D "
+                        f"model, only simple bodies", "body_models": prims["body_models"]}
+            # Altium's names are Windows paths whatever runs this.
+            names += [re.split(r"[\\/]", n)[-1] for n in from_altium]
+        target = Path(out_dir) if out_dir else (
+            Path(get_bridge().config.workspace_dir) / "models" / path.stem)
+        try:
+            got = pcblib_models.extract_embedded_models(
+                path, target, names=names or None, overwrite=overwrite)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        if asked_altium is not None:
+            got["footprint"] = footprint_name
+            got["altium_model_files"] = asked_altium
+        return got
 
     async def _live_footprint(footprint_name: str, library_path: str,
                               courtyard_layer: str, assembly_layer: str):
@@ -5775,6 +5846,81 @@ def register_library_tools(mcp):
                     "b": {"footprint": footprint_b,
                           "library": model_b.source.get("library_path")},
                     "notes": sorted(set(notes_a + notes_b))})
+        return out
+
+    @mcp.tool()
+    async def lib_build_integrated_library(
+        package_path: str,
+        source_libraries: list[str],
+        install: bool = False,
+    ) -> dict[str, Any]:
+        """Package libraries into a LibPkg and compile it to an IntLib.
+
+        Through Altium, end to end: the .LibPkg is created when it does
+        not exist, each source library (.SchLib, .PcbLib, ...) is added to
+        it, and the package is compiled. The IntLib Altium writes to
+        "Project Outputs for <package>" is then looked for, and
+        ``built`` is true only when a NEW file is there, so a compile
+        that produced nothing is not reported as done. ``install`` adds
+        the IntLib to the installed libraries.
+
+        Args:
+            package_path: the .LibPkg to create or update (full path).
+            source_libraries: full paths of the libraries to package.
+            install: install the compiled IntLib.
+        """
+        import os
+        import time as _time
+
+        if Path(package_path).suffix.lower() != ".libpkg":
+            return {"success": False, "error": "BAD_PARAM",
+                    "reason": "package_path must be a .LibPkg"}
+        sources = [str(s) for s in (source_libraries or []) if str(s).strip()]
+        missing = [s for s in sources if not os.path.isfile(s)]
+        if not sources or missing:
+            return {"success": False, "error": "MISSING_SOURCES",
+                    "reason": ("no source libraries given" if not sources
+                               else "not found: " + ", ".join(missing))}
+        bridge = get_bridge()
+        steps: dict[str, Any] = {}
+        created = not os.path.isfile(package_path)
+        if created:
+            os.makedirs(os.path.dirname(package_path) or ".", exist_ok=True)
+            steps["create"] = await bridge.send_command_async(
+                "project.create", {"project_path": package_path,
+                                   "project_type": "IntegratedLibrary"})
+        else:
+            steps["open"] = await bridge.send_command_async(
+                "project.open", {"project_path": package_path})
+        added = []
+        for src in sources:
+            reply = await bridge.send_command_async(
+                "project.add_document",
+                {"document_path": src, "project_path": package_path})
+            added.append({"library": src,
+                          "ok": bool(isinstance(reply, dict)
+                                     and reply.get("success", True))})
+        out_dir = Path(package_path).parent / \
+            f"Project Outputs for {Path(package_path).stem}"
+        intlib = out_dir / f"{Path(package_path).stem}.IntLib"
+        before = intlib.stat().st_mtime if intlib.is_file() else None
+        started = _time.time()
+        steps["compile"] = await bridge.send_command_async(
+            "project.compile", {"project_path": package_path}, timeout=300.0)
+        after = intlib.stat().st_mtime if intlib.is_file() else None
+        built = after is not None and (before is None or after > before)
+        out: dict[str, Any] = {
+            "success": built, "built": built, "created": created,
+            "package_path": package_path, "added": added,
+            "intlib": str(intlib) if intlib.is_file() else None,
+            "intlib_bytes": intlib.stat().st_size if intlib.is_file() else None,
+            "compile_seconds": round(_time.time() - started, 1)}
+        if not built:
+            out["reason"] = (f"no new IntLib at {intlib} after the compile; "
+                             f"read Altium's Messages panel for the errors")
+        elif install:
+            out["install"] = await bridge.send_command_async(
+                "library.install_library", {"library_path": str(intlib)})
         return out
 
     @mcp.tool()

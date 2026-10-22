@@ -158,6 +158,13 @@ def model_from_live(pads_reply: dict, prims_reply: dict,
         by1 = max(b[3] for b in copper)
     else:
         bx0 = by0 = bx1 = by1 = 0.0
+    # The footprint's Height field is often left at 0 while a 3D body says
+    # how tall the part is; the taller of the two is the part's height.
+    height = float((prims_reply or {}).get("height_mm") or 0.0)
+    standoff = 0.0
+    for body in (prims_reply or {}).get("body_models") or []:
+        height = max(height, float(body.get("overall_height_mm") or 0.0))
+        standoff = max(standoff, float(body.get("standoff_mm") or 0.0))
     one = next((p for p in pads if p.number == "1"), pads[0] if pads else None)
     name = str((prims_reply or {}).get("name") or (pads_reply or {}).get("name")
                or "footprint")
@@ -167,8 +174,7 @@ def model_from_live(pads_reply: dict, prims_reply: dict,
         courtyard=courtyard,
         ref=Text(layer="assembly", text="", x=0.0, y=0.0, height=0.5,
                  thickness=0.1),
-        body=Body3D(bx0, by0, bx1, by1, 0.0,
-                    float((prims_reply or {}).get("height_mm") or 0.0)),
+        body=Body3D(bx0, by0, bx1, by1, standoff, height),
         pin1=(one.x, one.y) if one else (0.0, 0.0),
         origin="footprint origin",
         source={"library_path": (prims_reply or {}).get("library_path"),

@@ -98,6 +98,16 @@ def test_compare_names_what_changed_and_nothing_else():
     assert list(out["layers_differing"]) == ["courtyard"]
 
 
+def test_a_3d_body_sets_the_height_when_the_field_is_zero():
+    """Measured: a footprint read height_mm 0 with an 11 mm STEP body."""
+    prims = copy.deepcopy(PRIMS)
+    prims["height_mm"] = 0
+    prims["body_models"] = [{"has_model": True, "model_type": 1,
+                             "overall_height_mm": 11.0, "standoff_mm": 0.127}]
+    model = model_from_live(PADS, prims, MECH)
+    assert (model.body.z0, model.body.z1) == (0.127, 11.0)
+
+
 def test_an_empty_footprint_draws_rather_than_failing():
     """A library's blank PCBComponent_1 raised 'min() arg is empty'."""
     svg = render_svg(model_from_live({"pads": []}, {"tracks": []}, []))
