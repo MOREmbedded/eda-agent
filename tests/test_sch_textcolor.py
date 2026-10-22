@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+# Copyright (c) 2026 Terrence Henry
 """AD21 TextColor crash: exercise the real guards, not a permissive mock API."""
 from __future__ import annotations
 

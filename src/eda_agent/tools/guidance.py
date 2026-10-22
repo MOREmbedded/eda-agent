@@ -280,6 +280,36 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "reply before trusting the synced count."),
     },
     {
+        "task": "Relink placed parts to another library, database row or "
+                "footprint library",
+        "keywords": ("relink", "link", "dblib", "database", "intlib",
+                     "schlib", "library", "footprint", "pcblib", "point",
+                     "repoint", "migrate", "move", "row"),
+        "when": (("relink",), ("database", "link"), ("dblib",),
+                 ("link", "library"), ("footprint", "library")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["sch_relink_components", "lib_dblib_search",
+                "app_update_from_libraries"],
+        "avoid": [
+            ("app_set_dialog_control", "the Properties panel changes one "
+                                       "part at a time and cannot be read "
+                                       "back; driving Altium's dialogs is a "
+                                       "last resort"),
+            ("obj_modify", "one field at a time with no check that the "
+                           "target exists; a half-written link is the Not "
+                           "Found state"),
+        ],
+        "note": (
+            "sch_relink_components checks the target first (the symbol in "
+            "a SchLib/IntLib, the row in a DbLib), fills a DbLib row's own "
+            "symbol and footprint, writes every link field together and "
+            "reads each back, with dry_run to preview. It changes the link "
+            "only; app_update_from_libraries then brings the drawn symbol "
+            "and parameters in line. proj_replace_component swaps the "
+            "symbol itself."),
+    },
+    {
         "task": "Mirror or flip a placed schematic component",
         "keywords": ("mirror", "mirrored", "ismirrored", "flip",
                      "horizontal", "horizontally"),

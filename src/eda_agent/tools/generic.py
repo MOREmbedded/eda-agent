@@ -2028,6 +2028,142 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_relink_components(
+        designators: list[str],
+        library_path: str = "",
+        lib_ref: str = "",
+        dblib_table: str = "",
+        dblib_key: str = "",
+        footprint: str = "",
+        footprint_library: str = "",
+        sheet_path: str = "",
+        all_sheets: bool = False,
+        dry_run: bool = False,
+        verify: bool = True,
+    ) -> dict[str, Any]:
+        """Point placed parts at another library, without Altium's dialog.
+
+        The kind follows ``library_path``: a .SchLib or .IntLib links the
+        symbol (``lib_ref``) from that file; a .DbLib links a database row
+        (``dblib_table`` and ``dblib_key``, the row's key). ``footprint``
+        and ``footprint_library`` repoint the current footprint model.
+        Only the link changes: the symbol drawn on the sheet stays until
+        Altium updates from the library (``app_update_from_libraries``);
+        ``proj_replace_component`` swaps the symbol itself.
+
+        Checked FIRST, so nothing changes on a bad target: a SchLib/IntLib
+        given by full path must contain ``lib_ref``; a DbLib row must
+        exist, and its own symbol and footprint fill ``lib_ref`` and
+        ``footprint`` when they are not given. Every part is read back:
+        ``parts`` has each one's link ``before`` and ``after``, and a
+        field that did not take is named in ``not_applied``.
+
+        Args:
+            designators: the parts to relink, e.g. ["R1", "R2"].
+            library_path: target .SchLib, .IntLib or .DbLib (full path to
+                verify; a bare file name is written without checking).
+            lib_ref: the symbol name in that library.
+            dblib_table: DbLib table.
+            dblib_key: the row's key, which becomes the Design Item ID.
+            footprint: footprint name for the current footprint model.
+            footprint_library: .PcbLib the footprint model points at.
+            sheet_path: open .SchDoc; empty = the focused sheet.
+            all_sheets: every open schematic of the focused project.
+            dry_run: report what would change, write nothing.
+            verify: check the target before writing (default True).
+        """
+        import os
+
+        names = [d.strip() for d in (designators or []) if str(d).strip()]
+        if not names:
+            return {"success": False, "error": "MISSING_PARAM",
+                    "reason": "designators is required"}
+        if any("," in d for d in names):
+            return {"success": False, "error": "BAD_PARAM",
+                    "reason": "a designator cannot contain a comma"}
+        ext = os.path.splitext(library_path)[1].lower()
+        kind = {".schlib": "schlib", ".intlib": "intlib",
+                ".dblib": "dblib"}.get(ext, "")
+        if library_path and not kind:
+            return {"success": False, "error": "BAD_PARAM",
+                    "reason": "library_path must be a .SchLib, .IntLib or "
+                              ".DbLib"}
+        if kind == "dblib" and not (dblib_table and dblib_key):
+            return {"success": False, "error": "MISSING_PARAM",
+                    "reason": "a .DbLib link needs dblib_table and dblib_key"}
+        bridge = get_bridge()
+        row = None
+        if kind == "dblib" and verify and os.path.isabs(library_path):
+            row = await bridge.send_command_async(
+                "library.get_dblib_record",
+                {"library_path": library_path, "table": dblib_table,
+                 "key": dblib_key}, timeout=120.0)
+            if not (isinstance(row, dict) and row.get("found")):
+                return {"success": False, "error": "DBLIB_ROW_NOT_FOUND",
+                        "reason": (f"{dblib_key!r} is not a row of "
+                                   f"{dblib_table!r} in {library_path}; "
+                                   f"nothing was changed"),
+                        "lookup": row}
+            lib_ref = lib_ref or str(row.get("symbol_ref") or "")
+            prints = row.get("footprints") or []
+            if not footprint and prints:
+                footprint = str(prints[0].get("ref") or "")
+                footprint_library = footprint_library or str(
+                    prints[0].get("library") or "")
+        params = {
+            "designators": ",".join(names), "kind": kind,
+            "library": library_path, "lib_ref": lib_ref,
+            "design_item_id": dblib_key if kind == "dblib" else "",
+            "table": dblib_table, "footprint": footprint,
+            "footprint_library": footprint_library,
+            "verify": "true" if verify else "false",
+            "dry_run": "true" if dry_run else "false",
+        }
+        sheets = [sheet_path] if sheet_path else [""]
+        if all_sheets:
+            docs = await bridge.send_command_async("project.get_documents", {})
+            docs = docs.get("documents", docs) if isinstance(docs, dict) else docs
+            sheets = [d.get("file_path") for d in (docs or [])
+                      if isinstance(d, dict)
+                      and str(d.get("document_kind", "")).upper() == "SCH"]
+        replies, found = [], set()
+        for sheet in sheets:
+            try:
+                reply = await bridge.send_command_async(
+                    "generic.relink_components",
+                    {**params, "sheet_path": sheet or ""})
+            except Exception as exc:                 # noqa: BLE001
+                if not all_sheets:
+                    raise
+                reply = {"success": False, "sheet_path": sheet,
+                         "error": getattr(exc, "code", type(exc).__name__),
+                         "reason": str(exc)}
+            replies.append(reply)
+            for part in (reply or {}).get("parts", []) or []:
+                found.add(part.get("designator"))
+        out = {
+            "success": all(r.get("success") for r in replies) and bool(found),
+            "dry_run": dry_run, "kind": kind or None,
+            "lib_ref": lib_ref or None, "footprint": footprint or None,
+            "matched": sum(int(r.get("matched", 0)) for r in replies),
+            "changed": sum(int(r.get("changed", 0)) for r in replies),
+            "failed": sum(int(r.get("failed", 0)) for r in replies),
+            "footprint_models_added": sum(
+                int(r.get("footprint_models_added", 0)) for r in replies),
+            "not_found": [d for d in names if d not in found],
+            "sheets": replies if all_sheets else None,
+            "parts": [p for r in replies for p in (r.get("parts") or [])],
+        }
+        if row is not None:
+            out["dblib_row"] = {k: row.get(k) for k in
+                                ("symbol_ref", "symbol_library", "footprints")}
+        if not dry_run and out["changed"]:
+            out["next_step"] = ("the link changed; app_update_from_libraries "
+                                "brings the sheet's symbol and parameters "
+                                "in line with it")
+        return out
+
+    @mcp.tool()
     async def sch_clear_source_library(
         sheet_path: str = "",
         designators: Optional[list[str]] = None,

@@ -12409,6 +12409,400 @@ Begin
 End;
 
 {..............................................................................}
+{ The current PCBLIB implementation of a placed part, or the first one.        }
+{..............................................................................}
+Function CurrentFootprintImpl(Comp : ISch_Component) : ISch_Implementation;
+Var
+    ImplIter : ISch_Iterator;
+    Impl, FirstFp : ISch_Implementation;
+    MT : String;
+    IsCur : Boolean;
+Begin
+    Result := Nil;
+    FirstFp := Nil;
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            Try MT := Impl.ModelType; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                If FirstFp = Nil Then FirstFp := Impl;
+                IsCur := False;
+                Try IsCur := Impl.IsCurrent; Except End;
+                If IsCur Then
+                Begin
+                    Result := Impl;
+                    Break;
+                End;
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+    If Result = Nil Then Result := FirstFp;
+End;
+
+{ Give a placed part with no footprint model one, the way                }
+{ Lib_LinkFootprint does on a symbol: AddSchImplementation, PCBLIB,      }
+{ current, and one datafile link. The link's location is a FILE NAME or }
+{ empty, never a full path, which wedged AD26 there.                     }
+Function AddPlacedFootprintModel(Comp : ISch_Component; Name, LibName : String) : Boolean;
+Var
+    Impl : ISch_Implementation;
+Begin
+    Result := False;
+    Impl := Nil;
+    Try Impl := Comp.AddSchImplementation; Except End;
+    If Impl = Nil Then Exit;
+    Try Impl.ClearAllDatafileLinks; Except End;
+    Try Impl.ModelName := Name; Except End;
+    Try Impl.ModelType := cDocKind_PcbLib; Except End;
+    Try Impl.IsCurrent := True; Except End;
+    Try Impl.AddDataFileLink(Name, LibName, 'PCBLib'); Except End;
+    Result := CurrentFootprintImpl(Comp) <> Nil;
+End;
+
+{ Everything that decides where a placed part comes from, as JSON. }
+Function CompLinkJson(Comp : ISch_Component) : String;
+Var
+    Impl : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    S, FpName, FpLib : String;
+    B : Boolean;
+Begin
+    Result := '';
+    S := ''; Try S := Comp.LibReference; Except End;
+    Result := Result + '"lib_ref":"' + EscapeJsonString(S) + '"';
+    S := ''; Try S := Comp.SourceLibraryName; Except End;
+    Result := Result + ',"source_library":"' + EscapeJsonString(S) + '"';
+    S := ''; Try S := Comp.DesignItemId; Except End;
+    Result := Result + ',"design_item_id":"' + EscapeJsonString(S) + '"';
+    S := ''; Try S := Comp.LibraryIdentifier; Except End;
+    Result := Result + ',"library_identifier":"' + EscapeJsonString(S) + '"';
+    S := ''; Try S := Comp.DatabaseTableName; Except End;
+    Result := Result + ',"database_table":"' + EscapeJsonString(S) + '"';
+    B := False; Try B := Comp.UseDBTableName; Except End;
+    Result := Result + ',"use_db_table_name":' + BoolToJsonStr(B);
+    B := False; Try B := Comp.UseLibraryName; Except End;
+    Result := Result + ',"use_library_name":' + BoolToJsonStr(B);
+    FpName := '';
+    FpLib := '';
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl <> Nil Then
+    Begin
+        Try FpName := Impl.ModelName; Except End;
+        Link := Nil;
+        Try
+            If Impl.DatafileLinkCount > 0 Then Link := Impl.DatafileLink[0];
+        Except End;
+        If Link <> Nil Then
+        Begin
+            Try FpLib := Link.Location; Except End;
+        End;
+    End;
+    Result := Result + ',"footprint":"' + EscapeJsonString(FpName) + '"'
+        + ',"footprint_library":"' + EscapeJsonString(FpLib) + '"';
+End;
+
+{ Point the current footprint model's datafile links at another PcbLib.  }
+{ UseComponentLibrary off, so Altium takes the footprint from that file   }
+{ rather than from the part's own integrated library; both members as    }
+{ CompSourceLibReLinker.pas writes them.                                  }
+Function SetPlacedFootprintLibrary(Comp : ISch_Component; LibName : String) : Boolean;
+Var
+    Impl : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    J, LinkCount : Integer;
+    Back : String;
+Begin
+    Result := False;
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl = Nil Then Exit;
+    SchBeginModify(Impl);
+    Try Impl.UseComponentLibrary := False; Except End;
+    LinkCount := 0;
+    Try LinkCount := Impl.DatafileLinkCount; Except LinkCount := 0; End;
+    For J := 0 To LinkCount - 1 Do
+    Begin
+        Link := Nil;
+        Try Link := Impl.DatafileLink[J]; Except End;
+        If Link <> Nil Then
+        Begin
+            Try Link.Location := LibName; Except End;
+        End;
+    End;
+    SchEndModify(Impl);
+    Back := '';
+    Try
+        If Impl.DatafileLinkCount > 0 Then Back := Impl.DatafileLink[0].Location;
+    Except End;
+    Result := (LinkCount > 0) And SameText(Back, LibName);
+End;
+
+{..............................................................................}
+{ Gen_RelinkComponents - point placed parts at another library, by property,  }
+{ without Altium's dialog.                                                     }
+{                                                                              }
+{ A SchLib or IntLib part: SourceLibraryName is the file, LibReference the    }
+{ symbol, DesignItemId the item (the symbol name), no database table. A DbLib }
+{ part: SourceLibraryName is the DbLib, DatabaseTableName and UseDBTableName  }
+{ name the table, DesignItemId is the row key. The footprint is the current   }
+{ PCBLIB model's name and its datafile links' Location. Every member written  }
+{ here is written the same way by CompSourceLibReLinker.pas or                }
+{ XIA_Update_From_Database.pas; LibraryIdentifier is reported, never set,     }
+{ because Altium derives it.                                                   }
+{                                                                              }
+{ A SchLib/IntLib target given as a full path is checked FIRST: the symbol    }
+{ must be in it, or nothing changes (LIB_REF_NOT_FOUND, with names that are). }
+{ Each part is read before and after, and a field that did not read back as  }
+{ written is named in not_applied, so the reply never claims a link it did   }
+{ not make. dry_run reports what would change and writes nothing.            }
+{                                                                              }
+{ Params: sheet_path (refused when given and not open), designators (comma    }
+{ list, required), kind (schlib|intlib|dblib|''), library (path or name),     }
+{ lib_ref, design_item_id, table, footprint, footprint_library, verify,       }
+{ dry_run.                                                                     }
+{..............................................................................}
+Function Gen_RelinkComponents(Params : String; RequestId : String) : String;
+Var
+    SheetPath, DesigCsv, Kind, LibPath, LibName, LibRef, ItemId, Table : String;
+    FpName, FpLib, FpLibName, Desig, Avail, Before, After, Missing, Items : String;
+    FpBefore, FpAfter, S, WantItem : String;
+    SchDoc : ISch_Document;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    DesigList, Seen : TStringList;
+    DryRun, Verify, Ok, B : Boolean;
+    Total, Changed, Failed, I, ModelsAdded : Integer;
+Begin
+    ModelsAdded := 0;
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    DesigCsv := ExtractJsonValue(Params, 'designators');
+    Kind := LowerCase(ExtractJsonValue(Params, 'kind'));
+    LibPath := ExtractJsonValue(Params, 'library');
+    LibRef := ExtractJsonValue(Params, 'lib_ref');
+    ItemId := ExtractJsonValue(Params, 'design_item_id');
+    Table := ExtractJsonValue(Params, 'table');
+    FpName := ExtractJsonValue(Params, 'footprint');
+    FpLib := ExtractJsonValue(Params, 'footprint_library');
+    DryRun := ExtractJsonValue(Params, 'dry_run') = 'true';
+    Verify := ExtractJsonValue(Params, 'verify') <> 'false';
+    LibName := ExtractFileName(LibPath);
+    FpLibName := ExtractFileName(FpLib);
+
+    If DesigCsv = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designators is required: name the parts to relink');
+        Exit;
+    End;
+    If (Kind = 'dblib') And ((Table = '') Or (ItemId = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'a database link needs table and design_item_id (the row key)');
+        Exit;
+    End;
+    If (Kind = 'dblib') And (LibName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'a database link needs library, the .DbLib');
+        Exit;
+    End;
+
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_OPEN',
+                'sheet_path is not an open schematic: ' + SheetPath
+                + '. Nothing was changed; open it first');
+            Exit;
+        End;
+    End
+    Else
+        SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document is active');
+        Exit;
+    End;
+
+    If Verify And ((Kind = 'schlib') Or (Kind = 'intlib')) And (LibRef <> '')
+        And (LibPath <> LibName) Then
+    Begin
+        If Not ResolveLibRef(LibPath, LibRef, Avail) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'LIB_REF_NOT_FOUND',
+                LibRef + ' is not in ' + LibPath + '. Nothing was changed. In it: '
+                + Avail);
+            Exit;
+        End;
+    End;
+
+    DesigList := TStringList.Create;
+    Seen := TStringList.Create;
+    Items := '';
+    Total := 0;
+    Changed := 0;
+    Failed := 0;
+    Try
+        DesigList.CommaText := DesigCsv;
+        If Not DryRun Then SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            Iterator := SchDoc.SchIterator_Create;
+            Try
+                Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+                Obj := Iterator.FirstSchObject;
+                While Obj <> Nil Do
+                Begin
+                    Comp := Obj;
+                    Desig := '';
+                    Try Desig := Comp.Designator.Text; Except End;
+                    If DesigList.IndexOf(Desig) >= 0 Then
+                    Begin
+                        Inc(Total);
+                        Seen.Add(Desig);
+                        Before := CompLinkJson(Comp);
+                        Missing := '';
+                        If Not DryRun Then
+                        Begin
+                            { The design item a SchLib/IntLib part re-matches by
+                              is its symbol unless one is named. }
+                            WantItem := ItemId;
+                            If (WantItem = '') And (Kind <> 'dblib') And (Kind <> '') Then
+                                WantItem := LibRef;
+                            SchBeginModify(Comp);
+                            Try
+                                If LibName <> '' Then
+                                Begin
+                                    Try Comp.SourceLibraryName := LibName; Except End;
+                                End;
+                                If LibRef <> '' Then
+                                Begin
+                                    Try Comp.LibReference := LibRef; Except End;
+                                End;
+                                If Kind = 'dblib' Then
+                                Begin
+                                    Try Comp.DatabaseTableName := Table; Except End;
+                                    Try Comp.UseDBTableName := True; Except End;
+                                    Try Comp.UseLibraryName := True; Except End;
+                                End;
+                                If (Kind = 'schlib') Or (Kind = 'intlib') Then
+                                Begin
+                                    Try Comp.DatabaseTableName := ''; Except End;
+                                    Try Comp.UseDBTableName := False; Except End;
+                                    Try Comp.UseLibraryName := True; Except End;
+                                End;
+                                If WantItem <> '' Then
+                                Begin
+                                    Try Comp.DesignItemId := WantItem; Except End;
+                                End;
+                            Finally
+                                SchEndModify(Comp);
+                            End;
+                            If FpName <> '' Then
+                            Begin
+                                { A part placed without a footprint has no
+                                  model to repoint; it gets one. }
+                                If CurrentFootprintImpl(Comp) = Nil Then
+                                Begin
+                                    SchBeginModify(Comp);
+                                    AddPlacedFootprintModel(Comp, FpName, FpLibName);
+                                    SchEndModify(Comp);
+                                    Inc(ModelsAdded);
+                                End;
+                                If Not SetPlacedFootprintName(Comp, FpName, FpBefore, FpAfter) Then
+                                    Missing := Missing + ',"footprint"';
+                            End;
+                            If FpLibName <> '' Then
+                            Begin
+                                If Not SetPlacedFootprintLibrary(Comp, FpLibName) Then
+                                    Missing := Missing + ',"footprint_library"';
+                            End;
+
+                            { Read back each field that was asked for. }
+                            S := '';
+                            Try S := Comp.SourceLibraryName; Except End;
+                            If (LibName <> '') And (Not SameText(S, LibName)) Then
+                                Missing := Missing + ',"source_library"';
+                            S := '';
+                            Try S := Comp.LibReference; Except End;
+                            If (LibRef <> '') And (S <> LibRef) Then
+                                Missing := Missing + ',"lib_ref"';
+                            If Kind = 'dblib' Then
+                            Begin
+                                S := '';
+                                Try S := Comp.DatabaseTableName; Except End;
+                                If S <> Table Then Missing := Missing + ',"database_table"';
+                                B := False;
+                                Try B := Comp.UseDBTableName; Except End;
+                                If Not B Then Missing := Missing + ',"use_db_table_name"';
+                            End;
+                            S := '';
+                            Try S := Comp.DesignItemId; Except End;
+                            If (WantItem <> '') And (S <> WantItem) Then
+                                Missing := Missing + ',"design_item_id"';
+                        End;
+                        After := CompLinkJson(Comp);
+                        Ok := Missing = '';
+                        If Ok And (Before <> After) Then Inc(Changed);
+                        If Not Ok Then Inc(Failed);
+                        If Missing <> '' Then Missing := Copy(Missing, 2, Length(Missing));
+                        If Items <> '' Then Items := Items + ',';
+                        Items := Items + '{"designator":"' + EscapeJsonString(Desig) + '"'
+                            + ',"before":{' + Before + '}'
+                            + ',"after":{' + After + '}'
+                            + ',"not_applied":[' + Missing + ']}';
+                    End;
+                    Obj := Iterator.NextSchObject;
+                End;
+            Finally
+                SchDoc.SchIterator_Destroy(Iterator);
+            End;
+        Finally
+            If Not DryRun Then
+            Begin
+                SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+                SchDoc.GraphicallyInvalidate;
+            End;
+        End;
+
+        Missing := '';
+        For I := 0 To DesigList.Count - 1 Do
+            If Seen.IndexOf(DesigList[I]) < 0 Then
+            Begin
+                If Missing <> '' Then Missing := Missing + ',';
+                Missing := Missing + '"' + EscapeJsonString(DesigList[I]) + '"';
+            End;
+    Finally
+        DesigList.Free;
+        Seen.Free;
+    End;
+
+    If (Not DryRun) And (Changed > 0) Then MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr(Failed = 0)
+        + ',"sheet_path":"' + EscapeJsonString(SchDoc.DocumentName) + '"'
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"matched":' + IntToStr(Total)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"footprint_models_added":' + IntToStr(ModelsAdded)
+        + ',"not_on_sheet":[' + Missing + ']'
+        + ',"parts":[' + Items + ']}');
+End;
+
+{..............................................................................}
 { Command Handler - must be at end                                            }
 {..............................................................................}
 
@@ -13111,6 +13505,7 @@ Begin
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);
         'clear_sch_source_library': Result := Gen_ClearSchSourceLibrary(Params, RequestId);
+        'relink_components': Result := Gen_RelinkComponents(Params, RequestId);
         'get_constraint_groups':      Result := Gen_GetConstraintGroups(Params, RequestId);
         'place_harness_connector':    Result := Gen_PlaceHarnessConnector(Params, RequestId);
         'place_cross_sheet_connector': Result := Gen_PlaceCrossSheetConnector(Params, RequestId);
