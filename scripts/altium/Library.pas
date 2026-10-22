@@ -2998,7 +2998,34 @@ Var
     ItemsJson, NameStr, FileStr : String;
     First, Enabled : Boolean;
     Num, Count, KindId : Integer;
+    LibPath, FocusedPath : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
 Begin
+    { library_path, when given, is opened and focused the way             }
+    { Lib_GetPadGeometry does it, so a caller reading one library's        }
+    { footprints and its layer kinds reads them from the same file.        }
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        FocusedPath := '';
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            Doc := Workspace.DM_FocusedDocument;
+            If Doc <> Nil Then
+            Begin
+                Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+            End;
+        End;
+        If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+        Begin
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Document');
+            AddStringParameter('FileName', LibPath);
+            RunProcess('WorkspaceManager:OpenObject');
+        End;
+    End;
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
     Begin

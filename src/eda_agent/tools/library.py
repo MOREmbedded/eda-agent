@@ -5612,6 +5612,171 @@ def register_library_tools(mcp):
             "library.get_footprint_primitives",
             {"footprint_name": footprint_name, "library_path": library_path})
 
+    async def _live_footprint(footprint_name: str, library_path: str,
+                              courtyard_layer: str, assembly_layer: str):
+        """(model, notes) for one footprint, read from the library live:
+        pads, every other primitive, and the library's layer kinds."""
+        from ..bridge.exceptions import AltiumCommandError
+        from ..design.landpattern.live import model_from_live
+
+        bridge = get_bridge()
+        args = {"footprint_name": footprint_name, "library_path": library_path}
+        pads = await bridge.send_command_async("library.get_pad_geometry", args)
+        prims = await bridge.send_command_async(
+            "library.get_footprint_primitives", args)
+        notes: list[str] = []
+        mech = None
+        want = str((prims or {}).get("library_path") or library_path)
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_mech_layers", {"library_path": want})
+            got = str((reply or {}).get("library_path") or "")
+            if got and want and got.lower() != want.lower():
+                notes.append(f"layer kinds were read from {got}, not {want}; "
+                             f"layers are matched by the names given only")
+            else:
+                mech = (reply or {}).get("layers") or []
+        except AltiumCommandError as e:
+            notes.append(f"layer kinds not read ({e.code or e}); courtyard "
+                         f"and assembly come from the names given only")
+        model = model_from_live(pads, prims, mech,
+                                courtyard_layer=courtyard_layer,
+                                assembly_layer=assembly_layer)
+        if not model.pads and not model.graphics:
+            notes.append(f"{footprint_name} is empty: no pads and no "
+                         f"primitives")
+        elif not any(g.layer == "courtyard" for g in model.graphics):
+            notes.append("no courtyard found: no mechanical layer has the "
+                         "Courtyard kind and courtyard_layer was not given")
+        return model, notes
+
+    @mcp.tool()
+    async def lib_render_footprint(
+        footprint_name: str,
+        library_path: str = "",
+        path: str = "",
+        png: bool = True,
+        courtyard_layer: str = "",
+        assembly_layer: str = "",
+    ) -> dict[str, Any]:
+        """Draw a footprint as it is in its library, to look at.
+
+        Read live (pads, every primitive, the library's layer kinds) and
+        drawn the way ``footprint_render_package`` draws a planned one:
+        copper with pad numbers and holes, paste, silkscreen, assembly
+        dashed blue, courtyard magenta, anything else dashed grey. Which
+        layer is the courtyard comes from Altium's layer KIND; a library
+        whose layers have no kind set needs ``courtyard_layer`` /
+        ``assembly_layer`` (e.g. "Mechanical15").
+
+        Args:
+            footprint_name: the footprint in the library.
+            library_path: the .PcbLib; empty = the focused library.
+            path: SVG to write; default <workspace>/renders/<name>_live.svg.
+            png: also write a PNG beside it when a headless browser is
+                installed.
+            courtyard_layer / assembly_layer: layer names to use when the
+                layer kinds do not say.
+
+        Returns:
+            {ok, svg_path, png_path, pads, roles (per role: count and
+            extent in mm), height_mm, silk_over_copper (silkscreen lines
+            that touch a pad, by pad), notes}.
+        """
+        from ..design.landpattern.live import role_summary, silk_over_copper
+        from ..design.landpattern.svg import render_svg
+
+        model, notes = await _live_footprint(
+            footprint_name, library_path, courtyard_layer, assembly_layer)
+        on_copper = silk_over_copper(model)
+        if on_copper:
+            notes.insert(0, f"silkscreen over copper on pad(s) "
+                            f"{', '.join(sorted({h['pad'] for h in on_copper}))}")
+        svg = render_svg(model, notes=[f"{len(model.pads)} pads, read live",
+                                       *notes[:2]])
+        if path:
+            target = Path(path).with_suffix(".svg")
+        else:
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", model.name).strip("._") \
+                or "footprint"
+            target = get_config().workspace_dir / "renders" / f"{safe}_live.svg"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(svg, encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "reason": f"could not write {target}: {exc}"}
+        out: dict[str, Any] = {
+            "ok": True, "svg_path": str(target), "png_path": None,
+            "name": model.name, "pads": len(model.pads),
+            "roles": role_summary(model), "height_mm": model.body.z1,
+            "silk_over_copper": on_copper, "notes": notes,
+            "legend": {"copper": "pads", "dark": "paste", "black": "silkscreen",
+                       "blue dashed": "assembly", "magenta": "courtyard",
+                       "grey dashed": "other layers"}}
+        if png:
+            from ..render import rasterize_svg, size_svg_for_raster
+
+            sized, w_px, h_px = size_svg_for_raster(svg, target_width=1400)
+            raster = target.with_suffix(".raster.svg")
+            try:
+                raster.write_text(sized, encoding="utf-8")
+                rr = await asyncio.to_thread(
+                    rasterize_svg, str(raster),
+                    str(target.with_suffix(".png")), w_px, h_px)
+            finally:
+                try:
+                    raster.unlink()
+                except OSError:
+                    pass
+            if rr.get("ok"):
+                out["png_path"] = rr["png_path"]
+            else:
+                out["rasterize_note"] = rr.get("reason")
+        return out
+
+    @mcp.tool()
+    async def lib_compare_footprints(
+        footprint_a: str,
+        footprint_b: str,
+        library_a: str = "",
+        library_b: str = "",
+        tolerance_mm: float = 0.001,
+        courtyard_layer: str = "",
+        assembly_layer: str = "",
+    ) -> dict[str, Any]:
+        """What differs between two footprints, pad by pad and layer by layer.
+
+        Both read live, from one library or two (a vendor's footprint
+        against yours, an old revision against the new). Pads are matched
+        by number: position, size, shape, corner radius, rotation, hole,
+        plating, paste and mask expansion are compared. Silkscreen,
+        assembly, courtyard and the other layers are compared by count and
+        extent. ``same`` is true only when nothing differs over the
+        tolerance.
+
+        Args:
+            footprint_a / footprint_b: footprint names.
+            library_a / library_b: their .PcbLib files; empty = focused
+                library (library_b defaults to library_a).
+            tolerance_mm: smallest difference reported.
+            courtyard_layer / assembly_layer: layer names to use when the
+                layer kinds do not say.
+        """
+        from ..design.landpattern.live import compare_live
+
+        model_a, notes_a = await _live_footprint(
+            footprint_a, library_a, courtyard_layer, assembly_layer)
+        model_b, notes_b = await _live_footprint(
+            footprint_b, library_b or library_a, courtyard_layer,
+            assembly_layer)
+        out = compare_live(model_a, model_b, tol=max(0.0, tolerance_mm))
+        out.update({"a": {"footprint": footprint_a,
+                          "library": model_a.source.get("library_path")},
+                    "b": {"footprint": footprint_b,
+                          "library": model_b.source.get("library_path")},
+                    "notes": sorted(set(notes_a + notes_b))})
+        return out
+
     @mcp.tool()
     async def lib_audit_footprint_vs_datasheet(
         footprint_name: str,
