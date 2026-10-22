@@ -190,10 +190,38 @@ def test_every_shared_calculator_is_covered_or_known_different(registries):
 
     shared = set.intersection(*(set(registries[b].names) for b in _BACKENDS))
     calculators = {n for n in shared if "_calc_" in n}
-    unexamined = calculators - set(_CASES) - known_different - already_agreed
+    unexamined = (calculators - set(_CASES) - known_different - already_agreed
+                  - _defined_once())
     assert not unexamined, (
         f"these shared calculators have never been checked for spelling "
         f"parity: {sorted(unexamined)}")
+
+
+def _defined_once() -> set[str]:
+    """Calculators with ONE definition, shared by every backend.
+
+    The spelling drift this file guards needs two definitions of a
+    name; register_physics_calc_tools is the only one of these, so its
+    tools cannot drift from themselves. Read from the function rather
+    than listed, so a calculator moved elsewhere loses the exemption.
+    """
+    from eda_agent.tools.calc import register_physics_calc_tools
+
+    reg = ToolRegistry()
+    register_physics_calc_tools(reg)
+    return set(reg.names)
+
+
+def test_the_defined_once_exemption_is_real():
+    import re
+    from pathlib import Path
+
+    once = _defined_once()
+    assert once, "the exemption came out empty: the derivation broke"
+    pcb = (Path(__file__).resolve().parents[1] / "src" / "eda_agent" / "tools"
+           / "pcb.py").read_text(encoding="utf-8")
+    twice = {n for n in once if re.search(rf"async def {n}\(", pcb)}
+    assert not twice, f"also defined for Altium, so they CAN drift: {twice}"
 
 
 @pytest.mark.parametrize("name", sorted(_CASES))

@@ -13,6 +13,7 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from ..bridge import get_bridge
+from ..design import fab_library
 from ..placement import (
     BoardRegion,
     PlaceComp,
@@ -3994,6 +3995,89 @@ def register_pcb_tools(mcp):
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
         return result
+
+    @mcp.tool()
+    async def pcb_check_stackup(
+        template: str,
+        thickness_tol_pct: float = 5.0,
+        er_tol: float = 0.05,
+    ) -> dict[str, Any]:
+        """Compare the active board's stack-up with a fab stack-up.
+
+        Reads the board (``pcb_get_layer_stackup``) and compares copper
+        thickness, the dielectric height under each copper layer and its
+        Dk with the template (``design_list_stackups``). The board keeps
+        one dielectric per copper gap; a template gap of several plies is
+        summed (heights) and thickness-weighted (Dk) first, so a correct
+        board is not reported wrong for having fewer entries. A different
+        copper count is ONE finding. Read only.
+
+        Args:
+            template: stack-up name, e.g. "JLC04161H-7628"
+            thickness_tol_pct: allowed difference in thickness, percent
+            er_tol: allowed difference in Dk
+
+        Returns:
+            ``{"ok": True, "matches": bool, "findings": [...], "board":
+            {...}}`` or the bridge's error.
+        """
+        bridge = get_bridge()
+        board = await bridge.send_command_async("pcb.get_layer_stackup", {})
+        if not isinstance(board, dict) or "layers" not in board:
+            return {"ok": False, "reason": "could not read the board stack-up",
+                    "board": board}
+        got = fab_library.compare_stackup(board, template,
+                                          thickness_tol_pct=thickness_tol_pct,
+                                          er_tol=er_tol)
+        got["board"] = board.get("board_name")
+        return got
+
+    @mcp.tool()
+    async def pcb_apply_stackup_template(
+        template: str, dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Give the active board a fab stack-up's thicknesses and Dk.
+
+        A dry run by default: it returns the ``pcb_modify_layer`` calls it
+        would make. With ``dry_run=False`` it makes them, each read back.
+        Existing layers only: a board with a different copper count is
+        refused (add or remove layers in Altium's Layer Stack Manager
+        first; inventing a layer name on a routed board is worse than
+        asking). If a call fails part way, the result says which layers
+        changed and which did not, since a half-applied stack-up is worse
+        than none and has to be finished or undone knowingly.
+
+        Args:
+            template: stack-up name, e.g. "JLC04161H-7628"
+            dry_run: True to only plan (default)
+
+        Returns:
+            ``{"ok", "template", "calls", "dry_run"}``, plus per-layer
+            ``results`` and ``changed`` / ``not_changed`` when applied.
+        """
+        bridge = get_bridge()
+        board = await bridge.send_command_async("pcb.get_layer_stackup", {})
+        if not isinstance(board, dict) or "layers" not in board:
+            return {"ok": False, "reason": "could not read the board stack-up",
+                    "board": board}
+        plan = fab_library.plan_apply(board, template)
+        if not plan["ok"] or dry_run:
+            return {**plan, "dry_run": dry_run}
+        results, changed, not_changed = [], [], []
+        for call in plan["calls"]:
+            params = {k: (f"{v:g}" if isinstance(v, float) else str(v))
+                      for k, v in call.items()}
+            try:
+                res = await bridge.send_command_async("pcb.modify_layer", params)
+            except Exception as exc:                        # noqa: BLE001
+                res = {"success": False, "error": str(exc)}
+            results.append({"layer": call["layer"], "result": res})
+            ok = isinstance(res, dict) and res.get("success") is not False \
+                and not res.get("rejected") and "error" not in res
+            (changed if ok else not_changed).append(call["layer"])
+        return {"ok": not not_changed, "template": plan["template"],
+                "dry_run": False, "calls": plan["calls"], "results": results,
+                "changed": changed, "not_changed": not_changed}
 
     @mcp.tool()
     async def pcb_set_plane_net(layer: str, net: str) -> dict[str, Any]:

@@ -98,6 +98,16 @@ def setup_logging() -> None:
     root = logging.getLogger("eda_agent")
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # A capped file in the workspace beside stderr, and secrets redacted
+    # from both. Best-effort: a workspace that cannot be written never
+    # stops the server.
+    try:
+        from .config import get_config
+        from .server_log import install
+
+        install(root, get_config().workspace_dir)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # Which EDA tool this server drives. Resolved once, at import, from the
@@ -899,6 +909,18 @@ def main() -> int:
                        help="Exit non-zero on a finding at/above this "
                             "severity (default: error).")
 
+    # calc -- the offline engineering calculators, without an MCP client.
+    calc_p = subparsers.add_parser(
+        "calc",
+        help=("Run an engineering calculator: `eda-agent calc fusing-current "
+              "seconds=1 area_sq_mils=103`. `eda-agent calc` lists them; "
+              "`eda-agent calc NAME --help` shows a calculator's inputs."),
+    )
+    calc_p.add_argument("name", nargs="?", help="Calculator name.")
+    calc_p.add_argument("inputs", nargs="*", metavar="KEY=VALUE",
+                        help="Inputs, named as the calculator's arguments.")
+    calc_p.add_argument("--json", action="store_true", help="Emit JSON.")
+
     args = parser.parse_args()
 
     # Backend was already registered at import from EDA_AGENT_BACKEND. If
@@ -988,6 +1010,8 @@ def main() -> int:
         return _run_bom(args)
     if args.command == "netlist":
         return _run_netlist(args)
+    if args.command == "calc":
+        return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":

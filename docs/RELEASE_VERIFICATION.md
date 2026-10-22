@@ -1,4 +1,4 @@
-# Release verification: 2026.10.22.5
+# Release verification: 2026.10.22.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -104,6 +104,7 @@ works elsewhere cannot be an undeclared identifier:
 | 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
 | 37, pin labels | `ShowName`, `ShowDesignator` on a pin | yes, `Library.pas` | low |
 | 37, pin text | `Name_FontMode`, `Name_CustomFontID`, `Name_CustomColor`, `Designator_FontMode`, `Designator_CustomFontID`, `Designator_CustomColor` on a pin | no, nowhere | medium, read live; the writes are not run live |
+| 38, stack-up apply | `CopperThickness`, `DielectricHeight`, `DielectricConstant`, `DielectricType` on a board layer | yes, `PCB_ModifyLayer` | low, the same writes pcb_modify_layer makes, each read back |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -279,7 +280,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.22.5`, `version_match` =
+Expect `altium_script_version` = `2026.10.22.7`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2273,6 +2274,30 @@ took 6.6 s and saved the file, while two symbols created earlier in the
 session were found in 0.05 s without a save. Item 1 left one open copy; before the fix the same steps left two
 and the pad was "not found". Items 2 and 3 were also read with the flag
 written back the other way. Nothing here was saved and reopened.
+
+## 38. Fab stack-ups, applied and checked
+
+New: `pcb_check_stackup` and `pcb_apply_stackup_template`, over the
+stack-ups in `design_list_stackups` (JLCPCB's 36, parsed from its
+impedance page). No script change: both use `pcb.get_layer_stackup` and
+`pcb.modify_layer`, which already reads every field back. Use a scratch
+4-layer board and make sure it is the only board open, since both act on
+the board Altium resolves as current.
+
+1. **Dry run.** `pcb_apply_stackup_template template=JLC04161H-7628A`:
+   four calls, the top gap 11.59 mil (0.218 + 0.0764 mm summed) with Dk
+   4.27, and the board unchanged (`pcb_get_layer_stackup` before and after).
+2. **Apply.** The same with `dry_run=false`: `changed` names all four
+   layers, `not_changed` is empty, and `pcb_check_stackup` with the same
+   template reports `matches: true`.
+3. **A real difference.** `pcb_check_stackup template=JLC04161H-3313`:
+   findings for the dielectric heights and Dk, each with the board's and
+   the template's value.
+4. **Wrong count.** On a 2-layer scratch board, apply refuses naming the
+   Layer Stack Manager, and check reports one copper-count finding.
+
+Not yet run live: the documents open on the test machine at the time
+included unsaved boards that were not ours to risk.
 
 ---
 

@@ -1,0 +1,74 @@
+{
+ "note": "Only figures read off the maker's own datasheet. Each Dk says what it is: 'process' (the maker's QC test value), 'design' (the maker's recommendation for circuit design), or 'typical' (a typical value at the stated frequency, with no separate design value published). Impedance sizing takes the design value when there is one, else the typical value nearest the frequency asked for.",
+ "laminates": [
+  {
+   "name": "RO4003C",
+   "maker": "Rogers",
+   "kind": "hydrocarbon ceramic",
+   "source": {"url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
+              "retrieved": "2026-10-22", "document": "Revised 1592 080322 PUB# 92-004"},
+   "dk": [
+    {"value": 3.38, "tolerance": 0.05, "kind": "process", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"},
+    {"value": 3.55, "kind": "design", "frequency_ghz": [8, 40], "method": "differential phase length, Z"}
+   ],
+   "df": [
+    {"value": 0.0027, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, 23°C"},
+    {"value": 0.0021, "frequency_ghz": 2.5, "method": "IPC-TM-650 2.5.5.5, 23°C"}
+   ]
+  },
+  {
+   "name": "RO4350B",
+   "maker": "Rogers",
+   "kind": "hydrocarbon ceramic",
+   "source": {"url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
+              "retrieved": "2026-10-22", "document": "Revised 1592 080322 PUB# 92-004"},
+   "dk": [
+    {"value": 3.48, "tolerance": 0.05, "kind": "process", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"},
+    {"value": 3.66, "kind": "design", "frequency_ghz": [8, 40], "method": "differential phase length, Z"}
+   ],
+   "df": [
+    {"value": 0.0037, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, 23°C"},
+    {"value": 0.0031, "frequency_ghz": 2.5, "method": "IPC-TM-650 2.5.5.5, 23°C"}
+   ],
+   "caveat": "The datasheet: 'The design Dk value decreases by about 0.1 as the core thickness decreases from 0.020\" to 0.004\".'"
+  },
+  {
+   "name": "370HR",
+   "maker": "Isola",
+   "kind": "FR-4, 180°C Tg multifunctional epoxy",
+   "source": {"url": "https://www.isola-group.com/wp-content/uploads/data-sheets/370hr.pdf",
+              "retrieved": "2026-10-22", "document": "Revision No: C, last updated April 15, 2021"},
+   "dk": [
+    {"value": 4.24, "kind": "typical", "frequency_ghz": 0.1, "method": "IPC-TM-650 2.5.5.3"},
+    {"value": 4.17, "kind": "typical", "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9"},
+    {"value": 4.04, "kind": "typical", "frequency_ghz": 2, "method": "Bereskin stripline"},
+    {"value": 3.92, "kind": "typical", "frequency_ghz": 5, "method": "Bereskin stripline"},
+    {"value": 3.92, "kind": "typical", "frequency_ghz": 10, "method": "Bereskin stripline"}
+   ],
+   "df": [
+    {"value": 0.0150, "frequency_ghz": 0.1, "method": "IPC-TM-650 2.5.5.3"},
+    {"value": 0.0161, "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9"},
+    {"value": 0.0210, "frequency_ghz": 2, "method": "Bereskin stripline"},
+    {"value": 0.0250, "frequency_ghz": 5, "method": "Bereskin stripline"},
+    {"value": 0.0250, "frequency_ghz": 10, "method": "Bereskin stripline"}
+   ],
+   "caveat": "The datasheet states no resin content for these; Isola publishes Dk/Df by construction separately, and a thin, resin-rich ply sits well below these values."
+  },
+  {
+   "name": "MEGTRON 6 (R-5775 / R-5670)",
+   "maker": "Panasonic",
+   "kind": "low-loss polyphenylene ether blend",
+   "source": {"url": "https://industrial.panasonic.com/content/data/EM/PDF/ipcdatasheet_R-5775.pdf",
+              "retrieved": "2026-10-22", "document": "No.21041931, 2021"},
+   "dk": [
+    {"value": 3.71, "kind": "typical", "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9, C-24/23/50"},
+    {"value": 3.61, "kind": "typical", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, C-24/23/50"}
+   ],
+   "df": [
+    {"value": 0.002, "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9, C-24/23/50"},
+    {"value": 0.004, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, C-24/23/50"}
+   ],
+   "caveat": "Laminate R-5775 measured on a 0.750 mm (core type 30) sample; the datasheet: 'The data in the above table are not guaranteed values.' Thinner, resin-rich constructions are lower (its per-construction table)."
+  }
+ ]
+}

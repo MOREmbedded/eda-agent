@@ -1,0 +1,101 @@
+{
+ "vendor": "PCBWay",
+ "source": {
+  "url": "https://www.pcbway.com/capabilities.html",
+  "retrieved": "2026-10-22",
+  "note": "Two tables: 'Standard PCB' and 'Advanced PCB', the second graded Normal process / Medium difficulty / High difficulty. Tier standard is the first table; tier advanced_normal is the second table's Normal process column. Medium and high difficulty cost more and are not offered as tiers."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {"counts": [1, 2, 4, 6, 8, 10, 12, 14],
+     "quote": "Number of Layers - 1-14 layers For orders above 14 layers, please view the below \"Advanced PCB\"",
+     "note": "1 and 2 plus even counts to 14; the inner-copper row speaks of 'Multi-layer laminated structure' for 4 to 10 layers and names no odd count."}
+   ],
+   "min_track": [
+    {"mm": 0.1, "quote": "Min Trace 0.1mm/4mil Min manufacturable trace is 4mil(0.1mm)"}
+   ],
+   "min_gap": [
+    {"mm": 0.1, "quote": "Min Spacing Min manufacturable spacing is 4mil(0.1mm)"}
+   ],
+   "min_drill": [
+    {"mm": 0.15, "quote": "Drill Sizes (CNC) 0.15-6.0mm Min drill size is 0.15mm, max drill is 6.0mm. Any holes greater than 6mm or smaller than 0.2mm will be subject to extra charges.",
+     "note": "Below 0.2 mm costs extra."}
+   ],
+   "min_annular_ring": [
+    {"mm": 0.15, "quote": "Min Width of Annular Ring 0.15mm(6mil) For pads with vias in the middle, Min width for Annular Ring is 0.15mm(6mil)."}
+   ],
+   "min_hole_to_hole": [
+    {"unpublished": "The standard table gives no hole-to-hole figure; the advanced table's normal process gives one (tier advanced_normal)."}
+   ],
+   "min_mask_sliver": [
+    {"unpublished": "The standard table gives no solder mask bridge; the advanced table's normal process gives one (tier advanced_normal)."}
+   ],
+   "min_silk_width": [
+    {"mm": 0.15, "quote": "Minimum Character Width(Legend) 0.15mm Characters of less than 0.15mm wide will be too narrow to be identifiable."}
+   ],
+   "min_silk_height": [
+    {"mm": 0.8, "quote": "Minimum Character Height (Legend) - 0.8mm Characters of less than 0.8mm high will be too small to be recognizable."}
+   ]
+  },
+  "advanced_normal": {
+   "copper_layer_counts": [
+    {"counts": [4, 6, 8, 10, 12, 14, 16],
+     "quote": "1 Multilayer PCB Layers 3L≤Layers≤16L 18L≤Layers≤24L ≥24L",
+     "note": "Normal process covers 3 to 16 layers; listed as the even counts, as elsewhere on the page."}
+   ],
+   "min_track": [
+    {"mil": 5, "when": {"layers": "multi", "outer_oz": 1},
+     "quote": "15 The min width/spacing of outer layer (before compensation) ... copper thickness 35um ≥5/6 mil ≥5/5 mil",
+     "note": "Outer layer, 35 µm (1 oz), normal process: width 5 mil, spacing 6 mil."},
+    {"mil": 7, "when": {"layers": "multi", "outer_oz": 2},
+     "quote": "copper thickness 70um ≥7/8mil ≥6/7mil",
+     "note": "Outer layer, 70 µm (2 oz), normal process: width 7 mil, spacing 8 mil."}
+   ],
+   "min_gap": [
+    {"mil": 6, "when": {"layers": "multi", "outer_oz": 1},
+     "quote": "15 The min width/spacing of outer layer (before compensation) ... copper thickness 35um ≥5/6 mil ≥5/5 mil"},
+    {"mil": 8, "when": {"layers": "multi", "outer_oz": 2},
+     "quote": "copper thickness 70um ≥7/8mil ≥6/7mil"}
+   ],
+   "min_drill": [
+    {"mm": 0.2, "quote": "5 Drill diameter Nc drill 0.20mm≤Drill diameter≤6.5mm",
+     "note": "0.2 mm holds up to a 1.6 mm board: 'hole diameter 0.2mm: maximum board thickness 1.6mm'."}
+   ],
+   "min_annular_ring": [
+    {"mil": 5, "when": {"outer_oz": 1},
+     "quote": "17 Minimum weld ring (outer layer) ... copper thickness 35um via hole ≥5mil ≥4mil component hole ≥10mil ≥8mil",
+     "note": "Via ring at 35 µm; component holes need 10 mil."},
+    {"mil": 7, "when": {"outer_oz": 2},
+     "quote": "copper thickness 70um via hole ≥7mil ≥6mil component hole ≥12mil ≥10mil"}
+   ],
+   "min_hole_to_hole": [
+    {"mil": 11, "quote": "10 Hole to hole spacing component hole ≥16MIL 14≤Hole to hole spacing≤16 13≤Hole to hole spacing≤14 via（≤0.45mm） ≥11MIL",
+     "note": "Vias up to 0.45 mm; component holes need 16 mil."}
+   ],
+   "min_mask_sliver": [
+    {"mil": 4, "when": {"outer_oz": 1},
+     "quote": "green solder mask Bridge（mil） copper thicknesss 4（spacing between ICs is 8 mil, green oil），variegated or black oil≥4.5mil",
+     "note": "Green mask; other colours and black need 4.5 mil."},
+    {"mil": 5, "when": {"outer_oz": 2},
+     "quote": "copper thicknesss≥2OZ 5 4"}
+   ],
+   "min_silk_width": [
+    {"unpublished": "The advanced table gives etched (copper) legend sizes only, not ink silkscreen; the standard table's 0.15 mm is the ink figure."}
+   ],
+   "pth_annular_ring": [
+    {"mil": 10, "when": {"outer_oz": 1},
+     "quote": "17 Minimum weld ring (outer layer) ... copper thickness 35um via hole ≥5mil ≥4mil component hole ≥10mil ≥8mil"},
+    {"mil": 12, "when": {"outer_oz": 2},
+     "quote": "copper thickness 70um via hole ≥7mil ≥6mil component hole ≥12mil ≥10mil"}
+   ],
+   "inner_via_hole_to_copper": [
+    {"mil": 7, "when": {"layers": [4, 4]},
+     "quote": "13 Minimum isolation ring of Inner layer, The distance between minimum hole in Inner layer and circuit (before compensation) 4L ≥7MIL"},
+    {"mil": 8, "when": {"layers": [6, 6]}, "quote": "6L ≥8MIL 6.5MIL≤isolation ring"},
+    {"mil": 9, "when": {"layers": [8, 8]}, "quote": "8L ≥9MIL 7MIL≤isolation ring"},
+    {"mil": 10, "when": {"layers": [10, null]}, "quote": "≥10L ≥10MIL 8MIL≤isolation ring"}
+   ]
+  }
+ }
+}

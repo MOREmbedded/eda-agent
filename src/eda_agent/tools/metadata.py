@@ -257,6 +257,8 @@ INTERACTION_OVERRIDES = {
     "datasheet_fetch": SILENT,
     # Writes the SVG (and a PNG) it draws, as pcb_render_svg does.
     "footprint_render_package": SILENT,
+    # Writes the .cir / .net deck it builds into the workspace.
+    "design_export_spice_deck": SILENT,
     # Reads the footprint's pads, primitives and the library's layers and
     # writes nothing. The lib_ prefix says nothing about that, and the
     # default would publish an audit as a tool that edits the library.

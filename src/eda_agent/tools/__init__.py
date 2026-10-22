@@ -36,7 +36,7 @@ from .sch_template import register_sch_template_tools
 from .easyeda import register_easyeda_tools
 from .kicad import register_kicad_tools
 from .eda import register_eda_tools
-from .calc import register_calc_tools
+from .calc import register_calc_tools, register_physics_calc_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
@@ -91,9 +91,14 @@ OFFLINE_DESIGN_TOOLS = (
     "design_connect_bus",
     "design_describe_circuits",
     "design_edit_plan",
+    "design_fab_vendor_profile",
     "design_generate_bom",
+    "design_get_laminate",
+    "design_get_stackup",
     "design_get_discipline",
     "design_list_circuit_blocks",
+    "design_list_fab_vendors",
+    "design_list_stackups",
     "design_load_fab_profile",
     "design_next_action",
     "design_plan_hierarchy",
@@ -287,6 +292,10 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # Datasheet fetch and the package checks work on the package, not on an
     # editor, so every backend gets them.
     register_footprint_tools(mcp)
+    # Calculators with no Altium twin: register_calc_tools stays off the
+    # Altium backend because pcb.py defines its names there, which would
+    # leave these missing from the default backend.
+    register_physics_calc_tools(mcp)
     return backend
 
 
@@ -297,6 +306,7 @@ __all__ = [
     "register_kicad_tools",
     "register_eda_tools",
     "register_calc_tools",
+    "register_physics_calc_tools",
     "register_plan_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",

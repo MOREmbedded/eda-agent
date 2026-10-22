@@ -437,3 +437,107 @@ def register_calc_tools(mcp) -> None:
                     "delta_t_c": delta_t_c, "layer": layer}
         except Exception as e:
             return _fail(e)
+
+
+def register_physics_calc_tools(mcp) -> None:
+    """Calculators with no Altium twin, registered on EVERY backend.
+
+    The ones above register only where tools/pcb.py does not already give
+    Altium the same names. These exist nowhere else, so the opposite
+    holds: left in register_calc_tools they would be missing from the
+    default backend. Each answer carries ``status`` (exact, published or
+    fab) and ``source``; see design/calculators.py.
+    """
+    from ..design import calculators as calc
+
+    @mcp.tool()
+    async def pcb_calc_reactance(
+            frequency_hz: float, inductance_h: float = 0.0,
+            capacitance_f: float = 0.0) -> dict[str, Any]:
+        """Reactance of an inductor and/or capacitor at a frequency.
+
+        SI units so a value is never off by a prefix: 10 nH is 10e-9,
+        100 nF is 100e-9. Exact (X_L = 2 pi f L, X_C = 1/(2 pi f C)).
+        """
+        return calc.reactance(frequency_hz, inductance_h, capacitance_f)
+
+    @mcp.tool()
+    async def pcb_calc_resonance(inductance_h: float,
+                                 capacitance_f: float) -> dict[str, Any]:
+        """Resonant frequency and characteristic impedance of an LC pair,
+        in henries and farads. Exact."""
+        return calc.resonance(inductance_h, capacitance_f)
+
+    @mcp.tool()
+    async def pcb_calc_wavelength(frequency_hz: float, er_eff: float = 1.0,
+                                  length_mils: float = 0.0) -> dict[str, Any]:
+        """Wavelength and quarter wave at a frequency, and the electrical
+        length of ``length_mils`` in degrees. ``er_eff`` is the effective
+        permittivity: the laminate's Dk for stripline; a microstrip's is
+        lower and geometry dependent, so give it. Exact."""
+        return calc.wavelength(frequency_hz, er_eff, length_mils)
+
+    @mcp.tool()
+    async def pcb_calc_pdn_target_impedance(
+            supply_v: float, ripple_pct: float,
+            transient_a: float) -> dict[str, Any]:
+        """The power network's target impedance: allowed ripple over the
+        load's current step. The step is the device datasheet's to give;
+        nothing here assumes a share of the full current. Exact."""
+        return calc.pdn_target_impedance(supply_v, ripple_pct, transient_a)
+
+    @mcp.tool()
+    async def pcb_calc_wire_gauge(awg: Optional[int] = None,
+                                  diameter_mils: float = 0.0) -> dict[str, Any]:
+        """AWG size: diameter, area and kcmil for a gauge (-3 for 0000 up
+        to 40), or the nearest gauge for a diameter. Exact (ASTM B258)."""
+        return calc.wire_gauge(awg, diameter_mils)
+
+    @mcp.tool()
+    async def pcb_calc_fusing_current(
+            seconds: float, area_sq_mils: float = 0.0, width_mils: float = 0.0,
+            copper_oz: float = 1.0, ambient_c: float = 20.0) -> dict[str, Any]:
+        """Current that melts a copper conductor in ``seconds``
+        (Onderdonk, in Brooks and Adam's 2015 form).
+
+        Adiabatic, so a LOWER bound for a trace on a board: Brooks and
+        Adam's simulations of traces on FR-4 carry 2 to 6 times more. Not
+        valid beyond about 10 s. Give the cross-section, or width and
+        copper weight."""
+        return calc.fusing_current(seconds, area_sq_mils, width_mils,
+                                   copper_oz, ambient_c)
+
+    @mcp.tool()
+    async def pcb_calc_via_inductance(
+            plane_spacing_mils: float, via_diameter_mils: float,
+            return_spacing_mils: float) -> dict[str, Any]:
+        """Loop inductance a via adds between two planes, with its return
+        (ground via or plane capacitor) ``return_spacing_mils`` away,
+        centre to centre (Johnson, 'Via Inductance II', within about 10 %
+        of his measurements). Only the interplane part."""
+        return calc.via_inductance(plane_spacing_mils, via_diameter_mils,
+                                   return_spacing_mils)
+
+    @mcp.tool()
+    async def pcb_calc_spiral_inductance(
+            turns: float, outer_mils: float, width_mils: float = 0.0,
+            spacing_mils: float = 0.0, inner_mils: float = 0.0,
+            shape: str = "square") -> dict[str, Any]:
+        """DC inductance of a planar spiral: square, hexagonal, octagonal
+        or circle (Mohan, Hershenson, Boyd, Lee, IEEE JSSC 1999), by the
+        modified Wheeler and the current-sheet expressions. Give
+        inner_mils, or width and spacing to work it out."""
+        return calc.spiral_inductance(turns, outer_mils, width_mils,
+                                      spacing_mils, inner_mils, shape)
+
+    @mcp.tool()
+    async def pcb_calc_padstack(
+            vendor: str, copper_layers: int, drill_mils: float,
+            kind: str = "via", outer_oz: float = 1.0,
+            tier: str = "standard") -> dict[str, Any]:
+        """Smallest pad and inner-layer clearance a fab builds around a
+        hole, from its published ring and hole-to-copper figures, each
+        quoted (design_list_fab_vendors). ``kind`` is "via" or "pth"; a
+        figure the fab does not publish is said so, not filled in."""
+        return calc.padstack(vendor, copper_layers, drill_mils, kind,
+                             outer_oz, tier)

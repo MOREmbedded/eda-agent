@@ -41,6 +41,7 @@ from ..design.component_values import (
     resistor_divider,
 )
 from ..design.discipline import get_discipline
+from ..design import fab_library
 from ..design.fab_profile import load_fab_profile
 from ..design.hierarchy import apply_hierarchy, plan_hierarchy
 from ..design.requirement import (
@@ -438,6 +439,9 @@ def register_design_tools(mcp) -> None:
           loops, worst first. Advisory.
         - ``pad_entry_audit``: off-axis, off-centre, too-wide or uneven
           pad entries. Fails only on high severity.
+        - ``rotation_audit``: parts whose connections are shorter turned
+          90, 180 or 270 degrees, a turn into a neighbour's courtyard
+          excluded. Advisory.
 
         Log the result as ``data`` on the stage_result
         (``design_session_log``).
@@ -1947,6 +1951,95 @@ def register_design_tools(mcp) -> None:
                 "loops": results}
 
     @mcp.tool()
+    async def design_export_spice_deck(
+        plan_json: Union[str, dict],
+        dialect: str = "ngspice",
+        analyses: Optional[dict] = None,
+        models: Optional[dict[str, dict]] = None,
+        supplies: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        path: str = "",
+        allow_partial: bool = False,
+    ) -> dict[str, Any]:
+        """Write a plan's circuit as a SPICE deck for ngspice or LTspice.
+
+        The same netlist design_simulate_loops runs: R, C and L from their
+        values, everything else from the manufacturer's model (``models``,
+        as there), rails as DC sources. ``dialect`` "ltspice" writes a
+        .net LTspice opens and runs as it is; "ngspice" writes a .cir. A
+        plan read off a live sheet comes from design_plan_from_sheet.
+
+        A part without its model is never approximated: the deck is not
+        written and ``gaps`` names what is missing. ``allow_partial``
+        writes it anyway with every gap listed in comments at the top, so
+        the file cannot pass for the whole circuit.
+
+        Args:
+            plan_json: a DesignPlan (object or JSON).
+            dialect: "ngspice" or "ltspice".
+            analyses: {"op": true}, {"tran": {"step", "stop"}},
+                {"ac": {"points", "start", "stop"}} (decade) or {"dc":
+                {"source", "start", "stop", "step"}}; default .op.
+            models / supplies / pin_names: as design_simulate_loops.
+            path: file to write; default <workspace>/sim/<title>.cir|.net.
+            allow_partial: write a deck that is missing parts.
+        """
+        import re as _re
+
+        from ..config import get_config
+        from ..sim.deck import deck_from_plan
+        from ..sim.dialects import deck_gaps, write_deck
+
+        payload = plan_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"invalid JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()]}
+        deck = deck_from_plan(plan, models or {}, supplies, pin_names,
+                              title=plan.summary or "")
+        gaps = deck_gaps(deck)
+        out: dict[str, Any] = {
+            "ok": False, "dialect": dialect, "complete": not gaps,
+            "gaps": gaps, "rails": deck.get("rails"),
+            "missing_models": deck.get("missing_models")}
+        if gaps and not allow_partial:
+            out["reason"] = ("the deck is missing parts, so it was not "
+                             "written; give their models, or allow_partial "
+                             "to write it with the gaps listed")
+            return out
+        try:
+            text = write_deck(deck["netlist"], dialect, analyses,
+                              gaps if gaps else None)
+        except ValueError as exc:
+            out["reason"] = str(exc)
+            return out
+        ext = ".net" if dialect.lower() == "ltspice" else ".cir"
+        if path:
+            target = Path(path)
+        else:
+            stem = _re.sub(r"[^A-Za-z0-9._-]+", "_",
+                           plan.summary or "design").strip("._")[:60] or "design"
+            target = get_config().workspace_dir / "sim" / f"{stem}{ext}"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            out["reason"] = f"could not write {target}: {exc}"
+            return out
+        out.update(ok=True, path=str(target), deck=text)
+        if dialect.lower() == "ltspice":
+            out["note"] = ("open it in LTspice (File > Open, then Run); "
+                           "eda-agent itself simulates with ngspice")
+        return out
+
+    @mcp.tool()
     async def pcb_smart_drc(
         board_json_path: str = "",
         expect_file: str = "",
@@ -2329,6 +2422,149 @@ def register_design_tools(mcp) -> None:
                 f"drill {prof.min_drill_mils:g} mils."
             ),
         }
+
+    @mcp.tool()
+    async def design_list_fab_vendors() -> dict[str, Any]:
+        """Fab houses whose published capabilities ship with this server.
+
+        Each has its capability page, the day it was read, whether that
+        is over a year ago (``stale``), its tiers and how many stack-ups
+        it has. Nothing here is recalled: every figure was read off the
+        fab's page and carries the fab's own words.
+
+        Returns:
+            ``{"ok": True, "vendors": [...], "laminates": [...]}``; each
+            laminate with its design Dk.
+        """
+        return {"ok": True, "vendors": fab_library.list_vendors(),
+                "laminates": fab_library.list_laminates()}
+
+    @mcp.tool()
+    async def design_fab_vendor_profile(
+        vendor: str,
+        copper_layers: int = 0,
+        outer_oz: float = 1.0,
+        tier: str = "standard",
+        fill: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """A fab profile for one build at a fab, ready for
+        ``design_synthesize_rules``, with every value's source.
+
+        Minimums depend on the build: JLCPCB's track is 4 mil on two
+        layers, 3.5 mil on four, and grows with copper weight. The
+        profile is built for the layer count and outer copper given.
+        A figure the fab does not publish is never filled in here: the
+        profile is refused, naming each one, until ``fill`` supplies it
+        (recorded as yours, not the fab's). PCBWay's standard table, for
+        one, gives no hole-to-hole or mask bridge; its ``advanced_normal``
+        tier does.
+
+        With ``copper_layers`` 0, returns the vendor's raw figures with
+        their quotes instead.
+
+        Args:
+            vendor: "JLCPCB" or "PCBWay" (see design_list_fab_vendors)
+            copper_layers: copper layer count of the board
+            outer_oz: outer copper weight, oz
+            tier: the vendor's tier, "standard" by default
+            fill: {FabProfile field: mils} for figures the fab does not
+                publish, e.g. {"min_hole_to_hole_mils": 10}
+
+        Returns:
+            ``{"ok": True, "profile": {...}, "provenance": {field:
+            {quote, ...}}, "age": {...}}`` or ``{"ok": False, "missing":
+            [{field, reason}], ...}``.
+        """
+        if not copper_layers:
+            return fab_library.vendor(vendor)
+        got = fab_library.fab_profile(vendor, copper_layers=copper_layers,
+                                      outer_oz=outer_oz, tier=tier, fill=fill)
+        if got.get("ok"):
+            got["profile"] = got["profile"].model_dump()
+        return got
+
+    @mcp.tool()
+    async def design_list_stackups(
+        vendor: str = "", copper_layers: int = 0,
+    ) -> dict[str, Any]:
+        """The fabs' own stack-ups that ship with this server.
+
+        JLCPCB's are parsed ply by ply from its impedance page (36 at
+        1.6 mm, 4 and 6 layers), so every height and Dk is JLCPCB's.
+
+        Args:
+            vendor: limit to one fab ("" for all)
+            copper_layers: limit to one copper count (0 for all)
+
+        Returns:
+            ``{"ok": True, "stackups": [{name, vendor, copper_layers,
+            total_mm, dielectrics}]}``.
+        """
+        return {"ok": True, "stackups": fab_library.stackup_templates(
+            vendor or None, copper_layers or None)}
+
+    @mcp.tool()
+    async def design_get_stackup(
+        name: str,
+        impedance_targets: Optional[list] = None,
+        board_stackup: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """One fab stack-up ply by ply, with optional trace widths for
+        target impedances and an optional comparison against a board.
+
+        Widths: outer layers as microstrip over the dielectric to the next
+        copper; an inner layer only when it sits near the middle of its
+        two planes (the closed form is symmetric; otherwise it is reported
+        and not sized). Closed forms are +/-10 %, so these are starting
+        widths for the fab's solver to confirm.
+
+        Args:
+            name: stack-up name, e.g. "JLC04161H-7628"
+            impedance_targets: e.g. [{"ohms": 50}, {"ohms": 90,
+                "spacing_mils": 6}] (spacing makes it differential)
+            board_stackup: a ``pcb_get_layer_stackup`` result to compare
+                with; the template's plies are first collapsed to one
+                dielectric per copper gap, as Altium keeps them
+
+        Returns:
+            ``{"ok": True, "stackup": {...}, "plies": [...], "source":
+            {...}, "impedance": {...}?, "comparison": {...}?}``.
+        """
+        got = fab_library.stackup_template(name)
+        if not got["ok"]:
+            return got
+        got["stackup"] = got["stackup"].model_dump()
+        if impedance_targets:
+            got["impedance"] = fab_library.impedance_widths(name, impedance_targets)
+        if board_stackup:
+            got["comparison"] = fab_library.compare_stackup(board_stackup, name)
+        return got
+
+    @mcp.tool()
+    async def design_get_laminate(
+        name: str, frequency_ghz: float = 0.0,
+    ) -> dict[str, Any]:
+        """A laminate's datasheet figures and the Dk to design with.
+
+        Makers publish different kinds of Dk: Rogers a process value (a QC
+        test) AND a design value 5 % higher, Isola and Panasonic typical
+        values by frequency. Each figure here says which it is, with its
+        frequency, method and datasheet. The returned design Dk is the
+        design value when there is one, else the typical value nearest
+        ``frequency_ghz``; never a process value.
+
+        Args:
+            name: e.g. "RO4350B", "370HR", "MEGTRON 6" (prefix matches)
+            frequency_ghz: the frequency to pick a typical Dk at (0: the
+                highest listed)
+
+        Returns:
+            The laminate record plus the design Dk it chose and why.
+        """
+        got = fab_library.laminate(name)
+        if got["ok"]:
+            got["design_dk"] = fab_library.design_dk(name, frequency_ghz or None)
+        return got
 
     @mcp.tool()
     async def design_synthesize_rules(

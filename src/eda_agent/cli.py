@@ -435,3 +435,65 @@ def _install_scripts_into(dst: Path, force: bool) -> int:
     print("Each Altium session, start the polling loop via:")
     print("  File -> Run Script... -> Altium_API -> Dispatcher.pas -> StartMCPServer -> Run")
     return 0
+
+
+def cmd_calc(name: Optional[str], inputs: list[str], as_json: bool = False) -> int:
+    """Run one calculator from design/calculators.py.
+
+    The inputs are read against the function's own signature, so a flag
+    can never drift from the parameter it fills: a name it does not take
+    is refused with the names it does, and each value is converted to the
+    type that parameter is annotated with.
+    """
+    import inspect
+    import json as _json
+
+    from .design.calculators import CALCULATORS
+
+    if not name or name not in CALCULATORS:
+        if name:
+            print(f"no calculator {name!r}")
+        for key, fn in CALCULATORS.items():
+            doc = " ".join((fn.__doc__ or "").split())
+            print(f"  {key:22s} {doc.split('. ')[0].rstrip('.')}.")
+        return 0 if not name else 2
+    fn = CALCULATORS[name]
+    params = inspect.signature(fn).parameters
+    if any(i in ("-h", "--help") for i in inputs):
+        print((fn.__doc__ or "").strip())
+        print()
+        for p in params.values():
+            default = "" if p.default is inspect.Parameter.empty else f" = {p.default!r}"
+            print(f"  {p.name}{default}")
+        return 0
+    kwargs = {}
+    for item in inputs:
+        key, sep, raw = item.partition("=")
+        if not sep or key not in params:
+            print(f"{item!r}: inputs are KEY=VALUE, KEY one of {', '.join(params)}")
+            return 2
+        hint = str(params[key].annotation)
+        try:
+            if "int" in hint and "float" not in hint:
+                kwargs[key] = int(raw)
+            elif "float" in hint:
+                kwargs[key] = float(raw)
+            else:
+                kwargs[key] = raw
+        except ValueError:
+            print(f"{key}: {raw!r} is not a number")
+            return 2
+    try:
+        result = fn(**kwargs)
+    except TypeError as exc:
+        print(f"{name}: {exc}")
+        return 2
+    if as_json:
+        print(_json.dumps(result, indent=1, default=str))
+    else:
+        for key, value in result.items():
+            if isinstance(value, float):
+                value = f"{value:.6g}"
+            print(f"{key}: {value}")
+    return 0 if result.get("ok") else 1
+

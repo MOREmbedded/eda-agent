@@ -1,0 +1,100 @@
+{
+ "vendor": "JLCPCB",
+ "source": {
+  "url": "https://jlcpcb.com/capabilities/pcb-capabilities",
+  "retrieved": "2026-10-22",
+  "note": "Rigid FR-4 capabilities. The page carries no revision date."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {"counts": [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32],
+     "quote": "Layer count 1-32 Layers The number of copper layers in the PCB Controlled Impedance 4/6/8/10/12/14/16/18/20/.../32 layers",
+     "note": "1 and 2 plus the even counts the controlled-impedance row lists; the page names no odd count above 2."}
+   ],
+   "min_track": [
+    {"mm": 0.10, "when": {"layers": "1-2", "outer_oz": 1},
+     "quote": "Min. track width and spacing (1 oz) ... 1- and 2-layer: 0.10 / 0.10 mm (4 / 4 mil)"},
+    {"mm": 0.09, "when": {"layers": "multi", "outer_oz": 1},
+     "quote": "Min. track width and spacing (1 oz) ... Multilayer: 0.09 / 0.09 mm (3.5 / 3.5 mil). 3 mil is acceptable in BGA fan-outs."},
+    {"mm": 0.16, "when": {"layers": "1-2", "outer_oz": 2},
+     "quote": "Min. track width and spacing (2 oz) ... 2-layer: 0.16 / 0.16 mm (6.5 / 6.5 mil)"},
+    {"mm": 0.15, "when": {"layers": "multi", "outer_oz": 2},
+     "quote": "Min. track width and spacing (2 oz) ... Multilayer: 0.15 / 0.15 mm (6 / 6 mil)"},
+    {"mm": 0.2, "when": {"layers": "1-2", "outer_oz": 2.5},
+     "quote": "Min. track width and spacing (2.5 oz) 2 layer: 0.2/0.2mm(8mil/8mil)"},
+    {"mm": 0.25, "when": {"layers": "1-2", "outer_oz": 3.5},
+     "quote": "Min. track width and spacing (3.5 oz) 2 layer: 0.25/0.25mm(10mil/10mil)"},
+    {"mm": 0.3, "when": {"layers": "1-2", "outer_oz": 4.5},
+     "quote": "Min. track width and spacing (4.5 oz) 2 layer: 0.3/0.3mm(12mil/12mil)"}
+   ],
+   "min_gap": [
+    {"mm": 0.10, "when": {"layers": "1-2", "outer_oz": 1},
+     "quote": "Min. track width and spacing (1 oz) ... 1- and 2-layer: 0.10 / 0.10 mm (4 / 4 mil)"},
+    {"mm": 0.09, "when": {"layers": "multi", "outer_oz": 1},
+     "quote": "Min. track width and spacing (1 oz) ... Multilayer: 0.09 / 0.09 mm (3.5 / 3.5 mil)."},
+    {"mm": 0.16, "when": {"layers": "1-2", "outer_oz": 2},
+     "quote": "Min. track width and spacing (2 oz) ... 2-layer: 0.16 / 0.16 mm (6.5 / 6.5 mil)"},
+    {"mm": 0.15, "when": {"layers": "multi", "outer_oz": 2},
+     "quote": "Min. track width and spacing (2 oz) ... Multilayer: 0.15 / 0.15 mm (6 / 6 mil)"},
+    {"mm": 0.2, "when": {"layers": "1-2", "outer_oz": 2.5},
+     "quote": "Min. track width and spacing (2.5 oz) 2 layer: 0.2/0.2mm(8mil/8mil)"},
+    {"mm": 0.25, "when": {"layers": "1-2", "outer_oz": 3.5},
+     "quote": "Min. track width and spacing (3.5 oz) 2 layer: 0.25/0.25mm(10mil/10mil)"},
+    {"mm": 0.3, "when": {"layers": "1-2", "outer_oz": 4.5},
+     "quote": "Min. track width and spacing (4.5 oz) 2 layer: 0.3/0.3mm(12mil/12mil)"}
+   ],
+   "min_drill": [
+    {"mm": 0.3, "when": {"layers": "1"},
+     "quote": "Drill Diameter 1-layer: 0.3 – 6.3 mm"},
+    {"mm": 0.15, "when": {"layers": "2+"},
+     "quote": "Drill Diameter ... 2-layer: 0.15 – 6.3 mm (0.1mm microvias only available for board thickness ≤1mm; ENIG/OSP surface finish required) Multilayer: 0.15 – 6.3 mm",
+     "note": "0.1 mm exists only at extra cost, board ≤1 mm and ENIG/OSP, so it is not the standard floor."}
+   ],
+   "min_annular_ring": [
+    {"mm": 0.05, "when": {"layers": "2+"},
+     "quote": "Min. Via hole size/diameter 0.15/0.25mm ... Via diameter should be 0.1mm(0.15mm preferred) larger than Via hole size.",
+     "derived": "(0.25 - 0.15) / 2: the via ring the published hole and diameter leave",
+     "note": "This is the VIA ring, the one rule synthesis sizes vias with. Plated component holes need far more: 'PTH annular ring ≧0.20mm ... Multilayer: 1 oz: Recommended 0.20 mm or above; absolute minimum 0.15 mm'."}
+   ],
+   "min_hole_to_hole": [
+    {"mm": 0.2, "quote": "Via Hole-to-Hole Spacing 0.2mm",
+     "note": "Between plated component holes the page asks for more: 'Pad Hole-to-Hole Spacing 0.45mm'."}
+   ],
+   "min_mask_sliver": [
+    {"mm": 0.10, "when": {"outer_oz": 1},
+     "quote": "Soldermask bridge 0.10mm 1oz: Min. pad spacing: 0.10 mm (green, red, yellow, blue, purple) Min. pad spacing: 0.13 mm (black, white)",
+     "note": "The solder mask bridge is the narrowest mask web between openings. Black and white mask need 0.13 mm."},
+    {"mm": 0.20, "when": {"outer_oz": 2},
+     "quote": "Soldermask bridge ... 2oz: Min. pad spacing: 0.20 mm (any color)"}
+   ],
+   "min_silk_width": [
+    {"mm": 0.15, "quote": "Minimum Line Width ≥0.15mm Characters width less than 0.15mm will be unidentifiable."}
+   ],
+   "min_silk_height": [
+    {"mm": 1.0, "quote": "Minimum text height 40 mil (1.0mm) Characters height less than 40 mil(1.0mm) will be unidentifiable."}
+   ],
+   "pth_annular_ring": [
+    {"mm": 0.18, "recommended_mm": 0.25, "when": {"layers": "1-2", "outer_oz": 1},
+     "quote": "PTH annular ring ≧0.20mm 2-layer: 1 oz: Recommended 0.25 mm or above; absolute minimum 0.18 mm"},
+    {"mm": 0.254, "when": {"layers": "1-2", "outer_oz": 2},
+     "quote": "PTH annular ring ... 2-layer: ... 2 oz: 0.254 mm or above"},
+    {"mm": 0.15, "recommended_mm": 0.20, "when": {"layers": "multi", "outer_oz": 1},
+     "quote": "PTH annular ring ... Multilayer: 1 oz: Recommended 0.20 mm or above; absolute minimum 0.15 mm"},
+    {"mm": 0.254, "when": {"layers": "multi", "outer_oz": 2},
+     "quote": "PTH annular ring ... Multilayer: ... 2 oz: 0.254 mm or above"}
+   ],
+   "inner_via_hole_to_copper": [
+    {"mm": 0.2, "when": {"layers": "multi"},
+     "quote": "Inner layer via hole to copper clearance 0.2mm"}
+   ],
+   "inner_pth_hole_to_copper": [
+    {"mm": 0.3, "when": {"layers": "multi"},
+     "quote": "Inner layer PTH pad hole to copper clearance 0.3mm"}
+   ],
+   "copper_to_edge": [
+    {"mm": 0.2, "quote": "Routed 0.2mm ① Copper clearance from routed board edges: ≧0.2 mm"}
+   ]
+  }
+ }
+}
