@@ -46,9 +46,9 @@
    ],
    "min_drill": [
     {"mm": 0.3, "when": {"layers": "1"},
-     "quote": "Drill Diameter 1-layer: 0.3 – 6.3 mm"},
+     "quote": "Drill Diameter 1-layer: 0.3-6.3 mm"},
     {"mm": 0.15, "when": {"layers": "2+"},
-     "quote": "Drill Diameter ... 2-layer: 0.15 – 6.3 mm (0.1mm microvias only available for board thickness ≤1mm; ENIG/OSP surface finish required) Multilayer: 0.15 – 6.3 mm",
+     "quote": "Drill Diameter ... 2-layer: 0.15-6.3 mm (0.1mm microvias only available for board thickness ≤1mm; ENIG/OSP surface finish required) Multilayer: 0.15-6.3 mm",
      "note": "0.1 mm exists only at extra cost, board ≤1 mm and ENIG/OSP, so it is not the standard floor."}
    ],
    "min_annular_ring": [

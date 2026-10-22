@@ -74,7 +74,7 @@
  "High-pin-count ICs": "Микросхемы с большим числом выводов",
  "IC datasheets": "Даташиты микросхем",
  "IC decoupling": "Развязка микросхем",
- "IC pins with no net or named '?' / empty. Each is either a missing wire or a missing No-ERC mark.": "Выводы микросхем без цепи или с именем '?' / пустым. Каждый из них — пропущенный провод или пропущенная метка No-ERC.",
+ "IC pins with no net or named '?' / empty. Each is either a missing wire or a missing No-ERC mark.": "Выводы микросхем без цепи или с именем '?' / пустым. Каждый из них: пропущенный провод или пропущенная метка No-ERC.",
  "ICs missing local decoupling": "Микросхемы без локальной развязки",
  "ICs missing local decoupling caps": "Микросхемы без локальных развязывающих конденсаторов",
  "ICs where a VCC/VDD/GND/VSS pin is wired to a net whose name doesn't match. ERC won't catch this.": "Микросхемы, у которых вывод VCC/VDD/GND/VSS подключён к цепи с несоответствующим именем. ERC этого не обнаружит.",
