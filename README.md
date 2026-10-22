@@ -124,7 +124,7 @@ or, if `eda-agent` is not recognised:
 python -m eda_agent install-scripts
 ```
 
-Default destination: `%USERPROFILE%\EDA Agent\scripts\`. Use `--dest PATH` to put it elsewhere.
+Default destination: wherever Altium already loads the script project from (its Global Projects list, for every Altium version installed), or `%USERPROFILE%\EDA Agent\scripts\` the first time. Use `--dest PATH` to put it elsewhere; Altium still talks to the same workspace either way. `eda-agent health` reports a registration that points at a missing file.
 
 Register the script as a Global Project in Altium (once):
 
@@ -465,7 +465,7 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent serve` | Explicit form of the above |
 | `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
 | `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
-| `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to a directory of your choice |
+| `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to every folder Altium loads them from, or to PATH |
 | `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
 | `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
 | `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |

@@ -59,12 +59,90 @@ def get_bundled_scripts_path() -> Path:
 # User-profile paths
 # --------------------------------------------------------------------------
 
-def get_default_scripts_dest() -> Path:
-    """Default destination for `install-scripts`: %USERPROFILE%\\EDA Agent\\scripts\\."""
+#: Where an Altium install keeps its Global Projects list (the Scripting
+#: System preference page), under HKCU\Software\Altium\<install>; one
+#: value per project. Read on AD 26.11.
+_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
+
+def registered_script_projects() -> list[dict]:
+    """Every Altium_API.PrjScr an Altium install loads at startup.
+
+    [{"install": registry key name, "path": project file, "exists"}], in
+    registry order; [] off Windows or when no install registers one.
+    The folder that matters is the one Altium loads, and it need not be
+    the default this package installs to.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found: list[dict] = []
+    try:
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Altium")
+    except OSError:
+        return []
+    with root:
+        index = 0
+        while True:
+            try:
+                install = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS)
+            except OSError:
+                continue
+            with key:
+                item = 0
+                while True:
+                    try:
+                        _name, value, _kind = winreg.EnumValue(key, item)
+                    except OSError:
+                        break
+                    item += 1
+                    if (isinstance(value, str)
+                            and Path(value.strip()).name.lower()
+                            == "altium_api.prjscr"):
+                        path = Path(value.strip())
+                        found.append({"install": install, "path": str(path),
+                                      "exists": path.is_file()})
+    return found
+
+
+def get_registered_scripts_dirs() -> list[Path]:
+    """The distinct folders Altium loads the script project from."""
+    folders: list[Path] = []
+    seen: set[str] = set()
+    for entry in registered_script_projects():
+        folder = Path(entry["path"]).parent
+        key = os.path.normcase(str(folder))
+        if key not in seen:
+            seen.add(key)
+            folders.append(folder)
+    return folders
+
+
+def get_fallback_scripts_dest() -> Path:
+    """%USERPROFILE%\\EDA Agent\\scripts\\, when Altium names no folder."""
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "scripts"
     return Path.home() / "EDA Agent" / "scripts"
+
+
+def get_default_scripts_dest() -> Path:
+    """Where the scripts belong: the folder Altium loads them from when one
+    is registered, else %USERPROFILE%\\EDA Agent\\scripts\\.
+
+    With several installs registering different folders the first is
+    returned; `install-scripts` itself deploys to all of them.
+    """
+    registered = get_registered_scripts_dirs()
+    return registered[0] if registered else get_fallback_scripts_dest()
 
 
 # --------------------------------------------------------------------------
@@ -243,17 +321,32 @@ def _stamp_deployed_unit(path: Path) -> None:
 
 
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
-    """Copy the bundled script project to a user-chosen directory.
+    """Copy the bundled script project where Altium loads it from.
 
-    Default destination: %USERPROFILE%\\EDA Agent\\scripts\\
-    Override with --dest PATH.
+    Default destination: every folder an Altium install registers the
+    script project in (Global Projects), so each version on the machine
+    compiles the same build; with none registered,
+    %USERPROFILE%\\EDA Agent\\scripts\\. Override with --dest PATH.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
     from `Dispatcher.pas`.
     """
+    if dest:
+        targets = [Path(dest).expanduser().resolve()]
+    else:
+        targets = get_registered_scripts_dirs() or [get_fallback_scripts_dest()]
+    status = 0
+    for target in targets:
+        status = max(status, _install_scripts_into(target, force))
+    if len(targets) > 1:
+        print(f"Installed into {len(targets)} folders that Altium installs "
+              f"register: {', '.join(map(str, targets))}")
+    return status
+
+
+def _install_scripts_into(dst: Path, force: bool) -> int:
     src = get_bundled_scripts_path()
-    dst = Path(dest).expanduser().resolve() if dest else get_default_scripts_dest()
 
     if not src.exists():
         print(f"ERROR: bundled scripts directory not found: {src}", file=sys.stderr)
@@ -313,10 +406,13 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
         copied += 1
 
     # Publish the workspace path for DelphiScript to pick up, even before
-    # the MCP server has ever run. Workspace lives alongside scripts: if
-    # scripts are at <dest>\, workspace is at <dest's parent>\workspace\.
-    from .config import write_workspace_pointer
-    workspace_dir = dst.parent / "workspace"
+    # the MCP server has ever run. It is the SERVER's workspace, wherever
+    # the scripts went: the script reads the pointer once at startup, and
+    # deriving it from the destination (<dest>\..\workspace) pointed
+    # Altium at a folder no request is written to whenever --dest or a
+    # registered folder was not the default.
+    from .config import get_config, write_workspace_pointer
+    workspace_dir = Path(get_config().workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
 
@@ -324,10 +420,17 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     print(f"Copied {copied} files to: {dst}")
     print(f"Workspace:     {workspace_dir}")
     print()
-    print("One-time setup in Altium Designer:")
-    print("  DXP -> Preferences -> Scripting System -> Global Projects")
-    print(f"  Install from file -> select:")
-    print(f"  {prjscr}")
+    registered = {os.path.normcase(str(f)) for f in get_registered_scripts_dirs()}
+    if os.path.normcase(str(dst)) in registered:
+        print("Altium already loads the script project from this folder.")
+    else:
+        print("One-time setup in Altium Designer:")
+        print("  DXP -> Preferences -> Scripting System -> Global Projects")
+        print(f"  Install from file -> select:")
+        print(f"  {prjscr}")
+        if registered:
+            print("  (Altium currently loads it from elsewhere: "
+                  f"{', '.join(map(str, get_registered_scripts_dirs()))})")
     print()
     print("Each Altium session, start the polling loop via:")
     print("  File -> Run Script... -> Altium_API -> Dispatcher.pas -> StartMCPServer -> Run")
