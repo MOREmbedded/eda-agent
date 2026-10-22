@@ -50,9 +50,11 @@ clicks it, and clicking it runs it.
 from __future__ import annotations
 
 import ctypes
+import functools
 import time
 from ctypes import POINTER, byref, c_long, wintypes
 
+from . import altium_locale
 from . import windows as win
 from .captions import plain
 
@@ -147,7 +149,28 @@ def _same(a: str, b: str) -> bool:
     def flat(text):
         return (plain(text).replace("&", "").strip()
                 .rstrip(".").strip().lower())
-    return flat(a) == flat(b)
+    if flat(a) == flat(b):
+        return True
+    # On a translated Altium the caller still names the English caption,
+    # and the bar shows Altium's own translation of it.
+    if _UI_LANGUAGE in (None, "en"):
+        return False
+    return altium_locale.plain_caption(a) in _local_names(_UI_LANGUAGE, b)
+
+
+#: The language Altium's menu bar was last read in; set by bar_items.
+_UI_LANGUAGE: str | None = None
+
+
+@functools.lru_cache(maxsize=512)
+def _local_names(language: str, english: str) -> frozenset:
+    found = altium_locale.translations(english).get(language, set())
+    return frozenset(altium_locale.plain_caption(t) for t in found)
+
+
+def ui_language() -> str | None:
+    """The language Altium's menus were last seen in, or None if unread."""
+    return _UI_LANGUAGE
 
 
 def _name_at(x: int, y: int) -> str:
@@ -338,6 +361,8 @@ def bar_items(pid: int, timeout: float = 6.0) -> dict:
     while True:
         found = _bar_items_once(pid)
         if found:
+            global _UI_LANGUAGE
+            _UI_LANGUAGE = altium_locale.language_of(found.keys())
             return found
         if time.monotonic() >= deadline:
             # Empty after polling is not "this editor has no menus".

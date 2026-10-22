@@ -6,6 +6,7 @@ import re
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
+from ..bridge.exceptions import AltiumCommandError
 from ..cli import get_bundled_scripts_path
 from .datasheet_hints import DATASHEET_RULES
 from ..atomicfile import replace_with_retry
@@ -306,8 +307,87 @@ def register_meta_tools(mcp):
         return {"tool": name, "result": content}
 
 
+async def _run_declared_menu(bridge, menu_path: str) -> dict:
+    """Run a menu path through the command Altium's menu files give it.
+
+    The focused document picks the menu bar, because "Tools|Teardrops"
+    exists on a board and not on a schematic.
+    """
+    import asyncio
+
+    from ..safety import refuse_process
+    from ..ui import altium_menus
+
+    active = await bridge.send_command_async(
+        "application.get_active_document", {})
+    editor = str((active or {}).get("document_kind") or "").upper() \
+        if isinstance(active, dict) else ""
+    loop = asyncio.get_running_loop()
+    item = await loop.run_in_executor(
+        None, altium_menus.resolve, menu_path, editor)
+    if item is None:
+        near = await loop.run_in_executor(
+            None, lambda: altium_menus.nearest(menu_path, editor, 8))
+        return {"success": False, "dispatched": False,
+                "error": "UNMAPPED_MENU_PATH", "menu_path": menu_path,
+                "editor": editor or None,
+                "reason": (f"{menu_path!r} is not in the "
+                           f"{editor or 'focused'} editor's menus as Altium "
+                           f"declares them"),
+                "nearest": near}
+    refusal = refuse_process(item.command)
+    if refusal is not None:
+        return {"success": False, "dispatched": False,
+                "error": "REFUSED_BY_POLICY", "reason": refusal,
+                "menu_path": "|".join(item.path), "command": item.command}
+    params = "|".join(p.strip() for p in item.params.split("|") if p.strip())
+    params = "|".join("=".join(s.strip() for s in p.split("=", 1))
+                      for p in params.split("|") if p)
+    result = await bridge.send_command_async(
+        "generic.run_process", {"process": item.command, "params": params})
+    out = {"success": True, "dispatched": True, "outcome_verified": False,
+           "menu_path": "|".join(item.path), "editor": editor,
+           "command": item.command, "params": params,
+           "shortcut": item.shortcut or None,
+           "note": ("run through the command behind the menu item, with no "
+                    "menu walk; Altium does not report whether a process "
+                    "did anything, so read the result back")}
+    if isinstance(result, dict):
+        out["bridge"] = result
+    return out
+
+
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
+
+    @mcp.tool()
+    async def app_find_menu_command(query: str, editor: str = "",
+                                    limit: int = 20) -> dict[str, Any]:
+        """Search every Altium menu item and the command behind it.
+
+        Read from Altium's own menu definitions in its install, so it
+        answers without Altium's window, in any language Altium ships
+        (words may be English, 中文, 日本語, Deutsch, ...). Each hit gives
+        the menu ``path`` (English), the ``command`` and ``params`` it
+        runs, and its ``shortcut``. Run one with ``app_run_menu`` (no
+        menu walk) or ``app_click_menu`` (the real menu).
+
+        Args:
+            query: words to find, all of which must match.
+            editor: PCB, SCH, PCBLIB or SCHLIB; empty searches all four.
+            limit: how many hits to return.
+        """
+        import asyncio
+
+        from ..ui import altium_locale, altium_menus
+
+        loop = asyncio.get_running_loop()
+        hits = await loop.run_in_executor(
+            None, lambda: altium_menus.search(query, editor, limit))
+        install = altium_locale.install_dir()
+        return {"success": True, "query": query, "editor": editor or None,
+                "count": len(hits), "hits": hits,
+                "install": str(install) if install else None}
 
     @mcp.tool()
     async def app_get_status() -> dict[str, Any]:
@@ -1094,11 +1174,13 @@ def register_application_tools(mcp):
         Use ``app_click_menu`` when the command must actually run; it
         clicks the real menu and fails on a path that does not exist.
 
-        Mapped paths: "File|Save All", "Tools|Design Rule Check",
-        "Tools|Electrical Rules Check", "Project|Compile", "Edit|Select
-        All", "Edit|Deselect All", "View|Zoom Fit", "Tools|Preferences",
-        "Tools|Extensions and Updates". Anything else is refused with
-        UNMAPPED_MENU_PATH.
+        Any path in the focused editor's menu bar works, in English or
+        in any language Altium ships: it is looked up in Altium's own
+        menu definitions (``app_find_menu_command`` searches them) and
+        the command behind it is run, with no menu walk and no focus
+        taken. The reply names the ``command`` and ``params`` used. A
+        path the install does not declare is refused with
+        UNMAPPED_MENU_PATH and the nearest matches.
 
         Args:
             menu_path: Menu path using pipe separators (e.g., "File|Save All")
@@ -1109,9 +1191,14 @@ def register_application_tools(mcp):
             parse is reported as a failure, not smoothed into a success.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "application.execute_menu", {"menu_path": menu_path}
-        )
+        try:
+            result = await bridge.send_command_async(
+                "application.execute_menu", {"menu_path": menu_path}
+            )
+        except AltiumCommandError as exc:
+            if getattr(exc, "code", "") != "UNMAPPED_MENU_PATH":
+                raise
+            return await _run_declared_menu(bridge, menu_path)
         # Report what the handler said, and nothing it did not say. The
         # previous ``{"success": True, **result}`` did preserve an
         # explicit ``success: false`` (the spread wins), but it INVENTED

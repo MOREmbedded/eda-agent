@@ -384,7 +384,10 @@ def register_uiauto_tools(mcp):
         try ``tool_guide`` first.
 
         Path by name, e.g. "Design|Rules" (accelerators and "..."
-        ignored). It needs the foreground: it brings Altium forward and
+        ignored). Give the English names on any language: a translated
+        Altium's own captions are matched from its install, and the
+        reply's ``ui_language`` says which it was. It needs the
+        foreground: it brings Altium forward and
         briefly moves the pointer, so ``may_steal_focus`` must be True.
         The menu bar depends on the focused editor, so focus the right
         document first. Read any dialog it opens with
@@ -434,8 +437,11 @@ def register_uiauto_tools(mcp):
                 "and briefly moving the pointer. Pass "
                 "may_steal_focus=True if that is acceptable now.")}
 
-        return await loop.run_in_executor(
+        out = await loop.run_in_executor(
             None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
+        if isinstance(out, dict) and menu.ui_language():
+            out["ui_language"] = menu.ui_language()
+        return out
 
     @mcp.tool()
     async def app_list_open_dialogs() -> dict[str, Any]:
