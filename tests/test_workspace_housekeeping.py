@@ -122,7 +122,7 @@ def test_only_old_default_screenshots_are_deleted(tmp_path: Path):
 def test_run_never_raises_on_an_empty_workspace(tmp_path: Path):
     report = housekeeping.run(tmp_path)
     assert report == {"rotated": [], "checkpoints_removed": 0,
-                      "screenshots_removed": 0}
+                      "screenshots_removed": 0, "server_logs_removed": 0}
 
 
 def test_the_server_starts_housekeeping_off_the_main_thread():

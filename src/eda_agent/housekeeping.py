@@ -106,6 +106,12 @@ def run(workspace: Path) -> dict:
     except Exception as e:  # noqa: BLE001 - housekeeping must not stop a server
         logger.debug("checkpoint prune failed: %s", e)
     report["screenshots_removed"] = prune_screenshots(workspace)
-    if report["rotated"] or report["checkpoints_removed"] or report["screenshots_removed"]:
+    try:
+        from .server_log import prune
+        report["server_logs_removed"] = prune(workspace)
+    except Exception as e:  # noqa: BLE001 - housekeeping must not stop a server
+        logger.debug("server log prune failed: %s", e)
+    if report["rotated"] or report["checkpoints_removed"] or report["screenshots_removed"] \
+            or report.get("server_logs_removed"):
         logger.info("workspace housekeeping: %s", report)
     return report
