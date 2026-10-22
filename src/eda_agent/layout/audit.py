@@ -734,6 +734,11 @@ def _pad_entry_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
     return pad_entry_audit(board, limit=limit)
 
 
+def _rotation_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
+    from .rotation_audit import rotation_audit
+    return rotation_audit(board, limit=limit)
+
+
 CHECKS: dict[str, Callable[..., dict]] = {
     "placement_audit": placement_audit,
     "connectivity_summary": connectivity_summary,
@@ -743,6 +748,7 @@ CHECKS: dict[str, Callable[..., dict]] = {
     "plane_region_audit": plane_region_audit,
     "loop_audit": _loop_audit,
     "pad_entry_audit": _pad_entry_audit,
+    "rotation_audit": _rotation_audit,
 }
 
 

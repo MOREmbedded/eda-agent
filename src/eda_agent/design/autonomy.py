@@ -114,7 +114,7 @@ class Criterion:
 #: sentence.
 AUDIT_CHECKS = ("placement_audit", "connectivity_summary", "drc",
                 "corner_audit", "return_via_audit", "plane_region_audit",
-                "loop_audit", "pad_entry_audit")
+                "loop_audit", "pad_entry_audit", "rotation_audit")
 
 _DRC = Criterion("drc", "violations", "==", 0,
                  also=(("pcb_run_drc", "violation_count"),
