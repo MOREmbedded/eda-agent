@@ -316,6 +316,7 @@ class AltiumBridge:
     """
 
     KEEPALIVE_INTERVAL = 30  # seconds
+    KEEPALIVE_SLOW_INTERVAL = 120  # seconds, while Altium does not answer
     DETACH_HINT_AFTER = 600  # seconds
 
     def __init__(self):
@@ -554,34 +555,44 @@ class AltiumBridge:
         sentinel_interval = 1.0
         ticks_per_ping = max(1, int(self.KEEPALIVE_INTERVAL / sentinel_interval))
         tick = 0
-        # One slow/failed ping must not kill the keep-alive: a long tool call
-        # holds the serialized bridge past the 5s ping timeout, and a dead
-        # keep-alive lets Altium's 60s idle auto-shutdown stop the polling
-        # loop. Only give up after several consecutive failures, and say so
-        # loudly -- a silently dead keep-alive looks like a transport drop.
+        # A failed ping must not END the keep-alive. It used to exit after
+        # three in a row, which looked safe and was not: MEASURED
+        # 2026-10-22, a bridge restart that took a few minutes killed the
+        # keep-alive of every attached session, so once the loop was back
+        # nobody pinged it and it shut itself down idle twenty minutes
+        # later, with every session still connected. Now the pings slow
+        # down while Altium does not answer and return to the normal
+        # interval on the first answer, so a restarted loop is kept alive
+        # by every session that was attached before.
         consecutive_failures = 0
-        max_failures = 3
+        slow_after = 3
+        slow_ticks = max(ticks_per_ping, int(self.KEEPALIVE_SLOW_INTERVAL
+                                             / sentinel_interval))
         while not self._keepalive_stop.wait(sentinel_interval):
             if not self._attached:
                 break
             self._maybe_open_dashboard_sentinel()
             tick += 1
-            if tick >= ticks_per_ping:
+            due = slow_ticks if consecutive_failures >= slow_after \
+                else ticks_per_ping
+            if tick >= due:
                 tick = 0
                 try:
                     self.send_command("application.ping", timeout=5.0)
+                    if consecutive_failures >= slow_after:
+                        logger.info("Keep-alive: Altium answers again")
                     consecutive_failures = 0
                 except Exception:
                     consecutive_failures += 1
-                    logger.debug(
-                        "Keep-alive ping failed (%d/%d)",
-                        consecutive_failures, max_failures)
-                    if consecutive_failures >= max_failures:
+                    if consecutive_failures == slow_after:
                         logger.warning(
-                            "Keep-alive exiting after %d consecutive failed "
-                            "pings -- Altium polling loop is likely stopped. "
-                            "It restarts on the next tool call.", max_failures)
-                        break
+                            "Keep-alive: %d pings in a row went unanswered; "
+                            "the polling loop is likely stopped. Pinging "
+                            "every %ds until it is back.", slow_after,
+                            self.KEEPALIVE_SLOW_INTERVAL)
+                    else:
+                        logger.debug("Keep-alive ping failed (%d)",
+                                     consecutive_failures)
 
     def _maybe_open_dashboard_sentinel(self) -> None:
         """If the Altium status form dropped open_dashboard.url, open it.
