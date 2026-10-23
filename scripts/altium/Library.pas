@@ -14880,6 +14880,446 @@ Begin
     End;
 End;
 
+{ RotCoordX / RotCoordY - a point turned about (OX, OY) by a multiple of 90  }
+{ degrees, counter-clockwise as Altium measures angles. Exact in integer      }
+{ coordinates, so four quarter turns give back the point exactly.             }
+Function RotCoordX(X, Y, OX, OY : TCoord; Quarter : Integer) : TCoord;
+Begin
+    If Quarter = 1 Then Result := OX - (Y - OY)
+    Else If Quarter = 2 Then Result := OX - (X - OX)
+    Else If Quarter = 3 Then Result := OX + (Y - OY)
+    Else Result := X;
+End;
+
+Function RotCoordY(X, Y, OX, OY : TCoord; Quarter : Integer) : TCoord;
+Begin
+    If Quarter = 1 Then Result := OY + (X - OX)
+    Else If Quarter = 2 Then Result := OY - (Y - OY)
+    Else If Quarter = 3 Then Result := OY - (X - OX)
+    Else Result := Y;
+End;
+
+{ Angles compared modulo 360, to a hundredth of a degree. }
+Function SameAngle(A, B : Double) : Boolean;
+Var
+    D : Double;
+Begin
+    D := A - B;
+    While D < 0 Do D := D + 360;
+    While D >= 360 Do D := D - 360;
+    Result := (D < 0.01) Or (D > 359.99);
+End;
+
+{ Whether an object address is new to the Seen list, adding it if so. A     }
+{ footprint on screen can list an object twice; turning it twice is a 180   }
+{ for a 90.                                                                  }
+Function FirstSighting(Var Seen : String; Addr : String) : Boolean;
+Begin
+    Result := (Addr = '') Or (Pos(#9 + Addr + #9, Seen) = 0);
+    If Result And (Addr <> '') Then Seen := Seen + Addr + #9;
+End;
+
+{..............................................................................}
+{ Lib_RotateFootprint - turn a footprint in a PcbLib about its own origin by   }
+{ 90, 180 or 270 degrees (counter-clockwise), every primitive: pads (position  }
+{ and pad rotation, custom shapes with them), tracks, arcs, fills, regions,   }
+{ vias, texts and 3D bodies (outline and model).                              }
+{                                                                              }
+{ Asked for to turn house footprints to an assembler's default orientation;  }
+{ nothing could do it except the editor's own select-all-and-rotate, which   }
+{ needs the screen and moves the user's selection.                            }
+{                                                                              }
+{ The library is opened by path, so it need not be focused. The origin is    }
+{ Footprint.X / Footprint.Y, the frame the footprint's primitives are in      }
+{ whether or not it is on screen (see FootprintOriginX). One walk per kind,  }
+{ each into a local of that kind's type: DelphiScript narrows an interface   }
+{ only when the local is assigned straight from an iterator, and a pad held }
+{ in a list has no x or Rotation. Each object is turned once, by address    }
+{ (FirstSighting). Polygons and dimensions are counted and reported as not  }
+{ turned.                                                                    }
+{                                                                              }
+{ Tracks are turned by their end points, exactly; IPCB_Track declares no      }
+{ RotateAroundXY in the SDK. The other kinds use RotateAroundXY, which        }
+{ IPCB_Pad, IPCB_Arc, IPCB_Region (so IPCB_ComponentBody), IPCB_Via and the  }
+{ rectangular primitives (fills, texts) declare.                             }
+{                                                                              }
+{ A body turns with RotateAroundXY like the rest, and its 3D model with it;  }
+{ the model itself is never written (see the body walk below).               }
+{                                                                              }
+{ Every pad is READ BACK: its centre must be where the turn puts it and its  }
+{ rotation must have moved by the angle. Anything else is a mismatch.       }
+{ dry_run counts what would be                                               }
+{ turned and changes nothing. Does not save.                                 }
+{..............................................................................}
+Function Lib_RotateFootprint(Params : String; RequestId : String) : String;
+Var
+    LibPath, FpWanted, AngleStr, DryStr, ShowStr, Kinds, Mismatch, Seen, Addr : String;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    GrpIter : IPCB_GroupIterator;
+    Trk : IPCB_Track;
+    Pad : IPCB_Pad;
+    Arc : IPCB_Arc;
+    Fill : IPCB_Fill;
+    Rgn : IPCB_Region;
+    Via : IPCB_Via;
+    Txt : IPCB_Text;
+    Body : IPCB_ComponentBody;
+    Prim : IPCB_Primitive;
+    Model : IPCB_Model;
+    Angle, Quarter : Integer;
+    DryRun : Boolean;
+    OX, OY, X1, Y1, X2, Y2, WantX, WantY : TCoord;
+    PadRotBefore, PadRotAfter : Double;
+    NPads, NTracks, NArcs, NFills, NRegions, NVias, NTexts, NBodies, NOther : Integer;
+    Turned, Bad, NModels : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpWanted := ExtractJsonValue(Params, 'footprint');
+    AngleStr := ExtractJsonValue(Params, 'angle');
+    DryStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
+    DryRun := (DryStr = 'true') Or (DryStr = '1');
+    ShowStr := LowerCase(ExtractJsonValue(Params, 'show'));
+    If (LibPath = '') Or (FpWanted = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'library_path and footprint are required');
+        Exit;
+    End;
+    Angle := StrToIntDef(AngleStr, 0);
+    While Angle < 0 Do Angle := Angle + 360;
+    Angle := Angle Mod 360;
+    If (Angle <> 90) And (Angle <> 180) And (Angle <> 270) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ANGLE',
+            'angle must be 90, 180 or 270 (or -90), counter-clockwise; got '
+            + AngleStr);
+        Exit;
+    End;
+    Quarter := Angle Div 90;
+
+    PcbLib := Nil;
+    Try PcbLib := PCBServer.GetPCBLibraryByPath(LibPath); Except End;
+    If PcbLib = Nil Then Try PcbLib := PCBServer.LoadPCBLibraryByPath(LibPath); Except End;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'Could not open the PCB library at ' + LibPath);
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpWanted);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No footprint named ' + FpWanted + ' in ' + LibPath);
+        Exit;
+    End;
+    OX := FootprintOriginX(Footprint);
+    OY := FootprintOriginY(Footprint);
+
+    NPads := 0; NTracks := 0; NArcs := 0; NFills := 0; NRegions := 0;
+    NVias := 0; NTexts := 0; NBodies := 0; NOther := 0; Turned := 0; Bad := 0;
+    NModels := 0;
+    Mismatch := '';
+    Seen := #9;
+
+    If Not DryRun Then PCBServer.PreProcess;
+    Try
+        { Tracks: by their end points. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+            Trk := GrpIter.FirstPCBObject;
+            While Trk <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Trk.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NTracks);
+                    If Not DryRun Then
+                    Begin
+                        X1 := Trk.x1; Y1 := Trk.y1; X2 := Trk.x2; Y2 := Trk.y2;
+                        Trk.BeginModify;
+                        Trk.x1 := RotCoordX(X1, Y1, OX, OY, Quarter);
+                        Trk.y1 := RotCoordY(X1, Y1, OX, OY, Quarter);
+                        Trk.x2 := RotCoordX(X2, Y2, OX, OY, Quarter);
+                        Trk.y2 := RotCoordY(X2, Y2, OX, OY, Quarter);
+                        Trk.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Trk := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Pads: turned, then every one read back. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GrpIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Pad.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NPads);
+                    If Not DryRun Then
+                    Begin
+                        X1 := Pad.x; Y1 := Pad.y;
+                        PadRotBefore := 0;
+                        Try PadRotBefore := Pad.Rotation; Except End;
+                        WantX := RotCoordX(X1, Y1, OX, OY, Quarter);
+                        WantY := RotCoordY(X1, Y1, OX, OY, Quarter);
+                        Pad.BeginModify;
+                        Pad.RotateAroundXY(OX, OY, Angle);
+                        Pad.EndModify;
+                        Inc(Turned);
+                        PadRotAfter := 0;
+                        Try PadRotAfter := Pad.Rotation; Except End;
+                        If (Abs(Pad.x - WantX) > 1) Or (Abs(Pad.y - WantY) > 1)
+                           Or (Not SameAngle(PadRotAfter, PadRotBefore + Angle)) Then
+                        Begin
+                            Inc(Bad);
+                            If Mismatch <> '' Then Mismatch := Mismatch + ',';
+                            Mismatch := Mismatch + '{"pad":"' + EscapeJsonString(Pad.Name) + '"'
+                                + ',"x_mils":' + FloatToJsonStr(CoordToMilsF(Pad.x - OX))
+                                + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Pad.y - OY))
+                                + ',"want_x_mils":' + FloatToJsonStr(CoordToMilsF(WantX - OX))
+                                + ',"want_y_mils":' + FloatToJsonStr(CoordToMilsF(WantY - OY))
+                                + ',"rotation":' + FloatToJsonStr(PadRotAfter)
+                                + ',"rotation_before":' + FloatToJsonStr(PadRotBefore) + '}';
+                        End;
+                    End;
+                End;
+                Pad := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Arcs. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eArcObject));
+            Arc := GrpIter.FirstPCBObject;
+            While Arc <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Arc.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NArcs);
+                    If Not DryRun Then
+                    Begin
+                        Arc.BeginModify;
+                        Arc.RotateAroundXY(OX, OY, Angle);
+                        Arc.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Arc := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Fills. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eFillObject));
+            Fill := GrpIter.FirstPCBObject;
+            While Fill <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Fill.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NFills);
+                    If Not DryRun Then
+                    Begin
+                        Fill.BeginModify;
+                        Fill.RotateAroundXY(OX, OY, Angle);
+                        Fill.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Fill := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Regions. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eRegionObject));
+            Rgn := GrpIter.FirstPCBObject;
+            While Rgn <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Rgn.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NRegions);
+                    If Not DryRun Then
+                    Begin
+                        Rgn.BeginModify;
+                        Rgn.RotateAroundXY(OX, OY, Angle);
+                        Rgn.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Rgn := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Vias. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eViaObject));
+            Via := GrpIter.FirstPCBObject;
+            While Via <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Via.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NVias);
+                    If Not DryRun Then
+                    Begin
+                        Via.BeginModify;
+                        Via.RotateAroundXY(OX, OY, Angle);
+                        Via.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Via := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Texts. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eTextObject));
+            Txt := GrpIter.FirstPCBObject;
+            While Txt <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Txt.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NTexts);
+                    If Not DryRun Then
+                    Begin
+                        Txt.BeginModify;
+                        Txt.RotateAroundXY(OX, OY, Angle);
+                        Txt.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Txt := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { 3D bodies: the outline, then the model if the outline left it. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+            Body := GrpIter.FirstPCBObject;
+            While Body <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Body.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then
+                Begin
+                    Inc(NBodies);
+                    { Counted on a dry run too: that is when it is asked. }
+                    Model := Nil;
+                    Try Model := Body.Model; Except Model := Nil; End;
+                    If Model <> Nil Then Inc(NModels);
+                    If Not DryRun Then
+                    Begin
+                        { The body is a region: RotateAroundXY turns its     }
+                        { outline, and the model it carries goes with it, as }
+                        { it does when Altium's own Rotate Selection turns   }
+                        { a footprint. NOTHING is written to the model      }
+                        { itself: IPCB_Model.GetState cannot hand its four   }
+                        { values back to DelphiScript (measured: always 0), }
+                        { so a SetState built on them would reset the       }
+                        { model's X/Y rotation and Z offset, and STEP models }
+                        { often carry a 90 degree X rotation.               }
+                        Body.BeginModify;
+                        Body.RotateAroundXY(OX, OY, Angle);
+                        Body.EndModify;
+                        Inc(Turned);
+                    End;
+                End;
+                Body := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+
+        { Anything else is counted, not turned. }
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePolyObject, eDimensionObject, eCoordinateObject));
+            Prim := GrpIter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                Addr := '';
+                Try Addr := IntToStr(Prim.I_ObjectAddress); Except End;
+                If FirstSighting(Seen, Addr) Then Inc(NOther);
+                Prim := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+    Finally
+        If Not DryRun Then PCBServer.PostProcess;
+    End;
+
+    { show: make the footprint the library's current one, so it can be     }
+    { looked at (its 3D model shows only on the current footprint). Off by  }
+    { default: it changes what the user's library editor has on screen.    }
+    If (ShowStr = 'true') Or (ShowStr = '1') Then
+    Begin
+        Try PcbLib.CurrentComponent := Footprint; Except End;
+    End;
+    If Not DryRun Then
+    Begin
+        Try PcbLib.Board.GraphicallyInvalidate; Except End;
+        Try PcbLib.RefreshView; Except End;
+        MarkDocDirtyByPath(PcbLib.Board.FileName);
+    End;
+
+    Kinds := '"pads":' + IntToStr(NPads) + ',"tracks":' + IntToStr(NTracks)
+        + ',"arcs":' + IntToStr(NArcs) + ',"fills":' + IntToStr(NFills)
+        + ',"regions":' + IntToStr(NRegions) + ',"vias":' + IntToStr(NVias)
+        + ',"texts":' + IntToStr(NTexts) + ',"bodies":' + IntToStr(NBodies);
+    Result := BuildSuccessResponse(RequestId,
+        '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"footprint":"' + EscapeJsonString(Footprint.Name) + '"'
+        + ',"angle":' + IntToStr(Angle)
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"kinds":{' + Kinds + '}'
+        + ',"not_turned":' + IntToStr(NOther)
+        + ',"turned":' + IntToStr(Turned)
+        + ',"mismatches":' + IntToStr(Bad)
+        + ',"pad_mismatches":[' + Mismatch + ']'
+        + ',"bodies_with_models":' + IntToStr(NModels) + '}');
+End;
+
 { Lib_MoveBodiesToLayer - put the 3D bodies of a library on one mechanical   }
 { layer.                                                                     }
 {                                                                            }
@@ -18033,6 +18473,7 @@ Begin
         'copy_component':     Result := Lib_CopyComponent(Params, RequestId);
         'move_components':    Result := Lib_MoveComponents(Params, RequestId);
         'move_footprints':    Result := Lib_MoveFootprints(Params, RequestId);
+        'rotate_footprint':   Result := Lib_RotateFootprint(Params, RequestId);
         'copy_footprint':     Result := Lib_CopyFootprint(Params, RequestId);
         'audit_styles':       Result := Lib_AuditStyles(Params, RequestId);
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);

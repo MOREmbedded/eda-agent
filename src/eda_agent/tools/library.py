@@ -215,6 +215,34 @@ async def _save_library(bridge, library_path) -> tuple[bool, str]:
     return False, str(reply.get("reason") or "the library did not get newer on disk")
 
 
+async def _open_document(bridge, path: str) -> str:
+    """Make sure Altium has ``path`` open as a document; '' or the problem.
+
+    Focused when it is open already; opened (WorkspaceManager:OpenObject)
+    and focused when it is not.
+    """
+    from ..bridge.exceptions import AltiumError
+
+    async def focus() -> str:
+        try:
+            await bridge.send_command_async(
+                "application.set_active_document", {"file_path": path})
+            return ""
+        except AltiumError as exc:
+            return str(exc)
+
+    problem = await focus()
+    if problem and "not loaded" in problem.lower():
+        try:
+            await bridge.send_command_async("application.run_process", {
+                "process_name": "WorkspaceManager:OpenObject",
+                "parameters": f"ObjectKind=Document|FileName={path}"})
+        except AltiumError as exc:
+            return f"could not open {path}: {exc}"
+        problem = await focus()
+    return f"could not open {path}: {problem}" if problem else ""
+
+
 async def _reload_library(bridge, library_path) -> bool:
     """Close and reopen the PcbLib so Altium rebuilds its caches from disk.
 
@@ -5049,6 +5077,81 @@ def register_library_tools(mcp):
                 "overwrite": "true" if overwrite else "false",
             },
         )
+
+    @mcp.tool()
+    async def lib_rotate_footprint(
+        library_path: str,
+        footprint: str,
+        angle: int,
+        dry_run: bool = False,
+        save: bool = True,
+        show: bool = False,
+    ) -> dict[str, Any]:
+        """Turn a footprint in a .PcbLib about its own origin by 90, 180 or
+        270 degrees, counter-clockwise (-90 is 270), every primitive with it:
+        pads (position and pad rotation), tracks, arcs, fills, regions, vias,
+        texts (.Designator / .Comment included) and 3D bodies, whose model
+        turns with the body as it does under Altium's own Rotate Selection
+        (the model's own rotation fields are never written). The library is
+        opened by path; it need not be focused, and the user's selection is
+        not touched.
+
+        Every pad is read back: its centre must land where the turn puts it
+        and its rotation must move by the angle. Any that did not are
+        listed in ``pad_mismatches`` and counted in ``mismatches``; the
+        library is then NOT saved, so it can be inspected (or the footprint
+        turned back by the opposite angle). Polygons and dimensions in a
+        footprint are counted in ``not_turned``. Look at one turned
+        footprint in 3D before a batch (``show``), since the model's
+        orientation cannot be read back.
+
+        Args:
+            library_path: the .PcbLib.
+            footprint: footprint name (case-insensitive).
+            angle: 90, 180, 270 or -90.
+            dry_run: count what would be turned, change nothing.
+            save: save the library afterwards when nothing mismatched.
+            show: make the footprint the library's current one afterwards,
+                to look at it (its 3D model shows only there). Changes what
+                the library editor has on screen.
+
+        Returns:
+            ``kinds`` (count per primitive kind), ``turned``,
+            ``not_turned``, ``mismatches``, ``pad_mismatches``,
+            ``bodies_with_models`` and ``saved``.
+        """
+        if angle not in (90, 180, 270, -90):
+            return {"success": False,
+                    "error": "angle must be 90, 180, 270 or -90 (counter-clockwise)"}
+        bridge = get_bridge()
+        if not dry_run:
+            # A library Altium has not opened as a document is loaded off
+            # screen by the turn, where nothing can save it: the edit would
+            # be lost. Open it first, the way the template tools open a sheet.
+            opened = await _open_document(bridge, library_path)
+            if opened:
+                return {"success": False, "saved": False, "error": opened}
+        result = await bridge.send_command_async(
+            "library.rotate_footprint",
+            {"library_path": library_path, "footprint": footprint,
+             "angle": str(angle), "dry_run": "true" if dry_run else "false",
+             "show": "true" if show else "false"},
+            timeout=60.0,
+        )
+        if not isinstance(result, dict) or dry_run:
+            return result
+        out = dict(result)
+        out["saved"] = False
+        if not save:
+            out["next_step"] = "Not saved (save=False). app_save_document on the library writes it."
+        elif out.get("mismatches"):
+            out["next_step"] = ("Not saved: something did not turn as expected. Inspect it, "
+                                "or turn the footprint back with the opposite angle.")
+        else:
+            out["saved"], reason = await _save_library(bridge, library_path)
+            if not out["saved"]:
+                out["save_problem"] = reason
+        return out
 
     @mcp.tool()
     async def lib_move_footprints(
