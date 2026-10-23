@@ -6115,6 +6115,8 @@ Begin
                     Pin := PinIter.FirstSchObject;
                     While Pin <> Nil Do
                     Begin
+                        If PinShownOn(Comp, Pin) Then
+                        Begin
                         PinNum := '';
                         PinName := '';
                         PinX := 0;
@@ -6157,6 +6159,7 @@ Begin
                             ',"owner_part_id":' + IntToStr(OwnerPart) +
                             ',"owner_x":' + IntToStr(CompX) +
                             ',"owner_y":' + IntToStr(CompY) + '}';
+                        End;
 
                         Pin := PinIter.NextSchObject;
                     End;
@@ -9748,14 +9751,18 @@ End;
 
 {..............................................................................}
 { Gen_PlaceSchComponentsFromLibrary - Bulk BOM placement.                       }
-{ Each op: library_path, lib_reference, x, y, designator, rotation, footprint. }
-{ library_path and lib_reference are required; others have sane defaults.      }
+{ Each op: library_path, lib_reference, x, y, designator, rotation, footprint, }
+{ part_id. library_path and lib_reference are required; others have sane      }
+{ defaults. part_id places one part of a multi-part symbol (U2 part 3): the   }
+{ same designator can then appear once per part. It is read back, and a part  }
+{ id the symbol does not have fails that placement (PART_REFUSED), because    }
+{ the assignment is accepted and silently does not take.                      }
 {..............................................................................}
 
 Function Gen_PlaceSchComponentsFromLibrary(Params : String; RequestId : String) : String;
 Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
-    OpCount, Placed, Failed, Rotation : Integer;
+    OpCount, Placed, Failed, Rotation, PartId, PartAfter : Integer;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
     ResolvedLib, LibReason : String;
     X, Y : Integer;
@@ -9796,6 +9803,7 @@ Begin
             X := StrToIntDef(GetBatchField(Op, 'x'), 0);
             Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 0);
 
             If LibRef = '' Then
             Begin
@@ -9890,6 +9898,19 @@ Begin
             { read-only in DelphiScript (memory: delphiscript_api_quirks.md). }
             { Library symbol's own footprint is used.                          }
             PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);
+            If PartId > 1 Then
+            Begin
+                Try Comp.CurrentPartID := PartId; Except End;
+                PartAfter := -1;
+                Try PartAfter := Comp.CurrentPartID; Except End;
+                If PartAfter <> PartId Then
+                Begin
+                    Inc(Failed);
+                    If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+                    FailedRefdes := FailedRefdes + Desig + ':PART_REFUSED';
+                    Continue;
+                End;
+            End;
             Inc(Placed);
         End;
     Finally
@@ -10277,7 +10298,15 @@ End;
 { Gen_GetSchDocPins - Whole-sheet pin dump in one IPC call.                    }
 { Params: sheet_path (optional, defaults to active doc).                        }
 { Returns object with "pins" array; each entry has refdes, pin_number,       }
-{ pin_name, x_mils, y_mils, orientation, pin_length_mils.                    }
+{ pin_name, x_mils, y_mils, orientation, pin_length_mils, part_id.           }
+{                                                                              }
+{ ONLY THE PINS OF THE PART EACH INSTANCE SHOWS. A multi-part symbol placed   }
+{ as U2 part 1, 2 and 3 is three components that each carry EVERY pin of the }
+{ symbol, the other parts' pins hidden at this instance's positions. Read    }
+{ unfiltered, each U2 pin came back three times and the template wiring     }
+{ check reported 15 false shorts (GND joined to an I2C clock). Kept: a pin   }
+{ whose OwnerPartId is 0 (common to every part) or the instance's           }
+{ CurrentPartID, the filter SchPinMap already applies.                        }
 {..............................................................................}
 
 Function Gen_GetSchDocPins(Params : String; RequestId : String) : String;
@@ -10287,7 +10316,7 @@ Var
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PinX, PinY, PinOrient, PinLenMils : Integer;
+    PinX, PinY, PinOrient, PinLenMils, PartId, Owner : Integer;
     First : Boolean;
     DataBlob : String;
 Begin
@@ -10320,12 +10349,18 @@ Begin
             Try RefDes := Comp.Designator.Text; Except End;
             If RefDes <> '' Then
             Begin
+                PartId := 0;
+                Try PartId := Comp.CurrentPartID; Except End;
                 PinIter := Comp.SchIterator_Create;
                 Try
                     PinIter.AddFilter_ObjectSet(MkSet(ePin));
                     Pin := PinIter.FirstSchObject;
                     While Pin <> Nil Do
                     Begin
+                        Owner := 0;
+                        Try Owner := Pin.OwnerPartId; Except End;
+                        If (Owner = 0) Or (Owner = PartId) Then
+                        Begin
                         PinNum := '';
                         PinName := '';
                         PinX := 0;
@@ -10348,7 +10383,9 @@ Begin
                             '","x_mils":' + IntToStr(PinX) +
                             ',"y_mils":' + IntToStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) + '}';
+                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            ',"part_id":' + IntToStr(PartId) + '}';
+                        End;
 
                         Pin := PinIter.NextSchObject;
                     End;
@@ -11432,6 +11469,8 @@ Begin
                     Pin := PinIter.FirstSchObject;
                     While Pin <> Nil Do
                     Begin
+                      If PinShownOn(Comp, Pin) Then
+                      Begin
                         Loc := Pin.Location;
                         { Electrical type as a string so the renderer can map }
                         { straight to a glyph (input arrow / OC bubble / ...). }
@@ -11448,6 +11487,7 @@ Begin
                             ',"len":' + IntToStr(CoordToMils(Pin.PinLength)) +
                             ',"electrical":"' + EscapeJsonString(ElecStr) + '"}';
                         Inc(NumPins);
+                      End;
                         Pin := PinIter.NextSchObject;
                     End;
                 Finally
@@ -12939,7 +12979,7 @@ Begin
                             Pin := PinIter.FirstSchObject;
                             While (Pin <> Nil) And (Not Found) Do
                             Begin
-                                If Pin.Designator = PinNum Then
+                                If (Pin.Designator = PinNum) And PinShownOn(Comp, Pin) Then
                                 Begin
                                     Try PX := CoordToMils(Pin.Location.X); Except End;
                                     Try PY := CoordToMils(Pin.Location.Y); Except End;
@@ -13251,7 +13291,7 @@ Begin
                                         Pin := PinObj;
                                         PinNumStr := '';
                                         Try PinNumStr := Pin.Designator; Except End;
-                                        If PinNumStr = WantPin Then
+                                        If (PinNumStr = WantPin) And PinShownOn(Comp, Pin) Then
                                         Begin
                                             Found := True;
                                             FoundSheet := SheetName;

@@ -2144,6 +2144,22 @@ Begin
 End;
 
 { UnitStamp_Utils - which build of Utils.pas Altium compiled; 'dev' here. }
+{ PinShownOn - whether a placed component instance shows this pin. A      }
+{ multi-part symbol placed as U2 part 1, 2 and 3 is three components that  }
+{ each carry EVERY pin of the symbol, the other parts' pins hidden at this }
+{ instance's positions. A pin belongs to the instance when its OwnerPartId }
+{ is 0 (common to all parts) or the instance's CurrentPartID.              }
+Function PinShownOn(Comp : ISch_Component; Pin : ISch_Pin) : Boolean;
+Var
+    Owner, PartId : Integer;
+Begin
+    Owner := 0;
+    PartId := 0;
+    Try Owner := Pin.OwnerPartId; Except End;
+    Try PartId := Comp.CurrentPartID; Except End;
+    Result := (Owner = 0) Or (Owner = PartId);
+End;
+
 { install-scripts writes the hash of this file into the deployed copy. }
 Function UnitStamp_Utils(Dummy : Integer) : String;
 Begin

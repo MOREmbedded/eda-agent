@@ -21,7 +21,26 @@ from ..design import sch_template as st
 
 #: Keys a template part may carry.
 PART_KEYS = frozenset({"designator", "lib_reference", "library_path", "x", "y",
-                       "rotation", "value", "footprint"})
+                       "rotation", "value", "footprint", "part"})
+
+
+def _load_template(template: Any, template_path: str) -> tuple[Any, str]:
+    """The template given inline or read from ``template_path`` (JSON), and
+    a problem when neither or both are given or the file cannot be read.
+    A large sheet's template is tens of kilobytes; a file keeps it out of
+    every call."""
+    import json
+
+    if template_path and template is not None:
+        return None, "give template or template_path, not both"
+    if not template_path:
+        if template is None:
+            return None, "give template or template_path"
+        return template, ""
+    try:
+        return json.loads(Path(template_path).read_text(encoding="utf-8-sig")), ""
+    except (OSError, ValueError) as exc:
+        return None, f"could not read template_path {template_path}: {exc}"
 
 
 def _renders_dir() -> Path:
@@ -59,7 +78,8 @@ def _part_problems(template: Any) -> list[str]:
     if not isinstance(template, dict):
         return ["the template must be an object with parts and wires"]
     problems = []
-    seen: set[str] = set()
+    seen: set[tuple[str, int]] = set()
+    symbol_of: dict[str, tuple[str, str]] = {}
     for i, p in enumerate(template.get("parts") or []):
         if not isinstance(p, dict):
             problems.append(f"parts[{i}] is not an object")
@@ -69,11 +89,21 @@ def _part_problems(template: Any) -> list[str]:
             problems.append(f"parts[{i}]: unknown keys {sorted(extra)}; "
                             f"known: {sorted(PART_KEYS)}")
         ref = str(p.get("designator", "")).strip()
-        if not ref or not str(p.get("lib_reference", "")).strip():
+        raw_part = p.get("part", 1)
+        if not isinstance(raw_part, int) or isinstance(raw_part, bool) or raw_part < 1:
+            problems.append(f"parts[{i}]: part must be a whole number from 1")
+            raw_part = 1
+        symbol = (str(p.get("library_path", "")).strip(),
+                  str(p.get("lib_reference", "")).strip())
+        if not ref or not symbol[1]:
             problems.append(f"parts[{i}]: designator and lib_reference are required")
-        elif ref in seen:
-            problems.append(f"parts[{i}]: designator {ref} is used twice")
-        seen.add(ref)
+        elif (ref, raw_part) in seen:
+            problems.append(f"parts[{i}]: {ref} part {raw_part} is placed twice; "
+                            "one designator appears once per part of its symbol")
+        elif symbol_of.setdefault(ref, symbol) != symbol:
+            problems.append(f"parts[{i}]: the parts of {ref} must all be the same "
+                            "symbol from the same library")
+        seen.add((ref, raw_part))
         if int(p.get("rotation", 0) or 0) % 90:
             problems.append(f"parts[{i}]: rotation must be 0, 90, 180 or 270")
     return problems
@@ -101,12 +131,14 @@ async def _symbol_pins(bridge, parts: list[dict]) -> tuple[dict, list[str]]:
                             + ("" if lib else " (give library_path)") + f": {reply}")
             pins = []
         cache[key] = pins
-    out = {}
+    out: dict[str, list] = {}
     for p in parts:
         key = (str(p.get("library_path", "")).strip(), str(p["lib_reference"]).strip())
-        out[str(p["designator"])] = st.place_symbol_pins(
+        # Every part of a multi-part symbol under its one designator, so an
+        # anchor like U2.B22 finds the pin on whichever part shows it.
+        out.setdefault(str(p["designator"]), []).extend(st.place_symbol_pins(
             str(p["designator"]), cache[key], int(p.get("x", 0)), int(p.get("y", 0)),
-            int(p.get("rotation", 0) or 0))
+            int(p.get("rotation", 0) or 0), st.part_number(p)))
     return out, problems
 
 
@@ -147,11 +179,12 @@ def register_sch_template_tools(mcp):
 
     @mcp.tool()
     async def sch_preview_template(
-        template: dict[str, Any],
+        template: Optional[dict[str, Any]] = None,
         png_path: str = "",
         grid: int = 100,
         plan_json: str = "",
         sheet: str = "",
+        template_path: str = "",
     ) -> dict[str, Any]:
         """Check a schematic template and draw it to a PNG, without
         touching any sheet. Read the PNG to look at it.
@@ -178,6 +211,12 @@ def register_sch_template_tools(mcp):
         containing GND. ``nets`` is the netlist the sheet must produce,
         checked pin by pin.
 
+        A MULTI-PART symbol (an MCU split into sections) takes one entry per
+        part on this sheet, the same designator and symbol with ``"part": 2``
+        and so on (absent means 1). Anchors name the designator only:
+        "U2.B22" finds the pin on whichever drawn part shows it. With plan
+        nets, pins of parts not drawn here are warnings, not errors.
+
         Args:
             template: as above.
             png_path: where to write the picture; default the workspace's
@@ -189,6 +228,8 @@ def register_sch_template_tools(mcp):
                 by pin. A part the plan lacks is an error.
             sheet: the plan sheet this template draws, to list the plan
                 parts it leaves out.
+            template_path: a JSON file holding the template, instead of
+                passing it inline (a big sheet's template is tens of KB).
 
         Returns:
             ``ok``, ``errors`` (shorts, overlapping wires, bad anchors,
@@ -197,6 +238,9 @@ def register_sch_template_tools(mcp):
             points, stacked labels), ``netlist``, ``unconnected_pins``,
             ``auto_junctions`` and ``preview_png``.
         """
+        template, problem = _load_template(template, template_path)
+        if problem:
+            return {"ok": False, "errors": [problem]}
         template, _, plan_notes, problems = _with_plan(template, plan_json, sheet)
         problems = problems or _part_problems(template)
         if problems:
@@ -216,12 +260,13 @@ def register_sch_template_tools(mcp):
 
     @mcp.tool()
     async def sch_draw_template(
-        template: dict[str, Any],
-        document_path: str,
+        template: Optional[dict[str, Any]] = None,
+        document_path: str = "",
         png_path: str = "",
         grid: int = 100,
         plan_json: str = "",
         sheet: str = "",
+        template_path: str = "",
     ) -> dict[str, Any]:
         """Draw a schematic sheet from a hand template: THE way to draw
         or redraw a block. Same template as sch_preview_template; run that
@@ -236,6 +281,10 @@ def register_sch_template_tools(mcp):
         refused: redraw on a fresh sheet rather than patching. Does not
         save.
 
+        A multi-part symbol is placed one part per entry (``"part"``), each
+        set to its part and read back; a part the symbol does not have
+        stops the call before any wire.
+
         Args:
             template: parts, wires, ports, labels and optional nets.
             document_path: the .SchDoc to draw on (it is focused first).
@@ -245,12 +294,18 @@ def register_sch_template_tools(mcp):
                 Value, Manufacturer, Manufacturer Part Number and
                 Footprint are stamped on every drawn part.
             sheet: the plan sheet this template draws.
+            template_path: a JSON file holding the template, instead of
+                passing it inline.
 
         Returns:
             The same report as sch_preview_template, plus ``placed``,
             ``wires``, ``ports``, ``labels``, ``values`` counts and
             ``stage`` (where it stopped, or "done").
         """
+        template, problem = _load_template(template, template_path)
+        if problem or not document_path:
+            return {"ok": False, "stage": "template",
+                    "errors": [problem or "document_path is required"]}
         template, plan_stamps, plan_notes, problems = _with_plan(
             template, plan_json, sheet)
         problems = problems or _part_problems(template)
@@ -293,11 +348,18 @@ def register_sch_template_tools(mcp):
                       f"designator={payload_safe(p['designator'])}"]
             if p.get("footprint"):
                 fields.append(f"footprint={payload_safe(p['footprint'])}")
+            if st.part_number(p) > 1:
+                fields.append(f"part_id={st.part_number(p)}")
             ops.append(";".join(fields))
         placed = await _send(bridge, "generic.place_sch_components_from_library",
                              {"placements": "~~".join(ops)})
         if _failed(placed):
             return {"ok": False, "stage": "placement", "errors": [placed.get("error")]}
+        if placed.get("failed"):
+            # Named per part: U2:PART_REFUSED is a part id the symbol lacks.
+            return {"ok": False, "stage": "placement", "placed": placed, "errors": [
+                f"not every part was placed ({placed.get('failed_refdes', '')}); "
+                "nothing was wired. Check the parts on the sheet."]}
 
         after = await _send(bridge, "generic.get_sch_doc_pins", {"sheet_path": document_path})
         real = st.pins_from_sheet((after or {}).get("pins", []))
@@ -334,8 +396,12 @@ def register_sch_template_tools(mcp):
                     f"text={payload_safe(o['net'])};x={o['x']};y={o['y']};"
                     f"orientation={o['orientation']}" for o in d.labels)})
         stamps = []
+        stamped: set[str] = set()
         for p in parts:
             ref = str(p["designator"])
+            if ref in stamped:
+                continue        # one stamp per designator, not per part
+            stamped.add(ref)
             fields = dict(plan_stamps.get(ref, {}))
             if str(p.get("value", "")).strip():
                 fields["Comment"] = str(p["value"])
