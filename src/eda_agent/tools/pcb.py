@@ -951,7 +951,14 @@ def register_pcb_tools(mcp):
         The inverse of `pcb_export_coordinates`. Each entry repositions a
         component already on the board, by designator. Absolute coordinates in
         mils, rotation in degrees; supplying `side`/`layer` flips the component
-        to that side.
+        to that side (a part already there is left alone).
+
+        Applied in the order that gives an exact result: the side first, then
+        the rotation, then the move. ``rotation`` is the FINAL rotation as
+        Altium shows it, after any flip, and x/y are the component origin
+        exactly, whatever the flip and the turn did to it (both move an
+        asymmetric part). A part given only a side or a rotation keeps its
+        origin. Every part is read back.
 
         Args:
             placements: list of dicts, each supporting:
@@ -963,7 +970,9 @@ def register_pcb_tools(mcp):
                 layer    (optional) , "TopLayer" / "BottomLayer" (overrides side)
 
         Returns:
-            {"applied": N, "failed": M}.
+            ``applied``, ``failed``, ``unknown_layers``, and ``mismatched``
+            with ``mismatches`` (the first 20: designator, what is wrong,
+            and the read-back x, y, rotation and layer).
         """
         ops: list[str] = []
         for p in placements:
@@ -2506,9 +2515,12 @@ def register_pcb_tools(mcp):
                           | {"kind": "region", "layer", "key": {"n", "first", "holes"}}],
              "create":   [{"kind": "track"|"arc", "layer", "width",
                            "geom": [x1,y1,x2,y2] | [cx,cy,r,start,end],
-                           "keepout"? (default true on KeepOutLayer)}
+                           "net"?, "keepout"? (default true on KeepOutLayer)}
                           | {"kind": "region", "layer", "contour": [[x,y],...],
-                           "net"?, "teardrop"?, "keepout"?}]}
+                           "net"?, "teardrop"?, "keepout"?}
+                          | {"kind": "via", "x", "y", "size", "hole", "net"?}
+                          | {"kind": "polygon", "layer", "contour": [[x,y],...],
+                           "net"?, "name"?, "order"?, "pour_over"? (true)}]}
 
         A seg is {"kind": 0, "vx", "vy"} (line) or {"kind": 1, "vx", "vy",
         "cx", "cy", "r", "sa", "ea"} (arc). Track ends match in either
@@ -2520,9 +2532,17 @@ def register_pcb_tools(mcp):
         object both moved and deleted is refused). Identical objects need
         one identical entry per copy; fewer entries than copies is
         ambiguous and deletes none. Creates are free, on
-        the layer named, tracks and arcs with no net. A created region
-        takes ``net`` (a net the board lacks creates nothing) and, with
-        ``teardrop``, Altium's teardrop flag. A value past +/-214,748 mil (an arc's
+        the layer named, each with an optional ``net``; a net the board
+        lacks creates nothing and is listed in ``apply.create_refused``
+        with the map ``entry``. A via is a through via (TopLayer to
+        BottomLayer). A polygon pour is made but NOT poured: pour many
+        with pcb_repour_polygons afterwards (small ones first); ``order``
+        sets its pour index (``pour_order_off`` counts any that did not
+        take). Copper fills that are rotated or not rectangular are best
+        sent as regions. A created region takes, with ``teardrop``,
+        Altium's teardrop flag. THIS IS THE BULK COPPER CREATE: thousands of
+        tracks, vias, regions and pours from one file, in one transaction,
+        instead of sending them inline. A value past +/-214,748 mil (an arc's
         centre plus radius included) stops the whole apply before anything
         is sent, since Altium's coordinates cannot hold it; ``out_of_range``
         counts them per kind. Draw a near-straight arc as a line.
@@ -2614,6 +2634,14 @@ def register_pcb_tools(mcp):
         result["apply"] = await bridge.send_command_async(
             "pcb.apply_free_primitives", apply_params,
             timeout=_GEOMETRY_MAP_TIMEOUT)
+        # Each refused create named by its entry in the map, not its line.
+        order = (match.get("create") or {}).get("line_entries") or []
+        applied = result["apply"]
+        if isinstance(applied, dict) and applied.get("create_refused"):
+            for item in applied["create_refused"]:
+                n = item.get("create")
+                if isinstance(n, int) and 0 <= n < len(order):
+                    item["entry"] = order[n]
         return result
 
     @mcp.tool()
@@ -4693,11 +4721,16 @@ def register_pcb_tools(mcp):
         scope: str = "",
         net_scope: str = "different_nets",
         allowed: Optional[bool] = None,
+        connect_style: str = "direct",
     ) -> dict[str, Any]:
         """Create a new design rule on the active PCB.
 
         Args:
             name: Rule name (e.g., "Min Clearance 6mil").
+            rule_type: "polygon_connect" / "plane_connect" (no value:
+                connect_style decides, e.g. scope "IsVia" with "direct"
+                so vias never get thermal reliefs; set relief widths
+                and gaps afterwards with pcb_set_rule_properties),
             rule_type: "clearance" (value = gap), "width" (value = min,
                 max_value/favored_value optional), "via_size" (value = min
                 hole), "differential_pairs" (value = min gap, max_value,
@@ -4749,6 +4782,8 @@ def register_pcb_tools(mcp):
             params["scope"] = scope
         if allowed is not None:
             params["allowed"] = "true" if allowed else "false"
+        if rule_type in ("polygon_connect", "plane_connect"):
+            params["connect_style"] = connect_style
         result = await bridge.send_command_async("pcb.create_design_rule", params)
         return result
 
@@ -6016,9 +6051,26 @@ def register_pcb_tools(mcp):
         comment: str | None = None,
         gap_mils: int | None = None,
         gap_mm: float | None = None,
-        min_width_mils: int | None = None,
-        max_width_mils: int | None = None,
-        favored_width_mils: int | None = None,
+        min_width_mils: float | None = None,
+        max_width_mils: float | None = None,
+        favored_width_mils: float | None = None,
+        min_width_mm: float | None = None,
+        max_width_mm: float | None = None,
+        favored_width_mm: float | None = None,
+        connect_style: str | None = None,
+        relief_width_mils: float | None = None,
+        relief_width_mm: float | None = None,
+        air_gap_mils: float | None = None,
+        air_gap_mm: float | None = None,
+        entries: int | None = None,
+        relief_angle: int | None = None,
+        relief_expansion_mils: float | None = None,
+        dp_min_gap_mils: float | None = None,
+        dp_max_gap_mils: float | None = None,
+        dp_preferred_gap_mils: float | None = None,
+        dp_min_gap_mm: float | None = None,
+        dp_max_gap_mm: float | None = None,
+        dp_preferred_gap_mm: float | None = None,
         min_hole_size_mils: int | None = None,
         max_hole_size_mils: int | None = None,
         min_via_size_mils: float | None = None,
@@ -6054,7 +6106,19 @@ def register_pcb_tools(mcp):
                 MinimumSolderMaskSliver rule. Applies to every kind
                 listed above.
             min_width_mils / max_width_mils / favored_width_mils:
-                Width constraint values (applied to every layer).
+                Width constraint values (applied to every layer); decimals
+                allowed. The *_mm forms are exact (0.09 mm is 3.543 mil).
+                On a Differential Pairs Routing rule (kind 51) they set the
+                pair's track widths.
+            dp_min_gap_mils / dp_max_gap_mils / dp_preferred_gap_mils and
+                the *_mm forms: a Differential Pairs Routing rule's gaps,
+                every layer. Read back in ``diff_pair_descriptor``.
+            connect_style: Polygon Connect (kind 20) or Power Plane Connect
+                (kind 6) rule: "relief", "direct" or "none". Confirmed from
+                the rule's own descriptor (``connect_style_confirmed``).
+            relief_width_mils / relief_width_mm, air_gap_mils / air_gap_mm,
+                entries (2 or 4), relief_angle (45 or 90, polygon only),
+                relief_expansion_mils (plane only): the relief's settings.
             min_hole_size_mils / max_hole_size_mils: HoleSize
                 constraint limits.
 
@@ -6075,6 +6139,23 @@ def register_pcb_tools(mcp):
             ("min_width_mils", min_width_mils),
             ("max_width_mils", max_width_mils),
             ("favored_width_mils", favored_width_mils),
+            ("min_width_mm", min_width_mm),
+            ("max_width_mm", max_width_mm),
+            ("favored_width_mm", favored_width_mm),
+            ("connect_style", connect_style),
+            ("relief_width_mils", relief_width_mils),
+            ("relief_width_mm", relief_width_mm),
+            ("air_gap_mils", air_gap_mils),
+            ("air_gap_mm", air_gap_mm),
+            ("entries", entries),
+            ("relief_angle", relief_angle),
+            ("relief_expansion_mils", relief_expansion_mils),
+            ("dp_min_gap_mils", dp_min_gap_mils),
+            ("dp_max_gap_mils", dp_max_gap_mils),
+            ("dp_preferred_gap_mils", dp_preferred_gap_mils),
+            ("dp_min_gap_mm", dp_min_gap_mm),
+            ("dp_max_gap_mm", dp_max_gap_mm),
+            ("dp_preferred_gap_mm", dp_preferred_gap_mm),
             ("min_hole_size_mils", min_hole_size_mils),
             ("max_hole_size_mils", max_hole_size_mils),
             ("min_via_size_mils", min_via_size_mils),

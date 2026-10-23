@@ -238,14 +238,15 @@ def test_creates_come_last_and_bad_ones_are_refused():
                    {"kind": "polygon", "layer": "TopLayer", "width": 1, "geom": []}]}, d)
     assert lines[0].startswith("T\t4\t")
     # MEASURED: keep-out copies carry IsKeepout; a create there defaults to it.
-    assert lines[1] == f"C\tT\tKeepOutLayer\t{472400}\t0\t0\t{10 * C}\t0\t1"
+    # The net is the last field, empty here.
+    assert lines[1] == f"C\tT\tKeepOutLayer\t{472400}\t0\t0\t{10 * C}\t0\t1\t"
     assert lines[2] == (f"C\tA\tMechanical1\t{39400}\t{5 * C}\t{5 * C}\t{2 * C}"
-                        "\t0.0\t180.0\t0")
+                        "\t0.0\t180.0\t0\t")
     assert rep["create"]["matched"] == 2 and rep["create"]["refused"] == 2
     lines, _ = build_edits({"create": [{"kind": "track", "layer": "KeepOutLayer",
                                         "width": 1, "geom": [0, 0, 1, 0],
                                         "keepout": False}]}, d)
-    assert lines == [f"C\tT\tKeepOutLayer\t{C}\t0\t0\t{C}\t0\t0"]
+    assert lines == [f"C\tT\tKeepOutLayer\t{C}\t0\t0\t{C}\t0\t0\t"]
 
 
 def test_a_created_region_carries_its_net_and_teardrop_flag():
@@ -344,6 +345,11 @@ def test_every_polygon_writer_rewrites_the_closing_vertex():
             obj, count = m.group(1), m.group(2).strip()
             body = text[m.end():]
             body = body[:re.search(r"\n(?:Function|Procedure) ", body).start()]
+            # Up to this object's next PointCount: one routine can build
+            # several polygons, each closed in its own turn.
+            nxt = body.find(f"{obj}.PointCount := ")
+            if nxt >= 0:
+                body = body[:nxt]
             close = body.find(f"ClosePolySegments({obj}, {count});")
             assert close >= 0, f"{name}: {obj}.PointCount := {count} is never closed"
             writes = [w.start() for w in re.finditer(
@@ -351,7 +357,7 @@ def test_every_polygon_writer_rewrites_the_closing_vertex():
             assert writes and writes[-1] < close, (
                 f"{name}: {obj} writes a segment after it is closed")
             writers += 1
-    assert writers == 5
+    assert writers == 6
     helper = (scripts / "PCBGeneric.pas").read_text(encoding="ascii")
     helper = helper[helper.index("Procedure ClosePolySegments("):]
     helper = helper[:helper.index("End;") + 4]
