@@ -9296,7 +9296,8 @@ Begin
             '{"placed":true,"vertices":' + IntToStr(NPts) + ','
             + '"points":[' + PtsJson + '],'
             + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
-            + '"net":"' + EscapeJsonString(NetStr) + '"}');
+            + '"net":"' + EscapeJsonString(NetStr) + '",'
+            + '"name":"' + EscapeJsonString(Region.Name) + '"}');
         Exit;
     End;
 

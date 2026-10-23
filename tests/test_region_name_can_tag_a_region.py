@@ -105,3 +105,12 @@ def test_a_name_reaches_the_script(monkeypatch):
 def test_no_name_is_sent_when_none_is_given(monkeypatch):
     sent = _call(monkeypatch, x1=0, y1=0, x2=100, y2=50)
     assert "name" not in sent[0][1]
+
+
+def test_both_replies_read_the_name_back():
+    """The rectangle and the outline branch each return the region's Name."""
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "altium"
+           / "PCB.pas").read_text(encoding="utf-8")
+    start = src.index("Function PCB_PlaceRegion(")
+    body = src[start:src.index("\nEnd;", start)]
+    assert body.count("EscapeJsonString(Region.Name)") == 2
