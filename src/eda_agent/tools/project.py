@@ -1031,6 +1031,7 @@ def register_project_tools(mcp):
         import os
         import time as _time
 
+        from ..atomicfile import replace_with_retry
         from ..bridge.exceptions import AltiumError
         from ..ui import windows
         from .uiauto import _altium_pid
@@ -1067,7 +1068,7 @@ def register_project_tools(mcp):
         if existed:
             aside = output_path + ".previous"
             try:
-                os.replace(output_path, aside)
+                replace_with_retry(output_path, aside)
             except OSError as e:
                 return {"ok": False, "output_path": output_path, "reason": (
                     f"the existing file could not be moved aside: {e}")}
@@ -1148,7 +1149,7 @@ def register_project_tools(mcp):
                 if written:
                     os.remove(aside)
                 else:
-                    os.replace(aside, output_path)
+                    replace_with_retry(aside, output_path)
             except OSError:
                 pass
         result: dict[str, Any] = {
@@ -1214,9 +1215,12 @@ def register_project_tools(mcp):
 
         bridge = get_bridge()
         if not source_outjob and use_fallback:
+            # Altium installs its OutputJobs templates under the shared
+            # Public profile, which Windows names in PUBLIC.
+            public = os.environ.get("PUBLIC", "")
             shipped = sorted(glob.glob(os.path.join(
-                os.environ.get("PUBLIC", r"C:\Users\Public"), "Documents",
-                "Altium", "*", "OutputJobs", "Fabrication.OutJob")))
+                public, "Documents", "Altium", "*", "OutputJobs",
+                "Fabrication.OutJob"))) if public else []
             if not shipped:
                 return {"ok": False, "reason": (
                     "Altium's shipped OutputJobs templates were not found")}

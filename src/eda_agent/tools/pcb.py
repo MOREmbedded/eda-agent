@@ -466,6 +466,71 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_set_view_configuration(name: str = "",
+                                         board_path: str = "") -> dict[str, Any]:
+        """Switch a board's view configuration, e.g. "Altium 3D Black".
+
+        Sets the PCB Standard toolbar's view configuration combo, the
+        one showing "Altium Standard 2D" by default. No API route exists:
+        PCB:ChangeViewConfiguration ignores its parameters. The combo is
+        read back afterwards, so a pick that did not take is reported.
+        It lives here rather than with the app_ tools because it uses the
+        bridge to focus the board and to check which board is in front.
+
+        Args:
+            name: The configuration as the combo lists it. Omit it to
+                read the current one; a name not on the list is refused
+                with the names that are.
+            board_path: Focus this .PcbDoc first. Omit it to act on the
+                board already in front.
+        """
+        import os
+
+        from ..ui import menu
+        from .uiauto import _altium_pid
+
+        pid, problem = _altium_pid(reads_only=not name)
+        if problem is not None:
+            return problem
+        bridge = get_bridge()
+        if board_path:
+            focused = await bridge.send_command_async(
+                "pcb.focus_board", {"board_path": board_path})
+            if not (focused or {}).get("focused", True):
+                return {"ok": False, "reason": "could not focus that board",
+                        "focus": focused}
+
+        async def front() -> str:
+            doc = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            return (doc or {}).get("file_path") or ""
+
+        def same(a: str, b: str) -> bool:
+            return (os.path.normcase(os.path.normpath(a))
+                    == os.path.normcase(os.path.normpath(b)))
+
+        # The combo belongs to whichever board is in front, and another
+        # session can bring a different one forward between the focus and
+        # the click: measured, a switch meant for a scratch board landed
+        # on another session's board. So the front board is checked just
+        # before and named afterwards.
+        before = await front()
+        if board_path and not same(before, board_path):
+            return {"ok": False, "front_document": before, "reason": (
+                f"{board_path} is not the board in front, so the toolbar "
+                "would change another one. Nothing was changed")}
+        result = menu.set_view_configuration(pid, name)
+        after = await front()
+        result["front_document"] = before
+        if after and not same(after, before):
+            result["ok"] = False
+            result["warning"] = (
+                f"the board in front changed from {before} to {after} "
+                "during the switch, so the change may have landed on "
+                f"{after}. Read it with no name to see")
+        return result
+
+    @mcp.tool()
     async def pcb_delete_net(
         nets: Optional[list[str]] = None,
         force: bool = False,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
+from eda_agent.tools import pcb as pcb_tools
 from eda_agent.tools import uiauto
 
 _MINE = r"C:\scratch\Mine.PcbDoc"
@@ -42,10 +43,10 @@ def _tool(monkeypatch, fronts, picked):
         picked.append(name)
         return {"ok": True, "value": name, "changed": True}
 
-    monkeypatch.setattr("eda_agent.bridge.get_bridge", lambda: _Bridge())
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: _Bridge())
     monkeypatch.setattr(uiauto, "_altium_pid", lambda reads_only=False: (1, None))
     monkeypatch.setattr(uiauto.menu, "set_view_configuration", _set)
-    uiauto.register_uiauto_tools(_Mcp())
+    pcb_tools.register_pcb_tools(_Mcp())
     return tools["pcb_set_view_configuration"]
 
 
@@ -70,3 +71,14 @@ def test_the_board_in_front_is_named_on_success(monkeypatch):
     tool = _tool(monkeypatch, [_MINE, _MINE.lower()], picked)
     out = asyncio.run(tool("Altium 3D Black", board_path=_MINE))
     assert out["ok"] is True and out["front_document"] == _MINE
+
+
+def test_it_lives_with_the_bridge_tools_not_the_app_tools():
+    """The app_ tools must answer while a modal blocks the bridge, so
+    none may send a bridge command; this one focuses and checks the
+    board through the bridge, so it is registered with the PCB tools."""
+    import inspect
+    assert "pcb_set_view_configuration" not in inspect.getsource(uiauto)
+    reads = inspect.getsource(pcb_tools)
+    start = reads.index("async def pcb_set_view_configuration(")
+    assert "reads_only=not name" in reads[start:start + 3000]

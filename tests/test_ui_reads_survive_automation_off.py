@@ -24,8 +24,7 @@ READS = ("app_list_open_dialogs", "app_read_panel", "app_screenshot",
 # Tools that read in one mode and act in another.
 SOMETIMES = {"app_list_panels": "reads_only=not offered_too",
              "app_toolbar": "reads_only=not name",
-             "app_dialog_tab": "reads_only=not name",
-             "pcb_set_view_configuration": "reads_only=not name"}
+             "app_dialog_tab": "reads_only=not name"}
 # Tools that send input: never reads_only.
 ACTS = ("app_send_keys", "app_type_text", "app_click_menu",
         "app_press_dialog_button", "app_canvas", "app_set_dialog_control")
