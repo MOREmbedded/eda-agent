@@ -196,13 +196,12 @@ INTERACTION_OVERRIDES = {
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    # Design Rule Checker (TDesignRuleCheckForm). Altium exposes no
-    # non-interactive DRC trigger, so the tool's only functional path is
-    # the modal one: it refuses unless called with allow_modal=True.
-    # Measured behind the dialog: a 30-minute dead loop to an 1800 s
-    # client timeout. pcb_get_clearance_violations reads stored
-    # violations instead and stays readonly.
-    "pcb_run_drc": MODAL,
+    # pcb_run_drc was here: PCB:DesignRuleCheck opens the Design Rule
+    # Checker (TDesignRuleCheckForm), measured behind it a 30-minute dead
+    # loop. It now runs IPCB_Board.RunBatchDesignRuleCheck by default,
+    # MEASURED 2026-10-23 on AD 26.11: 0.45 s, no dialog, report written,
+    # so it is silent; allow_modal=True still takes the dialog route.
+    "pcb_run_drc": SILENT,
     "proj_export_pdf": MODAL,         # Preview PCB / print preview
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and

@@ -1480,14 +1480,54 @@ Begin
     Result := Result + '}';
 End;
 
+{ The violations the last check left on the board: '"violation_count":N,  }
+{ "violations":[...]', the first 100 in full.                              }
+Function DrcViolationsJson(Board : IPCB_Board) : String;
+Var
+    Iterator : IPCB_BoardIterator;
+    Violation : IPCB_Violation;
+    ViolationCount : Integer;
+    JsonItems : String;
+Begin
+    ViolationCount := 0;
+    JsonItems := '';
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Violation := Iterator.FirstPCBObject;
+    While Violation <> Nil Do
+    Begin
+        Inc(ViolationCount);
+        If ViolationCount <= 100 Then
+        Begin
+            If JsonItems <> '' Then JsonItems := JsonItems + ',';
+            JsonItems := JsonItems + BuildViolationJson(Violation);
+        End;
+        Violation := Iterator.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iterator);
+    Result := '"violation_count":' + IntToStr(ViolationCount)
+        + ',"violations":[' + JsonItems + ']';
+End;
+
+{ Why a batch check is not confirmed, as a ',"reason":...' field, or '' . }
+Function DrcBatchReason(ReportPresent : Boolean) : String;
+Begin
+    Result := '';
+    If ReportPresent Then Exit;
+    Result := ',"reason":"The batch check wrote no report, so it is not '
+        + 'confirmed to have run, and the violations listed are whatever an '
+        + 'earlier check left on the board. pcb_get_clearance_violations reads '
+        + 'those; allow_modal=true runs the check through the Design Rule '
+        + 'Checker dialog instead, which needs a person to press Run."';
+End;
+
 Function PCB_RunDRC(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    ViolationCount : Integer;
-    Iterator : IPCB_BoardIterator;
-    Violation : IPCB_Violation;
     JsonItems, ReportPath, AllowStr, OutputsPath : String;
-    First, ReportPresent, AllowModal, ReportFresh : Boolean;
+    ReportPresent, AllowModal, ReportFresh, BatchOk : Boolean;
     ReportBefore, ReportAfter, OutputsBefore, OutputsAfter : Integer;
     BoardDoc : IServerDocument;
 Begin
@@ -1504,19 +1544,44 @@ Begin
     { single-threaded polling loop until a human clicks it. Observed: one   }
     { call left the loop dead for 30+ min, the client timed out at 1800 s,  }
     { and a scripting-engine access violation sat hidden behind the dialog. }
-    { No documented parameter suppresses that dialog, so the trigger is     }
-    { OPT-IN: the caller must pass allow_modal=true and accept the block.   }
-    { Everything else reads the violations already stored on the board --   }
-    { see PCB_GetClearanceViolations, which never triggers a run.           }
+    { No parameter suppresses that dialog, so this route is OPT-IN: the     }
+    { caller passes allow_modal=true and accepts the block. The default is  }
+    { the batch check just below, which has no dialog at all.               }
     AllowStr := LowerCase(ExtractJsonValue(Params, 'allow_modal'));
     AllowModal := (AllowStr = 'true') Or (AllowStr = '1');
+
+    { THE DEFAULT IS THE BATCH CHECK, WHICH OPENS NO DIALOG.                 }
+    { IPCB_Board.RunBatchDesignRuleCheck(ReportFilename, ReportFormat,      }
+    { DisplayReportFile, PublishToWeb) : Boolean, read from                 }
+    { Altium.SDK.Interfaces.dll; the format is TDRCReportFileFormat, whose  }
+    { names run eDRC_HTML, eDRC_Text, used here as the literal 0 because an  }
+    { unknown identifier halts the loop. The modal route above blocked every }
+    { Claude session at once: on 2026-10-23 all 10 times the bridge was      }
+    { blocked by a modal, it was this dialog left open by a pcb_run_drc.     }
+    { It runs on the board object, so the focus never moves. The report goes }
+    { to the workspace, never the user's project folder, and the old one is  }
+    { deleted first: a report present afterwards is this run's.             }
     If Not AllowModal Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MODAL_BLOCKED',
-            'PCB:DesignRuleCheck opens the modal Design Rule Checker dialog and '
-            + 'blocks the bridge until a human closes it. Pass allow_modal=true '
-            + 'to accept that block, or call pcb.get_clearance_violations to read '
-            + 'the violations left on the board by the last DRC run.');
+        ReportPath := WorkspaceDir + 'drc_batch_report.html';
+        Try If FileExists(ReportPath) Then DeleteFile(ReportPath); Except End;
+        BatchOk := False;
+        Try
+            BatchOk := Board.RunBatchDesignRuleCheck(ReportPath, 0, False, False);
+        Except
+            BatchOk := False;
+        End;
+        ReportPresent := False;
+        Try ReportPresent := FileExists(ReportPath); Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{' + DrcViolationsJson(Board) + ','
+            + '"mode":"batch",'
+            + '"drc_triggered":true,'
+            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','
+            + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '"'
+            + DrcBatchReason(ReportPresent) + '}');
         Exit;
     End;
 
@@ -1557,29 +1622,7 @@ Begin
         ReportPath := OutputsPath;
     End;
 
-    // Count violations by iterating
-    ViolationCount := 0;
-    JsonItems := '';
-    First := True;
-
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    Violation := Iterator.FirstPCBObject;
-    While Violation <> Nil Do
-    Begin
-        Inc(ViolationCount);
-        If ViolationCount <= 100 Then  // Limit detail output
-        Begin
-            If Not First Then JsonItems := JsonItems + ',';
-            First := False;
-            JsonItems := JsonItems + BuildViolationJson(Violation);
-        End;
-        Violation := Iterator.NextPCBObject;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
+    JsonItems := DrcViolationsJson(Board);
 
     { A cancelled Design Rule Checker dialog used to return violation_count }
     { 0 with an empty list, the same answer as a board that passes. There  }
@@ -1594,8 +1637,8 @@ Begin
 
     If Not ReportFresh Then
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":' + IntToStr(ViolationCount) + ','
-            + '"violations":[' + JsonItems + '],'
+            '{' + JsonItems + ','
+            + '"mode":"dialog",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":false,'
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
@@ -1609,8 +1652,8 @@ Begin
             + 'Design Rule Checker (turn it on)."}')
     Else
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":' + IntToStr(ViolationCount) + ','
-            + '"violations":[' + JsonItems + '],'
+            '{' + JsonItems + ','
+            + '"mode":"dialog",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":true,'
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','

@@ -790,7 +790,7 @@ def register_pcb_tools(mcp):
         Reads the violation records the last DRC left; opens no dialog.
         ``violation_count: 0`` means none are STORED, not that the board
         passes: with no DRC run this session it is 0 either way (see
-        ``note``). ``pcb_run_drc(allow_modal=True)`` forces a fresh run.
+        ``note``). ``pcb_run_drc`` runs a fresh check, with no dialog.
 
         Each violation has ``x_mils``, ``y_mils``, ``layer`` and
         ``primitive1`` / ``primitive2`` ``{detail, type, net, layer,
@@ -818,44 +818,34 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_run_drc(allow_modal: bool = False) -> dict[str, Any]:
-        """Run Design Rule Check on the active PCB. MODAL: BLOCKS THE BRIDGE
-        until a human closes Altium's DRC dialog (no parameter avoids it),
-        so it refuses unless ``allow_modal=True``. PREFER
-        pcb_get_clearance_violations, which reads stored violations and
-        cannot block. Don't run it on a board with no tracks yet.
+        """Run Design Rule Check on the active PCB, with no dialog.
 
-        ``drc_confirmed`` is true only if the .DRC report was rewritten
-        by this call; a cancelled dialog leaves an older report.
+        Runs Altium's batch check (IPCB_Board.RunBatchDesignRuleCheck), the
+        rules ticked for batch checking in the Design Rule Checker, and
+        returns the violations it leaves on the board. Nothing opens, the
+        focus does not move, and the report goes to the bridge workspace,
+        not the project folder. ``drc_confirmed`` is true only if this run
+        wrote its report. Don't run it on a board with no tracks yet.
 
         Args:
-            allow_modal: True means a human is there to close the dialog.
-                Default False refuses without touching Altium.
+            allow_modal: True runs the check through Altium's Design Rule
+                Checker DIALOG instead, which blocks the bridge for every
+                session until a person presses Run or Cancel. Only for
+                someone at the keyboard who wants that dialog's options.
 
         Returns:
-            ``violation_count`` (all), ``drc_triggered``,
-            ``drc_confirmed`` and ``violations`` (first 100): name,
-            description, rule, x_mils, y_mils, layer, and ``primitive1``
-            / ``primitive2`` {detail, type, net, layer, x_mils, y_mils}
-            (primitive2 empty for single-object rules). Refused:
-            {ok: False, reason}.
+            ``violation_count`` (all), ``mode`` ("batch" or "dialog"),
+            ``drc_triggered``, ``drc_confirmed``, ``report_path`` and
+            ``violations`` (first 100): name, description, rule, x_mils,
+            y_mils, layer, and ``primitive1`` / ``primitive2`` {detail,
+            type, net, layer, x_mils, y_mils} (primitive2 empty for
+            single-object rules). ``reason`` when not confirmed.
         """
-        if not allow_modal:
-            return {
-                "ok": False,
-                "reason": (
-                    "pcb_run_drc opens Altium's MODAL Design Rule Checker "
-                    "dialog and blocks the whole bridge until a human "
-                    "closes it (observed: 30+ min dead loop, client "
-                    "timeout). Refusing by default. Use "
-                    "pcb_get_clearance_violations to read the violations "
-                    "already on the board, or pass allow_modal=True if a "
-                    "human is at the keyboard to dismiss the dialog."),
-                "drc_triggered": False,
-            }
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.run_drc", {"allow_modal": "true"})
-        return result
+        if allow_modal:
+            return await bridge.send_command_async(
+                "pcb.run_drc", {"allow_modal": "true"})
+        return await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
 
     @mcp.tool()
     async def pcb_get_components() -> dict[str, Any]:
