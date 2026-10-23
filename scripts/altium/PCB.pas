@@ -870,6 +870,8 @@ End;
 { iterator-returned locals per the ModifyWidthRules.pas reference pattern):    }
 {   - Clearance (kind 0) + ComponentClearance (kind 24)                        }
 {     + HoleToHoleClearance (kind 52):  gap_mils                                }
+{   - MinimumSolderMaskSliver (53), SilkToSolderMaskClearance (54),            }
+{     SilkToSilkClearance (55):  gap_mils, through each one's SetState_ pair   }
 {   - MaxMinWidth (kind 2):  min_width_mils / max_width_mils / favored_width_mils}
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
 {                                                                               }
@@ -895,6 +897,9 @@ Var
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
     RuleViaIter : IPCB_RoutingViaStyleRule;
+    RuleSliverIter : IPCB_MinimumSolderMaskSliverRule;
+    RuleSilkMaskIter : IPCB_SilkToSolderMaskClearanceRule;
+    RuleSilkSilkIter : IPCB_SilkToSilkClearanceRule;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
     VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
     NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
@@ -1013,8 +1018,10 @@ Begin
       interface" from a single measurement. So the write below is checked
       by reading the value back rather than assumed. }
     GapKindSupported := (Kind = eRule_Clearance) Or (Kind = 24)
-        Or (Kind = 52) Or (Kind = 63);
-    If ((GapStr <> '') Or (GapMMStr <> '')) And GapKindSupported Then
+        Or (Kind = 52) Or (Kind = 63)
+        Or (Kind = 53) Or (Kind = 54) Or (Kind = 55);
+    If ((GapStr <> '') Or (GapMMStr <> '')) And ((Kind = eRule_Clearance)
+        Or (Kind = 24) Or (Kind = 52) Or (Kind = 63)) Then
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
@@ -1055,6 +1062,75 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
+    End;
+
+    { 53 MinimumSolderMaskSliver, 54 SilkToSolderMaskClearance and 55
+      SilkToSilkClearance carry no Gap: each has its own GetState_/SetState_
+      pair, named in Altium.SDK.Interfaces.dll. The ordinals follow 52 in
+      the ReturnViaCheck TRuleKind order. Same typed iterator local and
+      the same read-back as the clearance kinds above. }
+    If ((GapStr <> '') Or (GapMMStr <> '')) And
+       ((Kind = 53) Or (Kind = 54) Or (Kind = 55)) Then
+    Begin
+        If GapMMStr <> '' Then
+            GapWanted := MMToCoord(StrToFloatDef(GapMMStr, 0))
+        Else GapWanted := MilsToCoord(StrToIntDef(GapStr, 0));
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Found := False;
+        Try
+            If Kind = 53 Then
+            Begin
+                RuleSliverIter := Iter.FirstPCBObject;
+                While (RuleSliverIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSliverIter.RuleKind = 53) And (RuleSliverIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
+                        Try RuleSliverIter.SetState_MinSolderMaskSliver(GapWanted); Except End;
+                        Try GapAfter := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSliverIter := Iter.NextPCBObject;
+                End;
+            End
+            Else If Kind = 54 Then
+            Begin
+                RuleSilkMaskIter := Iter.FirstPCBObject;
+                While (RuleSilkMaskIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSilkMaskIter.RuleKind = 54) And (RuleSilkMaskIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
+                        Try RuleSilkMaskIter.SetState_SilkToMaskGap(GapWanted); Except End;
+                        Try GapAfter := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSilkMaskIter := Iter.NextPCBObject;
+                End;
+            End
+            Else
+            Begin
+                RuleSilkSilkIter := Iter.FirstPCBObject;
+                While (RuleSilkSilkIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSilkSilkIter.RuleKind = 55) And (RuleSilkSilkIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
+                        Try RuleSilkSilkIter.SetState_SilkToSilkClearance(GapWanted); Except End;
+                        Try GapAfter := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSilkSilkIter := Iter.NextPCBObject;
+                End;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        GapVerified := Found And (GapAfter = GapWanted);
+        If GapVerified Then Inc(UpdatedCount);
     End;
 
     If (Kind = eRule_MaxMinWidth) And
@@ -1250,7 +1326,9 @@ Begin
                 + IntToStr(Kind) + '. It was SKIPPED, not attempted, and the '
                 + 'rule is unchanged. Gap is dispatched for kinds 0 '
                 + '(Clearance), 24 (ComponentClearance), 52 '
-                + '(HoleToHoleClearance) and 63 (BoardOutlineClearance). '
+                + '(HoleToHoleClearance), 53 (MinimumSolderMaskSliver), 54 '
+                + '(SilkToSolderMaskClearance), 55 (SilkToSilkClearance) and 63 '
+                + '(BoardOutlineClearance). '
                 + 'Everything else needs PCB > Rules and Constraints Editor. '
                 + 'Report the kind number if it should be here."'
         Else If Not GapVerified Then

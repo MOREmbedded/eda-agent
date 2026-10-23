@@ -6042,8 +6042,9 @@ def register_pcb_tools(mcp):
 
         Pass only what should change. Constraint fields by rule kind:
         clearance kinds (Clearance, ComponentClearance, HoleToHole,
-        BoardOutline): ``gap_mils`` or ``gap_mm`` (0.2 mm cannot be said
-        in whole mils); Width: the three width fields, every layer;
+        BoardOutline, MinimumSolderMaskSliver, SilkToSolderMaskClearance,
+        SilkToSilkClearance): ``gap_mils`` or ``gap_mm`` (0.2 mm cannot
+        be said in whole mils); Width: the three width fields, every layer;
         HoleSize: the hole fields; Routing Via: the via size and hole
         fields, checked as a set (min <= preferred <= max, diameter >
         hole). Writes are read back: ``gap_written``, ``via_sizes_written``
@@ -6059,8 +6060,9 @@ def register_pcb_tools(mcp):
                 (``"IsPad And (HoleSize > 3)"``) or joined with ``&&``;
                 an unbracketed one is refused before anything is sent.
             comment: Free-form comment.
-            gap_mils: Clearance gap. Applies to Clearance,
-                ComponentClearance, and HoleToHoleClearance rules.
+            gap_mils: Clearance gap, or the sliver width for a
+                MinimumSolderMaskSliver rule. Applies to every kind
+                listed above.
             min_width_mils / max_width_mils / favored_width_mils:
                 Width constraint values (applied to every layer).
             min_hole_size_mils / max_hole_size_mils: HoleSize
