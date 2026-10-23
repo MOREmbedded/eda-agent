@@ -394,6 +394,8 @@ procedure ResetPropertyDiag(Dummy: Integer);
 begin DiagDirty := False; Inc(ResetCount); end;
 procedure SchRegisterObject(Container, Obj: TSchObject);
 begin if not Obj.Registered then Halt(54); end;
+procedure ApplyNoErcDefaults(Obj: TSchObject);
+begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
 function ObjectTypeFromString(S: String): Integer;
