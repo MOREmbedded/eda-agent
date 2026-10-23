@@ -1371,19 +1371,58 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create line');
 End;
 
+{ A name the library already has is refused, as rename and copy refuse it   }
+{ (NAME_EXISTS): Altium registers the second footprint without complaint,   }
+{ and every later lookup by name then reaches the FIRST, so writes meant for }
+{ the new one land in the old one. Compared ignoring case, as the library's  }
+{ own lookups are.                                                           }
 Function Lib_CreateFootprint(Params : String; RequestId : String) : String;
 Var
-    Name, Description : String;
+    Name, Description, CurName : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    Iter : IPCB_LibraryIterator;
+    Clash : Boolean;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     Description := ExtractJsonValue(Params, 'description');
+    If Trim(Name) = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required');
+        Exit;
+    End;
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+
+    Clash := False;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Footprint := Iter.FirstPCBObject;
+        While Footprint <> Nil Do
+        Begin
+            CurName := '';
+            Try CurName := Footprint.Name; Except End;
+            If UpperCase(CurName) = UpperCase(Name) Then
+            Begin
+                Clash := True;
+                Break;
+            End;
+            Footprint := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+    If Clash Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NAME_EXISTS',
+            'A footprint named "' + CurName + '" already exists in '
+            + PcbLib.Board.FileName + '; nothing was created. Pick another name, '
+            + 'or change that one with the lib_ footprint tools.');
         Exit;
     End;
 

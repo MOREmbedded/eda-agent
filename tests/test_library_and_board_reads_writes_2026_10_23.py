@@ -233,6 +233,24 @@ def test_layer_counts_name_footprints_and_every_mechanical_layer():
     assert "'library_path is required'" not in body
 
 
+# -- a footprint name the library already has -----------------------------------
+
+def test_creating_a_footprint_refuses_a_name_already_taken():
+    body = _fn("Library.pas", "Lib_CreateFootprint")
+    check = body.index("UpperCase(CurName) = UpperCase(Name)")
+    assert "'NAME_EXISTS'" in body
+    assert check < body.index("PCBServer.CreatePCBLibComp")
+
+
+def test_an_empty_footprint_name_is_refused_before_sending():
+    tools, sent, mp = _tools("library")
+    try:
+        got = asyncio.run(tools["lib_create_footprint"]("  "))
+    finally:
+        mp.undo()
+    assert got["success"] is False and not sent
+
+
 # -- #113: extruded bodies ------------------------------------------------------
 
 def test_an_extruded_body_joins_the_board_before_any_property():

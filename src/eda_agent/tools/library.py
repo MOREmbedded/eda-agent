@@ -1748,6 +1748,10 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new PCB footprint in the active library.
 
+        A name the library already has (ignoring case) is refused with
+        NAME_EXISTS: a second footprint of the same name would be
+        unreachable, every lookup by name finding the first.
+
         Args:
             name: Footprint name
             description: Footprint description
@@ -1755,6 +1759,8 @@ def register_library_tools(mcp):
         Returns:
             Dictionary with created footprint information
         """
+        if not name.strip():
+            return {"success": False, "error": "name is required"}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.create_footprint",
@@ -2023,8 +2029,8 @@ def register_library_tools(mcp):
         if not isinstance(rows, list):
             return failed("existing", "the library listing carried no "
                           "footprint list", False)
-        names = {str(f.get("name")) for f in rows if isinstance(f, dict)}
-        if fp_name in names:
+        names = {str(f.get("name")).upper() for f in rows if isinstance(f, dict)}
+        if fp_name.upper() in names:
             return failed("existing", f"a footprint named {fp_name!r} is "
                           "already in the library; pass another name", False)
 
