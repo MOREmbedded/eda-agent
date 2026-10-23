@@ -348,12 +348,15 @@ one design. They apply in every session.
    reads, prefer `scope=doc:<path>` (e.g. `obj_query`) over active-doc
    tools.
 
-6. **ECO (schematic → PCB) is not headless.** `proj_sync_pcb` fires the real
-   Engineering Change Order, but Altium's change-review dialog is
-   non-suppressible by design: a human must click **Execute Changes**.
-   Don't call `proj_sync_pcb` in an unattended run; it blocks until someone
-   interacts. After an attended ECO, the rest of the PCB tools work
-   normally.
+6. **The ECO (schematic → PCB) is a dialog, and you drive it.** Altium's
+   change-review dialog cannot be suppressed, so `proj_sync_pcb` blocks the
+   bridge while it is open. Open it without blocking instead:
+   `app_click_menu("Design|Import Changes From <Project>.PrjPcb",
+   expect_dialog="Engineering Change Order")`, read it with
+   `app_screenshot(dialog_title=...)`, then
+   `app_press_dialog_button("Execute Changes", allow_irreversible=True)` and
+   "Close". Do not ask the user to click it. Read board rules and counts
+   before opening it, since every bridge call waits while it is open.
 
 7. **`pcb_place_components` has two modes.** *Geometry only* (footprint +
    designator) leaves the board UNSYNCED, no link, no pad nets; pads are
@@ -366,8 +369,8 @@ one design. They apply in every session.
    `proj_get_connectivity_many`). That stamps the sch↔PCB link AND creates +
    assigns each pad's net, giving real connectivity (ratsnest + DRC) with
    NO ECO dialog: the headless way to populate a board from a compiled
-   schematic. (`proj_sync_pcb` / a real attended ECO remains the canonical
-   path when a human can click the dialog.)
+   schematic. (The real ECO, driven as in rule 6, remains the canonical
+   path.)
 
 8. **Connectivity review uses the netlist, never the render.** The FIRST
    priority for any review or check that concerns electrical connection (what
@@ -835,7 +838,7 @@ _DRAW_BLOCK = {
 
 #: The first line of the schematic-to-PCB block, used as an anchor. The
 #: block runs from here to the start of rule 8.
-_ECO_ANCHOR = "6. **ECO (schematic → PCB) is not headless.**"
+_ECO_ANCHOR = "6. **The ECO (schematic → PCB) is a dialog, and you drive it.**"
 _RULE_8_ANCHOR = "8. **Connectivity review uses the netlist, never the render.**"
 
 #: Rules 6 and 7 explain Altium's Engineering Change Order: a dialog a

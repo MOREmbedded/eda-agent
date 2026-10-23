@@ -410,7 +410,23 @@ Begin
           stopped, when the property was simply spelled differently. }
         Else If (PropName = 'Net') Or (PropName = 'Net.Name') Then
         Begin
-            If Obj.Net <> Nil Then Result := Obj.Net.Name;
+            { Poured copper carries no net of its own: the pour that made it }
+            { does, the same owner PCB_LayoutModel reads. A poured region    }
+            { read as netless, and a Net filter could not find it.           }
+            If Obj.Net <> Nil Then
+            Begin
+                Result := Obj.Net.Name;
+            End
+            Else
+            Begin
+                If Obj.InPolygon Then
+                Begin
+                    If Obj.Polygon <> Nil Then
+                    Begin
+                        If Obj.Polygon.Net <> Nil Then Result := Obj.Polygon.Net.Name;
+                    End;
+                End;
+            End;
         End
         { WHAT A PRIMITIVE BELONGS TO. The walk below takes every primitive  }
         { on the board, so a footprint's own tracks and a hatched pour's     }
@@ -517,15 +533,15 @@ Begin
         End
         Else If PropName = 'XCenter' Then
         Begin
-            If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.XCenter)); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMilsF(Arc.XCenter)); End;
         End
         Else If PropName = 'YCenter' Then
         Begin
-            If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.YCenter)); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMilsF(Arc.YCenter)); End;
         End
         Else If PropName = 'Radius' Then
         Begin
-            If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.Radius)); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMilsF(Arc.Radius)); End;
         End
         Else If PropName = 'StartAngle' Then
         Begin
@@ -619,6 +635,30 @@ Begin
         Else If PropName = 'SourceDesignator' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceDesignator; End;
+        End
+        { The schematic link of a placed part: the UniqueId of the symbol it }
+        { came from and the sheet-symbol path above it, the pair a multi-   }
+        { channel design needs to tell its copies apart. A board part has   }
+        { no UniqueId of its own that the schematic matches on.             }
+        Else If PropName = 'SourceUniqueId' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceUniqueId; End;
+        End
+        Else If PropName = 'SourceHierarchicalPath' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceHierarchicalPath; End;
+        End
+        Else If PropName = 'SourceLibReference' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceLibReference; End;
+        End
+        Else If PropName = 'SourceFootprintLibrary' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceFootprintLibrary; End;
+        End
+        Else If PropName = 'SourceComponentLibrary' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceComponentLibrary; End;
         End
         Else If PropName = 'Name' Then
         Begin
@@ -792,6 +832,7 @@ Begin
     Result := (PropName = 'X') Or (PropName = 'Y') Or (PropName = 'X1') Or
         (PropName = 'Y1') Or (PropName = 'X2') Or (PropName = 'Y2') Or
         (PropName = 'Width') Or (PropName = 'HoleSize') Or
+        (PropName = 'XCenter') Or (PropName = 'YCenter') Or (PropName = 'Radius') Or
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
@@ -874,6 +915,7 @@ End;
 Function SetPCBProperty(Obj : IPCB_Primitive; PropName : String; Value : String) : Integer;
 Var
     Track : IPCB_Track;
+    Arc   : IPCB_Arc;
     Pad   : IPCB_Pad;
     Via   : IPCB_Via;
     Comp  : IPCB_Component;
@@ -960,7 +1002,37 @@ Begin
         Else If PropName = 'Width' Then
         Begin
             If Oid = eTrackObject Then Begin Track := Obj; Track.Width := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else If Oid = eArcObject Then Begin Arc := Obj; Arc.LineWidth := MilsToCoordF(StrToFloatDef(Value, 0)); End
             Else If Oid = eTextObject Then Begin Txt := Obj; SetTextGeometry(Txt, False, MilsToCoordF(StrToFloatDef(Value, 0))); End
+            Else Matched := False;
+        End
+        { AN ARC'S GEOMETRY. Readable from the start and not writable, so   }
+        { a footprint's pin-1 dot could be read wrong and not put right.    }
+        { The same members the reader uses, inside the caller's modify      }
+        { bracket, on free arcs and on a placed part's arcs alike.          }
+        Else If PropName = 'XCenter' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.XCenter := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
+        End
+        Else If PropName = 'YCenter' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.YCenter := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
+        End
+        Else If PropName = 'Radius' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.Radius := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
+        End
+        Else If PropName = 'StartAngle' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.StartAngle := StrToFloatDef(Value, 0); End
+            Else Matched := False;
+        End
+        Else If PropName = 'EndAngle' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.EndAngle := StrToFloatDef(Value, 0); End
             Else Matched := False;
         End
         Else If PropName = 'Rotation' Then
@@ -1359,6 +1431,9 @@ Begin
         (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
         (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
         (PropName = 'SourceDesignator') Or
+        (PropName = 'SourceUniqueId') Or (PropName = 'SourceHierarchicalPath') Or
+        (PropName = 'SourceLibReference') Or (PropName = 'SourceFootprintLibrary') Or
+        (PropName = 'SourceComponentLibrary') Or
         (PropName = 'Kind') Or (PropName = 'RegionKind') Or
         (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
         (PropName = 'RemoveIslandsByArea') Or
@@ -1432,6 +1507,8 @@ Begin
         + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
         + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
         + 'Text, Pattern, Designator, Comment, SourceDesignator, '
+        + 'SourceUniqueId, SourceHierarchicalPath, SourceLibReference, '
+        + 'SourceFootprintLibrary, SourceComponentLibrary, '
         { Everything the reader above answers. A list that lags the reader
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }

@@ -2493,10 +2493,17 @@ Begin
     If OutputPath <> '' Then
         Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
 
+    { PCB:ExportSTEP3D is not a registered process, so it did nothing and  }
+    { said nothing. The STEP exporter is the 'STEP 3D' filter of           }
+    { PCB:Export (advpcb.ins), the route File > Export > STEP 3D takes. It }
+    { asks for the file name (already filled in from FileName), the       }
+    { export options, and closes with "Done!"; proj_export_step answers    }
+    { those three from outside while this waits in RunProcess.             }
     ResetParameters;
+    AddStringParameter('Format', 'STEP 3D');
     If OutputPath <> '' Then
         AddStringParameter('FileName', OutputPath);
-    RunProcess('PCB:ExportSTEP3D');
+    RunProcess('PCB:Export');
 
     { success:true used to come back whatever happened, and a reported    }
     { run that wrote nothing was indistinguishable from one that did.     }
@@ -2521,9 +2528,8 @@ Begin
             '{"generated":false,"dispatched":true,"output_path":"'
             + EscapeJsonString(OutputPath) + '"'
             + ',"reason":"the export was launched but no new file is at '
-            + 'output_path. PCB:ExportSTEP3D is not documented to take a file '
-            + 'name; run an OutJob with an ExportSTEP output through '
-            + 'proj_run_outjob for a result that can be confirmed"}');
+            + 'output_path. The export dialogs were cancelled or answered '
+            + 'with another file name"}');
 End;
 
 {..............................................................................}

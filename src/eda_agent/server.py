@@ -197,16 +197,27 @@ _ENGINE_PARAGRAPHS = {
 # in a plan to edit 1,499 symbols through the Properties panel. The API
 # route existed for two of the three; the third was a real gap, now fixed.
 # "Usually" is the accurate word, and a genuine gap is worth reporting.
+# The paragraph then told sessions to ask the user before driving the
+# interface, and they did: they asked George to click things they could
+# click themselves. His rule (2026-10-23): the API route when there is
+# one, otherwise the interface, without asking.
 _UI_AUTOMATION_ALTIUM = (
-    "The app_ tools that press buttons, pick menus and type into Altium's\n"
-    "dialogs (app_click_menu, app_run_ui_command, app_set_dialog_control,\n"
-    "app_canvas and the rest) are a last resort, not a second route. When\n"
-    "an API tool seems to fail or be missing, the cause has usually been a\n"
-    "wrong argument or a tool that was not found, and driving a dialog\n"
-    "instead has ended with Altium crashed. Before reaching for one,\n"
-    "{reach} with what you are trying to do. If it still finds nothing,\n"
-    "say so and ask the user before driving the interface: a genuine gap\n"
-    "is worth reporting, because it gets fixed.\n"
+    "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
+    "press buttons, pick menus and type into Altium's dialogs\n"
+    "(app_click_menu, app_run_ui_command, app_press_dialog_button,\n"
+    "app_drive_dialogs, app_set_dialog_control, app_canvas and the rest)\n"
+    "come second to an API tool. When an API tool seems to fail or be\n"
+    "missing, the cause has usually been a wrong argument or a tool that\n"
+    "was not found, and driving a dialog instead has ended with Altium\n"
+    "crashed, so first {reach} with what you are trying to do. When there\n"
+    "is no API route, drive the interface yourself and carry on: never\n"
+    "ask the user to click, pick a menu or press a button you can press.\n"
+    "Read every dialog you raise (app_list_open_dialogs, app_screenshot)\n"
+    "and answer it as the task requires; needs_a_human marks one the\n"
+    "dialog driver will not answer blindly, not one to hand to the user.\n"
+    "Ask the user only for a decision that is theirs, never for a click.\n"
+    "Say in your report which step needed the interface: a missing API\n"
+    "route is worth reporting, because it gets fixed.\n"
     "\n"
 )
 

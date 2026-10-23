@@ -10387,6 +10387,554 @@ Begin
 End;
 
 {..............................................................................}
+{ FootprintSignature - what a footprint is made of, independent of where it   }
+{ sits: pad, track, arc, region and fill counts, and the summed track widths  }
+{ and lengths and arc radii and widths, to a tenth of a mil. None of these    }
+{ change with a move, a turn or a flip, so a placed part and the library      }
+{ footprint it came from give the same string. Owner is a placed component    }
+{ or a library footprint; only its group iterator is used. The library's      }
+{ iterator can hand one primitive back twice, so each is counted once.        }
+{..............................................................................}
+
+Function FootprintSignature(Owner : IPCB_Component) : String;
+Var
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Prim : IPCB_Primitive;
+    Seen : TStringList;
+    Addr : String;
+    NP, NT, NA, NR, NF : Integer;
+    TW, TL, AR, AW, DX, DY : Double;
+Begin
+    Result := '';
+    If Owner = Nil Then Exit;
+    NP := 0; NT := 0; NA := 0; NR := 0; NF := 0;
+    TW := 0; TL := 0; AR := 0; AW := 0;
+    Seen := TStringList.Create;
+    Try
+        GrpIter := Owner.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := GrpIter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            Addr := IntToStr(Pad.I_ObjectAddress);
+            If Seen.IndexOf(Addr) < 0 Then
+            Begin
+                Seen.Add(Addr);
+                Inc(NP);
+            End;
+            Pad := GrpIter.NextPCBObject;
+        End;
+        Owner.GroupIterator_Destroy(GrpIter);
+
+        GrpIter := Owner.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+        Track := GrpIter.FirstPCBObject;
+        While Track <> Nil Do
+        Begin
+            Addr := IntToStr(Track.I_ObjectAddress);
+            If Seen.IndexOf(Addr) < 0 Then
+            Begin
+                Seen.Add(Addr);
+                Inc(NT);
+                TW := TW + CoordToMilsF(Track.Width);
+                DX := CoordToMilsF(Track.X2 - Track.X1);
+                DY := CoordToMilsF(Track.Y2 - Track.Y1);
+                TL := TL + Sqrt(DX * DX + DY * DY);
+            End;
+            Track := GrpIter.NextPCBObject;
+        End;
+        Owner.GroupIterator_Destroy(GrpIter);
+
+        GrpIter := Owner.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(eArcObject));
+        Arc := GrpIter.FirstPCBObject;
+        While Arc <> Nil Do
+        Begin
+            Addr := IntToStr(Arc.I_ObjectAddress);
+            If Seen.IndexOf(Addr) < 0 Then
+            Begin
+                Seen.Add(Addr);
+                Inc(NA);
+                AR := AR + CoordToMilsF(Arc.Radius);
+                AW := AW + CoordToMilsF(Arc.LineWidth);
+            End;
+            Arc := GrpIter.NextPCBObject;
+        End;
+        Owner.GroupIterator_Destroy(GrpIter);
+
+        GrpIter := Owner.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Prim := GrpIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Addr := IntToStr(Prim.I_ObjectAddress);
+            If Seen.IndexOf(Addr) < 0 Then
+            Begin
+                Seen.Add(Addr);
+                Inc(NR);
+            End;
+            Prim := GrpIter.NextPCBObject;
+        End;
+        Owner.GroupIterator_Destroy(GrpIter);
+
+        GrpIter := Owner.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(eFillObject));
+        Prim := GrpIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Addr := IntToStr(Prim.I_ObjectAddress);
+            If Seen.IndexOf(Addr) < 0 Then
+            Begin
+                Seen.Add(Addr);
+                Inc(NF);
+            End;
+            Prim := GrpIter.NextPCBObject;
+        End;
+        Owner.GroupIterator_Destroy(GrpIter);
+    Finally
+        Seen.Free;
+    End;
+    Result := 'pads ' + IntToStr(NP) + ', tracks ' + IntToStr(NT)
+        + ' (width ' + IntToStr(Round(TW * 10)) + ', length ' + IntToStr(Round(TL * 10))
+        + '), arcs ' + IntToStr(NA) + ' (radius ' + IntToStr(Round(AR * 10))
+        + ', width ' + IntToStr(Round(AW * 10)) + '), regions ' + IntToStr(NR)
+        + ', fills ' + IntToStr(NF);
+End;
+
+{..............................................................................}
+{ LibraryFootprintSignature - the signature of one footprint in the .PcbLib   }
+{ at LibPath, read from that library and no other: it is opened in front,     }
+{ checked to be the one in front, and searched by name. Empty when the        }
+{ library cannot be brought forward or lacks the footprint. Leaves the        }
+{ library in front; the caller brings its board back.                         }
+{..............................................................................}
+
+Function LibraryFootprintSignature(LibPath, Pattern : String) : String;
+Var
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint, Target : IPCB_LibComponent;
+    FpName, Front : String;
+Begin
+    Result := '';
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', LibPath);
+    RunProcess('WorkspaceManager:OpenObject');
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then Exit;
+    Front := '';
+    Try Front := PcbLib.Board.FileName; Except End;
+    If UpperCase(Front) <> UpperCase(LibPath) Then Exit;
+    Target := Nil;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Footprint := Iter.FirstPCBObject;
+        While Footprint <> Nil Do
+        Begin
+            FpName := '';
+            Try FpName := Footprint.Name; Except End;
+            If UpperCase(FpName) = UpperCase(Pattern) Then
+            Begin
+                Target := Footprint;
+                Break;
+            End;
+            Footprint := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+    If Target = Nil Then Exit;
+    Result := FootprintSignature(Target);
+End;
+
+{..............................................................................}
+{ PCB_UpdateFootprintsFromLibrary - refresh placed parts from their PcbLib,   }
+{ with no ECO.                                                                 }
+{                                                                              }
+{ WHY. A footprint edited in its library reaches the board only through the   }
+{ project ECO, which also proposes every other difference between schematic   }
+{ and board: on a real board it wanted to remove all the net classes and swap }
+{ eleven unrelated footprints, so it could not be used for a silk fix.        }
+{                                                                              }
+{ WHICH LIBRARY. Altium's loaders find a footprint by NAME: measured, with    }
+{ two libraries holding SOIC8_T, a load naming the second gave the first's    }
+{ copy, and a stale copy kept a part's old pin-1 dot. So the footprint is    }
+{ read from the named library first (LibraryFootprintSignature), each loader }
+{ is tried in turn, and a copy is kept only when its signature matches that  }
+{ library's; otherwise the part is left and both signatures are reported.    }
+{                                                                              }
+{ HOW. Each part is replaced, not edited: a fresh copy is loaded, given the   }
+{ old part's side, }
+{ turn and origin in that order, its designator and comment text as placed,   }
+{ and its schematic link (SourceUniqueId, SourceHierarchicalPath and the rest }
+{ of the Source fields, which a multi-channel design matches on). Each pad    }
+{ takes the net the old pad of the same name had. The old part goes only once }
+{ the new one is on the board with the asked pattern and every pad that       }
+{ carried a net; otherwise the new copy is removed and the old one stays.     }
+{                                                                              }
+{ Params: designators (pipe list), library_path (a .PcbLib; empty uses each   }
+{ part's own SourceFootprintLibrary), dry_run.                                }
+{..............................................................................}
+
+Function PCB_UpdateFootprintsFromLibrary(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    OldC, NewC : IPCB_Component;
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    Net : IPCB_Net;
+    DesList, Remaining, Des, LibPathArg, LibPath, Pattern, LoadStr : String;
+    PadNets, OldPadNames, NewPadNames, PadName, NetName, Missing : String;
+    ItemsJson, Item, Reason, DryStr : String;
+    DryRun, First, Ok : Boolean;
+    PipePos, Updated, Failed, PadsOld, PadsNew, Bound : Integer;
+    OldLayer : TLayer;
+    OldX, OldY : TCoord;
+    OldRot : Double;
+    SrcUid, SrcPath, SrcDes, SrcLibRef, SrcCompLib, SrcFpLib, OldComment : String;
+    LibSig, NewSig, How, Tried, BoardPath : String;
+    Sigs : TStringList;
+    Attempt : Integer;
+    Loaded : Boolean;
+Begin
+    Board := Nil;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        Exit;
+    End;
+    DesList := ExtractJsonValue(Params, 'designators');
+    If DesList = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designators is required (pipe-separated, e.g. C1|C2|J3)');
+        Exit;
+    End;
+    LibPathArg := ExtractJsonValue(Params, 'library_path');
+    DryStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
+    DryRun := (DryStr = 'true') Or (DryStr = '1');
+
+    Updated := 0;
+    Failed := 0;
+    ItemsJson := '';
+    First := True;
+    Remaining := DesList;
+    BoardPath := Board.FileName;
+    Sigs := TStringList.Create;
+
+    PCBServer.PreProcess;
+    Try
+        While Remaining <> '' Do
+        Begin
+            PipePos := Pos('|', Remaining);
+            If PipePos > 0 Then
+            Begin
+                Des := Trim(Copy(Remaining, 1, PipePos - 1));
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End
+            Else
+            Begin
+                Des := Trim(Remaining);
+                Remaining := '';
+            End;
+            If Des = '' Then Continue;
+
+            Ok := False;
+            Reason := '';
+            How := '';
+            Pattern := '';
+            LibPath := '';
+            PadsOld := 0;
+            PadsNew := 0;
+            Bound := 0;
+            Missing := '';
+            NewC := Nil;
+            OldC := Nil;
+            Try OldC := Board.GetPcbComponentByRefDes(Des); Except OldC := Nil; End;
+            If OldC = Nil Then
+            Begin
+                Reason := 'no part with that designator on the board';
+            End
+            Else
+            Begin
+                Pattern := OldC.Pattern;
+                SrcUid := ''; SrcPath := ''; SrcDes := ''; SrcLibRef := '';
+                SrcCompLib := ''; SrcFpLib := ''; OldComment := '';
+                Try SrcUid := OldC.SourceUniqueId; Except End;
+                Try SrcPath := OldC.SourceHierarchicalPath; Except End;
+                Try SrcDes := OldC.SourceDesignator; Except End;
+                Try SrcLibRef := OldC.SourceLibReference; Except End;
+                Try SrcCompLib := OldC.SourceComponentLibrary; Except End;
+                Try SrcFpLib := OldC.SourceFootprintLibrary; Except End;
+                Try OldComment := OldC.Comment.Text; Except End;
+                LibPath := LibPathArg;
+                If LibPath = '' Then LibPath := SrcFpLib;
+
+                { The old part's pads and their nets, by pad name. }
+                PadNets := '';
+                OldPadNames := '|';
+                GrpIter := OldC.GroupIterator_Create;
+                GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                Pad := GrpIter.FirstPCBObject;
+                While Pad <> Nil Do
+                Begin
+                    Inc(PadsOld);
+                    PadName := '';
+                    Try PadName := Pad.Name; Except End;
+                    OldPadNames := OldPadNames + PadName + '|';
+                    If Pad.Net <> Nil Then
+                        PadNets := PadNets + PadName + '=' + Pad.Net.Name + '|';
+                    Pad := GrpIter.NextPCBObject;
+                End;
+                OldC.GroupIterator_Destroy(GrpIter);
+
+                If LibPath = '' Then
+                Begin
+                    Reason := 'the part names no footprint library; pass library_path';
+                End
+                Else If DryRun Then
+                Begin
+                    Ok := True;
+                End
+                Else
+                Begin
+                    OldLayer := OldC.Layer;
+                    OldX := OldC.x;
+                    OldY := OldC.y;
+                    OldRot := OldC.Rotation;
+                    { The named library's own footprint, read once per library. }
+                    LibSig := Sigs.Values[UpperCase(LibPath + '>' + Pattern)];
+                    If LibSig = '' Then
+                    Begin
+                        LibSig := LibraryFootprintSignature(LibPath, Pattern);
+                        If LibSig <> '' Then
+                            Sigs.Values[UpperCase(LibPath + '>' + Pattern)] := LibSig;
+                        Board := ResolvePCBBoard(BoardPath);
+                    End;
+                    If SrcLibRef = '' Then SrcLibRef := Pattern;
+                    How := '';
+                    Tried := '';
+                    Loaded := False;
+                    If Board = Nil Then
+                    Begin
+                        Reason := 'the board could not be brought back after reading the library';
+                    End
+                    Else If LibSig = '' Then
+                    Begin
+                        Reason := Pattern + ' could not be read from ' + LibPath;
+                    End
+                    Else
+                    Begin
+                        { Three loaders, first one naming the library FILE:       }
+                        { LoadFromLibrary with FootPrint and FileName, the pair   }
+                        { AdvPcb.dll builds beside "Change Physical Footprint".   }
+                        { Then the part's own, from its Pattern and               }
+                        { SourceFootprintLibrary, then LoadFromLibrary with the   }
+                        { SourceComponentLibrary key, which names a COMPONENT     }
+                        { library and finds the footprint by name. Not            }
+                        { PCBServer.LoadCompFromLibrary: its result is untyped    }
+                        { and may be the library's own footprint, which a board   }
+                        { must not adopt; a reference script found it does not    }
+                        { work either.                                            }
+                        For Attempt := 1 To 3 Do
+                        Begin
+                            If Loaded Then Continue;
+                            NewC := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
+                            If NewC = Nil Then Continue;
+                            NewC.Board := Board;
+                            If Attempt = 1 Then
+                            Begin
+                                Try NewC.LoadFromLibrary('FootPrint=' + Pattern + '|FileName=' + LibPath); Except End;
+                            End;
+                            If Attempt = 2 Then
+                            Begin
+                                Try NewC.SetState_Pattern(Pattern); Except End;
+                                Try NewC.SourceFootprintLibrary := LibPath; Except End;
+                                Try NewC.LoadCompFromLibrary; Except End;
+                            End;
+                            If Attempt = 3 Then
+                            Begin
+                                LoadStr := 'SourceLibReference=' + SrcLibRef + '|FootPrint=' + Pattern
+                                         + '|SourceComponentLibrary=' + LibPath;
+                                Try NewC.LoadFromLibrary(LoadStr); Except End;
+                            End;
+                            { Side, then turn, then origin, as every placement here. }
+                            NewC.Layer := OldLayer;
+                            NewC.Rotation := OldRot;
+                            NewC.x := OldX;
+                            NewC.y := OldY;
+                            NewC.Name.Text := Des;
+                            If OldComment <> '' Then NewC.Comment.Text := OldComment;
+                            Board.AddPCBObject(NewC);
+                            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                                PCBM_BoardRegisteration, NewC.I_ObjectAddress);
+                            NewSig := FootprintSignature(NewC);
+                            If NewSig = LibSig Then
+                            Begin
+                                Loaded := True;
+                                How := IntToStr(Attempt);
+                            End
+                            Else
+                            Begin
+                                Tried := Tried + ' loader ' + IntToStr(Attempt) + ' gave [' + NewSig + '];';
+                                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                                    PCBM_BoardRegisteration, NewC.I_ObjectAddress);
+                                Board.RemovePCBObject(NewC);
+                                NewC := Nil;
+                            End;
+                        End;
+                        If Not Loaded Then
+                            Reason := 'no loader gave the footprint in ' + LibPath + ' ['
+                                + LibSig + '], so another copy of ' + Pattern
+                                + ' (a library with the same name, or a cached one) was '
+                                + 'loaded instead:' + Tried;
+                    End;
+                    If Loaded Then
+                    Begin
+
+                        { Check before the old one goes: the pattern loaded and   }
+                        { every pad that carried a net is on the new footprint.   }
+                        NewPadNames := '|';
+                        GrpIter := NewC.GroupIterator_Create;
+                        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                        Pad := GrpIter.FirstPCBObject;
+                        While Pad <> Nil Do
+                        Begin
+                            Inc(PadsNew);
+                            PadName := '';
+                            Try PadName := Pad.Name; Except End;
+                            NewPadNames := NewPadNames + PadName + '|';
+                            Pad := GrpIter.NextPCBObject;
+                        End;
+                        NewC.GroupIterator_Destroy(GrpIter);
+
+                        Item := PadNets;
+                        While Item <> '' Do
+                        Begin
+                            PipePos := Pos('|', Item);
+                            PadName := Copy(Item, 1, Pos('=', Item) - 1);
+                            Item := Copy(Item, PipePos + 1, Length(Item));
+                            If Pos('|' + PadName + '|', NewPadNames) = 0 Then
+                                Missing := Missing + PadName + ' ';
+                        End;
+
+                        If PadsNew = 0 Then
+                        Begin
+                            Reason := Pattern + ' has no pads in ' + LibPath;
+                        End
+                        Else If NewC.Pattern <> Pattern Then
+                        Begin
+                            Reason := 'the library loaded ' + NewC.Pattern + ', not ' + Pattern;
+                        End
+                        Else If Missing <> '' Then
+                        Begin
+                            Reason := 'the new footprint lacks pads that carry nets: ' + Trim(Missing);
+                        End;
+
+                        If Reason <> '' Then
+                        Begin
+                            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                                PCBM_BoardRegisteration, NewC.I_ObjectAddress);
+                            Board.RemovePCBObject(NewC);
+                        End
+                        Else
+                        Begin
+                            { Text as placed: absolute, since the origin is shared. }
+                            PCBServer.SendMessageToRobots(NewC.I_ObjectAddress,
+                                c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                            Try NewC.NameOn := OldC.NameOn; Except End;
+                            Try NewC.Name.Layer := OldC.Name.Layer; Except End;
+                            Try NewC.Name.Rotation := OldC.Name.Rotation; Except End;
+                            Try NewC.Name.Size := OldC.Name.Size; Except End;
+                            Try NewC.Name.Width := OldC.Name.Width; Except End;
+                            Try NewC.Name.XLocation := OldC.Name.XLocation; Except End;
+                            Try NewC.Name.YLocation := OldC.Name.YLocation; Except End;
+                            Try NewC.CommentOn := OldC.CommentOn; Except End;
+                            Try NewC.Comment.Layer := OldC.Comment.Layer; Except End;
+                            Try NewC.Comment.Rotation := OldC.Comment.Rotation; Except End;
+                            Try NewC.Comment.Size := OldC.Comment.Size; Except End;
+                            Try NewC.Comment.Width := OldC.Comment.Width; Except End;
+                            Try NewC.Comment.XLocation := OldC.Comment.XLocation; Except End;
+                            Try NewC.Comment.YLocation := OldC.Comment.YLocation; Except End;
+                            Try NewC.Moveable := OldC.Moveable; Except End;
+                            { The schematic link, every Source field as it was. }
+                            Try NewC.SourceUniqueId := SrcUid; Except End;
+                            Try NewC.SourceHierarchicalPath := SrcPath; Except End;
+                            Try NewC.SourceDesignator := SrcDes; Except End;
+                            Try NewC.SourceLibReference := SrcLibRef; Except End;
+                            Try NewC.SourceComponentLibrary := SrcCompLib; Except End;
+                            Try NewC.SourceFootprintLibrary := SrcFpLib; Except End;
+                            PCBServer.SendMessageToRobots(NewC.I_ObjectAddress,
+                                c_Broadcast, PCBM_EndModify, c_NoEventData);
+
+                            GrpIter := NewC.GroupIterator_Create;
+                            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                            Pad := GrpIter.FirstPCBObject;
+                            While Pad <> Nil Do
+                            Begin
+                                PadName := '';
+                                Try PadName := Pad.Name; Except End;
+                                NetName := GetPadNet(PadNets, PadName);
+                                If NetName <> '' Then
+                                Begin
+                                    Net := EnsureNet(Board, NetName);
+                                    If BindPrimitiveToNet(Net, Pad) Then Inc(Bound);
+                                End;
+                                Pad := GrpIter.NextPCBObject;
+                            End;
+                            NewC.GroupIterator_Destroy(GrpIter);
+
+                            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                                PCBM_BoardRegisteration, OldC.I_ObjectAddress);
+                            Board.RemovePCBObject(OldC);
+                            Ok := True;
+                        End;
+                    End;
+                End;
+            End;
+
+            If Ok Then Inc(Updated) Else Inc(Failed);
+            Item := '{"designator":"' + EscapeJsonString(Des) + '"'
+                + ',"ok":' + BoolToJsonStr(Ok)
+                + ',"pattern":"' + EscapeJsonString(Pattern) + '"'
+                + ',"library":"' + EscapeJsonString(LibPath) + '"'
+                + ',"pads_before":' + IntToStr(PadsOld)
+                + ',"pads_after":' + IntToStr(PadsNew)
+                + ',"nets_bound":' + IntToStr(Bound);
+            If How <> '' Then
+                Item := Item + ',"loader":' + How + ',"signature":"' + EscapeJsonString(LibSig) + '"';
+            If Reason <> '' Then
+                Item := Item + ',"reason":"' + EscapeJsonString(Reason) + '"';
+            Item := Item + '}';
+            If Not First Then ItemsJson := ItemsJson + ',';
+            ItemsJson := ItemsJson + Item;
+            First := False;
+        End;
+    Finally
+        PCBServer.PostProcess;
+        Sigs.Free;
+    End;
+
+    If (Not DryRun) And (Updated > 0) Then
+    Begin
+        MarkDocDirtyByPath(Board.FileName);
+        Try Board.ViewManager_FullUpdate; Except End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"updated":' + IntToStr(Updated)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"board":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"items":[' + ItemsJson + ']}');
+End;
+
+{..............................................................................}
 { PCB_FocusBoard - make a specific board the focused/current one, so the      }
 { GetPCBBoardAnywhere-based tools (get_components, delete, plan_placement,    }
 { render, ...) all operate on it. Essential when several PcbDocs are open.    }
@@ -18327,6 +18875,7 @@ Begin
         'place_stitching_vias':    Result := PCB_PlaceStitchingVias(Params, RequestId);
         'get_fab_stats':           Result := PCB_GetFabStats(Params, RequestId);
         'clear_source_footprint_library': Result := PCB_ClearSourceFootprintLibrary(Params, RequestId);
+        'update_footprints_from_library': Result := PCB_UpdateFootprintsFromLibrary(Params, RequestId);
         'get_differential_pairs':  Result := PCB_GetDifferentialPairs(Params, RequestId);
         'make_paste_grid':         Result := PCB_MakePasteGrid(Params, RequestId);
         'apply_dnp_paste_exclusion': Result := PCB_ApplyDnpPasteExclusion(Params, RequestId);

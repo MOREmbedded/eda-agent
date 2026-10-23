@@ -1003,32 +1003,289 @@ def register_project_tools(mcp):
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    async def proj_export_step(output_path: str = "") -> dict[str, Any]:
-        """Export the open PCB to a STEP 3D model file.
+    async def proj_export_step(output_path: str,
+                               board_path: str = "",
+                               overwrite: bool = False) -> dict[str, Any]:
+        """Export a board to a STEP 3D model with Altium's own exporter.
 
-        The board is focused first, since the export acts on the focused
-        view. If output_path is omitted, Altium may show a file-save
-        dialog. ``generated`` is true only when a new file is at
-        output_path afterwards; otherwise the reply says the export was
-        dispatched and why nothing could be confirmed. An OutJob with an
-        ExportSTEP output, run through proj_run_outjob, is the route
-        whose result can always be checked.
+        Runs PCB:Export with the STEP 3D format, the route File > Export >
+        STEP 3D takes, and answers its three dialogs: the file name
+        (already filled in), the export options (Altium's defaults) and
+        the closing "Done!". Only those three are pressed; any other
+        dialog stops the export and is reported. ``generated`` is true
+        only when a new file is at output_path afterwards.
 
         Args:
-            output_path: Full path for the output .step file (optional)
+            output_path: Full path for the .step file.
+            board_path: Focus this .PcbDoc first; it must then be the
+                board in front, since the export acts on the front view.
+                Omit it to export the board already in front.
+            overwrite: Replace an existing file. Off by default, so an
+                earlier export is never lost by accident.
 
         Returns:
-            ``generated``, plus ``dispatched`` and ``reason`` when no new
-            file was found
+            ``generated``, ``output_path``, ``size_bytes``, the board that
+            was exported (``front_document``) and every dialog answered.
         """
+        import asyncio
+        import os
+        import time as _time
+
+        from ..bridge.exceptions import AltiumError
+        from ..ui import windows
+        from .uiauto import _altium_pid
+
+        if not output_path or not os.path.isabs(output_path):
+            return {"ok": False, "reason": "output_path must be a full path"}
+        existed = os.path.exists(output_path)
+        if existed and not overwrite:
+            return {"ok": False, "output_path": output_path, "reason": (
+                "a file is already there. Pass overwrite=True to replace it")}
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+
         bridge = get_bridge()
-        params: dict[str, Any] = {}
-        if output_path:
-            params["output_path"] = output_path
-        result = await bridge.send_command_async(
-            "project.export_step", params, timeout=120.0
-        )
+        if board_path:
+            await bridge.send_command_async(
+                "pcb.focus_board", {"board_path": board_path})
+        front = await bridge.send_command_async(
+            "application.get_active_document", {"front": "true"})
+        front_path = (front or {}).get("file_path") or ""
+        if board_path and (os.path.normcase(os.path.normpath(front_path))
+                           != os.path.normcase(os.path.normpath(board_path))):
+            return {"ok": False, "front_document": front_path, "reason": (
+                f"{board_path} is not the board in front, so the export "
+                "would write another board. Nothing was exported")}
+        if not front_path.lower().endswith(".pcbdoc"):
+            return {"ok": False, "front_document": front_path,
+                    "reason": "the document in front is not a board"}
+        # An existing file is moved aside rather than overwritten through
+        # Altium: its "Confirm Save As" sat on top of the Save dialog and
+        # the export never ran. It comes back if no new file is written.
+        aside = ""
+        if existed:
+            aside = output_path + ".previous"
+            try:
+                os.replace(output_path, aside)
+            except OSError as e:
+                return {"ok": False, "output_path": output_path, "reason": (
+                    f"the existing file could not be moved aside: {e}")}
+        started = _time.time()
+
+        # The handler blocks in RunProcess until the dialogs are answered,
+        # and the bridge gives up on a call as soon as a modal shows, so
+        # the call's end says nothing about the export's. The export ends
+        # with Altium's "Done!", which is answered too: left open, it
+        # blocked the next call.
+        call = asyncio.ensure_future(bridge.send_command_async(
+            "project.export_step", {"output_path": output_path},
+            timeout=600.0))
+
+        def settled() -> bool:
+            """A new file whose size has stopped changing."""
+            if not os.path.exists(output_path)                     or os.path.getmtime(output_path) < started - 1:
+                return False
+            size = os.path.getsize(output_path)
+            _time.sleep(1.0)
+            return size > 0 and size == os.path.getsize(output_path)
+
+        def answer() -> dict:
+            steps = {"export file": "Save", "export options": "OK",
+                     "information": "OK"}
+            answered, deadline = [], _time.monotonic() + 600.0
+            quiet_since = None
+            while _time.monotonic() < deadline:
+                shown = windows.dialogs(pid)
+                for dialog in shown:
+                    title = (dialog.title or "").strip().lower()
+                    caption = steps.get(title)
+                    if caption is None:
+                        return {"ok": False, "answered": answered,
+                                "reason": (f"an unexpected dialog "
+                                           f"{dialog.title!r} is open; "
+                                           "nothing was pressed in it")}
+                    button = dialog.find_button(caption)
+                    if button is None:
+                        continue
+                    windows.click(button)
+                    windows.wait_for_close(dialog.hwnd, timeout=5.0)
+                    answered.append(dialog.title)
+                    if title == "information":
+                        return {"ok": True, "answered": answered}
+                    break
+                # Nothing on screen once the options are answered is the
+                # export running. It is done at "Done!", or, should that
+                # never come, once a new file has stopped growing and the
+                # screen has stayed empty for a few seconds.
+                if shown:
+                    quiet_since = None
+                elif "Export Options" in answered:
+                    quiet_since = quiet_since or _time.monotonic()
+                    if _time.monotonic() - quiet_since > 5.0 and settled():
+                        return {"ok": True, "answered": answered}
+                _time.sleep(0.25)
+            return {"ok": False, "answered": answered,
+                    "reason": "the export did not finish in ten minutes"}
+
+        driven = await asyncio.get_running_loop().run_in_executor(None, answer)
+        try:
+            await asyncio.wait_for(call, timeout=30.0)
+        except (AltiumError, asyncio.TimeoutError):
+            pass
+
+        # The file can land a few seconds after the last dialog closes.
+        written = False
+        for _ in range(30):
+            written = await asyncio.get_running_loop().run_in_executor(
+                None, settled)
+            if written:
+                break
+            await asyncio.sleep(0.5)
+
+        if aside:
+            try:
+                if written:
+                    os.remove(aside)
+                else:
+                    os.replace(aside, output_path)
+            except OSError:
+                pass
+        result: dict[str, Any] = {
+            "ok": bool(written and driven.get("ok")),
+            "generated": bool(written),
+            "output_path": output_path,
+            "front_document": front_path,
+            "dialogs_answered": driven.get("answered", []),
+        }
+        if written:
+            result["size_bytes"] = os.path.getsize(output_path)
+        if aside and not written:
+            result["previous_file_kept"] = os.path.exists(output_path)
+        if not driven.get("ok"):
+            result["reason"] = driven.get("reason")
+        elif not written:
+            result["reason"] = "the dialogs were answered and no new file is there"
         return result
+
+    @mcp.tool()
+    async def proj_create_outjob(
+        project_path: str,
+        source_outjob: str = "",
+        outjob_name: str = "",
+        output_dir: str = "",
+        use_fallback: bool = False,
+    ) -> dict[str, Any]:
+        """Give a project an OutJob by copying one in the user's own style.
+
+        Every user exports differently, so this invents no outputs. It
+        copies an existing OutJob (the user's own from another project,
+        or one Altium ships), points each output at this project's
+        documents, writes every container to ``output_dir``, and adds the
+        copy to the project. Run it afterwards with proj_run_outjob or
+        proj_generate_fab_package.
+
+        ASK THE USER FIRST. With no ``source_outjob`` nothing is written:
+        the reply lists the OutJobs found in open projects. Ask the user
+        which one to copy, or how they prefer their outputs (Gerber
+        format and units, drill files, pick-and-place, BOM, folders) and
+        pick the closest. Altium's own templates are a fallback, used
+        only with ``use_fallback`` once the user has agreed.
+
+        Args:
+            project_path: The target .PrjPcb.
+            source_outjob: The .OutJob to copy.
+            outjob_name: File name for the copy; defaults to the source's.
+            output_dir: Absolute folder for the outputs; defaults to
+                "Project Outputs for <project>" beside the project.
+            use_fallback: With no source, copy Altium's shipped
+                Fabrication template. Only once the user has agreed.
+
+        Returns:
+            ``outjob_path``, the ``outputs`` it holds, which documents
+            were ``retargeted`` and which were left ``unmapped``, and the
+            containers Altium reads back from it.
+        """
+        import glob
+        import os
+
+        from .. import outjob
+        from ..atomicfile import replace_with_retry
+
+        bridge = get_bridge()
+        if not source_outjob and use_fallback:
+            shipped = sorted(glob.glob(os.path.join(
+                os.environ.get("PUBLIC", r"C:\Users\Public"), "Documents",
+                "Altium", "*", "OutputJobs", "Fabrication.OutJob")))
+            if not shipped:
+                return {"ok": False, "reason": (
+                    "Altium's shipped OutputJobs templates were not found")}
+            source_outjob = shipped[-1]
+        if not source_outjob:
+            open_docs = await bridge.send_command_async(
+                "application.get_open_documents")
+            docs = open_docs.get("result", open_docs) \
+                if isinstance(open_docs, dict) else open_docs
+            found = sorted({d.get("file_path", "") for d in docs or []
+                            if str(d.get("file_path", "")).lower()
+                            .endswith(".outjob")})
+            return {"ok": False, "needs_input": True,
+                    "candidates": found,
+                    "reason": (
+                        "nothing was written. Ask the user which OutJob to "
+                        "copy (one of the candidates, or a path), or how "
+                        "they prefer their outputs, then call again with "
+                        "source_outjob. use_fallback=True copies Altium's "
+                        "shipped Fabrication template, only once the user "
+                        "has agreed to it.")}
+
+        if not os.path.isfile(source_outjob):
+            return {"ok": False, "reason": f"{source_outjob} is not a file"}
+        if not project_path.lower().endswith(".prjpcb"):
+            return {"ok": False, "reason": "project_path must be a .PrjPcb"}
+        project_dir = os.path.dirname(project_path)
+        stem = os.path.splitext(os.path.basename(project_path))[0]
+        target = os.path.join(project_dir,
+                              outjob_name or os.path.basename(source_outjob))
+        if not target.lower().endswith(".outjob"):
+            target += ".OutJob"
+        if os.path.exists(target):
+            return {"ok": False, "outjob_path": target, "reason": (
+                "a file of that name is already there and is never "
+                "overwritten; pass another outjob_name")}
+        output_dir = output_dir or os.path.join(
+            project_dir, f"Project Outputs for {stem}")
+
+        listing = await bridge.send_command_async(
+            "project.get_documents", {"project_path": project_path})
+        members = listing.get("result", listing) \
+            if isinstance(listing, dict) else listing
+        documents = [d.get("file_path", "") for d in members or []
+                     if d.get("file_path")]
+        if not documents:
+            return {"ok": False, "reason": (
+                "Altium lists no documents in that project; open it first")}
+
+        with open(source_outjob, "rb") as fh:
+            data, report = outjob.clone(fh.read(), project_path, documents,
+                                        output_dir)
+        tmp = target + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        replace_with_retry(tmp, target)
+
+        added = await bridge.send_command_async(
+            "project.add_document",
+            {"document_path": target, "project_path": project_path})
+        read_back = await bridge.send_command_async(
+            "project.get_outjob_containers", {"outjob_path": target},
+            timeout=30.0)
+        return {"ok": bool((read_back or {}).get("containers")),
+                "outjob_path": target, "source_outjob": source_outjob,
+                "output_dir": output_dir,
+                "outputs": outjob.outputs(data),
+                **report, "added_to_project": added,
+                "containers_read_by_altium": (read_back or {}).get("containers")}
 
     @mcp.tool()
     async def proj_export_dxf(output_path: str = "") -> dict[str, Any]:
@@ -1534,9 +1791,22 @@ def register_project_tools(mcp):
 
         extras: dict[str, Any] = {}
         if include_step:
-            extras["step"] = await bridge.send_command_async(
-                "project.export_step", {}, timeout=120.0
-            )
+            # Next to the other outputs, named after the board in front,
+            # through proj_export_step, which answers the exporter's
+            # dialogs; the bare command waits on them forever.
+            import os
+            front = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            board = (front or {}).get("file_path") or ""
+            out_dir = next((r["output_dir"] for r in per_container
+                            if r.get("output_dir")), "")
+            if board and out_dir:
+                stem = os.path.splitext(os.path.basename(board))[0]
+                extras["step"] = await proj_export_step(
+                    os.path.join(out_dir, stem + ".step"), overwrite=True)
+            else:
+                extras["step"] = {"ok": False, "reason": (
+                    "no board in front or no output folder to put it in")}
         if include_dxf:
             extras["dxf"] = await bridge.send_command_async(
                 "project.export_dxf", {}, timeout=120.0
@@ -2281,9 +2551,12 @@ def register_project_tools(mcp):
         """Push schematic changes to the PCB (Design > Update PCB Document).
 
         NOT SILENT: Altium's ECO dialog cannot be suppressed, so this
-        BLOCKS the bridge until a human clicks Execute Changes. Never use
-        it unattended (use pcb_place_components to populate a board
-        without a schematic). It focuses the PCB first so the update runs
+        BLOCKS the bridge until Execute Changes is pressed. Prefer opening
+        the same dialog without blocking, and press it yourself rather
+        than asking the user: app_click_menu("Design|Import Changes From
+        <Project>.PrjPcb", expect_dialog="Engineering Change Order"), then
+        app_press_dialog_button("Execute Changes",
+        allow_irreversible=True) and "Close". It focuses the PCB first so the update runs
         schematic to board (refuses with WRONG_FOCUS if it cannot); check
         the ECO lists the PcbDoc before executing. ``app_list_open_dialogs``
         reads the dialog while the bridge is blocked.

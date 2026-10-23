@@ -38,7 +38,8 @@ Three axes:
     ``readonly``   queries / reads; no mutation.
     ``silent``     mutates, no dialog -- the loop stays responsive.
     ``modal``      pops a non-suppressible Altium dialog that BLOCKS the
-                   polling loop until a human clicks (see the bridge audit).
+                   polling loop until it is answered; answer it yourself
+                   with app_press_dialog_button (see the bridge audit).
     ``partial``    succeeds but leaves the job incomplete; a follow-up tool
                    is required to finish.
 """

@@ -2471,11 +2471,25 @@ def register_pcb_tools(mcp):
                         "error": f"could not keep a backup at {backup_path}: {e}. "
                                  "Nothing was written; pass backup=False to "
                                  "overwrite without one."}
+        # Altium will not write into a folder that does not exist, and said
+        # only written:false. The folder is made, and the reply says so.
+        folder = Path(target_path).parent
+        created_folder = ""
+        if not folder.is_dir():
+            try:
+                folder.mkdir(parents=True)
+                created_folder = str(folder)
+            except OSError as e:
+                return {"success": False, "written": False,
+                        "error": f"the folder {folder} does not exist and "
+                                 f"could not be made: {e}. Nothing was written."}
         result = await bridge.send_command_async("pcb.save_copy_as", params)
         if isinstance(result, dict):
             result["backup"] = backup_path
             if backup_path and not Path(backup_path).is_file():
                 result["backup"] = ""
+            if created_folder:
+                result["created_folder"] = created_folder
         return result
 
     @mcp.tool()
@@ -3604,6 +3618,111 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async(
             "pcb.clear_source_footprint_library", params, timeout=30.0,
         )
+
+    @mcp.tool()
+    async def pcb_update_footprints_from_library(
+        designators: list[str],
+        library_path: str = "",
+        board_path: str = "",
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Refresh placed parts from their edited PcbLib, with no ECO.
+
+        For a footprint fixed in its library (silk, pads, 3D body) when
+        the project ECO cannot be used because it also proposes every
+        other schematic and board difference. Each part is replaced by a
+        fresh copy from the library that keeps its side, rotation,
+        position, designator and comment text as placed, locked state,
+        pad nets by pad name, and its schematic link (SourceUniqueId and
+        SourceHierarchicalPath, which multi-channel designs match on).
+
+        A part is replaced only when the library holds its pattern and
+        every pad that carried a net exists on the new footprint;
+        otherwise it is left as it was and the reason is given. Routed
+        copper is not touched, so check connectivity where pads moved.
+
+        Args:
+            designators: The parts to refresh, e.g. ``["C12", "J3"]``.
+            library_path: The .PcbLib to load from. Empty uses each
+                part's own SourceFootprintLibrary.
+            board_path: Focus this .PcbDoc first. Omit for the board in
+                front.
+            dry_run: Report what would be refreshed and change nothing.
+
+        Returns:
+            ``updated``, ``failed`` and per part ``ok``, ``pattern``,
+            ``library``, ``pads_before``/``pads_after``, ``nets_bound``
+            and a ``reason`` when it was left alone.
+        """
+        bad = [d for d in designators if "|" in str(d) or not str(d).strip()]
+        if not designators or bad:
+            return {"ok": False, "reason": (
+                "give one or more designators, none empty or containing "
+                f"'|', the wire-format separator: {bad}")}
+        import os
+
+        bridge = get_bridge()
+        if board_path:
+            focused = await bridge.send_command_async(
+                "pcb.focus_board", {"board_path": board_path})
+            if not (focused or {}).get("focused", True):
+                return {"ok": False, "reason": "could not focus that board",
+                        "focus": focused}
+        names = [str(d).strip() for d in designators]
+        plan = await bridge.send_command_async(
+            "pcb.update_footprints_from_library",
+            {"designators": "|".join(names), "library_path": library_path,
+             "dry_run": "true"}, timeout=120.0)
+        if not isinstance(plan, dict) or "items" not in plan:
+            return plan
+        board = plan.get("board") or board_path
+
+        # LoadFromLibrary does not fail on a library that lacks the
+        # pattern. MEASURED: pointed at a .PcbLib that does not exist, it
+        # loaded the footprint from elsewhere, most likely the board's own
+        # copy, and the part "refreshed" to exactly what it was. So each
+        # library is checked to exist and to hold the pattern first.
+        held: dict[str, set] = {}
+        refused: list[dict[str, Any]] = []
+        passing: list[str] = []
+        for item in plan["items"]:
+            if not item.get("ok"):
+                refused.append(item)
+                continue
+            lib = item.get("library") or ""
+            if not os.path.isfile(lib):
+                refused.append({**item, "ok": False, "reason": (
+                    f"{lib!r} is not a library file on disk, so the "
+                    "footprint would come from elsewhere; pass library_path")})
+                continue
+            if lib not in held:
+                listing = await bridge.send_command_async(
+                    "library.get_footprints", {"library_path": lib})
+                held[lib] = {str(f.get("name", "")).upper()
+                             for f in (listing or {}).get("footprints", [])}
+            if str(item.get("pattern", "")).upper() not in held[lib]:
+                refused.append({**item, "ok": False, "reason": (
+                    f"{item.get('pattern')} is not in {lib}")})
+                continue
+            passing.append(item["designator"])
+        if held and board:
+            await bridge.send_command_async(
+                "pcb.focus_board", {"board_path": board})
+
+        if dry_run or not passing:
+            items = [i for i in plan["items"]
+                     if i["designator"] in passing] + refused
+            return {"updated": 0, "would_update": len(passing),
+                    "failed": len(refused), "dry_run": dry_run,
+                    "board": board, "items": items}
+        done = await bridge.send_command_async(
+            "pcb.update_footprints_from_library",
+            {"designators": "|".join(passing), "library_path": library_path,
+             "dry_run": "false"}, timeout=300.0)
+        if isinstance(done, dict) and "items" in done:
+            done["items"] = done["items"] + refused
+            done["failed"] = done.get("failed", 0) + len(refused)
+        return done
 
     @mcp.tool()
     async def pcb_get_fab_stats() -> dict[str, Any]:
