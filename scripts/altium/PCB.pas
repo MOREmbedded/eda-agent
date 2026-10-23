@@ -9058,7 +9058,8 @@ End;
 
 {..............................................................................}
 { PCB_PlaceRegion - Drop a solid copper region (no net) on a rectangle        }
-{ Params: x1,y1,x2,y2 in mils, layer=<layer>, net=<optional>                  }
+{ Params: x1,y1,x2,y2 in mils, layer=<layer>, net=<optional>,                 }
+{         name=<optional>: the region's Name, a tag to find it again by       }
 { Regions are solid primitives without a net; they don't participate in the   }
 { connectivity engine. Use place_polygon_rect for a net-associated pour.      }
 { Optional points=x1,y1/x2,y2/x3,y3[/...] in mils (decimals kept): a polygon  }
@@ -9075,7 +9076,7 @@ Var
     ReadBack : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr, PointsStr, PtsJson : String;
+    LayerStr, NetStr, PointsStr, PtsJson, NameStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
     NPts, I, NBack : Integer;
@@ -9106,6 +9107,7 @@ Begin
             Exit;
         End;
     End;
+    NameStr := ExtractJsonValue(Params, 'name');
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
@@ -9156,6 +9158,7 @@ Begin
             Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
         End;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
 
         If NetStr <> '' Then
         Begin
@@ -9202,7 +9205,8 @@ Begin
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
-        + '"net":"' + EscapeJsonString(NetStr) + '"}');
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}

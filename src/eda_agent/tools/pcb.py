@@ -5592,6 +5592,7 @@ def register_pcb_tools(mcp):
         layer: str = "TopLayer",
         net: str = "",
         points: Optional[list[Any]] = None,
+        name: str = "",
     ) -> dict[str, Any]:
         """Place a solid copper region on a rectangle or a polygon outline.
 
@@ -5609,11 +5610,14 @@ def register_pcb_tools(mcp):
             points: Optional outline, ``[{x, y}]`` (or ``[[x, y]]``) in
                 mils, three or more vertices in order, decimals kept; the
                 outline closes by itself
+            name: Optional region Name, a tag to find the region again by
+                (``obj_query`` filter ``Name=...``); avoid ``=`` and ``|``,
+                which split a filter
 
         Returns:
-            Dictionary confirming the region placement; with points, also
-            ``vertices`` and ``points``, the outline read back from the
-            placed region in mils
+            Dictionary confirming the region placement, with the ``name``
+            read back from the region; with points, also ``vertices`` and
+            ``points``, the outline read back from the placed region in mils
         """
         params: dict[str, Any] = {
             "x1": str(x1),
@@ -5634,6 +5638,8 @@ def register_pcb_tools(mcp):
                 return {"ok": False,
                         "reason": "an outline needs three or more points"}
             params["points"] = "/".join(f"{x},{y}" for x, y in pairs)
+        if name:
+            params["name"] = name
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.place_region", params)
 
