@@ -188,7 +188,7 @@ def test_a_multi_part_symbol_is_drawn_with_each_part_set(mod, monkeypatch, tmp_p
     placements = [p for c, p in bridge.calls
                   if c == "generic.place_sch_components_from_library"][0]["placements"]
     ops = placements.split("~~")
-    assert "part_id" not in ops[0] and ops[1].endswith("part_id=2")
+    assert ops[0].endswith("part_id=1") and ops[1].endswith("part_id=2")
     stamps = [p for c, p in bridge.calls if c == "generic.set_sch_components_parameters"]
     assert all(s["stamps"].count("designator=U2") <= 1 for s in stamps)
 
@@ -222,6 +222,13 @@ def test_the_helper_is_the_same_rule():
 def test_the_placer_sets_the_part_and_reads_it_back():
     body = load(_ALTIUM / "Generic.pas")["Gen_PlaceSchComponentsFromLibrary"]
     put = body.index("PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);")
-    assert body.index("Comp.CurrentPartID := PartId;") > put
+    # Set before the add, through both setters, part 1 included.
+    assert body.index("Comp.SetState_CurrentPartID(PartId);") < put
+    assert body.index("Comp.CurrentPartID := PartId;") < put
+    assert body.count("If PartId >= 1 Then") == 2
+    # Defaulted to part 1, so a caller that sends no part_id (an older
+    # server) still gets its part written and read back.
+    assert "PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);" in body
+    assert "If PartId < 1 Then PartId := 1;" in body
     assert "If PartAfter <> PartId Then" in body
     assert "':PART_REFUSED'" in body

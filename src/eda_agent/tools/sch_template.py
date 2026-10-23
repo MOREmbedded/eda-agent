@@ -348,8 +348,9 @@ def register_sch_template_tools(mcp):
                       f"designator={payload_safe(p['designator'])}"]
             if p.get("footprint"):
                 fields.append(f"footprint={payload_safe(p['footprint'])}")
-            if st.part_number(p) > 1:
-                fields.append(f"part_id={st.part_number(p)}")
+            # Always, part 1 included: a loaded symbol can arrive showing
+            # another part, and a part left to chance lands wrong.
+            fields.append(f"part_id={st.part_number(p)}")
             ops.append(";".join(fields))
         placed = await _send(bridge, "generic.place_sch_components_from_library",
                              {"placements": "~~".join(ops)})

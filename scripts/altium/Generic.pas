@@ -9803,7 +9803,10 @@ Begin
             X := StrToIntDef(GetBatchField(Op, 'x'), 0);
             Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
-            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 0);
+            { Part 1 when not given: a symbol is placed as its first part   }
+            { unless asked otherwise, and the part is written either way.  }
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);
+            If PartId < 1 Then PartId := 1;
 
             If LibRef = '' Then
             Begin
@@ -9897,10 +9900,21 @@ Begin
             { Footprint override skipped: CurrentFootprintModelName is        }
             { read-only in DelphiScript (memory: delphiscript_api_quirks.md). }
             { Library symbol's own footprint is used.                          }
-            PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);
-            If PartId > 1 Then
+            { The part is set BEFORE the component joins the sheet, through   }
+            { both setters, the order the replicate path uses. A loaded       }
+            { symbol does not reliably arrive as part 1: one placed as part 1 }
+            { landed as part 2, and parts written only after the add left     }
+            { the compiled netlist listing every pin of the symbol on every   }
+            { part, with the hidden pins joined into nets. Part 1 is written  }
+            { too when it is asked for, never assumed.                         }
+            If PartId >= 1 Then
             Begin
+                Try Comp.SetState_CurrentPartID(PartId); Except End;
                 Try Comp.CurrentPartID := PartId; Except End;
+            End;
+            PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);
+            If PartId >= 1 Then
+            Begin
                 PartAfter := -1;
                 Try PartAfter := Comp.CurrentPartID; Except End;
                 If PartAfter <> PartId Then
