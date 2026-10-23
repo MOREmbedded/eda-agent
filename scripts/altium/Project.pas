@@ -4774,6 +4774,208 @@ End;
 { recompiles, returns the new compile tick so callers can verify it moved.    }
 {..............................................................................}
 
+{..............................................................................}
+{ ERC REPORT LEVELS - read and set the project's Error Reporting options:     }
+{ for each violation type, No Report, Warning, Error or Fatal Error.           }
+{                                                                              }
+{ IProject.DM_ErrorLevels(TErrorKind) : TErrorLevel and DM_SetErrorLevels,    }
+{ TErrorLevel = (eErrorLevelNoReport, eErrorLevelWarning, eErrorLevelError,   }
+{ eErrorLevelFatal), 0 to 3 (workspace manager API reference). The types are  }
+{ named by IWorkspace.DM_ViolationTypeDescription(kind), so the list is read }
+{ from Altium rather than kept here. Asked for because a multichannel design }
+{ reports "Nets with multiple names" by construction, and there was no way   }
+{ to set the level without the Project Options dialog.                       }
+{..............................................................................}
+
+Function ErcLevelName(Level : Integer) : String;
+Begin
+    If Level = 0 Then Result := 'no_report'
+    Else If Level = 1 Then Result := 'warning'
+    Else If Level = 2 Then Result := 'error'
+    Else If Level = 3 Then Result := 'fatal'
+    Else Result := IntToStr(Level);
+End;
+
+{ -1 when the text names no level. }
+Function ErcLevelFromText(Text : String) : Integer;
+Var
+    T : String;
+Begin
+    T := LowerCase(Trim(Text));
+    T := StringReplace(T, ' ', '_', -1);
+    If (T = 'no_report') Or (T = 'noreport') Or (T = 'none') Or (T = '0') Then Result := 0
+    Else If (T = 'warning') Or (T = '1') Then Result := 1
+    Else If (T = 'error') Or (T = '2') Then Result := 2
+    Else If (T = 'fatal') Or (T = 'fatal_error') Or (T = '3') Then Result := 3
+    Else Result := -1;
+End;
+
+Function ErcProject(Params : String; Var Problem : String) : IProject;
+Var
+    Workspace : IWorkspace;
+    Path : String;
+Begin
+    Result := Nil;
+    Problem := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Problem := 'No workspace';
+        Exit;
+    End;
+    Path := ExtractJsonValue(Params, 'project_path');
+    If Path <> '' Then
+    Begin
+        Result := FindProjectByPath(Workspace, Path);
+        If Result = Nil Then Problem := 'Project not open: ' + Path;
+    End
+    Else
+    Begin
+        Result := Workspace.DM_FocusedProject;
+        If Result = Nil Then Problem := 'No focused project; pass project_path';
+    End;
+End;
+
+{ The violation type with this exact description (case ignored), or a      }
+{ number given as text. -1 when neither.                                    }
+Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+Var
+    I : Integer;
+    Desc : String;
+Begin
+    Result := -1;
+    If (Trim(Text) <> '') And (StrToIntDef(Trim(Text), -1) >= 0) Then
+    Begin
+        Result := StrToIntDef(Trim(Text), -1);
+        Exit;
+    End;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If (Desc <> '') And (LowerCase(Desc) = LowerCase(Trim(Text))) Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+    End;
+End;
+
+{ Proj_GetErcLevels - every violation type with its current report level. }
+{ Params: project_path (default the focused project), match (substring of  }
+{ the description, optional).                                              }
+Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
+Var
+    Project : IProject;
+    Workspace : IWorkspace;
+    Problem, Match, Desc, Items : String;
+    I, Level, Count : Integer;
+Begin
+    Project := ErcProject(Params, Problem);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', Problem);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    Match := LowerCase(ExtractJsonValue(Params, 'match'));
+    Items := '';
+    Count := 0;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If (Desc <> '') And ((Match = '') Or (Pos(Match, LowerCase(Desc)) > 0)) Then
+        Begin
+            Level := -1;
+            Try Level := Project.DM_ErrorLevels(I); Except Level := -1; End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"kind":' + IntToStr(I)
+                + ',"description":"' + EscapeJsonString(Desc) + '"'
+                + ',"level":"' + ErcLevelName(Level) + '"}';
+            Inc(Count);
+        End;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+        + ',"count":' + IntToStr(Count)
+        + ',"levels":[' + Items + ']}');
+End;
+
+{ Proj_SetErcLevels - set report levels. Params: project_path (default the }
+{ focused project), levels = 'kind=level~~kind=level', a kind being its    }
+{ number or its exact description, a level no_report, warning, error,     }
+{ fatal or 0 to 3. Every one is read back. The project is marked modified; }
+{ save it (proj_save) to keep the change.                                 }
+Function Proj_SetErcLevels(Params : String; RequestId : String) : String;
+Var
+    Project : IProject;
+    Workspace : IWorkspace;
+    Problem, LevelsStr, Remaining, Op, KindText, LevelText, Items, Desc : String;
+    Eq, Kind, Want, Got, Done, Failed : Integer;
+Begin
+    Project := ErcProject(Params, Problem);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', Problem);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    LevelsStr := ExtractJsonValue(Params, 'levels');
+    If LevelsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'levels is required: kind=level~~kind=level');
+        Exit;
+    End;
+    Items := '';
+    Done := 0;
+    Failed := 0;
+    Remaining := LevelsStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        Eq := Pos('=', Op);
+        KindText := Trim(Copy(Op, 1, Eq - 1));
+        LevelText := Trim(Copy(Op, Eq + 1, Length(Op)));
+        Kind := -1;
+        If Eq > 0 Then Kind := ErcKindFromText(Workspace, KindText);
+        Want := ErcLevelFromText(LevelText);
+        Got := -1;
+        Desc := '';
+        If Kind >= 0 Then
+        Begin
+            Try Desc := Workspace.DM_ViolationTypeDescription(Kind); Except Desc := ''; End;
+        End;
+        If (Kind >= 0) And (Desc <> '') And (Want >= 0) Then
+        Begin
+            Try Project.DM_SetErrorLevels(Kind, Want); Except End;
+            Try Got := Project.DM_ErrorLevels(Kind); Except Got := -1; End;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '{"kind_given":"' + EscapeJsonString(KindText) + '"'
+            + ',"kind":' + IntToStr(Kind)
+            + ',"description":"' + EscapeJsonString(Desc) + '"'
+            + ',"level":"' + ErcLevelName(Got) + '"';
+        If (Kind < 0) Or (Desc = '') Then
+            Items := Items + ',"problem":"no violation type by that number or exact description"'
+        Else If Want < 0 Then
+            Items := Items + ',"problem":"level must be no_report, warning, error, fatal or 0 to 3"'
+        Else If Got <> Want Then
+            Items := Items + ',"problem":"written, but it reads back ' + ErcLevelName(Got) + '"';
+        Items := Items + '}';
+        If (Kind >= 0) And (Desc <> '') And (Want >= 0) And (Got = Want) Then Inc(Done)
+        Else Inc(Failed);
+    End;
+    If Done > 0 Then MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Result := BuildSuccessResponse(RequestId,
+        '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+        + ',"set":' + IntToStr(Done)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"results":[' + Items + ']}');
+End;
+
 Function Proj_ForceRecompile(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -5097,6 +5299,8 @@ Begin
         'get_connectivity':  Result := Proj_GetConnectivity(Params, RequestId);
         'get_connectivity_batch': Result := Proj_GetConnectivityBatch(Params, RequestId);
         'force_recompile':       Result := Proj_ForceRecompile(Params, RequestId);
+        'get_erc_levels':        Result := Proj_GetErcLevels(Params, RequestId);
+        'set_erc_levels':        Result := Proj_SetErcLevels(Params, RequestId);
         'get_compile_freshness': Result := Proj_GetCompileFreshness(Params, RequestId);
         'import_document':   Result := Proj_ImportDocument(Params, RequestId);
         'get_project_path':  Result := Proj_GetProjectPath(RequestId);

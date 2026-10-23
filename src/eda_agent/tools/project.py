@@ -2059,6 +2059,77 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_get_erc_levels(
+        match: str = "",
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """The project's ERC report level for every violation type (Project
+        Options > Error Reporting): no_report, warning, error or fatal.
+
+        Args:
+            match: only types whose description contains this text, e.g.
+                "multiple names" or "driving source".
+            project_path: the .PrjPcb; default the focused project.
+
+        Returns:
+            ``levels``: [{kind, description, level}], and ``count``.
+        """
+        params: dict[str, Any] = {"match": match}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        return await bridge.send_command_async("project.get_erc_levels", params,
+                                               timeout=30.0)
+
+    @mcp.tool()
+    async def proj_set_erc_levels(
+        levels: dict[str, str],
+        project_path: Optional[str] = None,
+        save: bool = True,
+    ) -> dict[str, Any]:
+        """Set ERC report levels (Project Options > Error Reporting).
+
+        Args:
+            levels: {violation type: level}. A type is its exact description
+                as proj_get_erc_levels lists it ("Nets with multiple names")
+                or its kind number; a level is no_report, warning, error or
+                fatal. Example: {"Nets with no driving source": "no_report"}.
+            project_path: the .PrjPcb; default the focused project.
+            save: save the project file afterwards so the setting persists.
+
+        Returns:
+            ``set``, ``failed`` and per item ``results`` with the level read
+            back (``problem`` when it did not take), and ``saved``.
+        """
+        if not levels:
+            return {"success": False, "error": "levels is empty"}
+        for kind, level in levels.items():
+            # Altium splits each item at its first '=' and items at '~~'.
+            if "~~" in str(kind) or "~~" in str(level) or "=" in str(kind):
+                return {"success": False,
+                        "error": f"{kind!r}: '~~' and '=' cannot appear in a type"}
+        params: dict[str, Any] = {
+            "levels": "~~".join(f"{k}={v}" for k, v in levels.items())}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        out = await bridge.send_command_async("project.set_erc_levels", params,
+                                              timeout=30.0)
+        if not isinstance(out, dict):
+            return out
+        out = dict(out)
+        out["saved"] = False
+        if save and out.get("set"):
+            target = project_path or out.get("project", "")
+            try:
+                reply = await bridge.send_command_async(
+                    "application.save_document", {"file_path": target}, timeout=60.0)
+                out["saved"] = bool(isinstance(reply, dict) and reply.get("saved"))
+            except Exception as exc:                          # noqa: BLE001
+                out["save_problem"] = str(exc)
+        return out
+
+    @mcp.tool()
     async def proj_force_recompile() -> dict[str, Any]:
         """Flush all dirty docs, invalidate the compile cache, and recompile.
 

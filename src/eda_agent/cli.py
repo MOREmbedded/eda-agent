@@ -254,7 +254,9 @@ def _restart(command: list, frames_pid: int) -> int:
 
     if windows.available():
         report = dialog_report.report(frames_pid)
-        if report.get("dialog_count"):
+        # Only a window that BLOCKS the loop stops a restart: a hover preview
+        # (FormPreviewPopup) is listed as a dialog and blocks nothing.
+        if report.get("blocked"):
             print("ERROR: Altium has a dialog open, so the loop cannot take the "
                   f"stop file: {report.get('summary')}. Close it first.",
                   file=sys.stderr)

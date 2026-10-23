@@ -259,6 +259,79 @@ Begin
         Or (PropName = 'Designator_CustomFontID') Or (PropName = 'Designator_CustomColor');
 End;
 
+{ NO-ERC MARKERS: what they suppress. ISch_NoERC carries IsActive,         }
+{ SuppressAll, StrErrorKindSetToSuppress, StrConnectionPairsToSuppress and  }
+{ StrSuppressableErrors (Altium.SDK.Interfaces.dll). Read here under the   }
+{ names ErrorKindSetToSuppress, ConnectionPairsToSuppress and              }
+{ SuppressableErrors. Callers check the type first: the names exist on no  }
+{ other object, and an undeclared one halts the loop.                      }
+Function ReadNoErcProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    N : ISch_NoERC;
+Begin
+    Result := '';
+    N := Obj;
+    If PropName = 'SuppressAll' Then
+    Begin
+        Try Result := BoolToJsonStr(N.SuppressAll); Except End;
+    End
+    Else If PropName = 'IsActive' Then
+    Begin
+        Try Result := BoolToJsonStr(N.IsActive); Except End;
+    End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+    Begin
+        Try Result := N.StrErrorKindSetToSuppress; Except End;
+    End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+    Begin
+        Try Result := N.StrConnectionPairsToSuppress; Except End;
+    End
+    Else If PropName = 'SuppressableErrors' Then
+    Begin
+        Try Result := N.StrSuppressableErrors; Except End;
+    End;
+End;
+
+Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
+Var
+    N : ISch_NoERC;
+    B : Boolean;
+Begin
+    N := Obj;
+    B := (LowerCase(Value) = 'true') Or (Value = '1');
+    If PropName = 'SuppressAll' Then
+    Begin
+        Try N.SuppressAll := B; Except End;
+    End
+    Else If PropName = 'IsActive' Then
+    Begin
+        Try N.IsActive := B; Except End;
+    End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+    Begin
+        Try N.StrErrorKindSetToSuppress := Value; Except End;
+    End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+    Begin
+        Try N.StrConnectionPairsToSuppress := Value; Except End;
+    End;
+End;
+
+{ A No-ERC marker as it comes from the factory suppressed nothing: placed  }
+{ on a pin by sch_place_no_erc or obj_batch_create eNoERC, the ERC still   }
+{ reported that pin (measured 2026-10-23, an unconnected pin and an output }
+{ meeting a power pin). Every creator makes a new marker active and        }
+{ suppressing all violations, Altium's own default for a placed No ERC,   }
+{ before the caller's properties, which can still narrow it.              }
+Procedure ApplyNoErcDefaults(Obj : ISch_GraphicalObject);
+Begin
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eNoERC Then Exit;
+    WriteNoErcProp(Obj, 'IsActive', 'true');
+    WriteNoErcProp(Obj, 'SuppressAll', 'true');
+End;
+
 Function ReadSchPinProp(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     P : ISch_Pin;
@@ -826,6 +899,13 @@ Begin
             Result := ReadSchPinProp(Obj, 'Description')
         Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
+        { What a No-ERC marker suppresses. Guarded on the type: these names  }
+        { exist only on ISch_NoERC, and an undeclared one halts the loop.   }
+        Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
+            Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
+            Or (PropName = 'ConnectionPairsToSuppress')
+            Or (PropName = 'SuppressableErrors')) Then
+            Result := ReadNoErcProp(Obj, PropName)
         Else If PropName = 'CurrentPartID' Then
         Begin
             Comp := Obj;
@@ -1210,6 +1290,13 @@ Begin
             Try Comp.SetState_CurrentPartID(StrToIntDef(Value, 1)); Except End;
             Try Comp.CurrentPartID := StrToIntDef(Value, 1); Except End;
         End
+        Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
+            Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
+            Or (PropName = 'ConnectionPairsToSuppress')) Then
+        Begin
+            WriteNoErcProp(Obj, PropName, Value);
+            WroteOK := (LowerCase(ReadNoErcProp(Obj, PropName)) = LowerCase(Value));
+        End
         Else If PropName = 'PartCount' Then
         Begin
             { LoadComponentFromLibrary can stamp a PLACED component with a
@@ -1429,6 +1516,27 @@ Begin
     { investigation, which is a silent edit to a design. Mirroring is now    }
     { handled properly by Gen_MirrorSchComponent, which moves the geometry.  }
     Try Obj.GraphicallyInvalidate; Except End;
+End;
+
+{..............................................................................}
+{ SetSchPartId - show part PartId of a placed component, the way obj_modify   }
+{ does it: both setters inside SCHM_BeginModify / SCHM_EndModify, then the     }
+{ geometry recompute after the bracket.                                        }
+{                                                                              }
+{ The bracket is what the compiler listens to. MEASURED 2026-10-23 on a        }
+{ 3-part STM32H743: parts written without it read back right (CurrentPartID   }
+{ 1, 2, 3) and the sheet showed the right pins, yet the compiled netlist       }
+{ listed U2's pins 700 times, hidden pins of the other parts joined nets (GND  }
+{ into +3V3) and 208 of 264 nets matched. Writing the same values through     }
+{ obj_batch_modify and recompiling gave 100 rows and 264 of 264.               }
+{..............................................................................}
+Procedure SetSchPartId(Comp : ISch_Component; PartId : Integer);
+Begin
+    SchBeginModify(Comp);
+    Try Comp.SetState_CurrentPartID(PartId); Except End;
+    Try Comp.CurrentPartID := PartId; Except End;
+    SchEndModify(Comp);
+    RefreshSchObjectRender(Comp);
 End;
 
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
@@ -1852,6 +1960,28 @@ End;
 { Mode: 'query', 'modify', 'delete'                                         }
 {..............................................................................}
 
+{ Try to take an object out of every component on the sheet: the delete's  }
+{ fallback for one that SchDoc.RemoveSchObject left in place. A component   }
+{ that does not hold it raises or does nothing; both are absorbed.          }
+Procedure RemoveFromComponents(SchDoc : ISch_Document; Obj : ISch_GraphicalObject);
+Var
+    It : ISch_Iterator;
+    Comp : ISch_Component;
+Begin
+    It := SchDoc.SchIterator_Create;
+    Try
+        It.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := It.FirstSchObject;
+        While Comp <> Nil Do
+        Begin
+            Try Comp.RemoveSchObject(Obj); Except End;
+            Comp := It.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(It);
+    End;
+End;
+
 Function ProcessSchDocObjects(SchDoc : ISch_Document; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
     Mode : String; DocPath : String;
@@ -1865,7 +1995,7 @@ Var
     SchLibDoc : ISch_Lib;
     ObjJson, SymbolRef : String;
     First : Boolean;
-    MaxIter, LastAddr, ThisAddr : Integer;
+    MaxIter, LastAddr, ThisAddr, SameTries : Integer;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -1888,6 +2018,7 @@ Begin
 
         MaxIter := 100000;
         LastAddr := 0;
+        SameTries := 0;
         While MaxIter > 0 Do
         Begin
             Iterator := SchDoc.SchIterator_Create;
@@ -1911,10 +2042,32 @@ Begin
             Try ThisAddr := FoundObj.I_ObjectAddress; Except End;
             If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then
             Begin
-                Dec(TotalMatched);
-                NoteDeleteFault('an object stayed on the sheet after it was removed');
-                Break;
+                { STILL THERE: try twice more before calling it a fault. A    }
+                { leftover No ERC (2026-10-23) moved fine and would not go: an }
+                { object registered twice needs a second remove, and one a    }
+                { component holds is removed through that component. Counted  }
+                { once whatever it takes.                                     }
+                Inc(SameTries);
+                If SameTries > 2 Then
+                Begin
+                    Dec(TotalMatched);
+                    NoteDeleteFault('an object stayed on the sheet after it was removed');
+                    Break;
+                End;
+                RemoveFromComponents(SchDoc, FoundObj);
+                Try SchDoc.RemoveSchObject(FoundObj); Except End;
+                { MEASURED: the stuck No ERC then went from the sheet and the }
+                { saved file, yet the compiler kept a copy at its old place  }
+                { until the document was closed and reloaded.                }
+                NoteNextStep('An object here needed more than one remove. The '
+                    + 'sheet and the saved file are right, but the compiled '
+                    + 'model can keep a stale copy: if ERC or the netlist still '
+                    + 'shows it, save, close the document (app_close_document) '
+                    + 'and reload it (proj_load_sheets).');
+                Dec(MaxIter);
+                Continue;
             End;
+            SameTries := 0;
             LastAddr := ThisAddr;
             { Sheet entries belong to their parent sheet symbol's child       }
             { container, not the SchDoc. SchDoc.RemoveSchObject silently      }
@@ -2579,6 +2732,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create object of type: ' + ObjTypeStr);
         Exit;
     End;
+    ApplyNoErcDefaults(NewObj);
 
     UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
     If UnsupportedProp <> '' Then
@@ -3861,6 +4015,12 @@ End;
 { implements, so no call here can hit the undeclared-identifier crash that a  }
 { narrower interface would risk. DM_PrimaryCrossProbeString is what Altium    }
 { itself uses to jump to the object, so it identifies the exact pin or net.   }
+{ WHAT ALTIUM REPORTS, NOT EVERYTHING IT FOUND. A violation that a No ERC   }
+{ marker covers stays in DM_Violations with DM_IsSuppressed set, and one of a }
+{ type set to No Report stays with DM_ErrorLevel 0. Both used to be listed,   }
+{ so a correctly placed marker looked as if it suppressed nothing (measured   }
+{ 2026-10-23: 91 violations before and after 36 markers). They are now left  }
+{ out and counted; include_suppressed lists them too, each flagged.          }
 Function Gen_GetErcViolations(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -3868,14 +4028,17 @@ Var
     Violation : IViolation;
     RelObj : IDMObject;
     I, J, VCount, MaxItems, Offset, Returned, NextOffset, RelCount : Integer;
-    JsonItems, RelItems : String;
-    First, FirstRel, Truncated : Boolean;
+    Level, NSuppressed, NNoReport, NReported : Integer;
+    JsonItems, RelItems, IncStr : String;
+    First, FirstRel, Truncated, Suppressed, IncludeAll : Boolean;
     Desc, Detail, Kind, DocName, Probe : String;
 Begin
     { limit 0 = every violation; offset pages through a long list. }
     MaxItems := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
     Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
     If Offset < 0 Then Offset := 0;
+    IncStr := LowerCase(ExtractJsonValue(Params, 'include_suppressed'));
+    IncludeAll := (IncStr = 'true') Or (IncStr = '1');
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -3892,6 +4055,23 @@ Begin
     End;
 
     VCount := Project.DM_ViolationCount;
+
+    { Counted over the whole list, so the totals do not depend on the page. }
+    NSuppressed := 0;
+    NNoReport := 0;
+    For I := 0 To VCount - 1 Do
+    Begin
+        Violation := Project.DM_Violations(I);
+        If Violation = Nil Then Continue;
+        Suppressed := False;
+        Try Suppressed := Violation.DM_IsSuppressed; Except Suppressed := False; End;
+        Level := 2;
+        Try Level := Violation.DM_ErrorLevel; Except Level := 2; End;
+        If Suppressed Then Inc(NSuppressed)
+        Else If Level = 0 Then Inc(NNoReport);
+    End;
+    NReported := VCount - NSuppressed - NNoReport;
+
     JsonItems := '';
     First := True;
     Returned := 0;
@@ -3909,6 +4089,11 @@ Begin
 
         Violation := Project.DM_Violations(I);
         If Violation = Nil Then Continue;
+        Suppressed := False;
+        Try Suppressed := Violation.DM_IsSuppressed; Except Suppressed := False; End;
+        Level := 2;
+        Try Level := Violation.DM_ErrorLevel; Except Level := 2; End;
+        If (Not IncludeAll) And (Suppressed Or (Level = 0)) Then Continue;
 
         Try
             Desc := Violation.DM_LongDescriptorString;
@@ -3977,21 +4162,29 @@ Begin
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
-            '","related_object_count":' + IntToStr(RelCount) +
+            '","level":"' + ErcLevelName(Level) +
+            '","suppressed":' + BoolToJsonStr(Suppressed) +
+            ',"related_object_count":' + IntToStr(RelCount) +
             ',"related_objects":[' + RelItems + ']}';
         Inc(Returned);
     End;
 
     If Truncated Then
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":' + IntToStr(VCount) +
+            '{"violation_count":' + IntToStr(NReported) +
+            ',"suppressed_count":' + IntToStr(NSuppressed) +
+            ',"not_reported_count":' + IntToStr(NNoReport) +
+            ',"raw_violation_count":' + IntToStr(VCount) +
             ',"offset":' + IntToStr(Offset) +
             ',"returned":' + IntToStr(Returned) +
             ',"truncated":true,"next_offset":' + IntToStr(NextOffset) +
             ',"violations":[' + JsonItems + ']}')
     Else
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":' + IntToStr(VCount) +
+            '{"violation_count":' + IntToStr(NReported) +
+            ',"suppressed_count":' + IntToStr(NSuppressed) +
+            ',"not_reported_count":' + IntToStr(NNoReport) +
+            ',"raw_violation_count":' + IntToStr(VCount) +
             ',"offset":' + IntToStr(Offset) +
             ',"returned":' + IntToStr(Returned) +
             ',"truncated":false,"violations":[' + JsonItems + ']}');
@@ -6643,6 +6836,7 @@ Begin
         Exit;
     End;
 
+    ApplyNoErcDefaults(NoERC);
     NoERC.Location := Point(MilsToCoord(X), MilsToCoord(Y));
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
@@ -7968,7 +8162,7 @@ Begin
     End;
 
     SchServer.ProcessControl.PreProcess(SchDoc, 'Set part id');
-    Try Comp.CurrentPartID := PartId; Except End;
+    SetSchPartId(Comp, PartId);
     SchServer.ProcessControl.PostProcess(SchDoc, 'Set part id');
     SchDoc.GraphicallyInvalidate;
 
@@ -9430,6 +9624,7 @@ Begin
                 End
                 Else
                 Begin
+                    ApplyNoErcDefaults(NewObj);
                     UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
                     If UnsupportedProp <> '' Then
                     Begin
@@ -9915,6 +10110,9 @@ Begin
             PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);
             If PartId >= 1 Then
             Begin
+                { Again on the sheet, inside the modify bracket: the write  }
+                { above decides what lands, this one is what compiles.      }
+                SetSchPartId(Comp, PartId);
                 PartAfter := -1;
                 Try PartAfter := Comp.CurrentPartID; Except End;
                 If PartAfter <> PartId Then

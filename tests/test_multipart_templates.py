@@ -232,3 +232,19 @@ def test_the_placer_sets_the_part_and_reads_it_back():
     assert "If PartId < 1 Then PartId := 1;" in body
     assert "If PartAfter <> PartId Then" in body
     assert "':PART_REFUSED'" in body
+
+
+def test_a_part_is_set_inside_the_modify_bracket_the_compiler_listens_to():
+    """Written without SCHM_Begin/EndModify the part read back right and the
+    compiled netlist still listed every pin of the symbol on every part."""
+    gen = load(_ALTIUM / "Generic.pas")
+    helper = gen["SetSchPartId"]
+    begin = helper.index("SchBeginModify(Comp);")
+    end = helper.index("SchEndModify(Comp);")
+    assert begin < helper.index("Comp.SetState_CurrentPartID(PartId);") < end
+    assert begin < helper.index("Comp.CurrentPartID := PartId;") < end
+    assert end < helper.index("RefreshSchObjectRender(Comp);")
+    placer = gen["Gen_PlaceSchComponentsFromLibrary"]
+    put = placer.index("PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);")
+    assert placer.index("SetSchPartId(Comp, PartId);") > put
+    assert "SetSchPartId(Comp, PartId);" in gen["Gen_SetComponentPartId"]

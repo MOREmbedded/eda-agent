@@ -877,14 +877,20 @@ def register_generic_tools(mcp):
             return {"success": True, "process": process_name}
 
     @mcp.tool()
-    async def proj_run_erc(limit: int = 100) -> dict[str, Any]:
+    async def proj_run_erc(limit: int = 100,
+                           include_suppressed: bool = False) -> dict[str, Any]:
         """Run Electrical Rules Check on the focused project.
 
         Compiles the project first (required), runs ERC, and returns
-        what it found, the same list ``proj_get_erc_violations`` reads.
+        what it found, the same list ``proj_get_erc_violations`` reads:
+        what Altium reports. A violation a No ERC marker covers, or of a
+        type set to No Report, is left out and counted in
+        ``suppressed_count`` / ``not_reported_count``.
 
         Args:
             limit: How many violations to return; 0 returns all of them.
+            include_suppressed: list those too, each with ``suppressed``
+                and ``level``.
 
         Returns:
             ``violation_count`` and ``violations``: each with its kind,
@@ -894,7 +900,8 @@ def register_generic_tools(mcp):
             with ``proj_get_erc_violations(offset=next_offset)``.
         """
         bridge = get_bridge()
-        params = {"limit": str(max(0, int(limit)))}
+        params = {"limit": str(max(0, int(limit))),
+                  "include_suppressed": "true" if include_suppressed else "false"}
         result = await bridge.send_command_async("generic.run_erc", params)
         # A script from before 2026.10.21 answers the run with a message
         # only; read the list it left behind instead of returning nothing.
@@ -960,6 +967,7 @@ def register_generic_tools(mcp):
     async def proj_get_erc_violations(
         limit: int = 100,
         offset: int = 0,
+        include_suppressed: bool = False,
     ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
@@ -976,6 +984,9 @@ def register_generic_tools(mcp):
             limit: How many violations to return; 0 returns all of them.
             offset: Index of the first violation, to page through a long
                 list without running ERC again.
+            include_suppressed: also list violations a No ERC marker
+                covers or whose type is set to No Report; left out and
+                only counted by default, as Altium's Messages panel does.
 
         Returns:
             ``{"violation_count", "offset", "returned", "truncated",
@@ -985,7 +996,8 @@ def register_generic_tools(mcp):
         """
         bridge = get_bridge()
         params = {"limit": str(max(0, int(limit))),
-                  "offset": str(max(0, int(offset)))}
+                  "offset": str(max(0, int(offset))),
+                  "include_suppressed": "true" if include_suppressed else "false"}
         result = await bridge.send_command_async(
             "generic.get_erc_violations", params)
         return _mark_erc_page(result)
@@ -1774,10 +1786,17 @@ def register_generic_tools(mcp):
         x: int,
         y: int,
     ) -> dict[str, Any]:
-        """Place a No-ERC marker at coordinates to suppress specific ERC violations.
+        """Place a No-ERC marker at coordinates to suppress the ERC violations
+        there.
 
         Use this after running ERC to suppress known-good violations at specific
-        pin or wire locations.
+        pin or wire locations. Put it on the pin's wire end (its connection
+        point), not on the body side. The marker is placed active and
+        suppressing ALL violations, as Altium's own placed No ERC does; to
+        narrow it, write ErrorKindSetToSuppress / SuppressAll=false on the
+        eNoERC object with obj_modify. obj_query reads SuppressAll,
+        IsActive, ErrorKindSetToSuppress, ConnectionPairsToSuppress and
+        SuppressableErrors.
 
         Args:
             x: X coordinate in mils

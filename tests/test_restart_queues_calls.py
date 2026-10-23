@@ -172,7 +172,7 @@ def test_restart_refuses_while_a_dialog_is_open(tmp_path, monkeypatch, capsys):
     configure(workspace_dir=tmp_path)
     monkeypatch.setattr(windows, "available", lambda: True)
     monkeypatch.setattr(dialog_report, "report",
-                        lambda pid: {"dialog_count": 1, "summary": "DRC"})
+                        lambda pid: {"dialog_count": 1, "blocked": True, "summary": "DRC"})
     assert cli._restart(["X2.EXE"], 4242) == 1
     assert not (tmp_path / "stop").exists()
     assert not (tmp_path / ab.MAINTENANCE_FILE).exists()
