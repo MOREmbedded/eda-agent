@@ -13,6 +13,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -224,6 +225,66 @@ def _queue_is_alive(workspace_dir: Path) -> bool:
         return False
 
 
+_VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
+
+
+def bundled_script_version() -> str:
+    """SCRIPT_VERSION of the script bundle on disk now, '' if unreadable."""
+    try:
+        from ..cli import get_bundled_scripts_path
+        text = (get_bundled_scripts_path() / "Main.pas").read_text(
+            encoding="utf-8", errors="replace")
+    except Exception:                                    # noqa: BLE001
+        return ""
+    m = _VERSION_RE.search(text)
+    return m.group(1) if m else ""
+
+
+#: The bridge script this server's Python was loaded alongside. A deploy
+#: replaces the script in Altium but not the Python of a server that is
+#: already running, and an old server drops tool arguments it does not
+#: know while reporting success (measured 2026-10-14). See _outdated_note.
+STARTED_WITH_VERSION = bundled_script_version()
+#: How often a reply repeats the note that this server is out of date.
+_OUTDATED_NOTE_EVERY_S = 300.0
+
+
+def outdated_note(started_with: str, altium: str, on_disk: str) -> str:
+    """The note for a server older than the script Altium runs, or ''.
+
+    Only when Altium runs what is on disk now and that is not what this
+    server started with: a deploy happened after it started. Altium on an
+    OLDER script than the disk is a different problem, which app_ping
+    reports.
+    """
+    if not (started_with and altium and on_disk):
+        return ""
+    if altium == started_with or altium != on_disk:
+        return ""
+    return (f"This session's eda-agent server started with bridge "
+            f"{started_with}, and Altium now runs {altium}. New or changed "
+            f"tool arguments can be dropped by this older server without "
+            f"an error. Reconnect it (/mcp in Claude Code) before relying "
+            f"on anything changed in that deploy.")
+
+
+#: Name of the marker ``eda-agent relaunch --restart`` keeps in the workspace
+#: while it stops and restarts the loop, and how long one counts as live.
+#: A restart takes well under a minute; an older marker is left over from
+#: one that died, and must not keep every caller waiting.
+MAINTENANCE_FILE = "maintenance.json"
+_MAINTENANCE_FRESH_S = 300.0
+
+
+def maintenance_in_progress(workspace_dir: Path) -> bool:
+    """Whether the bridge is being restarted on purpose right now."""
+    try:
+        age = time.time() - (Path(workspace_dir) / MAINTENANCE_FILE).stat().st_mtime
+    except OSError:
+        return False
+    return age < _MAINTENANCE_FRESH_S
+
+
 def _short_id() -> str:
     """Filename-safe request id: ``<session tag>-<sequence>-<random>``.
 
@@ -242,14 +303,22 @@ class CommandRequest:
     command: str
     params: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=_short_id)
+    #: The document this session last had in front. Altium puts it back
+    #: in front before running the command (SessionFocus in StatusForm.pas).
+    session_doc: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        out: dict[str, Any] = {
             "protocol_version": PROTOCOL_VERSION,
             "id": self.id,
             "command": self.command,
-            "params": self.params,
         }
+        # Before params: Pascal's ExtractJsonValue takes the first match,
+        # so the envelope key must come ahead of anything a caller passes.
+        if self.session_doc:
+            out["session_doc_path"] = self.session_doc
+        out["params"] = self.params
+        return out
 
 
 @dataclass
@@ -269,6 +338,10 @@ class CommandResponse:
     # a caller, and a refusal read as a bare "not found".
     next_step: str = ""
     active_document_changed: Optional[dict] = None
+    #: What became of this session's document before the command ran:
+    #: ``restored`` (put back in front), ``missing`` (closed) or
+    #: ``not_restored``. Absent when it was already in front.
+    session_document: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "CommandResponse":
@@ -280,6 +353,7 @@ class CommandResponse:
             error=data.get("error"),
             next_step=data.get("next_step") or "",
             active_document_changed=data.get("active_document_changed"),
+            session_document=data.get("session_document"),
         )
 
 
@@ -292,14 +366,58 @@ def _with_envelope_notes(data: Any, response: CommandResponse) -> Any:
     """
     if not isinstance(data, dict):
         return data
-    if not response.next_step and not response.active_document_changed:
+    if not (response.next_step or response.active_document_changed
+            or response.session_document):
         return data
     data = dict(data)
     if response.next_step and not data.get("next_step"):
         data["next_step"] = response.next_step
     if response.active_document_changed and "active_document_changed" not in data:
         data["active_document_changed"] = response.active_document_changed
+    if response.session_document and "session_document" not in data:
+        data["session_document"] = response.session_document
     return data
+
+
+#: Commands sent without the session's document: a keep-alive must never
+#: move the focus. application.get_active_document is pinned like any other
+#: command (tools read it and then act on that document), except when asked
+#: with ``front`` for what is really in front, which is how a session finds
+#: the document a person has opened (see _unpinned).
+_UNPINNED = frozenset({
+    "application.ping",
+    "application.stop_server",
+    "application.get_unit_stamps",
+})
+
+
+def _unpinned(command: str, params: Optional[dict]) -> bool:
+    return command in _UNPINNED or (
+        command == "application.get_active_document"
+        and str((params or {}).get("front", "")).lower() == "true")
+
+
+def next_session_doc(current: str, command: str, params: dict,
+                     response: "CommandResponse") -> str:
+    """The session's document after ``response``.
+
+    A command that moved the focus makes the new document the session's;
+    focusing a document that was already in front does too, since that is
+    the session choosing it. A closed document is forgotten. Anything else
+    leaves it as it was.
+    """
+    moved = response.active_document_changed or {}
+    if isinstance(moved, dict) and moved.get("to"):
+        return str(moved["to"])
+    if command == "application.set_active_document" and response.success:
+        data = response.data if isinstance(response.data, dict) else {}
+        chosen = data.get("file_path") or (params or {}).get("file_path")
+        if chosen:
+            return str(chosen)
+    note = response.session_document or {}
+    if isinstance(note, dict) and note.get("missing"):
+        return ""
+    return current
 
 
 class AltiumBridge:
@@ -342,6 +460,14 @@ class AltiumBridge:
         self._stale_fault_checked = False
         # The last non-ping command and when, for the FRAME_SHOWN trace line.
         self._last_command: Optional[tuple] = None
+        # The document this session last had in front, sent with every
+        # command so Altium can put it back if another session moved the
+        # focus in between. Empty until the session's first command.
+        self._session_doc = ""
+        # The script version Altium last reported (every ping carries it),
+        # and when a reply last said this server is out of date.
+        self._loop_script_version = ""
+        self._outdated_noted_at = 0.0
 
     def _note_fault(self, workspace_dir, guidance: dict) -> None:
         """Persist a fault for the dashboard recovery banner (best-effort)."""
@@ -871,15 +997,20 @@ class AltiumBridge:
                 # request has not been taken and the loop is visibly
                 # serving someone else. Only possible while sessions
                 # contend, so a lone session never takes this branch.
+                # Or the bridge is being restarted on purpose: the request
+                # waits for the new loop instead of failing, so nobody has
+                # to be asked to pause for a deploy.
+                restarting = maintenance_in_progress(workspace_dir)
                 if (not progress_path.exists()
                         and queue_extensions < _MAX_QUEUE_EXTENSIONS
                         and self._request_path(request_id).exists()
-                        and _queue_is_alive(workspace_dir)):
+                        and (restarting or _queue_is_alive(workspace_dir))):
                     queue_extensions += 1
                     _trace_log(
                         workspace_dir,
                         f"POLL_QUEUED id={request_id[:8]} "
-                        f"waits={queue_extensions}/{_MAX_QUEUE_EXTENSIONS}",
+                        f"waits={queue_extensions}/{_MAX_QUEUE_EXTENSIONS}"
+                        + (" restart" if restarting else ""),
                     )
                     deadline = time.monotonic() + timeout
                     continue
@@ -1033,6 +1164,29 @@ class AltiumBridge:
                    f"WITHDRAW id={request.id[:8]} cmd={request.command} "
                    f"withdrawn={withdrawn}")
 
+    def _with_outdated_note(self, command: str, data: Any) -> Any:
+        """Say so on a reply when a deploy has made this server out of date.
+
+        Repeated every few minutes rather than on every reply, and never on
+        a keep-alive, which nobody reads. The disk is read only once the
+        versions already differ, which is rare.
+        """
+        if command == "application.ping" or not isinstance(data, dict):
+            return data
+        if not self._loop_script_version or self._loop_script_version == STARTED_WITH_VERSION:
+            return data
+        now = time.monotonic()
+        if self._outdated_noted_at and now - self._outdated_noted_at < _OUTDATED_NOTE_EVERY_S:
+            return data
+        note = outdated_note(STARTED_WITH_VERSION, self._loop_script_version,
+                             bundled_script_version())
+        if not note:
+            return data
+        self._outdated_noted_at = now
+        data = dict(data)
+        data["server_outdated"] = note
+        return data
+
     def _reshow_hidden_frame(self, command: str, request_id: str) -> list:
         """Show Altium's main window again if it is hidden. Never raises.
 
@@ -1065,7 +1219,9 @@ class AltiumBridge:
 
     def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
         """Execute a command synchronously (blocking)."""
-        request = CommandRequest(command=command, params=params)
+        request = CommandRequest(
+            command=command, params=params,
+            session_doc="" if _unpinned(command, params) else self._session_doc)
         workspace_dir = self.config.workspace_dir
 
         _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
@@ -1094,12 +1250,19 @@ class AltiumBridge:
                 server_version=response.protocol_version,
             )
 
+        if not _unpinned(command, params):
+            self._session_doc = next_session_doc(
+                self._session_doc, command, params, response)
+
         shown = self._reshow_hidden_frame(command, request.id)
 
         if response.success:
             logger.info("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
             data = _with_envelope_notes(response.data, response)
+            if command == "application.ping" and isinstance(data, dict):
+                self._loop_script_version = str(data.get("script_version") or "")
+            data = self._with_outdated_note(command, data)
             if shown and isinstance(data, dict):
                 data = dict(data)
                 data["altium_window_shown_again"] = (
@@ -1154,6 +1317,14 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
+        # Logged before the executor, whose one worker runs this server's
+        # calls one at a time: a CALL with no SEND after it is a call stuck
+        # behind an earlier one of the same session (a cancelled call keeps
+        # its worker until its own deadline), not a lost request. Measured
+        # 2026-10-23: a call that "never returned" had no SEND at all, and
+        # nothing in the trace could say where it was.
+        _trace_log(self.config.workspace_dir,
+                   f"CALL cmd={command} tag={_SESSION_TAG}")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             _executor,

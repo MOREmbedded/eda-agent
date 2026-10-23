@@ -1091,8 +1091,20 @@ def register_application_tools(mcp):
         )
 
     @mcp.tool()
-    async def app_get_active_document() -> dict[str, Any]:
+    async def app_get_active_document(session: bool = False) -> dict[str, Any]:
         """Get information about the currently active (focused) document.
+
+        Several Claude sessions can share one Altium. Each command runs on
+        its own session's document (the last one it focused), which Altium
+        puts back in front first if anything else moved the focus. So by
+        default this answers what is REALLY in front, which may be another
+        session's document or one a person has just opened. To work on that
+        document, focus it (app_set_active_document); it then becomes this
+        session's.
+
+        Args:
+            session: True for this session's own document instead, brought
+                back to the front first if something else is there.
 
         Returns:
             Dictionary with active document information:
@@ -1105,7 +1117,9 @@ def register_application_tools(mcp):
             Returns empty dict if no document is active.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("application.get_active_document")
+        result = await bridge.send_command_async(
+            "application.get_active_document",
+            {} if session else {"front": "true"})
         return result
 
     @mcp.tool()

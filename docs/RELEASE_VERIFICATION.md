@@ -1,4 +1,4 @@
-# Release verification: 2026.10.23.3
+# Release verification: 2026.10.23.5
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -280,7 +280,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.23.3`, `version_match` =
+Expect `altium_script_version` = `2026.10.23.5`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2017,6 +2017,18 @@ documents only.
     ProcName form `Dispatcher.pas>StartMCPServer` is the one Altium's own
     menu files use; if the script does not start, record what Altium
     showed.
+11. **Several sessions.** Two sessions, A on a scratch board and B on a
+    scratch library. B focuses its library; A then reads its board's
+    nets without focusing anything: A's reply carries
+    `session_document.restored` naming the board, and the nets are the
+    board's. Click a third document by hand, then call a tool from A: the
+    board comes back. `app_get_active_document` from B answers what is
+    really in front; with `session=true` it brings the library back.
+    Close A's board and call A again: `session_document.missing`, and the
+    command runs on what is in front. Then, with both sessions sending
+    reads, run `eda-agent relaunch --restart`: neither session reports a
+    timeout, the trace shows `POLL_QUEUED ... restart`, and a session
+    whose server started before the deploy gets `server_outdated` once.
 
 Offline only, already covered by tests: the wheel carries the EasyEDA
 extension source and `eda-agent easyeda-extension path|build` finds or

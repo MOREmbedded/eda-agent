@@ -577,6 +577,15 @@ Begin
     Else Result := Lowest;
 End;
 
+{ SessionFocusAction -- copied VERBATIM from Main.pas (test_session_document checks it). }
+Function SessionFocusAction(Pin : String; Current : String) : String;
+Begin
+    Result := 'keep';
+    If Pin = '' Then Exit;
+    If UpperCase(Pin) = UpperCase(Current) Then Exit;
+    Result := 'restore';
+End;
+
 { ---------------------------------------------------------------------------
   IEEE pin-symbol converters, copied VERBATIM from scripts/altium/Utils.pas.
   These decide whether an active-low pin gets its inversion bubble and a clock
@@ -1108,6 +1117,12 @@ begin
       ResultStr := PickSession(B64Decode(Parts[1]), B64Decode(Parts[2]),
                                StrToInt(B64Decode(Parts[3])),
                                StrToInt(B64Decode(Parts[4])));
+    end
+
+    { --- SessionFocusAction: args = pin, current --- }
+    else if FnName = 'SessionFocusAction' then
+    begin
+      ResultStr := SessionFocusAction(B64Decode(Parts[1]), B64Decode(Parts[2]));
     end
 
     { --- GetBatchTail: args = op, key --- }

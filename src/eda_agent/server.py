@@ -795,6 +795,11 @@ def main() -> int:
                             help="Print the command instead of running it.")
     relaunch_p.add_argument("--force", action="store_true",
                             help="Run it even when the bridge answers a ping.")
+    relaunch_p.add_argument("--restart", action="store_true",
+                            help="Stop the running loop after its current "
+                                 "command and start it again (after "
+                                 "install-scripts). Other sessions' calls "
+                                 "wait through it instead of failing.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -966,7 +971,7 @@ def main() -> int:
         return cli.cmd_easyeda_extension(args.action, out=args.out)
     if args.command == "relaunch":
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
-                                force=args.force)
+                                force=args.force, restart=args.restart)
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([
