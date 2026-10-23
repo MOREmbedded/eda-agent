@@ -38,7 +38,7 @@ def test_the_via_mask_goes_through_the_pad_cache_only():
 def test_the_manual_flag_maps_to_the_cache_state_both_ways():
     setter = _fns()["PCBSetMask"]
     assert "Cache.SolderMaskExpansionValid := eCacheManual" in setter
-    assert "Cache.SolderMaskExpansionValid := eCacheValid" in setter
+    assert "Cache.SolderMaskExpansionValid := eCacheInvalid" in setter
     getter = _fns()["PCBGetMask"]
     assert "Cache.SolderMaskExpansionValid = eCacheManual" in getter
 

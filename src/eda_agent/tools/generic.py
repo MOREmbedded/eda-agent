@@ -271,7 +271,7 @@ def register_generic_tools(mcp):
                 "eNoERC", "eJunction"; symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
                 (plain "polygon" and "arc" are the board's), the bare
-                "ellipse" and "elliptical_arc", and "eDesignator" and
+                "ellipse", "elliptical_arc" and "bezier", and "eDesignator" and
                 "eRoundRectangle"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
@@ -681,19 +681,37 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def obj_zoom(action: str = "fit") -> dict[str, Any]:
+    async def obj_zoom(
+        action: str = "fit",
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        radius: Optional[float] = None,
+    ) -> dict[str, Any]:
         """Control the viewport zoom level of the focused document.
 
         Works on a schematic, a schematic library, a board and a footprint
         library; the focused tab decides which editor zooms.
 
         Args:
-            action: "fit" (zoom to show all), "selection" (zoom to selected objects)
+            action: "fit" (zoom to show all), "selection" (zoom to selected
+                objects) or "point" (zoom to x, y)
+            x, y: the point for "point", in mils (a footprint's frame in
+                a PCB library)
+            radius: half the width of the view round the point on a board
+                or footprint, mils (default 200)
 
         Returns:
             Dictionary confirming the zoom action
         """
         bridge = get_bridge()
+        if action == "point":
+            if x is None or y is None:
+                return {"success": False,
+                        "error": 'action "point" needs x and y'}
+            params: dict[str, Any] = {"x": str(float(x)), "y": str(float(y))}
+            if radius is not None:
+                params["radius"] = str(float(radius))
+            return await bridge.send_command_async("generic.zoom_to_xy", params)
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )

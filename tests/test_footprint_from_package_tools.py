@@ -108,6 +108,11 @@ class FakeAltium:
         if command == "library.get_pad_geometry":
             return {"name": params["footprint_name"], "pads": [
                 self._read(p, i) for i, p in enumerate(self.pads)]}
+        if command == "library.link_3d_model":
+            return {"success": True}
+        if command == "library.add_footprint_bodies":
+            n = len(_ops(params["bodies"]))
+            return {"added": n, "failed": 0, "total": n, "bodies": []}
         raise AssertionError(f"unexpected command {command}")
 
     def _read(self, p: dict, i: int) -> dict:
@@ -148,6 +153,11 @@ def altium(monkeypatch):
     return run, box
 
 
+#: The last call a footprint build makes, by the 3D body it got.
+_BODY_COMMAND = {"step": "library.link_3d_model",
+                 "extruded": "library.add_footprint_bodies"}
+
+
 def test_soic8_is_created_written_in_mm_and_read_back(altium):
     run, box = altium
     out = run(package=cases.soic8().to_dict())
@@ -158,17 +168,17 @@ def test_soic8_is_created_written_in_mm_and_read_back(altium):
         "library.create_footprint", "library.add_footprint_pads",
         "library.add_footprint_tracks", "library.add_footprint_arc",
         "library.add_footprint_text", "library.set_footprint_height",
-        "library.get_pad_geometry"]
+        "library.get_pad_geometry", _BODY_COMMAND[out["model_3d"]["kind"]]]
     name = out["footprint"]
     assert name == "SOIC-8 (D)"
-    for command, params in bridge.calls[3:-1]:
+    for command, params in bridge.calls[3:-2]:
         target = params.get("footprint_name") or params.get("component_name")
         assert target == name, f"{command} did not name the footprint"
         if command != "library.set_footprint_height":
             assert params.get("units") == "mm", command
     # The reads are aimed at the library the writes went to.
     assert bridge.calls[1][1]["library_path"] == "scratch.PcbLib"
-    assert bridge.calls[-1][1]["library_path"] == "scratch.PcbLib"
+    assert bridge.calls[-2][1]["library_path"] == "scratch.PcbLib"
     assert out["layers"]["assembly"]["layer"] == "Mechanical13"
     assert out["layers"]["courtyard"]["layer"] == "Mechanical15"
     text = bridge.calls[6][1]
@@ -495,3 +505,38 @@ def test_kicad_refuses_a_bad_package_and_a_path_name(kicad, tmp_path):
                             name="..\\escape"))
     assert not out["ok"] and "file name" in out["reason"]
     assert not os.path.exists(lib)
+
+
+def test_the_3d_body_is_a_step_model_from_the_drawing_first(altium, monkeypatch):
+    import pytest
+    from eda_agent.design import models3d
+    if "cadquery" not in models3d.available_writers():
+        pytest.skip("CadQuery is not installed")
+    monkeypatch.setattr(models3d, "available_writers", lambda: ["cadquery"])
+    run, box = altium
+    out = run(package=cases.soic8().to_dict())
+    assert out["model_3d"]["kind"] == "step", out["model_3d"]
+    command, params = box["bridge"].calls[-1]
+    assert command == "library.link_3d_model"
+    assert params["component_name"] == out["footprint"]
+    assert params["model_path"].endswith(".step")
+    assert out["model_3d"]["sources"]["lead_span_x"]
+
+
+def test_with_no_step_writer_the_body_falls_back_to_an_extruded_box(altium, monkeypatch):
+    from eda_agent.design import models3d
+    monkeypatch.setattr(models3d, "available_writers", lambda: [])
+    run, box = altium
+    out = run(package=cases.soic8().to_dict())
+    assert out["model_3d"]["kind"] == "extruded"
+    assert "fallback" in out["model_3d"]["note"] and "CadQuery" in out["model_3d"]["note"]
+    command, params = box["bridge"].calls[-1]
+    assert command == "library.add_footprint_bodies"
+    assert "overall_height=1.75" in params["bodies"]
+
+
+def test_no_3d_body_when_asked_for_none(altium):
+    run, box = altium
+    out = run(package=cases.soic8().to_dict(), model_3d="none")
+    assert out["model_3d"]["kind"] == "none"
+    assert box["bridge"].commands()[-1] == "library.get_pad_geometry"

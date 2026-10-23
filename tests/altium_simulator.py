@@ -1644,6 +1644,15 @@ class AltiumSimulator:
             return _build_success_response(
                 rid, '{"action":"' + zoom_action + '"}'
             )
+        elif action == "zoom_to_xy":
+            # Gen_ZoomToXY: x and y required; the reply echoes them.
+            x, y = params.get("x", ""), params.get("y", "")
+            if x == "" or y == "":
+                return _build_error_response(
+                    rid, "MISSING_PARAMS", "x and y parameters are required")
+            return _build_success_response(
+                rid, '{"success":true,"x":' + str(x) + ',"y":' + str(y)
+                + ',"context":"pcb"}')
         else:
             return _build_error_response(
                 rid, "UNKNOWN_ACTION",

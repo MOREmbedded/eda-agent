@@ -108,6 +108,8 @@ Begin
     Else If N = 'schellipticalarc' Then Result := eEllipticalArc
     Else If N = 'schellipse'      Then Result := eEllipse
     Else If N = 'schbezier'       Then Result := eBezier
+    { No board object is a bezier, so the bare word is free to take. }
+    Else If N = 'bezier'          Then Result := eBezier
     Else If N = 'ellipse'         Then Result := eEllipse
     Else If N = 'ellipticalarc'   Then Result := eEllipticalArc
     Else If N = 'designator'      Then Result := eDesignator
@@ -122,7 +124,7 @@ Begin
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask, sch_polygon, sch_arc, '
-            + 'sch_elliptical_arc, sch_ellipse, sch_bezier, ellipse, elliptical_arc, '
+            + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
             + 'eDesignator, eRoundRectangle';
 End;
 
@@ -1765,9 +1767,11 @@ Begin
     { only the library's OWN parameter, which is why a read came back with    }
     { one entry called Value rather than the component's full set.            }
     {                                                                         }
-    { The symbol is already known: a lib_component scope resolves through     }
-    { SelectLibComponentPart, which records it. So use it directly instead of }
-    { looking for something a library does not contain.                       }
+    { The symbol is the one on screen: a lib_component scope makes its symbol }
+    { current (SelectLibComponentPart), and with no scope the symbol the user }
+    { has open is the one meant. The held reference to the last symbol      }
+    { created is only a fallback; preferred, it sent a delete to a symbol    }
+    { the user had since left (issue #107).                                  }
     IsLib := False;
     Try IsLib := (SchDoc.ObjectId = eSchLib); Except IsLib := False; End;
     If IsLib Then
@@ -1775,9 +1779,9 @@ Begin
         { Same guard as the sheet path: without a filter this would strip     }
         { every parameter off the symbol.                                     }
         If ReducedFilter = '' Then Exit;
-        Comp := LastCreatedLibComponent;
-        If Comp = Nil Then
-            Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
+        Comp := Nil;
+        Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
+        If Comp = Nil Then Comp := LastCreatedLibComponent;
         RemoveMatchingParamsFromComponent(Comp, ReducedFilter, TotalMatched);
         Exit;
     End;
@@ -1859,7 +1863,7 @@ Var
     LibComp : ISch_Component;
     Removed, ParamsOfSymbol, IsLibDoc : Boolean;
     SchLibDoc : ISch_Lib;
-    ObjJson : String;
+    ObjJson, SymbolRef : String;
     First : Boolean;
     MaxIter, LastAddr, ThisAddr : Integer;
 Begin
@@ -1968,23 +1972,28 @@ Begin
     If Mode = 'modify' Then
         SchServer.ProcessControl.PreProcess(SchDoc, '');
 
-    { A SYMBOL'S PARAMETERS ARE OWNED BY THE SYMBOL. The library's own
-      iterator does not reach them, so a parameter query or modify in a
-      lib_component scope matched nothing while the parameters sat there.
-      Walk the scoped symbol instead, as DeleteParametersAnyOwner does. }
+    { A SYMBOL'S PARAMETERS AND ITS DESIGNATOR ARE OWNED BY THE SYMBOL. The
+      library's own iterator does not reach them, so a parameter query or
+      modify in a lib_component scope matched nothing while the parameters
+      sat there, and a designator was never found in a library at all
+      (issue #107). Walk the symbol on screen instead, which a
+      lib_component scope has made current; the last symbol created is only
+      the fallback, as in DeleteParametersAnyOwner. }
     ParamsOfSymbol := False;
     LibComp := Nil;
-    If ObjTypeInt = eParameter Then
+    If (ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator) Then
     Begin
         Try ParamsOfSymbol := (SchDoc.ObjectId = eSchLib); Except End;
         If ParamsOfSymbol Then
         Begin
-            LibComp := LastCreatedLibComponent;
-            If LibComp = Nil Then
-                Try LibComp := SchDoc.CurrentSchComponent; Except End;
+            Try LibComp := SchDoc.CurrentSchComponent; Except End;
+            If LibComp = Nil Then LibComp := LastCreatedLibComponent;
             If LibComp = Nil Then ParamsOfSymbol := False;
         End;
     End;
+    SymbolRef := '';
+    If ParamsOfSymbol Then
+        Try SymbolRef := LibComp.LibReference; Except SymbolRef := ''; End;
     IsLibDoc := False;
     Try IsLibDoc := (SchDoc.ObjectId = eSchLib); Except End;
     If ParamsOfSymbol Then
@@ -2015,6 +2024,9 @@ Begin
                     ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
                 Else
                     ObjJson := Copy(ObjJson, 1, 1) + '"_doc":"' + EscapeJsonString(DocPath) + '",' + Copy(ObjJson, 2, Length(ObjJson));
+                { Which symbol answered, so a caller can tell. }
+                If SymbolRef <> '' Then
+                    ObjJson := Copy(ObjJson, 1, 1) + '"_symbol":"' + EscapeJsonString(SymbolRef) + '",' + Copy(ObjJson, 2, Length(ObjJson));
                 If Not First Then Result := Result + ',';
                 First := False;
                 Result := Result + ObjJson;
@@ -3694,10 +3706,13 @@ End;
 
 Function Gen_ZoomToXY(Params : String; RequestId : String) : String;
 Var
-    XStr, YStr, RadStr : String;
+    XStr, YStr, RadStr, FocusedKind : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    PcbLib : IPCB_Library;
     Cx, Cy, Rad : TCoord;
+    Workspace : IWorkspace;
+    Doc : IDocument;
 Begin
     XStr := ExtractJsonValue(Params, 'x');
     YStr := ExtractJsonValue(Params, 'y');
@@ -3709,8 +3724,34 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere(0);
-    SchDoc := SchServer.GetCurrentSchDocument;
+    { The focused tab decides, as in Gen_Zoom. Asking for any board first  }
+    { zoomed a board in the background while a sheet or a library was in  }
+    { front. A PcbLib zooms its own view, in the footprint editor's frame. }
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    End;
+    Board := Nil;
+    SchDoc := Nil;
+    If FocusedKind = 'PCB' Then
+        Board := GetPCBBoardAnywhere(0)
+    Else If FocusedKind = 'PCBLIB' Then
+    Begin
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
+        If PcbLib <> Nil Then Board := PcbLib.Board;
+    End
+    Else If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then
+        SchDoc := SchServer.GetCurrentSchDocument
+    Else
+    Begin
+        Board := GetPCBBoardAnywhere(0);
+        If Board = Nil Then SchDoc := SchServer.GetCurrentSchDocument;
+    End;
 
     If Board <> Nil Then
     Begin
@@ -11756,7 +11797,8 @@ Begin
                     If Pad.TopShape = eRounded Then ShapeStr := 'Round'
                     Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
                     Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
-                    Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect';
+                    Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
+                    Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom';
                 Except End;
                 { Drill shape: round / square / slot. Slot pads expose a   }
                 { separate hole_width and a hole_rotation; round + square }

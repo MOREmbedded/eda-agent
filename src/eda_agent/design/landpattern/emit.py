@@ -50,6 +50,7 @@ __all__ = [
     "altium_plan",
     "easyeda_plan",
     "model_from_package",
+    "package_spec",
     "resolve_altium_layers",
     "verify_altium_readback",
 ]
@@ -95,20 +96,9 @@ def _drafting_rules(drafting: Optional[dict]) -> DraftingRules:
     return DraftingRules(**base)
 
 
-def model_from_package(package: Any, *, density: str = "", name: str = "",
-                       description: str = "",
-                       drafting: Optional[dict] = None) -> FootprintModel:
-    """Build the land pattern a package description asks for.
-
-    ``package`` is a :class:`PackageSpec`, its ``to_dict`` form, or that
-    form as JSON text. ``density`` (L, N or M) overrides the package's own;
-    empty keeps it (N unless the package says otherwise). ``name`` and
-    ``description`` override the package's. ``drafting`` overrides
-    :class:`DraftingRules` fields (silk width, paste coverage and so on).
-
-    Raises :class:`SpecError` with the spec's own text for anything the
-    engine cannot use.
-    """
+def package_spec(package: Any) -> PackageSpec:
+    """Read a package description: a :class:`PackageSpec`, its ``to_dict``
+    form, or that form as JSON text. Raises :class:`SpecError`."""
     if isinstance(package, str):
         try:
             package = json.loads(package)
@@ -130,6 +120,24 @@ def model_from_package(package: Any, *, density: str = "", name: str = "",
     else:
         raise SpecError(f"package must be an object (a PackageSpec as JSON), "
                         f"got {type(package).__name__}")
+    return spec
+
+
+def model_from_package(package: Any, *, density: str = "", name: str = "",
+                       description: str = "",
+                       drafting: Optional[dict] = None) -> FootprintModel:
+    """Build the land pattern a package description asks for.
+
+    ``package`` is a :class:`PackageSpec`, its ``to_dict`` form, or that
+    form as JSON text. ``density`` (L, N or M) overrides the package's own;
+    empty keeps it (N unless the package says otherwise). ``name`` and
+    ``description`` override the package's. ``drafting`` overrides
+    :class:`DraftingRules` fields (silk width, paste coverage and so on).
+
+    Raises :class:`SpecError` with the spec's own text for anything the
+    engine cannot use.
+    """
+    spec = package_spec(package)
     if name:
         spec.name = str(name)
     if description:

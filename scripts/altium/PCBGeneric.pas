@@ -196,10 +196,14 @@ Begin
         Cache.UseSeparateExpansions := StrToBool(Value)
     Else If PropName = 'SolderMaskManual' Then
     Begin
+        { Back to the rule is eCacheInvalid: Altium recomputes from the    }
+        { design rules. eCacheValid would assert that a rule value already }
+        { sits in the field, which after an override it does not           }
+        { (PCB_ApplyDnpPasteExclusion).                                    }
         If StrToBool(Value) Then
             Cache.SolderMaskExpansionValid := eCacheManual
         Else
-            Cache.SolderMaskExpansionValid := eCacheValid;
+            Cache.SolderMaskExpansionValid := eCacheInvalid;
     End
     Else Exit;
     AsPrim.SetState_Cache := Cache;
@@ -560,6 +564,7 @@ Begin
                 If Pad.TopShape = eRectangular Then Result := 'rectangular'
                 Else If Pad.TopShape = eOctagonal Then Result := 'octagonal'
                 Else If Pad.TopShape = eRoundedRectangular Then Result := 'roundrectangle'
+                Else If Pad.TopShape = eCustomShape Then Result := 'custom'
                 Else Result := 'round';
             End;
         End

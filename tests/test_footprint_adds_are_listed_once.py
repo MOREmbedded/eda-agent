@@ -41,9 +41,20 @@ def _settled(text: str) -> set[str]:
     return set(re.findall(r"Action = '(\w+)'", _body(text, "LibActionAddsToFootprint")))
 
 
+#: Helpers that add one primitive to the library board for their caller.
+_BOARD_ADDERS = ("AttachToCurrentFootprint(", "AddLibVia(", "AddExtrudedBody(")
+
+
 def _adds_to_board(text: str, handler: str) -> bool:
     body = _body(text, handler)
-    return "Board.AddPCBObject(" in body or "AttachToCurrentFootprint(" in body
+    return "Board.AddPCBObject(" in body or any(h in body for h in _BOARD_ADDERS)
+
+
+def test_the_board_adders_do_add_to_the_board():
+    text = _text()
+    for helper in _BOARD_ADDERS:
+        name = helper.rstrip("(")
+        assert "Board.AddPCBObject(" in _body(text, name), name
 
 
 def test_every_writer_that_adds_to_the_board_is_settled():

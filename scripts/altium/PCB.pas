@@ -5683,6 +5683,105 @@ Begin
         ));
 End;
 
+{..............................................................................}
+{ PCB_PlaceExtrudedBody - an extruded 3D body on the board (issue #113): an   }
+{ outline lifted from standoff_height to overall_height. A clearance or       }
+{ keep-in volume, or the body of a part with no STEP model; a STEP model is   }
+{ the accurate body (pcb.place_3d_body) and comes first.                      }
+{                                                                              }
+{ Params: points=x,y/x,y/x,y[/...] in mils, decimals kept, or the rectangle   }
+{ x1,y1,x2,y2 (also decimal: an outline in mm is fractional in mils);         }
+{ overall_height, standoff_height (mils); layer (default TopLayer); color     }
+{ (TColor), opacity (0..1), identifier: optional, each reported as applied.   }
+{ Altium's own route, Tools > Convert > Create 3D Body, is a menu command     }
+{ with a modal and no process id.                                             }
+{..............................................................................}
+
+Function PCB_PlaceExtrudedBody(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Body : IPCB_ComponentBody;
+    PointsStr, LayerStr, Why, Applied : String;
+    X1, Y1, X2, Y2, Tmp, Standoff, Overall : Double;
+    Layer : TLayer;
+Begin
+    PointsStr := Trim(ExtractJsonValue(Params, 'points'));
+    If PointsStr = '' Then
+    Begin
+        X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+        Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+        X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+        Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
+        If X1 > X2 Then Begin Tmp := X1; X1 := X2; X2 := Tmp; End;
+        If Y1 > Y2 Then Begin Tmp := Y1; Y1 := Y2; Y2 := Tmp; End;
+        If (X1 = X2) Or (Y1 = Y2) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_POINTS',
+                'Give points (three or more x,y pairs in mils joined by "/") '
+                + 'or a rectangle x1, y1, x2, y2 with an area.');
+            Exit;
+        End;
+        PointsStr := FloatToJsonStr(X1) + ',' + FloatToJsonStr(Y1) + '/'
+            + FloatToJsonStr(X2) + ',' + FloatToJsonStr(Y1) + '/'
+            + FloatToJsonStr(X2) + ',' + FloatToJsonStr(Y2) + '/'
+            + FloatToJsonStr(X1) + ',' + FloatToJsonStr(Y2);
+    End;
+    If RegionPointCount(PointsStr) < 3 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_POINTS',
+            'points must be three or more x,y pairs in mils joined by "/", '
+            + 'e.g. 0,0/100,0/50,80');
+        Exit;
+    End;
+    Overall := StrToFloatDef(ExtractJsonValue(Params, 'overall_height'), 0);
+    Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0);
+    If (Overall <= 0) Or (Standoff < 0) Or (Standoff >= Overall) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_HEIGHT',
+            'Need 0 <= standoff_height < overall_height, in mils');
+        Exit;
+    End;
+
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    If LayerStr = '' Then LayerStr := 'TopLayer';
+    Layer := eNoLayer;
+    Try Layer := ResolveLayerId(Board, LayerStr); Except Layer := eNoLayer; End;
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        Body := AddExtrudedBody(Board, PointsStr, 'mil', 0, 0, Layer,
+            MilsToCoordF(Standoff), MilsToCoordF(Overall),
+            ExtractJsonValue(Params, 'color'), ExtractJsonValue(Params, 'opacity'),
+            ExtractJsonValue(Params, 'identifier'), Applied);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Body = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+            'PCBObjectFactory returned no body for eComponentBodyObject');
+        Exit;
+    End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('placed', True) + ','
+        + ExtrudedBodyJson(Body, 'mil', 0, 0) + ','
+        + JsonStr('layer', LayerDisplayName(Layer)) + ','
+        + Applied));
+End;
+
 Function PCB_PlaceVia(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -7699,6 +7798,7 @@ Begin
             Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
             Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
             Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
+            Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom'
             Else ShapeStr := 'Other';
         Except ShapeStr := 'Unknown'; End;
 
@@ -15401,6 +15501,7 @@ Begin
     If S = eRectangular Then Name := 'rect';
     If S = eOctagonal Then Name := 'octagon';
     If S = eRoundedRectangular Then Name := 'roundrect';
+    If S = eCustomShape Then Name := 'custom';
     Result := Name;
 End;
 
@@ -17639,6 +17740,7 @@ Begin
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
         'place_3d_body':           Result := PCB_Place3DBody(Params, RequestId);
+        'place_extruded_body':     Result := PCB_PlaceExtrudedBody(Params, RequestId);
         'place_track':             Result := PCB_PlaceTrack(Params, RequestId);
         'place_tracks':            Result := PCB_PlaceTracks(Params, RequestId);
         'place_vias':              Result := PCB_PlaceVias(Params, RequestId);

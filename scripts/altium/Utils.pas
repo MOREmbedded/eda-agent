@@ -62,6 +62,13 @@ Begin
     Else Result := MilsToCoordF(Value);
 End;
 
+{ The other way: a coordinate in the caller's unit, for a read-back. }
+Function CoordToUnits(Coord : TCoord; Units : String) : Double;
+Begin
+    If UnitsAreMM(Units) Then Result := CoordToMilsF(Coord) * 0.0254
+    Else Result := CoordToMilsF(Coord);
+End;
+
 { A default written in mils, in the caller's unit. A bare default of 60 is  }
 { 60 mils; read as millimetres it would be a 60 mm pad.                     }
 Function MilsInUnits(Mils : Double; Units : String) : Double;

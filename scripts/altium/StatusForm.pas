@@ -982,6 +982,31 @@ Begin
         + ',"StatusForm":"' + UnitStamp_StatusForm(0) + '"}');
 End;
 
+{ The reply names the board it came from when GetPCBBoardAnywhere answered  }
+{ from one that was not focused: with a library or a sheet in front, a      }
+{ board found by walking the projects looks exactly like the one the caller }
+{ meant. Only a success whose data is an object is touched.                 }
+Function BoardFallbackNote(Response : String) : String;
+Var
+    Marker, Added, Front : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If BoardFallbackPath = '' Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Front := BoardFallbackFrom;
+    If Front = '' Then Front := 'no document';
+    Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
+        + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
+        + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
+        + ', the first board of the open projects."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -1008,6 +1033,9 @@ Begin
 
     SheetsSeen := 0;
     SheetsSkipped := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -1022,6 +1050,7 @@ Begin
             'commands, or audit.* for design-lint checks.');
     End;
     Result := SheetCoverage(Result);
+    Result := BoardFallbackNote(Result);
 End;
 
 {..............................................................................}

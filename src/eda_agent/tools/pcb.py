@@ -5457,6 +5457,79 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.place_3d_body", params)
 
     @mcp.tool()
+    async def pcb_place_extruded_body(
+        overall_height: float,
+        points: Optional[list[Any]] = None,
+        x1: float = 0,
+        y1: float = 0,
+        x2: float = 0,
+        y2: float = 0,
+        standoff_height: float = 0,
+        layer: str = "TopLayer",
+        identifier: str = "",
+        color: Optional[int] = None,
+        opacity: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Place an extruded 3D body on the open PCB: an outline lifted
+        from ``standoff_height`` to ``overall_height``.
+
+        A clearance or keep-in volume, an enclosure feature, or the body
+        of a part with no STEP model. A STEP model (``pcb_place_3d_body``)
+        is the accurate body and comes first; this is the fallback.
+
+        Args:
+            overall_height: top of the body above the board, mils.
+            points: outline ``[{x, y}]`` or ``[[x, y]]`` in mils, three or
+                more vertices, decimals kept; or leave it out and give the
+                rectangle x1, y1, x2, y2.
+            x1, y1, x2, y2: opposite corners in mils when no points.
+            standoff_height: underside above the board, mils (default 0).
+            layer: the layer the body belongs to; a bottom layer makes it
+                project from the bottom side.
+            identifier: a name to find the body again by.
+            color: Altium TColor integer.
+            opacity: 0 (clear) to 1 (solid).
+
+        Returns:
+            ``placed``, ``outline``, ``standoff_height``,
+            ``overall_height``, ``identifier`` and ``layer`` read back
+            from the body, and ``*_applied`` for each optional property.
+        """
+        if not 0 <= standoff_height < overall_height:
+            return {"ok": False,
+                    "reason": "need 0 <= standoff_height < overall_height"}
+        params: dict[str, Any] = {
+            "overall_height": str(float(overall_height)),
+            "standoff_height": str(float(standoff_height)),
+            "layer": layer,
+        }
+        if points:
+            try:
+                pairs = [(float(p["x"]), float(p["y"])) if isinstance(p, dict)
+                         else (float(p[0]), float(p[1])) for p in points]
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {"ok": False,
+                        "reason": "each point is {x, y} or [x, y] in mils"}
+            if len(pairs) < 3:
+                return {"ok": False,
+                        "reason": "an outline needs three or more points"}
+            params["points"] = "/".join(f"{x},{y}" for x, y in pairs)
+        else:
+            if x1 == x2 or y1 == y2:
+                return {"ok": False,
+                        "reason": "give points, or a rectangle with an area"}
+            params.update({"x1": str(float(x1)), "y1": str(float(y1)),
+                           "x2": str(float(x2)), "y2": str(float(y2))})
+        if identifier:
+            params["identifier"] = identifier
+        if color is not None:
+            params["color"] = str(int(color))
+        if opacity is not None:
+            params["opacity"] = str(min(max(float(opacity), 0.0), 1.0))
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.place_extruded_body", params)
+
+    @mcp.tool()
     async def pcb_get_room_rules() -> dict[str, Any]:
         """Get all room-like rules (confinement constraint design rules).
 

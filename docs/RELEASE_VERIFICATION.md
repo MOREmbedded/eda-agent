@@ -1,4 +1,4 @@
-# Release verification: 2026.10.22.7
+# Release verification: 2026.10.23.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -77,7 +77,7 @@ works elsewhere cannot be an undeclared identifier:
 | 33, DbLib part | `CurrentPartID` on a placed DbLib part | yes, `SetSchProperty` | low |
 | 33, pad designator | `Name` on a pad, through the generic setter | yes, `PCB_RenumberPads` | low |
 | 33, poll timer | `Enabled` on the poll timer, read back after arming | yes, `StartMCPPump` writes it | low |
-| 34, 3D body opacity | `BodyOpacity3D` on a component body | no, nowhere | high, a wrong member name stops the loop; used by several scripts in reference/ |
+| 34, 3D body opacity | `BodyOpacity3D` on a component body | yes, `AddExtrudedBody`, on a new extruded body | high, a wrong member name stops the loop; used by several scripts in reference/ |
 | 34, slot rotation | `HoleRotation` written on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | medium, read on the board side already |
 | 34, pad copper centre | `BoundingRectangle` on a library pad | yes, `BuildViolationJson`, on any primitive | low |
 | 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
@@ -280,7 +280,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.22.7`, `version_match` =
+Expect `altium_script_version` = `2026.10.23.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.

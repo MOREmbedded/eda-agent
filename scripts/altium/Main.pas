@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.22.7';
+    SCRIPT_VERSION = '2026.10.23.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -117,6 +117,13 @@ Var
     { ProcessCommand; see ProjectSheet and SheetCoverage.                  }
     SheetsSeen : Integer;
     SheetsSkipped : Integer;
+    { The board GetPCBBoardAnywhere answered from when none was focused,  }
+    { and the kind of the document that was in front; reset per request   }
+    { and put on the reply by BoardFallbackNote. BoardMissWhy says why it }
+    { gave no board at all, for the NO_PCB refusal.                       }
+    BoardFallbackPath : String;
+    BoardFallbackFrom : String;
+    BoardMissWhy : String;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -532,6 +539,13 @@ End;
 
 {..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
+{                                                                              }
+{ When no board is focused it answers from the first PcbDoc of the open        }
+{ projects, and the reply then names that board (BoardFallbackNote), so a     }
+{ caller can tell it from the one it meant. With a PcbLib in front the caller  }
+{ is working on a library, not a board: it answers only when exactly one board }
+{ is open, and with several gives Nil with the reason in BoardMissWhy, rather  }
+{ than reading or writing whichever board the walk reached first.             }
 {..............................................................................}
 
 Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
@@ -541,8 +555,8 @@ Var
     Doc : IDocument;
     ServerDoc : IServerDocument;
     PrevView : IServerDocumentView;
-    Path : String;
-    I, P : Integer;
+    Path, FocusKind, Candidates : String;
+    I, P, Found : Integer;
 Begin
     Result := Nil;
 
@@ -558,10 +572,46 @@ Begin
     { absent server) that Try/Except cannot swallow and that hangs the       }
     { polling loop. So only touch PCBServer when a PCB is actually focused.  }
     Doc := Workspace.DM_FocusedDocument;
-    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
+    FocusKind := '';
+    If Doc <> Nil Then
+        Try FocusKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    If FocusKind = 'PCB' Then
     Begin
         Result := PCBServer.GetCurrentPCBBoard;
         If Result <> Nil Then Exit;
+    End;
+
+    { A library in front: a board is meant only when there is just one. }
+    If FocusKind = 'PCBLIB' Then
+    Begin
+        Found := 0;
+        Candidates := '';
+        For P := 0 To Workspace.DM_ProjectCount - 1 Do
+        Begin
+            Project := Workspace.DM_Projects(P);
+            If Project = Nil Then Continue;
+            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+            Begin
+                Doc := Project.DM_LogicalDocuments(I);
+                If Doc = Nil Then Continue;
+                Path := '';
+                Try Path := Doc.DM_FullPath; Except End;
+                If Path = '' Then Continue;
+                If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
+                   (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
+                Found := Found + 1;
+                If Candidates <> '' Then Candidates := Candidates + ', ';
+                Candidates := Candidates + Path;
+            End;
+        End;
+        If Found > 1 Then
+        Begin
+            BoardMissWhy := 'A PCB library is in front and ' + IntToStr(Found)
+                + ' boards are open (' + Candidates + '), so no board was '
+                + 'picked. For the library use the lib_ tools; for a board, '
+                + 'focus it first.';
+            Exit;
+        End;
     End;
 
     { Fallback: no PCB tab is focused (the user is on a schematic, a library }
@@ -598,7 +648,12 @@ Begin
 
             Try Client.ShowDocument(ServerDoc); Except End;
             Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-            If Result <> Nil Then Break;
+            If Result <> Nil Then
+            Begin
+                BoardFallbackPath := Path;
+                BoardFallbackFrom := FocusKind;
+                Break;
+            End;
         End;
 
         If Result <> Nil Then Break;
@@ -1815,6 +1870,9 @@ Begin
     { and must not be doubled. Decided on the handler's own words,       }
     { BEFORE the focus note is added, because a file name such as        }
     { power_lib_parts.SchLib contains "lib_" and would read as a pointer.}
+    { Why GetPCBBoardAnywhere gave no board, when it decided not to guess. }
+    If (ErrorCode = 'NO_PCB') And (BoardMissWhy <> '') Then
+        ErrorMsg := WithFullStop(ErrorMsg) + ' ' + BoardMissWhy;
     Hint := CrossDocumentHint(ErrorCode);
     Pointed := MessageNamesATool(ErrorMsg);
     If Hint <> '' Then

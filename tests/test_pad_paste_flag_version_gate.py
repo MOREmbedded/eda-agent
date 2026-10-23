@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""The pad paste flag is only touched on Altium Designer 26 or later.
+"""The pad paste flag is only touched on Altium Designer 25 or later.
 
 IsTopPasteEnabled does not exist on AD23: the line that names it stops the
 whole script with "Undeclared identifier", Try/Except does not catch it,
 and the bridge never answers a ping. Every use must sit behind the
-version gate, read and write alike.
+version gate, read and write alike. It reads and writes on 25.8.1.18
+(issue #105), so 25 is inside the gate; 24 is not measured.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ def _routine(text: str, name: str) -> str:
 def test_the_gate_reads_the_major_version():
     body = _routine(LIBRARY.read_text(encoding="utf-8"), "PadPasteFlagSupported")
     assert "Client.GetProductVersion" in body
-    assert "Major >= 26" in body
+    assert "Major >= 25" in body
 
 
 def test_every_use_of_the_flag_follows_the_gate():
