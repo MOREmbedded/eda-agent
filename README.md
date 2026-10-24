@@ -6,6 +6,10 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 
 ## Demo
 
+Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board in Altium Designer from a written spec to manufacturing files. It builds a project library from scratch, with a symbol, footprint, 3D model and part numbers for every part. It then draws the schematic, places 61 LEDs in rings, routes the USB pair at 90 ohms, pours stitched ground, gets DRC clean and writes the Gerbers, drill, BOM, pick-and-place and STEP files.
+
+[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](assets/demo_round_led.jpg)](https://youtu.be/NZ8hi3sgfm8)
+
 Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
 
 [![eda-agent demo: a schematic from a one-line spec in Altium Designer](assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
