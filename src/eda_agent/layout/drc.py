@@ -280,6 +280,55 @@ def connectivity(board: LayoutBoard, items: list[Item] | None = None,
     it attaches, not whether.
     """
     items = items if items is not None else conductive_items(board)
+    uf = _joined(board, items, grid, dist)
+    groups: dict[str, dict[int, set[int]]] = {}
+    for n, it in enumerate(items):
+        if it.kind != "pad" or not it.net:
+            continue
+        groups.setdefault(it.net, {}).setdefault(uf.find(n), set()).add(it.idx)
+    return {net: list(g.values()) for net, g in groups.items()}
+
+
+def pads_on_a_barrel(board: LayoutBoard) -> set[int]:
+    """Surface pads that existing copper already joins to a via or a
+    plated hole of their own net: such a pad reaches every layer, and a
+    plane of its net, already.
+
+    The plane fan-out used to give every surface pad of a plane net its
+    own dog-bone whatever was there: on a board whose LED supply pads all
+    had their via and stub already, it added 303 more vias.
+    """
+    return set(pad_barrels(board))
+
+
+def pad_barrels(board: LayoutBoard) -> dict[int, list[tuple[float, float]]]:
+    """For each surface pad that existing copper joins to a via or plated
+    hole of its net, where those barrels are."""
+    items = conductive_items(board)
+    uf = _joined(board, items)
+    at: dict[int, set] = {}
+    for n, it in enumerate(items):
+        if not it.net:
+            continue
+        if it.kind == "via":
+            v = board.vias[it.idx]
+            at.setdefault(uf.find(n), set()).add((v.x, v.y))
+        elif it.kind == "pad" and not board.pads[it.idx].is_smd:
+            p = board.pads[it.idx]
+            at.setdefault(uf.find(n), set()).add((p.x, p.y))
+    out: dict[int, list[tuple[float, float]]] = {}
+    for n, it in enumerate(items):
+        if it.kind == "pad" and it.net and board.pads[it.idx].is_smd:
+            got = at.get(uf.find(n))
+            if got:
+                out.setdefault(it.idx, [])
+                out[it.idx] = sorted(set(out[it.idx]) | got)
+    return out
+
+
+def _joined(board: LayoutBoard, items: list[Item], grid: "_Grid | None" = None,
+            dist: "_Distances | None" = None) -> _UF:
+    """Union of every pair of items copper joins (see connectivity)."""
     grid = grid or _Grid(items, _cell_size(items, TOUCH), TOUCH)
     dist = dist or _Distances(items)
     uf = _UF(len(items))
@@ -340,13 +389,7 @@ def connectivity(board: LayoutBoard, items: list[Item] | None = None,
                 uf.union(first_item[key], n)
             else:
                 first_item[key] = n
-
-    groups: dict[str, dict[int, set[int]]] = {}
-    for n, it in enumerate(items):
-        if it.kind != "pad" or not it.net:
-            continue
-        groups.setdefault(it.net, {}).setdefault(uf.find(n), set()).add(it.idx)
-    return {net: list(g.values()) for net, g in groups.items()}
+    return uf
 
 
 # ---------------------------------------------------------------------------

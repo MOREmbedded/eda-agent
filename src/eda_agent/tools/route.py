@@ -168,8 +168,11 @@ def register_route_tools(mcp):
             "board": board.name,
             "read": {"pads": len(board.pads), "components": len(board.components),
                      "nets": len(board.nets()), "layers": board.copper_layers()},
-            "next_step": "poll design_job_status, then design_job_result; "
-                         "apply with pcb_autoroute_apply",
+            "next_step": "call design_job_status(job_id, wait_seconds=90) "
+                         "until it is done (nothing notifies you when it "
+                         "finishes, so keep calling it; do not end your "
+                         "turn), then design_job_result; apply with "
+                         "pcb_autoroute_apply",
         }
 
     @mcp.tool()

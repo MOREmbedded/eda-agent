@@ -21,7 +21,33 @@ from ..design import sch_template as st
 
 #: Keys a template part may carry.
 PART_KEYS = frozenset({"designator", "lib_reference", "library_path", "x", "y",
-                       "rotation", "value", "footprint", "part"})
+                       "rotation", "value", "footprint", "part", "unique_id"})
+
+
+async def _keep_unique_ids(bridge, ids: dict[str, str], document_path: str) -> dict:
+    """Give each redrawn part its old UniqueId and read every one back.
+
+    A redraw places new symbols with new ids, and the board's parts are
+    linked by id. A follow-up take set them back one call at a time after
+    the redraw and the compare still found 7 parts unmatched (Altium
+    raised Component Links). Set in the same call as the drawing, and
+    checked, a redraw never unlinks the board.
+    """
+    for ref, uid in ids.items():
+        await _send(bridge, "generic.set_component_unique_id",
+                    {"designator": ref, "unique_id": uid})
+    read = await _send(bridge, "generic.query_objects", {
+        "scope": f"doc:{document_path}", "object_type": "eSchComponent",
+        "filter": "", "properties": "Designator.Text,UniqueId"})
+    got: dict[str, set] = {}
+    for o in (read or {}).get("objects", []) if isinstance(read, dict) else []:
+        got.setdefault(str(o.get("Designator.Text", "")), set()).add(
+            str(o.get("UniqueId", "")))
+    wrong = sorted(ref for ref, uid in ids.items() if got.get(ref) != {uid})
+    out: dict[str, Any] = {"set": len(ids) - len(wrong), "failed": len(wrong)}
+    if wrong:
+        out["failed_refdes"] = wrong
+    return out
 
 
 def _load_template(template: Any, template_path: str) -> tuple[Any, str]:
@@ -210,6 +236,12 @@ def register_sch_template_tools(mcp):
         style "bar" pointing up, or "gnd_power" pointing down for a net
         containing GND. ``nets`` is the netlist the sheet must produce,
         checked pin by pin.
+
+        REDRAWING a sheet whose parts are on a board: give each part its
+        old ``"unique_id"`` (obj_query eSchComponent,
+        "Designator.Text,UniqueId", before clearing). sch_draw_template
+        sets it and reads it back (``unique_ids``), so the board stays
+        linked; without it the redrawn parts are new to the board.
 
         A MULTI-PART symbol (an MCU split into sections) takes one entry per
         part on this sheet, the same designator and symbol with ``"part": 2``
@@ -414,6 +446,10 @@ def register_sch_template_tools(mcp):
                 bridge, "generic.set_sch_components_parameters",
                 {"stamps": "~~".join(stamps), "sheet_path": document_path},
                 timeout=60.0)
+        ids = {str(p["designator"]): str(p["unique_id"]).strip() for p in parts
+               if str(p.get("unique_id", "")).strip()}
+        if ids:
+            counts["unique_ids"] = await _keep_unique_ids(bridge, ids, document_path)
         failed = [k for k, v in counts.items()
                   if isinstance(v, dict) and (_failed(v) or v.get("failed"))]
         out = {**d.report(), **counts, "stage": "done",
@@ -424,4 +460,11 @@ def register_sch_template_tools(mcp):
                 f"{k}: not all placed ({counts[k]})" for k in failed]
         if plan_notes:
             out["plan_notes"] = plan_notes
+        if not failed:
+            # Measured in a demo run: a sheet cleared and drawn again still
+            # compiled with its old parts and wires, so ERC reported
+            # duplicate designators that were not on it, until the sheet
+            # was closed and opened again.
+            from .generic import _reopen_sheet
+            out["reopened"] = await _reopen_sheet(bridge)
         return out

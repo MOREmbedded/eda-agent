@@ -1364,7 +1364,7 @@ End;
 
 Function MatchesFilterPCB(Obj : IPCB_Primitive; FilterStr : String) : Boolean;
 Var
-    Remaining, Condition, PropName, Expected, Actual : String;
+    Remaining, Condition, PropName, Expected, Actual, Op : String;
     PipePos, EqPos : Integer;
 Begin
     Result := True;
@@ -1382,12 +1382,14 @@ Begin
         { A condition that is not Name=Value matches nothing (see
           FilterProblem): skipped, it matched every object. }
         If Trim(Condition) = '' Then Continue;
-        EqPos := Pos('=', Condition);
-        If EqPos < 2 Then Begin Result := False; Exit; End;
+        EqPos := FilterOpPos(Condition);
+        Op := FilterOpText(Condition);
+        If (EqPos < 2) Or (Op = '') Then Begin Result := False; Exit; End;
         PropName := Copy(Condition, 1, EqPos - 1);
-        Expected := Copy(Condition, EqPos + 1, Length(Condition));
+        Expected := Copy(Condition, EqPos + Length(Op), Length(Condition));
         Actual := GetPCBProperty(Obj, PropName);
-        If Not FilterValueMatchesPCB(PropName, Actual, Expected) Then
+        If Not FilterOpHolds(Op, Actual, Expected,
+                FilterValueMatchesPCB(PropName, Actual, Expected)) Then
         Begin
             Result := False;
             Exit;
@@ -1893,7 +1895,7 @@ Begin
             Condition := Remaining;
             Remaining := '';
         End;
-        EqPos := Pos('=', Condition);
+        EqPos := FilterOpPos(Condition);
         If EqPos > 1 Then
         Begin
             PropName := Copy(Condition, 1, EqPos - 1);

@@ -287,6 +287,37 @@ End;
 { to be skipped, which emptied the filter and matched every object: an       }
 { obj_delete given one removed every track on the board and reported         }
 { success. Names are letters, digits, '_' and '.' (Designator.Text).        }
+{ FilterOpPos - where a condition's operator starts (its first = ! < or >), }
+{ 0 when it has none. Names hold none of those characters.                }
+Function FilterOpPos(Condition : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(Condition) Do
+        If Pos(Copy(Condition, I, 1), '=!<>') > 0 Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+End;
+
+{ FilterOpText - the condition's operator: = != < > <= >=, '' for none or }
+{ a bare '!'.                                                              }
+Function FilterOpText(Condition : String) : String;
+Var
+    P : Integer;
+    Two, One : String;
+Begin
+    Result := '';
+    P := FilterOpPos(Condition);
+    If P = 0 Then Exit;
+    Two := Copy(Condition, P, 2);
+    One := Copy(Condition, P, 1);
+    If One <> '!' Then Result := One;
+    If (Two = '!=') Or (Two = '<=') Or (Two = '>=') Then Result := Two;
+End;
+
 Function FilterProblem(FilterStr : String) : String;
 Var
     Remaining, Condition, PropName, Ch : String;
@@ -309,8 +340,8 @@ Begin
             Remaining := '';
         End;
         If Trim(Condition) = '' Then Continue;
-        EqPos := Pos('=', Condition);
-        Ok := EqPos > 1;
+        EqPos := FilterOpPos(Condition);
+        Ok := (EqPos > 1) And (FilterOpText(Condition) <> '');
         If Ok Then
         Begin
             PropName := Copy(Condition, 1, EqPos - 1);
@@ -338,7 +369,8 @@ Begin
        And (Pos(' ', Trim(Condition)) = 0) Then
         Hint := 'For a true/false property write ' + Trim(Condition) + '=true. ';
     Result := 'Filter condition "' + Condition + '" is not Name=Value. A filter '
-        + 'is Name=Value pairs joined by |, each matched exactly; Altium query '
+        + 'is Name=Value conditions joined by |, each matched exactly (also '
+        + 'Name!=Value, and Name<Value, >, <=, >= on numbers); Altium query '
         + 'expressions (OnLayer(...), Or, And) and bare names are not understood. '
         + Hint + 'Nothing was matched or changed.';
 End;
@@ -1079,6 +1111,45 @@ Begin
     End;
 End;
 
+{ FilterOpHolds - whether Actual stands in relation Op to Expected. Equal }
+{ is the caller's own equality (a PCB length matches within half a unit). }
+{ < > <= >= compare numbers ('.' or ',' decimal); a value that is not a   }
+{ number matches none of them.                                            }
+Function FilterOpHolds(Op, Actual, Expected : String; Equal : Boolean) : Boolean;
+Var
+    A, E, Ch : String;
+    I : Integer;
+    AV, EV : Double;
+Begin
+    If Op = '=' Then Begin Result := Equal; Exit; End;
+    If Op = '!=' Then Begin Result := Not Equal; Exit; End;
+    Result := False;
+    A := '';
+    For I := 1 To Length(Actual) Do
+    Begin
+        Ch := Copy(Actual, I, 1);
+        If Ch = ',' Then Ch := '.';
+        A := A + Ch;
+    End;
+    E := '';
+    For I := 1 To Length(Expected) Do
+    Begin
+        Ch := Copy(Expected, I, 1);
+        If Ch = ',' Then Ch := '.';
+        E := E + Ch;
+    End;
+    A := Trim(A);
+    E := Trim(E);
+    If Not IsFloatStr(A) Then Exit;
+    If Not IsFloatStr(E) Then Exit;
+    AV := StrToFloatDef(A, 0);
+    EV := StrToFloatDef(E, 0);
+    If Op = '<' Then Result := AV < EV;
+    If Op = '>' Then Result := AV > EV;
+    If Op = '<=' Then Result := AV <= EV;
+    If Op = '>=' Then Result := AV >= EV;
+End;
+
 { The first length a rule's Descriptor states, in mils, or -1 when it     }
 { states none. A descriptor carries the rule's value, as in "Clearance     }
 { Constraint (Gap=6mil) (All),(All)", in the board's units. The silk rules }
@@ -1470,7 +1541,11 @@ Begin
     Else If N = 'componentbodyobject' Then Result := eComponentBodyObject
     Else If N = 'componentbody' Then Result := eComponentBodyObject
     Else If N = 'body'           Then Result := eComponentBodyObject
-    Else If N = '3dbody'         Then Result := eComponentBodyObject;
+    Else If N = '3dbody'         Then Result := eComponentBodyObject
+    { A plane's net lives on its split-plane regions as well as on the   }
+    { layer; nothing could read them to see which net a plane carries.   }
+    Else If N = 'splitplaneobject' Then Result := eSplitPlaneObject
+    Else If N = 'splitplane'     Then Result := eSplitPlaneObject;
 End;
 
 { What the refusal should have said. Listed from the resolver above so the
@@ -1481,7 +1556,7 @@ Begin
     Result := 'eTrackObject, ePadObject, eViaObject, eComponentObject, '
             + 'eArcObject, eFillObject, eTextObject, ePolyObject, '
             + 'eRegionObject, eRuleObject, eDimensionObject, '
-            + 'eComponentBodyObject, eConnectionObject';
+            + 'eComponentBodyObject, eConnectionObject, eSplitPlaneObject';
 End;
 
 { Inverse of ObjectTypeFromStringPCB. Written here, next to it, so the
@@ -1514,6 +1589,7 @@ Begin
     Else If Id = eRuleObject         Then Result := 'rule'
     Else If Id = eDimensionObject    Then Result := 'dimension'
     Else If Id = eConnectionObject   Then Result := 'connection'
+    Else If Id = eSplitPlaneObject   Then Result := 'split_plane'
     Else Result := 'objectid_' + IntToStr(Id);
 End;
 
@@ -2158,6 +2234,22 @@ Begin
     Try Owner := Pin.OwnerPartId; Except End;
     Try PartId := Comp.CurrentPartID; Except End;
     Result := (Owner = 0) Or (Owner = PartId);
+End;
+
+{ SchDocByPathLoading - the sheet at Path, loading it when it is a file   }
+{ Altium has not opened yet. GetSchDocumentByPath alone answers Nil for a  }
+{ project member that was never opened, which made a tool given a sheet's }
+{ path fail whenever another document was in front. Client.OpenDocument   }
+{ keeps the project membership (RunProcess Client:OpenDocument does not). }
+Function SchDocByPathLoading(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    If Path = '' Then Exit;
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    If Not FileExists(Path) Then Exit;
+    Try Client.OpenDocument('SCH', Path); Except End;
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
 { install-scripts writes the hash of this file into the deployed copy. }

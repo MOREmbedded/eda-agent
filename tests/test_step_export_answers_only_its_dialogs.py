@@ -148,3 +148,51 @@ def test_done_is_answered_after_a_quiet_spell(monkeypatch, tmp_path):
     result = asyncio.run(tool(out, board_path=board))
     assert ("Information", "OK") in pressed
     assert result["ok"] is True
+
+
+def test_a_done_after_the_file_has_settled_is_answered_too(monkeypatch, tmp_path):
+    """Measured on a demo board: the file was written and had settled, the
+    screen stayed empty past the quiet spell, the export was judged done,
+    and "Done!" came after it; left open, it failed the next two calls."""
+    tool, out, board, pressed = _tool(
+        monkeypatch, tmp_path, ["Export File", "Export Options", "Information"])
+    shown = windows.dialogs
+    late = {"polls": 0}
+    clock = {"t": 0.0}
+
+    def _late(pid):
+        current = shown(pid)
+        if current and current[0].title == "Information":
+            late["polls"] += 1
+            if late["polls"] < 40:
+                (tmp_path / "Board.step").write_text("ISO-10303-21;")
+                return []
+        return current
+
+    import time as real_time
+
+    def _mono():
+        clock["t"] += 0.5
+        return clock["t"]
+
+    monkeypatch.setattr(windows, "dialogs", _late)
+    monkeypatch.setattr(real_time, "monotonic", _mono)
+    monkeypatch.setattr(real_time, "sleep", lambda s: None)
+    result = asyncio.run(tool(out, board_path=board))
+    assert ("Information", "OK") in pressed
+    assert result["ok"] is True
+    assert result["dialogs_answered"][-1] == "Information"
+
+
+def test_a_missing_output_folder_is_made(monkeypatch, tmp_path):
+    tool, out, board, pressed = _tool(
+        monkeypatch, tmp_path, ["Export File", "Export Options", "Information"])
+    import os
+    nested = os.path.join(os.path.dirname(out), "STEP", "Board.step")
+
+    async def _no_wait(_s):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_wait)
+    asyncio.run(tool(nested, board_path=board))
+    assert os.path.isdir(os.path.dirname(nested))

@@ -767,15 +767,26 @@ def run_audits(board: LayoutBoard, checks: Optional[list[str]] = None, *,
     unknown = [n for n in names if n not in CHECKS]
     if unknown:
         raise ValueError(f"unknown check(s) {unknown}; known: {list(CHECKS)}")
+    import logging
+    import time
+
     results: dict[str, dict] = {}
+    seconds: dict[str, float] = {}
     for name in dict.fromkeys(names):
+        t0 = time.perf_counter()
         if name == "return_via_audit":
             results[name] = return_via_audit(board, nets, max_distance_mils, limit)
         else:
             results[name] = CHECKS[name](board, limit=limit)
+        seconds[name] = round(time.perf_counter() - t0, 2)
+    # A take's audit of the round LED board took 4.5 min in the server; the
+    # same board read back takes 4.5 s outside it. Logged per check so the
+    # next slow run says where the time went.
+    logging.getLogger(__name__).info("layout audit %s: %s", board.name, seconds)
     return {
         "board": board.name,
         "pass": all(r["pass"] for r in results.values()),
         "summary": {n: {"pass": r["pass"], **r["counts"]} for n, r in results.items()},
         "checks": results,
+        "seconds": seconds,
     }

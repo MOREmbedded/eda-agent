@@ -33,7 +33,7 @@ from .state_machine import MAX_STAGE_ATTEMPTS, RETRY, STAGE_PLAYBOOKS, next_acti
 # The loop a client runs. Kept short and imperative: it is meant to be read
 # once and followed.
 LOOP_PROTOCOL = [
-    "1. Call design_get_discipline once: hard rules + the DesignPlan schema.",
+    "1. Call design_get_discipline once: the hard rules (include_schema=True adds the DesignPlan schema).",
     "2. design_session_start(requirement): opens the durable journal. Keep "
     "the returned session_id. Then design_live_view so the person can watch "
     "the board change, and record each decision with its reason BEFORE "

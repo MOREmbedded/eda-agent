@@ -29,6 +29,7 @@ import numpy as np
 from scipy.ndimage import distance_transform_edt
 
 from .. import geom
+from ..drc import pad_barrels
 from ..model import LayoutBoard, Pad, Region, Track, Via
 from ..rules import RuleSet
 from .grid import (EDGE, KEEPOUT, NETLESS, RouteGrid, _seg_dist, fill_polygon, inner_depth,
@@ -228,6 +229,10 @@ class Router:
         # _no_via_cells).
         bgas = find_bgas(board)
         self.via_pads = {i for b in bgas for i in b.pads} | set(find_exposed_pads(board))
+        # Surface pads the board's own copper already takes to a via or a
+        # plated hole of their net, and where: the plane fan-out and the
+        # pour joining count those pads as on every layer already.
+        self.pad_barrels = pad_barrels(board)
         # What copper laid before the routing joins: pad -> the via it was
         # given, pads joined to another pad of their net, nets joined
         # whole.
@@ -1151,6 +1156,16 @@ class Router:
         d = distance_transform_edt(far)
         return d[win.cy, win.cx] * (self.pitch * self.greed)
 
+    def _barrel_in(self, mask: np.ndarray, pad: int) -> bool:
+        """Whether existing copper takes ``pad`` to a via or plated hole
+        standing inside ``mask`` (a plane's cells)."""
+        spec = self.grid.spec
+        for x, y in self.pad_barrels.get(pad, ()):
+            i, j = spec.cell(x, y)
+            if 0 <= j < mask.shape[0] and 0 <= i < mask.shape[1] and mask[j, i]:
+                return True
+        return False
+
     def _add_path(self, job: NetJob, path) -> None:
         job.paths.append(path)
         chosen = getattr(self, "_chosen_styles", {})
@@ -1168,6 +1183,10 @@ class Router:
         job.failed = 0
         if job.plane_mask is not None:
             for t in job.terminals:
+                if self._barrel_in(job.plane_mask, t.pad):
+                    # Its own stub and via already reach the plane: a plane
+                    # joins every barrel of its net that stands in it.
+                    continue
                 path = self._connect(job, t.cells, set(), set(), [t.center, t.center],
                                      pres, plane_target=True, hard=hard)
                 if path is None:

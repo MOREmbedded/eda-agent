@@ -1359,9 +1359,33 @@ class AltiumSimulator:
             if not model_name:
                 model_path = params.get("model_path", "")
                 model_name = model_path.rsplit("\\", 1)[-1] if "\\" in model_path else model_path.rsplit("/", 1)[-1]
+            bodies = self.__dict__.setdefault("lib_bodies", {})
+            fp = params.get("component_name", "")
+            bodies[fp] = bodies.get(fp, 0) + 1
             return _build_success_response(
                 rid,
                 '{"success":true,"model":"' + _escape_json_string(model_name) + '"}'
+            )
+
+        elif action == "delete_footprint_primitives":
+            # Mirrors Lib_DeleteFootprintPrimitives for 3D bodies, the only
+            # kind the simulator tracks: confirm required, then matched,
+            # removed and leftover counted.
+            fp = params.get("footprint_name", "")
+            if str(params.get("confirm", "")).lower() != "true":
+                return _build_error_response(rid, "CONFIRM_REQUIRED",
+                                             "Pass confirm=true")
+            kind = str(params.get("object_type", "")).lower().replace("_", "")
+            bodies = self.__dict__.setdefault("lib_bodies", {})
+            matched = bodies.get(fp, 0) if kind in ("componentbody", "body") else 0
+            if matched:
+                bodies[fp] = 0
+            return _build_success_response(
+                rid,
+                '{"library":"","footprint":"' + _escape_json_string(fp) + '",'
+                '"matched":' + str(matched) + ',"removed":' + str(matched) + ','
+                '"leftover":0,"hint":"","examined":' + str(matched) + ','
+                '"layers":[],"pads_included":false,"was_current":false}'
             )
 
         elif action == "get_components":

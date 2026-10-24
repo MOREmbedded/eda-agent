@@ -285,6 +285,45 @@ def maintenance_in_progress(workspace_dir: Path) -> bool:
     return age < _MAINTENANCE_FRESH_S
 
 
+#: Set to 1 to fit the board (or sheet) in view after each command that
+#: changes the design, so whoever watches Altium always sees the whole
+#: board. Off by default: it moves the view, which a user zoomed in on one
+#: corner would not want.
+KEEP_IN_VIEW_ENV = "EDA_AGENT_KEEP_BOARD_IN_VIEW"
+_KEEP_IN_VIEW_EVERY_S = 2.0
+_last_fit = [0.0]
+
+#: The verbs of commands that only read, look or report: no fit after them.
+_READ_VERBS = ("get_", "query", "count", "list", "find", "read", "export",
+               "audit", "calc", "check", "probe", "ping", "zoom", "focus",
+               "screenshot", "render", "status", "highlight", "select",
+               "deselect", "explain", "crossref", "compare", "run_drc",
+               "dump", "inspect", "measure", "snapshot", "switch_view",
+               "run_erc", "run_simulation", "simcfg", "set_grid", "refresh",
+               "clear_highlights")
+
+
+def _wants_board_in_view(command: str, now: Optional[float] = None) -> bool:
+    """True when the view should be fitted after ``command``.
+
+    Only with ``EDA_AGENT_KEEP_BOARD_IN_VIEW`` set, only after a board,
+    schematic or object edit (``pcb.`` and ``generic.`` commands that are
+    not reads), and at most once every two seconds.
+    """
+    if os.environ.get(KEEP_IN_VIEW_ENV, "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    domain, _, verb = command.partition(".")
+    if domain not in ("pcb", "generic") or not verb:
+        return False
+    if verb.startswith(_READ_VERBS):
+        return False
+    now = time.monotonic() if now is None else now
+    if now - _last_fit[0] < _KEEP_IN_VIEW_EVERY_S:
+        return False
+    _last_fit[0] = now
+    return True
+
+
 def _short_id() -> str:
     """Filename-safe request id: ``<session tag>-<sequence>-<random>``.
 
@@ -1326,13 +1365,21 @@ class AltiumBridge:
         _trace_log(self.config.workspace_dir,
                    f"CALL cmd={command} tag={_SESSION_TAG}")
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             _executor,
             self._execute_command,
             command,
             params or {},
             timeout,
         )
+        if _wants_board_in_view(command):
+            try:
+                await loop.run_in_executor(
+                    _executor, self._execute_command,
+                    "generic.zoom", {"action": "board"}, 10.0)
+            except Exception:  # a view nicety never fails the call it follows
+                pass
+        return result
 
     def ping(self) -> bool:
         try:

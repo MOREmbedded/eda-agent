@@ -466,6 +466,10 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
                      name="workspace-housekeeping", daemon=True).start()
 
+    # The first 3D model would otherwise wait on a cold CadQuery import.
+    from .design.models3d import warm_cadquery
+    warm_cadquery()
+
     # Record this server and warn (stderr only) about others on the same
     # workspace. Never refuses and never stops anything: several sessions
     # at once are allowed. app_ping and app_get_status repeat the warning.

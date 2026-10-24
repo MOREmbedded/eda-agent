@@ -193,6 +193,38 @@ def _same_plan(a, b) -> bool:
     return bool(a) and key(a) == key(b)
 
 
+def _step_solid_count(path: str) -> Optional[int]:
+    """Solids in a STEP file, or None when it cannot be read."""
+    try:
+        text = Path(path).read_text(encoding="latin-1", errors="ignore")
+    except OSError:
+        return None
+    return (text.count("MANIFOLD_SOLID_BREP(")
+            + text.count("BREP_WITH_VOIDS("))
+
+
+async def _remove_old_bodies(bridge, footprint: str) -> dict:
+    """Take a footprint's 3D bodies off before a new model is linked.
+
+    Linking adds a body; it never replaced one. A follow-up take rebuilt
+    every footprint's model and each kept its old plain box beside the
+    new one, removed afterwards by hand.
+    """
+    if not footprint.strip():
+        return {"skipped": "no footprint name, so the current one's bodies "
+                           "were left as they are"}
+    try:
+        out = await bridge.send_command_async(
+            "library.delete_footprint_primitives",
+            {"footprint_name": footprint, "object_type": "component_body",
+             "confirm": "true"})
+    except Exception as exc:                    # noqa: BLE001
+        return {"error": str(exc)}
+    if isinstance(out, dict):
+        return {"removed": out.get("removed", 0), "leftover": out.get("leftover", 0)}
+    return {"removed": 0}
+
+
 async def _save_library(bridge, library_path) -> tuple[bool, str]:
     """Write ONE library to disk: (saved, reason).
 
@@ -441,7 +473,8 @@ def _pads_payload(pads: list[dict[str, Any]],
         # designator or layer carrying ";", "=" or "~~" reshapes the
         # payload and lands the pad somewhere else.
         desig = _payload_safe(str(p.get("designator", "")).strip())
-        if not desig:
+        # A non-plated mounting hole carries no designator in a land pattern.
+        if not desig and not (p.get("hole_size") and _unplated(p.get("plated"))):
             skipped_invalid += 1
             continue
         fields = [
@@ -463,13 +496,44 @@ def _pads_payload(pads: list[dict[str, Any]],
         for key in _OPTIONAL_PAD_LENGTHS:
             if p.get(key) is not None:
                 fields.append(f"{key}={format_length(p[key])}")
+        turn = _slot_rotation(p, units)
+        if turn is not None:
+            fields.append(f"hole_rotation={format_length(turn)}")
         if p.get("plated") is not None:
-            plated = p["plated"]
-            if isinstance(plated, str):
-                plated = plated.strip().lower() not in ("false", "0", "no")
-            fields.append(f"plated={'true' if plated else 'false'}")
+            fields.append(f"plated={'false' if _unplated(p['plated']) else 'true'}")
         op_strs.append(";".join(fields))
     return "~~".join(op_strs), skipped_invalid
+
+
+def _unplated(plated: Any) -> bool:
+    if plated is None:
+        return False
+    if isinstance(plated, str):
+        return plated.strip().lower() in ("false", "0", "no")
+    return not plated
+
+
+def _slot_rotation(p: dict[str, Any], units: str) -> Optional[float]:
+    """The slot's turn from the pad's X axis, or None for no slot.
+
+    Altium runs a slot along the pad's X. A slot given without
+    ``hole_rotation`` runs along the pad's longer side, so a pad taller
+    than it is wide has its slot turned 90 degrees. A USB-C receptacle's
+    shell pads (1.1 x 1.9 mm with a 1.4 mm slot, 1.1 x 1.6 mm with a
+    1.1 mm one) came out with their slots across the pads.
+    """
+    try:
+        hole = float(p.get("hole_size") or 0)
+        slot = float(p.get("hole_length") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not (hole > 0 and slot > hole):
+        return None
+    if p.get("hole_rotation") is not None:
+        return float(p["hole_rotation"])
+    xs = float(p.get("x_size", length_in(units, 60)))
+    ys = float(p.get("y_size", length_in(units, 60)))
+    return 90.0 if ys > xs else 0.0
 
 
 def _tracks_payload(tracks: list[dict[str, Any]],
@@ -1205,6 +1269,10 @@ async def _footprint_3d_body(bridge: Any, step: Any, spec: Any, model: Any,
         return {"kind": "none", "note": "3D body: none, as asked"}
     why_not_step = ""
     if mode in ("auto", "step"):
+        import logging
+        import time as _time
+        log = logging.getLogger(__name__)
+        t0 = _time.monotonic()
         plan = models3d.plan_model(spec, model)
         if plan is None:
             why_not_step = (f"the {spec.family} family is not modelled yet "
@@ -1215,7 +1283,12 @@ async def _footprint_3d_body(bridge: Any, step: Any, spec: Any, model: Any,
             safe = "".join(ch if ch.isalnum() or ch in "-_." else "_"
                            for ch in fp_name)
             path = get_config().workspace_dir / "models" / f"{safe}.step"
+            t1 = _time.monotonic()
             wrote = models3d.write_step(plan, path, name=fp_name)
+            # The first model in a server once took 146 s here and none
+            # outside it could be made slow; the log says which step.
+            log.info("3D model %s: plan %.1f s, write %.1f s (%s)", fp_name,
+                     t1 - t0, _time.monotonic() - t1, wrote.get("writer") or "none")
             if wrote["ok"]:
                 linked = await step("model_3d", bridge.send_command_async(
                     "library.link_3d_model",
@@ -1252,7 +1325,8 @@ async def _footprint_3d_body(bridge: Any, step: Any, spec: Any, model: Any,
         return {"kind": "none", "note": "3D body: none, the extruded fallback "
                 f"was not added{reason}"}
     return {"kind": "extruded", "note": "3D body: an extruded box of the package "
-            f"outline and height, the fallback{reason}"}
+            f"outline and height, the fallback{reason}; lib_create_3d_model "
+            "replaces it with a STEP model built from the drawing"}
 
 
 def register_library_tools(mcp):
@@ -1577,9 +1651,14 @@ def register_library_tools(mcp):
         Args:
             pins: List of pin dicts, each with:
                 - designator, name (required)
-                - x, y: pin endpoint, mils
+                - x, y: where the pin meets the BODY (Altium's
+                  Location), mils. The wire connects at the other end,
+                  ``length`` away in the rotation's direction.
                 - length: mils (default 200)
-                - rotation: 0/90/180/270 (default 0)
+                - rotation: the way the pin points out of the body:
+                  0 right, 90 up, 180 left, 270 down (default 0). A
+                  left-side pin at the body edge x=0 is rotation 180 and
+                  connects at x=-length; a top pin at y=0 is 90.
                 - electrical_type: input, output, bidirectional, passive
                   (default), open_collector, open_emitter, power, hiz, io
                 - hidden: hide the pin (default False)
@@ -2363,6 +2442,86 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
+    async def lib_create_3d_model(
+        footprint_name: str,
+        solids: list[dict[str, Any]],
+        source: str,
+        output_dir: str = "",
+        replace_existing: bool = True,
+    ) -> dict[str, Any]:
+        """Build a STEP model from the datasheet drawing and link it to a
+        footprint in the ACTIVE .PcbLib.
+
+        The footprint's existing 3D bodies are removed first
+        (``replace_existing``, reported as ``replaced_bodies``), so a
+        rebuilt model does not sit beside the old box.
+
+        For a part no package family covers (a connector, a LED with a
+        lens, a header, a switch): read each feature off the mechanical
+        drawing and give it as a primitive. lib_create_footprint_from_package
+        already models the standard families; an extruded body
+        (lib_add_footprint_bodies) is only the fallback.
+
+        Args:
+            footprint_name: the footprint to link the model to.
+            solids: primitives in mm, origin at the footprint origin, Z up
+                from the board (a top-side part sits on Z=0). Each has
+                ``kind`` and ``role`` (colour: body, metal, ceramic, ball,
+                white, lens, gold, pin1) and:
+                box ``x0 y0 z0 x1 y1 z1``; cylinder ``r`` with ``cx cy
+                z0 z1`` (vertical) or ``axis: "x"``, ``cy cz x0 x1``;
+                sphere ``cx cy cz r``; prism ``profile`` [[u, z], ...]
+                in the XZ plane swept from ``y0`` to ``y1`` (``axis``
+                "y"), or in the YZ plane swept from ``x0`` to ``x1``
+                (``axis`` "x").
+            source: the drawing the dimensions come from (document,
+                revision, page or figure). Required: a model is not built
+                from guesses.
+            output_dir: folder for the .step; empty puts it in a ``3D``
+                folder beside the active library.
+            replace_existing: remove the footprint's 3D bodies before
+                linking (default True); False adds this one beside them.
+
+        Returns:
+            ``ok``, ``path``, ``writer``, ``height_mm``, ``linked`` (the
+            link reply) and ``replaced_bodies``, or ``ok: false`` with
+            ``problems`` or ``reason``.
+        """
+        from ..design import models3d
+
+        plan, problems = models3d.plan_from_solids(solids, source)
+        if plan is None:
+            return {"ok": False, "problems": problems}
+        bridge = get_bridge()
+        folder = Path(output_dir) if output_dir else None
+        if folder is None:
+            active = await bridge.send_command_async(
+                "application.get_active_document", {}) or {}
+            doc = str(active.get("file_path") or "") if isinstance(active, dict) else ""
+            folder = (Path(doc).parent / "3D" if doc.lower().endswith(".pcblib")
+                      else get_config().workspace_dir / "models")
+        safe = "".join(ch if ch.isalnum() or ch in "-_." else "_"
+                       for ch in footprint_name) or "model"
+        wrote = await asyncio.to_thread(
+            models3d.write_step, plan, folder / f"{safe}.step",
+            name=footprint_name or safe)
+        if not wrote["ok"]:
+            return {"ok": False, "reason": wrote.get("reason"),
+                    "tried": wrote.get("tried")}
+        replaced = (await _remove_old_bodies(bridge, footprint_name)
+                    if replace_existing else None)
+        linked = await bridge.send_command_async(
+            "library.link_3d_model",
+            {"component_name": footprint_name, "model_path": wrote["path"],
+             "offset_x": 0, "offset_y": 0, "offset_z": 0,
+             "rotation_x": 0, "rotation_y": 0, "rotation_z": 0})
+        ok = isinstance(linked, dict) and linked.get("success") is not False
+        return {"ok": ok, "path": wrote["path"], "writer": wrote["writer"],
+                "height_mm": plan.height, "solids": len(plan.solids),
+                "source": source, "linked": linked,
+                "replaced_bodies": replaced}
+
+    @mcp.tool()
     async def lib_add_footprint_bodies(
         bodies: list[dict[str, Any]],
         footprint_name: str = "",
@@ -2588,7 +2747,10 @@ def register_library_tools(mcp):
                   corner_radius_length as a length
                 - rotation: degrees
                 - layer: SMD side, "TopLayer" (default) or "BottomLayer"
-                - optional: hole_length (slot), plated (false = NPTH),
+                - optional: hole_length (slot), hole_rotation (the
+                  slot's turn from the pad's X axis; left out, the slot
+                  runs along the pad's longer side),
+                  plated (false = NPTH, which may have no designator),
                   paste_expansion, mask_expansion (minus the larger side
                   closes the paste); refused writes show in
                   ``property_failures``
@@ -3424,9 +3586,14 @@ def register_library_tools(mcp):
         rotation_x: float = 0,
         rotation_y: float = 0,
         rotation_z: float = 0,
+        replace_existing: bool = True,
     ) -> dict[str, Any]:
         """Link a 3D STEP model to a footprint in the ACTIVE .PcbLib, as a
         component body (drives the 3D view and height DRC).
+
+        The footprint's existing 3D bodies are removed first
+        (``replace_existing``, reported as ``replaced_bodies``); a link
+        used to add the new body beside the old one.
 
         Args:
             component_name: Footprint name (empty: the current footprint).
@@ -3439,6 +3606,9 @@ def register_library_tools(mcp):
             rotation_y: NOT APPLIED.
             rotation_z: NOT APPLIED (no scriptable rotation on the body;
                 assigning one halted the script).
+            replace_existing: remove the footprint's 3D bodies before
+                linking (default True); False adds this one beside them,
+                for a part built from several models.
 
         Returns:
             ``success``, ``footprint``, ``model``,
@@ -3449,6 +3619,8 @@ def register_library_tools(mcp):
             its default.
         """
         bridge = get_bridge()
+        replaced = (await _remove_old_bodies(bridge, component_name)
+                    if replace_existing else None)
         result = await bridge.send_command_async(
             "library.link_3d_model",
             {
@@ -3462,6 +3634,8 @@ def register_library_tools(mcp):
                 "rotation_z": rotation_z,
             },
         )
+        if isinstance(result, dict) and replaced is not None:
+            result["replaced_bodies"] = replaced
         return result
 
     @mcp.tool()
@@ -4587,6 +4761,7 @@ def register_library_tools(mcp):
         component_name: str = "",
         output_path: str = "",
         inline_limit: int = 150,
+        library_path: str = "",
     ) -> dict[str, Any]:
         """Get all pins of a library component.
 
@@ -4602,6 +4777,9 @@ def register_library_tools(mcp):
                 return a summary instead.
             inline_limit: above this many pins the array goes to a file
                 (``pins_path``); 0 always returns inline.
+            library_path: the .SchLib to read; it is brought to the front
+                (opened if need be) first, so a sheet in front does not
+                stop the read. Empty reads the library in front.
 
         Returns:
             "count", "component", and "pins", each with designator,
@@ -4611,6 +4789,10 @@ def register_library_tools(mcp):
             "summary" instead of "pins". Plus `_datasheet_guidance`.
         """
         bridge = get_bridge()
+        if library_path:
+            problem = await _open_document(bridge, library_path)
+            if problem:
+                return {"success": False, "error": problem}
         params: dict[str, Any] = {}
         if str(component_name).strip():
             params["component_name"] = component_name
@@ -6144,7 +6326,9 @@ def register_library_tools(mcp):
             body_layers (the layer of each body), body_models [{layer,
             identifier, has_model, model_file (the file the model was
             embedded from), model_type (Altium's T3DModelType; 1 for a
-            STEP model), rotation,
+            STEP model), step_solids (solids in that file when it is
+            still there, else null: a STEP model is ONE body whatever its
+            detail, so read this, not ``bodies``), rotation,
             overall_height_mm, standoff_mm}], tracks
             [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
             layer_id, xc, yc, r, start, end, width}], regions and fills
@@ -6159,8 +6343,18 @@ def register_library_tools(mcp):
         if kinds:
             params["kinds"] = kinds
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        result = await bridge.send_command_async(
             "library.get_footprint_primitives", params)
+        # ONE BODY IS NOT ONE BLOCK. A STEP model is a single body however
+        # detailed it is; a take read "bodies": 1 on every footprint as
+        # "single plain blocks" and rebuilt eleven models that already had
+        # their terminations and leads. The file says how many solids.
+        for model in (result.get("body_models") or []
+                      if isinstance(result, dict) else []):
+            if isinstance(model, dict) and model.get("model_file"):
+                model["step_solids"] = await asyncio.to_thread(
+                    _step_solid_count, str(model["model_file"]))
+        return result
 
     @mcp.tool()
     async def lib_extract_embedded_models(

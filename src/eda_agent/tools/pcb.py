@@ -428,6 +428,175 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
             "suggested_scope": fixed, **extra}
 
 
+#: Altium's internal units per mil.
+_COORDS_PER_MIL = 10000
+
+
+def _outline_vertices(points: list) -> tuple[str, str]:
+    """Encode outline vertices for pcb.set_board_shape: ``(text, problem)``.
+
+    A vertex is ``[x, y]`` or a dict with ``x``, ``y`` and optionally
+    ``arc_center`` and ``clockwise``; an arc runs from its vertex to the
+    next one, so both must lie on its circle. Coordinates go in Altium's
+    internal units so an arc's ends meet the neighbouring vertices
+    exactly.
+    """
+    import math
+
+    verts: list[tuple[float, float, Optional[tuple[float, float]], bool]] = []
+    for i, p in enumerate(points):
+        try:
+            if isinstance(p, dict):
+                c = p.get("arc_center")
+                centre = (float(c[0]), float(c[1])) if c is not None else None
+                verts.append((float(p["x"]), float(p["y"]), centre,
+                              bool(p.get("clockwise", False))))
+            else:
+                verts.append((float(p[0]), float(p[1]), None, False))
+        except (KeyError, IndexError, TypeError, ValueError):
+            return "", f"vertex {i} is not [x, y] or {{x, y, arc_center}}"
+    if len(verts) > 1 and verts[0][:2] == verts[-1][:2] and verts[-1][2] is None:
+        verts = verts[:-1]
+    if len(verts) < 3:
+        return "", "a polygon needs three points or more"
+
+    def coord(v: float) -> int:
+        return int(round(v * _COORDS_PER_MIL))
+
+    out = []
+    for i, (x, y, centre, cw) in enumerate(verts):
+        if centre is None:
+            out.append(f"{coord(x)},{coord(y)}")
+            continue
+        nx, ny = verts[(i + 1) % len(verts)][:2]
+        cx, cy = centre
+        r = math.hypot(x - cx, y - cy)
+        r_next = math.hypot(nx - cx, ny - cy)
+        if r <= 0 or abs(r - r_next) > 1.0:
+            return "", (f"vertex {i}: the arc's ends are {r:.1f} and "
+                        f"{r_next:.1f} mil from its centre; both must lie "
+                        f"on one circle")
+        a_start = math.degrees(math.atan2(y - cy, x - cx)) % 360
+        a_end = math.degrees(math.atan2(ny - cy, nx - cx)) % 360
+        # Altium draws an arc counter-clockwise from Angle1 to Angle2, both
+        # in 0..360, and an Angle2 below Angle1 wraps through 0; an end at
+        # 0 is written 360, as Altium writes a quarter ending there.
+        a1, a2 = (a_end, a_start) if cw else (a_start, a_end)
+        if abs(a2) < 1e-9:
+            a2 = 360.0
+        out.append(f"{coord(x)},{coord(y)},{coord(cx)},{coord(cy)},"
+                   f"{coord(r)},{a1:.6f},{a2:.6f}")
+    return ";".join(out), ""
+
+
+def _outline_ring(outline: Any, step_deg: float = 5.0) -> list[tuple[float, float]]:
+    """The board outline from pcb.get_board_outline as one polygon, in mils.
+
+    An arc vertex runs about its centre from its own point to the next
+    vertex: counter-clockwise when its point sits at angle1 (Altium draws
+    arcs counter-clockwise from angle1 to angle2), clockwise when it sits
+    at angle2. Arcs are cut into chords of at most ``step_deg``. Empty when
+    the reply carries no usable outline.
+    """
+    import math
+
+    if not isinstance(outline, dict):
+        return []
+    verts = outline.get("vertices") or []
+    if len(verts) < 3:
+        return []
+    ring: list[tuple[float, float]] = []
+    for i, v in enumerate(verts):
+        try:
+            x, y = float(v["x"]), float(v["y"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        ring.append((x, y))
+        if v.get("kind") != "arc":
+            continue
+        nxt = verts[(i + 1) % len(verts)]
+        cx, cy = float(v["cx"]), float(v["cy"])
+        r = math.hypot(x - cx, y - cy)
+        a_here = math.degrees(math.atan2(y - cy, x - cx)) % 360
+        a1, a2 = float(v["angle1"]) % 360, float(v["angle2"]) % 360
+
+        def near(a: float, b: float) -> bool:
+            return abs((a - b + 180) % 360 - 180) < 1.0
+
+        a_next = math.degrees(math.atan2(float(nxt["y"]) - cy,
+                                         float(nxt["x"]) - cx)) % 360
+        sweep = (a2 - a1) % 360 or 360.0
+        ccw = near(a_here, a1) or not near(a_here, a2)
+        if not ccw:
+            sweep = -sweep
+        if not (near(a_here + sweep, a_next)):
+            # The vertices disagree with the angles: go the short way round.
+            sweep = ((a_next - a_here + 180) % 360) - 180
+        n = max(1, int(abs(sweep) // step_deg))
+        for k in range(1, n):
+            a = math.radians(a_here + sweep * k / n)
+            ring.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return ring
+
+
+def _grid_points(x1: float, y1: float, x2: float, y2: float,
+                 spacing: float) -> list[tuple[int, int]]:
+    """A ``spacing`` grid over the rectangle, corners in any order."""
+    lo_x, hi_x = sorted((x1, x2))
+    lo_y, hi_y = sorted((y1, y2))
+    spacing = spacing if spacing > 0 else 50
+    pts = []
+    y = lo_y
+    while y <= hi_y:
+        x = lo_x
+        while x <= hi_x:
+            pts.append((int(round(x)), int(round(y))))
+            x += spacing
+        y += spacing
+    return pts
+
+
+def _inside_ring(p: tuple[float, float], ring: list[tuple[float, float]],
+                 margin: float) -> bool:
+    """True when ``p`` lies inside the ring and ``margin`` or more from its edge."""
+    import math
+
+    x, y = p
+    inside = False
+    n = len(ring)
+    nearest = math.inf
+    for i in range(n):
+        ax, ay = ring[i]
+        bx, by = ring[(i + 1) % n]
+        if (ay > y) != (by > y):
+            cross = ax + (y - ay) * (bx - ax) / (by - ay)
+            if x < cross:
+                inside = not inside
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length2))
+        nearest = min(nearest, math.hypot(x - ax - t * dx, y - ay - t * dy))
+    return inside and nearest >= margin
+
+
+def _layer_names(layer: str, layers: Any) -> list[str]:
+    """The layer names asked for: ``layers`` (a list, or a JSON list sent
+    as text, as a client sent it), else the single ``layer``."""
+    import json
+
+    if isinstance(layers, str):
+        text = layers.strip()
+        try:
+            layers = json.loads(text) if text.startswith("[") else [
+                p for p in (q.strip() for q in text.split(",")) if p]
+        except ValueError:
+            layers = [text]
+    names = [str(n).strip() for n in (layers or []) if str(n).strip()]
+    if not names and layer:
+        names = [layer]
+    return names
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -1008,6 +1177,76 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_place_ring(
+        designators: list[str],
+        center_x: float,
+        center_y: float,
+        radius: float,
+        start_angle: float = 90.0,
+        clockwise: bool = True,
+        span: float = 360.0,
+        rotation: Optional[float] = None,
+        rotation_offset: float = 0.0,
+        side: str = "",
+    ) -> dict[str, Any]:
+        """Place parts evenly round a circle (or an arc of one), in order.
+
+        For rings of LEDs, buttons or mounting features: the first part at
+        ``start_angle`` (degrees, 0 = +X, 90 = +Y), the rest every
+        ``span / n`` degrees (``span / (n - 1)`` for an arc short of a full
+        turn, so both ends are used), clockwise by default. Each part
+        faces the centre the same way (its rotation follows its angle plus
+        ``rotation_offset``), unless ``rotation`` fixes one rotation for
+        all. Placed with the exact batch placement of pcb_move_components
+        (side, then turn, then origin) and read back.
+
+        Args:
+            designators: the parts, in ring order.
+            center_x, center_y: the circle's centre, mils.
+            radius: mils.
+            start_angle: the first part's angle, degrees.
+            clockwise: direction round the ring.
+            span: degrees covered (360 for a full ring).
+            rotation: one rotation for every part, instead of following
+                the ring.
+            rotation_offset: added to each part's angle when following
+                the ring (0 turns a part's +X outward).
+            side: "top" or "bottom" for every part; empty keeps each.
+
+        Returns:
+            The batch placement reply, plus ``positions`` [{designator, x,
+            y, rotation}] as sent.
+        """
+        import math
+
+        refs = [str(d).strip() for d in designators if str(d).strip()]
+        if not refs:
+            return {"error": "no designators", "applied": 0}
+        n = len(refs)
+        full = abs(span) >= 360.0 - 1e-9
+        step = span / n if full or n == 1 else span / (n - 1)
+        sign = -1.0 if clockwise else 1.0
+        positions = []
+        for k, ref in enumerate(refs):
+            a = start_angle + sign * step * k
+            x = center_x + radius * math.cos(math.radians(a))
+            y = center_y + radius * math.sin(math.radians(a))
+            rot = rotation if rotation is not None else (a + rotation_offset)
+            positions.append({"designator": ref, "x": round(x, 3), "y": round(y, 3),
+                              "rotation": round(rot % 360.0, 3)})
+        ops = []
+        layer = {"top": "TopLayer", "bottom": "BottomLayer"}.get(side.strip().lower(), "")
+        for p in positions:
+            ops.append(f"{p['designator']},{round(p['x'])},{round(p['y'])},"
+                       f"{p['rotation']:g},{layer}")
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.import_placement", {"placements": "|".join(ops)})
+        if isinstance(result, dict):
+            result["positions"] = positions
+        return result
+
+    @mcp.tool()
     async def pcb_import_placement(
         placements: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -1024,6 +1263,16 @@ def register_pcb_tools(mcp):
         exactly, whatever the flip and the turn did to it (both move an
         asymmetric part). A part given only a side or a rotation keeps its
         origin. Every part is read back.
+
+        A FLIP MIRRORS THE PART LEFT-RIGHT, as seen from the top, about its
+        origin, and Altium changes the rotation it reports. Measured on a
+        USB-C at 180 on the bottom: flipped to the top it read 0, every
+        pad's x mirrored about the origin, every y unchanged. So a part
+        whose opening faces +Y in its library faces +Y on either side at
+        the same reported rotation, while one facing +X faces -X on the
+        bottom. Work out the facing from the final reported rotation and
+        the mirror, and read the pads back (pcb_get_component_pads) for a
+        connector: two takes put the USB-C facing into the board.
 
         Args:
             placements: list of dicts, each supporting:
@@ -2726,56 +2975,95 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_stitching_vias(
         net: str,
-        x1_mils: int,
-        y1_mils: int,
-        x2_mils: int,
-        y2_mils: int,
+        x1_mils: int = 0,
+        y1_mils: int = 0,
+        x2_mils: int = 0,
+        y2_mils: int = 0,
         spacing_mils: int = 50,
         via_size_mils: int = 30,
         via_hole_mils: int = 14,
         clearance_mils: int = 10,
         dry_run: bool = True,
+        within_board: bool = True,
+        edge_clearance_mils: int = 30,
+        avoid_parts: bool = True,
     ) -> dict[str, Any]:
-        """Place a grid of stitching vias on a named net within a rectangle.
+        """Place a grid of stitching vias on a named net.
 
-        A grid point is skipped when a pad, via, track or arc of another
-        net lies within ``via_size_mils/2 + clearance_mils``; the rest get
-        a through via on the net. Dry run by default: check ``placed``
-        and ``skipped``, then call again with ``dry_run=False``.
+        The grid covers the rectangle, or the whole board when no
+        rectangle is given. With ``within_board`` (default) only grid
+        points inside the board outline, at least ``edge_clearance_mils``
+        from its edge, are tried, so a round or flanged board gets vias
+        only on the board. A point is skipped when any pad or via (any
+        net: no via in a pad), a part's 3D body (``avoid_parts``), or a
+        track, arc or keep-out of another net lies within
+        ``via_size_mils/2 + clearance_mils``; the rest get a through via
+        on the net. Dry run by default: check ``placed`` and
+        ``skipped``, then call again with ``dry_run=False``.
 
         Args:
             net: Target net (must already exist on the board).
-            x1_mils, y1_mils, x2_mils, y2_mils: Inclusive rectangle
-                for the grid.
+            x1_mils, y1_mils, x2_mils, y2_mils: Inclusive rectangle for
+                the grid; all zero (default) uses the board's extent.
             spacing_mils: Grid spacing (default 50).
             via_size_mils: Via pad diameter (default 30).
             via_hole_mils: Via drill diameter (default 14).
-            clearance_mils: Min gap to any non-same-net existing
-                primitive (default 10).
+            clearance_mils: Min gap to a blocking primitive (default 10).
             dry_run: When True (default), only count would-be
                 placements without mutating the board.
+            within_board: Keep to the board outline (default True).
+            edge_clearance_mils: Minimum distance from a via centre to
+                the board edge when ``within_board`` (default 30).
+            avoid_parts: Keep out from under every part's 3D body
+                (default True): a board-wide stitch put vias under the
+                USB-C and debug connectors. False stitches under bodies
+                too, as under a QFN's thermal area.
 
         Returns:
             Dict with ``{net, dry_run, placed, skipped, spacing_mils,
-            clearance_mils}``.
+            clearance_mils}``, plus ``outside_board`` (grid points left out).
         """
         bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.place_stitching_vias",
-            {
-                "net": net,
-                "x1_mils": str(round(x1_mils)),
-                "y1_mils": str(round(y1_mils)),
-                "x2_mils": str(round(x2_mils)),
-                "y2_mils": str(round(y2_mils)),
-                "spacing_mils": str(round(spacing_mils)),
-                "via_size_mils": str(round(via_size_mils)),
-                "via_hole_mils": str(round(via_hole_mils)),
-                "clearance_mils": str(round(clearance_mils)),
-                "dry_run": "true" if dry_run else "false",
-            },
-            timeout=60.0,
-        )
+        params: dict[str, Any] = {
+            "net": net,
+            "x1_mils": str(round(x1_mils)),
+            "y1_mils": str(round(y1_mils)),
+            "x2_mils": str(round(x2_mils)),
+            "y2_mils": str(round(y2_mils)),
+            "spacing_mils": str(round(spacing_mils)),
+            "via_size_mils": str(round(via_size_mils)),
+            "via_hole_mils": str(round(via_hole_mils)),
+            "clearance_mils": str(round(clearance_mils)),
+            "dry_run": "true" if dry_run else "false",
+            "avoid_parts": "1" if avoid_parts else "0",
+        }
+        no_rect = not any((x1_mils, y1_mils, x2_mils, y2_mils))
+        outside = 0
+        if within_board or no_rect:
+            outline = await bridge.send_command_async("pcb.get_board_outline", {})
+            ring = _outline_ring(outline)
+            if not ring:
+                return {"success": False,
+                        "error": "the board outline could not be read",
+                        "outline": outline}
+            if no_rect:
+                xs = [p[0] for p in ring]
+                ys = [p[1] for p in ring]
+                x1_mils, y1_mils, x2_mils, y2_mils = min(xs), min(ys), max(xs), max(ys)
+            grid = _grid_points(x1_mils, y1_mils, x2_mils, y2_mils, spacing_mils)
+            inside = ([p for p in grid if _inside_ring(p, ring, edge_clearance_mils)]
+                      if within_board else grid)
+            outside = len(grid) - len(inside)
+            if not inside:
+                return {"net": net, "dry_run": dry_run, "placed": 0, "skipped": 0,
+                        "outside_board": outside,
+                        "note": "no grid point lies inside the board"}
+            params["points"] = ";".join(f"{x},{y}" for x, y in inside)
+        result = await bridge.send_command_async(
+            "pcb.place_stitching_vias", params, timeout=120.0)
+        if isinstance(result, dict):
+            result["outside_board"] = outside
+        return result
 
     @mcp.tool()
     async def pcb_calc_impedance(
@@ -3706,6 +3994,13 @@ def register_pcb_tools(mcp):
         otherwise it is left as it was and the reason is given. Routed
         copper is not touched, so check connectivity where pads moved.
 
+        The part's PARAMETERS (LCSC number, manufacturer and the rest a
+        schematic sync put on it) are not carried over: the scripting
+        API exposes no way to read them on a board part. A follow-up take
+        refreshed all 143 parts and the next change order offered to put
+        every part's parameters back. That sync restores them, so run
+        proj_sync_pcb after a refresh, before writing a BOM from the board.
+
         Args:
             designators: The parts to refresh, e.g. ``["C12", "J3"]``.
             library_path: The .PcbLib to load from. Empty uses each
@@ -4353,12 +4648,15 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_layer_visibility(
-        layer: str,
+        layer: str = "",
         visible: bool = True,
+        layers: Optional[Any] = None,
     ) -> dict[str, Any]:
-        """Show or hide a specific PCB layer.
+        """Show or hide a PCB layer, or several.
 
         Args:
+            layers: Several layer names to set at once (a list, or a JSON
+                list as text), instead of ``layer``.
             layer: Layer name string, e.g.:
                 Copper: "TopLayer", "BottomLayer", "MidLayer1"-"MidLayer30"
                 Overlay: "TopOverlay", "BottomOverlay"
@@ -4372,11 +4670,22 @@ def register_pcb_tools(mcp):
             Dictionary with layer name and visibility state
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.set_layer_visibility",
-            {"layer": layer, "visible": "true" if visible else "false"},
-        )
-        return result
+        names = _layer_names(layer, layers)
+        if not names:
+            return {"success": False, "error": "give a layer, or layers"}
+        if len(names) == 1:
+            return await bridge.send_command_async(
+                "pcb.set_layer_visibility",
+                {"layer": names[0], "visible": "true" if visible else "false"})
+        results = []
+        for name in names:
+            results.append(await bridge.send_command_async(
+                "pcb.set_layer_visibility",
+                {"layer": name, "visible": "true" if visible else "false"}))
+        failed = [n for n, r in zip(names, results)
+                  if isinstance(r, dict) and r.get("success") is False]
+        return {"success": not failed, "visible": visible, "layers": names,
+                "failed": failed, "results": results}
 
     @mcp.tool()
     async def pcb_repour_polygons(
@@ -4490,28 +4799,63 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_board_shape(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: int = 0,
+        y1: int = 0,
+        x2: int = 0,
+        y2: int = 0,
+        shape: str = "rectangle",
+        center_x: int = 0,
+        center_y: int = 0,
+        radius: int = 0,
+        points: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
-        """Define the physical PCB board outline as a rectangle.
+        """Define the physical PCB board outline: a rectangle, a circle or
+        a polygon.
 
         Overwrites the current board shape. Use this right after creating a
         new PCB document to establish the board size before placing parts.
-        Coordinates are in mils; (x1,y1) and (x2,y2) are opposite corners in
-        any order.
+        Coordinates are in mils.
 
         Args:
-            x1: First corner X in mils
-            y1: First corner Y in mils
-            x2: Opposite corner X in mils
-            y2: Opposite corner Y in mils
+            x1: rectangle: first corner X.
+            y1: rectangle: first corner Y.
+            x2: rectangle: opposite corner X (corners in any order).
+            y2: rectangle: opposite corner Y.
+            shape: "rectangle" (default), "circle" or "polygon".
+            center_x: circle: centre X.
+            center_y: circle: centre Y.
+            radius: circle: radius.
+            points: polygon: the vertices in order, three or more, not
+                repeating the first at the end. Each is ``[x, y]`` (a
+                straight edge to the next vertex) or ``{"x", "y",
+                "arc_center": [cx, cy], "clockwise": false}`` (an arc
+                about that centre to the next vertex, counter-clockwise
+                unless ``clockwise``). A round board with mounting tabs
+                is arcs of the board circle between straight tab sides
+                and an arc around each hole.
 
         Returns:
-            Dictionary confirming the new outline rectangle
+            ``success`` and the shape as written.
         """
         bridge = get_bridge()
+        kind = str(shape or "rectangle").strip().lower()
+        if kind == "circle":
+            if radius <= 0:
+                return {"success": False, "error": "a circle needs a positive radius"}
+            return await bridge.send_command_async(
+                "pcb.set_board_shape",
+                {"shape": "circle", "cx": str(int(center_x)),
+                 "cy": str(int(center_y)), "radius": str(int(radius))})
+        if kind == "polygon":
+            encoded, problem = _outline_vertices(points or [])
+            if problem:
+                return {"success": False, "error": problem}
+            return await bridge.send_command_async(
+                "pcb.set_board_shape",
+                {"shape": "polygon", "points": encoded})
+        if kind != "rectangle":
+            return {"success": False,
+                    "error": f"shape {shape!r} is not rectangle, circle or polygon"}
         result = await bridge.send_command_async(
             "pcb.set_board_shape",
             {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
@@ -4527,6 +4871,7 @@ def register_pcb_tools(mcp):
         net: str = "",
         layer: str = "TopLayer",
         pour_over: bool = True,
+        remove_dead: bool = True,
     ) -> dict[str, Any]:
         """Drop a copper polygon pour on a rectangular area.
 
@@ -4534,6 +4879,12 @@ def register_pcb_tools(mcp):
         corners, the layer, and the net name (typically "GND"). Set
         pour_over=False to force the pour around same-net tracks/pads
         instead of covering them.
+
+        On a board that is not a rectangle (round, flanged), draw the
+        outline as a keep-out first (pcb_keepout_board_outline) and make
+        the rectangle larger than the board: the pour stops at the
+        keep-out, and copper left outside it, joined to nothing, is
+        removed as dead copper.
 
         Args:
             x1: First corner X in mils
@@ -4543,6 +4894,8 @@ def register_pcb_tools(mcp):
             net: Net name to assign (empty = no-net fill, unusual)
             layer: Copper layer (default "TopLayer")
             pour_over: Pour over same-net objects (default True)
+            remove_dead: Remove copper islands joined to nothing
+                (default True).
 
         Returns:
             Dictionary confirming the polygon placement
@@ -4558,8 +4911,81 @@ def register_pcb_tools(mcp):
                 "net": net,
                 "layer": layer,
                 "pour_over": "true" if pour_over else "false",
+                "remove_dead": "true" if remove_dead else "false",
             },
         )
+        return result
+
+    @mcp.tool()
+    async def pcb_keepout_board_outline(width_mils: int = 20) -> dict[str, Any]:
+        """Draw the board outline on the Keep-Out layer.
+
+        Every outline edge, arcs included, becomes a keep-out track or arc
+        of ``width_mils`` centred on the edge. Copper on every layer (a
+        pour, a route) then stays half that width plus the clearance rule
+        from the board edge, and a pour larger than the board stops there.
+        Edges already drawn on the Keep-Out layer are left alone, so a
+        second call adds nothing.
+
+        Args:
+            width_mils: Keep-out width (default 20, so copper keeps 10 mil
+                plus clearance from the edge).
+
+        Returns:
+            ``edges``, ``added``, ``already_there`` and ``width_mils``.
+        """
+        if width_mils <= 0:
+            return {"success": False, "error": "width_mils must be positive"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.keepout_board_outline", {"width": str(int(width_mils))})
+
+    @mcp.tool()
+    async def pcb_place_polygon_board(
+        net: str,
+        layer: str = "TopLayer",
+        edge_clearance_mils: int = 10,
+        pour_over: bool = True,
+        remove_dead: bool = True,
+    ) -> dict[str, Any]:
+        """Pour copper over the whole board shape, following its outline.
+
+        The pour takes the board outline's own vertices, arcs included, so
+        it fits a round or flanged board exactly. The outline is drawn on
+        the Keep-Out layer first (pcb_keepout_board_outline, twice
+        ``edge_clearance_mils`` wide), which keeps the copper that far
+        plus the clearance rule from the edge. Pour every copper layer
+        that wants it, then stitch them with pcb_place_stitching_vias.
+
+        Args:
+            net: Net of the pour, typically "GND". Must exist on the board.
+            layer: Copper layer (default "TopLayer").
+            edge_clearance_mils: Copper-free band inside the board edge
+                (default 10; 0 draws no keep-out).
+            pour_over: Pour over same-net objects (default True).
+            remove_dead: Remove copper islands joined to nothing
+                (default True).
+
+        Returns:
+            The pour (``vertices``, ``layer``, ``net``, ``remove_dead``)
+            and ``keepout`` (what the keep-out outline added).
+        """
+        bridge = get_bridge()
+        keepout: Any = None
+        if edge_clearance_mils > 0:
+            keepout = await bridge.send_command_async(
+                "pcb.keepout_board_outline",
+                {"width": str(int(2 * edge_clearance_mils))})
+            if isinstance(keepout, dict) and keepout.get("success") is False:
+                return {"success": False, "error": "the keep-out outline failed",
+                        "keepout": keepout}
+        result = await bridge.send_command_async(
+            "pcb.place_polygon_board",
+            {"net": net, "layer": layer,
+             "pour_over": "true" if pour_over else "false",
+             "remove_dead": "true" if remove_dead else "false"})
+        if isinstance(result, dict):
+            result["keepout"] = keepout
         return result
 
     @mcp.tool()
@@ -4756,6 +5182,7 @@ def register_pcb_tools(mcp):
         end_angle: float = 360,
         width: int = 10,
         layer: str = "TopLayer",
+        keepout: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Place an arc on the active PCB.
 
@@ -4770,9 +5197,13 @@ def register_pcb_tools(mcp):
             end_angle: End angle in degrees (default 360 = full circle)
             width: Arc line width in mils (default 10)
             layer: PCB layer name (default "TopLayer")
+            keepout: Mark the arc a keep-out, which routing and pours
+                keep clear of. Omitted: on for "KeepOutLayer", off
+                elsewhere; True on a copper layer keeps that layer
+                clear only.
 
         Returns:
-            Dictionary with placed arc geometry and layer
+            Dictionary with placed arc geometry, layer and ``keepout``
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -4784,6 +5215,8 @@ def register_pcb_tools(mcp):
             "width": str(width),
             "layer": layer,
         }
+        if keepout is not None:
+            params["keepout"] = "1" if keepout else "0"
         result = await bridge.send_command_async("pcb.place_arc", params)
         return result
 
@@ -5040,6 +5473,12 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Flip a component to the other side of the board (top to bottom
         or bottom to top).
+
+        The part is mirrored left-right about its origin, as seen from the
+        top, and Altium changes the rotation it reports (a USB-C at 180 on
+        the bottom read 0 once flipped to the top). To end at an exact
+        place and rotation, use pcb_move_components with ``side``, which
+        sets the rotation after the flip.
 
         Args:
             designator: Component reference designator (e.g., "U1", "R5")
@@ -5522,22 +5961,24 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_unrouted_nets(reanalyze: bool = False) -> dict[str, Any]:
+    async def pcb_get_unrouted_nets(reanalyze: bool = True) -> dict[str, Any]:
         """Get list of nets with unrouted connections (ratsnest lines).
 
         Identifies nets that still have ratsnest lines, meaning they are
         not fully routed. Useful for checking routing completion status.
 
         The count is of the connection lines stored on the board, and
-        those can be out of date: boards whose nets were all joined have
-        been reported with open connections. ``reanalyze`` has Altium
-        re-derive the lines of every net that has one first, as it does
-        after an edit. ``obj_query`` on ``eConnectionObject`` lists each
-        line with its ends, layers, ``IsRedundant`` and ``Mode``.
+        those go out of date: boards whose nets were all joined have been
+        reported with open connections, and moved parts kept lines to
+        their old places. So by default Altium first re-derives the lines
+        of every net that has one, as it does after an edit.
+        ``obj_query`` on ``eConnectionObject`` lists each line with its
+        ends, layers, ``IsRedundant`` and ``Mode``.
 
         Args:
             reanalyze: re-derive the ratsnest before counting (default
-                False).
+                True). False reads the stored lines as they are, faster
+                on a large board.
 
         Returns:
             Dictionary with "unrouted_nets" array (each with net name and
@@ -5846,6 +6287,13 @@ def register_pcb_tools(mcp):
         differential routing constraints and the interactive router to
         honour impedance / matched-length rules between the pair.
 
+        A PAIR MADE ONLY ON THE BOARD IS REMOVED BY THE NEXT SCHEMATIC
+        SYNC: the change order deletes board objects the schematic does
+        not define (a follow-up take lost both USB pairs that way). To
+        keep it, define the pair in the schematic too: net names ending
+        _P/_N and a DifferentialPair directive on them (sch_add_directive),
+        then sync.
+
         Args:
             positive_net: Positive-side net name (e.g. "USB_DP")
             negative_net: Negative-side net name (e.g. "USB_DM")
@@ -5863,6 +6311,11 @@ def register_pcb_tools(mcp):
                 "name": name,
             },
         )
+        if isinstance(result, dict) and result.get("success", True) is not False:
+            result.setdefault("note", (
+                "board-only: the next schematic sync removes this pair unless "
+                "the schematic defines it too (DifferentialPair directive on "
+                "_P/_N nets)"))
         return result
 
     @mcp.tool()

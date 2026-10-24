@@ -59,11 +59,28 @@ def test_containers_write_to_the_folder_and_are_not_release_managed():
     text, report = _cloned()
     assert "ReleaseManaged1" not in text
     assert "ReleaseManaged2=0\r\n" in text and "ReleaseManaged3=0\r\n" in text
-    assert "OutputFilePath2=C:\\New\\Outputs\\Fab.pdf\r\n" in text
-    assert "OutputFilePath3=C:\\New\\Outputs\\\r\n" in text
-    assert "RelativeOutputPath3=C:\\New\\Outputs\\\r\n" in text
-    assert "OutputBasePath2=C:\\New\\Outputs\r\n" in text
+    # Inside the project, so written relative to it, as Altium writes
+    # "Project Outputs for <project>".
+    assert "OutputFilePath2=Outputs\\Fab.pdf\r\n" in text
+    assert "OutputFilePath3=Outputs\\\r\n" in text
+    assert "RelativeOutputPath3=Outputs\\\r\n" in text
+    assert "OutputBasePath2=Outputs\r\n" in text
     assert report["containers"] == [2, 3]
+
+
+def test_a_copied_project_writes_beside_itself():
+    """07d worked on a copy of 07b's project, and its OutJob kept writing
+    into 07b's folder: the paths were absolute."""
+    text, _ = _cloned()
+    assert "C:\\New" not in text.split("[PublishSettings]", 1)[1]
+
+
+def test_a_folder_outside_the_project_stays_absolute():
+    data, _ = outjob.clone(_SRC, _PRJ, _DOCS, r"D:\Fab\New")
+    text = data.decode("utf-8")
+    assert "OutputBasePath2=D:\\Fab\\New\r\n" in text
+    data, _ = outjob.clone(_SRC, _PRJ, _DOCS, r"C:\Elsewhere\New")
+    assert "OutputBasePath2=C:\\Elsewhere\\New\r\n" in data.decode("utf-8")
 
 
 def test_the_users_settings_are_kept_byte_for_byte():

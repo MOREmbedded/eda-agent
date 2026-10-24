@@ -189,3 +189,82 @@ def test_every_call_is_traced_before_it_waits_for_the_worker():
     src = inspect.getsource(ab.AltiumBridge.send_command_async)
     call = src.index('f"CALL cmd={command}')
     assert call < src.index("run_in_executor")
+
+
+@pytestmark_win
+def test_restart_stops_the_loop_that_is_running_not_the_configured_one(
+        tmp_path, monkeypatch, capsys):
+    """After a demo take the config named the normal workspace while the
+    loop still served the demo one: the stop file went where nobody read
+    it. The ping says which workspace the running loop serves."""
+    from eda_agent.config import configure
+    from eda_agent.ui import windows, dialog_report
+    import eda_agent.diag.doctor as doctor
+    import subprocess
+
+    configured, running = tmp_path / "normal", tmp_path / "demo"
+    configured.mkdir()
+    running.mkdir()
+    configure(workspace_dir=configured)
+    monkeypatch.setattr(windows, "available", lambda: True)
+    monkeypatch.setattr(dialog_report, "report", lambda pid: {"dialog_count": 0})
+    monkeypatch.setattr(windows, "visible_main_frames", lambda pid: [])
+    monkeypatch.setattr(doctor, "_ping_altium",
+                        lambda: {"pong": True, "workspace_dir": str(running)})
+    taken = {}
+
+    def loop_takes_the_stop():
+        for _ in range(100):
+            for ws in (configured, running):
+                if (ws / "stop").exists():
+                    taken["where"] = ws
+                    (ws / "stop").unlink()
+                    return
+            time.sleep(0.05)
+
+    class _P:
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kw: _P())
+    t = threading.Thread(target=loop_takes_the_stop)
+    t.start()
+    try:
+        assert cli._restart(["X2.EXE"], 4242) == 0
+    finally:
+        t.join()
+    assert taken.get("where") == running
+    assert "stopping that one" in capsys.readouterr().out
+
+
+@pytestmark_win
+def test_a_plain_relaunch_refuses_behind_a_dialog(tmp_path, monkeypatch, capsys):
+    """With "Unsaved Changes" up the ping fails, and a relaunch then started
+    the script: X2.EXE -R went to a NEW Altium instead of the busy one."""
+    from eda_agent.bridge import process_manager
+    from eda_agent.ui import windows, dialog_report
+    import subprocess
+
+    project = tmp_path / "Altium_API.PrjScr"
+    project.write_text("")
+    exe = tmp_path / "X2.EXE"
+    exe.write_text("")
+
+    class _Proc:
+        pid = 4242
+        exe_path = str(exe)
+
+    class _Sel:
+        process = _Proc()
+        reason = ""
+
+    monkeypatch.setattr(process_manager.AltiumProcessManager,
+                        "select_altium_process", lambda self: _Sel())
+    monkeypatch.setattr(windows, "available", lambda: True)
+    monkeypatch.setattr(dialog_report, "report", lambda pid: {
+        "dialog_count": 1, "blocked": True, "summary": "Unsaved Changes"})
+    launched = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: launched.append(a))
+    assert cli.cmd_relaunch(str(project), force=True) == 1
+    assert not launched
+    assert "Unsaved Changes" in capsys.readouterr().err

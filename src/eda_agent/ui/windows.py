@@ -352,6 +352,11 @@ def _show_without_focus(hwnd: int) -> None:
     ctypes.windll.user32.ShowWindowAsync(hwnd, _SW_SHOWNA)
 
 
+def show_without_focus(hwnd: int) -> None:
+    """Show a hidden window without activating it (see above)."""
+    _show_without_focus(hwnd)
+
+
 def owns_foreground(hwnd) -> bool:
     """Whether hwnd's APPLICATION is the active one.
 

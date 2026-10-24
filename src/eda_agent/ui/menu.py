@@ -317,9 +317,21 @@ def _press(pid: int, node, wanted: str, until) -> str:
 
 
 def frame(pid: int):
-    """Altium's main document frame, or None."""
+    """Altium's main document frame, or None.
+
+    A HIDDEN frame is shown again and returned. Altium's main window has
+    been found hidden (not minimized) while the bridge kept answering;
+    the bridge re-shows it after each reply, but a menu walk does not go
+    through the bridge, and app_update_from_libraries then failed with
+    "no Altium main window" on an Altium that was running.
+    """
     for window in win.enumerate_windows(pid=pid):
         if window.class_name == _FRAME_CLASS:
+            return window
+    for window in win.enumerate_windows(pid=pid, visible_only=False):
+        if window.class_name == _FRAME_CLASS:
+            win.show_without_focus(window.hwnd)
+            win.wait_until(lambda: bool(win32gui.IsWindowVisible(window.hwnd)), 1.0)
             return window
     return None
 

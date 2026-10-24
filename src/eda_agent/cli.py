@@ -232,6 +232,46 @@ def _wait_for_loop_to_stop(workspace: Path) -> str:
     return "stopped"
 
 
+def _stop_halted_script(command: list) -> None:
+    """Ask Altium to stop a script parked in the debugger.
+
+    A handler that hits an undeclared identifier halts the loop but leaves
+    the script running in the engine, and the new loop then fails with
+    "Another script executing now". Run > Stop (EditScript:Stop, as the
+    install's EditScript.rcs names it) frees the engine; with nothing
+    running it does nothing. Measured 2026-10-25: after it, StartMCPServer
+    came up at once.
+    """
+    import subprocess
+
+    try:
+        subprocess.Popen([command[0], "-REditScript:Stop"],
+                         close_fds=True).wait(timeout=30)
+    except Exception:                            # noqa: BLE001
+        pass
+
+
+def _blocked_by_dialog(pid: int, consequence: str) -> bool:
+    """Say so and return True when Altium sits behind a blocking dialog.
+
+    Only a window that BLOCKS the loop counts: a hover preview
+    (FormPreviewPopup) is listed as a dialog and blocks nothing. A plain
+    relaunch used to skip this: with "Unsaved Changes" up, the ping failed,
+    so relaunch started the script, and X2.EXE -R went to a NEW Altium
+    instead of the busy one.
+    """
+    from .ui import dialog_report, windows
+
+    if not windows.available():
+        return False
+    report = dialog_report.report(pid)
+    if report.get("blocked"):
+        print(f"ERROR: Altium has a dialog open, so {consequence}: "
+              f"{report.get('summary')}. Close it first.", file=sys.stderr)
+        return True
+    return False
+
+
 def _restart(command: list, frames_pid: int) -> int:
     """Stop the running loop and start a new one, with other sessions'
     calls waiting through it instead of failing.
@@ -250,19 +290,31 @@ def _restart(command: list, frames_pid: int) -> int:
     from .bridge.altium_bridge import MAINTENANCE_FILE
     from .config import get_config
     from .diag.doctor import _ping_altium
-    from .ui import dialog_report, windows
+    from .ui import windows
 
-    if windows.available():
-        report = dialog_report.report(frames_pid)
-        # Only a window that BLOCKS the loop stops a restart: a hover preview
-        # (FormPreviewPopup) is listed as a dialog and blocks nothing.
-        if report.get("blocked"):
-            print("ERROR: Altium has a dialog open, so the loop cannot take the "
-                  f"stop file: {report.get('summary')}. Close it first.",
-                  file=sys.stderr)
-            return 1
+    if _blocked_by_dialog(frames_pid, "the loop cannot take the stop file"):
+        return 1
 
     workspace = Path(get_config().workspace_dir)
+    # THE LOOP THAT IS RUNNING, not the one the config names: after a demo
+    # take the pointer named the normal workspace while the loop still
+    # served the demo one, and the stop file went where nobody read it.
+    # Capped: with the loop dead the bridge's own wait ran 267 s before
+    # the restart even began.
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(1)
+    try:
+        ping = pool.submit(_ping_altium).result(timeout=5.0)
+    except concurrent.futures.TimeoutError:
+        ping = None
+    finally:
+        pool.shutdown(wait=False)
+    running = Path(str((ping or {}).get("workspace_dir") or "")) if ping else None
+    if running and str(running) not in ("", ".") and running.is_dir() \
+            and running.resolve() != workspace.resolve():
+        print(f"The running loop serves {running}, not {workspace}; "
+              f"stopping that one.")
+        workspace = running
     marker = workspace / MAINTENANCE_FILE
     marker.write_text(json.dumps({"reason": "relaunch --restart",
                                   "started": time.time(), "pid": os.getpid()}),
@@ -271,6 +323,13 @@ def _restart(command: list, frames_pid: int) -> int:
         state = _wait_for_loop_to_stop(workspace)
         print(f"The loop {'stopped' if state == 'stopped' else 'was not running'}; "
               f"other sessions' calls are waiting for the new one.")
+        if state != "stopped" and ping is None:
+            _stop_halted_script(command)
+            print(f"Nothing answered a ping through {workspace}, so any script "
+                  f"left halted in Altium was stopped first. If Altium still "
+                  f"says \"Another script executing now\", a loop is serving "
+                  f"another workspace: put an empty file named stop in that "
+                  f"workspace and run this again.")
         frames = windows.visible_main_frames(frames_pid)
         launcher = subprocess.Popen(command, close_fds=True)
         _reshow_hidden_frames(launcher, frames)
@@ -338,6 +397,9 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
         return 0
     if restart:
         return _restart(command, selection.process.pid)
+    if _blocked_by_dialog(selection.process.pid,
+                          "a script started now would go to a second Altium"):
+        return 1
     if not force:
         from .diag.doctor import _ping_altium
 
@@ -345,6 +407,7 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
             print("The bridge already answers a ping; nothing was started. "
                   "Pass --force to run StartMCPServer anyway.")
             return 0
+        _stop_halted_script(command)
 
     import subprocess
 

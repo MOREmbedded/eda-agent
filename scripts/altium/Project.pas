@@ -350,6 +350,26 @@ Begin
             Exit;
         End;
     End;
+    { NO MEMBER LOADED: nothing above could be shown, and the project could }
+    { not be closed. MEASURED: opening a member (load_project_sheets, or    }
+    { OpenObject) focuses the project and the close then works. The Client }
+    { API keeps the membership; RunProcess Client:OpenDocument does not.    }
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If (Path = '') Or (Not FileExists(Path)) Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.OpenDocument(Doc.DM_DocumentKind, Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        If FocusedProjectPathIs(Target) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
 End;
 
 { Paths in BeforeList that are gone from AfterList, other than TargetPath.   }

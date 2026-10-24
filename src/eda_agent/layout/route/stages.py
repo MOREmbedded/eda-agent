@@ -69,7 +69,12 @@ class StageOptions:
     stall_stop: bool = False
     # Where a via may go into a pad: "bga" (a BGA's balls and an exposed
     # pad only), "ic" (also an IC's pins, never a passive's) or "any".
-    pad_vias: str = "ic"
+    # "bga" by default: a via in a pin wicks the solder unless it is
+    # filled and capped, and a demo board under "ic" came out with 90 of
+    # them, a USB connector's pins among them. The fallback (route_adaptive)
+    # still widens it to "ic" when that alone leaves connections unmade,
+    # and says so in stage_report.fallback.
+    pad_vias: str = "bga"
     # Intra-pair skew left after bumps.
     pair_skew: float = 5.0
     # Pair width and gap when the board has no differential pair rule.

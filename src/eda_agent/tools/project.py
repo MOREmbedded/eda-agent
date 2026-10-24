@@ -9,6 +9,56 @@ from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
 
 
+def _rows(result: Any, key: str) -> list:
+    if isinstance(result, dict):
+        inner = result.get("result", result)
+        if isinstance(inner, dict):
+            rows = inner.get(key)
+            return rows if isinstance(rows, list) else []
+    return []
+
+
+async def _pair_names(bridge) -> set:
+    try:
+        pairs = await bridge.send_command_async(
+            "pcb.get_differential_pairs", {}, timeout=30.0)
+    except Exception:                           # noqa: BLE001 - no board yet
+        return set()
+    return {str(p.get("name")) for p in _rows(pairs, "pairs")
+            if isinstance(p, dict) and p.get("name")}
+
+
+async def _after_sync(bridge, pairs_before: set) -> dict:
+    """What a schematic-to-board sync left undone, read from both sides."""
+    bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
+    board = await bridge.send_command_async("pcb.get_components", {})
+    sch = {str(c.get("designator")): str(c.get("footprint") or "")
+           for c in _rows(bom, "components") if isinstance(c, dict)}
+    pcb = {str(c.get("designator")): str(c.get("footprint") or "")
+           for c in _rows(board, "components") if isinstance(c, dict)}
+    mismatch = [{"designator": d, "schematic": fp, "board": pcb[d]}
+                for d, fp in sorted(sch.items())
+                if d in pcb and fp and pcb[d] and fp.lower() != pcb[d].lower()]
+    missing = sorted(d for d in sch if d not in pcb)
+    removed = sorted(pairs_before - await _pair_names(bridge))
+    out: dict[str, Any] = {"footprint_mismatch": mismatch,
+                           "missing_on_board": missing,
+                           "diff_pairs_removed": removed}
+    problems = []
+    if mismatch:
+        problems.append(f"{len(mismatch)} part(s) kept a footprint the "
+                        f"schematic no longer uses")
+    if missing:
+        problems.append(f"{len(missing)} schematic part(s) are not on the board")
+    if removed:
+        problems.append(f"the sync removed {len(removed)} board-only "
+                        f"differential pair(s); define them in the schematic "
+                        f"(DifferentialPair directive) to keep them")
+    if problems:
+        out["warning"] = "; ".join(problems)
+    return out
+
+
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
 
@@ -650,6 +700,106 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_export_jlc_assembly(
+        output_dir: str,
+        lcsc_parameter: str = "",
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Write the BOM and pick-and-place (CPL) files JLCPCB assembly takes.
+
+        BOM: Comment, Designator, Footprint, LCSC Part #, one row per part
+        kind. CPL: Designator, Mid X, Mid Y (mm, from the board origin, as
+        Altium's own pick-and-place and the Gerbers), Layer (Top/Bottom),
+        Rotation (degrees, as Altium shows it). Read from the board and the
+        compiled project, so nothing is copied by hand.
+
+        Mid X/Y is each part's ORIGIN: right for a footprint whose origin
+        is its centre (every footprint lib_create_footprint_from_package
+        makes); a part with its origin elsewhere is placed off by that much.
+        Rotations follow Altium; JLC's preview shows each part on its pads,
+        so check polarised and bottom-side parts there before ordering.
+
+        Args:
+            output_dir: folder for the two files (made when missing).
+            lcsc_parameter: the parameter holding the LCSC number. Empty
+                tries "LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #".
+            name: file name stem; default the board's name.
+
+        Returns:
+            ``bom_path``, ``cpl_path``, ``parts``, ``bom_rows``,
+            ``without_lcsc`` (designators with no LCSC number) and
+            ``origin_mils``.
+        """
+        import csv
+        import os
+        from collections import OrderedDict
+
+        bridge = get_bridge()
+        coords = await bridge.send_command_async("pcb.export_coordinates", {})
+        comps = [c for c in (coords or {}).get("placements", [])
+                 if isinstance(c, dict) and c.get("designator")]
+        if not comps:
+            return {"ok": False, "reason": "no components were read from the board"}
+        board = await bridge.send_command_async("project.get_board_info", {})
+        ox = float((board or {}).get("origin_x", 0) or 0)
+        oy = float((board or {}).get("origin_y", 0) or 0)
+        info = await bridge.send_command_async(
+            "project.get_component_info_batch",
+            {"designators": "~~".join(str(c["designator"]) for c in comps),
+             "with_pin_nets": "false"}, timeout=120.0)
+        params_of: dict[str, dict] = {}
+        for c in (info or {}).get("components", []) if isinstance(info, dict) else []:
+            if isinstance(c, dict) and isinstance(c.get("parameters"), dict):
+                params_of[str(c.get("designator"))] = c["parameters"]
+        keys = ([lcsc_parameter] if lcsc_parameter else
+                ["LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #"])
+
+        def lcsc(ref: str) -> str:
+            got = {k.lower(): v for k, v in params_of.get(ref, {}).items()}
+            for k in keys:
+                v = str(got.get(k.lower(), "") or "").strip()
+                if v and v != "*":
+                    return v
+            return ""
+
+        groups: "OrderedDict[tuple, list[str]]" = OrderedDict()
+        missing = []
+        for c in comps:
+            ref = str(c["designator"])
+            part = lcsc(ref)
+            if not part:
+                missing.append(ref)
+            key = (str(c.get("comment", "")), str(c.get("footprint", "")), part)
+            groups.setdefault(key, []).append(ref)
+
+        stem = name or os.path.splitext(
+            str((coords or {}).get("board_name") or "board"))[0] or "board"
+        os.makedirs(output_dir, exist_ok=True)
+        bom_path = os.path.join(output_dir, f"{stem}_BOM_JLCPCB.csv")
+        cpl_path = os.path.join(output_dir, f"{stem}_CPL_JLCPCB.csv")
+        with open(bom_path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Comment", "Designator", "Footprint", "LCSC Part #"])
+            for (comment, fp, part), refs in groups.items():
+                w.writerow([comment, ",".join(refs), fp, part])
+        with open(cpl_path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Designator", "Mid X", "Mid Y", "Layer", "Rotation"])
+            for c in comps:
+                x = (float(c.get("x", 0)) - ox) * 0.0254
+                y = (float(c.get("y", 0)) - oy) * 0.0254
+                side = "Bottom" if str(c.get("side", "")).lower().startswith("b") else "Top"
+                w.writerow([c["designator"], f"{x:.4f}mm", f"{y:.4f}mm", side,
+                            f"{float(c.get('rotation', 0)) % 360:g}"])
+        out = {"ok": True, "bom_path": bom_path, "cpl_path": cpl_path,
+               "parts": len(comps), "bom_rows": len(groups),
+               "without_lcsc": missing, "origin_mils": [ox, oy]}
+        if missing:
+            out["note"] = (f"{len(missing)} parts have no LCSC number in "
+                           f"{' / '.join(keys)}; JLC leaves them unplaced")
+        return out
+
+    @mcp.tool()
     async def proj_get_bom(
         project_path: Optional[str] = None,
         limit: int = 1000,
@@ -846,7 +996,15 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_export_pdf(output_path: str) -> dict[str, Any]:
-        """Export the active document to PDF.
+        """Open Altium's PRINT dialog for the active document, for a PDF.
+
+        NOT UNATTENDED. This opens the print preview / print setup dialog
+        with the user's real printer selected and a live Print button,
+        and blocks the bridge until a person finishes or cancels it; a
+        wrong press prints paper. ``written`` says whether the PDF exists
+        afterwards. For a PDF with nobody at the machine, run an OutJob
+        container whose medium is PDF (proj_list_outjob_containers, then
+        proj_run_outjob).
 
         Args:
             output_path: Full path for the output PDF file
@@ -1045,6 +1203,13 @@ def register_project_tools(mcp):
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
+        # Altium's exporter cannot write into a folder that is not there,
+        # and says so in an "Information" box, as it says "Done!".
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "output_path": output_path,
+                    "reason": f"the output folder could not be made: {e}"}
 
         bridge = get_bridge()
         if board_path:
@@ -1129,7 +1294,29 @@ def register_project_tools(mcp):
             return {"ok": False, "answered": answered,
                     "reason": "the export did not finish in ten minutes"}
 
+        def late_done(wait_s: float = 30.0) -> list:
+            """Answer a "Done!" that comes after the file has settled.
+
+            On a large board it came seconds after the export had been
+            judged finished, and blocked the next call (a demo run's BOM
+            and pick-and-place both failed on it)."""
+            deadline = _time.monotonic() + wait_s
+            while _time.monotonic() < deadline:
+                for dialog in windows.dialogs(pid):
+                    if (dialog.title or "").strip().lower() != "information":
+                        return []
+                    button = dialog.find_button("OK")
+                    if button is not None:
+                        windows.click(button)
+                        windows.wait_for_close(dialog.hwnd, timeout=5.0)
+                        return [dialog.title]
+                _time.sleep(0.25)
+            return []
+
         driven = await asyncio.get_running_loop().run_in_executor(None, answer)
+        if driven.get("ok") and "Information" not in driven.get("answered", []):
+            late = await asyncio.get_running_loop().run_in_executor(None, late_done)
+            driven["answered"] = driven.get("answered", []) + late
         try:
             await asyncio.wait_for(call, timeout=30.0)
         except (AltiumError, asyncio.TimeoutError):
@@ -1270,9 +1457,27 @@ def register_project_tools(mcp):
             return {"ok": False, "reason": (
                 "Altium lists no documents in that project; open it first")}
 
+        # The board's own copper layers, planes included, for the Gerber
+        # layer set: Altium's shipped template plots four signal layers and
+        # no plane, and a demo board's planes were left out of its Gerbers.
+        codes: list[int] = []
+        boards = {os.path.basename(d).lower() for d in documents
+                  if d.lower().endswith(".pcbdoc")}
+        if boards:
+            stack = await bridge.send_command_async("pcb.get_layer_stackup", {})
+            # Only the project's own board: the stack read is the focused one.
+            if isinstance(stack, dict) and str(stack.get("board_name", "")).lower() in boards:
+                codes = outjob.copper_layer_codes(
+                    int(layer.get("layer_id") or 0) for layer in stack.get("layers") or [])
+
         with open(source_outjob, "rb") as fh:
             data, report = outjob.clone(fh.read(), project_path, documents,
-                                        output_dir)
+                                        output_dir, copper_codes=codes)
+        if not codes:
+            report["copper_layers_note"] = (
+                "the board's layer stack could not be read, so the Gerber "
+                "layer set is the template's own: check it plots every "
+                "copper and plane layer")
         tmp = target + ".tmp"
         with open(tmp, "wb") as fh:
             fh.write(data)
@@ -1462,9 +1667,45 @@ def register_project_tools(mcp):
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
             params["outjob_path"] = outjob_path
+            busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
+            if busy:
+                return {"success": False, "container_name": container_name,
+                        "files_in_use": busy, "reason": (
+                            "these outputs are open in another program (a PDF "
+                            "viewer?), and Altium stops with an Error dialog when "
+                            "it cannot overwrite one: close them and run again. "
+                            "Nothing was run.")}
         started_at = _time.time()
         result = await _send_run(bridge, params, 120.0)
         return _judge_outjob_run(result, started_at, fresh_window_seconds)
+
+    def _locked_outputs(output_dir):
+        """Files in a container's output folder another program holds
+        open, so that Altium cannot overwrite them. A second run of a
+        take's OutJob stopped on an Altium "Error" modal naming the
+        Fabrication.pdf the first run wrote, still open."""
+        import os
+        from pathlib import Path
+
+        if not output_dir:
+            return []
+        busy = []
+        folder = Path(output_dir)
+        if not folder.is_dir():
+            return []
+        for path in folder.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                fd = os.open(str(path), os.O_RDWR | os.O_APPEND)
+                os.close(fd)
+            except PermissionError:
+                busy.append(str(path))
+            except OSError:
+                pass
+            if len(busy) >= 20:
+                break
+        return busy
 
     async def _send_run(bridge, params, timeout):
         """One container run. A dialog Altium raises during or after the
@@ -1657,6 +1898,13 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
+                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                if busy:
+                    per_container.append({
+                        "container": name, "ok": False, "files_in_use": busy,
+                        "reason": "outputs open in another program; close them "
+                                  "and run again (not run)"})
+                    continue
             run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
@@ -1757,6 +2005,13 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
+                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                if busy:
+                    per_container.append({
+                        "container": name, "ok": False, "files_in_use": busy,
+                        "reason": "outputs open in another program; close them "
+                                  "and run again (not run)"})
+                    continue
             run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
@@ -2363,6 +2618,15 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Set ERC report levels (Project Options > Error Reporting).
 
+        A project's policy, not a way to a clean ERC. Before turning a
+        check off because it reports something that is not there, look for
+        a stale compile: Altium keeps a document's state until it is
+        reopened, so a resized or redrawn sheet can report "Off sheet" or
+        duplicates that are gone (sch_set_sheet_size and sch_draw_template
+        reopen the sheet; proj_force_recompile recompiles). A demo take
+        switched "Off sheet" off for exactly that, hiding the check for
+        every later sheet.
+
         Args:
             levels: {violation type: level}. A type is its exact description
                 as proj_get_erc_levels lists it ("Nets with multiple names")
@@ -2570,11 +2834,21 @@ def register_project_tools(mcp):
             components_added_to_pcb, components_removed_from_pcb,
             components_in_sync, and dialog_outcome_verified (always
             false: which button was pressed is unknown). The counts see
-            components added or removed only, not footprint, parameter
-            or net changes.
+            components added or removed only. ``after_sync`` then reads the
+            board against the schematic: ``footprint_mismatch`` (the
+            board's footprint is not the schematic's), ``missing_on_board``
+            and ``diff_pairs_removed`` (pairs defined only on the board,
+            which a sync deletes). A footprint swap that "ran" twice and
+            never reached the board was found only by eye before.
         """
         bridge = get_bridge()
+        pairs_before = await _pair_names(bridge)
         result = await bridge.send_command_async("project.update_pcb", {})
+        if isinstance(result, dict):
+            try:
+                result["after_sync"] = await _after_sync(bridge, pairs_before)
+            except Exception as exc:            # noqa: BLE001 - a report only
+                result["after_sync"] = {"error": f"not read: {exc}"}
         return result
 
     @mcp.tool()

@@ -880,8 +880,11 @@ _SCH_TO_PCB_BLOCK = {
 }
 
 
-def get_discipline() -> str:
+def get_discipline(include_schema: bool = True) -> str:
     """Return the discipline doc + the embedded DesignPlan JSON schema.
+
+    ``include_schema=False`` leaves the schema out, for a caller that
+    sends it separately (design_get_discipline sends it as a dict).
 
     The opening paragraph is rewritten for the active backend. Only
     that paragraph: the rest of the text names Altium tools inside
@@ -981,6 +984,8 @@ def get_discipline() -> str:
                 f"is {editor}; a plan is run there with {executor}.\n")
         text = replaced
 
+    if not include_schema:
+        return text
     return (
         text
         + "\n## DesignPlan JSON schema\n\nYour DesignPlan must validate "

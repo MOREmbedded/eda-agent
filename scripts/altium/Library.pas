@@ -2421,7 +2421,8 @@ End;
 { without them builds exactly the pad it always did:                          }
 {   hole_length      slot length; above hole_size it makes a slotted hole,    }
 {                    HoleSize the slot width and HoleWidth its length, as     }
-{                    Altium's own Hyperlynx exporter reads a slot             }
+{                    Altium's own Hyperlynx exporter reads a slot;            }
+{                    hole_rotation turns the slot from the pad's X axis       }
 {   plated=false     a non-plated hole                                        }
 {   paste_expansion  manual paste mask expansion, in the call's units         }
 {   mask_expansion   manual solder mask expansion, in the call's units        }
@@ -2551,6 +2552,9 @@ Begin
                 Try
                     Pad.HoleType := eSlotHole;
                     Pad.HoleWidth := CoordFromUnits(SlotLen, UnitsStr);
+                    { A slot runs along the pad's X; hole_rotation turns it
+                      (90 = along the pad's Y). }
+                    Pad.HoleRotation := StrToFloatDef(GetBatchField(Op, 'hole_rotation'), 0);
                     Inc(Slots);
                 Except
                     Inc(PropFailed);

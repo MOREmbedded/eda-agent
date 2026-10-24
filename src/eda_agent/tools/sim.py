@@ -152,7 +152,11 @@ def register_sim_tools(mcp):
         """Audit every component on the active schematic for SPICE readiness.
 
         Step 1 of any simulation. Each component lands in one bucket:
-        ``ready`` (SpicePrefix set), ``needs_primitive`` (R/L/C or a
+        ``ready`` (SpicePrefix set AND a SIM model linked, which is what
+        Altium's netlister reads), ``no_sim_model`` (SpicePrefix written
+        but no model link: the netlister reports "Missing component
+        models" for these; sim_run_deck runs a plain SPICE deck without
+        them), ``needs_primitive`` (R/L/C or a
         V/I/D/Q source needing SpicePrefix and Value; pass them all to
         sim_attach_primitives in one call) or ``needs_file`` (an IC or
         active part needing the vendor's .mdl/.ckt/.lib, for
@@ -166,7 +170,8 @@ def register_sim_tools(mcp):
 
         Returns:
             Dict with:
-              - ready, ready_count
+              - ready, ready_count (each with sim_model)
+              - no_sim_model, no_sim_model_count
               - needs_primitive, needs_primitive_count
                 (each entry has designator, comment, suggested_prefix,
                  suggested_value)
@@ -265,6 +270,73 @@ def register_sim_tools(mcp):
             reply["results_note"] = (
                 "the results document could not be saved, so its values "
                 "were not read; they are open in Altium")
+            return reply
+        try:
+            charts = latest_charts(read_sdf(path))
+        except (OSError, SdfError) as exc:
+            reply["results_note"] = f"the results file could not be read: {exc}"
+            return reply
+        reply["results"] = _results(charts, waves=None, max_points=0)
+        return reply
+
+    @mcp.tool()
+    async def sim_run_deck(deck: str, file_path: str) -> dict[str, Any]:
+        """Run a SPICE deck in Altium's simulator; the waves open as a chart.
+
+        The way to simulate a circuit that is not a schematic of parts with
+        simulation models: a hot-plug, an inrush, a supply under a load
+        step. Write it as plain SPICE (elements, models, one analysis such
+        as .TRAN, a .PLOT line per analysis naming the waves to chart, and
+        .END). Altium opens the results as a chart in front, and the reply
+        gives each wave's figures. Passive and source values are yours to
+        state; an IC's behaviour needs its vendor's model (SPICE_MODEL_RULES).
+
+        A schematic of your own symbols does not run through sim_run: each
+        part needs a simulation model link, and the parameters
+        sim_attach_primitives writes are not one (Altium answers "Missing
+        component models").
+
+        Args:
+            deck: the SPICE text, e.g. "* hot-plug\\nV1 in 0 PULSE(0 5 10u
+                1u)\\nR1 in out 0.25\\nC1 out 0 22u\\n.TRAN 1u 2m\\n.PLOT TRAN
+                V(out)\\n.END".
+            file_path: where to write it: a full path ending in .nsx, in
+                the project's folder. An existing deck there is replaced.
+
+        Returns:
+            ``ran``, ``deck``, ``results_document`` (the .sdf), and
+            ``results`` per analysis per wave (unit, points, min, max,
+            first, last); sim_get_results gives the traces.
+        """
+        import os
+
+        if not file_path or not os.path.isabs(file_path) \
+                or not file_path.lower().endswith(".nsx"):
+            return {"success": False, "error": "file_path must be a full path ending in .nsx"}
+        text = (deck or "").replace("\r\n", "\n").strip()
+        if not text:
+            return {"success": False, "error": "the deck is empty"}
+        if not any(line.strip().upper().startswith((".TRAN", ".AC", ".DC", ".OP"))
+                   for line in text.splitlines()):
+            return {"success": False, "error": "the deck has no analysis (.TRAN, .AC, .DC or .OP)"}
+        if text.splitlines()[-1].strip().upper() != ".END":
+            text += "\n.END"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8", newline="\r\n") as fh:
+            fh.write(text + "\n")
+
+        bridge = get_bridge()
+        reply = await bridge.send_command_async(
+            "generic.run_spice_deck", {"file_path": file_path}, timeout=600.0)
+        if not (isinstance(reply, dict) and reply.get("ran")):
+            return reply
+        path = reply.get("results_document") or ""
+        if path:
+            _last_results["path"] = path
+        if not reply.get("results_saved"):
+            reply["results_note"] = (
+                "the results document could not be saved, so its values "
+                "were not read; the chart is open in Altium")
             return reply
         try:
             charts = latest_charts(read_sdf(path))

@@ -87,26 +87,65 @@ def _divider_payload(r, series: str, mode: str) -> dict[str, Any]:
     }
 
 
+#: Entries a list in a job result keeps inline; the rest go to a file.
+_JOB_LIST_INLINE = 25
+
+
+def _trim_job_result(rec: dict, job_id: str) -> dict:
+    """``rec`` with each long list in its result cut to its first entries
+    and counted, the whole of it written to the workspace."""
+    import json
+
+    from ..config import get_config
+
+    result = dict(rec["result"])
+    trimmed = {}
+    for key, value in list(result.items()):
+        if isinstance(value, list) and len(value) > _JOB_LIST_INLINE:
+            trimmed[key] = len(value)
+            result[key] = value[:_JOB_LIST_INLINE]
+    out = dict(rec, result=result)
+    if trimmed:
+        folder = get_config().workspace_dir / "jobs"
+        folder.mkdir(parents=True, exist_ok=True)
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in job_id)
+        path = folder / f"{safe}.json"
+        path.write_text(json.dumps(rec, default=str), encoding="utf-8")
+        out["trimmed"] = {k: f"{n} entries, first {_JOB_LIST_INLINE} shown"
+                          for k, n in trimmed.items()}
+        out["full_path"] = str(path)
+    return out
+
+
 def register_design_tools(mcp) -> None:
     """Register the design-agent tools with the MCP server."""
 
     @mcp.tool()
-    async def design_get_discipline() -> dict[str, Any]:
-        """Read the design discipline + DesignPlan JSON schema.
+    async def design_get_discipline(include_schema: bool = False) -> dict[str, Any]:
+        """Read the design discipline, and on request the DesignPlan schema.
 
         ALWAYS call this first when starting a design task. The result
-        contains the hard rules the planner must follow (net-label-driven
-        wiring, datasheet-first part choice, NDA isolation, etc.) plus
-        the JSON schema that ``sch_draw_template`` takes as ``plan_json``.
+        contains the hard rules the planner must follow (datasheet-first
+        part choice, NDA isolation, the template method for schematics,
+        placement and routing discipline).
+
+        Args:
+            include_schema: Also return the DesignPlan JSON schema, which
+                the plan tools (design_validate_plan, design_review_plan,
+                design_compose_netlist) take. A schematic drawn from
+                templates does not need it.
 
         Returns:
-            A dict with ``discipline`` (markdown text) and
+            A dict with ``discipline`` (markdown text) and, when asked,
             ``schema`` (DesignPlan JSON schema as a dict).
         """
-        return {
-            "discipline": get_discipline(),
-            "schema": DesignPlan.model_json_schema(),
-        }
+        # Under one tool result: with the schema always in, the reply was
+        # 52.5 KB and Claude Code set it aside in a file under the user's
+        # profile, whose path it then showed on screen.
+        out: dict[str, Any] = {"discipline": get_discipline(include_schema=False)}
+        if include_schema:
+            out["schema"] = DesignPlan.model_json_schema()
+        return out
 
     # --- session journal (autonomy-harness durable state) ----------------
 
@@ -516,12 +555,16 @@ def register_design_tools(mcp) -> None:
 
     # --- async jobs (engine runs that outlive a tool timeout) ------------
 
+    #: Longest design_job_status holds a call: under the client's 120 s.
+    _JOB_WAIT_CAP_S = 100.0
+
     @mcp.tool()
     async def design_job_start(kind: str, params: dict) -> dict[str, Any]:
         """Start a long engine run as a background job; returns its id.
 
         For work that can exceed the MCP tool timeout (routing a dense
-        board). Poll `design_job_status`, then `design_job_result` when done.
+        board). Call `design_job_status` with ``wait_seconds`` until it is
+        done (nothing notifies you), then `design_job_result`.
 
         Args:
             kind: registered job kind. Currently: ``route`` (offline A*
@@ -541,21 +584,53 @@ def register_design_tools(mcp) -> None:
         return {"job_id": job_id, "kind": kind}
 
     @mcp.tool()
-    async def design_job_status(job_id: str = "") -> dict[str, Any]:
-        """Status of a background job (or all jobs if ``job_id`` is blank)."""
+    async def design_job_status(job_id: str = "", wait_seconds: float = 0) -> dict[str, Any]:
+        """Status of a background job (or all jobs if ``job_id`` is blank).
+
+        Nothing tells you when a job finishes, so keep calling this until
+        it is done rather than ending your turn: a session that stopped to
+        "check when it finishes" was never woken again.
+
+        Args:
+            job_id: the job; blank lists every job.
+            wait_seconds: hold the call until the job finishes or this
+                many seconds pass (capped at 100, inside the client's
+                two-minute limit). 0 answers at once.
+        """
+        import asyncio
+
         from ..design.jobs import get_job_store
         store = get_job_store()
         if not job_id:
             return {"jobs": store.list()}
+        wait = max(0.0, min(float(wait_seconds or 0), _JOB_WAIT_CAP_S))
+        if wait and store.get(job_id) is not None:
+            await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
         return rec if rec else {"error": f"no such job: {job_id}"}
 
     @mcp.tool()
-    async def design_job_result(job_id: str) -> dict[str, Any]:
-        """Fetch a finished job's result payload (None until it's done)."""
+    async def design_job_result(job_id: str, full: bool = False) -> dict[str, Any]:
+        """Fetch a finished job's result payload (None until it's done).
+
+        A router result lists every track and via, which ran to 250,000
+        characters on a 61-LED board; the client set it aside in a file
+        instead of reading it. So any list longer than a few dozen
+        entries comes back as its count and first entries, and the whole
+        result is written to ``full_path`` (pcb_autoroute_apply takes the
+        tracks from the job itself, not from this reply).
+
+        Args:
+            job_id: the job.
+            full: return every entry inline, however long.
+        """
         from ..design.jobs import get_job_store
         rec = get_job_store().result(job_id)
-        return rec if rec else {"error": f"no such job: {job_id}"}
+        if not rec:
+            return {"error": f"no such job: {job_id}"}
+        if full or not isinstance(rec.get("result"), dict):
+            return rec
+        return _trim_job_result(rec, job_id)
 
     @mcp.tool()
     async def design_snapshot_inventory(

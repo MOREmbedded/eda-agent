@@ -121,3 +121,15 @@ def test_the_remove_tool_can_leave_the_save_for_later(monkeypatch):
     sent = _run(project_tools, "register_project_tools", "proj_remove_document",
                 monkeypatch, r"C:\t\x.SchDoc")
     assert "save_project" not in sent
+
+
+def test_a_new_sheet_never_opens_a_file_left_on_disk():
+    """proj_delete_sheet leaves the file; a sheet created again under the
+    same name opened it, old drawing and all (retake 07b)."""
+    from pathlib import Path
+    from tests.pascal_source import load
+    body = load(Path(__file__).resolve().parents[1] / "scripts" / "altium"
+                / "Generic.pas")["Gen_AddSheet"]
+    check = body.index("FileExists(NewDocPath) Then")
+    assert check < body.index("Client.OpenNewDocument(")
+    assert "'FILE_EXISTS'" in body[check:body.index("Client.OpenNewDocument(")]

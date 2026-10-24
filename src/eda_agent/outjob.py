@@ -64,22 +64,89 @@ def _is_folder(value: str) -> bool:
     return not value or value.endswith(("\\", "/")) or not PureWindowsPath(value).suffix
 
 
+#: OutJob layer codes of the copper layers: top, mid 1..30, bottom, and
+#: internal planes 1..16 (Altium's V7 layer ids).
+_V7_TOP, _V7_BOTTOM, _V7_PLANE0 = 16777217, 16842751, 16842752
+_PLOT_SET = re.compile(r"(Plot\.Set=SerializeLayerHash\.Version~2,ClassName~TLayerToBoolean)"
+                       r"((?:,\d+~\d+)*)")
+
+
+def copper_layer_codes(layer_ids: Iterable[int]) -> list[int]:
+    """OutJob layer codes for a board's copper layers, from their layer ids
+    (pcb.get_layer_stackup ``layer_id``: 1 top, 2..31 mid, 32 bottom,
+    39..54 internal planes). Ids of other layers are dropped."""
+    codes = []
+    for lid in layer_ids:
+        if lid == 1:
+            codes.append(_V7_TOP)
+        elif 2 <= lid <= 31:
+            codes.append(_V7_TOP + lid - 1)
+        elif lid == 32:
+            codes.append(_V7_BOTTOM)
+        elif 39 <= lid <= 54:
+            codes.append(_V7_PLANE0 + lid - 38)
+    return codes
+
+
+def _is_copper_code(code: int) -> bool:
+    return _V7_TOP <= code <= _V7_BOTTOM or _V7_PLANE0 < code <= _V7_PLANE0 + 16
+
+
+def _plot_copper(text: str, codes: list[int]) -> str:
+    """``text`` with the copper entries of each layer set it holds replaced
+    by ``codes``, in the place of the first copper entry; a set with no
+    copper entry is left as it was."""
+    def fix(m: re.Match) -> str:
+        entries = [e for e in m.group(2).split(",") if e]
+        if not any(_is_copper_code(int(e.split("~")[0])) for e in entries):
+            return m.group(0)
+        kept, placed = [], False
+        for e in entries:
+            if _is_copper_code(int(e.split("~")[0])):
+                if not placed:
+                    kept.extend(f"{c}~1" for c in codes)
+                    placed = True
+                continue
+            kept.append(e)
+        return m.group(1) + "".join("," + e for e in kept)
+    return _PLOT_SET.sub(fix, text)
+
+
 def clone(data: bytes, project_path: str, documents: Iterable[str],
-          output_dir: str) -> tuple[bytes, dict[str, Any]]:
+          output_dir: str, copper_codes: Iterable[int] = ()) -> tuple[bytes, dict[str, Any]]:
     """The OutJob ``data`` pointed at another project.
 
     Args:
         data: the source .OutJob's bytes.
         project_path: the target .PrjPcb.
         documents: the target project's document paths.
-        output_dir: absolute folder every container writes into.
+        output_dir: absolute folder every container writes into. One
+            inside the project is written relative to it.
+        copper_codes: the target board's copper layers as OutJob layer
+            codes (copper_layer_codes). Given, every layer set that plots
+            copper plots exactly these: a template made for four signal
+            layers plotted none of a board's internal planes.
 
     Returns:
         The new bytes and a report: ``retargeted`` (output number, old,
-        new), ``unmapped`` (output number, old, why) and ``containers``.
+        new), ``unmapped`` (output number, old, why), ``containers`` and
+        ``copper_layer_sets`` (how many layer sets were set to the board).
     """
+    codes = list(copper_codes)
+    copper_sets = 0
     bom, lines, encoding = _split(data)
     project_dir = os.path.dirname(project_path)
+    # RELATIVE TO THE PROJECT when the folder is inside it, as Altium's own
+    # "Project Outputs for <project>" is written. Absolute, a project copied
+    # elsewhere (the 07d take worked on a copy of 07b) went on writing into
+    # the original's folder, and the agent edited the OutJob by hand.
+    where = output_dir
+    try:
+        rel = os.path.relpath(output_dir, project_dir)
+        if not rel.startswith("..") and not os.path.isabs(rel):
+            where = rel
+    except ValueError:                      # another drive
+        pass
     by_ext: dict[str, list[str]] = {}
     for doc in documents:
         by_ext.setdefault(PureWindowsPath(doc).suffix.lower(), []).append(doc)
@@ -120,6 +187,13 @@ def clone(data: bytes, project_path: str, documents: Iterable[str],
             out.append(line)
             continue
 
+        if codes and section.startswith("outputgroup") and "Plot.Set=" in text:
+            fixed = _plot_copper(text, codes)
+            if fixed != text:
+                copper_sets += 1
+                out.append(fixed + eol)
+                continue
+
         keyed = _KEY.match(text)
         if keyed and section in _CONTAINER_SECTIONS:
             key, n, value = keyed.group("key"), keyed.group("n"), keyed.group("value")
@@ -128,19 +202,19 @@ def clone(data: bytes, project_path: str, documents: Iterable[str],
                 out.append(f"ReleaseManaged{n}=0{eol}")
                 continue
             if key == "OutputBasePath":
-                out.append(f"OutputBasePath{n}={output_dir}{eol}")
+                out.append(f"OutputBasePath{n}={where}{eol}")
                 continue
             if key in _WHERE_KEYS:
                 if _is_folder(value):
-                    new = output_dir.rstrip("\\/") + "\\"
+                    new = where.rstrip("\\/") + "\\"
                 else:
-                    new = str(PureWindowsPath(output_dir) / PureWindowsPath(value).name)
+                    new = str(PureWindowsPath(where) / PureWindowsPath(value).name)
                 out.append(f"{key}{n}={new}{eol}")
                 continue
         out.append(line)
 
     report = {"retargeted": retargeted, "unmapped": unmapped,
-              "containers": sorted(containers)}
+              "containers": sorted(containers), "copper_layer_sets": copper_sets}
     return bom + "".join(out).encode(encoding), report
 
 

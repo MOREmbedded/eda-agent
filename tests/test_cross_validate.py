@@ -1481,8 +1481,8 @@ def generate_batch_field_cases():
     for model in (qfn, holes):
         plan = altium_plan(model, layers)
         payload, _ = _lib._pads_payload(plan["pads"], "mm")
-        for key in ("x", "hole_length", "plated", "paste_expansion",
-                    "mask_expansion"):
+        for key in ("x", "hole_length", "hole_rotation", "plated",
+                    "paste_expansion", "mask_expansion"):
             cases.append(("BatchFieldSweep", [payload, key]))
         if plan["regions"]:
             regions, _ = _lib._regions_payload(plan["regions"])

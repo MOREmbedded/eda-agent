@@ -195,22 +195,26 @@ async def _refuse_manual_sheet_layout(
 
 
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
+# Name, operator, value. The operator is the first = ! < or > (names hold
+# none), as the script's FilterOpPos reads it; a lone '!' is no operator.
+_FILTER_COND = re.compile(r"([^=!<>]*)(!=|<=|>=|=|<|>)(.*)", re.S)
 
 
 def filter_problem(filt: str) -> str:
-    """The first condition of ``filt`` that is not Name=Value, or ''.
+    """The first condition of ``filt`` that is not Name<op>Value, or ''.
 
-    A filter is Name=Value pairs joined by ``|`` and nothing else. The
-    script used to skip a condition it could not parse, which emptied the
-    filter: obj_delete given an Altium query expression removed every
-    track on a board and reported success. The script now refuses such a
-    filter too; this says so before anything is sent.
+    A filter is conditions joined by ``|`` and nothing else, each Name=Value,
+    Name!=Value or a numeric Name<Value, >, <=, >=. The script used to skip
+    a condition it could not parse, which emptied the filter: obj_delete
+    given an Altium query expression removed every track on a board and
+    reported success. The script now refuses such a filter too; this says
+    so before anything is sent.
     """
     for cond in str(filt or "").split("|"):
         if not cond.strip():
             continue
-        name, eq, _ = cond.partition("=")
-        if not eq or not _FILTER_NAME.fullmatch(name):
+        m = _FILTER_COND.fullmatch(cond)
+        if not m or not _FILTER_NAME.fullmatch(m.group(1)):
             return cond
     return ""
 
@@ -221,7 +225,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
     if _FILTER_NAME.fullmatch(cond.strip()):
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
-                     "Name=Value pairs joined by |, each matched exactly; Altium "
+                     "Name=Value conditions joined by |, each matched exactly "
+                     "(also Name!=Value, and Name<Value, >, <=, >= on numbers); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
                      f"not understood.{hint} Nothing was sent.", **extra}
 
@@ -250,6 +255,36 @@ def _mark_erc_page(result: Any) -> Any:
     return result
 
 
+async def _reopen_sheet(bridge) -> dict[str, Any]:
+    """Save, close and reopen the active sheet, and bring it back to front.
+
+    MEASURED on AD 26.11: after a sheet size change the ERC still judged
+    the sheet against its old frame ("Off sheet Net Label PROBE at
+    6000mil,9500mil" on an A3 sheet that had been A4), through saves and
+    forced recompiles, until the document was closed and opened again.
+    A demo run then switched the check off to get a clean ERC.
+    """
+    from ..bridge.exceptions import AltiumError
+
+    try:
+        active = await bridge.send_command_async("application.get_active_document", {})
+        path = str((active or {}).get("file_path") or "") if isinstance(active, dict) else ""
+        if not path.lower().endswith(".schdoc"):
+            return {"done": False, "reason": "the active document is not a saved sheet"}
+        await bridge.send_command_async("application.save_document", {"file_path": path},
+                                        timeout=60)
+        await bridge.send_command_async("application.close_document", {"file_path": path},
+                                        timeout=60)
+        await bridge.send_command_async("application.run_process", {
+            "process_name": "WorkspaceManager:OpenObject",
+            "parameters": f"ObjectKind=Document|FileName={path}"})
+        await bridge.send_command_async("application.set_active_document", {"file_path": path})
+        return {"done": True, "file_path": path,
+                "why": "Altium's ERC keeps a sheet's old frame until it is reopened"}
+    except AltiumError as exc:
+        return {"done": False, "reason": str(exc)}
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -275,6 +310,8 @@ def register_generic_tools(mcp):
                 "eRoundRectangle"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
+                "eSplitPlaneObject" (a plane layer's regions, with Net
+                and Layer),
                 "eConnectionObject" (the ratsnest: one line per unrouted
                 connection, with X1, Y1, X2, Y2, Layer1, Layer2 and Net)
             properties: Comma-separated property names to return.
@@ -314,6 +351,8 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND), e.g.
                 "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
                 length matches as a number in mils ('.' or ',' decimal).
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
+                (a value that is not a number matches no < > <= >=).
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -693,8 +732,10 @@ def register_generic_tools(mcp):
         library; the focused tab decides which editor zooms.
 
         Args:
-            action: "fit" (zoom to show all), "selection" (zoom to selected
-                objects) or "point" (zoom to x, y)
+            action: "fit" (zoom to show all), "board" (the board alone,
+                not parts parked beside it; a schematic fits as "fit"),
+                "selection" (zoom to selected objects) or "point" (zoom
+                to x, y)
             x, y: the point for "point", in mils (a footprint's frame in
                 a PCB library)
             radius: half the width of the view round the point on a board
@@ -870,11 +911,17 @@ def register_generic_tools(mcp):
             },
         )
         if isinstance(result, dict):
-            return {"success": True, **result}
+            out = {"success": True, **result}
         elif result:
-            return {"success": True, "data": result}
+            out = {"success": True, "data": result}
         else:
-            return {"success": True, "process": process_name}
+            out = {"success": True, "process": process_name}
+        try:
+            from ..ui.altium_processes import unlisted
+            out.update(unlisted(process_name) or {})
+        except Exception:                       # noqa: BLE001 - a hint only
+            pass
+        return out
 
     @mcp.tool()
     async def proj_run_erc(limit: int = 100,
@@ -1092,6 +1139,9 @@ def register_generic_tools(mcp):
         """Create a new schematic sheet and add it to the focused project.
 
         The sheet is created in the same directory as the project file.
+        Refused (FILE_EXISTS) when a file of that name is already there,
+        as one removed with proj_delete_sheet is: it would open with its
+        old drawing.
 
         Args:
             name: Name for the new sheet (without .SchDoc extension).
@@ -1480,6 +1530,8 @@ def register_generic_tools(mcp):
             params["orientation"] = orientation
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.set_sheet_size", params)
+        if isinstance(result, dict) and result.get("success") is not False:
+            result["reopened"] = await _reopen_sheet(bridge)
         return result
 
     @mcp.tool()
@@ -1543,7 +1595,8 @@ def register_generic_tools(mcp):
                 "generic.set_sheet_size", {"style": to, "custom_width": "0",
                                            "custom_height": "0"})
             actions.append({"action": "set_sheet_size", "to": to,
-                            "reply": reply})
+                            "reply": reply,
+                            "reopened": await _reopen_sheet(bridge)})
             report = await audit()
         if report.get("ok") and report.get("verdict") == "shift":
             dx, dy = int(report["dx"]), int(report["dy"])

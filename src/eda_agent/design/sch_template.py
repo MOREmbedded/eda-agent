@@ -420,6 +420,7 @@ def build(template: dict, pins: dict[str, list[PinEnd]], *,
     _check_overlaps(d)
     _check_crossings(d)
     _check_bodies(d)
+    _check_text(d)
     _connectivity(d, template.get("nets"))
     return d
 
@@ -497,6 +498,72 @@ def _check_bodies(d: Drawing) -> None:
             if (a["x"], a["y"]) == (b["x"], b["y"]):
                 d.warnings.append({"check": "stacked", "where": [a["x"], a["y"]],
                                    "detail": f"{a['net']} and {b['net']} sit on the same point"})
+
+
+#: Text as the preview draws it, in mils: per character and line height.
+_CHAR_W, _TEXT_H = 50, 100
+
+
+def text_boxes(d: Drawing) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """(what, box) for every designator, value, port and label text, and
+    every power port's symbol, where the preview draws them."""
+    by_ref = {body_name(str(p.get("designator", "")), part_number(p)): p
+              for p in d.parts}
+    out: list[tuple[str, tuple[int, int, int, int]]] = []
+    for ref, (x0, y0, x1, y1) in d.bodies.items():
+        part = by_ref.get(ref, {})
+        name = str(part.get("designator", ref))
+        out.append((f"{ref} designator",
+                    (x1 + 20, y1, x1 + 20 + _CHAR_W * len(name), y1 + _TEXT_H)))
+        if part.get("value"):
+            val = str(part["value"])
+            out.append((f"{ref} value",
+                        (x1 + 20, y0 - _TEXT_H, x1 + 20 + _CHAR_W * len(val), y0)))
+    for o in d.ports:
+        dx, dy = _DIRS[o["orientation"] % 4]
+        sx, sy = o["x"] + dx * 60, o["y"] + dy * 60
+        out.append((f"port {o['net']} symbol",
+                    (min(o["x"], sx) - 40, min(o["y"], sy) - 40,
+                     max(o["x"], sx) + 40, max(o["y"], sy) + 40)))
+        tx, ty = o["x"] + dx * 80, o["y"] + dy * 80
+        half = _CHAR_W * len(o["net"]) // 2
+        out.append((f"port {o['net']} text",
+                    (tx - half, ty if dy >= 0 else ty - _TEXT_H,
+                     tx + half, ty + _TEXT_H if dy >= 0 else ty)))
+    for o in d.labels:
+        out.append((f"label {o['net']}",
+                    (o["x"], o["y"] + 15, o["x"] + _CHAR_W * len(o["net"]), o["y"] + 15 + _TEXT_H)))
+    return out
+
+
+def _check_text(d: Drawing) -> None:
+    """Text that would sit on other text, on another part or on a power
+    port's symbol: found only on the Altium screenshot before (cap values
+    over ground symbols, port text over designators), and redrawn."""
+    boxes = text_boxes(d)
+
+    def hit(a, b) -> bool:
+        return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+    for i, (what, box) in enumerate(boxes):
+        own = what.split(" ")[0]
+        for other, obox in boxes[i + 1:]:
+            if other.split(" ")[0] == own and not what.startswith(("port", "label")):
+                continue
+            if what.endswith("symbol") and other.endswith("symbol"):
+                continue                       # stacked ports are their own check
+            if hit(box, obox):
+                d.warnings.append({"check": "text_overlap",
+                                   "where": [box[0], box[1]],
+                                   "detail": f"{what} overlaps {other} (approximate: "
+                                             "Altium places texts from the symbol)"})
+        if what.endswith("symbol"):
+            continue
+        for ref, body in d.bodies.items():
+            if ref != own and hit(box, body):
+                d.warnings.append({"check": "text_overlap",
+                                   "where": [box[0], box[1]],
+                                   "detail": f"{what} lies on {ref}'s body (approximate)"})
 
 
 def _connectivity(d: Drawing, expected: Optional[dict]) -> None:

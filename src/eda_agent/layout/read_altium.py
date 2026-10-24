@@ -33,6 +33,10 @@ def _m(c) -> float:
     return float(c) / COORD_PER_MIL
 
 
+def _raw(mils: float) -> float:
+    return mils * COORD_PER_MIL
+
+
 def _pt(p) -> tuple[float, float]:
     return (_m(p[0]), _m(p[1]))
 
@@ -131,16 +135,28 @@ def _courtyard_layers(board_reply: dict) -> set[str]:
             if "courtyard" in (m.get("name") or "").lower()}
 
 
-def _courtyard_polygon(prims: list[dict]) -> list[tuple[float, float]]:
+def _courtyard_polygon(prims: list[dict], cx: float = 0.0, cy: float = 0.0,
+                       rotation: float = 0.0) -> list[tuple[float, float]]:
     """A courtyard outline from the primitives drawn on its layer.
 
     A region is taken as it is. Line and arc work is reduced to the extent
-    it covers, which is exact for the rectangular courtyards nearly every
-    footprint uses and conservative for the rest.
+    it covers in the part's own frame (turned by ``rotation`` about
+    ``cx, cy``) and that box is turned back, which is exact for the
+    rectangular courtyards nearly every footprint uses, at any rotation,
+    and conservative for the rest. Measured: the extent taken on the
+    board axes made a 45-degree LQFP-48's courtyard a square twice its
+    area, and the placement audit reported it overlapping ten neighbours.
     """
     for p in prims:
         if "pts" in p and len(p["pts"]) >= 3:
             return [_pt(v) for v in p["pts"]]
+    turn = math.radians(rotation % 360.0)
+    if abs(math.sin(2 * turn)) > 1e-9 or abs(math.cos(turn)) < 1e-9:
+        local = _courtyard_polygon(
+            [_turned(p, cx, cy, -turn) for p in prims])
+        cos_t, sin_t = math.cos(turn), math.sin(turn)
+        return [(cx + (x - cx) * cos_t - (y - cy) * sin_t,
+                 cy + (x - cx) * sin_t + (y - cy) * cos_t) for x, y in local]
     xs: list[float] = []
     ys: list[float] = []
     for p in prims:
@@ -159,6 +175,27 @@ def _courtyard_polygon(prims: list[dict]) -> list[tuple[float, float]]:
     return _box(min(xs), min(ys), max(xs), max(ys))
 
 
+def _turned(prim: dict, cx: float, cy: float, turn: float) -> dict:
+    """``prim`` (a track or an arc, raw coordinates) turned by ``turn``
+    radians about ``cx, cy`` in mils, in the same raw form."""
+    cos_t, sin_t = math.cos(turn), math.sin(turn)
+
+    def rot(x_raw, y_raw):
+        x, y = _m(x_raw) - cx, _m(y_raw) - cy
+        return (_raw(cx + x * cos_t - y * sin_t), _raw(cy + x * sin_t + y * cos_t))
+
+    if "t" in prim:
+        x1, y1, x2, y2, w = prim["t"]
+        a, b = rot(x1, y1), rot(x2, y2)
+        return {"t": [a[0], a[1], b[0], b[1], w]}
+    if "a" in prim:
+        acx, acy, r, a1, a2, w = prim["a"]
+        c = rot(acx, acy)
+        deg = math.degrees(turn)
+        return {"a": [c[0], c[1], r, float(a1) + deg, float(a2) + deg, w]}
+    return prim
+
+
 def _box(x1, y1, x2, y2) -> list[tuple[float, float]]:
     return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
 
@@ -174,7 +211,8 @@ def _components(reply: dict, courtyard_ids: set[str],
                    "layer": b.get("layer", "")}
                   for b in c.get("bodies") or []]
         yard_prims = [p for p in c.get("mech") or [] if p.get("layer") in courtyard_ids]
-        courtyard = _courtyard_polygon(yard_prims)
+        courtyard = _courtyard_polygon(yard_prims, _m(c["x"]), _m(c["y"]),
+                                       float(c.get("rotation", 0.0)))
         source = "courtyard" if courtyard else ""
         if not courtyard and bodies:
             xs = [x for b in bodies for x, _ in b["outline"]]
@@ -241,7 +279,11 @@ def _copper(items: list[dict], board: LayoutBoard) -> None:
         layer, net, comp = o.get("layer", ""), o.get("net", ""), o.get("comp", "")
         # Poured copper has no net of its own; the reply names its pour's.
         net = net or o.get("pour_net", "")
-        keepout = bool(o.get("keepout"))
+        # Anything on the Keep-Out layer keeps copper out of every layer,
+        # flagged or not. Measured: a ring drawn there round a mounting
+        # hole with pcb_place_arc was read as copper on a layer the router
+        # does not route, so a signal ran straight through it.
+        keepout = bool(o.get("keepout")) or layer == "KeepOutLayer"
         if k == "track":
             x1, y1, x2, y2, w = (_m(v) for v in o["v"])
             board.tracks.append(Track(layer, x1, y1, x2, y2, w, net, comp, keepout))
@@ -279,7 +321,13 @@ def _copper(items: list[dict], board: LayoutBoard) -> None:
                 kind = "cutout"
             else:
                 kind = "pour" if o.get("in_polygon") else "copper"
-            source = f"polygon:{o['pour']}" if o.get("pour") else "region"
+            # Copper a polygon poured carries that polygon's source even when
+            # the polygon has no name, so the router can set it aside and
+            # pour again from the outline. Unnamed, it was read as a fixed
+            # region: routing +3V3 after the GND pours took 8 minutes and
+            # failed, until the agent emptied the pours by hand.
+            source = (f"polygon:{o.get('pour', '')}" if o.get("in_polygon") or o.get("pour")
+                      else "region")
             board.regions.append(Region(layer, outline, holes, net, kind,
                                         keepout, comp, source))
         elif k == "fill":
@@ -288,8 +336,9 @@ def _copper(items: list[dict], board: LayoutBoard) -> None:
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
             shape = geom.pad_shape(cx, cy, abs(x2 - x1), abs(y2 - y1), "rect", rot)
             kind = "keepout" if keepout else ("pour" if o.get("in_polygon") else "copper")
-            board.regions.append(Region(layer, list(shape.pts), [], net, kind,
-                                        keepout, comp, "fill"))
+            board.regions.append(Region(layer, list(shape.pts), [], net, kind, keepout, comp,
+                                        f"polygon:{o.get('pour', '')}" if o.get("in_polygon")
+                                        else "fill"))
         elif k == "polygon":
             outline = _outline_points(o.get("pts") or [])
             if len(outline) >= 3:

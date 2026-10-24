@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Application-level tools for Altium Designer MCP Server."""
 
+import os
 import re
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
@@ -1124,18 +1125,39 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_set_active_document(file_path: str) -> dict[str, Any]:
-        """Set a specific document as the active (focused) document.
+        """Set a specific document as the active (focused) document,
+        opening it first when it is a file Altium has not loaded yet (a
+        member of a project just opened, say).
 
         Args:
             file_path: Full path to the document to activate
 
         Returns:
-            Dictionary with result of the operation
+            Dictionary with result of the operation; ``opened`` true when
+            the document had to be opened first.
         """
+        from ..bridge.exceptions import AltiumError
+
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "application.set_active_document", {"file_path": file_path}
-        )
+        opened = False
+        try:
+            result = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": file_path}
+            )
+        except AltiumError as exc:
+            # Measured: a demo run opened its project and then could not
+            # bring the board forward because no editor had loaded it.
+            if "not loaded" not in str(exc).lower() or not os.path.isfile(file_path):
+                raise
+            await bridge.send_command_async("application.run_process", {
+                "process_name": "WorkspaceManager:OpenObject",
+                "parameters": f"ObjectKind=Document|FileName={file_path}"})
+            opened = True
+            result = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": file_path}
+            )
+        if opened:
+            result = {"opened": True, **(result if isinstance(result, dict) else {})}
         if isinstance(result, dict):
             return {"success": True, "file_path": file_path, **result}
         elif result:

@@ -404,7 +404,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                      "standoff", "opacity", "library"),
         "document_kind": "library",
         "backends": ("altium",),
-        "use": ["lib_link_3d_model", "lib_auto_link_3d_models",
+        "use": ["lib_link_3d_model", "lib_create_3d_model",
+                "lib_auto_link_3d_models",
                 "lib_update_footprint_heights_from_3d"],
         "avoid": [
             ("pcb_place_3d_body", "places a free body on a BOARD, not "
@@ -415,11 +416,132 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         ],
         "note": (
             "lib_link_3d_model puts a STEP model in a footprint with its "
-            "offsets and rotations; lib_auto_link_3d_models matches models "
+            "offsets and rotations; lib_create_3d_model builds one from "
+            "solids read off the datasheet drawing, for a part no package "
+            "family covers (connector, LED with a lens, header); "
+            "lib_auto_link_3d_models matches models "
             "to footprints by name across a library; and "
             "lib_update_footprint_heights_from_3d sets each footprint's "
             "height from its body. lib_get_footprint_primitives counts the "
             "bodies a footprint carries and the layer each is on."),
+    },
+    {
+        "task": "Simulate a supply, inrush, hot-plug or load step in Altium",
+        "keywords": ("simulate", "simulation", "spice", "transient", "inrush",
+                     "hotplug", "hot-plug", "ringing", "droop", "sim", "ngspice",
+                     "waveform"),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["sim_run_deck", "sim_get_results", "sim_get_readiness",
+                "sim_setup_analysis", "sim_run"],
+        "avoid": [
+            ("sim_attach_primitives", "it writes parameters, not the model "
+                                      "link Altium needs, so a sheet of your "
+                                      "own symbols still fails with Missing "
+                                      "component models"),
+        ],
+        "note": (
+            "sim_run_deck runs a plain SPICE deck you write (sources, the "
+            "cable, fuse, ESD, bulk and load as elements, .TRAN, a .PLOT "
+            "line, .END) in Altium's simulator and opens the waves as a "
+            "chart; the reply gives each wave's min, max and final value. "
+            "sim_run runs a schematic whose parts all carry simulation "
+            "models, such as Altium's own simulation examples. An IC's "
+            "behaviour needs its vendor's SPICE model."),
+    },
+    {
+        "task": "Place parts in a ring or on an arc (LED rings, round boards)",
+        "keywords": ("ring", "circle", "circular", "round", "radial", "polar",
+                     "arc", "concentric", "led ring"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_ring", "pcb_copy_tracks_radial", "pcb_move_components"],
+        "avoid": [],
+        "note": (
+            "pcb_place_ring spaces parts evenly round a circle or an arc, each "
+            "turned to face the centre (rotation_offset sets which way), in "
+            "one exact batch placement; call it once per ring. "
+            "pcb_copy_tracks_radial copies one cell's routing round the same "
+            "centre."),
+    },
+    {
+        "task": "Make a PDF of the schematics or the board without a person there",
+        "keywords": ("pdf", "print", "schematic pdf", "smart pdf", "publish",
+                     "documentation", "drawing"),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["proj_list_outjob_containers", "proj_run_outjob",
+                "proj_create_outjob"],
+        "avoid": [
+            ("proj_export_pdf", "it opens Altium's PRINT dialog with the "
+                                "user's real printer selected and a live "
+                                "Print button; nothing is written until a "
+                                "person finishes it, and a wrong press "
+                                "prints paper"),
+        ],
+        "note": (
+            "A PDF is written without dialogs by an OutJob container whose "
+            "medium is PDF (Publish). proj_list_outjob_containers lists the "
+            "project's OutJobs and their containers; proj_run_outjob runs "
+            "one. With no OutJob, ask the user which of their OutJobs to copy "
+            "and use proj_create_outjob."),
+    },
+    {
+        "task": "Route a USB or differential pair at a controlled impedance",
+        "keywords": ("usb", "differential", "diff", "pair", "impedance", "90",
+                     "100", "ohm", "coupled", "dp", "dm", "lvds", "matched"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_layer_stackup", "pcb_calc_trace_width_for_impedance",
+                "pcb_create_diff_pair", "pcb_create_design_rule",
+                "pcb_set_rule_properties", "pcb_autoroute"],
+        "avoid": [
+            ("pcb_place_tracks", "two tracks drawn one by one are not coupled "
+                                 "and drift apart at every corner"),
+        ],
+        "note": (
+            "Read the stack-up (dielectric height to the reference plane, Er), "
+            "then pcb_calc_trace_width_for_impedance with geometry "
+            "microstrip_diff for the target (USB 2.0: 90 ohm differential) "
+            "and a chosen gap. pcb_create_diff_pair names the pair; "
+            "pcb_create_design_rule rule_type differential_pairs with scope "
+            "InDifferentialPair('<name>') sets the gap, and "
+            "pcb_set_rule_properties its widths. pcb_autoroute routes the pair "
+            "first, coupled at that width and gap, and reports it under "
+            "pairs (length, skew); a pair it reports with a note was routed "
+            "at defaults, not to an impedance. Keep a solid ground plane "
+            "beside it: each pair's ``reference`` names the plane next to its "
+            "layer and that plane's net. A part in series with the pair (an "
+            "ESD protector, a common-mode choke) splits each line into two "
+            "nets; the router follows a pair through a small flow-through "
+            "part (source \"through U1\"), but defining both halves as pairs "
+            "is surer, and a pair the schematic does not define is removed "
+            "by the next schematic sync."),
+    },
+    {
+        "task": "Pour copper and stitch it on a round or shaped board",
+        "keywords": ("pour", "ground", "gnd", "stitch", "stitching",
+                     "keepout", "keep-out", "outline", "round", "circular",
+                     "shaped", "thermal"),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_polygon_board", "pcb_keepout_board_outline",
+                "pcb_modify_polygon", "pcb_place_polygon_rect",
+                "pcb_place_stitching_vias", "pcb_repour_polygons"],
+        "avoid": [
+            ("pcb_place_region", "a region is fixed copper; it does not pour "
+                                 "around other nets or clear dead copper"),
+        ],
+        "note": (
+            "pcb_place_polygon_board pours over the board's own outline, arcs "
+            "included, after drawing the outline as a keep-out "
+            "(pcb_keepout_board_outline) so the copper keeps its distance "
+            "from the edge. Or draw the keep-out and use pcb_place_polygon_rect "
+            "larger than the board: the pour stops at the keep-out and dead "
+            "copper is removed (pcb_modify_polygon sets that on a pour "
+            "already there). Pour top and bottom with the ground net, then "
+            "pcb_place_stitching_vias with no rectangle stitches the whole "
+            "board on grid points inside its outline, never in a pad."),
     },
     {
         "task": "Move every 3D body of a library onto one layer",
