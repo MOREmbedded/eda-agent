@@ -402,6 +402,32 @@ Begin
         Or (Obj.ObjectId = eHarnessEntry);
 End;
 
+{ FontId belongs to ISch_Label and the types built on it (net labels,
+  power objects, cross-sheet connectors, parameters, designators, sheet
+  names and file names), to ISch_Port and to ISch_TextFrame (text frames,
+  notes): the interfaces Altium.SDK.Interfaces.dll gives Get/SetState_FontId.
+  On a sheet entry it raised an undeclared-identifier modal and stopped the
+  polling loop (AD 25.8), so this is an allowlist. }
+Function SchObjectHasFontId(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eLabel) Or (Obj.ObjectId = eNetLabel)
+        Or (Obj.ObjectId = ePowerObject) Or (Obj.ObjectId = eCrossSheetConnector)
+        Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
+        Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName)
+        Or (Obj.ObjectId = ePort) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote);
+End;
+
+{ A sheet entry's or harness entry's label font is TextFontID, not FontId. }
+Function SchObjectHasTextFontId(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSheetEntry) Or (Obj.ObjectId = eHarnessEntry);
+End;
+
 { Only these types answer to Name. Anything else (a free text, a note,
   a net label) faults with an undeclared-identifier modal that
   Try/Except cannot contain, which stops the bridge (issue #74). This is
@@ -443,7 +469,11 @@ Begin
             PropName := Copy(Assignment, 1, EqPos - 1);
             If ((PropName = 'Text') And (Not SchObjectHasText(Obj)))
                 Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj)))
-                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj))) Then
+                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj)))
+                Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
+                Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj)))
+                Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
+                    And (Obj.ObjectId <> eSchComponent)) Then
             Begin
                 Result := PropName;
                 Exit;
@@ -753,6 +783,311 @@ Begin
         Result := FloatToJsonStr(CoordToMilsF(Vtx.Y));
 End;
 
+{..............................................................................}
+{ A PLACED PART'S FOOTPRINT MODELS. Defined above GetSchProperty, which reads  }
+{ the pin map through them. A part can carry several PCBLIB models; the one   }
+{ marked IsCurrent is the footprint the board gets.                          }
+{..............................................................................}
+
+{ The current PCBLIB implementation of a placed part, or the first one. }
+Function CurrentFootprintImpl(Comp : ISch_Component) : ISch_Implementation;
+Var
+    ImplIter : ISch_Iterator;
+    Impl, FirstFp : ISch_Implementation;
+    MT : String;
+    IsCur : Boolean;
+Begin
+    Result := Nil;
+    FirstFp := Nil;
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            Try MT := Impl.ModelType; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                If FirstFp = Nil Then FirstFp := Impl;
+                IsCur := False;
+                Try IsCur := Impl.IsCurrent; Except End;
+                If IsCur Then
+                Begin
+                    Result := Impl;
+                    Break;
+                End;
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+    If Result = Nil Then Result := FirstFp;
+End;
+
+{ The PCBLIB model names a part carries, comma separated, for a hint. }
+Function FootprintModelNames(Comp : ISch_Component) : String;
+Var
+    ImplIter : ISch_Iterator;
+    Impl : ISch_Implementation;
+    MT, MN : String;
+Begin
+    Result := '';
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            MN := '';
+            Try MT := Impl.ModelType; Except End;
+            Try MN := Impl.ModelName; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                If Result <> '' Then Result := Result + ', ';
+                Result := Result + MN;
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+End;
+
+{ ChooseFootprintModel - make the part's PCBLIB model called Name (matched   }
+{ ignoring case and outer spaces) its only current one. 1 = chosen, 0 = the  }
+{ part has no model of that name (nothing written), -1 = the flags did not   }
+{ read back as asked, and each was put back as it was. Before is the model   }
+{ that was current, After the one current now. The models are collected      }
+{ first and written after the walk: the others cleared, then the chosen one  }
+{ set, then every flag read back, so a setter that also clears its siblings  }
+{ and one that does not end the same way. Other model types keep their own   }
+{ current model. The list is left to the script host (Free on design         }
+{ objects crashes Altium).                                                    }
+Function ChooseFootprintModel(Comp : ISch_Component; Name : String;
+    Var Before : String; Var After : String) : Integer;
+Var
+    ImplIter : ISch_Iterator;
+    Impl : ISch_Implementation;
+    Impls : TInterfaceList;
+    Flags, MT, MN : String;
+    IsCur, Held : Boolean;
+    I, K : Integer;
+Begin
+    Result := 0;
+    Before := '';
+    After := '';
+    K := -1;
+    Flags := '';
+    Impls := TInterfaceList.Create;
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            Try MT := Impl.ModelType; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                MN := '';
+                IsCur := False;
+                Try MN := Impl.ModelName; Except End;
+                Try IsCur := Impl.IsCurrent; Except End;
+                If (K < 0) And (UpperCase(Trim(MN)) = UpperCase(Trim(Name))) Then
+                    K := Impls.Count;
+                If IsCur Then
+                Begin
+                    Flags := Flags + '1';
+                    If Before = '' Then Before := MN;
+                End
+                Else
+                    Flags := Flags + '0';
+                Impls.Add(Impl);
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+    If K < 0 Then Exit;
+
+    For I := 0 To Impls.Count - 1 Do
+        If I <> K Then
+        Begin
+            Impl := Impls.Items[I];
+            SchBeginModify(Impl);
+            Try Impl.IsCurrent := False; Except End;
+            SchEndModify(Impl);
+        End;
+    Impl := Impls.Items[K];
+    SchBeginModify(Impl);
+    Try Impl.IsCurrent := True; Except End;
+    SchEndModify(Impl);
+
+    Held := True;
+    For I := 0 To Impls.Count - 1 Do
+    Begin
+        Impl := Impls.Items[I];
+        IsCur := Not (I = K);
+        Try IsCur := Impl.IsCurrent; Except End;
+        If IsCur <> (I = K) Then Held := False;
+    End;
+    If Held Then
+    Begin
+        Impl := Impls.Items[K];
+        Try After := Impl.ModelName; Except End;
+        Result := 1;
+        Exit;
+    End;
+
+    { Put every flag back: the cleared ones first, then the current ones. }
+    For I := 0 To Impls.Count - 1 Do
+        If Copy(Flags, I + 1, 1) = '0' Then
+        Begin
+            Impl := Impls.Items[I];
+            SchBeginModify(Impl);
+            Try Impl.IsCurrent := False; Except End;
+            SchEndModify(Impl);
+        End;
+    For I := 0 To Impls.Count - 1 Do
+        If Copy(Flags, I + 1, 1) = '1' Then
+        Begin
+            Impl := Impls.Items[I];
+            SchBeginModify(Impl);
+            Try Impl.IsCurrent := True; Except End;
+            SchEndModify(Impl);
+        End;
+    After := Before;
+    Result := -1;
+End;
+
+{ A pin map in Altium's own form, "(G:1),(D:2),(S:3)", from that form or     }
+{ "G:1;D:2" or "G->1, D->2", in the order given. '' when an entry lacks a    }
+{ pin or a pad.                                                               }
+Function CanonicalPinMap(Text : String) : String;
+Var
+    Rest, Entry, Pin, Pad, Ch : String;
+    I, P : Integer;
+Begin
+    Result := '';
+    Rest := '';
+    For I := 1 To Length(Text) Do
+    Begin
+        Ch := Copy(Text, I, 1);
+        If (Ch = '(') Or (Ch = ')') Then Ch := '';
+        If Ch = ';' Then Ch := ',';
+        Rest := Rest + Ch;
+    End;
+    Rest := StringReplace(Rest, '->', ':', -1);
+    While Rest <> '' Do
+    Begin
+        P := Pos(',', Rest);
+        If P > 0 Then
+        Begin
+            Entry := Trim(Copy(Rest, 1, P - 1));
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Entry := Trim(Rest);
+            Rest := '';
+        End;
+        If Entry <> '' Then
+        Begin
+            P := Pos(':', Entry);
+            If P = 0 Then
+            Begin
+                Result := '';
+                Exit;
+            End;
+            Pin := Trim(Copy(Entry, 1, P - 1));
+            Pad := Trim(Copy(Entry, P + 1, Length(Entry)));
+            If (Pin = '') Or (Pad = '') Then
+            Begin
+                Result := '';
+                Exit;
+            End;
+            If Result <> '' Then Result := Result + ',';
+            Result := Result + '(' + Pin + ':' + Pad + ')';
+        End;
+    End;
+End;
+
+{ True when every "(pin:pad)" entry of Wanted (in CanonicalPinMap form) is   }
+{ in Got, whatever the order and spacing. Altium merges a written map by     }
+{ schematic pin, so Got may hold entries Wanted does not name.               }
+Function PinMapHolds(Wanted : String; Got : String) : Boolean;
+Var
+    Rest, Entry, Have : String;
+    P : Integer;
+Begin
+    Result := False;
+    Have := ',' + StringReplace(CanonicalPinMap(Got), ' ', '', -1) + ',';
+    Rest := StringReplace(Wanted, ' ', '', -1);
+    If Rest = '' Then Exit;
+    While Rest <> '' Do
+    Begin
+        P := Pos('),', Rest);
+        If P > 0 Then
+        Begin
+            Entry := Copy(Rest, 1, P);
+            Rest := Copy(Rest, P + 2, Length(Rest));
+        End
+        Else
+        Begin
+            Entry := Rest;
+            Rest := '';
+        End;
+        If Pos(',' + Entry + ',', Have) = 0 Then Exit;
+    End;
+    Result := True;
+End;
+
+{ WriteFootprintPinMap - the current footprint model's pin map, in any form  }
+{ CanonicalPinMap takes. Read back; when it does not hold, the old map is    }
+{ written back and False returned. Altium merges by schematic pin, so a map  }
+{ cannot be cleared this way, and pads are not checked against the footprint.}
+Function WriteFootprintPinMap(Comp : ISch_Component; Value : String) : Boolean;
+Var
+    Impl : ISch_Implementation;
+    Wanted, Old, Got : String;
+Begin
+    Result := False;
+    Wanted := CanonicalPinMap(Value);
+    If Wanted = '' Then Exit;
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl = Nil Then Exit;
+    Old := '';
+    Try Old := Impl.MapAsString; Except End;
+    SchBeginModify(Impl);
+    Try Impl.MapAsString := Wanted; Except End;
+    SchEndModify(Impl);
+    Got := '';
+    Try Got := Impl.MapAsString; Except End;
+    If PinMapHolds(Wanted, Got) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    SchBeginModify(Impl);
+    Try Impl.MapAsString := Old; Except End;
+    SchEndModify(Impl);
+End;
+
+{ The current footprint model's pin map, '' when the part has no PCB model. }
+Function ReadFootprintPinMap(Comp : ISch_Component) : String;
+Var
+    Impl : ISch_Implementation;
+Begin
+    Result := '';
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl = Nil Then Exit;
+    Try Result := Impl.MapAsString; Except Result := ''; End;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
@@ -894,6 +1229,25 @@ Begin
         // library symbol cannot tell which part a returned primitive is on.
         Else If PropName = 'OwnerPartId'        Then Result := IntToStr(Obj.OwnerPartId)
         Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
+        { A placed part's display mode (0 = normal, then the alternates)  }
+        { and how many it has, and its current footprint model's pin map  }
+        { as Altium writes it, "(G:1),(D:2),(S:3)". Components only.       }
+        Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
+             Or (PropName = 'FootprintPinMap') Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                If PropName = 'DisplayMode' Then Result := IntToStr(Comp.DisplayMode)
+                Else If PropName = 'DisplayModeCount' Then Result := IntToStr(Comp.DisplayModeCount)
+                Else Result := ReadFootprintPinMap(Comp);
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
         // A pin's own description (issue #75), not the component's.
         Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
             Result := ReadSchPinProp(Obj, 'Description')
@@ -958,7 +1312,34 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'FontId'      Then Result := IntToStr(Obj.FontId)
+        Else If PropName = 'FontId' Then
+        Begin
+            If SchObjectHasFontId(Obj) Then
+                Result := IntToStr(Obj.FontId)
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
+        Else If PropName = 'TextFontId' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                Result := IntToStr(EntryObj.TextFontID);
+            End
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := IntToStr(HarnessEntryObj.TextFontID);
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
         Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
         Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
@@ -1354,7 +1735,53 @@ Begin
             Else
                 NotePropertyDiag('unknown', PropName);
         End
-        Else If PropName = 'FontId'      Then Obj.FontId := StrToIntDef(Value, 1)
+        { A placed part's display mode, refused outside 0 .. count - 1 and  }
+        { read back; its current footprint model's pin map, which Altium    }
+        { merges by schematic pin (WriteFootprintPinMap). Components only.  }
+        Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap') Then
+        Begin
+            If Obj.ObjectId <> eSchComponent Then
+                Matched := False
+            Else If PropName = 'DisplayMode' Then
+            Begin
+                Comp := Obj;
+                If (Not IsIntStr(Value)) Or (StrToIntDef(Value, -1) < 0)
+                   Or (StrToIntDef(Value, -1) >= Comp.DisplayModeCount) Then
+                    WroteOK := False
+                Else
+                Begin
+                    Comp.DisplayMode := StrToIntDef(Value, 0);
+                    If Comp.DisplayMode <> StrToIntDef(Value, 0) Then WroteOK := False;
+                End;
+            End
+            Else
+            Begin
+                Comp := Obj;
+                If Not WriteFootprintPinMap(Comp, Value) Then WroteOK := False;
+            End;
+        End
+        Else If PropName = 'FontId' Then
+        Begin
+            If SchObjectHasFontId(Obj) Then
+                Obj.FontId := StrToIntDef(Value, 1)
+            Else
+                NotePropertyDiag('unknown', PropName);
+        End
+        Else If PropName = 'TextFontId' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                EntryObj.TextFontID := StrToIntDef(Value, 1);
+            End
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                HarnessEntryObj.TextFontID := StrToIntDef(Value, 1);
+            End
+            Else
+                NotePropertyDiag('unknown', PropName);
+        End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
@@ -8884,6 +9311,10 @@ End;
 { Only a PCBLIB implementation is touched, the current one first; a part with   }
 { none is reported, not given a new model. The name is read back, so a write    }
 { that did not take is not counted.                                             }
+{ A part that already carries a model of that name has that model CHOSEN, not   }
+{ the current one renamed: renaming turned one model, its link and its pin map  }
+{ into a second copy of a name the part already had. A choice that does not    }
+{ read back is undone and reported, and nothing is renamed.                     }
 {..............................................................................}
 
 Function SetPlacedFootprintName(Comp : ISch_Component; NewName : String;
@@ -8894,11 +9325,17 @@ Var
     Link : ISch_ModelDatafileLink;
     MT : String;
     IsCur : Boolean;
-    J, LinkCount : Integer;
+    J, LinkCount, Choice : Integer;
 Begin
     Result := False;
     Before := '';
     After := '';
+    Choice := ChooseFootprintModel(Comp, NewName, Before, After);
+    If Choice <> 0 Then
+    Begin
+        Result := (Choice = 1);
+        Exit;
+    End;
     Target := Nil;
     FirstFp := Nil;
     ImplIter := Comp.SchIterator_Create;
@@ -8973,6 +9410,7 @@ Var
     P, Applied, Created : Integer;
     SrvDoc : IServerDocument;
     FpBefore, FpAfter, FpJson : String;
+    FpOk : Boolean;
 Begin
     DesigStr := ExtractJsonValue(Params, 'designator');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -9072,12 +9510,14 @@ Begin
             Begin
                 { Counted only when the model reads back the new name. This
                   used to count as applied and write nothing. }
-                If SetPlacedFootprintName(TargetComp, Val, FpBefore, FpAfter) Then
-                    Inc(Applied);
+                { A model chosen by name reads back in its own spelling, so the }
+                { helper's verdict decides, not a comparison with Val.          }
+                FpOk := SetPlacedFootprintName(TargetComp, Val, FpBefore, FpAfter);
+                If FpOk Then Inc(Applied);
                 FpJson := ',"footprint":{"requested":"' + EscapeJsonString(Val)
                     + '","before":"' + EscapeJsonString(FpBefore)
                     + '","after":"' + EscapeJsonString(FpAfter)
-                    + '","applied":' + BoolToJsonStr(FpAfter = Val) + '}';
+                    + '","applied":' + BoolToJsonStr(FpOk) + '}';
             End
             Else
             Begin
@@ -10127,7 +10567,8 @@ Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
     OpCount, Placed, Failed, Rotation, PartId, PartAfter : Integer;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
-    ResolvedLib, LibReason : String;
+    ResolvedLib, LibReason, FpBefore, FpAfter, FpIssues : String;
+    FpChosen, FpChoice : Integer;
     X, Y : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -10151,6 +10592,8 @@ Begin
     OpCount := 0;
     Remaining := PlaceStr;
     FailedRefdes := '';
+    FpIssues := '';
+    FpChosen := 0;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
@@ -10260,9 +10703,6 @@ Begin
                 Continue;
             End;
 
-            { Footprint override skipped: CurrentFootprintModelName is        }
-            { read-only in DelphiScript (memory: delphiscript_api_quirks.md). }
-            { Library symbol's own footprint is used.                          }
             { The part is set BEFORE the component joins the sheet, through   }
             { both setters, the order the replicate path uses. A loaded       }
             { symbol does not reliably arrive as part 1: one placed as part 1 }
@@ -10291,6 +10731,31 @@ Begin
                     Continue;
                 End;
             End;
+            { The footprint the placement names: one of the symbol's own PCB }
+            { models, made its only current one. CurrentFootprintModelName  }
+            { is read-only, so the model's IsCurrent flags are written       }
+            { instead. A name the symbol lacks, or a choice that does not    }
+            { read back, keeps the part on the library's model and is named  }
+            { in footprint_issues with the models it carries.                }
+            If Footprint <> '' Then
+            Begin
+                FpChoice := ChooseFootprintModel(Comp, Footprint, FpBefore, FpAfter);
+                If FpChoice = 1 Then
+                    Inc(FpChosen)
+                Else
+                Begin
+                    If FpIssues <> '' Then FpIssues := FpIssues + ',';
+                    If FpChoice = 0 Then
+                        FpIssues := FpIssues + '{"designator":"' + EscapeJsonString(Desig)
+                            + '","issue":"FOOTPRINT_NOT_ON_SYMBOL","kept":"'
+                            + EscapeJsonString(FpBefore) + '","models":"'
+                            + EscapeJsonString(FootprintModelNames(Comp)) + '"}'
+                    Else
+                        FpIssues := FpIssues + '{"designator":"' + EscapeJsonString(Desig)
+                            + '","issue":"FOOTPRINT_NOT_APPLIED","kept":"'
+                            + EscapeJsonString(FpBefore) + '"}';
+                End;
+            End;
             Inc(Placed);
         End;
     Finally
@@ -10300,7 +10765,10 @@ Begin
 
     ResponseBody := '{"placed":' + IntToStr(Placed)
         + ',"failed":' + IntToStr(Failed)
-        + ',"total":' + IntToStr(OpCount);
+        + ',"total":' + IntToStr(OpCount)
+        + ',"footprints_chosen":' + IntToStr(FpChosen);
+    If FpIssues <> '' Then
+        ResponseBody := ResponseBody + ',"footprint_issues":[' + FpIssues + ']';
     If FailedRefdes <> '' Then
         ResponseBody := ResponseBody + ',"failed_refdes":"'
             + EscapeJsonString(FailedRefdes) + '"';
@@ -12878,44 +13346,6 @@ Begin
         ',"synced_design_item_id":' + IntToStr(Synced) + '}');
 End;
 
-{..............................................................................}
-{ The current PCBLIB implementation of a placed part, or the first one.        }
-{..............................................................................}
-Function CurrentFootprintImpl(Comp : ISch_Component) : ISch_Implementation;
-Var
-    ImplIter : ISch_Iterator;
-    Impl, FirstFp : ISch_Implementation;
-    MT : String;
-    IsCur : Boolean;
-Begin
-    Result := Nil;
-    FirstFp := Nil;
-    ImplIter := Comp.SchIterator_Create;
-    Try
-        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
-        Impl := ImplIter.FirstSchObject;
-        While Impl <> Nil Do
-        Begin
-            MT := '';
-            Try MT := Impl.ModelType; Except End;
-            If UpperCase(MT) = 'PCBLIB' Then
-            Begin
-                If FirstFp = Nil Then FirstFp := Impl;
-                IsCur := False;
-                Try IsCur := Impl.IsCurrent; Except End;
-                If IsCur Then
-                Begin
-                    Result := Impl;
-                    Break;
-                End;
-            End;
-            Impl := ImplIter.NextSchObject;
-        End;
-    Finally
-        Comp.SchIterator_Destroy(ImplIter);
-    End;
-    If Result = Nil Then Result := FirstFp;
-End;
 
 { Give a placed part with no footprint model one, the way                }
 { Lib_LinkFootprint does on a symbol: AddSchImplementation, PCBLIB,      }

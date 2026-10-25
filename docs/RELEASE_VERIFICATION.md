@@ -1,4 +1,4 @@
-# Release verification: 2026.10.25.3
+# Release verification: 2026.10.25.4
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -280,7 +280,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.25.3`, `version_match` =
+Expect `altium_script_version` = `2026.10.25.4`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2316,6 +2316,50 @@ the board Altium resolves as current.
 
 Not yet run live: the documents open on the test machine at the time
 included unsaved boards that were not ours to risk.
+
+## 39. Property layer, decimal mils, fonts and footprint models
+
+Run live on AD 26.11 with 2026.10.25.4 on a scratch copy of a two-layer
+round board project, pinging after every step. All passed.
+
+1. **Polygon pour settings (#125).** `obj_query` on `polygon` reads Grid
+   20, TrackSize 8, MinTrack 3, ArcApproximation 0.5, NeckWidthThreshold
+   5, IslandAreaThreshold 2500, PolyHatchStyle 5, PourOver 1, PourIndex,
+   Poured. Grid 5.5, IslandAreaThreshold 1234.5 and a new Name write and
+   read back; PourOver 3 is refused and unchanged.
+2. **Keepout restrictions (#131).** The five restrictions read true on the
+   board-outline keep-out tracks and arcs; IsKeepoutForTrack false, then
+   true, on six tracks; asked of 279 vias the read is blank and the loop
+   stays up.
+3. **Region arcs and net (#119, #126).** `pcb_place_region` with one
+   vertex swept 180 degrees reports `arc_edges` 1 and the shape read back;
+   Net=GND joins the GND net, Net=NO_SUCH_NET is refused, Net= leaves it
+   on no net.
+4. **Decimal corners (#124, #130).** `pcb_place_polygon_rect` at
+   20000.25, 20000.5 to 20960.6299, 20500.75 reads those bounds back
+   exactly.
+5. **Footprint selection (#120).** `lib_select_footprint_primitives` on a
+   PcbLib footprint selects one pad by name, two pads by type, and clears
+   with a set that matches nothing.
+6. **FontId gate.** FontId reads on net labels, power objects, parameters
+   and designators; on wires, pins and components it is reported
+   unreadable instead of raising. On a sheet entry FontId is refused and
+   `TextFontId` reads 1, writes 12 and reads 12.
+7. **Display mode and pin map.** A one-mode part refuses DisplayMode 1 and
+   takes 0. FootprintPinMap reads "(1:1),(2:2)", takes "1:2;2:1" and reads
+   "(1:2),(2:1)", takes the original back, and refuses "1-2".
+8. **Footprint by name.** A placement naming a model the symbol lacks is
+   placed on the library's model and listed in `footprint_issues` with the
+   model it carries; naming that model in lower case counts in
+   `footprints_chosen`; the Footprint key on the placed part is applied
+   through the choice, not a rename.
+9. **One path spelling.** WorkspaceManager:OpenObject with a forward-slash
+   FileName for an open SchLib leaves one copy open (22 documents before
+   and after).
+
+Not run live: a part with several PCB models (the scratch library's parts
+carry one each), so the clear-then-set order and the restore after a
+failed choice are covered only by the source checks.
 
 ---
 

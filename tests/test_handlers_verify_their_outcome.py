@@ -598,5 +598,7 @@ def test_a_footprint_stamp_counts_only_when_it_reads_back():
         branch = branch[:branch.index("Else")]
         assert "SetPlacedFootprintName(" in branch, (
             f"{func} must write the footprint, not skip it")
-        assert "If SetPlacedFootprintName(" in branch, (
-            f"{func} must count the footprint only on read-back")
+        counted = ("If SetPlacedFootprintName(" in branch
+                   or ("FpOk := SetPlacedFootprintName(" in branch
+                       and "If FpOk Then Inc(" in branch))
+        assert counted, f"{func} must count the footprint only on read-back"

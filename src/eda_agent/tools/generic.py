@@ -322,7 +322,13 @@ def register_generic_tools(mcp):
                 (ConnectionX/Y is the ELECTRICAL end a wire must touch;
                 Location is the body-side root);
                 "Designator.Text,Comment.Text,LibReference" for
-                components. A managed component also reads
+                components, and "DisplayMode,DisplayModeCount" (the
+                alternate drawing, settable with obj_modify) and
+                "FootprintPinMap" (the current footprint model's pin map,
+                "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
+                merges by schematic pin, so a map cannot be cleared).
+                "TextFontId" is a sheet or harness entry's label font. A
+                managed component also reads
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
                 and the other Vault/Symbol GUIDs.
 
@@ -658,7 +664,10 @@ def register_generic_tools(mcp):
 
         Looks up (or creates) an entry in the Altium font table matching the
         specified properties and returns its font ID. Use the returned font_id
-        to set an object's FontId property via `obj_modify`.
+        to set an object's FontId property via `obj_modify`: labels, net
+        labels, power objects, cross-sheet connectors, parameters,
+        designators, sheet names, ports, text frames and notes. A sheet
+        entry's or harness entry's label font is TextFontId.
 
         Args:
             size: Font size in points (e.g., 8, 10, 12)
@@ -2985,13 +2994,18 @@ def register_generic_tools(mcp):
         Args:
             placements: [{lib_reference (required), x, y (mils),
                 library_path (empty: an open library), designator,
-                rotation (0/90/180/270), footprint}].
+                rotation (0/90/180/270), footprint}]. ``footprint`` names
+                one of the symbol's own PCB models (case aside), which
+                becomes its current model.
             document_path: .SchDoc to focus and place onto.
             allow_manual_layout: True places your own coordinates onto an
                 empty sheet anyway; say why.
 
         Returns:
-            Dict with placed, failed, total counts.
+            Dict with placed, failed, total counts and footprints_chosen;
+            footprint_issues lists a part whose symbol has no model of
+            that name (with the models it has) or whose choice did not
+            take. Such a part is placed on its library's model.
         """
         refusal = _unknown_keys_refusal(
             placements, PLACEMENT_KEYS,
@@ -3014,7 +3028,7 @@ def register_generic_tools(mcp):
             if p.get("designator"):
                 fields.append(f"designator={p['designator']}")
             if p.get("footprint"):
-                fields.append(f"footprint={p['footprint']}")
+                fields.append(f"footprint={payload_safe(p['footprint'])}")
             op_strs.append(";".join(fields))
 
         if not op_strs:
