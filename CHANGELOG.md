@@ -55,16 +55,19 @@ variable name, and the `truncated` field `proj_get_nets` pages on.
     table). **Checked on two vendor libraries written by Altium** (one
     model and eleven): every model came out as a STEP file.
   - `lib_write_libpkg` writes a .LibPkg grouping libraries, in the layout
-    measured from 44 packages Altium saved. **UNVERIFIED**: not yet opened
-    and compiled in Altium.
+    measured from 44 packages Altium saved. **Checked live on
+    2026-10-20**: a written package opened in Altium and compiled to an
+    IntLib.
   - `lib_backup_library`, `lib_list_library_backups` and
     `lib_restore_library_backup` keep byte copies of one library file,
     for libraries `app_checkpoint` does not reach. A restore backs up the
     file it replaces first and needs `confirm=True`.
   - `lib_render_footprint` draws a footprint to SVG and PNG from the live
     pad and primitive reads; `lib_compare_footprints` diffs two footprints
-    pad by pad and counts primitives per layer. **UNVERIFIED against a
-    live library**: covered by tests on canned reads only.
+    pad by pad and counts primitives per layer. **Checked live on
+    2026-10-20** against a vendor library: a WE-PMI footprint drew
+    correctly, and 0603 H0.5 against H1 reported the height difference
+    and nothing else, which is what those two parts differ by.
 - `rotation_audit`, an advisory check in `pcb_layout_audit`: each
   two-pad top-side part is tried at 0/90/180/270 degrees about its
   origin, scored by net airline (minimum spanning tree) for routable
@@ -72,8 +75,12 @@ variable name, and the `truncated` field `proj_get_nets` pages on.
   reported when another rotation beats the current one by 25 mils.
   The idea comes from coffeenmusic/altium-mcp's `check_orientation`,
   reimplemented on the LayoutBoard model. Bottom-side parts are skipped
-  until the rotation sign of a mirrored part is checked. **UNVERIFIED
-  against a live board**: covered by tests on synthetic boards only.
+  until the rotation sign of a mirrored part is checked. **Checked live
+  on 2026-10-20** against a real board (BDDFS2MWC01A), where its
+  suggestions were sensible. Still covered by synthetic-board tests for
+  the scoring itself, and the TOP-SIDE path is all that has been
+  exercised: a board with connected two-pad parts on the bottom has not
+  been run.
 
 #### Owner profiles
 
