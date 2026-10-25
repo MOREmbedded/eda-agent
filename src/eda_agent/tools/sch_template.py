@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from ..bridge import get_bridge
 from ..bridge.exceptions import AltiumError
+from ..bridge.path_spelling import same_file
 from ..bridge.payload import payload_safe
 from ..config import get_config
 from ..design import sch_template as st
@@ -93,6 +94,16 @@ async def _focus(bridge, path: str) -> dict:
     """Focus a document, opening it first if Altium has not loaded it."""
     reply = await _send(bridge, "application.set_active_document", {"file_path": path})
     if _failed(reply) and "not loaded" in str(reply.get("error", "")).lower():
+        # Open under another spelling (a second drive letter mapped to the
+        # same share): focus that copy rather than open a second one.
+        listed = await _send(bridge, "application.get_open_documents", {})
+        docs = listed.get("reply", listed.get("documents", [])) \
+            if isinstance(listed, dict) else listed
+        for doc in docs if isinstance(docs, list) else []:
+            other = doc.get("file_path", "") if isinstance(doc, dict) else ""
+            if other and other != path and same_file(other, path):
+                return await _send(bridge, "application.set_active_document",
+                                   {"file_path": other})
         await _send(bridge, "application.run_process", {
             "process_name": "WorkspaceManager:OpenObject",
             "parameters": f"ObjectKind=Document|FileName={path}"})
