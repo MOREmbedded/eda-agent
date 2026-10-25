@@ -6557,7 +6557,18 @@ def register_pcb_tools(mcp):
             fields.append(f"x=={int(p.get('x', 0))}")
             fields.append(f"y=={int(p.get('y', 0))}")
             if p.get("rotation") is not None:
-                fields.append(f"rotation=={p.get('rotation')}")
+                rot = p.get("rotation")
+                # Pre-compensate a part that will be flipped below: the
+                # flip rewrites rotation to 180 minus the original, so
+                # placing at 180 - R lands it on R. Measured across 0,
+                # 90, 270 and 45 degrees on 2026-10-25.
+                if "bottom" in str(p.get("layer") or "").strip().lower():
+                    try:
+                        rot = (180.0 - float(rot)) % 360
+                        rot = int(rot) if float(rot).is_integer() else rot
+                    except (TypeError, ValueError):
+                        pass
+                fields.append(f"rotation=={rot}")
             pn = p.get("pad_nets")
             if pn:
                 pn_str = "|".join(
@@ -6574,10 +6585,50 @@ def register_pcb_tools(mcp):
                     "library_path)", "placed": 0}
 
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        result = await bridge.send_command_async(
             "pcb.place_components",
             {"placements": "~~".join(recs), "board_path": board_path},
         )
+
+        # Everything lands on the top layer, so a bottom-side part is
+        # flipped here afterwards. Setting the layer during placement
+        # changed the side and left the pads in top-side geometry, with
+        # the part's two pads on the wrong sides; the broadcast that
+        # makes Altium mirror only commits across its own
+        # PreProcess/PostProcess, and the placement loop has one for the
+        # whole batch. PCB_FlipComponent already does it correctly, so
+        # this reuses it rather than keeping a second copy of the
+        # sequence. Measured on 2026-10-25.
+        wanted_bottom = [
+            str(p.get("designator") or "").strip()
+            for p in placements
+            if isinstance(p, dict)
+            and "bottom" in str(p.get("layer") or "").strip().lower()
+            and str(p.get("designator") or "").strip()
+        ]
+        # A flip rewrites rotation to 180 minus the original -- measured
+        # across 0, 90, 270 and 45 degrees on 2026-10-25. So a part that
+        # has to be flipped is placed pre-compensated and lands on the
+        # rotation the caller asked for, instead of 180 minus it.
+        if wanted_bottom and isinstance(result, dict):
+            flipped, failed = [], {}
+            for designator in wanted_bottom:
+                try:
+                    await bridge.send_command_async(
+                        "pcb.flip_component", {"designator": designator})
+                    flipped.append(designator)
+                except Exception as exc:  # noqa: BLE001 - report, never raise
+                    # The part IS on the board, on the wrong side. Saying
+                    # so beats a success that hides a mirrored footprint.
+                    failed[designator] = str(exc)
+            result["flipped_to_bottom"] = flipped
+            if failed:
+                result["flip_failed"] = failed
+                result["warning"] = (
+                    "placed, but these are still on the TOP layer and "
+                    "their pads are not mirrored: "
+                    + ", ".join(sorted(failed)))
+        return result
 
     @mcp.tool()
     async def pcb_place_angular_dimension(

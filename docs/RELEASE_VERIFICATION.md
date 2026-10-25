@@ -1,4 +1,4 @@
-# Release verification: 2026.10.19.1
+# Release verification: 2026.10.25.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -104,6 +104,7 @@ works elsewhere cannot be an undeclared identifier:
 | 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
 | 37, pin labels | `ShowName`, `ShowDesignator` on a pin | yes, `Library.pas` | low |
 | 37, pin text | `Name_FontMode`, `Name_CustomFontID`, `Name_CustomColor`, `Designator_FontMode`, `Designator_CustomFontID`, `Designator_CustomColor` on a pin | no, nowhere | medium, read live; the writes are not run live |
+| 38, bottom-side placement | `Layer` on a placed component, through `PCB_FlipComponent` | yes, `PCB_FlipComponent` is in daily use | low to declare, but the failure it fixes is SILENT: a mirrored footprint looks placed |
 | 28, layer thickness | `CopperThickness`, `DielectricHeight`, now from `StrToFloatDef` and `MilsToCoordF` | yes, `PCB_ModifyLayer` wrote both already | low to declare, but it fixes a SILENT failure |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
@@ -280,7 +281,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.19.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.25.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2472,7 +2473,7 @@ the layer stack.**
    no polling restart. Restore focus and close the disposable board
    without saving.
 
-**Live result, 2026-10-19, Altium 26.11.1.5, script 2026.10.19.1.**
+**Live result, 2026-10-19, Altium 26.11.1.5, script 2026.10.25.2.**
 Run on a copy of the 2-layer test board, with two inner layers added
 for steps 6 and 7. Every step passed:
 
@@ -2497,3 +2498,45 @@ Not explained: `app_close_document` with `discard_changes` reported
 `discarded: false` after the stack edits, so Altium did not mark the
 board modified. The file on disk was unchanged, which is the outcome
 wanted here, but an API stack edit may not prompt a save on close.
+
+## 38. A bottom-side part is placed mirrored, at the rotation asked for
+
+`pcb_place_components` set the component's layer and nothing else, so a
+part asked for on the bottom kept top-side geometry and its two pads sat
+on the wrong sides. Altium mirrors on a side change it COMMITS, and the
+placement loop has one PreProcess/PostProcess for the whole batch, so a
+change made inside it never committed. Adding the modify broadcast alone
+did NOT fix it, which was measured before this was settled. Placement
+now always lands on the top and the tool flips afterwards through
+PCB_FlipComponent, which does its own PreProcess/PostProcess; the
+rotation sent is pre-compensated because a flip rewrites it to 180 minus
+the original.
+
+Risk: low to declare, since it reuses a handler already in daily use.
+Worth re-checking because the failure is silent -- a mirrored footprint
+looks placed.
+
+**On a disposable board.**
+
+1. Place one part with `layer="TopLayer"`, rotation 0. Read it back:
+   note the two pads' x offsets from the component origin.
+2. Place one with `layer="BottomLayer"`, rotation 0. Expect layer
+   BottomLayer and rotation **0**, not 180.
+3. Repeat at 90 and 270. Each must read back the rotation asked for.
+4. Place one on the top, flip it with `pcb_flip_component`, and place
+   another with `layer="BottomLayer"` at the rotation that flip
+   produced. The two must match in layer, rotation AND pad offsets.
+   A two-pad footprint symmetric about its origin cannot tell a flipped
+   part from an unflipped one on pad x alone, because a mirror and a
+   180 degree turn cancel; this comparison is what settles it.
+5. `flipped_to_bottom` lists what was flipped. Make one flip fail (a
+   locked part) and check `flip_failed` and the warning name it rather
+   than the call reporting plain success.
+
+**Live result, 2026-10-25, Altium 26.11.1.5, script 2026.10.25.2.**
+
+| Step | Result |
+|---|---|
+| 1-3 | 0, 90 and 270 all read back as asked; before the fix, 0 came back as 180 |
+| 4 | Hand-flipped and tool-placed parts identical: BottomLayer, rot 180, pads +31 / -31 |
+| 5 | `flipped_to_bottom` listed the part; the failure path is covered by tests, not run live |

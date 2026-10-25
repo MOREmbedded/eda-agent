@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.19.1';
+    SCRIPT_VERSION = '2026.10.25.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -40558,7 +40558,13 @@ Begin
             LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                      + '|SourceComponentLibrary=' + LibPath;
             Comp.LoadFromLibrary(LoadStr);
-            Comp.Layer := CompLayer;
+            { Load on the TOP layer whatever the caller asked for. The side
+              change happens once, after registration, inside the modify
+              broadcast below, because that is what makes Altium MIRROR the
+              primitives. Assigning Comp.Layer here instead set the field
+              and left the pads in top-side geometry, so a part placed on
+              the bottom came out with its two pads on the wrong sides. }
+            Comp.Layer := eTopLayer;
             Comp.x := MilsToCoord(X);
             Comp.y := MilsToCoord(Y);
             Comp.Rotation := Rotation;
@@ -40576,7 +40582,17 @@ Begin
 
             { Assign the registered component origin exactly once; setting
               Comp.X/Y carries all grouped primitives with it. }
-            Comp.Layer := ResolveLayerId(Board, LayerStr);
+            { EVERY component is placed on the TOP layer here, whatever
+              side the caller asked for, and a bottom-side one is flipped
+              afterwards by the tool, which calls PCB_FlipComponent.
+              A side change only mirrors the primitives when Altium commits
+              it: the broadcast alone, inside this routine's single
+              PreProcess/PostProcess, changed the layer and left the pads in
+              top-side geometry. Measured on 2026-10-25, with the broadcast
+              in place and the component still coming out unmirrored.
+              PCB_FlipComponent does its own PreProcess/PostProcess, which
+              is the part that matters, so the tool reuses it rather than
+              this routine growing a second copy of it. }
             Comp.x := MilsToCoord(X);
             Comp.y := MilsToCoord(Y);
             Comp.Rotation := Rotation;
