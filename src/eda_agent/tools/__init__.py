@@ -21,6 +21,7 @@ from .application import (
     register_meta_tools,
 )
 from .guidance import register_guidance_tools
+from .update import register_update_tools
 from .uiauto import register_uiauto_tools
 from .project import register_project_tools
 from .library import register_library_tools
@@ -278,6 +279,8 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # any one EDA tool, so they belong on every backend too. They also have to
     # exist for the minimal toolset to be possible at all.
     register_meta_tools(mcp)
+    # Updating eda-agent itself belongs to no EDA tool either.
+    register_update_tools(mcp)
     # tool_guide answers which tool for which DOCUMENT, and what is proven
     # impossible. That is a different question from tool_catalog's "what is
     # this called", and it is the one that has been getting wrong answers,
@@ -320,6 +323,7 @@ __all__ = [
     "register_guidance_tools",
     "register_uiauto_tools",
     "register_meta_tools",
+    "register_update_tools",
     "register_parts_tools",
     "register_live_tools",
     "register_footprint_tools",

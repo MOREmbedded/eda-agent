@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Application-level tools for Altium Designer MCP Server."""
 
+import functools
 import os
 import re
 from typing import Any, Optional
@@ -11,6 +12,7 @@ from ..bridge.exceptions import AltiumCommandError
 from ..cli import get_bundled_scripts_path
 from .datasheet_hints import DATASHEET_RULES
 from ..atomicfile import replace_with_retry
+from .. import updates
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
@@ -40,6 +42,23 @@ _SESSION_REMINDER = {
     ),
     "datasheet_rules": DATASHEET_RULES,
 }
+
+
+def _reports_update(fn):
+    """Add ``update`` to a reply when the daily check found a newer
+    eda-agent, so a session hears of it from the tools it calls first.
+    Read from the last check only; never waits on the network."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        reply = await fn(*args, **kwargs)
+        try:
+            news = updates.notice()
+        except Exception:  # noqa: BLE001  news never breaks a ping
+            news = None
+        if news and isinstance(reply, dict):
+            reply["update"] = news
+        return reply
+    return wrapper
 
 
 def _bundled_script_version() -> Optional[str]:
@@ -424,6 +443,7 @@ def register_application_tools(mcp):
         return status
 
     @mcp.tool()
+    @_reports_update
     async def app_context() -> dict[str, Any]:
         """Where you are, in one call. Run this before anything else.
 
@@ -819,6 +839,7 @@ def register_application_tools(mcp):
         }
 
     @mcp.tool()
+    @_reports_update
     async def app_ping() -> dict[str, Any]:
         """Check that Altium and its bridge script answer, and that the
         running script is the version on disk. A mismatch or a non-empty

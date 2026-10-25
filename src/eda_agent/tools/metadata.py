@@ -194,6 +194,10 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Pulls new code into the installation and can restart the Altium
+    # loop. It is filed under meta, which counts as offline, and offline
+    # would otherwise read as readonly.
+    "server_update": SILENT,
     # MEASURED MODAL during the live sweep of 2026-08-24. Each of these was
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
@@ -301,6 +305,9 @@ _CATEGORY_BY_NAME = {
     "list_nets": "core",
     "run_drc": "core",
     "run_erc": "core",
+    # Updates eda-agent itself, on every backend: about the tool surface,
+    # like tool_catalog, rather than about any one EDA tool.
+    "server_update": "meta",
 }
 
 

@@ -274,6 +274,10 @@ def build_server_instructions(
         + ui
         + engine +
         "Coordinates are in mils throughout, on every backend.\n"
+        "\n"
+        "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
+        "the user what is new and ask; call server_update(apply=True) only\n"
+        "after they agree.\n"
     )
 
 
@@ -473,8 +477,11 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # Record this server and warn (stderr only) about others on the same
     # workspace. Never refuses and never stops anything: several sessions
     # at once are allowed. app_ping and app_get_status repeat the warning.
-    from . import server_registry
+    from . import server_registry, updates
     server_registry.register(config.workspace_dir)
+    # Once a day at most, in the background: a newer eda-agent is then
+    # reported by app_ping and app_context, never installed unasked.
+    updates.start_background_check()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
     if duplicate:
@@ -816,6 +823,20 @@ def main() -> int:
                                  "install-scripts). Other sessions' calls "
                                  "wait through it instead of failing.")
 
+    # update -- pull a newer eda-agent into this clone, after asking
+    update_p = subparsers.add_parser(
+        "update",
+        help=("Show what a newer eda-agent brings and, once you agree, "
+              "fast-forward this clone, reinstall if needed, copy the "
+              "scripts and restart the Altium loop."),
+    )
+    update_p.add_argument("--check", action="store_true",
+                          help="Only show what an update would bring.")
+    update_p.add_argument("--yes", action="store_true",
+                          help="Update without asking.")
+    update_p.add_argument("--no-relaunch", action="store_true",
+                          help="Leave the Altium loop running the old scripts.")
+
     # health -- offline, fast
     subparsers.add_parser(
         "health",
@@ -987,6 +1008,9 @@ def main() -> int:
     if args.command == "relaunch":
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
                                 force=args.force, restart=args.restart)
+    if args.command == "update":
+        return cli.cmd_update(check_only=args.check, assume_yes=args.yes,
+                              relaunch=not args.no_relaunch)
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([

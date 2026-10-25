@@ -354,6 +354,48 @@ def _restart(command: list, frames_pid: int) -> int:
             pass
 
 
+def cmd_update(check_only: bool = False, assume_yes: bool = False,
+               relaunch: bool = True) -> int:
+    """Show what a newer eda-agent brings, and install it once agreed."""
+    from . import updates
+
+    info = updates.check(force=True)
+    if info.get("update_available") is None:
+        print(info.get("how") or info.get("error") or "Could not check for an update.")
+        return 1
+    if not info.get("update_available"):
+        print("eda-agent is up to date.")
+        return 0
+    print(f"{info['behind']} new commit(s) on {updates.REMOTE}/{updates.BRANCH}:")
+    for title in info.get("new_commits", []):
+        print(f"  - {title}")
+    if check_only:
+        return 0
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print("Re-run with --yes to update.", file=sys.stderr)
+            return 1
+        try:
+            reply = input("Update now? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Not updated.")
+            return 1
+    out = updates.apply(relaunch=relaunch)
+    if not out.get("updated"):
+        print(f"Not updated: {out.get('reason') or out.get('error') or out}",
+              file=sys.stderr)
+        return 1
+    print(f"Updated {out['from']} -> {out['to']}.")
+    for step in out.get("steps", []):
+        print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
+        if not step["ok"] and step.get("output"):
+            print("    " + step["output"].replace("\n", "\n    "))
+    print(out["next_step"])
+    return 1 if out.get("failed_steps") else 0
+
+
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
                  force: bool = False, restart: bool = False) -> int:
     """Start the bridge script in the running Altium, when you ask for it.
