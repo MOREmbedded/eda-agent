@@ -4,6 +4,7 @@
 
 from typing import Any, Optional
 from ..bridge import get_bridge
+from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
@@ -786,8 +787,8 @@ def register_project_tools(mcp):
             w = csv.writer(fh)
             w.writerow(["Designator", "Mid X", "Mid Y", "Layer", "Rotation"])
             for c in comps:
-                x = (float(c.get("x", 0)) - ox) * 0.0254
-                y = (float(c.get("y", 0)) - oy) * 0.0254
+                x = (float(c.get("x", 0)) - ox) * MM_PER_MIL
+                y = (float(c.get("y", 0)) - oy) * MM_PER_MIL
                 side = "Bottom" if str(c.get("side", "")).lower().startswith("b") else "Top"
                 w.writerow([c["designator"], f"{x:.4f}mm", f"{y:.4f}mm", side,
                             f"{float(c.get('rotation', 0)) % 360:g}"])

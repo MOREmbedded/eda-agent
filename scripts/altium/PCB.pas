@@ -5029,7 +5029,8 @@ Var
     Applied : Boolean;
     SIter : IPCB_BoardIterator;
     Split : IPCB_SplitPlane;
-    SplitsSeen, SplitsSet, SplitsKept : Integer;
+    Splits : TInterfaceList;
+    SplitsSeen, SplitsSet, SplitsKept, I : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -5148,6 +5149,10 @@ Begin
     SplitsKept := 0;
     If Applied Then
     Begin
+        { Collected first and changed after the walk: a write while the }
+        { iterator walks corrupts it. The list is left to the script    }
+        { host; Free on design objects crashes Altium.                  }
+        Splits := TInterfaceList.Create;
         SIter := Board.BoardIterator_Create;
         Try
             SIter.AddFilter_ObjectSet(MkSet(eSplitPlaneObject));
@@ -5156,35 +5161,32 @@ Begin
             Split := SIter.FirstPCBObject;
             While Split <> Nil Do
             Begin
-                If Split.Layer = TargetLayer Then Inc(SplitsSeen);
-                Split := SIter.NextPCBObject;
-            End;
-            Split := SIter.FirstPCBObject;
-            While Split <> Nil Do
-            Begin
-                If Split.Layer = TargetLayer Then
-                Begin
-                    If (Split.Net = Nil) Or (SplitsSeen = 1) Then
-                    Begin
-                        PCBServer.PreProcess;
-                        Try
-                            Split.BeginModify;
-                            Try Split.Net := NetObj; Except End;
-                            Split.EndModify;
-                            Split.GraphicallyInvalidate;
-                        Finally
-                            PCBServer.PostProcess;
-                        End;
-                        If Split.Net <> Nil Then
-                            If UpperCase(Split.Net.Name) = UpperCase(NetStr) Then Inc(SplitsSet);
-                    End
-                    Else
-                        Inc(SplitsKept);
-                End;
+                If Split.Layer = TargetLayer Then Splits.Add(Split);
                 Split := SIter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(SIter);
+        End;
+        SplitsSeen := Splits.Count;
+        For I := 0 To Splits.Count - 1 Do
+        Begin
+            Split := Splits.Items[I];
+            If (Split.Net = Nil) Or (SplitsSeen = 1) Then
+            Begin
+                PCBServer.PreProcess;
+                Try
+                    Split.BeginModify;
+                    Try Split.Net := NetObj; Except End;
+                    Split.EndModify;
+                    Split.GraphicallyInvalidate;
+                Finally
+                    PCBServer.PostProcess;
+                End;
+                If Split.Net <> Nil Then
+                    If UpperCase(Split.Net.Name) = UpperCase(NetStr) Then Inc(SplitsSet);
+            End
+            Else
+                Inc(SplitsKept);
         End;
     End;
 
