@@ -16,6 +16,17 @@ maturity classification for every tool.
 
 ### Changed
 
+- **The two version numbers are documented.** The package follows
+  semantic versioning (`0.7.1`) and the Altium script is dated
+  (`SCRIPT_VERSION`, `YYYY.MM.DD.N`), they cover different artifacts and
+  they move independently, and nothing said so anywhere. A reader
+  opening `Main.pas` met a year where a release number was expected.
+  The README now gives both, says the script version exists to answer
+  "is Altium running today's script", and says to bump the trailing
+  `.N` on every `.pas` edit -- leaving it makes a reloaded Altium
+  indistinguishable from a stale one, which has caused real confusion
+  here more than once.
+
 - `rotation_audit` now checks **bottom-side parts**. They were skipped
   while it was unknown whether a rotation value turns a mirrored part
   clockwise or anticlockwise in board coordinates. Measured against

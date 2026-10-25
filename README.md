@@ -17,6 +17,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
 - [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
+- [Two version numbers](#two-version-numbers-and-why-they-differ) - the package is semver, the Altium script is dated
 - [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
@@ -880,6 +881,37 @@ default.
 - **PCB-side units and grid are documentation only.** No bridge command
   sets a board's display units or default snap grid; a project template
   sidesteps this for new projects.
+
+### Two version numbers, and why they differ
+
+There are two, they cover different artifacts, and they move
+independently. Seeing a year where you expect a semantic version is
+the usual moment of confusion:
+
+| Artifact | Example | Scheme | Where |
+|---|---|---|---|
+| The Python package | `0.7.1` | Semantic versioning | `pyproject.toml`, `eda_agent.__version__` |
+| The Altium DelphiScript | `2026.10.25.2` | Date, `YYYY.MM.DD.N` | `SCRIPT_VERSION` in `scripts/altium/Main.pas` |
+
+The package version is the one you install and the one that follows
+semver. The script version exists to answer a different question:
+**is the Altium session running today's script, or one from last
+week?** `app_ping` reports what Altium has COMPILED, and
+`eda-agent update` compares that against what is on disk.
+
+A date suits that job in a way a release number would not. A `.pas`
+file changes several times in an afternoon while the bridge is being
+worked on, with no relationship to whether the Python package gained a
+feature or broke an interface, and the only thing a reader needs from
+it is whether it is newer than the copy Altium compiled. `2026.10.25.2`
+answers that at a glance; `0.7.1` would not move at all.
+
+**Bump `SCRIPT_VERSION` on every change to any `.pas` file**, even a
+second edit on the same day: that is what the trailing `.N` is for.
+Leaving it unchanged makes a reloaded Altium and a stale one
+indistinguishable, and `update` will then report a session as current
+while it runs the old code. That has caused real confusion here more
+than once.
 
 ### Where the Altium scripts are deployed
 
