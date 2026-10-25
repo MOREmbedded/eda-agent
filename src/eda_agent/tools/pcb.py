@@ -6521,6 +6521,16 @@ def register_pcb_tools(mcp):
                 footprint (required), library_path (required, .PcbLib),
                 x, y (mils), designator, lib_reference, comment,
                 rotation, layer, unique_id, and pad_nets
+
+                ``layer`` SETS THE LAYER WITHOUT MIRRORING. Measured
+                against Altium 26.11.1.5 on 2026-10-25: a part placed
+                with ``layer="BottomLayer"`` comes out with its pads on
+                bottom copper but in TOP-SIDE geometry, while the same
+                part sent through ``pcb_flip_component`` is mirrored
+                properly (its two pads swap sides and its rotation
+                moves to 180 - rotation). So a bottom-side part placed
+                this way has its pads on the wrong sides. Place on the
+                top and flip, until the Pascal side mirrors as well.
                 (``{pad_name: net_name}``); omit unique_id/pad_nets for
                 geometry-only, include them for a synced placement.
             board_path: Absolute .PcbDoc path to place onto (optional).

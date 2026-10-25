@@ -14,6 +14,31 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Changed
+
+- `rotation_audit` now checks **bottom-side parts**. They were skipped
+  while it was unknown whether a rotation value turns a mirrored part
+  clockwise or anticlockwise in board coordinates. Measured against
+  Altium 26.11.1.5 on 2026-10-25: four parts flipped with
+  `pcb_flip_component` and read back turn their pads in world
+  coordinates by exactly the delta applied to `Rotation`, the same as a
+  top-side part, at 45 degrees as well as at right angles. The scoring
+  never needed a side term -- it rotates the pad's WORLD position about
+  the component origin, and the mirroring is already in the position
+  the board reports.
+
+### Fixed
+
+- `pcb_place_components` documents that **`layer` sets the layer
+  without mirroring**. A part placed with `layer="BottomLayer"` comes
+  out with its pads on bottom copper in TOP-SIDE geometry, so its two
+  pads are on the wrong sides; the same part through
+  `pcb_flip_component` is mirrored properly and its rotation moves to
+  180 minus the original. Found while measuring the rotation sign
+  above. The docstring now says to place on the top and flip. The
+  Pascal side still does not mirror, so this is a documented
+  limitation rather than a repair.
+
 ### Merged from upstream 0.7.1
 
 This fork absorbed the 24 commits it was behind

@@ -19,9 +19,16 @@ Each pad scores one term:
 
 Geometry only. It knows nothing of which nets are critical, so a pull-up or
 a strap resistor can be told to turn for no electrical gain, and a
-datasheet's recommended layout outranks it. Bottom-side parts are skipped:
-whether a rotation value turns a mirrored part clockwise or anticlockwise
-in board coordinates has not been checked against Altium.
+datasheet's recommended layout outranks it.
+
+Bottom-side parts ARE checked. They were skipped until the sign was
+measured against Altium 26.11.1.5 on 2026-10-25: four mirrored parts,
+flipped with ``pcb_flip_component`` and read back, turn their pads in
+world coordinates by exactly the delta applied to ``Rotation``, the
+same way a top-side part does, at 45 degrees as well as at right
+angles. The scoring never needed a side term anyway -- it rotates the
+pad's WORLD position about the component origin, and the mirroring is
+already baked into the position the board reports.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from .model import TOP, LayoutBoard, Pad
+from .model import LayoutBoard, Pad
 
 #: Nets with more pads than this are scored as planes (nearest pad).
 PLANE_NET_PADS = 40
@@ -102,9 +109,6 @@ def suggest_rotations(board: LayoutBoard, designators: Optional[list[str]] = Non
             continue
         pads = pads_of.get(comp.ref, [])
         if len(pads) != 2:
-            continue
-        if comp.side != TOP:
-            skipped.append({"designator": comp.ref, "reason": "bottom side"})
             continue
         if not _orthogonal(comp.rotation):
             skipped.append({"designator": comp.ref,

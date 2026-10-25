@@ -62,10 +62,28 @@ def test_a_quarter_turn_reports_the_box_change():
     assert s["bbox_changes"] is True
 
 
-def test_bottom_side_parts_are_skipped_not_guessed():
-    found = suggest_rotations(_board(180, side=BOTTOM))
-    assert found["suggestions"] == []
-    assert found["skipped"] == [{"designator": "R1", "reason": "bottom side"}]
+def test_a_bottom_side_part_is_checked_like_a_top_side_one():
+    """Measured, not assumed.
+
+    Bottom-side parts were skipped while it was unknown whether a
+    rotation value turns a mirrored part clockwise or anticlockwise in
+    board coordinates. Measured against Altium 26.11.1.5 on 2026-10-25:
+    four parts flipped with `pcb_flip_component` and read back turn
+    their pads in world coordinates by exactly the delta applied to
+    `Rotation`, the same as a top-side part, at 45 degrees as well as
+    at right angles.
+
+    The scoring never needed a side term: it rotates the pad's WORLD
+    position about the component origin, and the mirroring is already
+    in the position the board reports. So the same board on the bottom
+    gives the same answer.
+    """
+    top = suggest_rotations(_board(180))
+    bottom = suggest_rotations(_board(180, side=BOTTOM))
+
+    assert bottom["skipped"] == []
+    assert bottom["checked"] == top["checked"] == 1
+    assert bottom["suggestions"] == top["suggestions"]
 
 
 def test_a_plane_net_scores_the_nearest_return_pad():
