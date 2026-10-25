@@ -4805,9 +4805,9 @@ def register_pcb_tools(mcp):
         x2: float = 0,
         y2: float = 0,
         shape: str = "rectangle",
-        center_x: int = 0,
-        center_y: int = 0,
-        radius: int = 0,
+        center_x: float = 0,
+        center_y: float = 0,
+        radius: float = 0,
         points: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
         """Define the physical PCB board outline: a rectangle, a circle or
@@ -4845,8 +4845,8 @@ def register_pcb_tools(mcp):
                 return {"success": False, "error": "a circle needs a positive radius"}
             return await bridge.send_command_async(
                 "pcb.set_board_shape",
-                {"shape": "circle", "cx": str(int(center_x)),
-                 "cy": str(int(center_y)), "radius": str(int(radius))})
+                {"shape": "circle", "cx": _mils(center_x),
+                 "cy": _mils(center_y), "radius": _mils(radius)})
         if kind == "polygon":
             encoded, problem = _outline_vertices(points or [])
             if problem:

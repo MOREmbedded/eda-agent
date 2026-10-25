@@ -14,6 +14,7 @@ by test_geometry_map (ClosePolySegments).
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,11 @@ def test_corners_are_read_as_decimal_mils(name):
     for key in ("x1", "y1", "x2", "y2"):
         assert (f"{key.upper()} := StrToFloatDef(ExtractJsonValue(Params, "
                 f"'{key}'), 0);") in body
-    assert "StrToIntDef" not in body
+    # No length in mils is read as a whole number. The board shape's
+    # polygon vertices arrive as integer internal coordinates and stay so.
+    assert not re.search(
+        r"StrToIntDef\(ExtractJsonValue\(Params, '(x1|y1|x2|y2|cx|cy|radius)'",
+        body)
     assert "X1, Y1, X2, Y2, TmpF : Double;" in body
 
 
@@ -94,3 +99,15 @@ def test_decimal_corners_are_sent_as_given(monkeypatch, tool, command):
     params = sent[0][1]
     assert (params["x1"], params["y1"], params["x2"], params["y2"]) == (
         "960.6299", "960.6299", "7039.3701", "5000")
+
+
+def test_a_round_board_keeps_its_decimal_centre_and_radius(monkeypatch):
+    # A 25 mm round board: radius 492.126 mil, which a whole-mil read
+    # rounded off.
+    sent = _call(monkeypatch, "pcb_set_board_shape", shape="circle",
+                 center_x=1000.5, center_y=1000.5, radius=492.126)
+    params = sent[0][1]
+    assert (params["cx"], params["cy"], params["radius"]) == (
+        "1000.5", "1000.5", "492.126")
+    body = load(_PCB)["PCB_SetBoardShape"]
+    assert "FloatToJsonStr(CoordToMilsF(Cr))" in body

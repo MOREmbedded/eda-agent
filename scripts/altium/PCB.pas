@@ -9477,9 +9477,9 @@ Begin
         { Four quarter arcs, the outline Altium builds itself from a  }
         { selected circle: each segment starts at its vertex and turns }
         { 90 degrees counter-clockwise about the centre.               }
-        Ccx := MilsToCoord(StrToIntDef(ExtractJsonValue(Params, 'cx'), 0));
-        Ccy := MilsToCoord(StrToIntDef(ExtractJsonValue(Params, 'cy'), 0));
-        Cr := MilsToCoord(StrToIntDef(ExtractJsonValue(Params, 'radius'), 0));
+        Ccx := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'cx'), 0));
+        Ccy := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'cy'), 0));
+        Cr := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0));
         If Cr <= 0 Then
         Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'radius must be positive');
@@ -9511,9 +9511,9 @@ Begin
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"shape":"circle","cx":' + IntToStr(CoordToMils(Ccx))
-            + ',"cy":' + IntToStr(CoordToMils(Ccy))
-            + ',"radius":' + IntToStr(CoordToMils(Cr)) + '}');
+            '{"success":true,"shape":"circle","cx":' + FloatToJsonStr(CoordToMilsF(Ccx))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Ccy))
+            + ',"radius":' + FloatToJsonStr(CoordToMilsF(Cr)) + '}');
         Exit;
     End;
 
