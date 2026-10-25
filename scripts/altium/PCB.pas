@@ -3825,7 +3825,7 @@ Begin
             PX := X1;
             While PX <= X2 Do
             Begin
-                Cands.Add(IntToStr(CoordToMils(PX)) + ',' + IntToStr(CoordToMils(PY)));
+                Cands.Add(FloatToJsonStr(CoordToMilsF(PX)) + ',' + FloatToJsonStr(CoordToMilsF(PY)));
                 PX := PX + Spacing;
             End;
             PY := PY + Spacing;
@@ -3838,8 +3838,8 @@ Begin
         Begin
             Pair := Cands[CandIdx];
             Cut := Pos(',', Pair);
-            PX := MilsToCoord(StrToIntDef(Copy(Pair, 1, Cut - 1), 0));
-            PY := MilsToCoord(StrToIntDef(Copy(Pair, Cut + 1, Length(Pair)), 0));
+            PX := MilsToCoordF(StrToFloatDef(Copy(Pair, 1, Cut - 1), 0));
+            PY := MilsToCoordF(StrToFloatDef(Copy(Pair, Cut + 1, Length(Pair)), 0));
             { Collision check: walk the primitives in a clearance-padded  }
             { box around the candidate; a blocker skips it.               }
             HasHit := False;
@@ -9819,7 +9819,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_OUTLINE', 'Board has no outline defined');
         Exit;
     End;
-    Width := MilsToCoord(StrToIntDef(ExtractJsonValue(Params, 'width'), 20));
+    Width := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'width'), 20));
     If Width <= 0 Then Width := MilsToCoord(20);
 
     Have := TStringList.Create;
@@ -9916,7 +9916,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"edges":' + IntToStr(Outline.PointCount)
         + ',"added":' + IntToStr(Added) + ',"already_there":' + IntToStr(Kept)
-        + ',"width_mils":' + IntToStr(CoordToMils(Width)) + '}');
+        + ',"width_mils":' + FloatToJsonStr(CoordToMilsF(Width)) + '}');
 End;
 
 {..............................................................................}

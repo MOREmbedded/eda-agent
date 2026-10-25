@@ -35,8 +35,11 @@ def _functions(unit):
 
 
 def _whole_mil_lengths(body):
-    """Names of variables read with StrToIntDef that reach MilsToCoord."""
-    ints = set(re.findall(r"(\w+)\s*:=\s*StrToIntDef\(", body))
+    """Names of variables read with StrToIntDef that reach MilsToCoord.
+
+    A record field such as Seg.cx is not one: a board-shape vertex arrives
+    as an integer internal coordinate, which is already exact."""
+    ints = set(re.findall(r"(?<![.\w])(\w+)\s*:=\s*StrToIntDef\(", body))
     found = set()
     for conv in re.findall(r"MilsToCoordF?\(([^;]*?)\)", body):
         found |= {v for v in ints if re.search(r"\b%s\b" % re.escape(v), conv)}
