@@ -5,9 +5,11 @@
 Symbol parts, display modes and aliases, model and part STEP export,
 impedance profiles, variant entries, net colours, the rule Altium applies,
 rule scopes, net clean-up, drill pairs, declared classes and rooms,
-sheet zones, and the extra board and pin properties. What each sends, what each
-refuses before Altium sees it, and the Pascal shapes that keep a refused or
-missing call from passing for a success.
+sheet zones, xSignals, shared packages, part text positions, net naming
+objects, the library rule check, project setup, and the extra board and
+pin properties. What each sends, what each refuses before Altium sees
+it, and the Pascal shapes that keep a refused or missing call from
+passing for a success.
 """
 from __future__ import annotations
 
@@ -250,7 +252,8 @@ def test_extra_properties_fit_only_their_owner():
     text = (ALTIUM / "PCBGeneric.pas").read_text(encoding="utf-8-sig")
     assert "(ExtraPCBPropertyOwner(PropName) > 0);" in text
     body = _body("PCBGeneric.pas", "PCBSetExtra")
-    assert "If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Then Exit;" in body
+    assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
+            "       (PropName = 'PackageSpecificHash') Then Exit;") in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
@@ -277,3 +280,171 @@ def test_an_unset_tolerance_reads_and_writes_as_unset():
 def test_variant_creation_tries_the_api_first():
     body = _body("Project.pas", "Proj_CreateVariant")
     assert body.index("Project.DM_AddProjectVariant") < body.index("RunProcess('WorkspaceManager:VariantManagement')")
+
+
+def test_xsignals_send_pins_and_refuse_bad_ones(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_create_xsignals",
+                    pins=["U4.4", " LED1.3 "], class_name="LED_DATA")
+    assert sent == [("pcb.create_xsignals",
+                     {"pins": "U4.4\tLED1.3", "class_name": "LED_DATA"})]
+    for pins in (["U4.4"], ["U4.4", "LED1"], ["U4.4", ".3"], []):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_create_xsignals", pins=pins)
+        assert sent == [] and result["ok"] is False, pins
+
+
+def test_xsignal_listing_names_pads_and_counts_copper():
+    body = _body("PCB.pas", "XSignalJson")
+    # Tracks, arcs and vias are counted, not listed: a routed xSignal
+    # otherwise lists every segment.
+    assert body.index("Inc(Tracks);") < body.index("GetPinPairItemDisplayName")
+    assert body.index("Inc(Vias);") < body.index("GetPinPairItemDisplayName")
+    assert "JsonRaw('path'," in body
+    create = _body("PCB.pas", "PCB_CreateXSignals")
+    # New xSignals are found by name against the list taken before.
+    assert create.index("BeforeNames := BeforeNames + PP.Name") < create.index("Mgr.CreateFromPins(Pins)")
+    assert "If Pos(#9 + PP.Name + #9, BeforeNames) > 0 Then Continue;" in create
+    assert "'NO_PIN'" in create
+
+
+def test_same_package_groups_are_confirmed_member_by_member(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                    "pcb_find_same_package", designator=" R1 ")
+    assert sent == [("pcb.find_same_package", {"designator": "R1"})]
+    body = _body("PCB.pas", "PCB_FindSamePackage")
+    # A shared hash is a candidate; IsPackageEqual decides.
+    assert "Same := First.IsPackageEqual(Comp);" in body
+    assert "If Size < 2 Then Continue;" in body
+    assert "parts_without_hash" in body
+
+
+@pytest.mark.parametrize("given, number", [
+    ("manual", 0), ("top_left", 1), ("bottom-center", 6), ("Bottom Right", 9),
+    ("4", 4), (5, 5)])
+def test_text_anchors_take_names_or_numbers(given, number):
+    assert pcb._text_anchor(given) == number
+
+
+def test_text_position_sends_and_refuses(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_auto_position_text",
+                    designators=["LED2", "R4"], name_position="top_center")
+    assert sent == [("pcb.auto_position_text",
+                     {"designators": "LED2\tR4", "name_position": "4"})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_auto_position_text")
+    assert sent == [("pcb.auto_position_text", {})]
+    for kwargs in ({"name_position": "middle"}, {"comment_position": "10"},
+                   {"designators": []}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_auto_position_text", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_text_position_reports_whether_the_text_is_shown():
+    # Measured: Altium records the anchor on hidden text but does not
+    # move it, so the reply has to say which texts are hidden.
+    body = _body("PCB.pas", "CompTextPosJson")
+    assert "JsonBool('name_shown', NameOn)" in body
+    assert "JsonBool('comment_shown', CommentOn)" in body
+    run = _body("PCB.pas", "PCB_AutoPositionText")
+    assert "Comp.ChangeNameAutoposition(NamePos);" in run
+    assert "Comp.AutoPosition_NameComment;" in run
+
+
+def test_part_text_properties_write_through_the_moving_call():
+    body = _body("PCBGeneric.pas", "PCBSetExtra")
+    assert "Comp.ChangeNameAutoposition(N)" in body
+    assert "Comp.ChangeCommentAutoposition(N)" in body
+    assert "Comp.LockStrings := B" in body
+    get = _body("PCBGeneric.pas", "PCBGetExtra")
+    assert "Result := Comp.PackageSpecificHash;" in get
+
+
+def test_net_items_sends_and_refuses(monkeypatch):
+    _, sent = _sent(project, "register_project_tools", monkeypatch,
+                    "proj_get_net_items", net="GND", named_only=True)
+    assert sent == [("project.get_net_items",
+                     {"limit": "500", "net": "GND", "named_only": "true"})]
+    result, sent = _sent(project, "register_project_tools", monkeypatch,
+                         "proj_get_net_items", limit=0)
+    assert sent == [] and result["ok"] is False
+
+
+def test_net_items_are_in_mils_and_name_power_ports():
+    body = _body("Project.pas", "NetNamingItemJson")
+    assert "JsonFloat('x', X / 10000)" in body
+    # A power port has no text of its own; the net name stands in.
+    assert body.index("If Text = '' Then") < body.index("Item.DM_NetName")
+    listing = _body("Project.pas", "Proj_GetNetItems")
+    assert "nets_examined" in listing and "truncated" in listing
+
+
+def test_project_setup_sends_only_what_was_asked(monkeypatch):
+    _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
+    assert sent == [("project.project_setup", {})]
+    _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup",
+                    move_document="C:/p/A.SchDoc", move_to_index=2,
+                    add_search_path="C:/libs", include_subfolders=True,
+                    allow_port_net_names=False)
+    assert sent == [("project.project_setup", {
+        "move_document": "C:/p/A.SchDoc", "move_to_index": "2",
+        "add_search_path": "C:/libs", "include_subfolders": "true",
+        "allow_port_net_names": "false"})]
+    for kwargs in ({"move_document": "C:/p/A.SchDoc"}, {"move_to_index": 1},
+                   {"move_document": "C:/p/A.SchDoc", "move_to_index": -1}):
+        result, sent = _sent(project, "register_project_tools", monkeypatch,
+                             "proj_project_setup", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_project_setup_reads_every_change_back():
+    body = _body("Project.pas", "Proj_ProjectSetup")
+    for write, check in (
+            ("Project.DM_MoveSourceDocument(MoveDoc, NewIdx);", "If NowIdx <> NewIdx Then"),
+            ("Project.DM_AddSearchPath(AddPath", "If Not Found Then"),
+            ("Project.DM_SetAllowPortNetNames(PortStr = 'true');",
+             "If Project.DM_GetAllowPortNetNames <> (PortStr = 'true') Then"),
+            ("Project.DM_SetAllowSheetEntryNetNames(EntryStr = 'true');",
+             "If Project.DM_GetAllowSheetEntryNetNames <> (EntryStr = 'true') Then")):
+        assert body.index(write) < body.index(check), write
+    assert "'NO_DOCUMENT'" in body
+
+
+def test_schlib_check_sends_and_refuses(monkeypatch, tmp_path):
+    lib = tmp_path / "Parts.SchLib"
+    lib.write_bytes(b"")
+    _, sent = _sent(library, "register_library_tools", monkeypatch, "lib_check_schlib",
+                    library_path=str(lib), checks=["missing_footprint", "duplicate_pins"])
+    assert sent == [("library.check_schlib", {
+        "checks": "missing_footprint\tduplicate_pins", "library_path": str(lib)})]
+    for kwargs in ({"checks": ["missing_everything"]}, {"checks": []},
+                   {"library_path": str(tmp_path / "None.SchLib")}):
+        result, sent = _sent(library, "register_library_tools", monkeypatch,
+                             "lib_check_schlib", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_schlib_check_hides_the_report_and_frees_the_checker():
+    body = _body("Library.pas", "Lib_CheckSchLib")
+    assert "Checker.ShowReport := False;" in body
+    assert body.index("Ran := Checker.Run;") < body.index("Sch_LibraryRuleChecker_Destroy(Checker)")
+    assert body.index("Finally") < body.index("Sch_LibraryRuleChecker_Destroy")
+    for check in library._SCHLIB_CHECKS:
+        assert f"#9 + '{check}' + #9" in body, check
+
+
+def test_schlib_check_report_is_read_per_symbol(tmp_path):
+    lib = tmp_path / "Parts.SchLib"
+    lib.write_bytes(b"")
+    (tmp_path / "Parts.ERR").write_text(
+        "Component Rule Check Report for : Parts.SchLib\n\n\n"
+        "Name                Errors\n"
+        "------------------------------------------------------------------\n"
+        "Component_1         (No Footprint) (No Description) \n"
+        "LM317 ADJ           (Duplicate Pins: 2) \n", encoding="utf-8")
+    report, problems = library._schlib_check_report(lib, 0)
+    assert report == tmp_path / "Parts.ERR"
+    assert problems == [
+        {"symbol": "Component_1", "problems": ["No Footprint", "No Description"]},
+        {"symbol": "LM317 ADJ", "problems": ["Duplicate Pins: 2"]}]
+    # A report older than the run is not this run's report.
+    assert library._schlib_check_report(lib, 4102444800) == (None, [])

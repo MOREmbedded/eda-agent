@@ -17624,6 +17624,496 @@ Begin
         + JsonBool('written', (AgeAfter <> -1) And (AgeAfter <> AgeBefore))));
 End;
 
+{ One xSignal (pin pair) as JSON: its name, lengths in mils, node count, the }
+{ pads and parts it runs through as Altium names them, and how many tracks,  }
+{ arcs and vias carry it.                                                    }
+Function XSignalJson(Mgr : IPCB_PinPairsManager; PP : IPCB_PinPair; PairIdx : Integer) : String;
+Var
+    Name, Items, Item : String;
+    Len, Routed, Unrouted : Double;
+    Nodes, Prims, I, Oid, Tracks, Vias : Integer;
+    Prim : IPCB_Primitive;
+Begin
+    Name := ''; Len := 0; Routed := 0; Unrouted := 0; Nodes := 0; Prims := 0;
+    Tracks := 0; Vias := 0;
+    Try Name := PP.Name; Except End;
+    Try Len := PP.Length / 10000; Except End;
+    Try Routed := PP.RoutedLength / 10000; Except End;
+    Try Unrouted := PP.UnroutedLength / 10000; Except End;
+    Try Nodes := PP.NodeCount; Except End;
+    Try Prims := PP.PrimitivesCount; Except End;
+    Items := '';
+    For I := 0 To Prims - 1 Do
+    Begin
+        Item := '';
+        Prim := Nil;
+        Try Prim := PP.Primitives[I]; Except Prim := Nil; End;
+        If Prim = Nil Then Continue;
+        Oid := Prim.ObjectId;
+        If (Oid = eTrackObject) Or (Oid = eArcObject) Then
+        Begin
+            Inc(Tracks);
+            Continue;
+        End;
+        If Oid = eViaObject Then
+        Begin
+            Inc(Vias);
+            Continue;
+        End;
+        Try Item := PP.GetPinPairItemDisplayName(Prim); Except End;
+        If Item = '' Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(Item) + '"';
+    End;
+    Result := JsonObj(JsonInt('index', PairIdx) + ','
+        + JsonStr('name', Name) + ','
+        + JsonFloat('length_mils', Len) + ','
+        + JsonFloat('routed_length_mils', Routed) + ','
+        + JsonFloat('unrouted_length_mils', Unrouted) + ','
+        + JsonInt('node_count', Nodes) + ','
+        + JsonInt('track_count', Tracks) + ','
+        + JsonInt('via_count', Vias) + ','
+        + JsonRaw('path', '[' + Items + ']'));
+End;
+
+{..............................................................................}
+{ PCB_GetXSignals - the board's xSignals (Board.PinPairsManager): each one's  }
+{ name, lengths and the pins and parts it runs through.                       }
+{..............................................................................}
+Function PCB_GetXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    I, Count : Integer;
+    Items : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS', 'The board has no xSignal manager');
+        Exit;
+    End;
+    Count := Mgr.PinPairsCount;
+    Items := '';
+    For I := 0 To Count - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP = Nil Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + XSignalJson(Mgr, PP, I);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('count', Count) + ',' + JsonRaw('xsignals', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ PCB_CreateXSignals - create xSignals between pins (PinPairsManager.         }
+{ CreateFromPins on the pads), and put them in an xSignal class when one is   }
+{ named. Reports the xSignals that were not there before.                     }
+{ Params: pins (tab-separated 'U1.3' references, at least two),               }
+{ class_name (optional).                                                      }
+{..............................................................................}
+Function PCB_CreateXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    Comp : IPCB_Component;
+    Pad : IPCB_Pad;
+    Pins : TInterfaceList;
+    Made : IInterface;
+    PinStr, ClassName, Item, Desig, PadName, Missing, NewItems, BeforeNames : String;
+    MissingPlain : String;
+    TabPos, DotPos, I, Before, After, Found : Integer;
+    Classed : Boolean;
+Begin
+    PinStr := ExtractJsonValue(Params, 'pins');
+    ClassName := ExtractJsonValue(Params, 'class_name');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS', 'The board has no xSignal manager');
+        Exit;
+    End;
+    Pins := TInterfaceList.Create;
+    Missing := '';
+    MissingPlain := '';
+    Found := 0;
+    While PinStr <> '' Do
+    Begin
+        TabPos := Pos(#9, PinStr);
+        If TabPos = 0 Then Begin Item := PinStr; PinStr := ''; End
+        Else Begin Item := Copy(PinStr, 1, TabPos - 1); PinStr := Copy(PinStr, TabPos + 1, Length(PinStr)); End;
+        Item := Trim(Item);
+        If Item = '' Then Continue;
+        DotPos := Pos('.', Item);
+        Pad := Nil;
+        If DotPos > 1 Then
+        Begin
+            Desig := Copy(Item, 1, DotPos - 1);
+            PadName := Copy(Item, DotPos + 1, Length(Item));
+            Comp := FindPCBComponentByDesignator(Board, Desig);
+            If Comp <> Nil Then Pad := PadOfComponent(Comp, PadName);
+        End;
+        If Pad = Nil Then
+        Begin
+            If Missing <> '' Then Missing := Missing + ',';
+            Missing := Missing + '"' + EscapeJsonString(Item) + '"';
+            If MissingPlain <> '' Then MissingPlain := MissingPlain + ', ';
+            MissingPlain := MissingPlain + Item;
+            Continue;
+        End;
+        Pins.Add(Pad);
+        Inc(Found);
+    End;
+    If Missing <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PIN',
+            'No pad for: ' + MissingPlain);
+        Exit;
+    End;
+    If Found < 2 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'give at least two pins');
+        Exit;
+    End;
+    Before := Mgr.PinPairsCount;
+    BeforeNames := #9;
+    For I := 0 To Before - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP <> Nil Then BeforeNames := BeforeNames + PP.Name + #9;
+    End;
+    Made := Nil;
+    PCBServer.PreProcess;
+    Try
+        Made := Mgr.CreateFromPins(Pins);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    Classed := False;
+    If (ClassName <> '') And (Made <> Nil) Then
+    Begin
+        Try
+            Mgr.AssignPinPairClass(Made, ClassName);
+            Classed := True;
+        Except
+            Classed := False;
+        End;
+    End;
+    After := Mgr.PinPairsCount;
+    NewItems := '';
+    For I := 0 To After - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP = Nil Then Continue;
+        If Pos(#9 + PP.Name + #9, BeforeNames) > 0 Then Continue;
+        If NewItems <> '' Then NewItems := NewItems + ',';
+        NewItems := NewItems + XSignalJson(Mgr, PP, I);
+    End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonBool('returned_pairs', Made <> Nil) + ','
+        + JsonStr('class_name', ClassName) + ','
+        + JsonBool('class_assigned', Classed) + ','
+        + JsonRaw('created', '[' + NewItems + ']')));
+End;
+
+{..............................................................................}
+{ PCB_FindSamePackage - placed parts that share a package, as Altium judges  }
+{ it (IPCB_Component.IsPackageEqual). With a designator, the parts whose     }
+{ package equals that one; without, every group of two or more, keyed by     }
+{ PackageSpecificHash and each member confirmed against the group's first.   }
+{ Params: designator (optional).                                             }
+{..............................................................................}
+Function PCB_FindSamePackage(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp, Ref, First : IPCB_Component;
+    Comps : TInterfaceList;
+    Hashes, Done : TStringList;
+    Desig, Name, Hash, Groups, Members, Pattern : String;
+    I, J, Size, GroupCount, Unhashed : Integer;
+    Same : Boolean;
+Begin
+    Desig := ExtractJsonValue(Params, 'designator');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Comps := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Comp := Iter.FirstPCBObject;
+    While Comp <> Nil Do
+    Begin
+        Comps.Add(Comp);
+        Comp := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+
+    If Desig <> '' Then
+    Begin
+        Ref := FindPCBComponentByDesignator(Board, Desig);
+        If Ref = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component ' + Desig);
+            Exit;
+        End;
+        Members := '';
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            If Name = Desig Then Continue;
+            Same := False;
+            Try Same := Ref.IsPackageEqual(Comp); Except Same := False; End;
+            If Not Same Then Continue;
+            If Members <> '' Then Members := Members + ',';
+            Members := Members + '"' + EscapeJsonString(Name) + '"';
+        End;
+        Pattern := '';
+        Try Pattern := Ref.Pattern; Except End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('designator', Desig) + ','
+            + JsonStr('footprint', Pattern) + ','
+            + JsonInt('parts_examined', Comps.Count) + ','
+            + JsonRaw('same_package', '[' + Members + ']')));
+        Exit;
+    End;
+
+    { Group by Altium's package hash, then confirm each member against the   }
+    { group's first part, so a hash collision cannot join two packages.      }
+    Hashes := TStringList.Create;
+    Done := TStringList.Create;
+    Unhashed := 0;
+    For I := 0 To Comps.Count - 1 Do
+    Begin
+        Comp := Comps.Items[I];
+        Hash := '';
+        Try Hash := Comp.PackageSpecificHash; Except Hash := ''; End;
+        If Hash = '' Then Inc(Unhashed);
+        Hashes.Add(Hash);
+    End;
+    Groups := '';
+    GroupCount := 0;
+    For I := 0 To Comps.Count - 1 Do
+    Begin
+        Hash := Hashes.Strings[I];
+        If Hash = '' Then Continue;
+        If Done.IndexOf(Hash) >= 0 Then Continue;
+        Done.Add(Hash);
+        First := Comps.Items[I];
+        Members := '';
+        Size := 0;
+        For J := I To Comps.Count - 1 Do
+        Begin
+            If Hashes.Strings[J] <> Hash Then Continue;
+            Comp := Comps.Items[J];
+            If J > I Then
+            Begin
+                Same := False;
+                Try Same := First.IsPackageEqual(Comp); Except Same := False; End;
+                If Not Same Then Continue;
+            End;
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            If Members <> '' Then Members := Members + ',';
+            Members := Members + '"' + EscapeJsonString(Name) + '"';
+            Inc(Size);
+        End;
+        If Size < 2 Then Continue;
+        Pattern := '';
+        Try Pattern := First.Pattern; Except End;
+        If Groups <> '' Then Groups := Groups + ',';
+        Groups := Groups + JsonObj(JsonStr('footprint', Pattern) + ','
+            + JsonInt('count', Size) + ','
+            + JsonRaw('designators', '[' + Members + ']'));
+        Inc(GroupCount);
+    End;
+    Hashes.Free;
+    Done.Free;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('parts_examined', Comps.Count) + ','
+        + JsonInt('parts_without_hash', Unhashed) + ','
+        + JsonInt('group_count', GroupCount) + ','
+        + JsonRaw('groups', '[' + Groups + ']')));
+End;
+
+{ A component's designator and comment positions as JSON. }
+Function CompTextPosJson(Comp : IPCB_Component) : String;
+Var
+    NameAuto, CommentAuto : Integer;
+    NX, NY, CX, CY : Double;
+    Locked, NameOn, CommentOn : Boolean;
+Begin
+    NameAuto := -1; CommentAuto := -1; NX := 0; NY := 0; CX := 0; CY := 0; Locked := False;
+    NameOn := False; CommentOn := False;
+    Try NameOn := Comp.NameOn; Except End;
+    Try CommentOn := Comp.CommentOn; Except End;
+    Try NameAuto := Comp.NameAutoPosition; Except End;
+    Try CommentAuto := Comp.CommentAutoPosition; Except End;
+    Try NX := CoordToMilsF(Comp.Name.XLocation); Except End;
+    Try NY := CoordToMilsF(Comp.Name.YLocation); Except End;
+    Try CX := CoordToMilsF(Comp.Comment.XLocation); Except End;
+    Try CY := CoordToMilsF(Comp.Comment.YLocation); Except End;
+    Try Locked := Comp.LockStrings; Except End;
+    Result := JsonObj(JsonInt('name_autoposition', NameAuto) + ','
+        + JsonBool('name_shown', NameOn) + ','
+        + JsonFloat('name_x', NX) + ',' + JsonFloat('name_y', NY) + ','
+        + JsonInt('comment_autoposition', CommentAuto) + ','
+        + JsonBool('comment_shown', CommentOn) + ','
+        + JsonFloat('comment_x', CX) + ',' + JsonFloat('comment_y', CY) + ','
+        + JsonBool('lock_strings', Locked));
+End;
+
+{..............................................................................}
+{ PCB_AutoPositionText - put parts' designator and comment back in Altium's  }
+{ automatic positions (IPCB_Component.AutoPosition_NameComment), or at a     }
+{ chosen anchor (ChangeNameAutoposition / ChangeCommentAutoposition, Altium's }
+{ TTextAutoposition numbers). Reports each part before and after.            }
+{ MEASURED on AD 26.11.1.5: a hidden designator or comment keeps its place   }
+{ (the anchor is recorded, the text does not move); shown, it moves.         }
+{ Params: designators (tab-separated; empty = every part), name_position,    }
+{ comment_position (optional numbers).                                       }
+{..............................................................................}
+Function PCB_AutoPositionText(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Comps : TInterfaceList;
+    DesigStr, NameStr, CommentStr, Item, Name, Items, Missing, Before : String;
+    TabPos, I, NamePos, CommentPos : Integer;
+Begin
+    DesigStr := ExtractJsonValue(Params, 'designators');
+    NameStr := ExtractJsonValue(Params, 'name_position');
+    CommentStr := ExtractJsonValue(Params, 'comment_position');
+    NamePos := -1;
+    CommentPos := -1;
+    If NameStr <> '' Then
+    Begin
+        If Not IsIntStr(NameStr) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'name_position must be a number');
+            Exit;
+        End;
+        NamePos := StrToInt(NameStr);
+    End;
+    If CommentStr <> '' Then
+    Begin
+        If Not IsIntStr(CommentStr) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'comment_position must be a number');
+            Exit;
+        End;
+        CommentPos := StrToInt(CommentStr);
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Comps := TInterfaceList.Create;
+    Missing := '';
+    If DesigStr = '' Then
+    Begin
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            Comps.Add(Comp);
+            Comp := Iter.NextPCBObject;
+        End;
+        Board.BoardIterator_Destroy(Iter);
+    End
+    Else
+    Begin
+        While DesigStr <> '' Do
+        Begin
+            TabPos := Pos(#9, DesigStr);
+            If TabPos = 0 Then Begin Item := DesigStr; DesigStr := ''; End
+            Else Begin Item := Copy(DesigStr, 1, TabPos - 1); DesigStr := Copy(DesigStr, TabPos + 1, Length(DesigStr)); End;
+            Item := Trim(Item);
+            If Item = '' Then Continue;
+            Comp := FindPCBComponentByDesignator(Board, Item);
+            If Comp = Nil Then
+            Begin
+                If Missing <> '' Then Missing := Missing + ',';
+                Missing := Missing + '"' + EscapeJsonString(Item) + '"';
+            End
+            Else Comps.Add(Comp);
+        End;
+    End;
+    Items := '';
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            Before := CompTextPosJson(Comp);
+            Comp.BeginModify;
+            Try
+                If (NamePos < 0) And (CommentPos < 0) Then
+                Begin
+                    Comp.AutoPosition_NameComment;
+                End
+                Else
+                Begin
+                    If NamePos >= 0 Then Comp.ChangeNameAutoposition(NamePos);
+                    If CommentPos >= 0 Then Comp.ChangeCommentAutoposition(CommentPos);
+                End;
+            Except
+            End;
+            Comp.EndModify;
+            If I < 200 Then
+            Begin
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('designator', Name) + ','
+                    + JsonRaw('before', Before) + ','
+                    + JsonRaw('after', CompTextPosJson(Comp)));
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Comps.Count > 0 Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('parts', Comps.Count) + ','
+        + JsonRaw('not_found', '[' + Missing + ']') + ','
+        + JsonRaw('changed', '[' + Items + ']')));
+End;
+
 
 {..............................................................................}
 { PCB_BindPadNets - Attach component pads to existing board nets. Second leg  }
@@ -20235,6 +20725,10 @@ Begin
         'get_drill_pairs':         Result := PCB_GetDrillPairs(Params, RequestId);
         'set_drill_pair':          Result := PCB_SetDrillPair(Params, RequestId);
         'save_component_model':    Result := PCB_SaveComponentModel(Params, RequestId);
+        'get_xsignals':            Result := PCB_GetXSignals(Params, RequestId);
+        'create_xsignals':         Result := PCB_CreateXSignals(Params, RequestId);
+        'find_same_package':       Result := PCB_FindSamePackage(Params, RequestId);
+        'auto_position_text':      Result := PCB_AutoPositionText(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

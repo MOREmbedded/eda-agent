@@ -598,6 +598,23 @@ def _layer_names(layer: str, layers: Any) -> list[str]:
     return names
 
 
+#: Altium's text anchors, in its own order (TTextAutoposition).
+_TEXT_ANCHORS = (
+    "manual", "top_left", "center_left", "bottom_left", "top_center",
+    "center", "bottom_center", "top_right", "center_right", "bottom_right",
+)
+
+
+def _text_anchor(value: Any) -> Optional[int]:
+    """An anchor name or number to Altium's number, or None."""
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if text in _TEXT_ANCHORS:
+        return _TEXT_ANCHORS.index(text)
+    if text.isdigit() and int(text) < len(_TEXT_ANCHORS):
+        return int(text)
+    return None
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -1090,6 +1107,124 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async(
             "pcb.save_component_model",
             {"designator": designator.strip(), "out_path": out_path}, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_get_xsignals() -> dict[str, Any]:
+        """List the board's xSignals with their lengths.
+
+        An xSignal is a signal path from pin to pin that may run through
+        series parts (a resistor or an AC-coupling capacitor), so a bus
+        can be length-matched across them.
+
+        Returns:
+            ``count`` and ``xsignals``: ``name``, ``length_mils``,
+            ``routed_length_mils``, ``unrouted_length_mils``,
+            ``node_count`` and ``items`` (the pins and parts it runs
+            through, as Altium names them).
+        """
+        return await get_bridge().send_command_async("pcb.get_xsignals", {})
+
+    @mcp.tool()
+    async def pcb_create_xsignals(
+        pins: list[str],
+        class_name: str = "",
+    ) -> dict[str, Any]:
+        """Create xSignals between pins, through any series parts.
+
+        Altium works out the paths between the pins given, the same as
+        its Create xSignals command, and can put the new xSignals in an
+        xSignal class for length-matching rules.
+
+        Args:
+            pins: At least two pins as "U1.3" (designator.pad).
+            class_name: Optional xSignal class to put them in.
+
+        Returns:
+            ``count_before``, ``count_after``, ``created`` (the new
+            xSignals, as pcb_get_xsignals lists them) and
+            ``class_assigned``.
+        """
+        items = [p.strip() for p in (pins or []) if p and p.strip()]
+        if len(items) < 2:
+            return {"ok": False, "reason": "give at least two pins"}
+        bad = [p for p in items if "." not in p.strip(".") or "\t" in p]
+        if bad:
+            return {"ok": False, "reason": f"pins are 'U1.3': {', '.join(bad)}"}
+        params: dict[str, Any] = {"pins": "\t".join(items)}
+        if class_name.strip():
+            params["class_name"] = class_name.strip()
+        return await get_bridge().send_command_async(
+            "pcb.create_xsignals", params, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_find_same_package(designator: str = "") -> dict[str, Any]:
+        """Find placed parts that share a package, as Altium judges it.
+
+        Useful before copying a layout between repeated channels: parts
+        with the same package can take each other's placement.
+
+        Args:
+            designator: One part, to list the parts with its package.
+                Empty lists every group of two or more.
+
+        Returns:
+            With a designator: ``footprint`` and ``same_package``.
+            Without: ``groups`` (``footprint``, ``count``,
+            ``designators``), ``group_count``, ``parts_examined`` and
+            ``parts_without_hash``.
+        """
+        params: dict[str, Any] = {}
+        if designator.strip():
+            params["designator"] = designator.strip()
+        return await get_bridge().send_command_async(
+            "pcb.find_same_package", params, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_auto_position_text(
+        designators: Optional[list[str]] = None,
+        name_position: Optional[str] = None,
+        comment_position: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Put parts' designator and comment back in Altium's automatic
+        positions, or at a chosen anchor.
+
+        With no position given, Altium re-places both texts at each
+        part's current anchor (a part set to manual stays). Altium moves
+        only text that is shown: a hidden designator or comment takes
+        the anchor and keeps its place (``name_shown`` /
+        ``comment_shown`` in the reply). Unlike pcb_autoplace_silkscreen,
+        this does not look for clearance.
+
+        Args:
+            designators: The parts. ``None`` means every part.
+            name_position, comment_position: One of manual, top_left,
+                center_left, bottom_left, top_center, center,
+                bottom_center, top_right, center_right, bottom_right
+                (the part's own frame, so a rotated part turns them),
+                or Altium's number 0 to 9.
+
+        Returns:
+            ``parts``, ``not_found`` and ``changed`` (each part's
+            anchors, shown flags and text positions ``before`` and
+            ``after``, the first 200).
+        """
+        params: dict[str, Any] = {}
+        items = [d.strip() for d in (designators or []) if d and d.strip()]
+        if designators is not None and not items:
+            return {"ok": False, "reason": "designators is empty"}
+        if items:
+            params["designators"] = "\t".join(items)
+        for key, value in (("name_position", name_position),
+                           ("comment_position", comment_position)):
+            if value is None:
+                continue
+            anchor = _text_anchor(value)
+            if anchor is None:
+                return {"ok": False, "reason": f"{key} is one of "
+                        + ", ".join(_TEXT_ANCHORS) + " or 0 to 9"}
+            params[key] = str(anchor)
+        return await get_bridge().send_command_async(
+            "pcb.auto_position_text", params, timeout=120.0)
 
     @mcp.tool()
     async def pcb_get_design_rules() -> dict[str, Any]:

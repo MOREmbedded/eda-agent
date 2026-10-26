@@ -503,7 +503,11 @@ def register_generic_tools(mcp):
                 BorderWidth, AvoidObsticles (Altium's spelling),
                 ClipAcuteCorners, MitreCorners, IgnoreViolations and
                 ArcPourMode on a pour; EnablePinSwapping and
-                EnablePartSwapping on a part (IsBGA reads). Symbol pins
+                EnablePartSwapping on a part (IsBGA reads); also on a
+                part LockStrings, NameAutoPosition and CommentAutoPosition
+                (Altium's anchor numbers; writing one moves the text
+                there), FootprintDescription, DefaultPCB3DModel
+                (PackageSpecificHash reads). Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),

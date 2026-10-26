@@ -60,7 +60,10 @@ Begin
             (PropName = 'MitreCorners') Or (PropName = 'IgnoreViolations') Or
             (PropName = 'ArcPourMode') Then Result := 5
     Else If (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
-            (PropName = 'IsBGA') Then Result := 6;
+            (PropName = 'IsBGA') Or (PropName = 'LockStrings') Or
+            (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
+            (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
+            (PropName = 'PackageSpecificHash') Then Result := 6;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -168,7 +171,13 @@ Begin
         Comp := Obj;
         If PropName = 'EnablePinSwapping' Then Result := BoolToJsonStr(Comp.EnablePinSwapping)
         Else If PropName = 'EnablePartSwapping' Then Result := BoolToJsonStr(Comp.EnablePartSwapping)
-        Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA);
+        Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA)
+        Else If PropName = 'LockStrings' Then Result := BoolToJsonStr(Comp.LockStrings)
+        Else If PropName = 'NameAutoPosition' Then Result := IntToStr(Comp.NameAutoPosition)
+        Else If PropName = 'CommentAutoPosition' Then Result := IntToStr(Comp.CommentAutoPosition)
+        Else If PropName = 'FootprintDescription' Then Result := Comp.FootprintDescription
+        Else If PropName = 'DefaultPCB3DModel' Then Result := Comp.DefaultPCB3DModel
+        Else If PropName = 'PackageSpecificHash' Then Result := Comp.PackageSpecificHash;
     End;
 End;
 
@@ -191,7 +200,8 @@ Begin
     Oid := Obj.ObjectId;
     If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
     Result := -1;
-    If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Then Exit;
+    If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
+       (PropName = 'PackageSpecificHash') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If (Owner = 1) And (LowerCase(Value) = 'unset') Then
     Begin
@@ -214,13 +224,16 @@ Begin
         (PropName = 'Multiline') Or (PropName = 'AvoidObsticles') Or
         (PropName = 'ClipAcuteCorners') Or (PropName = 'MitreCorners') Or
         (PropName = 'IgnoreViolations') Or (PropName = 'ArcPourMode') Or
-        (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping');
+        (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
+        (PropName = 'LockStrings');
     IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
-        (PropName = 'TextPrefix') Or (PropName = 'TextSuffix');
+        (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
+        (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel');
     IsInt := (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
         (PropName = 'MultilineTextAutoPosition') Or (PropName = 'TextPosition') Or
         (PropName = 'TextDimensionUnit') Or (PropName = 'TextPrecision') Or
-        (PropName = 'ArrowPosition') Or (PropName = 'PolygonType');
+        (PropName = 'ArrowPosition') Or (PropName = 'PolygonType') Or
+        (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition');
     B := False;
     F := 0;
     N := 0;
@@ -310,7 +323,14 @@ Begin
     Begin
         Comp := Obj;
         If PropName = 'EnablePinSwapping' Then Comp.EnablePinSwapping := B
-        Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B;
+        Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B
+        Else If PropName = 'LockStrings' Then Comp.LockStrings := B
+        { Change*Autoposition moves the text to the anchor as well as       }
+        { recording it; writing NameAutoPosition alone leaves it where it is. }
+        Else If PropName = 'NameAutoPosition' Then Comp.ChangeNameAutoposition(N)
+        Else If PropName = 'CommentAutoPosition' Then Comp.ChangeCommentAutoposition(N)
+        Else If PropName = 'FootprintDescription' Then Comp.FootprintDescription := Value
+        Else If PropName = 'DefaultPCB3DModel' Then Comp.DefaultPCB3DModel := Value;
     End;
     Result := 1;
 End;
@@ -2075,7 +2095,9 @@ Begin
         + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
         + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
         + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
-        + 'EnablePinSwapping, EnablePartSwapping, IsBGA';
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, '
+        + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
+        + 'DefaultPCB3DModel, PackageSpecificHash';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

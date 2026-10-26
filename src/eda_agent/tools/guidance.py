@@ -738,6 +738,94 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "a SchLib). On the board, a part's EnablePinSwapping and "
             "EnablePartSwapping switch it on."),
     },
+    {
+        "task": "Length-match a bus through series resistors or capacitors",
+        "keywords": ("xsignal", "xsignals", "series", "length", "match",
+                     "ddr", "termination", "coupling"),
+        "when": (("xsignal",), ("length", "series"), ("match", "through")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_create_xsignals", "pcb_get_xsignals",
+                "pcb_create_design_rule", "pcb_tune_length"],
+        "avoid": [("pcb_get_trace_lengths", "measures one net, so it "
+                                            "stops at the series part")],
+        "note": (
+            "pcb_create_xsignals takes the two end pins (\"U4.4\", "
+            "\"LED1.3\") and Altium finds the path through the series "
+            "parts; give class_name to group them for a matched-length "
+            "rule. pcb_get_xsignals reads the lengths back."),
+    },
+    {
+        "task": "Find where a net gets its name",
+        "keywords": ("net", "name", "named", "label", "power", "port",
+                     "sheet", "entry", "connector", "auto"),
+        "when": (("net", "named"), ("net", "name", "where"),
+                 ("auto", "generated", "net")),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_get_net_items", "proj_get_nets"],
+        "avoid": [],
+        "note": (
+            "proj_get_net_items lists each compiled net's labels, power "
+            "ports, ports, sheet entries and off-sheet connectors with "
+            "sheet and position, and flags names the compiler made up. "
+            "named_only=True skips nets nothing names."),
+    },
+    {
+        "task": "Check a schematic library with Altium's component rule check",
+        "keywords": ("schlib", "library", "check", "rule", "duplicate",
+                     "missing", "footprint", "description", "pins"),
+        "when": (("library", "check"), ("schlib", "check"),
+                 ("missing", "footprint", "symbol")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_check_schlib", "lib_audit_styles"],
+        "avoid": [],
+        "note": "Reads Altium's <library>.ERR report back as one entry per symbol.",
+    },
+    {
+        "task": "Find parts with the same package, to copy a channel's layout",
+        "keywords": ("same", "package", "identical", "channel", "repeat",
+                     "copy", "replicate", "footprint"),
+        "when": (("same", "package"), ("identical", "parts"),
+                 ("repeated", "channel")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_find_same_package", "pcb_replicate_layout",
+                "pcb_copy_component_placement"],
+        "avoid": [],
+        "note": "With a designator it lists the parts sharing that part's package.",
+    },
+    {
+        "task": "Reset designator and comment positions on placed parts",
+        "keywords": ("designator", "comment", "position", "autoposition",
+                     "anchor", "text", "lock", "strings"),
+        "when": (("designator", "position"), ("comment", "position"),
+                 ("autoposition",)),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_auto_position_text", "obj_modify",
+                "pcb_autoplace_silkscreen", "pcb_set_text_visibility"],
+        "avoid": [],
+        "note": (
+            "Altium moves only shown text: a hidden designator takes the "
+            "anchor and stays where it is. obj_modify on eComponentObject "
+            "also writes LockStrings, NameAutoPosition and "
+            "CommentAutoPosition. pcb_autoplace_silkscreen is the one that "
+            "looks for silk clearance."),
+    },
+    {
+        "task": "Reorder a project's documents or add library search paths",
+        "keywords": ("order", "reorder", "document", "sheet", "search",
+                     "path", "library", "port", "entry", "names"),
+        "when": (("reorder",), ("search", "path"), ("document", "order"),
+                 ("port", "net", "names")),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_project_setup", "proj_save", "proj_get_options"],
+        "avoid": [],
+        "note": "Changes stay in memory until proj_save.",
+    },
 )
 
 

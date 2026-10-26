@@ -2472,6 +2472,96 @@ def register_project_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def proj_get_net_items(
+        net: str = "",
+        named_only: bool = False,
+        limit: int = 500,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Show what gives each compiled net its name, and where.
+
+        For each net: its net labels, power ports, ports, sheet entries
+        and off-sheet connectors with sheet and location, whether the
+        compiler made the name up (``auto_generated``) and whether it is
+        local to one sheet. With one net, its pins too.
+
+        Args:
+            net: One net (any case). Empty lists every net.
+            named_only: Skip nets that nothing names.
+            limit: The most nets to list (default 500); ``truncated``
+                says when more were left out.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``nets_examined``, ``nets_listed``, ``truncated`` and
+            ``nets``.
+        """
+        if limit < 1:
+            return {"ok": False, "reason": "limit is 1 or more"}
+        params: dict[str, Any] = {"limit": str(limit)}
+        if net.strip():
+            params["net"] = net.strip()
+        if named_only:
+            params["named_only"] = "true"
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.get_net_items", params, timeout=120.0)
+
+    @mcp.tool()
+    async def proj_project_setup(
+        move_document: str = "",
+        move_to_index: Optional[int] = None,
+        add_search_path: str = "",
+        include_subfolders: bool = False,
+        allow_port_net_names: Optional[bool] = None,
+        allow_sheet_entry_net_names: Optional[bool] = None,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Read, or change, a project's document order, library search
+        paths and net naming options.
+
+        Call with no changes to read. Every change is read back, and
+        any that did not take is listed in ``not_applied``. Save the
+        project (proj_save) to keep the changes.
+
+        Args:
+            move_document: Full path of a document to move.
+            move_to_index: Its new position, from 0 (with move_document).
+            add_search_path: A folder to add to the library search paths.
+            include_subfolders: Search below that folder too.
+            allow_port_net_names: Ports name nets.
+            allow_sheet_entry_net_names: Sheet entries name nets.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``documents`` (in project order), ``search_paths``,
+            ``generated_documents``, the two naming options,
+            ``changed``, ``moved_from`` / ``moved_to`` and
+            ``not_applied``.
+        """
+        params: dict[str, Any] = {}
+        if move_document.strip():
+            if move_to_index is None or move_to_index < 0:
+                return {"ok": False,
+                        "reason": "move_to_index (0 or more) goes with move_document"}
+            params["move_document"] = move_document.strip()
+            params["move_to_index"] = str(move_to_index)
+        elif move_to_index is not None:
+            return {"ok": False, "reason": "move_to_index needs move_document"}
+        if add_search_path.strip():
+            params["add_search_path"] = add_search_path.strip()
+            params["include_subfolders"] = "true" if include_subfolders else "false"
+        for key, value in (("allow_port_net_names", allow_port_net_names),
+                           ("allow_sheet_entry_net_names", allow_sheet_entry_net_names)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.project_setup", params, timeout=60.0)
+
+    @mcp.tool()
     async def proj_get_declared_design_objects(
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:

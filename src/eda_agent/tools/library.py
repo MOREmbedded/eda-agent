@@ -22,6 +22,40 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
 
 
+_SCHLIB_CHECKS = (
+    "duplicate_pins", "duplicate_component", "missing_pin_number",
+    "missing_default_designator", "missing_footprint", "missing_description",
+    "missing_pin_name", "missing_pins_in_sequence",
+)
+
+
+def _schlib_check_report(library: Path, since: float):
+    """Altium's component rule check report for ``library``: the
+    ``<library>.ERR`` written beside it since ``since``. Returns the path
+    (None when no fresh report is there) and one entry per symbol with
+    the problems Altium named, e.g. ``["No Footprint"]``."""
+    report = library.with_suffix(".ERR")
+    try:
+        if not report.is_file() or report.stat().st_mtime < since:
+            return None, []
+        text = report.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, []
+    problems = []
+    rows = False
+    for line in text.splitlines():
+        if line.startswith("-----"):
+            rows = True
+            continue
+        if not rows or not line.strip():
+            continue
+        name = line.split("(", 1)[0].strip()
+        found = re.findall(r"\(([^)]*)\)", line)
+        if name and found:
+            problems.append({"symbol": name, "problems": found})
+    return report, problems
+
+
 def _encode_layer_ops(layers) -> "str | dict":
     """Layer dicts to the batch string, or a refusal dict.
 
@@ -5894,6 +5928,55 @@ def register_library_tools(mcp):
             params["library_path"] = path
         return await get_bridge().send_command_async(
             "library.set_symbol_aliases", params, timeout=60.0)
+
+    @mcp.tool()
+    async def lib_check_schlib(
+        library_path: str = "",
+        checks: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Run Altium's own component rule check on a schematic library.
+
+        Checks every symbol for duplicate pins, duplicate parts, missing
+        pin numbers, names, designator, footprint or description, and
+        gaps in the pin numbering. No report window opens; Altium writes
+        its report as <library>.ERR beside the library, and that is
+        read back.
+
+        Args:
+            library_path: The .SchLib. Defaults to the focused library.
+            checks: Only these: duplicate_pins, duplicate_component,
+                missing_pin_number, missing_default_designator,
+                missing_footprint, missing_description, missing_pin_name,
+                missing_pins_in_sequence. ``None`` runs all.
+
+        Returns:
+            ``ran``, ``report`` (the .ERR file Altium wrote beside the
+            library, None when it wrote none), ``symbols_with_problems``
+            and ``problems`` (``symbol`` and the ``problems`` Altium
+            named, such as "No Footprint").
+        """
+        import time
+        params: dict[str, Any] = {}
+        if checks is not None:
+            unknown = [c for c in checks if c not in _SCHLIB_CHECKS]
+            if unknown or not checks:
+                return {"ok": False, "reason": "checks are: " + ", ".join(_SCHLIB_CHECKS)}
+            params["checks"] = "\t".join(checks)
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False, "reason": f"{path} is not a file"}
+            params["library_path"] = path
+        started = time.time() - 2
+        reply = await get_bridge().send_command_async(
+            "library.check_schlib", params, timeout=180.0)
+        if not isinstance(reply, dict) or not reply.get("library"):
+            return reply
+        report, problems = _schlib_check_report(Path(reply["library"]), started)
+        reply["report"] = str(report) if report else None
+        reply["symbols_with_problems"] = len(problems)
+        reply["problems"] = problems
+        return reply
 
     @mcp.tool()
     async def lib_export_3d_model(

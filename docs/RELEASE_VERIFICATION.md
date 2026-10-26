@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.7
+# Release verification: 2026.10.26.10
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -137,6 +137,12 @@ works elsewhere cannot be an undeclared identifier:
 | 42, pin swapping | `SetState_SwapIdPart`, `SetState_SwapIdPin` on a symbol pin | no, nowhere | low, ran live and read back |
 | 42, symbol aliases | `Alias_Add`, `Alias_Remove` on a symbol | no, nowhere | low, ran live and read back |
 | 42, sheet options | `SetState_ReferenceZonesOn`, `SetState_CustomXZones`, `SetState_ShowTemplateGraphics` on a sheet | no, nowhere | low, ran live and restored |
+| 43, xSignals | `CreateFromPins`, `AssignPinPairClass` on the board's pin pair manager | no, nowhere | medium, ran live; the new xSignal is read back by name |
+| 43, text anchors | `ChangeNameAutoposition`, `ChangeCommentAutoposition` on a placed part | yes, `PCB_AutoplaceSilkscreen` | low, ran live; hidden text keeps its place |
+| 43, auto position | `AutoPosition_NameComment` on a placed part | no, nowhere | low, ran live |
+| 43, part text properties | `LockStrings`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, the first two written and read back live |
+| 43, project setup | `DM_MoveSourceDocument`, `DM_AddSearchPath`, `DM_SetAllowPortNetNames`, `DM_SetAllowSheetEntryNetNames` on a project | no, nowhere | medium, ran live, read back, saved and reopened |
+| 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -312,7 +318,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.7`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.10`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2541,6 +2547,53 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project
 and library, pinging after every step. All passed as described. Not
 run: a dimension, a project that declares classes or pairs, and a
 barcode text made in the GUI to read its kind numbers from.
+
+---
+
+## 43. xSignals, shared packages, text positions, net naming, library check and project setup
+
+New: `pcb_create_xsignals`, `pcb_get_xsignals`, `pcb_find_same_package`,
+`pcb_auto_position_text`, `proj_get_net_items`, `proj_project_setup`,
+`lib_check_schlib`, and the part properties `LockStrings`,
+`NameAutoPosition`, `CommentAutoPosition`, `FootprintDescription`,
+`DefaultPCB3DModel` and `PackageSpecificHash` (read only) on
+`obj_query` / `obj_modify`.
+
+1. **xSignals.** On a board with none: `pcb_create_xsignals` from an
+   MCU pin to an LED data pin through a series resistor, with a class
+   name: one xSignal, its `path` the two end pads and both resistor
+   pads, its length the routed length (821 mil, 9 tracks, 5 vias), and
+   `class_assigned` true. `pcb_get_xsignals` lists it.
+2. **Same package.** On a 143-part board: five groups (the 0402
+   capacitors, the 0805 capacitors, the LEDs, the resistors, two
+   SOT-23-5 parts), none without a hash. With `designator=R1`: the
+   other three resistors.
+3. **Text positions.** On a shown designator, anchors top_left,
+   bottom_center and bottom_right each move it, and the reply's
+   positions change. On a hidden designator the anchor is recorded and
+   the text stays where it is (`name_shown` false). With no anchor, a
+   part already at an anchor stays there. An unknown part is listed in
+   `not_found`; an unknown anchor name is refused.
+4. **Part properties.** `obj_modify` `LockStrings=true`,
+   `CommentAutoPosition=3`, `FootprintDescription` text: all read back.
+5. **Net naming.** `proj_get_net_items named_only=true` on a
+   three-sheet project: the 16 named nets of 91, each label with its
+   sheet and position in mils (a label on two sheets lists both). One
+   net (GND): its power ports, carrying the net name, and its pins.
+6. **Library check.** `lib_check_schlib` on a scratch library: Altium
+   writes `<library>.ERR` beside it, read back as "No Footprint" and
+   "No Description" on its one symbol. With only `duplicate_pins`
+   checked: no problems.
+7. **Project setup.** Read: documents in project order, no search
+   paths. Moved a sheet from 5 to 2, added a search path with
+   subfolders and set ports to name nets: all read back. Saved, closed
+   and reopened: all three were kept. Moved it back and restored the
+   option; a document not in the project is refused.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project,
+board and library. All passed as described. Not run: an xSignal class
+read back by name (the class listing shows net classes only), and a
+project with ports or sheet entries.
 
 ---
 

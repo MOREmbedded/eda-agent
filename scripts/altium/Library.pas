@@ -16424,6 +16424,54 @@ Begin
         + JsonRaw('aliases', SymbolAliasesJson(Comp))));
 End;
 
+{..............................................................................}
+{ Lib_CheckSchLib - run Altium's own component rule check on a schematic     }
+{ library (ISch_Lib.Sch_LibraryRuleChecker_Create ... Run) with no report    }
+{ window. Altium writes its report next to the library; the server reads it. }
+{ Params: library_path (optional, the open SchLib otherwise), checks (tab-   }
+{ separated names to run; empty = all).                                      }
+{..............................................................................}
+Function Lib_CheckSchLib(Params : String; RequestId : String) : String;
+Var
+    LibPath, Checks : String;
+    SchLib : ISch_Lib;
+    Checker : ISch_LibraryRuleChecker;
+    Ran : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Checks := ExtractJsonValue(Params, 'checks');
+    If Checks <> '' Then Checks := #9 + LowerCase(Checks) + #9;
+    SchLib := FocusSchLib(LibPath);
+    If SchLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library at ' + LibPath);
+        Exit;
+    End;
+    Checker := SchLib.Sch_LibraryRuleChecker_Create;
+    If Checker = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_CHECKER', 'Altium gave no library rule checker');
+        Exit;
+    End;
+    Checker.Duplicate_Pins := (Checks = '') Or (Pos(#9 + 'duplicate_pins' + #9, Checks) > 0);
+    Checker.Duplicate_Component := (Checks = '') Or (Pos(#9 + 'duplicate_component' + #9, Checks) > 0);
+    Checker.Missing_Pin_Number := (Checks = '') Or (Pos(#9 + 'missing_pin_number' + #9, Checks) > 0);
+    Checker.Missing_Default_Designator := (Checks = '') Or (Pos(#9 + 'missing_default_designator' + #9, Checks) > 0);
+    Checker.Missing_Footprint := (Checks = '') Or (Pos(#9 + 'missing_footprint' + #9, Checks) > 0);
+    Checker.Missing_Description := (Checks = '') Or (Pos(#9 + 'missing_description' + #9, Checks) > 0);
+    Checker.Missing_Pin_Name := (Checks = '') Or (Pos(#9 + 'missing_pin_name' + #9, Checks) > 0);
+    Checker.Missing_Pins_In_Sequence := (Checks = '') Or (Pos(#9 + 'missing_pins_in_sequence' + #9, Checks) > 0);
+    Checker.ShowReport := False;
+    Ran := False;
+    Try
+        Ran := Checker.Run;
+    Finally
+        Try SchLib.Sch_LibraryRuleChecker_Destroy(Checker); Except End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ',' + JsonBool('ran', Ran)));
+End;
+
 { Lib_ExportModelStep - write one footprint body's 3D model to a STEP file    }
 { through IPCB_Model.ExportToStep. MEASURED on AD 26.11.1.5: no dialog, and   }
 { the file is Altium's Open CASCADE re-encoding (117 KB from a 268 KB         }
@@ -19522,6 +19570,7 @@ Begin
         'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
         'set_symbol_parts':     Result := Lib_SetSymbolParts(Params, RequestId);
         'set_symbol_aliases':   Result := Lib_SetSymbolAliases(Params, RequestId);
+        'check_schlib':         Result := Lib_CheckSchLib(Params, RequestId);
         'export_model_step':    Result := Lib_ExportModelStep(Params, RequestId);
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);
