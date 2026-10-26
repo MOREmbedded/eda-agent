@@ -1093,7 +1093,7 @@ Begin
 
     { 53 MinimumSolderMaskSliver, 54 SilkToSolderMaskClearance and 55
       SilkToSilkClearance carry no Gap: each has its own GetState_/SetState_
-      pair, named in Altium's SDK. The ordinals follow 52 in
+      pair. The ordinals follow 52 in
       the ReturnViaCheck TRuleKind order. Same typed iterator local and
       the same read-back as the clearance kinds above. }
     If ((GapStr <> '') Or (GapMMStr <> '')) And
@@ -1333,8 +1333,8 @@ Begin
 
     { DIFFERENTIAL PAIR WIDTHS AND GAPS (kind 51), on every layer, through   }
     { IPCB_DifferentialPairsRoutingRule.SetState_MinWidth / MaxWidth /      }
-    { PreferedWidth and MinGap / MaxGap / PreferedGap (Layer, Value), named  }
-    { in Altium's SDK ("Prefered" is Altium's spelling). The              }
+    { PreferedWidth and MinGap / MaxGap / PreferedGap (Layer, Value)         }
+    { ("Prefered" is Altium's spelling). The                               }
     { width fields are the same min/max/favored_width ones the Width rule    }
     { takes. Read back from the rule's descriptor, which spells out both    }
     { the gap and the width constraints.                                    }
@@ -1432,8 +1432,8 @@ Begin
 
     { POLYGON AND PLANE CONNECT STYLE: Relief, Direct or None, and the      }
     { relief's conductor width, air gap, entries and angle (polygon) or     }
-    { expansion (plane). Written through the SetState_ methods named in      }
-    { Altium's SDK on IPCB_PolygonConnectStyleRule (kind 20)                }
+    { expansion (plane). Written through the SetState_ methods of           }
+    { IPCB_PolygonConnectStyleRule (kind 20)                                }
     { and IPCB_PowerPlaneConnectStyleRule (kind 6); their property spellings }
     { were unknown identifiers to DelphiScript when tried (see              }
     { ALTIUM_RULE_SETTERS), so nothing is read through them. What took is  }
@@ -1783,8 +1783,8 @@ Begin
 
     { THE DEFAULT IS THE BATCH CHECK, WHICH OPENS NO DIALOG.                 }
     { IPCB_Board.RunBatchDesignRuleCheck(ReportFilename, ReportFormat,      }
-    { DisplayReportFile, PublishToWeb) : Boolean, read from                 }
-    { Altium's SDK; the format is TDRCReportFileFormat, whose               }
+    { DisplayReportFile, PublishToWeb) : Boolean; the format is             }
+    { TDRCReportFileFormat, whose                                           }
     { names run eDRC_HTML, eDRC_Text, used here as the literal 0 because an  }
     { unknown identifier halts the loop. The modal route above blocked every }
     { Claude session at once: on 2026-10-23 all 10 times the bridge was      }
@@ -4578,7 +4578,7 @@ End;
 {                                                                              }
 { Read through IPCB_MasterLayerStack2 (GetImpedanceProfileCount /             }
 { GetImpedanceProfileByIndex) and IPCB_ImpedanceProfile / IPCB_TraceImpedance, }
-{ names read from Altium's SDK. Every member read is                         }
+{ Every member read is                                                       }
 { guarded, so a build missing one leaves that field at its default and the    }
 { rest of the answer stands; read_errors counts them.                         }
 {..............................................................................}
@@ -17142,7 +17142,7 @@ Var
     NameStr : String;
 Begin
     Result := Nil;
-    { Altium's own lookup first (Board.GetPcbComponentByRefDes, Altium's SDK), }
+    { Altium's own lookup first (Board.GetPcbComponentByRefDes),              }
     { kept only when its designator matches; the board walk below stays for   }
     { a build or a board where it answers nothing.                            }
     Comp := Nil;
@@ -17287,7 +17287,7 @@ End;
 {..............................................................................}
 { PCB_FindDominantRule - the rule Altium itself applies to one object, or to  }
 { a pair of objects, for one rule kind: Board.FindDominantRuleForObject and   }
-{ FindDominantRuleForObjectPair (Altium's SDK). This is what DRC and the       }
+{ FindDominantRuleForObjectPair. This is what DRC and the       }
 { router use, priorities and scopes resolved, not a guess from scope text.    }
 { Params: object1 (required), object2, rule_kind (integer) or rule_name (the  }
 { kind of that rule).                                                          }
@@ -17359,7 +17359,7 @@ End;
 {..............................................................................}
 { PCB_RuleScopeCheck - whether a named rule's scopes take in an object (and a  }
 { second one, for a binary rule): Rule.Scope1Includes / Scope2Includes and     }
-{ CheckUnaryScope / CheckBinaryScope (Altium's SDK). applies is Altium's own   }
+{ CheckUnaryScope / CheckBinaryScope. applies is Altium's own   }
 { answer to "does this rule cover these objects", before priorities.          }
 { Params: rule_name, object1 (required), object2.                             }
 {..............................................................................}
@@ -17442,8 +17442,8 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_CleanNet - Altium's own net clean-up on one net (Board.CleanNet,        }
-{ Altium's SDK): the tidy that removes redundant and broken routing pieces.   }
+{ PCB_CleanNet - Altium's own net clean-up on one net (Board.CleanNet):      }
+{ the tidy that removes redundant and broken routing pieces.                  }
 { Reports the net's track, arc and via count before and after.                }
 { Params: net (required).                                                      }
 {..............................................................................}
@@ -17506,8 +17506,8 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_GetDrillPairs - the board's drill layer pairs (Board.LayerPair(i),       }
-{ Altium's SDK): layers, backdrill, and whether a drill drawing and guide are }
+{ PCB_GetDrillPairs - the board's drill layer pairs (Board.LayerPair(i)):     }
+{ layers, backdrill, and whether a drill drawing and guide are                }
 { plotted for each.                                                           }
 {..............................................................................}
 Function PCB_GetDrillPairs(Params : String; RequestId : String) : String;
@@ -17581,7 +17581,7 @@ End;
 
 {..............................................................................}
 { PCB_SaveComponentModel - write a placed part's 3D model to a STEP file:     }
-{ IPCB_Component.SaveModelToFile (Altium's SDK). The part's own bodies, as    }
+{ IPCB_Component.SaveModelToFile. The part's own bodies, as    }
 { placed, in one file. written is true only when a new file is there.         }
 { Params: designator, out_path (both required).                               }
 {..............................................................................}

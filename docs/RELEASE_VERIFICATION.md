@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.6
+# Release verification: 2026.10.26.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -312,7 +312,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.6`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.7`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2458,12 +2458,11 @@ and only checked by model file name and body count.
 
 ---
 
-## 41. Calls found in Altium's SDK
+## 41. Dialog-free STEP export, symbol parts, model export and impedance profiles
 
 New: `lib_set_symbol_parts`, `lib_export_3d_model`,
 `pcb_get_impedance_profiles`, and a dialog-free first route in
-`proj_export_step`. Each call was found in Altium's SDK (the HTML API
-reference lists none of them), then measured live before use. Measured and NOT used: `IPCB_Model.GetState`
+`proj_export_step`. Each call was measured live before use. Measured and NOT used: `IPCB_Model.GetState`
 runs, but its four var parameters come back unchanged, so a script cannot
 read a STEP model's 3D rotations (step 40's file read stays).
 
@@ -2491,7 +2490,7 @@ than embedded model.
 
 ---
 
-## 42. More calls from Altium's SDK
+## 42. Variant entries, rule answers, drill pairs and more
 
 New: `proj_set_component_variation`, `proj_net_color`,
 `proj_get_declared_design_objects`, `pcb_find_dominant_rule`,

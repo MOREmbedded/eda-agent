@@ -2524,8 +2524,8 @@ End;
 
 {..............................................................................}
 { Proj_ExportSTEPApi - write the board's 3D model through Altium's own        }
-{ exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel, read    }
-{ from Altium's SDK), with no dialog. The exporter keeps the                  }
+{ exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel), with   }
+{ no dialog. The exporter keeps the                                           }
 { options last used in File > Export > STEP 3D. format is the exporter's own  }
 { code: 0 wrote STEP on AD 26.11.1.5 (7 MB in 17 s, no dialog).            }
 { generated is true only when a new file is at output_path afterwards, so a  }
@@ -3607,7 +3607,7 @@ Begin
     PreCount := -1;
     Try PreCount := Project.DM_ProjectVariantCount; Except End;
 
-    { IProject.DM_AddProjectVariant (Altium's SDK) first; the process    }
+    { IProject.DM_AddProjectVariant first; the process    }
     { route below stays for a build where it adds nothing.                }
     Route := 'api';
     NewVariant := Nil;
@@ -3664,7 +3664,7 @@ End;
 { Proj_SetComponentVariation - add, change or remove one part's entry in a    }
 { project variant: IProjectVariant.DM_AddComponentVariation,                  }
 { DM_RemoveComponentVariation and the IComponentVariation DM_Set* writers     }
-{ (Altium's SDK). The part is found by its physical designator in the         }
+{ The part is found by its physical designator in the         }
 { compiled project, and its variation by the part's unique id, the way the    }
 { not-fitted audit reads them. The entry is read back afterwards.             }
 { Params: variant (name or description, required), designator (required),    }
@@ -3809,7 +3809,7 @@ End;
 
 {..............................................................................}
 { Proj_NetColor - read, and optionally set, the colour the project gives a    }
-{ net: IProject.DM_GetNetColorByName / DM_SetNetColorByName (Altium's SDK).   }
+{ net: IProject.DM_GetNetColorByName / DM_SetNetColorByName.   }
 { Colours are Altium's BGR integers; color = -1 reads only.                   }
 { Params: net (required), color, project_path.                                }
 {..............................................................................}
@@ -3882,7 +3882,7 @@ End;
 { Proj_GetDeclaredDesignObjects - the net classes, component classes,         }
 { differential pairs and rooms the compiled schematics declare (directives,   }
 { class parameters, sheet-based rooms): IDocument.DM_NetClasses,               }
-{ DM_ComponentClasses, DM_DifferentialPairs and DM_Rooms (Altium's SDK).       }
+{ DM_ComponentClasses, DM_DifferentialPairs and DM_Rooms.       }
 { What an ECO would create on the board, read before it does.                  }
 { Params: project_path.                                                        }
 {..............................................................................}

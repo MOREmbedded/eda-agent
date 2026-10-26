@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Tools built on calls found in Altium's SDK.
+"""Tools added for Altium.
 
 Symbol parts, display modes and aliases, model and part STEP export,
 impedance profiles, variant entries, net colours, the rule Altium applies,

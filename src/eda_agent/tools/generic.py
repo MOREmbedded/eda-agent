@@ -513,7 +513,9 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
-            "matched" and "sheets_processed".
+            "matched", "sheets_processed", and on a schematic "modified"
+            (something was written) with "saved" false: the sheet is
+            marked modified, not saved. Run app_save_all to write it.
 
         Example - rename a net on every sheet:
             obj_modify(object_type="eNetLabel", scope="project",

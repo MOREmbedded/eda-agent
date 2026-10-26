@@ -261,7 +261,7 @@ End;
 
 { NO-ERC MARKERS: what they suppress. ISch_NoERC carries IsActive,         }
 { SuppressAll, StrErrorKindSetToSuppress, StrConnectionPairsToSuppress and  }
-{ StrSuppressableErrors (Altium's SDK). Read here under the               }
+{ StrSuppressableErrors. Read here under the                              }
 { names ErrorKindSetToSuppress, ConnectionPairsToSuppress and              }
 { SuppressableErrors. Callers check the type first: the names exist on no  }
 { other object, and an undeclared one halts the loop.                      }
@@ -405,7 +405,7 @@ End;
 { FontId belongs to ISch_Label and the types built on it (net labels,
   power objects, cross-sheet connectors, parameters, designators, sheet
   names and file names), to ISch_Port and to ISch_TextFrame (text frames,
-  notes): the interfaces Altium's SDK gives Get/SetState_FontId.
+  notes): the interfaces that carry Get/SetState_FontId.
   On a sheet entry it raised an undeclared-identifier modal and stopped the
   polling loop (AD 25.8), so this is an allowlist. }
 Function SchObjectHasFontId(Obj : ISch_GraphicalObject) : Boolean;
@@ -1356,7 +1356,7 @@ Begin
           only the reader changes, and it now agrees with lib_get_pin_list.
           Reported GH #11, 2026-09-22. }
         Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
-        { Pin swapping groups (Altium's SDK GetState_SwapId*), read through a  }
+        { Pin swapping groups (GetState_SwapId*), read through a              }
         { pin-typed local: the declared type decides the dispatch.            }
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
                 (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
@@ -2809,12 +2809,15 @@ Begin
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    { The document is marked modified here, never saved: "saved" said true }
+    { on every write, even one that matched nothing, while the file on     }
+    { disk did not change (measured on AD 26.11). It now says what         }
+    { happened: modified when something was written, saved false.          }
     Saved := False;
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -2829,6 +2832,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -2872,12 +2876,15 @@ Begin
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    { The document is marked modified here, never saved: "saved" said true }
+    { on every write, even one that matched nothing, while the file on     }
+    { disk did not change (measured on AD 26.11). It now says what         }
+    { happened: modified when something was written, saved false.          }
     Saved := False;
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -2892,6 +2899,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -5900,7 +5908,7 @@ End;
 {..............................................................................}
 { Gen_SheetOptions - read, and optionally change, the active sheet's zones,   }
 { margin, border style and template graphics: the SetState_ / GetState_ pairs }
-{ named in Altium's SDK on ISch_Document. Empty parameters are left alone;    }
+{ on ISch_Document. Empty parameters are left alone;                          }
 { the answer is read back after the writes.                                    }
 { Params: zones_x, zones_y, custom_zones_x, custom_zones_y, margin_width,     }
 { custom_margin_width (mils), border_style, reference_zones,                   }

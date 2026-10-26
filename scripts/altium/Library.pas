@@ -16223,7 +16223,7 @@ End;
 { Lib_SetSymbolParts - set how many parts and display modes a SchLib symbol   }
 { has, through the library's own part and mode commands                       }
 { (ISch_Lib.SetState_CurrentSchComponentAddPart / RemovePart / AddDisplayMode }
-{ / RemoveDisplayMode, read from Altium's SDK). Parts and                     }
+{ / RemoveDisplayMode). Parts and                                             }
 { modes are added and removed at the END, one at a time, each step read back; }
 { a removed part or mode takes its pins and graphics with it, and             }
 { pins_removed says how many.                                                 }
@@ -16358,7 +16358,7 @@ End;
 
 { Lib_SetSymbolAliases - read, add and remove a SchLib symbol's aliases:      }
 { ISch_Component.Alias_Add / Alias_Remove, AliasCount and GetState_AliasAt    }
-{ (Altium's SDK). An alias lets one symbol be placed under several part       }
+{ An alias lets one symbol be placed under several part                       }
 { names. Removal happens before adding; the list is read back.                }
 { Params: library_path, name (required), add, remove (each a tab-separated    }
 { list of alias names).                                                        }
