@@ -4561,6 +4561,155 @@ End;
 {..............................................................................}
 { PCB_GetLayerStackup - Get full layer stack info                             }
 {..............................................................................}
+{ ImpLayerName - the name of a layer an impedance record points at, or '' when  }
+{ it points at none (a trace impedance with no top or bottom reference).      }
+{..............................................................................}
+Function ImpLayerName(Layer : IPCB_LayerObject_V7) : String;
+Begin
+    Result := '';
+    If Layer = Nil Then Exit;
+    Try Result := Layer.Name; Except Result := ''; End;
+End;
+
+{..............................................................................}
+{ PCB_GetImpedanceProfiles - the impedance profiles in the board's Layer      }
+{ Stack Manager, each with Altium's own per-layer solution: trace width, gap, }
+{ reference layers, calculated impedance and error.                           }
+{                                                                              }
+{ Read through IPCB_MasterLayerStack2 (GetImpedanceProfileCount /             }
+{ GetImpedanceProfileByIndex) and IPCB_ImpedanceProfile / IPCB_TraceImpedance, }
+{ names read from Altium's SDK interface assembly. Every member read is       }
+{ guarded, so a build missing one leaves that field at its default and the    }
+{ rest of the answer stands; read_errors counts them.                         }
+{..............................................................................}
+Function PCB_GetImpedanceProfiles(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack2;
+    Profile : IPCB_ImpedanceProfile;
+    Trace : IPCB_TraceImpedance;
+    Layer : IPCB_LayerObject_V7;
+    PCount, TCount, I, J, Misses : Integer;
+    Items, Traces, PName, LName, RefTop, RefBottom : String;
+    Target, Tol, Calc, Err, Etch, Speed : Double;
+    IsDiff, Enabled : Boolean;
+    Width, Gap : TCoord;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Stack := Nil;
+    Try Stack := Board.MasterLayerStack; Except Stack := Nil; End;
+    If Stack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP',
+            'Could not access the master layer stack');
+        Exit;
+    End;
+
+    PCount := 0;
+    Try PCount := Stack.GetImpedanceProfileCount; Except PCount := -1; End;
+    If PCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
+            'This Altium build does not report impedance profiles to scripts');
+        Exit;
+    End;
+
+    Items := '';
+    Misses := 0;
+    For I := 0 To PCount - 1 Do
+    Begin
+        Profile := Nil;
+        Try Profile := Stack.GetImpedanceProfileByIndex(I); Except Profile := Nil; End;
+        If Profile = Nil Then
+        Begin
+            Inc(Misses);
+            Continue;
+        End;
+        PName := '';
+        Target := 0;
+        Tol := 0;
+        IsDiff := False;
+        Try PName := Profile.Name; Except Inc(Misses); End;
+        Try Target := Profile.Impedance; Except Inc(Misses); End;
+        Try Tol := Profile.ImpedanceTolerance; Except Inc(Misses); End;
+        Try IsDiff := Profile.IsDiffPair; Except Inc(Misses); End;
+
+        Traces := '';
+        TCount := 0;
+        Try TCount := Profile.GetTraceImpedanceCount; Except Inc(Misses); End;
+        For J := 0 To TCount - 1 Do
+        Begin
+            Trace := Nil;
+            Try Trace := Profile.GetTraceImpedanceByIndex(J); Except Trace := Nil; End;
+            If Trace = Nil Then
+            Begin
+                Inc(Misses);
+                Continue;
+            End;
+            LName := '';
+            RefTop := '';
+            RefBottom := '';
+            Enabled := True;
+            Width := 0;
+            Gap := 0;
+            Calc := 0;
+            Err := 0;
+            Etch := 0;
+            Speed := 0;
+            Layer := Nil;
+            Try Layer := Trace.Layer; Except Inc(Misses); End;
+            LName := ImpLayerName(Layer);
+            Layer := Nil;
+            Try Layer := Trace.RefTopLayer; Except Inc(Misses); End;
+            RefTop := ImpLayerName(Layer);
+            Layer := Nil;
+            Try Layer := Trace.RefBottomLayer; Except Inc(Misses); End;
+            RefBottom := ImpLayerName(Layer);
+            Try Enabled := Trace.IsEnabled; Except Inc(Misses); End;
+            Try Width := Trace.TraceWidth; Except Inc(Misses); End;
+            Try Calc := Trace.CalculatedImpedance; Except Inc(Misses); End;
+            Try Err := Trace.ImpedanceError; Except Inc(Misses); End;
+            Try Etch := Trace.EtchFactor; Except Inc(Misses); End;
+            Try Speed := Trace.PropagationSpeed; Except Inc(Misses); End;
+            If IsDiff Then
+            Begin
+                Try Gap := Trace.DiffPairGap; Except Inc(Misses); End;
+            End;
+            If Traces <> '' Then Traces := Traces + ',';
+            Traces := Traces + JsonObj(
+                JsonStr('layer', LName) + ','
+                + JsonStr('ref_top_layer', RefTop) + ','
+                + JsonStr('ref_bottom_layer', RefBottom) + ','
+                + JsonBool('enabled', Enabled) + ','
+                + JsonFloat('trace_width_mils', CoordToMilsF(Width)) + ','
+                + JsonFloat('diff_pair_gap_mils', CoordToMilsF(Gap)) + ','
+                + JsonFloat('calculated_impedance_ohms', Calc) + ','
+                + JsonFloat('impedance_error', Err) + ','
+                + JsonFloat('etch_factor', Etch) + ','
+                + JsonFloat('propagation_speed', Speed));
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(
+            JsonStr('name', PName) + ','
+            + JsonFloat('target_ohms', Target) + ','
+            + JsonFloat('tolerance', Tol) + ','
+            + JsonBool('differential', IsDiff) + ','
+            + JsonRaw('layers', '[' + Traces + ']'));
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', ExtractFileName(Board.FileName)) + ','
+        + JsonInt('profile_count', PCount) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('profiles', '[' + Items + ']')));
+End;
+
+{..............................................................................}
 
 Function PCB_GetLayerStackup(Params : String; RequestId : String) : String;
 Var
@@ -19615,6 +19764,7 @@ Begin
         'check_placement_collision': Result := PCB_CheckPlacementCollision(Params, RequestId);
         'get_trace_lengths':       Result := PCB_GetTraceLengths(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
+        'get_impedance_profiles':  Result := PCB_GetImpedanceProfiles(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

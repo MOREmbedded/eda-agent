@@ -16199,6 +16199,254 @@ Begin
         + JsonRaw('after', '[' + After + ']')));
 End;
 
+{ Pins of a symbol, every part and display mode, for Lib_SetSymbolParts.     }
+Function SymbolPinCount(Comp : ISch_Component) : Integer;
+Var
+    Iter : ISch_Iterator;
+    Pin : ISch_Pin;
+Begin
+    Result := 0;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := Iter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Inc(Result);
+            Pin := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+End;
+
+{ Lib_SetSymbolParts - set how many parts and display modes a SchLib symbol   }
+{ has, through the library's own part and mode commands                       }
+{ (ISch_Lib.SetState_CurrentSchComponentAddPart / RemovePart / AddDisplayMode }
+{ / RemoveDisplayMode, read from Altium's SDK interface assembly). Parts and  }
+{ modes are added and removed at the END, one at a time, each step read back; }
+{ a removed part or mode takes its pins and graphics with it, and             }
+{ pins_removed says how many.                                                 }
+{ Params: library_path, name (required), part_count, display_mode_count      }
+{ (either may be empty: left as it is).                                       }
+Function Lib_SetSymbolParts(Params : String; RequestId : String) : String;
+Var
+    LibPath, Name, PartStr, ModeStr, Stopped : String;
+    SchLib : ISch_Lib;
+    Comp : ISch_Component;
+    WantParts, WantModes, PartsBefore, ModesBefore, Was, Guard : Integer;
+    PinsBefore, PinsAfter : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Name := ExtractJsonValue(Params, 'name');
+    PartStr := ExtractJsonValue(Params, 'part_count');
+    ModeStr := ExtractJsonValue(Params, 'display_mode_count');
+    If Name = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required');
+        Exit;
+    End;
+    WantParts := StrToIntDef(PartStr, -1);
+    WantModes := StrToIntDef(ModeStr, -1);
+    If ((PartStr <> '') And (WantParts < 1)) Or ((ModeStr <> '') And (WantModes < 1)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'part_count and display_mode_count are whole numbers from 1');
+        Exit;
+    End;
+    SchLib := FocusSchLib(LibPath);
+    If SchLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+            'No schematic library at ' + LibPath);
+        Exit;
+    End;
+    Comp := ScanLibForComponent(SchLib, Name);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No symbol named ' + Name + ' in ' + LibPath);
+        Exit;
+    End;
+
+    SchLib.CurrentSchComponent := Comp;
+    PartsBefore := Comp.PartCount;
+    ModesBefore := Comp.DisplayModeCount;
+    PinsBefore := SymbolPinCount(Comp);
+    Stopped := '';
+
+    SchServer.ProcessControl.PreProcess(SchLib, '');
+    Try
+        If WantParts > 0 Then
+        Begin
+            Guard := 0;
+            While (Comp.PartCount < WantParts) And (Stopped = '') And (Guard < 64) Do
+            Begin
+                Inc(Guard);
+                Was := Comp.PartCount;
+                SchLib.SetState_CurrentSchComponentAddPart;
+                If Comp.PartCount <= Was Then Stopped := 'adding a part did not take';
+            End;
+            While (Comp.PartCount > WantParts) And (Stopped = '') And (Guard < 64) Do
+            Begin
+                Inc(Guard);
+                Was := Comp.PartCount;
+                Comp.CurrentPartID := Was;
+                SchLib.SetState_CurrentSchComponentRemovePart;
+                If Comp.PartCount >= Was Then Stopped := 'removing a part did not take';
+            End;
+            Comp.CurrentPartID := 1;
+        End;
+        If (WantModes > 0) And (Stopped = '') Then
+        Begin
+            Guard := 0;
+            While (Comp.DisplayModeCount < WantModes) And (Stopped = '') And (Guard < 64) Do
+            Begin
+                Inc(Guard);
+                Was := Comp.DisplayModeCount;
+                SchLib.SetState_CurrentSchComponentAddDisplayMode;
+                If Comp.DisplayModeCount <= Was Then Stopped := 'adding a display mode did not take';
+            End;
+            While (Comp.DisplayModeCount > WantModes) And (Stopped = '') And (Guard < 64) Do
+            Begin
+                Inc(Guard);
+                Was := Comp.DisplayModeCount;
+                Comp.DisplayMode := Was - 1;
+                SchLib.SetState_CurrentSchComponentRemoveDisplayMode;
+                If Comp.DisplayModeCount >= Was Then Stopped := 'removing a display mode did not take';
+            End;
+            Comp.DisplayMode := 0;
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+    End;
+    PinsAfter := SymbolPinCount(Comp);
+    Try SchLib.GraphicallyInvalidate; Except End;
+    If (Comp.PartCount <> PartsBefore) Or (Comp.DisplayModeCount <> ModesBefore) Then
+        MarkDocDirtyByPath(LibPath);
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('name', Name) + ','
+        + JsonInt('part_count_before', PartsBefore) + ','
+        + JsonInt('part_count', Comp.PartCount) + ','
+        + JsonInt('display_mode_count_before', ModesBefore) + ','
+        + JsonInt('display_mode_count', Comp.DisplayModeCount) + ','
+        + JsonInt('pins_removed', PinsBefore - PinsAfter) + ','
+        + JsonBool('complete', Stopped = '') + ','
+        + JsonStr('stopped', Stopped)));
+End;
+
+{ Lib_ExportModelStep - write one footprint body's 3D model to a STEP file    }
+{ through IPCB_Model.ExportToStep. MEASURED on AD 26.11.1.5: no dialog, and   }
+{ the file is Altium's Open CASCADE re-encoding (117 KB from a 268 KB         }
+{ embedded original), so the geometry, not the vendor's bytes. Works on a     }
+{ library that is not saved. lib_extract_embedded_models gives the original.  }
+{ Params: library_path, footprint_name (required), body_index (1-based among  }
+{ the footprint's STEP bodies, default 1), out_path (required).              }
+Function Lib_ExportModelStep(Params : String; RequestId : String) : String;
+Var
+    LibPath, FpWanted, OutPath, FocusedPath, ModelFile : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    GrpIter : IPCB_GroupIterator;
+    Body : IPCB_ComponentBody;
+    Model, Chosen : IPCB_Model;
+    WantIndex, Nth, Kind, AgeBefore, AgeAfter : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpWanted := ExtractJsonValue(Params, 'footprint_name');
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    WantIndex := StrToIntDef(ExtractJsonValue(Params, 'body_index'), 1);
+    If (FpWanted = '') Or (OutPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'footprint_name and out_path are required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If LibPath = '' Then LibPath := FocusedPath;
+    If (LibPath <> '') And (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (LibPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Asked for ' + LibPath + ' but the focused document is "' + FocusedPath + '"');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', LibPath + ' is not a PCB library');
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpWanted);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT',
+            'Footprint not found in ' + LibPath + ': ' + FpWanted);
+        Exit;
+    End;
+    Chosen := Nil;
+    Nth := 0;
+    GrpIter := Footprint.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Body := GrpIter.FirstPCBObject;
+        While (Body <> Nil) And (Chosen = Nil) Do
+        Begin
+            Model := Nil;
+            Try Model := Body.Model; Except Model := Nil; End;
+            Kind := -1;
+            If Model <> Nil Then
+            Begin
+                Try Kind := Model.ModelType; Except End;
+            End;
+            If Kind = 1 Then
+            Begin
+                Inc(Nth);
+                If Nth = WantIndex Then Chosen := Model;
+            End;
+            Body := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GrpIter);
+    End;
+    If Chosen = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BODY',
+            FpWanted + ' has ' + IntToStr(Nth) + ' STEP bodies; there is no body '
+            + IntToStr(WantIndex));
+        Exit;
+    End;
+    ModelFile := '';
+    Try ModelFile := Chosen.FileName; Except End;
+    AgeBefore := -1;
+    Try If FileExists(OutPath) Then AgeBefore := FileAge(OutPath); Except End;
+    Chosen.ExportToStep(OutPath);
+    AgeAfter := -1;
+    Try If FileExists(OutPath) Then AgeAfter := FileAge(OutPath); Except End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('footprint', FpWanted) + ','
+        + JsonStr('model', ModelFile) + ','
+        + JsonStr('out_path', OutPath) + ','
+        + JsonBool('written', (AgeAfter <> -1) And (AgeAfter <> AgeBefore))));
+End;
+
 { Grow the box L..R, B..T to take in RL..RR, RB..RT. An empty box has R < L. }
 Procedure GrowBox(Var L, B, R, T : TCoord; RL, RB, RR, RT : TCoord);
 Begin
@@ -19185,6 +19433,8 @@ Begin
                                 Result := Lib_DeleteFootprintPrimitives(Params, RequestId);
         'move_bodies_to_layer': Result := Lib_MoveBodiesToLayer(Params, RequestId);
         'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
+        'set_symbol_parts':     Result := Lib_SetSymbolParts(Params, RequestId);
+        'export_model_step':    Result := Lib_ExportModelStep(Params, RequestId);
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);
         'rename_footprint':     Result := Lib_RenameFootprint(Params, RequestId);

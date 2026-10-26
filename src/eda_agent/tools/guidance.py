@@ -158,7 +158,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "library",
         "backends": ("altium",),
         "use": ["obj_query", "obj_modify", "lib_get_pin_list",
-                "sch_set_component_part_id"],
+                "sch_set_component_part_id", "lib_set_symbol_parts"],
         "avoid": [],
         "note": (
             "Suffix the scope with @N, as lib_component:NAME@2, for both "
@@ -169,7 +169,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "check to run afterwards. Changing a pin's electrical type on a "
             "part the editor is not showing is obj_modify with the @N scope "
             "and a filter on the pin's Designator; it does not need a "
-            "rebuild."),
+            "rebuild. lib_set_symbol_parts adds or removes parts and "
+            "alternate display modes (removed from the end, with their "
+            "pins)."),
     },
     {
         "task": "Place a part from a library onto a schematic",
@@ -405,6 +407,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "library",
         "backends": ("altium",),
         "use": ["lib_link_3d_model", "lib_set_3d_body", "lib_create_3d_model",
+                "lib_export_3d_model",
                 "lib_auto_link_3d_models",
                 "lib_update_footprint_heights_from_3d"],
         "avoid": [
@@ -498,7 +501,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                      "100", "ohm", "coupled", "dp", "dm", "lvds", "matched"),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["pcb_get_layer_stackup", "pcb_calc_trace_width_for_impedance",
+        "use": ["pcb_get_layer_stackup", "pcb_get_impedance_profiles",
+                "pcb_calc_trace_width_for_impedance",
                 "pcb_create_diff_pair", "pcb_create_design_rule",
                 "pcb_set_rule_properties", "pcb_autoroute"],
         "avoid": [
@@ -506,7 +510,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                                  "and drift apart at every corner"),
         ],
         "note": (
-            "Read the stack-up (dielectric height to the reference plane, Er), "
+            "If pcb_get_impedance_profiles lists a profile for the target, "
+            "use Altium's own width and gap from it. Otherwise read the "
+            "stack-up (dielectric height to the reference plane, Er), "
             "then pcb_calc_trace_width_for_impedance with geometry "
             "microstrip_diff for the target (USB 2.0: 90 ohm differential) "
             "and a chosen gap. pcb_create_diff_pair names the pair; "

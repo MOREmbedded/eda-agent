@@ -4350,6 +4350,31 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_impedance_profiles() -> dict[str, Any]:
+        """Read the impedance profiles in the active board's Layer Stack Manager.
+
+        These are Altium's own numbers, from its field solver: for each
+        profile (a target impedance, single-ended or differential) and
+        each layer it applies to, the trace width (and pair gap) Altium
+        chose, the reference planes above and below, the impedance it
+        calculated and its error from the target. Use them to check a
+        route against the stack-up, or to cross-check
+        ``pcb_calc_impedance``, which uses closed-form formulas.
+
+        Returns:
+            ``profile_count``, ``read_errors`` (fields this build would
+            not report) and ``profiles``: each with ``name``,
+            ``target_ohms``, ``tolerance``, ``differential`` and
+            ``layers``: ``layer``, ``ref_top_layer``, ``ref_bottom_layer``,
+            ``enabled``, ``trace_width_mils``, ``diff_pair_gap_mils``,
+            ``calculated_impedance_ohms``, ``impedance_error``,
+            ``etch_factor``, ``propagation_speed``. A board with no
+            profiles returns an empty list.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_impedance_profiles", {})
+
+    @mcp.tool()
     async def pcb_export_stackup_csv(output_path: str = "") -> dict[str, Any]:
         """Write the layer stackup to a conventional fab CSV report.
 
