@@ -293,9 +293,11 @@ these rules before producing a plan; they bound your choices.
       net labels, and notes via `obj_get_font_spec` / `obj_get_font_id`
       (resolve the FontID an existing label uses; reuse THAT id, do not
       mint a new font).
-    - **Colours**: wire colour, net-label colour, text colour, and
-      symbol body fill, read from existing objects with `obj_query`
-      (don't hardcode a colour; sample what the sheet already uses).
+    - **Colours**: wire colour, text colour, and symbol body fill, read
+      from existing objects with `obj_query` (don't hardcode a colour;
+      sample what the sheet already uses). Net labels are the exception:
+      every label is Altium's native maroon (Color 128), and the label
+      tools write it whatever the older labels carry.
     - **Line widths / styles**: wire and bus width, junction size.
     - **Parameter presentation**: visibility, justification, and offset
       of Designator/Comment on already-placed components (match rule 16's

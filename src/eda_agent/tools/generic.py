@@ -1667,6 +1667,9 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Place a net label at coordinates on the active schematic.
 
+        The label takes the font most of the sheet's net labels use, and
+        Altium's native net-label maroon (Color 128) always.
+
         Args:
             text: Net name for the label (e.g., "VCC", "GND", "SDA")
             x: X coordinate in mils

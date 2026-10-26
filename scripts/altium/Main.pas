@@ -21,6 +21,10 @@ Const
     // pair above it is known to have been skipped rather than judged clean.
     MechScanLimit = 64;
 
+    // The colour Altium gives a net label by default: maroon, RGB(128, 0, 0),
+    // packed as BGR. Every net label a tool places takes it.
+    NET_LABEL_COLOR = 128;
+
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns
     // PROTOCOL_VERSION_MISMATCH on the Pascal side and raises on the Python

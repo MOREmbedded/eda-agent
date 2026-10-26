@@ -6339,28 +6339,27 @@ Begin
 End;
 
 {..............................................................................}
-{ InferNetLabelStyle - the sheet's own net-label convention, by majority.      }
-{ Every net label a tool adds must match the labels already on the target      }
-{ sheet: FontId (which carries font face AND size in the font table) and       }
-{ Color. Iterates the existing eNetLabel objects and returns the most common   }
-{ (FontId, Color) pair. Returns False when the sheet has no net labels yet,   }
-{ callers then keep their historical defaults so a fresh sheet is unchanged.  }
-{ Majority, not first-seen: one off-style label from an old edit must not      }
-{ define the convention.                                                       }
+{ InferNetLabelStyle - the sheet's own net-label font, by majority.          }
+{ Every net label a tool adds takes the FontId (font face AND size in the     }
+{ font table) most common among the labels already on the target sheet.      }
+{ Returns False when the sheet has no net labels yet; the label then keeps    }
+{ the font Altium creates it with. Majority, not first-seen: one off-style    }
+{ label from an old edit must not define the convention.                      }
+{ The colour is not inferred: every placed label is NET_LABEL_COLOR, the      }
+{ native Altium maroon, whatever colour older labels on the sheet carry.      }
 {..............................................................................}
 
 Function InferNetLabelStyle(SchDoc : ISch_Document;
-    Var OutFontId : Integer; Var OutColor : Integer) : Boolean;
+    Var OutFontId : Integer) : Boolean;
 Var
     Iterator : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Keys, Counts : TStringList;
     Key : String;
-    Idx, I, N, BestN, FId, Col, ColonPos : Integer;
+    Idx, I, N, BestN, FId : Integer;
 Begin
     Result := False;
     OutFontId := 0;
-    OutColor := 0;
     If SchDoc = Nil Then Exit;
 
     Keys := TStringList.Create;
@@ -6373,12 +6372,10 @@ Begin
             While Obj <> Nil Do
             Begin
                 FId := 0;
-                Col := 0;
                 Try FId := Obj.FontId; Except End;
-                Try Col := Obj.Color; Except End;
                 If FId > 0 Then
                 Begin
-                    Key := IntToStr(FId) + ':' + IntToStr(Col);
+                    Key := IntToStr(FId);
                     Idx := Keys.IndexOf(Key);
                     If Idx < 0 Then
                     Begin
@@ -6401,11 +6398,7 @@ Begin
             If N > BestN Then
             Begin
                 BestN := N;
-                Key := Keys[I];
-                ColonPos := Pos(':', Key);
-                OutFontId := StrToIntDef(Copy(Key, 1, ColonPos - 1), 0);
-                OutColor := StrToIntDef(
-                    Copy(Key, ColonPos + 1, Length(Key)), 0);
+                OutFontId := StrToIntDef(Keys[I], 0);
             End;
         End;
         Result := BestN > 0;
@@ -6429,7 +6422,7 @@ Var
     NetLabel : ISch_NetLabel;
     Loc : TLocation;
     SrvDoc : IServerDocument;
-    InfFont, InfColor : Integer;
+    InfFont : Integer;
     StyleFound : Boolean;
 Begin
     Text := ExtractJsonValue(Params, 'text');
@@ -6479,17 +6472,14 @@ Begin
     NetLabel.Location := Loc;
     NetLabel.Text := Text;
     NetLabel.Orientation := Orientation;
-    { Follow the sheet's own net-label convention (font, size via the
-      font table, colour). Historical default only on a sheet that has
-      no net labels yet. }
-    StyleFound := InferNetLabelStyle(SchDoc, InfFont, InfColor);
+    { The sheet's own net-label font (face and size via the font table),
+      always the native net-label colour. }
+    StyleFound := InferNetLabelStyle(SchDoc, InfFont);
     If StyleFound Then
     Begin
         Try NetLabel.FontId := InfFont; Except End;
-        NetLabel.Color := InfColor;
-    End
-    Else
-        NetLabel.Color := 0;
+    End;
+    NetLabel.Color := NET_LABEL_COLOR;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NetLabel);
@@ -10941,7 +10931,7 @@ Var
     SchDoc : ISch_Document;
     NetLabel : ISch_NetLabel;
     Loc : TLocation;
-    InfFont, InfColor : Integer;
+    InfFont : Integer;
     StyleFound : Boolean;
 Begin
     LabelsStr := ExtractJsonValue(Params, 'labels');
@@ -10965,7 +10955,7 @@ Begin
     Remaining := LabelsStr;
 
     { Sheet convention once per batch, applied to every label below. }
-    StyleFound := InferNetLabelStyle(SchDoc, InfFont, InfColor);
+    StyleFound := InferNetLabelStyle(SchDoc, InfFont);
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
@@ -11007,10 +10997,8 @@ Begin
             If StyleFound Then
             Begin
                 Try NetLabel.FontId := InfFont; Except End;
-                NetLabel.Color := InfColor;
-            End
-            Else
-                NetLabel.Color := 0;
+            End;
+            NetLabel.Color := NET_LABEL_COLOR;
 
             SchDoc.RegisterSchObjectInContainer(NetLabel);
             SchRegisterObject(SchDoc, NetLabel);
@@ -13725,7 +13713,7 @@ Var
     Found : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
-    InfFont, InfColor : Integer;
+    InfFont : Integer;
     StyleFound : Boolean;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
@@ -13746,7 +13734,7 @@ Begin
     Stubbed := 0;
     Failed := 0;
     { Sheet convention once, applied to every stub label below. }
-    StyleFound := InferNetLabelStyle(SchDoc, InfFont, InfColor);
+    StyleFound := InferNetLabelStyle(SchDoc, InfFont);
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
         Remaining := PinsStr;
@@ -13838,8 +13826,8 @@ Begin
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except End;
-                    NetLabel.Color := InfColor;
                 End;
+                NetLabel.Color := NET_LABEL_COLOR;
                 SchDoc.RegisterSchObjectInContainer(NetLabel);
                 SchRegisterObject(SchDoc, NetLabel);
             End;
