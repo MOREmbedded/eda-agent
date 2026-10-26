@@ -2436,7 +2436,7 @@ to open one, Altium opens a new, empty library under that name.
 7. **Index.** `body_index=2` on a one-body footprint is refused with
    `NO_BODY`.
 
-Run live on AD 26.11.1.5 with 2026.10.25.7 on a scratch copy of a working
+Run live on AD 26.11.1.5 with that change's script on a scratch copy of a working
 PcbLib, pinging after every step. All passed: 1 on SOT-23-3, 8-SOIC and
 C0603; 2 on 6-TSOP (Z offset 41.3386 to 19.685 mil, rotations 90/0/90
 kept), and on SOT-23-3 the panel and the 3D view were checked by eye;
@@ -2449,13 +2449,12 @@ and only checked by model file name and body count.
 
 ---
 
-## 41. Calls found in Altium's SDK interface assembly
+## 41. Calls found in Altium's SDK
 
 New: `lib_set_symbol_parts`, `lib_export_3d_model`,
 `pcb_get_impedance_profiles`, and a dialog-free first route in
-`proj_export_step`. Each call was found by reflecting Altium's
-`Altium.SDK.Interfaces.dll` (the HTML API reference lists none of them),
-then measured live before use. Measured and NOT used: `IPCB_Model.GetState`
+`proj_export_step`. Each call was found in Altium's SDK (the HTML API
+reference lists none of them), then measured live before use. Measured and NOT used: `IPCB_Model.GetState`
 runs, but its four var parameters come back unchanged, so a script cannot
 read a STEP model's 3D rotations (step 40's file read stays).
 
