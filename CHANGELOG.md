@@ -14,6 +14,36 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Added
+
+- **Altium 365 can be reached directly, not only through Nexar.** Altium
+  documents a GraphQL API on the workspace itself; this fork only ever
+  spoke to Nexar, which proxies the design domain and carries none of
+  the collaboration, workflow or script-execution contexts. Set
+  `EDA_AGENT_A365_DOMAIN` and `EDA_AGENT_A365_TOKEN` and the same client
+  posts to `https://{domain}/api/graphql/` with a bearer token created
+  in the workspace under Admin > Developer.
+
+  One client serves both, because the schema is the same `des*` one
+  either way; what differs is the URL, where the token comes from, and
+  that a workspace token has no refresh grant, so an expired one is
+  reported rather than renewed against an identity server that never
+  issued it. File uploads follow the route too: the Files Service at
+  `/api/files` takes the bearer header, Nexar's upload service takes a
+  `token` header, and sending the wrong one is a 401 with no clue.
+
+- **`eng_a365_schema`** lists the fields of one type in the LIVE schema
+  by introspection. That is how to reach the contexts Nexar does not
+  proxy without anyone guessing a field name: start at `Query`, then
+  name a type from the result. `eng_a365_query` already ran arbitrary
+  read-only GraphQL, so no per-context tool had to be invented.
+
+  UNVERIFIED against a live workspace. The twelve tests drive a fake
+  transport, so what is proven is the request this code builds (URL,
+  method, both headers, body, token precedence), not that Altium accepts
+  it. Verifying needs a workspace domain and a token.
+
+
 ### Merged from upstream (salitronic/eda-agent, 63 commits, 2026-10-20 to 2026-10-26)
 
 Both forks worked the same week, so several features existed twice. Where

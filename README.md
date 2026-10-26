@@ -90,7 +90,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 - **Two dashboards**: an in-Altium floating status window (status, request count, per-command performance, command log, Detach button) and a browser-based **web dashboard** (`127.0.0.1:8766`) for design review - datasheet / MPN / footprint coverage gauges, an actionable issue queue, component / net drill-in, one-click cross-probe into Altium, light / dark theme. The whole project view loads in one bundled IPC round-trip (`project.dashboard_snapshot`); the web dashboard auto-starts with the MCP server
 - **DelphiScript trap linter**: `scripts/altium/lint.py` (wired into `build.py`) scans the Pascal sources for known parser hazards - `Cardinal()` casts, malformed hex literals, empty `.Add('')` arguments, braces inside comments, fixed-size arrays as function locals, reserved-word identifiers - and fails the build before a bad deploy
 - **Activity logs**: every command is appended to `workspace/activity.log` (CSV with timestamps, durations, command name, response size). The bridge also writes `bridge_trace.log` for IPC-level diagnostics. On the Python side, a rotating, size-capped, secret-redacting JSON-lines log (`%USERPROFILE%\EDA Agent\logs\eda_agent.log` by default) runs alongside the server's existing stderr logging - see [Configuration](#configuration)
-- **Engineering tools**: IPC-7351B footprint calculation and library validation (offline and against a live SchLib/PcbLib pair), owner naming/rules policies, design-intent validation, LTspice batch runs, pre-ECO schematic/PCB diff, and read/write access to an Altium 365 workspace through Nexar. Full detail, including which parts are offline-tested versus unverified against live Altium/Nexar, is in [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md)
+- **Engineering tools**: IPC-7351B footprint calculation and library validation (offline and against a live SchLib/PcbLib pair), owner naming/rules policies, design-intent validation, LTspice batch runs, pre-ECO schematic/PCB diff, and read/write access to an Altium 365 workspace by **either route**: through Nexar, or straight to the workspace's own GraphQL API. The direct route reaches what Nexar does not proxy (comments, threads, tasks, workflows, script executions), and `eng_a365_schema` introspects the live schema so a field is discovered rather than guessed. Full detail, including which parts are offline-tested versus unverified against live Altium/Nexar, is in [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md)
 - **Fab output verification**: `pcb_check_fab_output` reads an exported Gerber/Excellon package back and compares it against the live board - copper layer count vs the stackup, outline size, drill hits vs pads and vias, and minimum drill/feature against your fab's limits. Closes a loop that was open: eda-agent could write a fab package but never read one. See [Checking the fab package](#checking-the-fab-package)
 - **Logo / artwork on the board**: `pcb_place_image` turns a PNG or BMP into PCB region primitives (silkscreen logo, QR code, artwork). The image is decomposed into non-overlapping rectangles rather than traced outlines, so nothing is approximated away from the source art and holes need no special handling. Plans by default (`dry_run=True`) and reports the primitive count first, because anti-aliased artwork can decompose into thousands of pieces, with a `max_regions` cap that a photograph will hit immediately. Verified on a live board: an asymmetric test glyph was placed and read back to confirm scale, origin corner and layer, and that the art is neither mirrored nor flipped
 - **Headless library reads**: `lib_read_pcblib_headers` parses a `.PcbLib`'s footprint names, pad counts, heights and descriptions straight out of the OLE container with Altium closed (the `.SchLib` side already backs the `altium_local` provider and the offline review). Pad geometry stays a live read: it lives in Altium's binary primitive region, which this project does not reverse-engineer without ground truth
@@ -1111,10 +1111,20 @@ server's existing stderr logging):
 - Bearer tokens, OAuth tokens and distributor/Nexar API keys are redacted
   before a line is written, regardless of which code logged it
 
-Part sourcing, Nexar/Altium 365, and the rest of the `eng_*` engineering
-tools have their own environment variables (`EDA_AGENT_NEXAR_CLIENT_ID`,
-`EDA_AGENT_A365_WORKSPACES`, `EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_IPC_DIR`,
-and more) - see [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) and
+Altium 365 takes one of two routes, and sets no default between them:
+
+| Route | Set | Token from |
+|---|---|---|
+| Workspace, direct | `EDA_AGENT_A365_DOMAIN`, `EDA_AGENT_A365_TOKEN` | the workspace, Admin > Developer (lasts up to a year) |
+| Nexar | `EDA_AGENT_NEXAR_CLIENT_ID` | `eda-agent a365-login`, refreshed for you |
+
+Setting the domain wins. A workspace token has no refresh grant, so an
+expired one is reported and has to be replaced by hand rather than
+renewed against an identity server that never issued it.
+
+Part sourcing and the rest of the `eng_*` engineering tools have their
+own environment variables (`EDA_AGENT_A365_WORKSPACES`,
+`EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_IPC_DIR`, and more) - see [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) and
 [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md).
 
 Coordinates throughout the API are in **mils** (1 mil = 0.0254 mm).

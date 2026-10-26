@@ -102,9 +102,17 @@ def test_a_bounded_wait_still_returns_a_response_that_arrives_in_time(
     assert response.data == {"ok": 1}
 
 
-def test_no_heartbeat_is_still_diagnosed_as_a_dead_loop(bridge):
+def test_no_heartbeat_is_still_diagnosed_as_a_dead_loop(bridge, monkeypatch):
     # No progress file at all: the loop is not running. A bounded wait must
     # not relabel that as a dialog.
+    #
+    # The dialog probe is stubbed because it reads the REAL desktop's
+    # Win32 windows. Finding anything there makes the message name a
+    # dialog instead of a dead loop, so without this the test passes or
+    # fails on what the developer happens to have open. It cost a green
+    # full run and a red single run on 2026-10-26, after the merge put
+    # that probe in this path.
+    monkeypatch.setattr(bridge, "_dialog_probe", lambda: None)
     with pytest.raises(AltiumTimeoutError) as excinfo:
         bridge._poll_response("noloop", timeout=0.05, max_extensions=3)
     assert "polling loop is probably not running" in str(excinfo.value)

@@ -129,4 +129,13 @@ def test_a_session_alone_still_times_out_on_a_dead_loop(bridge, tmp_path):
     start = time.monotonic()
     with pytest.raises(AltiumTimeoutError):
         bridge._poll_response(rid, timeout=0.5)
-    assert time.monotonic() - start < 5
+    # Bounded, not fast. What this guards is a wait that inherits the
+    # 300 s ceiling instead of the 0.5 s asked for; 30 s catches that
+    # outright. The budget was 5 s and it failed at 9.4 s under `-n auto`
+    # on 2026-10-26, which measured the machine's load rather than the
+    # bridge: eight workers sharing the cores stretch every sleep in the
+    # poll. Tightening it back just moves the flake to a busier day.
+    elapsed = time.monotonic() - start
+    assert elapsed < 30, (
+        f"the wait took {elapsed:.1f}s for a 0.5s timeout, which is the "
+        f"shape of inheriting the default ceiling rather than a slow run")

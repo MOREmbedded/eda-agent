@@ -12,7 +12,19 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from eda_agent.tools import project
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dialogs(monkeypatch):
+    """This fork refuses to fire the ECO while a modal is already up,
+    and the check reads the REAL desktop. Left unstubbed, anything open
+    on the developer's screen returns MODAL_DIALOG_ALREADY_OPEN and the
+    sync never runs, so these tests pass or fail on what is on screen.
+    """
+    monkeypatch.setattr(project, "_list_open_dialogs", lambda: [])
 
 
 class _Bridge:

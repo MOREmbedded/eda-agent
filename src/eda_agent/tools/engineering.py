@@ -266,13 +266,41 @@ def _trace_ltspice(project: str, run_id: str, trace_name: str) -> dict:
 
 
 def a365_config() -> A365Policy:
-    client_id = os.environ.get("EDA_AGENT_NEXAR_CLIENT_ID", "")
-    if not client_id:
-        raise ValueError("set EDA_AGENT_NEXAR_CLIENT_ID before using Altium 365")
+    """Resolve which Altium 365 route to use, and refuse to guess.
+
+    DIRECT when EDA_AGENT_A365_DOMAIN names a workspace: posts to that
+    workspace's own API with a long-lived token from Admin > Developer.
+    No Nexar client id is involved, so asking for one would be a wrong
+    error message.
+
+    NEXAR otherwise: the OAuth client and token this fork has always
+    used. Both read EDA_AGENT_A365_WORKSPACES the same way.
+    """
     workspaces = tuple(w.strip().rstrip("/") + "/" for w in
                        os.environ.get("EDA_AGENT_A365_WORKSPACES", "").split(",") if w.strip())
+    store = Path.home() / "EDA Agent" / "a365_token.bin"
+
+    domain = os.environ.get("EDA_AGENT_A365_DOMAIN", "").strip()
+    if domain:
+        token = os.environ.get("EDA_AGENT_A365_TOKEN", "").strip()
+        if not token:
+            raise ValueError(
+                f"EDA_AGENT_A365_DOMAIN is set to {domain!r} but "
+                "EDA_AGENT_A365_TOKEN is not. Create a token in that "
+                "workspace under Admin > Developer and set it; the direct "
+                "route has no login flow to fall back on.")
+        return A365Policy(client_id="", workspaces=workspaces,
+                          token_store=store, workspace_domain=domain,
+                          direct_token=token)
+
+    client_id = os.environ.get("EDA_AGENT_NEXAR_CLIENT_ID", "")
+    if not client_id:
+        raise ValueError(
+            "set EDA_AGENT_NEXAR_CLIENT_ID to use Altium 365 through Nexar, "
+            "or EDA_AGENT_A365_DOMAIN and EDA_AGENT_A365_TOKEN to talk to a "
+            "workspace directly")
     return A365Policy(client_id=client_id, workspaces=workspaces,
-                      token_store=Path.home() / "EDA Agent" / "a365_token.bin")
+                      token_store=store)
 
 
 @cache
@@ -556,12 +584,37 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
 
     @mcp.tool()
     def eng_a365_query(query: str, variables: dict | None = None) -> dict:
-        """Run a read-only Nexar GraphQL query with mutation checks."""
+        """Run a read-only GraphQL query against Altium 365.
+
+        Goes to Nexar, or straight to the workspace when
+        EDA_AGENT_A365_DOMAIN is set. The direct route reaches the
+        contexts Nexar does not proxy (comments, threads, tasks,
+        workflows, script executions); use eng_a365_schema to find what
+        a given workspace actually exposes rather than guessing a field
+        name. Mutations are refused here whichever route is in use.
+        """
         return _result(lambda: _a365_client().execute(query, variables))
 
     @mcp.tool()
+    def eng_a365_schema(type_name: str = "Query") -> dict:
+        """List the fields of one type in the live Altium 365 schema.
+
+        Introspection, so the answer comes from the workspace rather
+        than from this package's idea of the schema. Start at "Query" to
+        see what can be read, "Mutation" for what can be written, then
+        name a type from those to go deeper. The same browser Altium
+        ships at /api/voyager shows this graphically.
+        """
+        return _result(lambda: _a365_client().type_fields(type_name))
+
+    @mcp.tool()
     def eng_a365_doctor() -> dict:
-        """Check the connected Nexar schema for required Altium 365 fields."""
+        """Check the connected schema has the fields the built-in queries use.
+
+        Works on either route. On the direct route it is the quickest
+        confirmation that the domain and token are right, since it fails
+        with an authentication error rather than an empty result.
+        """
         return _result(lambda: _a365_client().doctor())
 
     @mcp.tool()

@@ -260,6 +260,17 @@ class NexarClient:
 
     # -- tokens
     def _token(self) -> str:
+        if self.cfg.is_direct:
+            # A workspace token is created in Admin > Developer and lasts up
+            # to a year. There is no refresh grant for it, so an expired one
+            # has to be replaced by hand; saying that is more use than a
+            # refresh attempt that cannot succeed.
+            if not self.cfg.direct_token:
+                raise AuthenticationFailed(
+                    f"no token for {self.cfg.workspace_domain}; create one in "
+                    "the workspace under Admin > Developer and set "
+                    "EDA_AGENT_A365_TOKEN")
+            return self.cfg.direct_token
         tok = self.store.load()
         if not tok:
             raise AuthenticationFailed("no Nexar token; owner must run `altium-ai a365-login`")
@@ -300,7 +311,7 @@ class NexarClient:
         body = json.dumps({"query": query, "variables": variables or {}}).encode()
         delay = 1.0
         for attempt in range(4):
-            req = urllib.request.Request(self.cfg.api_url, data=body, method="POST", headers={
+            req = urllib.request.Request(self.cfg.endpoint, data=body, method="POST", headers={
                 "Content-Type": "application/json", "Authorization": f"Bearer {self._token()}"})
             try:
                 with self._open(req, timeout=self.cfg.timeout_s) as r:
@@ -436,8 +447,15 @@ class NexarClient:
         b = boundary or "----altiumai" + secrets.token_hex(12)
         body = (f"--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{Path(path).name}\"\r\n"
                 f"Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{b}--\r\n".encode()
-        req = urllib.request.Request(FILE_UPLOAD_URL, data=body, method="POST", headers={
-            "Content-Type": f"multipart/form-data; boundary={b}", "token": self._token()})
+        # Nexar's upload service takes the token in a `token` header; the
+        # workspace's Files Service takes the same bearer header as its
+        # GraphQL endpoint. Sending the wrong one is a 401 with no clue.
+        if self.cfg.is_direct:
+            auth = {"Authorization": f"Bearer {self._token()}"}
+        else:
+            auth = {"token": self._token()}
+        req = urllib.request.Request(self.cfg.files_endpoint, data=body, method="POST", headers={
+            "Content-Type": f"multipart/form-data; boundary={b}", **auth})
         with self._open(req, timeout=self.cfg.timeout_s) as r:
             fid = r.read().decode("utf-8", errors="replace").strip().strip('"')
         if not fid:
