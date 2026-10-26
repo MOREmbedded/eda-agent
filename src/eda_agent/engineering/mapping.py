@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Pin-to-pad mapping and 3D model association checks."""
 from __future__ import annotations
 

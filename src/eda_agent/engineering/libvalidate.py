@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Validation of existing libraries (SchLib/PcbLib dumps, Altium 365 library, vendor downloads).
 
 Checks per symbol: pin grid/duplicates/hidden pins, owner naming, required parameters (owner ruleset types

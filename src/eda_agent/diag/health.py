@@ -133,9 +133,13 @@ def _pas_differences(bundled_dir: Path, deployed_dir: Path) -> list[str]:
     default state after an edit, so it cannot detect its own motivating
     scenario.
 
-    Line endings are normalised: the install copies files between
-    directories and a CRLF difference is not a code difference.
+    Compared as the install leaves them: line endings, the byte-order
+    mark the install drops, and the build stamp it writes into each unit
+    are not code differences. Without the stamp normalised every unit
+    read as different straight after a fresh install.
     """
+    from ..script_stamps import unit_stamp
+
     differing = []
     for source in sorted(bundled_dir.glob("*.pas")):
         target = deployed_dir / source.name
@@ -143,12 +147,12 @@ def _pas_differences(bundled_dir: Path, deployed_dir: Path) -> list[str]:
             differing.append(source.name)
             continue
         try:
-            a = source.read_bytes().replace(b"\r\n", b"\n")
-            b = target.read_bytes().replace(b"\r\n", b"\n")
+            a = source.read_bytes().decode("utf-8-sig", errors="replace")
+            b = target.read_bytes().decode("utf-8-sig", errors="replace")
         except OSError:
             differing.append(source.name)
             continue
-        if a != b:
+        if unit_stamp(a) != unit_stamp(b):
             differing.append(source.name)
     return differing
 
@@ -361,12 +365,52 @@ def _check_easyeda_extension_built() -> Check:
                  message=f"built from main.js, {have}")
 
 
+def _check_script_registration() -> Check:
+    """Which script project Altium loads, and whether it exists.
+
+    Altium compiles the Altium_API.PrjScr its Global Projects list names,
+    wherever that is. A registration pointing at a deleted file, or at a
+    folder install-scripts never writes, runs old code while every
+    version check reads the files that were updated.
+    """
+    import sys
+
+    from ..cli import registered_script_projects
+
+    if sys.platform != "win32":
+        return Check(name="script registration", status=Status.SKIP,
+                     message="Altium registrations are read on Windows")
+    entries = registered_script_projects()
+    if not entries:
+        return Check(
+            name="script registration", status=Status.WARN,
+            message="no Altium install lists Altium_API.PrjScr in its "
+                    "Global Projects",
+            fix="Run `eda-agent install-scripts`, then add the project it "
+                "prints under DXP > Preferences > Scripting System > "
+                "Global Projects.")
+    gone = [e for e in entries if not e["exists"]]
+    if gone:
+        return Check(
+            name="script registration", status=Status.FAIL,
+            message="registered but missing: " + ", ".join(
+                f"{e['path']} ({e['install']})" for e in gone),
+            fix="Run `eda-agent install-scripts --force`, which installs "
+                "into every registered folder, or re-register the project.")
+    folders = sorted({str(Path(e["path"]).parent) for e in entries})
+    return Check(
+        name="script registration", status=Status.PASS,
+        message=(f"{len(entries)} registration(s), loaded from "
+                 f"{', '.join(folders)}"))
+
+
 def run_health_checks() -> list[Check]:
     """Order matters, earlier failures often explain later ones."""
     return [
         _check_workspace_dir(),
         _check_pointer_file(),
         _check_bundled_scripts(),
+        _check_script_registration(),
         _check_deployed_scripts_current(),
         _check_bridge_constructable(),
         _check_easyeda_extension_built(),

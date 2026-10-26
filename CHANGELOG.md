@@ -14,6 +14,121 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Merged from upstream (salitronic/eda-agent, 63 commits, 2026-10-20 to 2026-10-26)
+
+Both forks worked the same week, so several features existed twice. Where
+they did, ONE survives. What was kept and what was dropped:
+
+- **Decimal mils throughout.** Upstream's change: every handler now reads
+  and writes fractional mils (`CoordToMilsF`, `MilsToCoordF`,
+  `FloatToJsonStr`) instead of rounding to whole mils. Taken wholesale.
+  Our extra JSON fields (`layer`, `bbox_basis`, `same_side_filter`,
+  `bbox_includes`, `scanned_tracks`, `max_tracks`, `truncated`,
+  `hole_size_mm`, `size_mm`) were folded back on top of it.
+
+- **`rotation_audit`: upstream's engine, our measurement.** Both forks
+  rewrote this check. Upstream's is broader: it scores every part with
+  two or more pads rather than only two-pad parts, and it turns the
+  part's courtyard and checks it against every other part's, so a
+  suggestion can be applied as it stands. That engine was kept. Upstream
+  withheld `new_rotation` on the bottom side, saying it needed an
+  assumption about how a mirrored part's angle is counted; we measured
+  that on 2026-10-25, so the value is now given on both sides and the
+  measurement is recorded in the module and its test.
+
+- **Bottom-side batch placement: ours kept.** Upstream's commit "Place
+  bottom-side parts exactly" fixed the SINGLE-component path, where each
+  placement has its own `PreProcess`/`PostProcess`. Their
+  `PCB_PlaceComponents` still sets `Comp.Layer` inside one transaction
+  wrapping the whole batch, which is the configuration measured here as
+  NOT mirroring the primitives. Our fix stands: load on the top layer,
+  flip after registration with `PCB_FlipComponent`, pre-compensating the
+  requested rotation because a flip rewrites it to `180 - R`.
+
+- **Calculators: ours kept, one of theirs ported.** Upstream built
+  `design/calculators.py` (9 functions) while we built
+  `engineering/pcb_calc.py` (10, plus 10 CLI verbs and three test
+  files). Ours is kept, theirs deleted, because it covers everything
+  theirs did plus IPC-2221 conductor spacing and a cross-check, and it
+  is reachable from the CLI. Upstream's `via_inductance` was PORTED
+  rather than dropped: it is a different question from our
+  `pcb_calc_via_parasitics`, which gives a via in isolation and says
+  outright that it ignores the return path, where theirs names the
+  return and gives the loop inductance between two planes (Johnson,
+  "Via Inductance II"). Both tools now exist.
+  NOT taken: upstream's spiral-inductance sheet expressions, which cover
+  a circular spiral that ours does not. `pcb_calc_spiral_inductor`
+  remains modified-Wheeler, square, hexagonal and octagonal only.
+
+- **ERC violations: upstream's handler, our field documentation.**
+  Theirs adds paging (`offset`, `next_offset`, `include_suppressed`),
+  ours added severity counts. The Pascal handler is upstream's, taken
+  whole rather than hybridised, because it is live-only code that cannot
+  be tested here. The tool now reports `violation_count`,
+  `suppressed_count`, `not_reported_count` and `raw_violation_count`.
+  LOST in the process: the per-severity `warning_count`, `error_count`
+  and `fatal_count` this fork briefly had.
+
+- **ECO: both.** Our refusal to fire while a modal is already open, and
+  our bounded wait, are kept; upstream's `after_sync` report is folded
+  in, so the board is read back against the schematic (`footprint_mismatch`,
+  `missing_on_board`, `diff_pairs_removed`) rather than the dialog's
+  outcome being trusted.
+
+- **Footprint render and compare: upstream's kept.** Both forks built
+  `lib_render_footprint` and `lib_compare_footprints`. Theirs takes
+  `courtyard_layer` and `assembly_layer`; ours did not. Ours removed.
+  Note the parameter rename: `output_path` is now `path`, `tol_mm` is
+  now `tolerance_mm`.
+
+- **Fab and stackup TOOLS: ours kept. The DATA is still duplicated.**
+  Both forks shipped `design_list_fab_vendors`,
+  `design_fab_vendor_profile`, `pcb_check_stackup` and
+  `pcb_apply_stackup_template`. Ours (`tools/stackup.py` over
+  `design/stackup_library.py`) is kept and upstream's four definitions
+  were removed, so `pcb_check_stackup` keeps our `vendor` parameter
+  rather than upstream's `template` / `thickness_tol_pct` / `er_tol`.
+
+  But BOTH material datasets are still live, because upstream's
+  `design_get_stackup`, `design_list_stackups` and `design_get_laminate`
+  read theirs:
+
+  | dataset | laminates |
+  |---|---|
+  | `data/stackups/laminates.json` (ours) | RO4003C, RO4350B, JLCPCB 7628 prepreg |
+  | `design/fab_data/laminates.json` (upstream) | RO4003C, RO4350B, 370HR, MEGTRON 6 |
+
+  Neither is a superset: each holds material the other does not, and
+  they agree on only two. A board checked through our tools and one
+  checked through theirs can therefore see different material. KNOWN
+  GAP, not closed in this merge: the two want folding into one
+  materials library.
+
+- **The automatic schematic layout engine is gone**, with upstream's
+  retirement of it: 84 files, including `design/layout.py`, the
+  force-directed and Sugiyama placers, the quality model and the
+  training scripts. All 84 were upstream's own code and this fork had
+  never modified any of them. Four tools go with it:
+  `design_layout_schematic`, `design_execute_plan`,
+  `design_preview_plan` and `design_learn_from_layout`. The replacement
+  is upstream's hand-template route, `sch_preview_template` and
+  `sch_draw_template`.
+
+- Other arrivals: 3D bodies in footprints (`lib_set_3d_body`,
+  `lib_create_3d_model`, `lib_export_3d_model`), `lib_rotate_footprint`,
+  `pcb_get_impedance_profiles`, ERC levels, `proj_create_outjob`,
+  `proj_export_jlc_assembly`, `pcb_update_footprints_from_library`, a
+  generic property layer for keepouts, polygon pours, primitive nets and
+  via/pad tenting, and `server_update`, which offers updates once a day
+  and installs them after you agree.
+
+- Dead code removed on the way: `_execute_command_async`, which
+  upstream's inline executor replaced as the only caller.
+  `_poll_response_async` stays, since a test exercises it directly.
+
+Tool count after the merge: **655 on the Altium backend**, 741 with both
+registered, 990 across all backends. `SCRIPT_VERSION` is `2026.10.26.4`.
+
 ### Changed
 
 - **The two version numbers are documented.** The package follows

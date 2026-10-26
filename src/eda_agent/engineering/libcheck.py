@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Library expert checks: footprint, symbol and component audits, plus IPC cross-check.
 
 Input geometry is the footprint dictionary (micrometres) produced by footprint.py/ipc7351.py, or the

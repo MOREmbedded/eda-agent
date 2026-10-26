@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Offline restart-supervisor and dialog diagnostic tests."""
 
 from __future__ import annotations

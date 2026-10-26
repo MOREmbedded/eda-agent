@@ -630,17 +630,46 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
                 [f"O\t{dump.outline_segments}\t{len(lines)}"] + lines)))
     report["board_outline"] = rep
 
-    # New free tracks and arcs (no net) and free regions (net optional),
-    # after everything that is matched.
+    # New free tracks, arcs, regions, through vias and polygon pours, each
+    # with an optional net, after everything that is matched. Lines go out
+    # in entry order, so the n-th C line is the n-th accepted entry.
     rep = KindReport()
     creates = geometry_map.get("create") or []
     rep.entries = len(creates)
     for i, e in enumerate(creates):
         try:
             kind = str(e.get("kind", "")).lower()
+            net = str(e.get("net") or "")
+            assert not any(c in net for c in "\t\r\n")
+            if kind == "via":
+                # A through via, TopLayer to BottomLayer, as pcb_place_vias
+                # makes one. The layer field carries MultiLayer.
+                size, hole = _mil(e["size"]), _mil(e["hole"])
+                assert 0 < hole < size
+                x, y = _mil(e["x"]), _mil(e["y"])
+                out.setdefault("C", []).append((i, "C\tV\tMultiLayer\t{}\t{}\t{}\t{}\t{}".format(
+                    size, x, y, hole, net)))
+                rep.matched += 1
+                continue
             layer = str(e["layer"]).strip()
-            assert kind in ("track", "arc", "region") and layer
+            assert kind in ("track", "arc", "region", "polygon") and layer
             assert not any(c in layer for c in "\t\r\n")
+            if kind == "polygon":
+                name = str(e.get("name") or "")
+                assert not any(c in name for c in "\t\r\n")
+                xy = [(_mil(q[0]), _mil(q[1])) for q in e["contour"]]
+                if len(xy) > 3 and xy[-1] == xy[0]:
+                    xy.pop()
+                assert len(xy) >= 3
+                order = int(e.get("order", -1))
+                over = "1" if e.get("pour_over", True) else "0"
+                pts = "\t".join(f"{x}\t{y}" for x, y in xy)
+                out.setdefault("C", []).append((i, "C\tP\t" + "\t".join(
+                    [layer, str(len(xy)), pts, str(order), over, name, net])))
+                if layer_of(layer) is None:
+                    rep.note("layer_not_in_dump", i, layer)
+                rep.matched += 1
+                continue
             # MEASURED: copies on the keep-out layer carry IsKeepout, and a
             # track created there without it read false, so DRC would treat
             # it differently. Default to the original's flag.
@@ -648,8 +677,6 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             flag = "1" if keep else "0"
             if kind == "region":
                 pts = e["contour"]
-                net = str(e.get("net") or "")
-                assert not any(c in net for c in "\t\r\n")
                 xy = [(_mil(p[0]), _mil(p[1])) for p in pts]
                 # A closing vertex equal to the first is dropped; Altium
                 # closes a region's contour itself.
@@ -670,17 +697,18 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
             assert w > 0
             if kind == "track":
                 assert len(g) == 4
-                line = "C\tT\t{}\t{}\t{}\t{}".format(
-                    layer, w, "\t".join(str(_mil(v)) for v in g), flag)
+                line = "C\tT\t{}\t{}\t{}\t{}\t{}".format(
+                    layer, w, "\t".join(str(_mil(v)) for v in g), flag, net)
             else:
                 assert len(g) == 5 and float(g[2]) > 0
                 _arc_fits(g[0], g[1], g[2])
                 line = (f"C\tA\t{layer}\t{w}\t{_mil(g[0])}\t{_mil(g[1])}\t"
-                        f"{_mil(g[2])}\t{_angle_text(g[3])}\t{_angle_text(g[4])}\t{flag}")
+                        f"{_mil(g[2])}\t{_angle_text(g[3])}\t{_angle_text(g[4])}\t{flag}\t{net}")
         except (KeyError, TypeError, ValueError, IndexError, AssertionError) as exc:
             _refuse(rep, i, exc, "needs kind track|arc, layer, width > 0 and "
                     "geom [x1,y1,x2,y2] or [cx,cy,r,start,end]; or kind "
-                    "region, layer and contour [[x,y],...] of 3+ points")
+                    "region|polygon, layer and contour [[x,y],...] of 3+ "
+                    "points; or kind via, x, y, size and hole < size")
             continue
         if layer_of(layer) is None:
             # Created by name in Altium, which knows every layer the board
@@ -696,6 +724,11 @@ def build_edits(geometry_map: dict, dump: Dump, tolerance_mil: float = 0.01,
         for _o, text in sorted(out.get(kind, []), key=lambda t: t[0]):
             ordered.extend(text.split("\n"))
     summary = {k: v.as_dict() for k, v in report.items()}
+    if "create" in summary:
+        # Altium names a refused create by its ordinal among the C lines;
+        # this turns that back into the entry of the map.
+        summary["create"]["line_entries"] = [i for i, _ in sorted(
+            out.get("C", []), key=lambda t: t[0])]
     dels = geometry_map.get("delete") or []
     if dels:
         summary["delete"] = {"entries": len(dels), "matched": sum(deleted.values()),

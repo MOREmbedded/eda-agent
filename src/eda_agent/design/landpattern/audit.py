@@ -665,6 +665,11 @@ def audit_footprint_vs_package(spec: PackageSpec, pads: list[dict], *,
         _check_silk(r, fp, roles.get("silk", set()), primitives)
         _check_assembly(r, roles.get("assembly", set()), primitives, body_fp)
         _check_height(r, spec, primitives)
+    # Copper clearance between pads, whatever the package says: a footprint
+    # drawn from a misread dimension can match its own numbers and short.
+    from eda_agent.design.footprint_audit import copper_clearance_findings
+    r.examined.append("pad_clearance")
+    r.findings += copper_clearance_findings(fp)
     met = {"footprint": fp_metrics,
            "ipc": {k: ipc_metrics.get(k) for k in ("pitch", "span", "span_y",
                                                   "pad_length", "pad_width")

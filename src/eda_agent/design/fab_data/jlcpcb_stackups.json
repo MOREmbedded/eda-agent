@@ -1,0 +1,2513 @@
+{
+ "vendor": "JLCPCB",
+ "source": {
+  "url": "https://jlcpcb.com/impedance",
+  "retrieved": "2026-10-22",
+  "page_state": "the selection the page opens with (1.6 mm)"
+ },
+ "dielectric_constants": {
+  "prepreg_by_glass": {
+   "7628": 4.4,
+   "3313": 4.1,
+   "1080": 3.91,
+   "2116": 4.16
+  },
+  "core": 4.6,
+  "solder_mask": 3.8,
+  "frequency": null,
+  "note": "The page states no frequency or test method for these."
+ },
+ "stackups": [
+  {
+   "name": "JLCPCB 4-layer default (no impedance requirement)",
+   "copper_layers": 4,
+   "total_mm": 1.5862,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628",
+   "copper_layers": 4,
+   "total_mm": 1.5862,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-3313",
+   "copper_layers": 4,
+   "total_mm": 1.5642,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.265,
+     "label": "1.3mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-1080",
+   "copper_layers": 4,
+   "total_mm": 1.5182,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.265,
+     "label": "1.3mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628A",
+   "copper_layers": 4,
+   "total_mm": 1.5542,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.865,
+     "label": "0.9mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-3313A",
+   "copper_layers": 4,
+   "total_mm": 1.5782,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-1080A",
+   "copper_layers": 4,
+   "total_mm": 1.4862,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628B",
+   "copper_layers": 4,
+   "total_mm": 1.6052,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.4,
+     "label": "0.4mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116A",
+   "copper_layers": 4,
+   "total_mm": 1.6172,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.6,
+     "label": "0.6mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116B",
+   "copper_layers": 4,
+   "total_mm": 1.6342,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.865,
+     "label": "0.9mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116C",
+   "copper_layers": 4,
+   "total_mm": 1.5662,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-1080B",
+   "copper_layers": 4,
+   "total_mm": 1.6542,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.065,
+     "label": "1.1mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.084,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628G",
+   "copper_layers": 4,
+   "total_mm": 1.6252,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.5,
+     "label": "0.5mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116",
+   "copper_layers": 4,
+   "total_mm": 1.5982,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 1.265,
+     "label": "1.3mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628E",
+   "copper_layers": 4,
+   "total_mm": 1.5572,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.6,
+     "label": "0.6mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116D",
+   "copper_layers": 4,
+   "total_mm": 1.4692,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.7,
+     "label": "0.7mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628F",
+   "copper_layers": 4,
+   "total_mm": 1.6432,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.25,
+     "label": "0.25mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-2116E",
+   "copper_layers": 4,
+   "total_mm": 1.4462,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.865,
+     "label": "0.9mm H/HOZ with copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC04161H-7628C",
+   "copper_layers": 4,
+   "total_mm": 1.5432,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.15,
+     "label": "0.15mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLCPCB 6-layer default (no impedance requirement)",
+   "copper_layers": 6,
+   "total_mm": 1.546,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-3313",
+   "copper_layers": 6,
+   "total_mm": 1.5384,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1088,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-7628",
+   "copper_layers": 6,
+   "total_mm": 1.5544,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.4,
+     "label": "0.4mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2028,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.4,
+     "label": "0.4mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-7628D",
+   "copper_layers": 6,
+   "total_mm": 1.5804,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.216,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2084,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.2,
+     "label": "0.2mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2008,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.2,
+     "label": "0.2mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2084,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.216,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-1080",
+   "copper_layers": 6,
+   "total_mm": 1.594,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.55,
+     "label": "0.55mm H/Hwithout copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-2116A",
+   "copper_layers": 6,
+   "total_mm": 1.5564,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.13,
+     "label": "0.13mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.7,
+     "label": "0.7 H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.13,
+     "label": "0.13mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-1080A",
+   "copper_layers": 6,
+   "total_mm": 1.583,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.6,
+     "label": "0.6mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.6,
+     "label": "0.6mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-3313C",
+   "copper_layers": 6,
+   "total_mm": 1.4524,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.4,
+     "label": "0.4mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.4,
+     "label": "0.4mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0784,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-1080B",
+   "copper_layers": 6,
+   "total_mm": 1.6044,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.7,
+     "label": "0.7 H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-3313E",
+   "copper_layers": 6,
+   "total_mm": 1.6504,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.7,
+     "label": "0.7 H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.0994,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-1080C",
+   "copper_layers": 6,
+   "total_mm": 1.5544,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.075,
+     "label": "0.075mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.7,
+     "label": "0.7 H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.075,
+     "label": "0.075mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-2116B",
+   "copper_layers": 6,
+   "total_mm": 1.5164,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.5,
+     "label": "0.5mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.5,
+     "label": "0.5mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-2116",
+   "copper_layers": 6,
+   "total_mm": 1.5944,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.127,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2313*1",
+     "thickness_mm": 0.0964,
+     "er": null,
+     "er_missing": "the page's prepreg table gives no Dk for 2313"
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.3,
+     "label": "0.30mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2084,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2084,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.3,
+     "label": "0.30mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2313*1",
+     "thickness_mm": 0.0964,
+     "er": null,
+     "er_missing": "the page's prepreg table gives no Dk for 2313"
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.127,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-7628B",
+   "copper_layers": 6,
+   "total_mm": 1.5724,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.35,
+     "label": "0.35mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.35,
+     "label": "0.35mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-3313D",
+   "copper_layers": 6,
+   "total_mm": 1.5424,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.25,
+     "label": "0.25mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.124,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.2104,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.25,
+     "label": "0.25mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "3313*1",
+     "thickness_mm": 0.107,
+     "er": 4.1
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-2116C",
+   "copper_layers": 6,
+   "total_mm": 1.5894,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.127,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1194,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.3,
+     "label": "0.30mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1194,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.127,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1194,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.3,
+     "label": "0.30mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1194,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.127,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  },
+  {
+   "name": "JLC06161H-7628A",
+   "copper_layers": 6,
+   "total_mm": 1.5884,
+   "plies": [
+    {
+     "kind": "copper",
+     "name": "Top",
+     "thickness_mm": 0.035
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "copper",
+     "name": "L2",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L3",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "prepreg",
+     "material": "2116*1",
+     "thickness_mm": 0.1164,
+     "er": 4.16
+    },
+    {
+     "kind": "copper",
+     "name": "L4",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "core",
+     "material": "Core",
+     "thickness_mm": 0.1,
+     "label": "0.10mm H/HOZ without copper",
+     "er": 4.6
+    },
+    {
+     "kind": "copper",
+     "name": "L5",
+     "thickness_mm": 0.0152
+    },
+    {
+     "kind": "prepreg",
+     "material": "1080*1",
+     "thickness_mm": 0.0764,
+     "er": 3.91
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "prepreg",
+     "material": "7628*1",
+     "thickness_mm": 0.218,
+     "er": 4.4
+    },
+    {
+     "kind": "copper",
+     "name": "Bottom",
+     "thickness_mm": 0.035
+    }
+   ]
+  }
+ ]
+}

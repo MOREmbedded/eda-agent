@@ -87,9 +87,6 @@ def test_full_authoring_chain_produces_a_valid_board():
     assert constructed.cross_check() == []
     erc = check_plan_erc(constructed)
     assert erc.passed, [i.code for i in erc.errors]
-    # the data bus is recognised for drawing
-    from eda_agent.design.buses import detect_buses
-    assert any(len(b.nets) == 4 for b in detect_buses(constructed))
 
     # 2) MODIFY -- post-review fixes via edit_plan
     edited = edit_plan(res.plan, [

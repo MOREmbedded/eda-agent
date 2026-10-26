@@ -5,6 +5,7 @@
 import asyncio
 from typing import Any, Optional
 from ..bridge import get_bridge
+from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
@@ -133,6 +134,56 @@ async def _verify_pad_nets(bridge) -> dict[str, Any]:
         "finish the job."
     )
     return report
+
+
+def _rows(result: Any, key: str) -> list:
+    if isinstance(result, dict):
+        inner = result.get("result", result)
+        if isinstance(inner, dict):
+            rows = inner.get(key)
+            return rows if isinstance(rows, list) else []
+    return []
+
+
+async def _pair_names(bridge) -> set:
+    try:
+        pairs = await bridge.send_command_async(
+            "pcb.get_differential_pairs", {}, timeout=30.0)
+    except Exception:                           # noqa: BLE001 - no board yet
+        return set()
+    return {str(p.get("name")) for p in _rows(pairs, "pairs")
+            if isinstance(p, dict) and p.get("name")}
+
+
+async def _after_sync(bridge, pairs_before: set) -> dict:
+    """What a schematic-to-board sync left undone, read from both sides."""
+    bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
+    board = await bridge.send_command_async("pcb.get_components", {})
+    sch = {str(c.get("designator")): str(c.get("footprint") or "")
+           for c in _rows(bom, "components") if isinstance(c, dict)}
+    pcb = {str(c.get("designator")): str(c.get("footprint") or "")
+           for c in _rows(board, "components") if isinstance(c, dict)}
+    mismatch = [{"designator": d, "schematic": fp, "board": pcb[d]}
+                for d, fp in sorted(sch.items())
+                if d in pcb and fp and pcb[d] and fp.lower() != pcb[d].lower()]
+    missing = sorted(d for d in sch if d not in pcb)
+    removed = sorted(pairs_before - await _pair_names(bridge))
+    out: dict[str, Any] = {"footprint_mismatch": mismatch,
+                           "missing_on_board": missing,
+                           "diff_pairs_removed": removed}
+    problems = []
+    if mismatch:
+        problems.append(f"{len(mismatch)} part(s) kept a footprint the "
+                        f"schematic no longer uses")
+    if missing:
+        problems.append(f"{len(missing)} schematic part(s) are not on the board")
+    if removed:
+        problems.append(f"the sync removed {len(removed)} board-only "
+                        f"differential pair(s); define them in the schematic "
+                        f"(DifferentialPair directive) to keep them")
+    if problems:
+        out["warning"] = "; ".join(problems)
+    return out
 
 
 def register_project_tools(mcp):
@@ -475,24 +526,46 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_remove_document(
-        document_path: str, project_path: Optional[str] = None
+        document_path: str,
+        project_path: Optional[str] = None,
+        save_project: bool = True,
     ) -> dict[str, Any]:
         """Remove a document from a project.
 
         Note: This only removes the document from the project, it doesn't delete the file.
 
+        The project file is saved and read back: a removal held only in
+        memory comes back when the project is reopened. Altium's own save
+        leaves the old [DocumentN] sections past the new count in the file,
+        so those are taken out here (only past the count, only when the rest
+        match the project's documents, after a backup to the workspace).
+
         Args:
             document_path: Full path to the document to remove
             project_path: Optional project path. If None, uses active project.
+            save_project: Write the .PrjPcb so the removal lasts (default).
+                False leaves it for a later proj_save.
 
         Returns:
-            Dictionary confirming the operation
+            ``removed`` (gone from the project in memory),
+            ``project_saved``, ``in_project_file`` (the file on disk
+            still lists it, with ``project_file_entry``) and
+            ``stale_sections`` when leftovers were taken out (with the
+            backup path). ``success`` is true only when the file no longer
+            lists it.
         """
         bridge = get_bridge()
         params = {"document_path": document_path}
         if project_path:
             params["project_path"] = project_path
+        if not save_project:
+            params["save_project"] = "false"
         result = await bridge.send_command_async("project.remove_document", params)
+        if save_project:
+            from ..config import get_config
+            from ..prjpcb import finish_removal
+            result = finish_removal(
+                result, str(get_config().workspace_dir / "backups" / "prjpcb"))
         return result
 
     @mcp.tool()
@@ -764,6 +837,106 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_export_jlc_assembly(
+        output_dir: str,
+        lcsc_parameter: str = "",
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Write the BOM and pick-and-place (CPL) files JLCPCB assembly takes.
+
+        BOM: Comment, Designator, Footprint, LCSC Part #, one row per part
+        kind. CPL: Designator, Mid X, Mid Y (mm, from the board origin, as
+        Altium's own pick-and-place and the Gerbers), Layer (Top/Bottom),
+        Rotation (degrees, as Altium shows it). Read from the board and the
+        compiled project, so nothing is copied by hand.
+
+        Mid X/Y is each part's ORIGIN: right for a footprint whose origin
+        is its centre (every footprint lib_create_footprint_from_package
+        makes); a part with its origin elsewhere is placed off by that much.
+        Rotations follow Altium; JLC's preview shows each part on its pads,
+        so check polarised and bottom-side parts there before ordering.
+
+        Args:
+            output_dir: folder for the two files (made when missing).
+            lcsc_parameter: the parameter holding the LCSC number. Empty
+                tries "LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #".
+            name: file name stem; default the board's name.
+
+        Returns:
+            ``bom_path``, ``cpl_path``, ``parts``, ``bom_rows``,
+            ``without_lcsc`` (designators with no LCSC number) and
+            ``origin_mils``.
+        """
+        import csv
+        import os
+        from collections import OrderedDict
+
+        bridge = get_bridge()
+        coords = await bridge.send_command_async("pcb.export_coordinates", {})
+        comps = [c for c in (coords or {}).get("placements", [])
+                 if isinstance(c, dict) and c.get("designator")]
+        if not comps:
+            return {"ok": False, "reason": "no components were read from the board"}
+        board = await bridge.send_command_async("project.get_board_info", {})
+        ox = float((board or {}).get("origin_x", 0) or 0)
+        oy = float((board or {}).get("origin_y", 0) or 0)
+        info = await bridge.send_command_async(
+            "project.get_component_info_batch",
+            {"designators": "~~".join(str(c["designator"]) for c in comps),
+             "with_pin_nets": "false"}, timeout=120.0)
+        params_of: dict[str, dict] = {}
+        for c in (info or {}).get("components", []) if isinstance(info, dict) else []:
+            if isinstance(c, dict) and isinstance(c.get("parameters"), dict):
+                params_of[str(c.get("designator"))] = c["parameters"]
+        keys = ([lcsc_parameter] if lcsc_parameter else
+                ["LCSC Part #", "LCSC", "LCSC Part", "JLCPCB Part #"])
+
+        def lcsc(ref: str) -> str:
+            got = {k.lower(): v for k, v in params_of.get(ref, {}).items()}
+            for k in keys:
+                v = str(got.get(k.lower(), "") or "").strip()
+                if v and v != "*":
+                    return v
+            return ""
+
+        groups: "OrderedDict[tuple, list[str]]" = OrderedDict()
+        missing = []
+        for c in comps:
+            ref = str(c["designator"])
+            part = lcsc(ref)
+            if not part:
+                missing.append(ref)
+            key = (str(c.get("comment", "")), str(c.get("footprint", "")), part)
+            groups.setdefault(key, []).append(ref)
+
+        stem = name or os.path.splitext(
+            str((coords or {}).get("board_name") or "board"))[0] or "board"
+        os.makedirs(output_dir, exist_ok=True)
+        bom_path = os.path.join(output_dir, f"{stem}_BOM_JLCPCB.csv")
+        cpl_path = os.path.join(output_dir, f"{stem}_CPL_JLCPCB.csv")
+        with open(bom_path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Comment", "Designator", "Footprint", "LCSC Part #"])
+            for (comment, fp, part), refs in groups.items():
+                w.writerow([comment, ",".join(refs), fp, part])
+        with open(cpl_path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Designator", "Mid X", "Mid Y", "Layer", "Rotation"])
+            for c in comps:
+                x = (float(c.get("x", 0)) - ox) * MM_PER_MIL
+                y = (float(c.get("y", 0)) - oy) * MM_PER_MIL
+                side = "Bottom" if str(c.get("side", "")).lower().startswith("b") else "Top"
+                w.writerow([c["designator"], f"{x:.4f}mm", f"{y:.4f}mm", side,
+                            f"{float(c.get('rotation', 0)) % 360:g}"])
+        out = {"ok": True, "bom_path": bom_path, "cpl_path": cpl_path,
+               "parts": len(comps), "bom_rows": len(groups),
+               "without_lcsc": missing, "origin_mils": [ox, oy]}
+        if missing:
+            out["note"] = (f"{len(missing)} parts have no LCSC number in "
+                           f"{' / '.join(keys)}; JLC leaves them unplaced")
+        return out
+
+    @mcp.tool()
     async def proj_get_bom(
         project_path: Optional[str] = None,
         limit: int = 1000,
@@ -961,7 +1134,15 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_export_pdf(output_path: str) -> dict[str, Any]:
-        """Export the active document to PDF.
+        """Open Altium's PRINT dialog for the active document, for a PDF.
+
+        NOT UNATTENDED. This opens the print preview / print setup dialog
+        with the user's real printer selected and a live Print button,
+        and blocks the bridge until a person finishes or cancels it; a
+        wrong press prints paper. ``written`` says whether the PDF exists
+        afterwards. For a PDF with nobody at the machine, run an OutJob
+        container whose medium is PDF (proj_list_outjob_containers, then
+        proj_run_outjob).
 
         Args:
             output_path: Full path for the output PDF file
@@ -1162,32 +1343,368 @@ def register_project_tools(mcp):
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    async def proj_export_step(output_path: str = "") -> dict[str, Any]:
-        """Export the open PCB to a STEP 3D model file.
+    async def proj_export_step(output_path: str,
+                               board_path: str = "",
+                               overwrite: bool = False) -> dict[str, Any]:
+        """Export a board to a STEP 3D model with Altium's own exporter.
 
-        The board is focused first, since the export acts on the focused
-        view. If output_path is omitted, Altium may show a file-save
-        dialog. ``generated`` is true only when a new file is at
-        output_path afterwards; otherwise the reply says the export was
-        dispatched and why nothing could be confirmed. An OutJob with an
-        ExportSTEP output, run through proj_run_outjob, is the route
-        whose result can always be checked.
+        First through Altium's exporter object
+        (``PCBServer.Board3DModelExporter``), which shows no dialog and
+        keeps the options last used in File > Export > STEP 3D
+        (``route: "exporter"``). If that writes nothing, it runs PCB:Export
+        with the STEP 3D format, the route File > Export > STEP 3D takes,
+        and answers its three dialogs: the file name (already filled in),
+        the export options (Altium's defaults) and the closing "Done!"
+        (``route: "dialogs"``, with ``exporter_reason``). Only those three
+        are pressed; any other dialog stops the export and is reported.
+        ``generated`` is true only when a new file is at output_path
+        afterwards.
 
         Args:
-            output_path: Full path for the output .step file (optional)
+            output_path: Full path for the .step file.
+            board_path: Focus this .PcbDoc first; it must then be the
+                board in front, since the export acts on the front view.
+                Omit it to export the board already in front.
+            overwrite: Replace an existing file. Off by default, so an
+                earlier export is never lost by accident.
 
         Returns:
-            ``generated``, plus ``dispatched`` and ``reason`` when no new
-            file was found
+            ``generated``, ``output_path``, ``size_bytes``, the board that
+            was exported (``front_document``) and every dialog answered.
         """
+        import asyncio
+        import os
+        import time as _time
+
+        from ..atomicfile import replace_with_retry
+        from ..bridge.exceptions import AltiumError
+        from ..ui import windows
+        from .uiauto import _altium_pid
+
+        if not output_path or not os.path.isabs(output_path):
+            return {"ok": False, "reason": "output_path must be a full path"}
+        existed = os.path.exists(output_path)
+        if existed and not overwrite:
+            return {"ok": False, "output_path": output_path, "reason": (
+                "a file is already there. Pass overwrite=True to replace it")}
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        # Altium's exporter cannot write into a folder that is not there,
+        # and says so in an "Information" box, as it says "Done!".
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "output_path": output_path,
+                    "reason": f"the output folder could not be made: {e}"}
+
         bridge = get_bridge()
-        params: dict[str, Any] = {}
-        if output_path:
-            params["output_path"] = output_path
-        result = await bridge.send_command_async(
-            "project.export_step", params, timeout=120.0
-        )
+        if board_path:
+            await bridge.send_command_async(
+                "pcb.focus_board", {"board_path": board_path})
+        front = await bridge.send_command_async(
+            "application.get_active_document", {"front": "true"})
+        front_path = (front or {}).get("file_path") or ""
+        if board_path and (os.path.normcase(os.path.normpath(front_path))
+                           != os.path.normcase(os.path.normpath(board_path))):
+            return {"ok": False, "front_document": front_path, "reason": (
+                f"{board_path} is not the board in front, so the export "
+                "would write another board. Nothing was exported")}
+        if not front_path.lower().endswith(".pcbdoc"):
+            return {"ok": False, "front_document": front_path,
+                    "reason": "the document in front is not a board"}
+        # An existing file is moved aside rather than overwritten through
+        # Altium: its "Confirm Save As" sat on top of the Save dialog and
+        # the export never ran. It comes back if no new file is written.
+        aside = ""
+        if existed:
+            aside = output_path + ".previous"
+            try:
+                replace_with_retry(output_path, aside)
+            except OSError as e:
+                return {"ok": False, "output_path": output_path, "reason": (
+                    f"the existing file could not be moved aside: {e}")}
+        started = _time.time()
+
+        # Altium's exporter object first: no dialog to answer. The dialog
+        # route below stays for a build where it writes nothing.
+        api: dict[str, Any] = {}
+        try:
+            api = await bridge.send_command_async(
+                "project.export_step_api", {"output_path": output_path},
+                timeout=600.0) or {}
+        except AltiumError as e:
+            api = {"generated": False, "reason": str(e)}
+        if api.get("generated") and os.path.exists(output_path):
+            if aside:
+                try:
+                    os.remove(aside)
+                except OSError:
+                    pass
+            return {"ok": True, "generated": True, "output_path": output_path,
+                    "size_bytes": os.path.getsize(output_path),
+                    "front_document": front_path, "route": "exporter",
+                    "dialogs_answered": []}
+        api_reason = api.get("reason") or "no new file"
+
+        # The handler blocks in RunProcess until the dialogs are answered,
+        # and the bridge gives up on a call as soon as a modal shows, so
+        # the call's end says nothing about the export's. The export ends
+        # with Altium's "Done!", which is answered too: left open, it
+        # blocked the next call.
+        call = asyncio.ensure_future(bridge.send_command_async(
+            "project.export_step", {"output_path": output_path},
+            timeout=600.0))
+
+        def settled() -> bool:
+            """A new file whose size has stopped changing."""
+            if not os.path.exists(output_path)                     or os.path.getmtime(output_path) < started - 1:
+                return False
+            size = os.path.getsize(output_path)
+            _time.sleep(1.0)
+            return size > 0 and size == os.path.getsize(output_path)
+
+        def answer() -> dict:
+            steps = {"export file": "Save", "export options": "OK",
+                     "information": "OK"}
+            answered, deadline = [], _time.monotonic() + 600.0
+            quiet_since = None
+            while _time.monotonic() < deadline:
+                shown = windows.dialogs(pid)
+                for dialog in shown:
+                    title = (dialog.title or "").strip().lower()
+                    caption = steps.get(title)
+                    if caption is None:
+                        return {"ok": False, "answered": answered,
+                                "reason": (f"an unexpected dialog "
+                                           f"{dialog.title!r} is open; "
+                                           "nothing was pressed in it")}
+                    button = dialog.find_button(caption)
+                    if button is None:
+                        continue
+                    windows.click(button)
+                    windows.wait_for_close(dialog.hwnd, timeout=5.0)
+                    answered.append(dialog.title)
+                    if title == "information":
+                        return {"ok": True, "answered": answered}
+                    break
+                # Nothing on screen once the options are answered is the
+                # export running. It is done at "Done!", or, should that
+                # never come, once a new file has stopped growing and the
+                # screen has stayed empty for a few seconds.
+                if shown:
+                    quiet_since = None
+                elif "Export Options" in answered:
+                    quiet_since = quiet_since or _time.monotonic()
+                    if _time.monotonic() - quiet_since > 5.0 and settled():
+                        return {"ok": True, "answered": answered}
+                _time.sleep(0.25)
+            return {"ok": False, "answered": answered,
+                    "reason": "the export did not finish in ten minutes"}
+
+        def late_done(wait_s: float = 30.0) -> list:
+            """Answer a "Done!" that comes after the file has settled.
+
+            On a large board it came seconds after the export had been
+            judged finished, and blocked the next call (a demo run's BOM
+            and pick-and-place both failed on it)."""
+            deadline = _time.monotonic() + wait_s
+            while _time.monotonic() < deadline:
+                for dialog in windows.dialogs(pid):
+                    if (dialog.title or "").strip().lower() != "information":
+                        return []
+                    button = dialog.find_button("OK")
+                    if button is not None:
+                        windows.click(button)
+                        windows.wait_for_close(dialog.hwnd, timeout=5.0)
+                        return [dialog.title]
+                _time.sleep(0.25)
+            return []
+
+        driven = await asyncio.get_running_loop().run_in_executor(None, answer)
+        if driven.get("ok") and "Information" not in driven.get("answered", []):
+            late = await asyncio.get_running_loop().run_in_executor(None, late_done)
+            driven["answered"] = driven.get("answered", []) + late
+        try:
+            await asyncio.wait_for(call, timeout=30.0)
+        except (AltiumError, asyncio.TimeoutError):
+            pass
+
+        # The file can land a few seconds after the last dialog closes.
+        written = False
+        for _ in range(30):
+            written = await asyncio.get_running_loop().run_in_executor(
+                None, settled)
+            if written:
+                break
+            await asyncio.sleep(0.5)
+
+        if aside:
+            try:
+                if written:
+                    os.remove(aside)
+                else:
+                    replace_with_retry(aside, output_path)
+            except OSError:
+                pass
+        result: dict[str, Any] = {
+            "ok": bool(written and driven.get("ok")),
+            "generated": bool(written),
+            "output_path": output_path,
+            "front_document": front_path,
+            "route": "dialogs",
+            "exporter_reason": api_reason,
+            "dialogs_answered": driven.get("answered", []),
+        }
+        if written:
+            result["size_bytes"] = os.path.getsize(output_path)
+        if aside and not written:
+            result["previous_file_kept"] = os.path.exists(output_path)
+        if not driven.get("ok"):
+            result["reason"] = driven.get("reason")
+        elif not written:
+            result["reason"] = "the dialogs were answered and no new file is there"
         return result
+
+    @mcp.tool()
+    async def proj_create_outjob(
+        project_path: str,
+        source_outjob: str = "",
+        outjob_name: str = "",
+        output_dir: str = "",
+        use_fallback: bool = False,
+    ) -> dict[str, Any]:
+        """Give a project an OutJob by copying one in the user's own style.
+
+        Every user exports differently, so this invents no outputs. It
+        copies an existing OutJob (the user's own from another project,
+        or one Altium ships), points each output at this project's
+        documents, writes every container to ``output_dir``, and adds the
+        copy to the project. Run it afterwards with proj_run_outjob or
+        proj_generate_fab_package.
+
+        ASK THE USER FIRST. With no ``source_outjob`` nothing is written:
+        the reply lists the OutJobs found in open projects. Ask the user
+        which one to copy, or how they prefer their outputs (Gerber
+        format and units, drill files, pick-and-place, BOM, folders) and
+        pick the closest. Altium's own templates are a fallback, used
+        only with ``use_fallback`` once the user has agreed.
+
+        Args:
+            project_path: The target .PrjPcb.
+            source_outjob: The .OutJob to copy.
+            outjob_name: File name for the copy; defaults to the source's.
+            output_dir: Absolute folder for the outputs; defaults to
+                "Project Outputs for <project>" beside the project.
+            use_fallback: With no source, copy Altium's shipped
+                Fabrication template. Only once the user has agreed.
+
+        Returns:
+            ``outjob_path``, the ``outputs`` it holds, which documents
+            were ``retargeted`` and which were left ``unmapped``, and the
+            containers Altium reads back from it.
+        """
+        import glob
+        import os
+
+        from .. import outjob
+        from ..atomicfile import replace_with_retry
+
+        bridge = get_bridge()
+        if not source_outjob and use_fallback:
+            # Altium installs its OutputJobs templates under the shared
+            # Public profile, which Windows names in PUBLIC.
+            public = os.environ.get("PUBLIC", "")
+            shipped = sorted(glob.glob(os.path.join(
+                public, "Documents", "Altium", "*", "OutputJobs",
+                "Fabrication.OutJob"))) if public else []
+            if not shipped:
+                return {"ok": False, "reason": (
+                    "Altium's shipped OutputJobs templates were not found")}
+            source_outjob = shipped[-1]
+        if not source_outjob:
+            open_docs = await bridge.send_command_async(
+                "application.get_open_documents")
+            docs = open_docs.get("result", open_docs) \
+                if isinstance(open_docs, dict) else open_docs
+            found = sorted({d.get("file_path", "") for d in docs or []
+                            if str(d.get("file_path", "")).lower()
+                            .endswith(".outjob")})
+            return {"ok": False, "needs_input": True,
+                    "candidates": found,
+                    "reason": (
+                        "nothing was written. Ask the user which OutJob to "
+                        "copy (one of the candidates, or a path), or how "
+                        "they prefer their outputs, then call again with "
+                        "source_outjob. use_fallback=True copies Altium's "
+                        "shipped Fabrication template, only once the user "
+                        "has agreed to it.")}
+
+        if not os.path.isfile(source_outjob):
+            return {"ok": False, "reason": f"{source_outjob} is not a file"}
+        if not project_path.lower().endswith(".prjpcb"):
+            return {"ok": False, "reason": "project_path must be a .PrjPcb"}
+        project_dir = os.path.dirname(project_path)
+        stem = os.path.splitext(os.path.basename(project_path))[0]
+        target = os.path.join(project_dir,
+                              outjob_name or os.path.basename(source_outjob))
+        if not target.lower().endswith(".outjob"):
+            target += ".OutJob"
+        if os.path.exists(target):
+            return {"ok": False, "outjob_path": target, "reason": (
+                "a file of that name is already there and is never "
+                "overwritten; pass another outjob_name")}
+        output_dir = output_dir or os.path.join(
+            project_dir, f"Project Outputs for {stem}")
+
+        listing = await bridge.send_command_async(
+            "project.get_documents", {"project_path": project_path})
+        members = listing.get("result", listing) \
+            if isinstance(listing, dict) else listing
+        documents = [d.get("file_path", "") for d in members or []
+                     if d.get("file_path")]
+        if not documents:
+            return {"ok": False, "reason": (
+                "Altium lists no documents in that project; open it first")}
+
+        # The board's own copper layers, planes included, for the Gerber
+        # layer set: Altium's shipped template plots four signal layers and
+        # no plane, and a demo board's planes were left out of its Gerbers.
+        codes: list[int] = []
+        boards = {os.path.basename(d).lower() for d in documents
+                  if d.lower().endswith(".pcbdoc")}
+        if boards:
+            stack = await bridge.send_command_async("pcb.get_layer_stackup", {})
+            # Only the project's own board: the stack read is the focused one.
+            if isinstance(stack, dict) and str(stack.get("board_name", "")).lower() in boards:
+                codes = outjob.copper_layer_codes(
+                    int(layer.get("layer_id") or 0) for layer in stack.get("layers") or [])
+
+        with open(source_outjob, "rb") as fh:
+            data, report = outjob.clone(fh.read(), project_path, documents,
+                                        output_dir, copper_codes=codes)
+        if not codes:
+            report["copper_layers_note"] = (
+                "the board's layer stack could not be read, so the Gerber "
+                "layer set is the template's own: check it plots every "
+                "copper and plane layer")
+        tmp = target + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        replace_with_retry(tmp, target)
+
+        added = await bridge.send_command_async(
+            "project.add_document",
+            {"document_path": target, "project_path": project_path})
+        read_back = await bridge.send_command_async(
+            "project.get_outjob_containers", {"outjob_path": target},
+            timeout=30.0)
+        return {"ok": bool((read_back or {}).get("containers")),
+                "outjob_path": target, "source_outjob": source_outjob,
+                "output_dir": output_dir,
+                "outputs": outjob.outputs(data),
+                **report, "added_to_project": added,
+                "containers_read_by_altium": (read_back or {}).get("containers")}
 
     @mcp.tool()
     async def proj_export_dxf(output_path: str = "") -> dict[str, Any]:
@@ -1262,6 +1779,21 @@ def register_project_tools(mcp):
                     result["file_size_bytes"] = os.path.getsize(output_path)
                 except OSError:
                     pass
+                # A file that is there is not yet a PDF: an empty or cut
+                # off print job leaves one too (issue #94 asks that the
+                # output decode). Every PDF starts with %PDF-.
+                head = b""
+                try:
+                    with open(output_path, "rb") as fh:
+                        head = fh.read(5)
+                except OSError:
+                    pass
+                if str(format).lower() == "pdf" and head != b"%PDF-":
+                    result["success"] = False
+                    result["error"] = "EXPORT_FILE_INVALID"
+                    result["details"] = (
+                        f"{output_path} exists but is not a PDF (it starts "
+                        f"with {head!r}). The print did not complete.")
             else:
                 # Pascal claimed success but file is missing - downgrade
                 # to an explicit error so callers don't trust a phantom
@@ -1318,6 +1850,13 @@ def register_project_tools(mcp):
         elsewhere reads as ``success: false``, and ``reason`` says what
         was examined.
 
+        The OutJob is opened if needed and made the ACTIVE document
+        first: Altium writes nothing for a container whose OutJob is
+        not active. A dialog Altium raises during the run (an error
+        after the files are out, say) comes back as ``dialog`` with the
+        files found so far, not as a bare failure; close it before the
+        next call.
+
         Args:
             container_name: Name of the output container to execute
             outjob_path: Path to the .OutJob file. If omitted, uses the
@@ -1338,11 +1877,100 @@ def register_project_tools(mcp):
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
             params["outjob_path"] = outjob_path
+            busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
+            if busy:
+                return {"success": False, "container_name": container_name,
+                        "files_in_use": busy, "reason": (
+                            "these outputs are open in another program (a PDF "
+                            "viewer?), and Altium stops with an Error dialog when "
+                            "it cannot overwrite one: close them and run again. "
+                            "Nothing was run.")}
         started_at = _time.time()
-        result = await bridge.send_command_async(
-            "project.run_outjob", params, timeout=120.0
-        )
+        result = await _send_run(bridge, params, 120.0)
         return _judge_outjob_run(result, started_at, fresh_window_seconds)
+
+    def _locked_outputs(output_dir):
+        """Files in a container's output folder another program holds
+        open, so that Altium cannot overwrite them. A second run of a
+        take's OutJob stopped on an Altium "Error" modal naming the
+        Fabrication.pdf the first run wrote, still open."""
+        import os
+        from pathlib import Path
+
+        if not output_dir:
+            return []
+        busy = []
+        folder = Path(output_dir)
+        if not folder.is_dir():
+            return []
+        for path in folder.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                fd = os.open(str(path), os.O_RDWR | os.O_APPEND)
+                os.close(fd)
+            except PermissionError:
+                busy.append(str(path))
+            except OSError:
+                pass
+            if len(busy) >= 20:
+                break
+        return busy
+
+    async def _send_run(bridge, params, timeout):
+        """One container run. A dialog Altium raises during or after the
+        run comes back as a reply to judge, not an exception: the output is
+        often written already (a NullReference error after a full Gerber
+        set, 2026-10-21), and only the folder can say so."""
+        from ..bridge.exceptions import AltiumTimeoutError
+
+        try:
+            return await bridge.send_command_async(
+                "project.run_outjob", params, timeout=timeout)
+        except AltiumTimeoutError as exc:
+            dialogs = (exc.details or {}).get("dialogs")
+            if not dialogs:
+                raise
+            outjob = params.get("outjob_path", "")
+            return {
+                "process_issued": True,
+                "container_name": params["container_name"],
+                "output_dir": _outjob_output_dir(
+                    outjob, params["container_name"]) if outjob else "",
+                "outjob_path": outjob,
+                "dialog": dialogs.get("summary", ""),
+                "dialog_message": [line for d in dialogs.get("dialogs", [])
+                                   for line in d.get("message", [])][:6],
+            }
+
+    def _outjob_output_dir(outjob_path, container_name):
+        """The container's output folder, read from the OutJob as the
+        handler reads it: the medium's index J in its OutputGroup picks
+        OutputBasePathJ in PublishSettings, relative to the OutJob."""
+        import configparser
+        from pathlib import Path
+
+        ini = configparser.ConfigParser(interpolation=None, strict=False)
+        ini.optionxform = str
+        try:
+            ini.read(outjob_path, encoding="utf-8-sig")
+        except (OSError, configparser.Error, UnicodeDecodeError):
+            return ""
+        for section in ini.sections():
+            if not section.startswith("OutputGroup"):
+                continue
+            j = 1
+            while ini.has_option(section, f"OutputMedium{j}"):
+                if ini.get(section, f"OutputMedium{j}") == container_name:
+                    rel = ini.get("PublishSettings", f"OutputBasePath{j}",
+                                  fallback="")
+                    if not rel:
+                        return ""
+                    base = (Path(rel) if len(rel) >= 2 and rel[1] == ":"
+                            else Path(outjob_path).parent / rel)
+                    return str(base) + "\\"
+                j += 1
+        return ""
 
     # Shared by the three OutJob tools, so they cannot disagree about what
     # "produced" means. Defined after proj_run_outjob in this scope, which
@@ -1392,8 +2020,25 @@ def register_project_tools(mcp):
         out["files_written"] = len(fresh)
         out["written"] = fresh[:50]
         out["success"] = bool(fresh)
+        if run.get("dialog"):
+            out["reason"] = (
+                f"Altium raised a dialog during the run and the bridge "
+                f"stopped waiting: {run['dialog']}. "
+                + (f"{len(fresh)} file(s) were written under {out_dir} "
+                   f"anyway. " if fresh else
+                   "Nothing new was found in the output folder. "
+                   if out_dir else
+                   "Pass outjob_path so the output folder can be checked. ")
+                + "Close the dialog (app_list_open_dialogs) before the "
+                  "next call")
+            return out
         if not fresh:
-            if not out_dir:
+            if run.get("outjob_active") is False:
+                out["reason"] = (
+                    "the container ran, but the OutJob was not the active "
+                    "document, and Altium writes nothing then. Make it "
+                    "active with app_set_active_document and run again")
+            elif not out_dir:
                 out["reason"] = (
                     "the container ran, but the OutJob gives it no output "
                     "path, so there was no folder to check and no file is "
@@ -1463,9 +2108,14 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-            run = await bridge.send_command_async(
-                "project.run_outjob", params, timeout=300.0,
-            )
+                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                if busy:
+                    per_container.append({
+                        "container": name, "ok": False, "files_in_use": busy,
+                        "reason": "outputs open in another program; close them "
+                                  "and run again (not run)"})
+                    continue
+            run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
             out_dir = judged.get("output_dir")
@@ -1482,13 +2132,19 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files if include_files else [],
             }
-            if not entry["ok"]:
+            if not entry["ok"] or judged.get("dialog"):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
+            # A dialog blocks every later run; stop and say so.
+            if judged.get("dialog"):
+                break
 
         produced = [r for r in per_container if r["ok"]]
+        names = [c.get("name") if isinstance(c, dict) else str(c)
+                 for c in containers]
         return {
             "ok": bool(produced),
+            "not_run": names[len(per_container):],
             "containers_with_output": len(produced),
             "reason": "" if produced else (
                 "no container wrote a file under its output_dir; each "
@@ -1559,9 +2215,14 @@ def register_project_tools(mcp):
             params: dict[str, Any] = {"container_name": name}
             if outjob_path:
                 params["outjob_path"] = outjob_path
-            run = await bridge.send_command_async(
-                "project.run_outjob", params, timeout=300.0,
-            )
+                busy = _locked_outputs(_outjob_output_dir(outjob_path, name))
+                if busy:
+                    per_container.append({
+                        "container": name, "ok": False, "files_in_use": busy,
+                        "reason": "outputs open in another program; close them "
+                                  "and run again (not run)"})
+                    continue
+            run = await _send_run(bridge, params, 300.0)
             judged = _judge_outjob_run(run, started_at, fresh_window_seconds)
             judged = judged if isinstance(judged, dict) else {}
             out_dir = judged.get("output_dir")
@@ -1579,15 +2240,42 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files,
             }
-            if not entry["ok"]:
+            if not entry["ok"] or judged.get("dialog"):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
+            # A dialog blocks every later run, and the extras too.
+            if judged.get("dialog"):
+                return {
+                    "ok": False,
+                    "reason": ("stopped at " + name + ": "
+                               + entry.get("reason", "")),
+                    "outjob_path": outjob_path,
+                    "containers_run": [r["container"] for r in per_container],
+                    "not_run": [c.get("name") if isinstance(c, dict) else str(c)
+                                for c in containers][len(per_container):],
+                    "results": per_container,
+                    "extras": {},
+                    "all_files": sorted(set(all_files)),
+                }
 
         extras: dict[str, Any] = {}
         if include_step:
-            extras["step"] = await bridge.send_command_async(
-                "project.export_step", {}, timeout=120.0
-            )
+            # Next to the other outputs, named after the board in front,
+            # through proj_export_step, which answers the exporter's
+            # dialogs; the bare command waits on them forever.
+            import os
+            front = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            board = (front or {}).get("file_path") or ""
+            out_dir = next((r["output_dir"] for r in per_container
+                            if r.get("output_dir")), "")
+            if board and out_dir:
+                stem = os.path.splitext(os.path.basename(board))[0]
+                extras["step"] = await proj_export_step(
+                    os.path.join(out_dir, stem + ".step"), overwrite=True)
+            else:
+                extras["step"] = {"ok": False, "reason": (
+                    "no board in front or no output folder to put it in")}
         if include_dxf:
             extras["dxf"] = await bridge.send_command_async(
                 "project.export_dxf", {}, timeout=120.0
@@ -2110,6 +2798,86 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_get_erc_levels(
+        match: str = "",
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """The project's ERC report level for every violation type (Project
+        Options > Error Reporting): no_report, warning, error or fatal.
+
+        Args:
+            match: only types whose description contains this text, e.g.
+                "multiple names" or "driving source".
+            project_path: the .PrjPcb; default the focused project.
+
+        Returns:
+            ``levels``: [{kind, description, level}], and ``count``.
+        """
+        params: dict[str, Any] = {"match": match}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        return await bridge.send_command_async("project.get_erc_levels", params,
+                                               timeout=30.0)
+
+    @mcp.tool()
+    async def proj_set_erc_levels(
+        levels: dict[str, str],
+        project_path: Optional[str] = None,
+        save: bool = True,
+    ) -> dict[str, Any]:
+        """Set ERC report levels (Project Options > Error Reporting).
+
+        A project's policy, not a way to a clean ERC. Before turning a
+        check off because it reports something that is not there, look for
+        a stale compile: Altium keeps a document's state until it is
+        reopened, so a resized or redrawn sheet can report "Off sheet" or
+        duplicates that are gone (sch_set_sheet_size and sch_draw_template
+        reopen the sheet; proj_force_recompile recompiles). A demo take
+        switched "Off sheet" off for exactly that, hiding the check for
+        every later sheet.
+
+        Args:
+            levels: {violation type: level}. A type is its exact description
+                as proj_get_erc_levels lists it ("Nets with multiple names")
+                or its kind number; a level is no_report, warning, error or
+                fatal. Example: {"Nets with no driving source": "no_report"}.
+            project_path: the .PrjPcb; default the focused project.
+            save: save the project file afterwards so the setting persists.
+
+        Returns:
+            ``set``, ``failed`` and per item ``results`` with the level read
+            back (``problem`` when it did not take), and ``saved``.
+        """
+        if not levels:
+            return {"success": False, "error": "levels is empty"}
+        for kind, level in levels.items():
+            # Altium splits each item at its first '=' and items at '~~'.
+            if "~~" in str(kind) or "~~" in str(level) or "=" in str(kind):
+                return {"success": False,
+                        "error": f"{kind!r}: '~~' and '=' cannot appear in a type"}
+        params: dict[str, Any] = {
+            "levels": "~~".join(f"{k}={v}" for k, v in levels.items())}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        out = await bridge.send_command_async("project.set_erc_levels", params,
+                                              timeout=30.0)
+        if not isinstance(out, dict):
+            return out
+        out = dict(out)
+        out["saved"] = False
+        if save and out.get("set"):
+            target = project_path or out.get("project", "")
+            try:
+                reply = await bridge.send_command_async(
+                    "application.save_document", {"file_path": target}, timeout=60.0)
+                out["saved"] = bool(isinstance(reply, dict) and reply.get("saved"))
+            except Exception as exc:                          # noqa: BLE001
+                out["save_problem"] = str(exc)
+        return out
+
+    @mcp.tool()
     async def proj_force_recompile() -> dict[str, Any]:
         """Flush all dirty docs, invalidate the compile cache, and recompile.
 
@@ -2268,6 +3036,14 @@ def register_project_tools(mcp):
         BLOCKS on a modal dialog until a human clicks "Execute Changes"**.
         Do not call it in an unattended/headless run.
 
+        PREFER driving the same dialog yourself, which does not block the
+        bridge: ``app_click_menu("Design|Import Changes From
+        <Project>.PrjPcb", expect_dialog="Engineering Change Order")``,
+        then ``app_press_dialog_button("Execute Changes",
+        allow_irreversible=True)`` and "Close". Check the ECO lists the
+        PcbDoc before executing. ``app_list_open_dialogs`` reads the dialog
+        even while the bridge is blocked.
+
         The wait is BOUNDED (``wait_seconds``). It used to inherit the
         bridge's full 300 s heartbeat budget and then report the handler as
         stuck in an infinite loop, the wrong diagnosis, and it cost a
@@ -2338,6 +3114,13 @@ def register_project_tools(mcp):
             components_in_sync (component presence only), and
             dialog_outcome_verified; plus ``pad_net_verification`` (with
             ``pads_unbound``) when ``verify_pad_nets`` is set.
+            ``after_sync`` reads the board back against the schematic,
+            because which button was pressed is unknowable:
+            ``footprint_mismatch`` (the board's footprint is not the
+            schematic's), ``missing_on_board``, and ``diff_pairs_removed``
+            (pairs defined only on the board, which a sync deletes). A
+            footprint swap that "ran" twice and never reached the board
+            was previously caught only by eye.
             On a bounded-wait expiry: ``success:false`` with
             ``error.code == "ECO_DIALOG_BLOCKING"``, the dialog inventory,
             and the steps to clear it.
@@ -2370,6 +3153,7 @@ def register_project_tools(mcp):
             # AltiumBridge config object. Keep the wait bounded in that case.
             poll_window = min(5.0, max(1.0, float(wait_seconds)))
         extensions = max(1, int(round(float(wait_seconds) / poll_window)))
+        pairs_before = await _pair_names(bridge)
         try:
             result = await bridge.send_command_async(
                 "project.update_pcb", {},
@@ -2391,8 +3175,15 @@ def register_project_tools(mcp):
 
         if not isinstance(result, dict):
             return result
+        # Which button was pressed is unknowable, so read the board back
+        # against the schematic rather than trusting the dialog's outcome.
+        try:
+            result["after_sync"] = await _after_sync(bridge, pairs_before)
+        except Exception as exc:            # noqa: BLE001 - a report only
+            result["after_sync"] = {"error": f"not read: {exc}"}
         if verify_pad_nets:
             result["pad_net_verification"] = await _verify_pad_nets(bridge)
+
         return result
 
     @mcp.tool()

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Regression: a 125% desktop must not turn Tools into Reports."""
 import pytest
 from types import SimpleNamespace

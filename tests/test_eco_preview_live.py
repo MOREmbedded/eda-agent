@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """eng_eco_preview_live: builds eng_eco_preview's sch/pcb views from
 eda-agent's existing reads, tested against synthetic payloads shaped
 exactly like the documented bridge responses (project.get_bom,

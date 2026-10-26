@@ -31,6 +31,9 @@ _SHAPE_MAP = {
     "roundedrectangular": "roundrect",
     "roundrect": "roundrect",
     "octagonal": "roundrect",
+    # A custom outline has no KiCad primitive here: its bounding box, and
+    # the export tool names the pad so the caller knows.
+    "custom": "rect",
 }
 
 

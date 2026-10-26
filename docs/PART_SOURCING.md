@@ -245,8 +245,8 @@ Re-requesting a cached URL returns the stored copy without fetching.
 Two of the three providers publish KiCad format, so on the Altium side a hit
 would otherwise be a dead end. `lib_kicad_import` reads `.kicad_sym` and
 `.kicad_mod` and produces the same thing `lib_easyeda_import` does: with
-`target=altium`, an ordered plan of this server's own library tools, run by
-`design_execute_plan`. Altium's binary library formats are never synthesized.
+`target=altium`, an ordered plan of this server's own library tools, run
+tool by tool. Altium's binary library formats are never synthesized.
 
 The two importers share one neutral geometry model and one Altium emitter, so
 they cannot drift apart: a fix to pad shapes or arc handling lands in both. The

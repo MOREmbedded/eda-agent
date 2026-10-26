@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Typed errors. Every error carries a stable machine-readable code that is
 returned to MCP clients, written to the audit log and used by tests."""
 

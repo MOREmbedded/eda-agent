@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Footprint geometry from a datasheet land pattern.
 
 This generator implements the datasheet's RECOMMENDED LAND PATTERN exactly as

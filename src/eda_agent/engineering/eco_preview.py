@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Pre-ECO schematic vs. PCB comparison (components, footprints, nets).
 
 Complements core/eco_verify.py rather than overlapping it: eco_verify

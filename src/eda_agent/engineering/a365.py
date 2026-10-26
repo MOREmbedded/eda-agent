@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Altium 365 design data through the Nexar GraphQL API (read-only).
 
 Vendor facts used (support.nexar.com, Appendix A of the manual):

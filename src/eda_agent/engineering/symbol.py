@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Schematic symbol geometry generator.
 
 Produces a rectangle body with pins on a 100 mil grid. Pins with side=auto are

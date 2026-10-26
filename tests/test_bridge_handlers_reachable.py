@@ -66,6 +66,12 @@ KNOWN_UNREACHABLE = {
     # active board iterator. Even dry_run with max_tracks=10 wedges the
     # scripting loop on the first track. It needs a two-pass snapshot before
     # it can be exposed safely.
+    # Callers were the retired schematic layout engine (2026-10-20).
+    # get_sch_doc_pins covers the first; the second places designator
+    # and value text and is a candidate for the template drawer.
+    "get_sch_component_pins",
+    "set_sch_text_positions",
+    # Genuinely unexposed.
     "fillet_corners",
     # set_via_soldermask_relief, measure_distance and place_compile_mask
     # all used to sit here and are reachable in this tree, so they are

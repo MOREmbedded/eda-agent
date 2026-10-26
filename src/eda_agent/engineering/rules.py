@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Owner design-rule engine.
 
 Rulesets are JSON files in policy.rules_dir (one file per ruleset). The owner writes

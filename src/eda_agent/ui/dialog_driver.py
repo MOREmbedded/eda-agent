@@ -30,8 +30,10 @@ a PCB tool is the accident this whole package exists to avoid.
 
 from __future__ import annotations
 
+import functools
 import time
 
+from . import altium_locale as locale
 from . import dialog_report as report
 from . import windows as win
 
@@ -97,7 +99,11 @@ def is_answerable_confirmation(dialog: dict) -> bool:
         + list(dialog.get("message") or [])
         + list(dialog.get("ocr_text") or [])
     ).lower()
-    return not any(word in haystack for word in _IRREVERSIBLE_WORDS)
+    if any(word in haystack for word in _IRREVERSIBLE_WORDS):
+        return False
+    if not haystack.isascii():
+        return not any(word in haystack for word in _localised_irreversible())
+    return True
 
 
 def _article(word: str) -> str:
@@ -113,7 +119,9 @@ def role_of(caption: str) -> str | None:
     """What pressing this button means, or None if unrecognised.
 
     Longest phrase wins, so "validate changes" is not mistaken for the
-    "advance" role that a bare "next" would take.
+    "advance" role that a bare "next" would take. A caption with no
+    English role is looked up in Altium's own translations and in
+    Windows' message box captions, in whatever language either runs.
     """
     flat = _normalise(caption)
     best, best_len = None, 0
@@ -122,7 +130,58 @@ def role_of(caption: str) -> str | None:
             key = _normalise(phrase)
             if key and key in flat and len(key) > best_len:
                 best, best_len = role, len(key)
+    if best is None and flat:
+        best = _localised_roles().get(_normalise(locale.plain_caption(caption)))
     return best
+
+
+#: The exact English captions Altium gives each role's buttons, looked
+#: up in its translation files. Exact rather than the phrases above:
+#: translated captions are matched whole, because a one-character
+#: Chinese "否" (No) is contained in "是否", and containment would give
+#: a Yes/No question's text a role.
+_ALTIUM_CAPTIONS = {
+    "validate": ("Validate Changes",),
+    "commit": ("Execute Changes", "Apply"),
+    "advance": ("OK", "Yes", "&Next >", "&Finish", "Continue", "Next",
+                "Finish"),
+    "dismiss": ("Cancel", "No", "Close"),
+    "report": ("&Report Changes...", "Report Changes"),
+}
+#: Windows' MB_GetString names for the same roles.
+_WINDOWS_ROLES = {"ok": "advance", "yes": "advance", "continue": "advance",
+                  "cancel": "dismiss", "no": "dismiss", "close": "dismiss",
+                  "abort": "dismiss"}
+
+
+@functools.lru_cache(maxsize=1)
+def _localised_roles() -> dict:
+    """{normalised translated caption: role}, built once, on the first
+    caption English did not recognise."""
+    out: dict = {}
+    for name, text in locale.windows_captions().items():
+        role = _WINDOWS_ROLES.get(name)
+        if role and _normalise(text):
+            out.setdefault(_normalise(text), role)
+    for role, captions in _ALTIUM_CAPTIONS.items():
+        for english in captions:
+            for text in locale.all_captions_for(english):
+                key = _normalise(text)
+                if key:
+                    out.setdefault(key, role)
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _localised_irreversible() -> tuple:
+    """The irreversible words in every language Altium is installed in,
+    from its own captions for the commands that carry them."""
+    words = set()
+    for english in ("Delete", "Remove", "Discard", "Overwrite", "Erase",
+                    "Reset", "Replace All"):
+        words.update(t for t in locale.all_captions_for(english)
+                     if t and not t.isascii())
+    return tuple(sorted(words))
 
 
 def buttons_by_role(dialog: dict) -> dict:

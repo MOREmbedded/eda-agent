@@ -138,3 +138,17 @@ def test_the_pascal_cannot_fail_the_ping_over_it():
     body = text.split("Function App_Ping(", 1)[1].split(chr(10) + "End;", 1)[0]
     assert "Try" in body and "Except" in body
     assert "Ver := '';" in body
+
+
+def test_the_ping_says_which_folder_the_loop_serves(monkeypatch):
+    """Two script projects or two servers on one machine are told apart
+    by the folder each loop takes requests from (issue #94)."""
+    text = _PAS.read_text(encoding="utf-8", errors="replace")
+    body = text.split("Function App_Ping(", 1)[1].split(chr(10) + "End;", 1)[0]
+    assert '"workspace_dir":"' in body and "EscapeJsonString(WorkspaceDir)" in body
+    monkeypatch.setattr(app_mod, "get_bridge", lambda: _Bridge(
+        {"pong": True, "script_version": "2026.10.21.4",
+         "workspace_dir": r"C:\ws" + "\\"}))
+    out = asyncio.run(_tools()["app_ping"]())
+    assert out["loop_workspace_dir"] == r"C:\ws" + "\\"
+    assert "server_workspace_dir" in out

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Engineering tools adapted from the team's Altium AI Automation v3.1.0.
 
 The calculations are offline. Live IPC comparison reads a footprint through

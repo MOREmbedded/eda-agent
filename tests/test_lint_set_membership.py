@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Catch the set-membership syntax rejected by the live Altium compiler."""
 import importlib.util
 import sys

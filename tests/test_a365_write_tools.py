@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Altium 365 write tools (eng_a365_publish_model, eng_a365_release_component,
 eng_a365_update_parameters): Phase 4 of the Booster integration.
 

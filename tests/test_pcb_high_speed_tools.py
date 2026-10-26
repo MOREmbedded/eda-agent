@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Coverage for multilayer and controlled-impedance PCB helpers."""
 
 from __future__ import annotations

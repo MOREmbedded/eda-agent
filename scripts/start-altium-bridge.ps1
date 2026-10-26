@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 param(
     [string]$ScriptProject = (Join-Path $PSScriptRoot 'altium\Altium_API.PrjScr'),
     [string]$Procedure = 'Dispatcher.pas>StartMCPServer',

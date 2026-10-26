@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Application-level tools for Altium Designer MCP Server."""
 
+import functools
 import os
 import re
 import sys
@@ -11,9 +12,11 @@ from pathlib import Path
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
+from ..bridge.exceptions import AltiumCommandError
 from ..cli import get_bundled_scripts_path
 from .datasheet_hints import DATASHEET_RULES
 from ..atomicfile import replace_with_retry
+from .. import updates
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
@@ -56,6 +59,21 @@ def _get_ui_inspector():
         return get_altium_ui_inspector(bridge)
     except WindowsUiUnavailable as exc:
         raise AltiumNotRunningError(str(exc)) from exc
+def _reports_update(fn):
+    """Add ``update`` to a reply when the daily check found a newer
+    eda-agent, so a session hears of it from the tools it calls first.
+    Read from the last check only; never waits on the network."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        reply = await fn(*args, **kwargs)
+        try:
+            news = updates.notice()
+        except Exception:  # noqa: BLE001  news never breaks a ping
+            news = None
+        if news and isinstance(reply, dict):
+            reply["update"] = news
+        return reply
+    return wrapper
 
 
 def _bundled_script_version() -> Optional[str]:
@@ -166,6 +184,15 @@ def _unit_stamp_check(bridge: Any, loaded: Any) -> tuple[dict, list[str]]:
             f"this, not a code bug.")
     return {"unit_stamps": reported, "stale_units": stale,
             "unstamped_units": unstamped, "stamps_compared_with": str(folder)}, warnings
+
+
+def _server_workspace_dir() -> str:
+    """The folder this server writes its requests to, or '' unknown."""
+    try:
+        from ..config import get_config
+        return str(get_config().workspace_dir)
+    except Exception:                              # noqa: BLE001
+        return ""
 
 
 def _other_servers() -> tuple[list, Optional[str]]:
@@ -358,8 +385,87 @@ def register_meta_tools(mcp):
         return {"tool": name, "result": content}
 
 
+async def _run_declared_menu(bridge, menu_path: str) -> dict:
+    """Run a menu path through the command Altium's menu files give it.
+
+    The focused document picks the menu bar, because "Tools|Teardrops"
+    exists on a board and not on a schematic.
+    """
+    import asyncio
+
+    from ..safety import refuse_process
+    from ..ui import altium_menus
+
+    active = await bridge.send_command_async(
+        "application.get_active_document", {})
+    editor = str((active or {}).get("document_kind") or "").upper() \
+        if isinstance(active, dict) else ""
+    loop = asyncio.get_running_loop()
+    item = await loop.run_in_executor(
+        None, altium_menus.resolve, menu_path, editor)
+    if item is None:
+        near = await loop.run_in_executor(
+            None, lambda: altium_menus.nearest(menu_path, editor, 8))
+        return {"success": False, "dispatched": False,
+                "error": "UNMAPPED_MENU_PATH", "menu_path": menu_path,
+                "editor": editor or None,
+                "reason": (f"{menu_path!r} is not in the "
+                           f"{editor or 'focused'} editor's menus as Altium "
+                           f"declares them"),
+                "nearest": near}
+    refusal = refuse_process(item.command)
+    if refusal is not None:
+        return {"success": False, "dispatched": False,
+                "error": "REFUSED_BY_POLICY", "reason": refusal,
+                "menu_path": "|".join(item.path), "command": item.command}
+    params = "|".join(p.strip() for p in item.params.split("|") if p.strip())
+    params = "|".join("=".join(s.strip() for s in p.split("=", 1))
+                      for p in params.split("|") if p)
+    result = await bridge.send_command_async(
+        "generic.run_process", {"process": item.command, "params": params})
+    out = {"success": True, "dispatched": True, "outcome_verified": False,
+           "menu_path": "|".join(item.path), "editor": editor,
+           "command": item.command, "params": params,
+           "shortcut": item.shortcut or None,
+           "note": ("run through the command behind the menu item, with no "
+                    "menu walk; Altium does not report whether a process "
+                    "did anything, so read the result back")}
+    if isinstance(result, dict):
+        out["bridge"] = result
+    return out
+
+
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
+
+    @mcp.tool()
+    async def app_find_menu_command(query: str, editor: str = "",
+                                    limit: int = 20) -> dict[str, Any]:
+        """Search every Altium menu item and the command behind it.
+
+        Read from Altium's own menu definitions in its install, so it
+        answers without Altium's window, in any language Altium ships
+        (words may be English, 中文, 日本語, Deutsch, ...). Each hit gives
+        the menu ``path`` (English), the ``command`` and ``params`` it
+        runs, and its ``shortcut``. Run one with ``app_run_menu`` (no
+        menu walk) or ``app_click_menu`` (the real menu).
+
+        Args:
+            query: words to find, all of which must match.
+            editor: PCB, SCH, PCBLIB or SCHLIB; empty searches all four.
+            limit: how many hits to return.
+        """
+        import asyncio
+
+        from ..ui import altium_locale, altium_menus
+
+        loop = asyncio.get_running_loop()
+        hits = await loop.run_in_executor(
+            None, lambda: altium_menus.search(query, editor, limit))
+        install = altium_locale.install_dir()
+        return {"success": True, "query": query, "editor": editor or None,
+                "count": len(hits), "hits": hits,
+                "install": str(install) if install else None}
 
     @mcp.tool()
     async def app_get_status() -> dict[str, Any]:
@@ -395,6 +501,7 @@ def register_application_tools(mcp):
         return status
 
     @mcp.tool()
+    @_reports_update
     async def app_context() -> dict[str, Any]:
         """Where you are, in one call. Run this before anything else.
 
@@ -673,10 +780,17 @@ def register_application_tools(mcp):
         """
         saved: Optional[bool] = None
         save_error = ""
+        project_dir, project_file, err = await _resolve_project_dir()
+        if err:
+            return err
         if save_first:
+            # THE PROJECT BEING CHECKPOINTED, not the workspace. save_all
+            # wrote every open document, other projects' included, to
+            # snapshot one (issue #94 reports unrelated sheets rewritten).
+            # Both this and the path lookup above take the focused project.
             try:
                 await get_bridge().send_command_async(
-                    "application.save_all", timeout=60.0
+                    "project.save", {}, timeout=60.0
                 )
                 saved = True
             except Exception as exc:  # noqa: BLE001 - reported, not raised
@@ -687,9 +801,6 @@ def register_application_tools(mcp):
                 # protecting.
                 saved = False
                 save_error = str(exc)
-        project_dir, project_file, err = await _resolve_project_dir()
-        if err:
-            return err
         from pathlib import Path
         store = _checkpoint_store()
         info = store.create(Path(project_dir), project_file=project_file or "", label=label)
@@ -884,6 +995,7 @@ def register_application_tools(mcp):
         }
 
     @mcp.tool()
+    @_reports_update
     async def app_ping() -> dict[str, Any]:
         """Check that Altium and its bridge script answer, and that the
         running script is the version on disk. A mismatch or a non-empty
@@ -895,7 +1007,9 @@ def register_application_tools(mcp):
             ``bundled_script_version`` and ``bundled_script_path``,
             ``version_match``, ``altium_version``, ``message``,
             ``script_projects_open`` and ``script_location_match`` (False:
-            Altium loaded scripts from elsewhere), ``unit_stamps``,
+            Altium loaded scripts from elsewhere), ``loop_workspace_dir``
+            (the folder the answering loop takes requests from) and
+            ``server_workspace_dir`` (this server's), ``unit_stamps``,
             ``stale_units``, ``unstamped_units``, ``other_servers`` (other
             eda-agent servers on this workspace) and ``warnings``.
         """
@@ -975,6 +1089,10 @@ def register_application_tools(mcp):
             "altium_version": result.get("altium_version") or "",
             "script_projects_open": loaded if isinstance(loaded, list) else None,
             "script_location_match": location_match,
+            # Whose loop answered: the folder it polls, as the script
+            # reports it. Empty from a script older than 2026.10.21.
+            "loop_workspace_dir": result.get("workspace_dir") or "",
+            "server_workspace_dir": _server_workspace_dir(),
             **stamp_fields,
             "other_servers": servers,
             "warnings": warnings,
@@ -1057,12 +1175,15 @@ def register_application_tools(mcp):
         file_path: str,
         name: Optional[str] = None,
         add_to_project: bool = True,
-        project_path: Optional[str] = None,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Create a new blank document of a given kind and save it to disk.
 
         Saved to `file_path` and, by default, added to the focused
-        project.
+        project, or to ``project_path`` when given. With several projects
+        open, name the project: the focused one is whichever was clicked
+        last, and a scratch sheet added to a production project stays in
+        it. ``member_of`` reads back which projects now list the file.
 
         Args:
             kind: Document kind, 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
@@ -1071,18 +1192,23 @@ def register_application_tools(mcp):
             file_path: Absolute path where the new document should live.
                 Use Windows backslashes.
             name: Optional display name. Defaults to the filename.
-            add_to_project: Attach the new file to the focused project.
-                Default True. Set False to leave it as a free document.
-            project_path: Explicit project to attach to. Prefer this whenever
-                more than one project is open; it avoids focus ambiguity.
+            add_to_project: Attach the new file to a project. Default
+                True. Set False to leave it as a free document.
+            project_path: The .PrjPcb to attach it to. An unknown path is
+                refused before anything is created.
 
         The new document is focused, and ``focused`` says whether that
         took, since the next tool acts on the focused one. A save that
         fails is an error naming the cause.
 
+        A path that is already OPEN is refused (``ALREADY_OPEN``): creating
+        over an open document crashed Altium's PCB editor. Focus it with
+        app_set_active_document instead. A file that exists on disk but is
+        not open is replaced by the blank document.
+
         Returns:
             Dictionary with kind, file_path, saved, focused,
-            added_to_project.
+            added_to_project and member_of (project paths).
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -1240,8 +1366,20 @@ def register_application_tools(mcp):
         )
 
     @mcp.tool()
-    async def app_get_active_document() -> dict[str, Any]:
+    async def app_get_active_document(session: bool = False) -> dict[str, Any]:
         """Get information about the currently active (focused) document.
+
+        Several Claude sessions can share one Altium. Each command runs on
+        its own session's document (the last one it focused), which Altium
+        puts back in front first if anything else moved the focus. So by
+        default this answers what is REALLY in front, which may be another
+        session's document or one a person has just opened. To work on that
+        document, focus it (app_set_active_document); it then becomes this
+        session's.
+
+        Args:
+            session: True for this session's own document instead, brought
+                back to the front first if something else is there.
 
         Returns:
             Dictionary with active document information:
@@ -1254,23 +1392,46 @@ def register_application_tools(mcp):
             Returns empty dict if no document is active.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("application.get_active_document")
+        result = await bridge.send_command_async(
+            "application.get_active_document",
+            {} if session else {"front": "true"})
         return result
 
     @mcp.tool()
     async def app_set_active_document(file_path: str) -> dict[str, Any]:
-        """Set a specific document as the active (focused) document.
+        """Set a specific document as the active (focused) document,
+        opening it first when it is a file Altium has not loaded yet (a
+        member of a project just opened, say).
 
         Args:
             file_path: Full path to the document to activate
 
         Returns:
-            Dictionary with result of the operation
+            Dictionary with result of the operation; ``opened`` true when
+            the document had to be opened first.
         """
+        from ..bridge.exceptions import AltiumError
+
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "application.set_active_document", {"file_path": file_path}
-        )
+        opened = False
+        try:
+            result = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": file_path}
+            )
+        except AltiumError as exc:
+            # Measured: a demo run opened its project and then could not
+            # bring the board forward because no editor had loaded it.
+            if "not loaded" not in str(exc).lower() or not os.path.isfile(file_path):
+                raise
+            await bridge.send_command_async("application.run_process", {
+                "process_name": "WorkspaceManager:OpenObject",
+                "parameters": f"ObjectKind=Document|FileName={file_path}"})
+            opened = True
+            result = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": file_path}
+            )
+        if opened:
+            result = {"opened": True, **(result if isinstance(result, dict) else {})}
         if isinstance(result, dict):
             return {"success": True, "file_path": file_path, **result}
         elif result:
@@ -1323,11 +1484,13 @@ def register_application_tools(mcp):
         Use ``app_click_menu`` when the command must actually run; it
         clicks the real menu and fails on a path that does not exist.
 
-        Mapped paths: "File|Save All", "Tools|Design Rule Check",
-        "Tools|Electrical Rules Check", "Project|Compile", "Edit|Select
-        All", "Edit|Deselect All", "View|Zoom Fit", "Tools|Preferences",
-        "Tools|Extensions and Updates". Anything else is refused with
-        UNMAPPED_MENU_PATH.
+        Any path in the focused editor's menu bar works, in English or
+        in any language Altium ships: it is looked up in Altium's own
+        menu definitions (``app_find_menu_command`` searches them) and
+        the command behind it is run, with no menu walk and no focus
+        taken. The reply names the ``command`` and ``params`` used. A
+        path the install does not declare is refused with
+        UNMAPPED_MENU_PATH and the nearest matches.
 
         Args:
             menu_path: Menu path using pipe separators (e.g., "File|Save All")
@@ -1338,9 +1501,14 @@ def register_application_tools(mcp):
             parse is reported as a failure, not smoothed into a success.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "application.execute_menu", {"menu_path": menu_path}
-        )
+        try:
+            result = await bridge.send_command_async(
+                "application.execute_menu", {"menu_path": menu_path}
+            )
+        except AltiumCommandError as exc:
+            if getattr(exc, "code", "") != "UNMAPPED_MENU_PATH":
+                raise
+            return await _run_declared_menu(bridge, menu_path)
         # Report what the handler said, and nothing it did not say. The
         # previous ``{"success": True, **result}`` did preserve an
         # explicit ``success: false`` (the spread wins), but it INVENTED

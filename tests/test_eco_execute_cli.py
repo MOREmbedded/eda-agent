@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """eda-agent eco-execute: the CLI wrapper around the existing
 ui.dialog_driver.drive() reactive driver.
 

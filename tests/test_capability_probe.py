@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Capability discovery must work without starting Altium."""
 
 from pathlib import Path

@@ -321,29 +321,23 @@ def _stackup_ops(stk: Stackup, rec, notes: list[str]) -> list[dict]:
     for i, cu in enumerate(coppers):
         op: dict = {"layer": _altium_layer_name(i, len(coppers)),
                     "name": cu.name}
-        thick = int(round(cu.thickness_mils))
-        if thick >= 1:
+        # Altium keeps 1e-4 mil, so 1 oz copper (1.378 mil) goes over as is.
+        thick = round(cu.thickness_mils, 4)
+        if thick > 0:
             op["copper_thickness_mils"] = rec(thick)
         else:
-            notes.append(
-                f"{cu.name}: copper thickness {cu.thickness_mils} mil rounds "
-                f"below 1 mil; the wrapper takes integer mils, thickness not "
-                f"set")
+            notes.append(f"{cu.name}: copper thickness {cu.thickness_mils} "
+                         f"mil; not set")
         if i < len(coppers) - 1:
             span = spans[i]
             op["dielectric_type"] = span.kind
-            height = int(round(span.height_mils))
-            if height >= 1:
+            height = round(span.height_mils, 4)
+            if height > 0:
                 op["dielectric_height_mils"] = rec(height)
-                if abs(height - span.height_mils) > 1e-9:
-                    notes.append(
-                        f"{cu.name}: dielectric height "
-                        f"{span.height_mils} mil rounded to {height} mil "
-                        f"(wrapper takes integer mils)")
             else:
                 notes.append(
-                    f"{cu.name}: dielectric height {span.height_mils} mil "
-                    f"rounds below 1 mil; not set")
+                    f"{cu.name}: dielectric height {span.height_mils} mil; "
+                    f"not set")
             if span.er is not None:
                 op["dielectric_constant"] = rec(round(span.er, 3))
             if span.ply_count > 1:

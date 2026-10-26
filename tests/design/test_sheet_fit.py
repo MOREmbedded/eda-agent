@@ -4,20 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from eda_agent.design.pipeline import build_canvas_from_plan
 from eda_agent.design.sheet_fit import (ALTIUM_FRAMES, Box, altium_frame,
-                                        canvas_boxes, check_canvas,
                                         fit_report, next_size)
-from tests.design.test_pipeline import (_BASE_SYMBOLS, MockExtractor,
-                                        _basic_rc_plan)
-
-
-def _canvas():
-    result = build_canvas_from_plan(_basic_rc_plan(), MockExtractor(_BASE_SYMBOLS))
-    assert result.ok, result
-    return result.canvas
 
 
 def test_altium_frames_are_not_paper_sizes():
@@ -31,20 +19,6 @@ def test_families_grow_in_order_and_stop_at_the_top():
     assert next_size("A0") is None
     assert next_size("ANSI A") == "B"
     assert next_size("OrCAD B") == "ORCADC"
-
-
-def test_the_engine_layout_fits_its_sheet():
-    reports = check_canvas(_canvas())
-    assert reports and all(r["verdict"] == "fits" for r in reports), reports
-
-
-def test_a_part_past_the_border_is_found_and_shifted_back():
-    canvas = _canvas()
-    inst = canvas.instances[0]
-    canvas.instances[0] = replace(inst, x=inst.x + 20000)
-    (rep,) = check_canvas(canvas)
-    assert any(o["ref"] == inst.refdes for o in rep["outside"])
-    assert rep["verdict"] in ("shift", "enlarge")
 
 
 def test_a_drawing_too_wide_for_a4_enlarges_to_a3():
@@ -158,31 +132,6 @@ def test_template_family_swaps_the_size_token(tmp_path):
         "ANSI C.SchDot")
 
 
-def test_fit_canvas_shifts_the_whole_drawing_with_its_wiring():
-    from eda_agent.design.sheet_fit import fit_canvas, translate_sheet
-
-    canvas = _canvas()
-    sheet = canvas.sheets[0].name
-    translate_sheet(canvas, sheet, -9000, 0)        # push it off the left edge
-    before = {(w.x1, w.y1, w.x2, w.y2) for w in canvas.wires}
-    (act,) = fit_canvas(canvas)
-    assert act["verdict"] == "shift" and act["still_outside"] == 0
-    dx, dy = act["shifted"]
-    after = {(w.x1, w.y1, w.x2, w.y2) for w in canvas.wires}
-    assert {(a + dx, b + dy, c + dx, d + dy) for a, b, c, d in before} == after
-
-
-def test_fit_canvas_enlarges_within_the_family():
-    from eda_agent.design.sheet_fit import fit_canvas
-
-    canvas = _canvas()
-    inst = canvas.instances[-1]
-    canvas.instances[-1] = replace(inst, x=inst.x + 14000)    # far right
-    (act,) = fit_canvas(canvas)
-    assert act["enlarged_to"] in ("A3", "A2")
-    assert canvas.sheets[0].size == act["enlarged_to"]
-
-
 def test_a_shift_is_whole_grid_steps():
     # 150 past the left margin moves 200, so pins stay on the 100 mil grid.
     boxes = [Box("part", "U1", 50, 3000, 2050, 4000)]
@@ -242,10 +191,23 @@ def test_apply_enlarges_an_untemplated_sheet_then_rechecks():
         {"type": "rectangle", "label": "", "bbox": [10000, 500, 10600, 900]}]),
               frame_x=11500, frame_y=7600, sheet_style=0, template="")
     a3 = dict(a4, frame_x=15500, frame_y=11100, sheet_style=1)
+    sheet = r"C:\w\A.SchDoc"
     out, sent = _apply_audit({"generic.get_sheet_frame": [a4, a3],
-                              "generic.set_sheet_size": [{"success": True}]})
+                              "generic.set_sheet_size": [{"success": True}],
+                              "application.get_active_document": [{"file_path": sheet}],
+                              "application.save_document": [{"saved": True}],
+                              "application.close_document": [{"closed": True}],
+                              "application.run_process": [{"success": True}],
+                              "application.set_active_document": [{"success": True}]})
+    # The sheet is reopened after the size change: Altium's ERC keeps the
+    # old frame until it is.
     assert [c for c, _ in sent] == ["generic.get_sheet_frame",
                                     "generic.set_sheet_size",
+                                    "application.get_active_document",
+                                    "application.save_document",
+                                    "application.close_document",
+                                    "application.run_process",
+                                    "application.set_active_document",
                                     "generic.get_sheet_frame"]
     assert sent[1][1]["style"] == "A3" and out["verdict"] == "fits"
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Python-side coverage for document open/close/reload MCP tools."""
 
 from __future__ import annotations

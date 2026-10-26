@@ -100,12 +100,35 @@ def test_a_via_add_settles_the_footprint_like_every_other_add():
 def test_set_via_properties_sends_only_what_was_given(monkeypatch):
     tools, sent = _tools(monkeypatch)
     asyncio.run(tools["lib_set_via_properties"](
-        "C:/lib.PcbLib", 0, 0, units="mm", tenting_top=True, mask_expansion=0.1))
+        0, 0, library_path="C:/lib.PcbLib", units="mm", tenting_top=True,
+        mask_expansion=0.1))
     command, params, _ = sent[-1]
     assert command == "library.set_via_properties"
     assert set(params) == {"library_path", "x", "y", "units", "tenting_top",
                            "mask_expansion"}
     assert params["tenting_top"] == "true"
+
+
+def test_set_via_properties_defaults_to_the_focused_library(monkeypatch):
+    tools, sent = _tools(monkeypatch)
+    asyncio.run(tools["lib_set_via_properties"](
+        0, 0, stack_mode="simple", mask_manual=False, mask_from_hole_edge=True))
+    params = sent[-1][1]
+    assert "library_path" not in params
+    assert params["stack_mode"] == "simple"
+    assert params["mask_manual"] == "false"
+    assert params["mask_from_hole_edge"] == "true"
+
+
+def test_set_via_properties_refuses_contradictions_before_sending(monkeypatch):
+    tools, sent = _tools(monkeypatch)
+    before = len(sent)
+    for kwargs in ({"stack_mode": "full-stack"},
+                   {"stack_mode": "simple", "dia_mid": 20},
+                   {"mask_manual": False, "mask_expansion": 2}):
+        got = asyncio.run(tools["lib_set_via_properties"](0, 0, **kwargs))
+        assert got["success"] is False, kwargs
+    assert len(sent) == before
 
 
 def test_add_footprint_via_passes_the_library_path_only_when_given(monkeypatch):

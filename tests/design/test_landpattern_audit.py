@@ -92,7 +92,7 @@ def soic():
 
 ALL_CHECKS = ["pad_count", "numbering", "pin1", "pad_position", "pad_size",
               "terminal_coverage", "holes", "pitch", "span", "origin", "paste",
-              "mask", "courtyard", "silk", "assembly", "height"]
+              "mask", "courtyard", "silk", "assembly", "height", "pad_clearance"]
 
 
 @pytest.mark.parametrize("name", sorted(cases.ALL_CASES))

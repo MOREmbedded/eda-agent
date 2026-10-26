@@ -520,6 +520,22 @@ def register_pcb_calc_tools(mcp) -> None:
                               plating_mils)
 
     @mcp.tool()
+    async def pcb_calc_via_inductance(
+            plane_spacing_mils: float, via_diameter_mils: float,
+            return_spacing_mils: float) -> dict[str, Any]:
+        """Loop inductance a via adds between two planes, with its return.
+
+        A different question from pcb_calc_via_parasitics, which gives a
+        via in isolation and ignores the return path. Here the return is
+        named: a ground via or a plane-to-plane capacitor, measured
+        centre to centre from the signal via. Only the part inside the
+        interplane space; pads and traces add their own.
+        """
+        from ..engineering.pcb_calc import via_loop_inductance
+        return via_loop_inductance(plane_spacing_mils, via_diameter_mils,
+                                   return_spacing_mils)
+
+    @mcp.tool()
     async def pcb_calc_spiral_inductor(
             turns: float, outer_diameter_mils: float,
             inner_diameter_mils: float,

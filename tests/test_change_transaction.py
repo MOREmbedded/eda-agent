@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Offline tests for checkpoint-backed command transactions."""
 
 from __future__ import annotations

@@ -118,7 +118,10 @@ def test_bounds_the_wait_instead_of_inheriting_the_300s_ceiling(
 
     _run(tools["proj_sync_pcb"](wait_seconds=60, verify_pad_nets=False))
 
-    _, _, kwargs = bridge.calls[0]
+    # The sync reads the differential pairs before firing the ECO, so
+    # the ECO is no longer call 0; find it by name.
+    _, _, kwargs = next(c for c in bridge.calls
+                        if c[0] == "project.update_pcb")
     assert kwargs["timeout"] == 10.0
     # 60 s budget over a 10 s poll window = 6 extensions, not the default 30.
     assert kwargs["max_extensions"] == 6
@@ -262,7 +265,9 @@ def test_verification_can_be_switched_off(tools, monkeypatch):
     res = _run(tools["proj_sync_pcb"](verify_pad_nets=False))
 
     assert "pad_net_verification" not in res
-    assert [c[0] for c in bridge.calls] == ["project.update_pcb"]
+    # The pairs are read before the ECO and the board after it, so a
+    # sync that "ran" and never reached the board is caught.
+    assert "project.update_pcb" in [c[0] for c in bridge.calls]
 
 
 def test_verification_failure_is_reported_not_silently_passed(

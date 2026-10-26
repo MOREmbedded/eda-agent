@@ -64,18 +64,47 @@ def test_register_exposes_expected_tools() -> None:
         "design_get_discipline",
         "design_snapshot_inventory",
         "design_validate_plan",
-        "design_execute_plan",
+        "design_plan_from_sheet",
         "design_validate",
     }
+    # The automatic layout was retired (2026-10-20): a sheet is drawn
+    # from a hand template by sch_draw_template.
+    assert not set(tools) & {"design_execute_plan", "design_preview_plan",
+                             "design_layout_schematic",
+                             "design_hints_from_sheet",
+                             "design_learn_from_layout"}
 
 
 def test_get_discipline_returns_text_and_schema() -> None:
     tools = _registered_tools()
-    result = asyncio.run(tools["design_get_discipline"]())
+    result = asyncio.run(tools["design_get_discipline"](include_schema=True))
     assert "discipline" in result
     assert "schema" in result
     assert "Design Discipline" in result["discipline"]
     assert "DesignPlan" in result["schema"]["title"]
+
+
+def test_get_discipline_reply_fits_one_tool_result() -> None:
+    """Claude Code sets a reply over 50 KB aside in a file under the
+    user's profile and shows its path: 74,000 characters with the schema
+    sent twice, then 52.5 KB with it sent once. The schema is now asked
+    for, and the default reply stays well under the limit.
+
+    The margin below is 47 KB, not 50: the hard limit is what Claude Code
+    enforces, and this leaves about 3 KB for the rules to grow before
+    anyone has to choose what to cut. It was 45 KB until the upstream
+    merge of 2026-10-26 brought both forks' rules together and the text
+    reached 45,262 characters, still 4.7 KB inside the real limit.
+    """
+    import json
+
+    tools = _registered_tools()
+    result = asyncio.run(tools["design_get_discipline"]())
+    assert "DesignPlan JSON schema" not in result["discipline"]
+    assert "schema" not in result
+    assert len(json.dumps(result)) < 47_000
+    with_schema = asyncio.run(tools["design_get_discipline"](include_schema=True))
+    assert with_schema["schema"]["title"] == "DesignPlan"
 
 
 def test_validate_plan_accepts_valid_plan() -> None:
@@ -90,25 +119,6 @@ def test_validate_plan_rejects_invalid_json() -> None:
     result = asyncio.run(tools["design_validate_plan"](plan_json="not json"))
     assert result["ok"] is False
     assert any("invalid JSON" in e for e in result["errors"])
-
-
-def test_layout_schematic_runs_the_execution_engine() -> None:
-    # THE INVERSE OF WHAT THIS ONCE ASSERTED. design_layout_schematic used
-    # to run a second, standalone engine and had to warn that its score
-    # and placements were not what design_execute_plan would emit. There
-    # is one engine now, so the tool must say which: `engine` names the
-    # canvas pipeline, and `symbols` says whether the geometry was read
-    # from a library or synthesised, which is the only thing that still
-    # separates this from an exact emit.
-    tools = _registered_tools()
-    result = asyncio.run(tools["design_layout_schematic"](plan_json=_valid_plan_json()))
-    assert result["ok"] is True
-    assert result["engine"] == "canvas"
-    assert result["symbols"] in ("altium", "synthetic")
-    # Accurate exactly when real symbol geometry was available.
-    assert result["execution_accurate"] is (result["symbols"] == "altium")
-    assert not any("neat" in n.lower() for n in result["notes"]), (
-        "the retired engine must not be mentioned as if it still ran")
 
 
 def test_validate_plan_rejects_schema_failure() -> None:
@@ -126,21 +136,6 @@ def test_validate_plan_rejects_cross_check_failure() -> None:
     result = asyncio.run(tools["design_validate_plan"](plan_json=json.dumps(payload)))
     assert result["ok"] is False
     assert any("R99" in e for e in result["errors"])
-
-
-def test_execute_plan_rejects_invalid_json() -> None:
-    """Smoke check that the executor MCP tool surface validates input
-    before any Altium round-trip; a real round-trip is covered by the
-    executor unit tests via fake bridge."""
-    tools = _registered_tools()
-    result = asyncio.run(
-        tools["design_execute_plan"](
-            plan_json="not json",
-            project_path="C:\\fake.PrjPcb",
-        )
-    )
-    assert result["ok"] is False
-    assert any("invalid JSON" in n for n in result["notes"])
 
 
 # design.validate dispatches to the real bridge, covered by test_validator.py

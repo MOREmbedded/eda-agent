@@ -1,4 +1,4 @@
-# Release verification: 2026.10.25.2
+# Release verification: 2026.10.26.4
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -58,7 +58,7 @@ works elsewhere cannot be an undeclared identifier:
 | 28, simulation run | `AddStringParameter` with `ObjectKind=Simulator` | yes, `Proj_UpdatePCB` | medium, a process run rather than a write |
 | 28, results saved | `SetFileName`, `DoFileSave` on the results document | yes, `App_CreateDocument` | low |
 | 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | no, nowhere | highest, and it can stop the loop |
-| 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | no, nowhere | high, and it can stop the loop |
+| 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | high, and it can stop the loop |
 | 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `PCB_SetViaSoldermaskRelief`, on a via's cache | medium, a library pad is new |
 | 29, non-plated hole | `Plated` on a library pad | read in `PCB.pas`, written nowhere else | medium |
 | 29, pad paste expansion | `PasteMaskExpansion`, `PasteMaskExpansionValid`, `SetState_Cache` | yes, `PCB_MakePasteGrid` | low, but now on a library pad |
@@ -77,8 +77,8 @@ works elsewhere cannot be an undeclared identifier:
 | 33, DbLib part | `CurrentPartID` on a placed DbLib part | yes, `SetSchProperty` | low |
 | 33, pad designator | `Name` on a pad, through the generic setter | yes, `PCB_RenumberPads` | low |
 | 33, poll timer | `Enabled` on the poll timer, read back after arming | yes, `StartMCPPump` writes it | low |
-| 34, 3D body opacity | `BodyOpacity3D` on a component body | no, nowhere | high, a wrong member name stops the loop; used by several scripts in reference/ |
-| 34, slot rotation | `HoleRotation` written on a library pad | no, nowhere | medium, read on the board side already |
+| 34, 3D body opacity | `BodyOpacity3D` on a component body | yes, `AddExtrudedBody`, on a new extruded body | high, a wrong member name stops the loop; used by several scripts in reference/ |
+| 34, slot rotation | `HoleRotation` written on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | medium, read on the board side already |
 | 34, pad copper centre | `BoundingRectangle` on a library pad | yes, `BuildViolationJson`, on any primitive | low |
 | 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
 | 34, arc mirror | `StartAngle`, `EndAngle` written on a placed arc | yes, `Lib_AddSymbolArc` | low |
@@ -91,13 +91,13 @@ works elsewhere cannot be an undeclared identifier:
 | 36, settle after an add | `SetState_CurrentComponent` on the footprint already current | yes, `Lib_Link3DModel` | low, ran after all eight add kinds and survived save and restart |
 | 36, modify bracket | `BeginModify`, `EndModify` round an obj_modify write and a placed body's move | yes, `PCB_SetTrackWidth` | low |
 | 36, mask sides | `UseSeparateExpansions`, `SolderMaskBottomExpansion` on the pad cache | yes, `Lib_SetPadProperties` | medium, missing from the API reference; read and written live on pads and vias |
-| 36, via hole edge | `SolderMaskExpansionFromHoleEdge` written on a via | no, nowhere | high, the expansion assigned straight onto a via faults (measured again); this member and the cache route did not |
+| 36, via hole edge | `SolderMaskExpansionFromHoleEdge` written on a via | only by `PCBGeneric.pas`, through the pad cast, itself new | high, the expansion assigned straight onto a via faults (measured again); this member and the cache route did not |
 | 36, mechanical enabled | `MechanicalLayerEnabled` read on a library layer | yes, `Lib_GetMechLayers` | low |
 | 36, rule gap | `Gap` read on a typed clearance rule | yes, `PCB_SetRuleProperties` | low |
 | 36, designator mirror | `Location` written on a placed designator | yes, `SetSchProperty` | low |
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
-| 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | no, nowhere | low, written and read back live both ways; dropped silently unless the mask is manual |
+| 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | yes, `PCB_SetViaTenting` | low, written and read back live both ways; dropped silently unless the mask is manual |
 | 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
 | 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
 | 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
@@ -106,6 +106,27 @@ works elsewhere cannot be an undeclared identifier:
 | 37, pin text | `Name_FontMode`, `Name_CustomFontID`, `Name_CustomColor`, `Designator_FontMode`, `Designator_CustomFontID`, `Designator_CustomColor` on a pin | no, nowhere | medium, read live; the writes are not run live |
 | 38, bottom-side placement | `Layer` on a placed component, through `PCB_FlipComponent` | yes, `PCB_FlipComponent` is in daily use | low to declare, but the failure it fixes is SILENT: a mirrored footprint looks placed |
 | 28, layer thickness | `CopperThickness`, `DielectricHeight`, now from `StrToFloatDef` and `MilsToCoordF` | yes, `PCB_ModifyLayer` wrote both already | low to declare, but it fixes a SILENT failure |
+| 39, polygon pour settings | `Grid`, `TrackSize`, `MinTrack`, `ArcApproximation`, `NeckWidthThreshold`, `IslandAreaThreshold`, `PolyHatchStyle`, `PourOver`, `UseOctagons` on a polygon | only by `PCBGeneric.pas`, itself new | low, read and written back live on AD 26.11 |
+| 39, keepout restrictions | `IsKeepoutForCopper`, `IsKeepoutForTrack`, `IsKeepoutForVia`, `IsKeepoutForSMDPad`, `IsKeepoutForTHPad` | only by `PCBGeneric.pas`, itself new | low, written and read back live on keep-out tracks |
+| 39, primitive net | `AddPCBObject` on a net | yes, `BindPrimitiveToNet` | low |
+| 39, region arcs | `ShapeSegmentCount`, `UpdateContourFromShape` on a board region | yes, `Lib_AddFootprintRegions` | low |
+| 39, entry font | `TextFontID` on a sheet entry | no, nowhere | low, read and written back live on AD 26.11 |
+| 39, display mode | `DisplayMode` on a placed part | yes, `Library.pas`, on a library part | low, refused out of range and written live |
+| 39, pin map | `MapAsString` on a footprint model | no, nowhere | low, written, read back and restored live |
+| 39, footprint choice | `IsCurrent` on a placed part's footprint model | yes, `Library.pas` | medium, not yet run on a part with several models |
+| 38, stack-up apply | `CopperThickness`, `DielectricHeight`, `DielectricConstant`, `DielectricType` on a board layer | yes, `PCB_ModifyLayer` | low, the same writes pcb_modify_layer makes, each read back |
+| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `Lib_Link3DModel` and `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
+| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | no, nowhere | low, signature measured live from the saved record; the rotations passed are the saved file's |
+| 40, model reassigned | `Model` assigned back to a STEP body after SetState | yes, `Lib_Link3DModel`, on a body just created | low, it is what makes the Z offset save, measured live |
+| 40, body height | `OverallHeight` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
+| 40, body opacity | `BodyOpacity3D` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
+| 40, body layer | `Layer` written on a library 3D body | yes, `Lib_MoveBodiesToLayer` | low |
+| 41, symbol parts | `SetState_CurrentSchComponentAddPart`, `SetState_CurrentSchComponentRemovePart` on the library | no, nowhere | medium, each step read back; ran live both ways |
+| 41, display modes | `SetState_CurrentSchComponentAddDisplayMode`, `SetState_CurrentSchComponentRemoveDisplayMode` on the library | no, nowhere | medium, each step read back; ran live both ways |
+| 41, part to remove | `CurrentPartID`, `DisplayMode` written on a library symbol | yes, `Lib_CreateSymbol` | low |
+| 41, model to STEP | `ExportToStep` on a 3D model | no, nowhere | medium, writes a file only; ran live |
+| 41, board STEP | `Board3DModelExporter`, `ExportBoard3DModel` | no, nowhere | medium, writes a file only; ran live, and the dialog route stays behind it |
+| 41, impedance profiles | `GetImpedanceProfileCount`, `GetImpedanceProfileByIndex`, `GetTraceImpedanceByIndex`, `CalculatedImpedance` | no, nowhere | high for the per-profile reads, not yet run on a board with a profile; each read is guarded |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -281,7 +302,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.25.2`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.4`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -1935,6 +1956,12 @@ Scratch documents only.
    report's modified time is now. If the second run reads false, check
    that Create Report File is ticked in the checker before suspecting
    the code.
+   Then `pcb_run_drc` with no arguments: no dialog appears
+   (`app_list_open_dialogs` reads none), `mode` "batch", `drc_confirmed`
+   true, `report_path` in the bridge workspace, the focus unchanged, and
+   the report's Rule Violations total equals `violation_count`. Recorded
+   2026-10-23 on AD 26.11.1.5, scratch board: 0.45 s, 3 violations
+   (Un-Routed Net), report 14 KB HTML.
 2. **Managed (Workspace) placement.** Needs a signed-in Workspace and
    an open sheet that already carries one managed part, since the
    Workspace name is read off open sheets. `lib_get_vault_name`:
@@ -2018,6 +2045,18 @@ documents only.
     ProcName form `Dispatcher.pas>StartMCPServer` is the one Altium's own
     menu files use; if the script does not start, record what Altium
     showed.
+11. **Several sessions.** Two sessions, A on a scratch board and B on a
+    scratch library. B focuses its library; A then reads its board's
+    nets without focusing anything: A's reply carries
+    `session_document.restored` naming the board, and the nets are the
+    board's. Click a third document by hand, then call a tool from A: the
+    board comes back. `app_get_active_document` from B answers what is
+    really in front; with `session=true` it brings the library back.
+    Close A's board and call A again: `session_document.missing`, and the
+    command runs on what is in front. Then, with both sessions sending
+    reads, run `eda-agent relaunch --restart`: neither session reports a
+    timeout, the trace shows `POLL_QUEUED ... restart`, and a session
+    whose server started before the deploy gets `server_outdated` once.
 
 Offline only, already covered by tests: the wheel carries the EasyEDA
 extension source and `eda-agent easyeda-extension path|build` finds or
@@ -2275,6 +2314,174 @@ took 6.6 s and saved the file, while two symbols created earlier in the
 session were found in 0.05 s without a save. Item 1 left one open copy; before the fix the same steps left two
 and the pad was "not found". Items 2 and 3 were also read with the flag
 written back the other way. Nothing here was saved and reopened.
+
+## 38. Fab stack-ups, applied and checked
+
+New: `pcb_check_stackup` and `pcb_apply_stackup_template`, over the
+stack-ups in `design_list_stackups` (JLCPCB's 36, parsed from its
+impedance page). No script change: both use `pcb.get_layer_stackup` and
+`pcb.modify_layer`, which already reads every field back. Use a scratch
+4-layer board and make sure it is the only board open, since both act on
+the board Altium resolves as current.
+
+1. **Dry run.** `pcb_apply_stackup_template template=JLC04161H-7628A`:
+   four calls, the top gap 11.59 mil (0.218 + 0.0764 mm summed) with Dk
+   4.27, and the board unchanged (`pcb_get_layer_stackup` before and after).
+2. **Apply.** The same with `dry_run=false`: `changed` names all four
+   layers, `not_changed` is empty, and `pcb_check_stackup` with the same
+   template reports `matches: true`.
+3. **A real difference.** `pcb_check_stackup template=JLC04161H-3313`:
+   findings for the dielectric heights and Dk, each with the board's and
+   the template's value.
+4. **Wrong count.** On a 2-layer scratch board, apply refuses naming the
+   Layer Stack Manager, and check reports one copper-count finding.
+
+Not yet run live: the documents open on the test machine at the time
+included unsaved boards that were not ours to risk.
+
+## 39. Property layer, decimal mils, fonts and footprint models
+
+Run live on AD 26.11 with the script build before step 40 on a scratch copy of a two-layer
+round board project, pinging after every step. All passed.
+
+1. **Polygon pour settings (#125).** `obj_query` on `polygon` reads Grid
+   20, TrackSize 8, MinTrack 3, ArcApproximation 0.5, NeckWidthThreshold
+   5, IslandAreaThreshold 2500, PolyHatchStyle 5, PourOver 1, PourIndex,
+   Poured. Grid 5.5, IslandAreaThreshold 1234.5 and a new Name write and
+   read back; PourOver 3 is refused and unchanged.
+2. **Keepout restrictions (#131).** The five restrictions read true on the
+   board-outline keep-out tracks and arcs; IsKeepoutForTrack false, then
+   true, on six tracks; asked of 279 vias the read is blank and the loop
+   stays up.
+3. **Region arcs and net (#119, #126).** `pcb_place_region` with one
+   vertex swept 180 degrees reports `arc_edges` 1 and the shape read back;
+   Net=GND joins the GND net, Net=NO_SUCH_NET is refused, Net= leaves it
+   on no net.
+4. **Decimal corners (#124, #130).** `pcb_place_polygon_rect` at
+   20000.25, 20000.5 to 20960.6299, 20500.75 reads those bounds back
+   exactly.
+5. **Footprint selection (#120).** `lib_select_footprint_primitives` on a
+   PcbLib footprint selects one pad by name, two pads by type, and clears
+   with a set that matches nothing.
+6. **FontId gate.** FontId reads on net labels, power objects, parameters
+   and designators; on wires, pins and components it is reported
+   unreadable instead of raising. On a sheet entry FontId is refused and
+   `TextFontId` reads 1, writes 12 and reads 12.
+7. **Display mode and pin map.** A one-mode part refuses DisplayMode 1 and
+   takes 0. FootprintPinMap reads "(1:1),(2:2)", takes "1:2;2:1" and reads
+   "(1:2),(2:1)", takes the original back, and refuses "1-2".
+8. **Footprint by name.** A placement naming a model the symbol lacks is
+   placed on the library's model and listed in `footprint_issues` with the
+   model it carries; naming that model in lower case counts in
+   `footprints_chosen`; the Footprint key on the placed part is applied
+   through the choice, not a rename.
+9. **One path spelling.** WorkspaceManager:OpenObject with a forward-slash
+   FileName for an open SchLib leaves one copy open (22 documents before
+   and after).
+
+Not run live: a part with several PCB models (the scratch library's parts
+carry one each), so the clear-then-set order and the restore after a
+failed choice are covered only by the source checks.
+
+---
+
+## 40. Editing a 3D body already in a footprint
+
+New: `lib_set_3d_body`. `lib_link_3d_model` writes a body's standoff only
+while it creates the body, so correcting one meant deleting the body and
+linking the model again. This reads, and optionally changes, the standoff,
+OverallHeight, BodyOpacity3D and Layer of the bodies in one footprint, in
+place, inside a modify bracket.
+
+Field report behind it, AD 26.10.1.5: a STEP model whose origin is at its
+mid-height was linked with `offset_z=25.59` (0.65 mm). `applied` reported
+`standoff_height` true, yet the model was seen sitting with its middle on
+the board.
+
+**What the live run found, and changed.** A STEP body ignores its own
+`StandoffHeight`. Written by script and saved, it read back 25.5906 mil
+from Altium and from the file, and the Properties panel still showed
+Standoff Height 0 mm. The panel's value is the model's `MODEL.3D.DZ` in
+the saved record, which nothing had written. That explains the field
+report. `IPCB_Model.SetState` was then measured on a scratch copy: writing
+`(10, 20, 30, 12 mil)` and saving put `ROTX=10`, `ROTY=20`, `ROTZ=30`,
+`DZ=12mil` in the record, so the signature is `SetState(RotX, RotY, RotZ :
+Double; Dz : TCoord)`, and only `Body.Model := Model` after it makes it
+save. `IPCB_Model.Rotation` reads the 2D rotation (0 with 10/20/30 set),
+and no getter for the 3D ones is known. So on a STEP body (`ModelType` 1)
+`standoff_height` now writes the model's Z offset with the rotations the
+SAVED file holds, read by `pcblib_models.saved_body_models`. In the test
+library most STEP models sit at a non-zero rotation (90/0/90, -90/180/0),
+so writing zeros there would have tipped them over. A body whose saved
+record is missing, or names another model file, or a footprint whose
+saved body count differs, is listed in `skipped` and left alone. A
+library path that is not a file is refused before Altium sees it: asked
+to open one, Altium opens a new, empty library under that name.
+
+1. **Read.** `lib_set_3d_body footprint_name=<fp> library_path=<lib>` on a
+   footprint with one body: `changed` 0, `before` equals `after`, and
+   `saved_bodies` gives the model's Z offset and rotations as saved.
+2. **STEP standoff.** `standoff_height=0.5 units=mm` on a STEP body with a
+   rotation: `model_z_offset_written` [1]. Save, read again:
+   `saved_bodies` reads the new Z offset and the same rotations, and the
+   panel's Standoff Height shows 0.5 mm.
+3. **Other standoff.** On an extruded body: the body's own
+   `standoff_height_mils` changes and nothing is written to a model.
+4. **Opacity and layer.** `opacity=0.5 layer=Mechanical15`: the panel
+   shows 50% and the body is on Mechanical15. `opacity=50` and
+   `layer=TopLayer` are refused.
+5. **Unsaved footprint.** On a STEP body of a footprint copied and not
+   saved: `skipped` names it, `changed` 0; with `opacity` as well,
+   `changed` 1 and the standoff still skipped.
+6. **Missing library.** A `library_path` that is not a file: refused, and
+   no document opens.
+7. **Index.** `body_index=2` on a one-body footprint is refused with
+   `NO_BODY`.
+
+Run live on AD 26.11.1.5 with 2026.10.25.7 on a scratch copy of a working
+PcbLib, pinging after every step. All passed: 1 on SOT-23-3, 8-SOIC and
+C0603; 2 on 6-TSOP (Z offset 41.3386 to 19.685 mil, rotations 90/0/90
+kept), and on SOT-23-3 the panel and the 3D view were checked by eye;
+3 on QFN16_8TR8210 (0 to 7.874 mil); 4 on SOT-23-3, kept after save,
+close and reopen; 5 on a copy of 6-TSOP; 7 on SOT-23-3. Item 6 was run
+before the guard and opened an empty library; the guard is unit-tested.
+Not run: a footprint with several STEP bodies, which the test library
+lacks, so that the saved records list in the editor's order is assumed
+and only checked by model file name and body count.
+
+---
+
+## 41. Calls found in Altium's SDK interface assembly
+
+New: `lib_set_symbol_parts`, `lib_export_3d_model`,
+`pcb_get_impedance_profiles`, and a dialog-free first route in
+`proj_export_step`. Each call was found by reflecting Altium's
+`Altium.SDK.Interfaces.dll` (the HTML API reference lists none of them),
+then measured live before use. Measured and NOT used: `IPCB_Model.GetState`
+runs, but its four var parameters come back unchanged, so a script cannot
+read a STEP model's 3D rotations (step 40's file read stays).
+
+1. **Symbol parts.** `lib_create_symbol name=<sym> part_count=3`, pins on
+   parts 1 and 3, then `lib_set_symbol_parts part_count=5
+   display_mode_count=2`: 5 parts, 2 modes, `pins_removed` 0,
+   `complete` true. `part_count=2`: 2 parts, `pins_removed` 2 (part 3's).
+   `display_mode_count=1`: 1 mode. An unknown symbol is refused.
+2. **Model to STEP.** `lib_export_3d_model` on a footprint with one
+   embedded STEP model: `written` true, a valid STEP file. It is
+   Altium's Open CASCADE re-encoding (117 KB from a 268 KB original),
+   not the vendor's bytes. `body_index=2` is refused with `NO_BODY`.
+3. **Board STEP.** `proj_export_step` on a scratch board: `route`
+   `exporter`, `dialogs_answered` empty, a valid 7 MB STEP file in 17 s.
+   Again with `overwrite=True`: the same, and no dialog is left open.
+4. **Impedance profiles.** `pcb_get_impedance_profiles` on three boards:
+   `profile_count` 0, `read_errors` 0 on each.
+
+Run live on AD 26.11.1.5 with 2026.10.26.4 on scratch libraries and a
+scratch board (closed without saving), pinging after every step. All
+passed. Not run: item 4 on a board that HAS a profile (none of the three
+did), so the per-profile and per-layer reads are unmeasured and each is
+guarded; a symbol's added display mode drawn and placed; a linked rather
+than embedded model.
 
 ---
 

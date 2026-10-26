@@ -11,7 +11,7 @@ two failures in eight tight renames.
 That rate is survivable once and fatal in a loop. SymbolCache.put()
 rewrites its library cache file once per symbol, so a 38-symbol
 extraction made 38 attempts at the same target, and the unretried
-exception propagated out of design_execute_plan and killed the run.
+exception propagated out of the schematic run and killed it.
 
 The fix is one helper, because the sites disagree about what a FINAL
 failure means and that disagreement is the whole design: a cache entry
@@ -250,4 +250,4 @@ def test_the_symbol_cache_does_swallow_one():
         "the abandoned .tmp is left beside the cache file")
     assert not re.search(r"\braise\b", code), (
         "put() propagating again is the defect that killed a 38-symbol "
-        "design_execute_plan run")
+        "schematic run")

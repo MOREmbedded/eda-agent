@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """LTspice integration (Analog Devices LTspice 24, Windows).
 
 Command line (ADI LTspice reference, analogdevicesinc.github.io/ltspice-reference):

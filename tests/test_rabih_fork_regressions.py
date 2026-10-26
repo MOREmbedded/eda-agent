@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Regression coverage for multipart SchLib fixes recovered from RabihND."""
 
 from __future__ import annotations

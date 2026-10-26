@@ -38,7 +38,8 @@ Three axes:
     ``readonly``   queries / reads; no mutation.
     ``silent``     mutates, no dialog -- the loop stays responsive.
     ``modal``      pops a non-suppressible Altium dialog that BLOCKS the
-                   polling loop until a human clicks (see the bridge audit).
+                   polling loop until it is answered; answer it yourself
+                   with app_press_dialog_button (see the bridge audit).
     ``partial``    succeeds but leaves the job incomplete; a follow-up tool
                    is required to finish.
 """
@@ -105,10 +106,11 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_context", "app_detach", "app_get_active_document",
-    "app_get_version", "app_list_documents",
-    "app_restart_altium_bridge", "app_set_active_document",
-    "app_visual_context", "audit_find_missing_decoupling",
+    "app_checkpoint", "app_context", "app_detach",
+    "app_get_active_document", "app_get_version",
+    "app_list_documents", "app_restart_altium_bridge",
+    "app_set_active_document", "app_visual_context",
+    "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
     "eng_eco_preview_live", "lib_add_footprint_arc",
@@ -117,14 +119,15 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_add_pins", "lib_add_symbol_polygon",
     "lib_add_symbol_rectangle", "lib_add_symbol_text",
     "lib_batch_rename", "lib_batch_set_params",
-    "lib_create_footprint", "lib_create_ic_symbol",
-    "lib_create_standard_footprint", "lib_create_symbol",
+    "lib_create_3d_model", "lib_create_footprint",
+    "lib_create_ic_symbol", "lib_create_standard_footprint",
+    "lib_create_symbol", "lib_delete_footprint_primitives",
     "lib_diff_libraries", "lib_get_component_details",
     "lib_get_components", "lib_link_3d_model", "lib_link_footprint",
     "obj_batch_delete", "obj_batch_modify", "obj_create",
     "obj_delete", "obj_deselect_all", "obj_get_font_id",
     "obj_get_font_spec", "obj_modify", "obj_query",
-    "obj_run_process", "obj_select", "obj_zoom",
+    "obj_run_process", "obj_select", "obj_zoom", "obj_zoom_to_xy",
     "pcb_bind_pad_nets", "pcb_build_from_project",
     "pcb_create_nets_from_list", "pcb_get_board_outline",
     "pcb_get_board_statistics", "pcb_get_components",
@@ -198,24 +201,19 @@ _CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
 # design tools are the explicit exceptions in _DESIGN_BRIDGE below.
 _DESIGN_BRIDGE = frozenset(
     {
-        "design_execute_plan",
         "design_audit_schematic",
         "design_validate",
         "design_review_snapshot",
         "design_snapshot_inventory",
         "design_datasheet_checklist",
-        "design_learn_from_layout",
         "design_capture_snapshot",
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
-        # These three extract symbol geometry, or read the live sheet,
-        # over the bridge. Each CATCHES the failure and answers anyway,
-        # so with no Altium running they return a degraded result rather
-        # than an error, and calling them offline is what sends somebody
-        # to rely on that result.
-        "design_preview_plan",
-        "design_hints_from_sheet",
+        # Reads the live sheet over the bridge. It CATCHES the failure
+        # and answers anyway, so with no Altium running it returns a
+        # degraded result rather than an error, and calling it offline
+        # is what sends somebody to rely on that result.
         "design_plan_from_sheet",
     }
 )
@@ -242,17 +240,20 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Pulls new code into the installation and can restart the Altium
+    # loop. It is filed under meta, which counts as offline, and offline
+    # would otherwise read as readonly.
+    "server_update": SILENT,
     # MEASURED MODAL during the live sweep of 2026-08-24. Each of these was
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    # Design Rule Checker (TDesignRuleCheckForm). Altium exposes no
-    # non-interactive DRC trigger, so the tool's only functional path is
-    # the modal one: it refuses unless called with allow_modal=True.
-    # Measured behind the dialog: a 30-minute dead loop to an 1800 s
-    # client timeout. pcb_get_clearance_violations reads stored
-    # violations instead and stays readonly.
-    "pcb_run_drc": MODAL,
+    # pcb_run_drc was here: PCB:DesignRuleCheck opens the Design Rule
+    # Checker (TDesignRuleCheckForm), measured behind it a 30-minute dead
+    # loop. It now runs IPCB_Board.RunBatchDesignRuleCheck by default,
+    # MEASURED 2026-10-23 on AD 26.11: 0.45 s, no dialog, report written,
+    # so it is silent; allow_modal=True still takes the dialog route.
+    "pcb_run_drc": SILENT,
     "proj_export_pdf": MODAL,         # Preview PCB / print preview
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
@@ -309,6 +310,8 @@ INTERACTION_OVERRIDES = {
     "datasheet_fetch": SILENT,
     # Writes the SVG (and a PNG) it draws, as pcb_render_svg does.
     "footprint_render_package": SILENT,
+    # Writes the .cir / .net deck it builds into the workspace.
+    "design_export_spice_deck": SILENT,
     # Reads the footprint's pads, primitives and the library's layers and
     # writes nothing. The lib_ prefix says nothing about that, and the
     # default would publish an audit as a tool that edits the library.
@@ -350,6 +353,9 @@ _CATEGORY_BY_NAME = {
     "list_nets": "core",
     "run_drc": "core",
     "run_erc": "core",
+    # Updates eda-agent itself, on every backend: about the tool surface,
+    # like tool_catalog, rather than about any one EDA tool.
+    "server_update": "meta",
 }
 
 
@@ -455,8 +461,8 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     # other record-reading tool, list_checkpoints.
     "easyeda_get_measured_shapes": "application",
     # Pure computation over a plan; they send nothing.
-    "easyeda_emit_plan": "design",
-    "easyeda_emit_connections": "design",
+    "easyeda_emit_template": "design",
+    "easyeda_emit_template_connections": "design",
     # Sends nothing directly either: it dispatches to whichever tools an
     # emitted plan names, so there is no command namespace to read.
     "easyeda_run_plan": "design",

@@ -5,8 +5,8 @@
 Claude Code is the planner. It calls ``design_get_discipline`` to read
 the rules, ``design_snapshot_inventory`` to learn what parts exist in
 the user's libraries, then constructs a DesignPlan JSON, validates it
-with ``design_validate_plan``, and hands it to ``design_execute_plan``
-to instantiate the schematic.
+with ``design_validate_plan``, and draws it from a hand template with
+``sch_draw_template``.
 
 This module deliberately makes no Anthropic API calls, the AI is the
 client (Claude Code), this is just the tool layer it drives.
@@ -41,7 +41,7 @@ from ..design.component_values import (
     resistor_divider,
 )
 from ..design.discipline import get_discipline
-from ..design.executor import execute_plan_from_json
+from ..design import fab_library
 from ..design.fab_profile import load_fab_profile
 from ..design.hierarchy import apply_hierarchy, plan_hierarchy
 from ..design.requirement import (
@@ -51,14 +51,7 @@ from ..design.requirement import (
 )
 from ..design.rule_synthesis import synthesize_rules
 from ..design.inventory import LibraryInventory, snapshot_live
-from ..design.learner import learn_from_layout
-from ..design.orchestrator import (
-    execute_plan_via_canvas_from_json,
-    hints_from_sheet,
-    layout_plan_from_json,
-    plan_from_live_sheet,
-    preview_plan_from_json,
-)
+from ..design.sheet_plan import plan_from_live_sheet
 from ..design.motif_descriptions import describe_motifs
 from ..design.net_classes import classify_nets
 from ..design.placement_constraints import infer_placement_constraints
@@ -78,31 +71,6 @@ from ..design.plan_stats import summarize_plan
 from ..design.validator import validate as run_validate
 
 
-def _schematic_summary(
-    score: dict,
-    net_representation: dict,
-    n_placements: int,
-) -> str:
-    """One-line plain-language verdict on a schematic layout, distilling the
-    aesthetic score + net representation so the planner can judge at a glance.
-    """
-    cx = int(score.get("wire_crossings", 0))
-    bends = int(score.get("total_bends", 0))
-    reps: dict[str, int] = {}
-    for kind in net_representation.values():
-        reps[kind] = reps.get(kind, 0) + 1
-    parts = [
-        "no wire crossings (clean)" if cx == 0
-        else f"{cx} wire crossing(s) (review)",
-        f"{bends} bend(s)",
-        f"{n_placements} part(s)",
-    ]
-    if reps:
-        parts.append("nets as " + ", ".join(
-            f"{reps[k]} {k}" for k in sorted(reps)))
-    return "; ".join(parts) + "."
-
-
 def _divider_payload(r, series: str, mode: str) -> dict[str, Any]:
     """Shape a DividerResult into the tool's JSON response."""
     return {
@@ -119,26 +87,65 @@ def _divider_payload(r, series: str, mode: str) -> dict[str, Any]:
     }
 
 
+#: Entries a list in a job result keeps inline; the rest go to a file.
+_JOB_LIST_INLINE = 25
+
+
+def _trim_job_result(rec: dict, job_id: str) -> dict:
+    """``rec`` with each long list in its result cut to its first entries
+    and counted, the whole of it written to the workspace."""
+    import json
+
+    from ..config import get_config
+
+    result = dict(rec["result"])
+    trimmed = {}
+    for key, value in list(result.items()):
+        if isinstance(value, list) and len(value) > _JOB_LIST_INLINE:
+            trimmed[key] = len(value)
+            result[key] = value[:_JOB_LIST_INLINE]
+    out = dict(rec, result=result)
+    if trimmed:
+        folder = get_config().workspace_dir / "jobs"
+        folder.mkdir(parents=True, exist_ok=True)
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in job_id)
+        path = folder / f"{safe}.json"
+        path.write_text(json.dumps(rec, default=str), encoding="utf-8")
+        out["trimmed"] = {k: f"{n} entries, first {_JOB_LIST_INLINE} shown"
+                          for k, n in trimmed.items()}
+        out["full_path"] = str(path)
+    return out
+
+
 def register_design_tools(mcp) -> None:
     """Register the design-agent tools with the MCP server."""
 
     @mcp.tool()
-    async def design_get_discipline() -> dict[str, Any]:
-        """Read the design discipline + DesignPlan JSON schema.
+    async def design_get_discipline(include_schema: bool = False) -> dict[str, Any]:
+        """Read the design discipline, and on request the DesignPlan schema.
 
         ALWAYS call this first when starting a design task. The result
-        contains the hard rules the planner must follow (net-label-driven
-        wiring, datasheet-first part choice, NDA isolation, etc.) plus
-        the JSON schema that ``design_execute_plan`` enforces on input.
+        contains the hard rules the planner must follow (datasheet-first
+        part choice, NDA isolation, the template method for schematics,
+        placement and routing discipline).
+
+        Args:
+            include_schema: Also return the DesignPlan JSON schema, which
+                the plan tools (design_validate_plan, design_review_plan,
+                design_compose_netlist) take. A schematic drawn from
+                templates does not need it.
 
         Returns:
-            A dict with ``discipline`` (markdown text) and
+            A dict with ``discipline`` (markdown text) and, when asked,
             ``schema`` (DesignPlan JSON schema as a dict).
         """
-        return {
-            "discipline": get_discipline(),
-            "schema": DesignPlan.model_json_schema(),
-        }
+        # Under one tool result: with the schema always in, the reply was
+        # 52.5 KB and Claude Code set it aside in a file under the user's
+        # profile, whose path it then showed on screen.
+        out: dict[str, Any] = {"discipline": get_discipline(include_schema=False)}
+        if include_schema:
+            out["schema"] = DesignPlan.model_json_schema()
+        return out
 
     # --- session journal (autonomy-harness durable state) ----------------
 
@@ -471,8 +478,9 @@ def register_design_tools(mcp) -> None:
           loops, worst first. Advisory.
         - ``pad_entry_audit``: off-axis, off-centre, too-wide or uneven
           pad entries. Fails only on high severity.
-        - ``rotation_audit``: two-pad top-side parts whose airline would
-          be shorter at another right angle. Advisory.
+        - ``rotation_audit``: parts whose connections are shorter turned
+          90, 180 or 270 degrees, a turn into a neighbour's courtyard
+          excluded. Advisory.
 
         Log the result as ``data`` on the stage_result
         (``design_session_log``).
@@ -547,12 +555,16 @@ def register_design_tools(mcp) -> None:
 
     # --- async jobs (engine runs that outlive a tool timeout) ------------
 
+    #: Longest design_job_status holds a call: under the client's 120 s.
+    _JOB_WAIT_CAP_S = 100.0
+
     @mcp.tool()
     async def design_job_start(kind: str, params: dict) -> dict[str, Any]:
         """Start a long engine run as a background job; returns its id.
 
         For work that can exceed the MCP tool timeout (routing a dense
-        board). Poll `design_job_status`, then `design_job_result` when done.
+        board). Call `design_job_status` with ``wait_seconds`` until it is
+        done (nothing notifies you), then `design_job_result`.
 
         Args:
             kind: registered job kind. Currently: ``route`` (offline A*
@@ -572,21 +584,53 @@ def register_design_tools(mcp) -> None:
         return {"job_id": job_id, "kind": kind}
 
     @mcp.tool()
-    async def design_job_status(job_id: str = "") -> dict[str, Any]:
-        """Status of a background job (or all jobs if ``job_id`` is blank)."""
+    async def design_job_status(job_id: str = "", wait_seconds: float = 0) -> dict[str, Any]:
+        """Status of a background job (or all jobs if ``job_id`` is blank).
+
+        Nothing tells you when a job finishes, so keep calling this until
+        it is done rather than ending your turn: a session that stopped to
+        "check when it finishes" was never woken again.
+
+        Args:
+            job_id: the job; blank lists every job.
+            wait_seconds: hold the call until the job finishes or this
+                many seconds pass (capped at 100, inside the client's
+                two-minute limit). 0 answers at once.
+        """
+        import asyncio
+
         from ..design.jobs import get_job_store
         store = get_job_store()
         if not job_id:
             return {"jobs": store.list()}
+        wait = max(0.0, min(float(wait_seconds or 0), _JOB_WAIT_CAP_S))
+        if wait and store.get(job_id) is not None:
+            await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
         return rec if rec else {"error": f"no such job: {job_id}"}
 
     @mcp.tool()
-    async def design_job_result(job_id: str) -> dict[str, Any]:
-        """Fetch a finished job's result payload (None until it's done)."""
+    async def design_job_result(job_id: str, full: bool = False) -> dict[str, Any]:
+        """Fetch a finished job's result payload (None until it's done).
+
+        A router result lists every track and via, which ran to 250,000
+        characters on a 61-LED board; the client set it aside in a file
+        instead of reading it. So any list longer than a few dozen
+        entries comes back as its count and first entries, and the whole
+        result is written to ``full_path`` (pcb_autoroute_apply takes the
+        tracks from the job itself, not from this reply).
+
+        Args:
+            job_id: the job.
+            full: return every entry inline, however long.
+        """
         from ..design.jobs import get_job_store
         rec = get_job_store().result(job_id)
-        return rec if rec else {"error": f"no such job: {job_id}"}
+        if not rec:
+            return {"error": f"no such job: {job_id}"}
+        if full or not isinstance(rec.get("result"), dict):
+            return rec
+        return _trim_job_result(rec, job_id)
 
     @mcp.tool()
     async def design_snapshot_inventory(
@@ -666,9 +710,9 @@ def register_design_tools(mcp) -> None:
     async def design_validate_plan(plan_json: Union[str, dict]) -> dict[str, Any]:
         """Validate a candidate DesignPlan JSON against the schema + cross-check.
 
-        Run this before ``design_execute_plan`` to catch schema problems
-        and cross-references that the executor will reject. Cheap; no
-        Altium round-trip.
+        Run this before drawing to catch schema problems and
+        cross-references that ``sch_draw_template`` would reject. Cheap;
+        no Altium round-trip.
 
         Args:
             plan_json: Either a JSON string of the DesignPlan, or the
@@ -796,8 +840,8 @@ def register_design_tools(mcp) -> None:
 
         Returns:
             {ok, plan, added: {refdes, nets, extended_nets}, notes,
-            validation}; ``plan`` is ready for the next block or
-            design_execute_plan. ``ok`` False comes with ``errors``.
+            validation}; ``plan`` is ready for the next block or for
+            drawing. ``ok`` False comes with ``errors``.
         """
         if isinstance(plan_json, dict):
             payload = plan_json
@@ -1169,7 +1213,7 @@ def register_design_tools(mcp) -> None:
             plan_json: the DesignPlan as a JSON string or dict.
             set_on_plan: when True (default), the returned ``plan`` carries
                 the generated BOM in its ``bom`` field, ready for
-                ``design_execute_plan``; the parts are unchanged.
+                ``sch_draw_template``; the parts are unchanged.
 
         Returns:
             ``{ok, bom: [{refdes_list, manufacturer, mpn, description,
@@ -1982,6 +2026,95 @@ def register_design_tools(mcp) -> None:
                 "loops": results}
 
     @mcp.tool()
+    async def design_export_spice_deck(
+        plan_json: Union[str, dict],
+        dialect: str = "ngspice",
+        analyses: Optional[dict] = None,
+        models: Optional[dict[str, dict]] = None,
+        supplies: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        path: str = "",
+        allow_partial: bool = False,
+    ) -> dict[str, Any]:
+        """Write a plan's circuit as a SPICE deck for ngspice or LTspice.
+
+        The same netlist design_simulate_loops runs: R, C and L from their
+        values, everything else from the manufacturer's model (``models``,
+        as there), rails as DC sources. ``dialect`` "ltspice" writes a
+        .net LTspice opens and runs as it is; "ngspice" writes a .cir. A
+        plan read off a live sheet comes from design_plan_from_sheet.
+
+        A part without its model is never approximated: the deck is not
+        written and ``gaps`` names what is missing. ``allow_partial``
+        writes it anyway with every gap listed in comments at the top, so
+        the file cannot pass for the whole circuit.
+
+        Args:
+            plan_json: a DesignPlan (object or JSON).
+            dialect: "ngspice" or "ltspice".
+            analyses: {"op": true}, {"tran": {"step", "stop"}},
+                {"ac": {"points", "start", "stop"}} (decade) or {"dc":
+                {"source", "start", "stop", "step"}}; default .op.
+            models / supplies / pin_names: as design_simulate_loops.
+            path: file to write; default <workspace>/sim/<title>.cir|.net.
+            allow_partial: write a deck that is missing parts.
+        """
+        import re as _re
+
+        from ..config import get_config
+        from ..sim.deck import deck_from_plan
+        from ..sim.dialects import deck_gaps, write_deck
+
+        payload = plan_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"invalid JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()]}
+        deck = deck_from_plan(plan, models or {}, supplies, pin_names,
+                              title=plan.summary or "")
+        gaps = deck_gaps(deck)
+        out: dict[str, Any] = {
+            "ok": False, "dialect": dialect, "complete": not gaps,
+            "gaps": gaps, "rails": deck.get("rails"),
+            "missing_models": deck.get("missing_models")}
+        if gaps and not allow_partial:
+            out["reason"] = ("the deck is missing parts, so it was not "
+                             "written; give their models, or allow_partial "
+                             "to write it with the gaps listed")
+            return out
+        try:
+            text = write_deck(deck["netlist"], dialect, analyses,
+                              gaps if gaps else None)
+        except ValueError as exc:
+            out["reason"] = str(exc)
+            return out
+        ext = ".net" if dialect.lower() == "ltspice" else ".cir"
+        if path:
+            target = Path(path)
+        else:
+            stem = _re.sub(r"[^A-Za-z0-9._-]+", "_",
+                           plan.summary or "design").strip("._")[:60] or "design"
+            target = get_config().workspace_dir / "sim" / f"{stem}{ext}"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            out["reason"] = f"could not write {target}: {exc}"
+            return out
+        out.update(ok=True, path=str(target), deck=text)
+        if dialect.lower() == "ltspice":
+            out["note"] = ("open it in LTspice (File > Open, then Run); "
+                           "eda-agent itself simulates with ngspice")
+        return out
+
+    @mcp.tool()
     async def pcb_smart_drc(
         board_json_path: str = "",
         expect_file: str = "",
@@ -2117,51 +2250,6 @@ def register_design_tools(mcp) -> None:
         }
 
     @mcp.tool()
-    async def design_layout_schematic(
-        plan_json: Union[str, dict],
-        sheet: str = "main",
-        grid_mils: int = 100,
-        fr_iterations: int = 80,
-        placement_hints: Optional[dict[str, dict[str, int]]] = None,
-        render_png: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """Compute the schematic layout for a DesignPlan, as pure data.
-
-        The same engine as ``design_preview_plan`` (renders it) and
-        ``design_execute_plan`` (places it). Runs offline on every
-        backend, so symbol geometry is synthesised from the plan's pin
-        lists: ``symbols`` is ``"synthetic"`` and ``execution_accurate``
-        False. For exact geometry use ``design_preview_plan``.
-
-        Args:
-            plan_json: A DesignPlan as a JSON string or a JSON object/dict.
-            sheet: Sheet name to report (default ``"main"``).
-            grid_mils: Ignored; the engine uses a 100-mil grid.
-            fr_iterations: Ignored; the engine sets its own budget.
-            placement_hints: Optional ``{refdes: {"x", "y", "rotation"}}``
-                pinned positions, same as ``design_execute_plan``.
-            render_png: Optional path for a preview image of the layout.
-
-        Returns:
-            ``ok``, ``sheet``, ``engine``, ``symbols``,
-            ``execution_accurate``, ``summary``, ``placements``,
-            ``net_representation``, ``wires``, ``net_labels``,
-            ``power_ports``, ``junctions``, ``score``, ``notes``,
-            ``failures``; on a bad plan ``{"ok": False, "errors": [...]}``.
-        """
-        result = layout_plan_from_json(
-            plan_json, sheet=sheet, placement_hints=placement_hints,
-            render_png=render_png,
-        )
-        if result.get("ok") and "placements" in result:
-            result["summary"] = _schematic_summary(
-                result.get("score", {}),
-                result.get("net_representation", {}),
-                len(result.get("placements", [])),
-            )
-        return result
-
-    @mcp.tool()
     async def design_suggest_partition(
         plan_json: Union[str, dict],
         n_groups: int = 2,
@@ -2235,102 +2323,23 @@ def register_design_tools(mcp) -> None:
         }
 
     @mcp.tool()
-    async def design_execute_plan(
-        plan_json: Union[str, dict],
-        project_path: str,
-        use_canvas: bool = True,
-        placement_hints: Optional[dict[str, dict[str, int]]] = None,
-        mode: str = "auto",
-    ) -> dict[str, Any]:
-        """Draw a DesignPlan in Altium: places AND routes the sheet in one
-        call, and writes an SVG preview next to the project. Stops first if
-        the plan has needs_creation parts (pick existing ones or author
-        them).
-
-        Args:
-            plan_json: The DesignPlan as JSON text or a dict.
-            project_path: Target .PrjPcb (created if missing).
-            use_canvas: True (default) lays out in Python then emits once;
-                False uses the legacy executor.
-            placement_hints: {refdes: {"x", "y", "rotation"}} to pin parts;
-                the rest are placed by the engine. Iterate with
-                design_preview_plan, then execute with the same hints.
-            mode: "auto" (default) EDITS a sheet this tool drew before:
-                moves only changed parts, adds new ones, removes dropped
-                ones, leaves the rest; draws fresh when there is none.
-                "full" redraws everything (hand edits lost). "delta"
-                refuses rather than redraw. To keep hand-dragged parts,
-                pass design_hints_from_sheet's result as placement_hints.
-
-        Returns:
-            ok, project_path, sheets_touched, placed, failures,
-            needs_creation, notes, ``canvas``, ``preview_svg_path``; on an
-            edit, ``delta`` lists refdes added, moved, replaced, removed
-            and untouched.
-        """
-        if use_canvas:
-            return execute_plan_via_canvas_from_json(
-                plan_json, project_path,
-                placement_hints=placement_hints,
-                mode=mode,
-            )
-        if mode != "auto":
-            return {"ok": False, "reason":
-                    "mode is a canvas-path option; the legacy executor "
-                    "(use_canvas=False) always redraws the whole sheet"}
-        if isinstance(plan_json, dict):
-            plan_json = json.dumps(plan_json)
-        result = execute_plan_from_json(plan_json, project_path)
-        return result.to_dict()
-
-    @mcp.tool()
-    async def design_learn_from_layout(
-        project_path: str,
-    ) -> dict[str, Any]:
-        """Capture your placement edits as training data.
-
-        After ``design_execute_plan`` (which writes
-        ``<project>.canvas.json``), move parts by hand in Altium and save,
-        then call this. Each moved part becomes a row in
-        ``%USERPROFILE%\\.eda-agent\\placement_edits.jsonl``, its move
-        recorded relative to an anchor (its busiest signal-net neighbour);
-        the log feeds the placement priors.
-
-        Args:
-            project_path: Same project path you passed to
-                ``design_execute_plan``.
-
-        Returns:
-            Dict with ok, rows_appended, refdes_moved, refdes_unchanged,
-            log_path, notes.
-        """
-        if not project_path:
-            return {"ok": False, "reason":
-                    "project_path is required: the same .PrjPcb path "
-                    "passed to design_execute_plan"}
-        return learn_from_layout(project_path)
-
-    @mcp.tool()
     async def design_plan_from_sheet(
         project_path: str,
         sheet_document: str = "",
     ) -> dict[str, Any]:
-        """Read a DesignPlan back off a schematic, including one drawn by
-        hand (no ``<project>.canvas.json``), so an edit becomes a plan
-        edit. Parts come from the components, nets from the compiled
+        """Read a DesignPlan back off a schematic so an edit becomes a
+        plan edit. Parts come from the components, nets from the compiled
         netlist, rails from the power ports; the plan is validated.
 
         A schematic does not record, so you supply:
 
-        - ``role`` on each part (decoupling, crystal, op-amp motif...);
-          without roles the layout is noticeably worse.
+        - ``role`` on each part (decoupling, crystal, op-amp motif...).
         - ``zone`` on each part, for functional blocks.
         - Single-pin nets, which a plan cannot express; they come back
           in ``dropped_pins``.
 
-        Then preview with ``design_layout_schematic`` and apply with
-        ``design_execute_plan``, passing ``design_hints_from_sheet``
-        output as ``placement_hints`` to keep existing positions.
+        Edit the plan, then redraw the block on a fresh sheet with
+        ``sch_preview_template`` and ``sch_draw_template`` (plan_json).
 
         Args:
             project_path: The .PrjPcb the sheet belongs to. Its compiled
@@ -2340,92 +2349,15 @@ def register_design_tools(mcp) -> None:
 
         Returns:
             ``ok`` / ``plan`` (a DesignPlan dict, or None on a refusal) /
-            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``.
+            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``,
+            and ``complete``: false when anything on the sheet is not in
+            the plan. ``interfaces_not_in_plan`` lists each lost
+            connection as ``{refdes, pin, net, why, is_rail}`` and
+            ``skipped_components`` the parts left out. A redraw from an
+            incomplete plan drops them: restore each one and compare the
+            netlists before keeping it.
         """
         return plan_from_live_sheet(project_path, sheet_document)
-
-    @mcp.tool()
-    async def design_hints_from_sheet(
-        project_path: str,
-    ) -> dict[str, Any]:
-        """Current sheet positions, as placement_hints for a re-run.
-
-        THIS IS HOW YOU EDIT A SCHEMATIC WITH THE ENGINE. Editing by hand
-        means choosing coordinates, which is what sch_place_components
-        refuses. Do this instead:
-
-        1. ``design_edit_plan`` to change the plan (add the part, change
-           a value, add a net).
-        2. ``design_hints_from_sheet`` to capture where everything
-           currently sits.
-        3. ``design_execute_plan`` with those hints. Every existing part
-           stays exactly where it is, and only the new or changed ones are
-           placed, by the engine rather than by you.
-
-        Positions come back as BODY CENTRES, the frame placement_hints
-        expects, converted from the symbol origins Altium reports. Pass
-        the returned ``hints`` through unchanged; do not round or adjust
-        them, and drop a refdes from the dict only when you deliberately
-        want the placer free to move that part.
-
-        Needs the ``<project>.canvas.json`` snapshot that
-        ``design_execute_plan`` writes, which is what records the library
-        symbol behind each refdes.
-
-        Args:
-            project_path: Absolute path to the .PrjPcb whose sheet to read.
-
-        Returns:
-            ``ok`` / ``hints`` ({refdes: {x, y, rotation}}) / ``unmatched``
-            (refdes present in the snapshot but not readable now) /
-            ``notes``.
-        """
-        return hints_from_sheet(project_path)
-
-    @mcp.tool()
-    async def design_preview_plan(
-        plan_json: Union[str, dict],
-        output_svg_path: Optional[str] = None,
-        placement_hints: Optional[dict[str, dict[str, int]]] = None,
-    ) -> dict[str, Any]:
-        """Render a DesignPlan to SVG without emitting to Altium.
-
-        Same pipeline as ``design_execute_plan(use_canvas=True)`` minus
-        the place + wire + save IPC pass. Symbol extraction still
-        consults Altium on cache miss (it has to read the SchLib), but
-        no project is created and nothing is placed. Use this to
-        sanity-check a layout cheaply before committing to a full emit.
-
-        Args:
-            plan_json: DesignPlan as JSON string or dict.
-            output_svg_path: Where to write the SVG. Default:
-                ``<repo>/.symbol_cache/preview.svg``.
-            placement_hints: Optional ``{refdes: {"x", "y", "rotation"}}``
-                partial anchors, same as ``design_execute_plan``: hinted
-                refdes pin to the supplied position, the rest run through
-                algorithmic placement. Iterate preview→hints→preview to
-                refine a layout before a full emit.
-
-        Returns:
-            Dict with ok / preview_svg_path / canvas (snapshot) /
-            counts {placements, wires, labels, power_ports, junctions} /
-            notes / failures.
-        """
-        result = preview_plan_from_json(
-            plan_json, output_svg_path, placement_hints=placement_hints,
-        )
-        # Cache the most recent plan input for the dashboard's Plan tab.
-        try:
-            from ..config import get_config
-            cache_path = get_config().workspace_dir / "plan.json"
-            payload = plan_json if isinstance(plan_json, dict) else json.loads(plan_json)
-            cache_path.write_text(
-                json.dumps({"plan": payload, "preview": result}, indent=2),
-                encoding="utf-8",
-            )
-        except (OSError, json.JSONDecodeError, TypeError):
-            pass
-        return result
 
     @mcp.tool()
     async def design_audit_schematic(
@@ -2434,7 +2366,7 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Structured visual/layout audit of the active schematic.
 
-        Call AFTER ``design_execute_plan`` and BEFORE ``design_validate``
+        Call AFTER ``sch_draw_template`` and BEFORE ``design_validate``
         so layout problems are fixed first; ERC violations downstream are
         less noisy. Detects three classes of issue, each with enough
         geometry for the planner to compute a corrective move:
@@ -2565,6 +2497,88 @@ def register_design_tools(mcp) -> None:
                 f"drill {prof.min_drill_mils:g} mils."
             ),
         }
+    @mcp.tool()
+    async def design_list_stackups(
+        vendor: str = "", copper_layers: int = 0,
+    ) -> dict[str, Any]:
+        """The fabs' own stack-ups that ship with this server.
+
+        JLCPCB's are parsed ply by ply from its impedance page (36 at
+        1.6 mm, 4 and 6 layers), so every height and Dk is JLCPCB's.
+
+        Args:
+            vendor: limit to one fab ("" for all)
+            copper_layers: limit to one copper count (0 for all)
+
+        Returns:
+            ``{"ok": True, "stackups": [{name, vendor, copper_layers,
+            total_mm, dielectrics}]}``.
+        """
+        return {"ok": True, "stackups": fab_library.stackup_templates(
+            vendor or None, copper_layers or None)}
+
+    @mcp.tool()
+    async def design_get_stackup(
+        name: str,
+        impedance_targets: Optional[list] = None,
+        board_stackup: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """One fab stack-up ply by ply, with optional trace widths for
+        target impedances and an optional comparison against a board.
+
+        Widths: outer layers as microstrip over the dielectric to the next
+        copper; an inner layer only when it sits near the middle of its
+        two planes (the closed form is symmetric; otherwise it is reported
+        and not sized). Closed forms are +/-10 %, so these are starting
+        widths for the fab's solver to confirm.
+
+        Args:
+            name: stack-up name, e.g. "JLC04161H-7628"
+            impedance_targets: e.g. [{"ohms": 50}, {"ohms": 90,
+                "spacing_mils": 6}] (spacing makes it differential)
+            board_stackup: a ``pcb_get_layer_stackup`` result to compare
+                with; the template's plies are first collapsed to one
+                dielectric per copper gap, as Altium keeps them
+
+        Returns:
+            ``{"ok": True, "stackup": {...}, "plies": [...], "source":
+            {...}, "impedance": {...}?, "comparison": {...}?}``.
+        """
+        got = fab_library.stackup_template(name)
+        if not got["ok"]:
+            return got
+        got["stackup"] = got["stackup"].model_dump()
+        if impedance_targets:
+            got["impedance"] = fab_library.impedance_widths(name, impedance_targets)
+        if board_stackup:
+            got["comparison"] = fab_library.compare_stackup(board_stackup, name)
+        return got
+
+    @mcp.tool()
+    async def design_get_laminate(
+        name: str, frequency_ghz: float = 0.0,
+    ) -> dict[str, Any]:
+        """A laminate's datasheet figures and the Dk to design with.
+
+        Makers publish different kinds of Dk: Rogers a process value (a QC
+        test) AND a design value 5 % higher, Isola and Panasonic typical
+        values by frequency. Each figure here says which it is, with its
+        frequency, method and datasheet. The returned design Dk is the
+        design value when there is one, else the typical value nearest
+        ``frequency_ghz``; never a process value.
+
+        Args:
+            name: e.g. "RO4350B", "370HR", "MEGTRON 6" (prefix matches)
+            frequency_ghz: the frequency to pick a typical Dk at (0: the
+                highest listed)
+
+        Returns:
+            The laminate record plus the design Dk it chose and why.
+        """
+        got = fab_library.laminate(name)
+        if got["ok"]:
+            got["design_dk"] = fab_library.design_dk(name, frequency_ghz or None)
+        return got
 
     @mcp.tool()
     async def design_synthesize_rules(
@@ -2636,7 +2650,7 @@ def register_design_tools(mcp) -> None:
         signal nets the cut severs (rails stay power ports), and returns
         top-sheet ops shaped for ``sch_place_sheet_symbol``,
         ``sch_place_sheet_entry`` and ``sch_generate_toc``. Apply with
-        ``design_apply_hierarchy`` before ``design_execute_plan``. Pure
+        ``design_apply_hierarchy`` before drawing the sheets. Pure
         Python, deterministic.
 
         Args:
@@ -2674,7 +2688,7 @@ def register_design_tools(mcp) -> None:
         with its parts (part-less zones park on the top sheet). The input
         plan is never mutated; a non-split hierarchy returns the plan
         unchanged. Feed the returned plan to ``design_validate_plan`` and
-        then ``design_execute_plan``; emit the hierarchy's
+        draw each sheet with ``sch_draw_template``; emit the hierarchy's
         ``top_sheet_ops`` separately to draw the top sheet. Pure Python.
 
         Args:

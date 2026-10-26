@@ -1,182 +1,167 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Two-pad parts that would connect shorter at another right-angle rotation.
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""Parts that would connect shorter turned by 90, 180 or 270 degrees.
 
-An advisory on a placed board, not a placer: every two-pad part on the top
-side is tried at 0, 90, 180 and 270 degrees about its own origin, every
-other part held where it is, and the rotation that scores lowest is
-reported when it beats the current one by ``min_improvement_mils``.
+A part placed with the right footprint at the right spot can still face
+the wrong way: a resistor whose pad 1 points away from the pin it feeds
+costs a crossing and a detour that no amount of routing recovers. This
+scores every unlocked part with two or more pads at each quarter turn
+about its own origin and suggests the turn that shortens its connections
+most.
 
-Each pad scores one term:
+THE SCORE is the connection length a router has to cover, per net the part
+touches: the minimum spanning tree over that net's pads for a signal net,
+and for a power or ground net (or one with many pads, poured or planed in
+practice) the distance from each of the part's pads to the nearest pad of
+the same net elsewhere, which is where its return or supply really goes.
 
-* a routable net (``plane_net_pads`` pads or fewer): the airline length of
-  the whole net, a minimum spanning tree over its pad centres, with this
-  pad at its candidate position. A pad that only slides along a chain
-  (a bulk cap on a power path) costs almost nothing, a real detour costs
-  its length;
-* a plane net (more pads than that, a ground or a supply): the distance to
-  the nearest other pad on that net, because a decoupling cap's return is
-  local and closeness to the IC's ground or thermal pad is what matters.
+A TURN THAT COLLIDES IS NOT SUGGESTED: the part's courtyard is turned with
+it and checked against every other part's, so a suggestion can be applied
+as it is. Bottom-side parts are scored too: their pads are turned where
+they are on the board, which needs no assumption about how a mirrored
+part's rotation angle is counted.
 
-Geometry only. It knows nothing of which nets are critical, so a pull-up or
-a strap resistor can be told to turn for no electrical gain, and a
-datasheet's recommended layout outranks it.
+``turn_by`` is the turn as seen from the top, and ``new_rotation`` is the
+value to write into the part's Rotation field. Both are given on either
+side. That a bottom-side part takes the same arithmetic was measured, not
+assumed: against Altium 26.11.1.5 on 2026-10-25, four parts flipped with
+``pcb_flip_component`` and read back turned their pads in world
+coordinates by exactly the delta applied to ``Rotation``, the same as a
+top-side part, at 45 degrees as well as at right angles.
 
-Bottom-side parts ARE checked. They were skipped until the sign was
-measured against Altium 26.11.1.5 on 2026-10-25: four mirrored parts,
-flipped with ``pcb_flip_component`` and read back, turn their pads in
-world coordinates by exactly the delta applied to ``Rotation``, the
-same way a top-side part does, at 45 degrees as well as at right
-angles. The scoring never needed a side term anyway -- it rotates the
-pad's WORLD position about the component origin, and the mirroring is
-already baked into the position the board reports.
+Advisory: it never fails a board.
 """
-
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Any
 
-from .model import LayoutBoard, Pad
+from ..core.net_naming import is_ground_net, is_power_net
+from . import geom
+from .audit import LIMIT, _overlaps, body_outline
+from .model import LayoutBoard
 
-#: Nets with more pads than this are scored as planes (nearest pad).
-PLANE_NET_PADS = 40
-
-#: Smallest gain, in mils of score, worth reporting.
-MIN_IMPROVEMENT_MILS = 25.0
-
-ROTATIONS = (0.0, 90.0, 180.0, 270.0)
+#: Nets this large are poured or planed; their pads go to the nearest one.
+_LARGE_NET = 24
+_TURNS = (90.0, 180.0, 270.0)
 
 
-def mst_length(points: list[tuple[float, float]]) -> float:
-    """Minimum spanning tree length over ``points`` (Prim, O(n^2))."""
-    n = len(points)
-    if n < 2:
+def _turn(x: float, y: float, ox: float, oy: float, deg: float):
+    a = math.radians(deg)
+    dx, dy = x - ox, y - oy
+    return (ox + dx * math.cos(a) - dy * math.sin(a),
+            oy + dx * math.sin(a) + dy * math.cos(a))
+
+
+def _mst(points: list[tuple[float, float]]) -> float:
+    """Total length of the minimum spanning tree, Prim's on a full graph."""
+    if len(points) < 2:
         return 0.0
-    in_tree = [False] * n
-    best = [math.inf] * n
+    inside = [False] * len(points)
+    best = [math.inf] * len(points)
     best[0] = 0.0
     total = 0.0
-    for _ in range(n):
-        u = min((i for i in range(n) if not in_tree[i]), key=best.__getitem__)
-        in_tree[u] = True
-        total += best[u]
-        ux, uy = points[u]
-        for v in range(n):
-            if not in_tree[v]:
-                d = math.hypot(points[v][0] - ux, points[v][1] - uy)
-                if d < best[v]:
-                    best[v] = d
+    for _ in range(len(points)):
+        i = min((k for k in range(len(points)) if not inside[k]),
+                key=lambda k: best[k])
+        inside[i] = True
+        total += best[i]
+        xi, yi = points[i]
+        for k in range(len(points)):
+            if not inside[k]:
+                d = math.hypot(points[k][0] - xi, points[k][1] - yi)
+                if d < best[k]:
+                    best[k] = d
     return total
 
 
-def _turn(x: float, y: float, ox: float, oy: float, deg: float) -> tuple[float, float]:
-    """(x, y) turned anticlockwise by ``deg`` about (ox, oy)."""
-    a = math.radians(deg)
-    c, s = math.cos(a), math.sin(a)
-    dx, dy = x - ox, y - oy
-    return (ox + dx * c - dy * s, oy + dx * s + dy * c)
+def _plane_like(board: LayoutBoard, net: str, count: int) -> bool:
+    planes = {lay.plane_net for lay in board.layers if lay.plane_net}
+    return (net in planes or is_ground_net(net) or is_power_net(net)
+            or count >= _LARGE_NET)
 
 
-def _orthogonal(deg: float) -> bool:
-    r = deg % 90.0
-    return r < 0.5 or r > 89.5
-
-
-def suggest_rotations(board: LayoutBoard, designators: Optional[list[str]] = None,
-                      min_improvement_mils: float = MIN_IMPROVEMENT_MILS,
-                      plane_net_pads: int = PLANE_NET_PADS) -> dict:
-    """Score each two-pad top-side part at the four right-angle rotations.
-
-    Returns ``{"checked", "skipped", "suggestions"}``: ``suggestions`` worst
-    first, each with the current and suggested rotation, the gain in mils,
-    ``bbox_changes`` (a quarter turn swaps the body's width and height, so
-    clearance wants re-checking) and the per-pad terms at both rotations.
-    """
-    wanted = {d.strip() for d in designators or [] if d.strip()}
-    pads_of: dict[str, list[Pad]] = {}
-    net_pads: dict[str, list[Pad]] = {}
-    for p in board.pads:
-        if p.comp:
-            pads_of.setdefault(p.comp, []).append(p)
+def rotation_audit(board: LayoutBoard, limit: int = LIMIT,
+                   min_gain_mils: float = 25.0) -> dict:
+    """Quarter turns that shorten a part's connections by ``min_gain_mils``
+    or more, with the turns a neighbour's courtyard rules out."""
+    net_pads: dict[str, list[int]] = {}
+    for i, p in enumerate(board.pads):
         if p.net:
-            net_pads.setdefault(p.net, []).append(p)
-
-    checked = 0
-    skipped: list[dict] = []
+            net_pads.setdefault(p.net, []).append(i)
+    outlines = {c.ref: body_outline(c) for c in board.components}
     suggestions: list[dict] = []
+    blocked: list[dict] = []
+    checked = 0
     for comp in board.components:
-        if wanted and comp.ref not in wanted:
+        mine = [i for i, p in enumerate(board.pads) if p.comp == comp.ref]
+        if comp.locked or len(mine) < 2:
             continue
-        pads = pads_of.get(comp.ref, [])
-        if len(pads) != 2:
-            continue
-        if not _orthogonal(comp.rotation):
-            skipped.append({"designator": comp.ref,
-                            "reason": f"rotation {comp.rotation:g} is not a right angle"})
-            continue
-
-        current = round(comp.rotation) % 360
-
-        def score(rotation: float) -> Optional[tuple[float, list[dict]]]:
-            total, terms = 0.0, []
-            for pad in pads:
-                others = [(q.x, q.y) for q in net_pads.get(pad.net, [])
-                          if q.comp != comp.ref] if pad.net else []
-                if not others:
-                    continue
-                px, py = _turn(pad.x, pad.y, comp.x, comp.y, rotation - current)
-                if len(net_pads[pad.net]) > plane_net_pads:
-                    value = min(math.hypot(px - x, py - y) for x, y in others)
-                    metric = "nearest_return_mils"
-                else:
-                    value = mst_length(others + [(px, py)])
-                    metric = "net_airline_mils"
-                total += value
-                terms.append({"pad": pad.name, "net": pad.net, metric: round(value, 1)})
-            return (total, terms) if terms else None
-
-        now = score(current)
-        if now is None:
+        nets = sorted({board.pads[i].net for i in mine if board.pads[i].net})
+        if not nets:
             continue
         checked += 1
-        best_rot, best = current, now
-        for r in ROTATIONS:
-            s = score(r)
-            if s is not None and s[0] < best[0] - 1e-6:
-                best_rot, best = int(r), s
-        gain = now[0] - best[0]
-        if best_rot != current and gain >= min_improvement_mils:
-            suggestions.append({
-                "designator": comp.ref,
-                "current_rotation": current,
-                "suggested_rotation": best_rot,
-                "improvement_mils": round(gain, 1),
-                "bbox_changes": (best_rot - current) % 180 != 0,
-                "current_pads": now[1],
-                "suggested_pads": best[1],
-            })
-    suggestions.sort(key=lambda s: -s["improvement_mils"])
-    return {"checked": checked, "skipped": skipped, "suggestions": suggestions}
 
+        def cost(deg: float) -> tuple[float, dict]:
+            where = {i: _turn(board.pads[i].x, board.pads[i].y,
+                              comp.x, comp.y, deg) for i in mine}
+            per_net: dict[str, float] = {}
+            for net in nets:
+                members = net_pads[net]
+                others = [(board.pads[j].x, board.pads[j].y)
+                          for j in members if j not in where]
+                own = [where[j] for j in members if j in where]
+                if _plane_like(board, net, len(members)):
+                    per_net[net] = sum(
+                        min((math.hypot(x - ox, y - oy) for ox, oy in others),
+                            default=0.0) for x, y in own)
+                else:
+                    per_net[net] = _mst(own + others)
+            return sum(per_net.values()), per_net
 
-def rotation_audit(board: LayoutBoard, limit: int = 200) -> dict:
-    """Layout audit check: two-pad parts that would connect shorter turned.
-
-    Advisory: ``pass`` stays True, since a shorter airline is not always the
-    better layout."""
-    found = suggest_rotations(board)
+        now, now_nets = cost(0.0)
+        scored = sorted(((cost(d), d) for d in _TURNS), key=lambda t: t[0][0])
+        for (total, per_net), deg in scored:
+            gain = now - total
+            if gain < min_gain_mils:
+                break
+            outline = outlines.get(comp.ref) or []
+            hit = None
+            if outline:
+                turned = geom.polygon([_turn(x, y, comp.x, comp.y, deg)
+                                       for x, y in outline])
+                for other in board.components:
+                    if other.ref == comp.ref or not outlines.get(other.ref):
+                        continue
+                    if _overlaps(turned, geom.polygon(outlines[other.ref])):
+                        hit = other.ref
+                        break
+            entry: dict[str, Any] = {
+                "ref": comp.ref, "side": comp.side, "turn_by": deg,
+                "mils_saved": round(gain, 1),
+                "length_now": round(now, 1), "length_after": round(total, 1),
+                "nets": {n: [round(now_nets[n], 1), round(per_net[n], 1)]
+                         for n in nets if abs(now_nets[n] - per_net[n]) > 0.05}}
+            entry["new_rotation"] = (comp.rotation + deg) % 360.0
+            if not outline:
+                entry["courtyard_checked"] = False
+            if hit:
+                entry["collides_with"] = hit
+                blocked.append(entry)
+                continue
+            suggestions.append(entry)
+            break
+    suggestions.sort(key=lambda e: -e["mils_saved"])
     return {
         "pass": True,
-        "advisory": True,
-        "counts": {"checked": found["checked"], "suggestions": len(found["suggestions"]),
-                   "skipped": len(found["skipped"])},
-        "suggestions": found["suggestions"][:limit],
-        "skipped": found["skipped"][:limit],
-        "note": ("Airline geometry only, pad centre to pad centre. Weigh each "
-                 "suggestion: it matters for decoupling, snubber and filter parts, "
-                 "rarely for pull-ups or straps. After a quarter turn "
-                 "(bbox_changes) re-run placement_audit."),
+        "counts": {"parts_checked": checked, "suggested": len(suggestions),
+                   "blocked_by_courtyard": len(blocked),
+                   "mils_to_save": round(sum(e["mils_saved"]
+                                             for e in suggestions), 1)},
+        "suggestions": suggestions[:limit],
+        "blocked": blocked[:limit],
+        "truncated": len(suggestions) > limit,
     }
 
 
-__all__ = ["mst_length", "rotation_audit", "suggest_rotations"]
+__all__ = ["rotation_audit"]

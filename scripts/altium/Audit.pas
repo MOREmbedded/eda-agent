@@ -208,7 +208,7 @@ Begin
         If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
 
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except End;
+        SchDoc := ProjectSheet(Doc.DM_FullPath);
         If SchDoc = Nil Then Continue;
 
         SchIter := SchDoc.SchIterator_Create;
@@ -382,7 +382,7 @@ Begin
         SheetPath := '';
         Try SheetPath := Doc.DM_FullPath; Except End;
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        SchDoc := ProjectSheet(SheetPath);
         If SchDoc = Nil Then Continue;
 
         SchIter := SchDoc.SchIterator_Create;
@@ -1623,7 +1623,7 @@ Begin
         Try SheetPath := Doc.DM_FileName; Except End;
 
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except End;
+        SchDoc := ProjectSheet(Doc.DM_FullPath);
         If SchDoc = Nil Then Continue;
         SchIter := SchDoc.SchIterator_Create;
         If SchIter = Nil Then Continue;
@@ -1914,7 +1914,7 @@ Begin
         Try SheetName := Doc.DM_FileName; Except End;
 
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except End;
+        SchDoc := ProjectSheet(Doc.DM_FullPath);
         If SchDoc = Nil Then Continue;
 
         SchIter := SchDoc.SchIterator_Create;
@@ -2340,7 +2340,7 @@ Begin
         If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
 
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except End;
+        SchDoc := ProjectSheet(Doc.DM_FullPath);
         If SchDoc = Nil Then Continue;
 
         SchIter := SchDoc.SchIterator_Create;
@@ -2482,7 +2482,7 @@ Begin
         If Doc = Nil Then Continue;
         If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
         SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except End;
+        SchDoc := ProjectSheet(Doc.DM_FullPath);
         If SchDoc = Nil Then Continue;
 
         SchIter := SchDoc.SchIterator_Create;
@@ -2973,7 +2973,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
         SheetName := '';
         Try SheetName := Document.DM_FileName; Except End;
@@ -3234,7 +3234,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
 
         Iter := Sheet.SchIterator_Create;
@@ -3365,7 +3365,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
         SheetName := '';
         Try SheetName := Document.DM_FileName; Except End;
@@ -3486,7 +3486,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
         SheetName := '';
         Try SheetName := Document.DM_FileName; Except End;
@@ -3608,7 +3608,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
 
         Iter := Sheet.SchIterator_Create;
@@ -4318,7 +4318,7 @@ Begin
         Try DocKind := Document.DM_DocumentKind; Except End;
         If DocKind <> 'SCH' Then Continue;
         Sheet := Nil;
-        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        Sheet := ProjectSheet(Document.DM_FullPath);
         If Sheet = Nil Then Continue;
         SheetName := '';
         Try SheetName := Document.DM_FileName; Except End;

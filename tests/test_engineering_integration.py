@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Check the imported engineering calculations and MCP surface together."""
 from eda_agent.engineering import ipc7351
 from eda_agent.tools.engineering import _live_pads_to_um, register_engineering_tools

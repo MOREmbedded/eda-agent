@@ -61,17 +61,19 @@ def get_bundled_scripts_path() -> Path:
 # User-profile paths
 # --------------------------------------------------------------------------
 
-#: Where each Altium install lists its Global Projects, under
-#: HKCU\Software\Altium\<install>. One value per project, named ItemN.
-_GLOBAL_PROJECTS_KEY = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+#: Where an Altium install keeps its Global Projects list (the Scripting
+#: System preference page), under HKCU\Software\Altium\<install>; one
+#: value per project. Read on AD 26.11.
+_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
 
 
-def _read_global_projects() -> list[str]:
-    """Every Global Project path any Altium install on this machine lists.
+def registered_script_projects() -> list[dict]:
+    """Every Altium_API.PrjScr an Altium install loads at startup.
 
-    Read from the registry, which is where Altium keeps the list the
-    Preferences dialog edits. Empty off Windows or when nothing is
-    readable: an Altium that was never installed is an ordinary state.
+    [{"install": registry key name, "path": project file, "exists"}], in
+    registry order; [] off Windows or when no install registers one.
+    The folder that matters is the one Altium loads, and it need not be
+    the default this package installs to.
     """
     if sys.platform != "win32":
         return []
@@ -79,7 +81,7 @@ def _read_global_projects() -> list[str]:
         import winreg
     except ImportError:
         return []
-    found: list[str] = []
+    found: list[dict] = []
     try:
         root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Altium")
     except OSError:
@@ -93,35 +95,42 @@ def _read_global_projects() -> list[str]:
                 break
             index += 1
             try:
-                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS_KEY)
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS)
             except OSError:
                 continue
             with key:
                 item = 0
                 while True:
                     try:
-                        _, value, _ = winreg.EnumValue(key, item)
+                        _name, value, _kind = winreg.EnumValue(key, item)
                     except OSError:
                         break
                     item += 1
-                    if isinstance(value, str) and value.strip():
-                        found.append(value.strip())
+                    if (isinstance(value, str)
+                            and Path(value.strip()).name.lower()
+                            == "altium_api.prjscr"):
+                        path = Path(value.strip())
+                        found.append({"install": install, "path": str(path),
+                                      "exists": path.is_file()})
     return found
 
 
 def get_registered_scripts_dirs() -> list[Path]:
-    """Folders Altium loads Altium_API.PrjScr from, as its Global Projects say.
+    """The distinct folders Altium loads Altium_API.PrjScr from.
 
-    This is the folder that matters. `install-scripts` used to write to
-    %USERPROFILE%\\EDA Agent\\scripts\\ regardless, and `health` and
-    `update` reported on that folder, so with the project registered
-    anywhere else they said "deployed scripts current" while Altium
-    compiled a build days old. Distinct folders, in registry order.
+    Every one of them, in registry order, so `install-scripts` can deploy
+    to each Altium version on the machine and they all compile the same
+    build.
+
+    OUR project only. A machine commonly registers other script projects
+    (an AltiumLL.PrjScr, a vendor's library tools), and taking every
+    registered folder would deploy this package's scripts on top of
+    somebody else's.
     """
     folders: list[Path] = []
     seen: set[str] = set()
-    for value in _read_global_projects():
-        path = Path(value)
+    for entry in registered_script_projects():
+        path = Path(entry["path"])
         if path.name.lower() != "altium_api.prjscr":
             continue
         key = os.path.normcase(str(path.parent))
@@ -132,7 +141,7 @@ def get_registered_scripts_dirs() -> list[Path]:
 
 
 def get_fallback_scripts_dest() -> Path:
-    """%USERPROFILE%\\EDA Agent\\scripts\\, for when Altium names no folder."""
+    """%USERPROFILE%\\EDA Agent\\scripts\\, when Altium names no folder."""
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "scripts"
@@ -140,18 +149,14 @@ def get_fallback_scripts_dest() -> Path:
 
 
 def get_default_scripts_dest() -> Path:
-    """Default destination for `install-scripts`, and what `health` and
-    `update` compare against.
+    """Where the scripts belong: the folder Altium loads them from when one
+    is registered, else %USERPROFILE%\\EDA Agent\\scripts\\.
 
-    The folder Altium's Global Projects list loads Altium_API.PrjScr
-    from, when exactly one is registered. Otherwise (none registered,
-    or several installs naming different folders, where picking one
-    would be a guess) %USERPROFILE%\\EDA Agent\\scripts\\.
+    With several installs registering different folders the first is
+    returned; `install-scripts` itself deploys to all of them.
     """
     registered = get_registered_scripts_dirs()
-    if len(registered) == 1:
-        return registered[0]
-    return get_fallback_scripts_dest()
+    return registered[0] if registered else get_fallback_scripts_dest()
 
 
 # --------------------------------------------------------------------------
@@ -205,14 +210,225 @@ def relaunch_command(exe: str, prjscr: str) -> list[str]:
                  f"|ProcName=Dispatcher.pas>StartMCPServer)"]
 
 
+#: How long --restart waits for the running loop to finish its command and
+#: stop, while a handler is visibly running (a progress file), and while
+#: nothing is (a loop that is not running never takes the stop file).
+RESTART_STOP_WAIT_S = 300.0
+RESTART_IDLE_STOP_WAIT_S = 15.0
+#: How long --restart waits for the new loop to answer.
+RESTART_PING_WAIT_S = 90.0
+
+
+def _wait_for_loop_to_stop(workspace: Path) -> str:
+    """Drop the stop file and wait for the loop to take it.
+
+    The loop deletes it between commands, so a command in flight always
+    finishes first. Returns "stopped", or "not running" when nothing took
+    it and no handler was running (the file is then removed, so a later
+    start does not stop at once).
+    """
+    import time
+
+    stop = workspace / "stop"
+    stop.write_text("", encoding="ascii")
+    start = time.monotonic()
+    while stop.exists():
+        waited = time.monotonic() - start
+        busy = any(workspace.glob("progress_*.json"))
+        if waited > RESTART_STOP_WAIT_S or (
+                not busy and waited > RESTART_IDLE_STOP_WAIT_S):
+            try:
+                stop.unlink()
+            except OSError:
+                pass
+            return "not running"
+        time.sleep(0.2)
+    return "stopped"
+
+
+def _stop_halted_script(command: list) -> None:
+    """Ask Altium to stop a script parked in the debugger.
+
+    A handler that hits an undeclared identifier halts the loop but leaves
+    the script running in the engine, and the new loop then fails with
+    "Another script executing now". Run > Stop (EditScript:Stop, as the
+    install's EditScript.rcs names it) frees the engine; with nothing
+    running it does nothing. Measured 2026-10-25: after it, StartMCPServer
+    came up at once.
+    """
+    import subprocess
+
+    try:
+        subprocess.Popen([command[0], "-REditScript:Stop"],
+                         close_fds=True).wait(timeout=30)
+    except Exception:                            # noqa: BLE001
+        pass
+
+
+def _blocked_by_dialog(pid: int, consequence: str) -> bool:
+    """Say so and return True when Altium sits behind a blocking dialog.
+
+    Only a window that BLOCKS the loop counts: a hover preview
+    (FormPreviewPopup) is listed as a dialog and blocks nothing. A plain
+    relaunch used to skip this: with "Unsaved Changes" up, the ping failed,
+    so relaunch started the script, and X2.EXE -R went to a NEW Altium
+    instead of the busy one.
+    """
+    from .ui import dialog_report, windows
+
+    if not windows.available():
+        return False
+    report = dialog_report.report(pid)
+    if report.get("blocked"):
+        print(f"ERROR: Altium has a dialog open, so {consequence}: "
+              f"{report.get('summary')}. Close it first.", file=sys.stderr)
+        return True
+    return False
+
+
+def _restart(command: list, frames_pid: int) -> int:
+    """Stop the running loop and start a new one, with other sessions'
+    calls waiting through it instead of failing.
+
+    maintenance.json tells every eda-agent server that this is a restart
+    on purpose: a call that is not taken keeps waiting rather than
+    reporting a dead loop, and the loop keeps the requests on disk across
+    the stop and the start instead of purging them. It is removed when the
+    new loop answers, or when this gives up.
+    """
+    import json
+    import os
+    import subprocess
+    import time
+
+    from .bridge.altium_bridge import MAINTENANCE_FILE
+    from .config import get_config
+    from .diag.doctor import _ping_altium
+    from .ui import windows
+
+    if _blocked_by_dialog(frames_pid, "the loop cannot take the stop file"):
+        return 1
+
+    workspace = Path(get_config().workspace_dir)
+    # THE LOOP THAT IS RUNNING, not the one the config names: after a demo
+    # take the pointer named the normal workspace while the loop still
+    # served the demo one, and the stop file went where nobody read it.
+    # Capped: with the loop dead the bridge's own wait ran 267 s before
+    # the restart even began.
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(1)
+    try:
+        ping = pool.submit(_ping_altium).result(timeout=5.0)
+    except concurrent.futures.TimeoutError:
+        ping = None
+    finally:
+        pool.shutdown(wait=False)
+    running = Path(str((ping or {}).get("workspace_dir") or "")) if ping else None
+    if running and str(running) not in ("", ".") and running.is_dir() \
+            and running.resolve() != workspace.resolve():
+        print(f"The running loop serves {running}, not {workspace}; "
+              f"stopping that one.")
+        workspace = running
+    marker = workspace / MAINTENANCE_FILE
+    marker.write_text(json.dumps({"reason": "relaunch --restart",
+                                  "started": time.time(), "pid": os.getpid()}),
+                      encoding="utf-8")
+    try:
+        state = _wait_for_loop_to_stop(workspace)
+        print(f"The loop {'stopped' if state == 'stopped' else 'was not running'}; "
+              f"other sessions' calls are waiting for the new one.")
+        if state != "stopped" and ping is None:
+            _stop_halted_script(command)
+            print(f"Nothing answered a ping through {workspace}, so any script "
+                  f"left halted in Altium was stopped first. If Altium still "
+                  f"says \"Another script executing now\", a loop is serving "
+                  f"another workspace: put an empty file named stop in that "
+                  f"workspace and run this again.")
+        frames = windows.visible_main_frames(frames_pid)
+        launcher = subprocess.Popen(command, close_fds=True)
+        _reshow_hidden_frames(launcher, frames)
+        deadline = time.monotonic() + RESTART_PING_WAIT_S
+        while time.monotonic() < deadline:
+            ping = _ping_altium()
+            if ping is not None:
+                waiting = len(list(workspace.glob("request_*.json")))
+                print(f"The bridge answers again (version "
+                      f"{ping.get('script_version', '?')}); {waiting} waiting "
+                      f"call{'' if waiting == 1 else 's'} now being served.")
+                return 0
+            time.sleep(1.0)
+        print("ERROR: the new loop did not answer within "
+              f"{RESTART_PING_WAIT_S:.0f}s. Check Altium's status window, or "
+              "run `eda-agent doctor`.", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
+def cmd_update_apply(check_only: bool = False, assume_yes: bool = False,
+                     relaunch: bool = True) -> int:
+    """Show what a newer eda-agent brings, and install it once agreed.
+
+    The APPLY half of updating: fast-forwards the clone, reinstalls when
+    the dependencies changed, copies the scripts and restarts the loop.
+    ``cmd_update`` is the REPORT half, which says what is stale across the
+    remote, the package, the deployed scripts and the compiled copy. The
+    `update` verb runs the report; `--yes` runs this.
+    """
+    from . import updates
+
+    info = updates.check(force=True)
+    if info.get("update_available") is None:
+        print(info.get("how") or info.get("error") or "Could not check for an update.")
+        return 1
+    if not info.get("update_available"):
+        print("eda-agent is up to date.")
+        return 0
+    print(f"{info['behind']} new commit(s) on {updates.REMOTE}/{updates.BRANCH}:")
+    for title in info.get("new_commits", []):
+        print(f"  - {title}")
+    if check_only:
+        return 0
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print("Re-run with --yes to update.", file=sys.stderr)
+            return 1
+        try:
+            reply = input("Update now? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Not updated.")
+            return 1
+    out = updates.apply(relaunch=relaunch)
+    if not out.get("updated"):
+        print(f"Not updated: {out.get('reason') or out.get('error') or out}",
+              file=sys.stderr)
+        return 1
+    print(f"Updated {out['from']} -> {out['to']}.")
+    for step in out.get("steps", []):
+        print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
+        if not step["ok"] and step.get("output"):
+            print("    " + step["output"].replace("\n", "\n    "))
+    print(out["next_step"])
+    return 1 if out.get("failed_steps") else 0
+
+
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
-                 force: bool = False) -> int:
+                 force: bool = False, restart: bool = False) -> int:
     """Start the bridge script in the running Altium, when you ask for it.
 
     Nothing runs this on its own: starting a script inside someone's
     Altium is their call. Request files already in the workspace are
     left alone, since another session may be waiting on them, and a
     bridge that already answers a ping is left running unless --force.
+
+    ``restart`` stops a running loop first, after its current command,
+    and other sessions' calls wait through the restart (see _restart),
+    which is how a deploy reaches a loop several sessions are using.
     """
     if sys.platform != "win32":
         print("ERROR: relaunch runs on Windows, where Altium is", file=sys.stderr)
@@ -242,6 +458,11 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
     if dry_run:
         print(" ".join(f'"{part}"' if " " in part else part for part in command))
         return 0
+    if restart:
+        return _restart(command, selection.process.pid)
+    if _blocked_by_dialog(selection.process.pid,
+                          "a script started now would go to a second Altium"):
+        return 1
     if not force:
         from .diag.doctor import _ping_altium
 
@@ -249,6 +470,7 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
             print("The bridge already answers a ping; nothing was started. "
                   "Pass --force to run StartMCPServer anyway.")
             return 0
+        _stop_halted_script(command)
 
     import subprocess
 
@@ -387,18 +609,32 @@ def _stamp_deployed_unit(path: Path) -> None:
 
 
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
-    """Copy the bundled script project to a user-chosen directory.
+    """Copy the bundled script project where Altium loads it from.
 
-    Default destination: the folder Altium's Global Projects list loads
-    Altium_API.PrjScr from (see get_default_scripts_dest), else
+    Default destination: every folder an Altium install registers the
+    script project in (Global Projects), so each version on the machine
+    compiles the same build; with none registered,
     %USERPROFILE%\\EDA Agent\\scripts\\. Override with --dest PATH.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
     from `Dispatcher.pas`.
     """
+    if dest:
+        targets = [Path(dest).expanduser().resolve()]
+    else:
+        targets = get_registered_scripts_dirs() or [get_fallback_scripts_dest()]
+    status = 0
+    for target in targets:
+        status = max(status, _install_scripts_into(target, force))
+    if len(targets) > 1:
+        print(f"Installed into {len(targets)} folders that Altium installs "
+              f"register: {', '.join(map(str, targets))}")
+    return status
+
+
+def _install_scripts_into(dst: Path, force: bool) -> int:
     src = get_bundled_scripts_path()
-    dst = Path(dest).expanduser().resolve() if dest else get_default_scripts_dest()
 
     if not src.exists():
         print(f"ERROR: bundled scripts directory not found: {src}", file=sys.stderr)
@@ -458,14 +694,13 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
         copied += 1
 
     # Publish the workspace path for DelphiScript to pick up, even before
-    # the MCP server has ever run. It must be the workspace the SERVER
-    # will use, not one derived from the scripts folder: the script reads
-    # this pointer once, at startup, so pointing it anywhere else leaves
-    # Altium polling a directory no request is ever written to. Deriving
-    # it as <dest's parent>\workspace\ was only right for the default
-    # destination, and the destination now follows Altium's registration.
-    from .config import _default_workspace_dir, write_workspace_pointer
-    workspace_dir = _default_workspace_dir()
+    # the MCP server has ever run. It is the SERVER's workspace, wherever
+    # the scripts went: the script reads the pointer once at startup, and
+    # deriving it from the destination (<dest>\..\workspace) pointed
+    # Altium at a folder no request is written to whenever --dest or a
+    # registered folder was not the default.
+    from .config import get_config, write_workspace_pointer
+    workspace_dir = Path(get_config().workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
 
@@ -473,10 +708,17 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     print(f"Copied {copied} files to: {dst}")
     print(f"Workspace:     {workspace_dir}")
     print()
-    print("One-time setup in Altium Designer:")
-    print("  DXP -> Preferences -> Scripting System -> Global Projects")
-    print(f"  Install from file -> select:")
-    print(f"  {prjscr}")
+    registered = {os.path.normcase(str(f)) for f in get_registered_scripts_dirs()}
+    if os.path.normcase(str(dst)) in registered:
+        print("Altium already loads the script project from this folder.")
+    else:
+        print("One-time setup in Altium Designer:")
+        print("  DXP -> Preferences -> Scripting System -> Global Projects")
+        print(f"  Install from file -> select:")
+        print(f"  {prjscr}")
+        if registered:
+            print("  (Altium currently loads it from elsewhere: "
+                  f"{', '.join(map(str, get_registered_scripts_dirs()))})")
     print()
     print("Each Altium session, start the polling loop via:")
     print("  File -> Run Script... -> Altium_API -> Dispatcher.pas -> StartMCPServer -> Run")

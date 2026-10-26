@@ -562,6 +562,32 @@ Begin
 End;
 
 
+{ A themed TPanel left on ParentBackground paints its parent's colour and
+  ignores its own Color. Started through -RScriptingSystem:RunScript, every
+  panel here drew in the base colour: no blue Open Dashboard, no red
+  Detach, no status dot. Each panel owns its background from here on. }
+Procedure OwnPanelColours(Pnl : TPanel);
+Begin
+    Try Pnl.ParentBackground := False; Except End;
+End;
+
+Procedure OwnAllPanelColours(Dummy : Integer);
+Begin
+    OwnPanelColours(pnl_Header);    OwnPanelColours(pnl_StatusDot);
+    OwnPanelColours(pnl_KPIs);      OwnPanelColours(pnl_K1);
+    OwnPanelColours(pnl_K2);        OwnPanelColours(pnl_K3);
+    OwnPanelColours(pnl_K4);        OwnPanelColours(pnl_ErrBar);
+    OwnPanelColours(pnl_Primary);   OwnPanelColours(btn_OpenWeb);
+    OwnPanelColours(pnl_Controls);  OwnPanelColours(btn_Pause);
+    OwnPanelColours(btn_Renew);     OwnPanelColours(btn_ClearLog);
+    OwnPanelColours(btn_Detach);    OwnPanelColours(chk_HidePings);
+    OwnPanelColours(chk_OnlySlow);  OwnPanelColours(chk_OnTop);
+    OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
+    OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
+    OwnPanelColours(btn_CopyCmd);
+End;
+
+
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -583,6 +609,7 @@ Begin
         LastPingMs      := 0;
         OpenWebEnabled  := False;
 
+        OwnAllPanelColours(0);
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');
@@ -959,6 +986,31 @@ Begin
         + ',"StatusForm":"' + UnitStamp_StatusForm(0) + '"}');
 End;
 
+{ The reply names the board it came from when GetPCBBoardAnywhere answered  }
+{ from one that was not focused: with a library or a sheet in front, a      }
+{ board found by walking the projects looks exactly like the one the caller }
+{ meant. Only a success whose data is an object is touched.                 }
+Function BoardFallbackNote(Response : String) : String;
+Var
+    Marker, Added, Front : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If BoardFallbackPath = '' Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Front := BoardFallbackFrom;
+    If Front = '' Then Front := 'no document';
+    Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
+        + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
+        + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
+        + ', the first board of the open projects."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -983,6 +1035,11 @@ Begin
         Exit;
     End;
 
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -996,6 +1053,8 @@ Begin
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
     End;
+    Result := SheetCoverage(Result);
+    Result := BoardFallbackNote(Result);
 End;
 
 {..............................................................................}
@@ -1059,13 +1118,55 @@ Begin
            Or (Verb = 'ping');
 End;
 
+{ SessionFocus - put the session's own document back in front, in the same }
+{ turn of the loop as its command, so nothing can move it in between. Pin   }
+{ is the session_doc_path its server sent. Returns the envelope field that }
+{ says what happened, '' when nothing did. Only an open document is shown: }
+{ a closed one is reported, never reopened, because reopening outside its  }
+{ project makes it a free document.                                        }
+Function SessionFocus(PinIn : String) : String;
+Var
+    Pin, Current, After : String;
+    ServerDoc : IServerDocument;
+Begin
+    Result := '';
+    { Both spelled one way: C:/x and C:\x name the same file but open as two }
+    { documents, and a mismatch here would re-show it on every command.    }
+    Pin := CanonicalPathValue('file_path', PinIn);
+    Current := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If SessionFocusAction(Pin, Current) <> 'restore' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Pin); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('missing', Pin) + ',' + JsonStr('kept', Current) + ',' +
+            JsonStr('note', 'This session''s document is no longer open, so '
+                + 'the command ran on the one in front.'));
+        Exit;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
+    After := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If UpperCase(After) <> UpperCase(Pin) Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('not_restored', Pin) + ',' + JsonStr('kept', After) + ',' +
+            JsonStr('note', 'The focus had moved and this session''s '
+                + 'document could not be put back, so the command ran on '
+                + 'the one in front.'));
+        Exit;
+    End;
+    Result := '"session_document":' + JsonObj(
+        JsonStr('restored', Pin) + ',' + JsonStr('from', Current));
+End;
+
 Function ProcessSingleRequest(Dummy : Integer): Boolean;
 Var
     RequestPath, RequestId : String;
     RequestContent, ResponseContent : String;
     Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
-    FocusBefore, FocusAfter : String;
+    FocusBefore, FocusAfter, SessionNote : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
@@ -1158,7 +1259,10 @@ Begin
       session spent a long time looking for a placement bug that was not
       there.
       Captured here rather than per handler because there are hundreds of
-      them and this is the one place every command passes through. }
+      them and this is the one place every command passes through.
+      Taken AFTER the session's own document is put back, so the note
+      below reports only what the handler itself moved. }
+    SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
     ResetNextStep(0);
 
@@ -1168,6 +1272,9 @@ Begin
     { out on a legitimately-slow handler. Delete only AFTER writing the       }
     { response, so at no point are both files missing.                        }
     StartProgress(RequestId);
+    LastErrorId := '';
+    LastErrorCode := '';
+    LastErrorMsg := '';
     Try
         Try
             ResponseContent := ProcessCommand(Command, Params, RequestId);
@@ -1204,6 +1311,9 @@ Begin
             ResponseContent := AppendEnvelopeField(ResponseContent,
                 JsonStr('next_step', PendingNextStep(0)));
 
+        If SessionNote <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent, SessionNote);
+
         FocusAfter := CurrentFocusedDocPath(0);
         If FocusAfter <> FocusBefore Then
             ResponseContent := AppendEnvelopeField(ResponseContent,
@@ -1237,6 +1347,11 @@ Begin
         DashIsError := True;
         DashCode    := ExtractJsonValue(DashErrPayload, 'code');
         DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+        { The message as the handler wrote it, when this reply is the error }
+        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
+        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
+            And (LastErrorMsg <> '') Then
+            DashDetail := LastErrorMsg;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then

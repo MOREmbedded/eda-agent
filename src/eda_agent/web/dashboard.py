@@ -497,7 +497,7 @@ def _aggregate(entries: Iterable[LogEntry]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 # Extensions we want to surface in the dashboard. Each tool that produces a
-# file uses one of these: SVG preview from design_preview_plan, PDF/STEP/DXF
+# file uses one of these: PNG template previews, PDF/STEP/DXF
 # from the export_* tools, PNG screenshots from export_image, JSON snapshots
 # from design_review_snapshot, etc.
 _ARTIFACT_EXTS = {
@@ -1138,6 +1138,26 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e), "checks": []})
 
+    @app.route("/api/language")
+    def language() -> Response:
+        """The language Altium's interface is in, and the ones offered."""
+        from eda_agent.web import i18n
+        try:
+            info = i18n.altium_language()
+        except Exception as e:  # noqa: BLE001 - English is always right
+            info = {"language": "en", "why": f"not read: {e}"}
+        info["name"] = i18n.NAMES.get(info["language"], info["language"])
+        info["available"] = i18n.available()
+        return jsonify(info)
+
+    @app.route("/api/i18n/<lang>")
+    def i18n_table(lang: str) -> Response:
+        """{English label: translation} for one language."""
+        from eda_agent.web import i18n
+        if lang not in i18n.NAMES:
+            return jsonify({})
+        return jsonify(i18n.catalog(lang))
+
     @app.route("/api/artifacts")
     def artifacts() -> Response:
         """List recent files produced by tools (preview SVGs, exports).
@@ -1287,10 +1307,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     def design_plan() -> Response:
         """Current DesignPlan if one is cached in the workspace.
 
-        Reads ``workspace/plan.json`` (written by tools that hand a plan
-        to execute_plan). Falls back to any ``<workspace>/*.canvas.json``
-        in the workspace dir, which design_execute_plan writes alongside
-        the project. Empty state means "no plan in flight".
+        Reads ``workspace/plan.json``. Empty state means "no plan in
+        flight".
         """
         plan_path = workspace_dir / "plan.json"
         if plan_path.exists():
@@ -1301,22 +1319,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
                                 "source": str(plan_path)})
             except (OSError, json.JSONDecodeError) as e:
                 return jsonify({"ok": False, "reason": f"plan.json unreadable: {e}"})
-        # Last-ditch: look for a canvas snapshot next to any open project.
-        canvas_candidates = sorted(workspace_dir.glob("*.canvas.json"),
-                                   key=lambda p: p.stat().st_mtime,
-                                   reverse=True)
-        if canvas_candidates:
-            cp = canvas_candidates[0]
-            try:
-                data = json.loads(cp.read_text(encoding="utf-8"))
-                return jsonify({"ok": True, "data": data,
-                                "mtime": cp.stat().st_mtime,
-                                "source": str(cp),
-                                "kind": "canvas"})
-            except (OSError, json.JSONDecodeError):
-                pass
         return jsonify({"ok": False, "reason": "no-plan-cached",
-                        "hint": "design_preview_plan / design_execute_plan write the cached snapshot."})
+                        "hint": "No plan.json in the workspace."})
 
     @app.route("/api/component/<designator>")
     def component_detail(designator: str) -> Response:

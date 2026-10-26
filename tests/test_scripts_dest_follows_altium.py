@@ -20,7 +20,11 @@ from eda_agent.diag.update import plan
 
 
 def _registered(monkeypatch, *values):
-    monkeypatch.setattr(cli, "_read_global_projects", lambda: list(values))
+    """``registered_script_projects`` yields a dict per install, not a path."""
+    monkeypatch.setattr(
+        cli, "registered_script_projects",
+        lambda: [{"install": f"AD{i}", "path": v, "exists": True}
+                 for i, v in enumerate(values)])
 
 
 def test_one_registered_folder_is_the_default(monkeypatch, tmp_path):
@@ -46,11 +50,19 @@ def test_two_installs_naming_one_folder_count_once(monkeypatch, tmp_path):
     assert cli.get_default_scripts_dest() == tmp_path
 
 
-def test_two_different_folders_are_not_guessed_between(monkeypatch, tmp_path):
+def test_two_different_folders_both_get_the_scripts(monkeypatch, tmp_path):
+    """Two Altium versions, each loading the project from its own folder.
+
+    This used to refuse to choose and fall back to the default folder,
+    which left BOTH registered folders stale while `health` reported on
+    a third one nobody compiled from. Both are returned now, so
+    `install-scripts` writes to each and every version compiles the same
+    build; the first is what the default resolves to.
+    """
     _registered(monkeypatch, str(tmp_path / "a" / "Altium_API.PrjScr"),
                 str(tmp_path / "b" / "Altium_API.PrjScr"))
-    assert len(cli.get_registered_scripts_dirs()) == 2
-    assert cli.get_default_scripts_dest() == cli.get_fallback_scripts_dest()
+    assert cli.get_registered_scripts_dirs() == [tmp_path / "a", tmp_path / "b"]
+    assert cli.get_default_scripts_dest() == tmp_path / "a"
 
 
 def test_install_scripts_writes_where_altium_reads(monkeypatch, tmp_path):
@@ -113,9 +125,10 @@ def test_off_windows_nothing_is_said_about_the_registry():
 def test_the_real_registry_reader_returns_strings(monkeypatch):
     # Undo the conftest stub for this one read-only call.
     monkeypatch.undo()
-    values = cli._read_global_projects()
+    values = cli.registered_script_projects()
     assert isinstance(values, list)
-    assert all(isinstance(v, str) for v in values)
+    assert all(isinstance(v, dict) for v in values)
+    assert all(isinstance(v["path"], str) for v in values)
 
 
 def test_install_scripts_points_altium_at_the_servers_workspace(

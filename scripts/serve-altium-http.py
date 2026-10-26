@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Expose the existing Altium MCP tools over Streamable HTTP."""
 
 import argparse

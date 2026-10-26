@@ -21,6 +21,7 @@ nobody reaches one by accident while looking for the other.
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 from ..ui import controls, dialog_driver, dialog_report, menu, windows
@@ -61,12 +62,18 @@ def _dialog_state(hwnd):
         (c.class_name, c.text, c.enabled, c.visible) for c in window.controls))
 
 
-def _altium_pid():
+def _altium_pid(reads_only: bool = False):
     """(pid, None) or (None, error-dict).
 
     Resolved through the bridge's process scan, NOT through IPC, so it
     still answers while Altium is blocked on a modal. Every tool in
     this module needs it and each used to inline the same six lines.
+
+    ``reads_only`` is for a call that only looks: listing dialogs,
+    reading a panel or window, a screenshot. Those stay available with
+    automation off, as docs/ui-automation.md says. Refusing them too
+    left no way to see why Altium was stuck once input was turned off
+    (issue #94).
     """
     from ..bridge import get_bridge
     from ..ui import windows as _win
@@ -74,12 +81,16 @@ def _altium_pid():
     # THE KILL SWITCH IS CHECKED HERE because every tool in this module
     # calls this first, so one check covers the whole surface. The
     # primitives check again for anything reaching past the tools.
-    if not _win.automation_enabled():
+    if not reads_only and not _win.automation_enabled():
         return None, {"ok": False, "reason": (
             f"UI automation is disabled by {_win.UI_AUTOMATION_ENV}. It is "
             f"on by default; unset that variable, or set it to 1, to allow "
             f"it. See docs/ui-automation.md for what it is for and what it "
             f"can do")}
+
+    # Before any rectangle is read: see windows._make_dpi_aware.
+    if _win.available():
+        _win._make_dpi_aware()
 
     status = get_bridge().get_altium_status()
     # Before the not-running check, because an ambiguous status also has
@@ -89,7 +100,21 @@ def _altium_pid():
                       "candidate_pids": status.get("candidate_pids", [])}
     if not status.get("running") or not status.get("pid"):
         return None, {"ok": False, "reason": "Altium is not running"}
+    _trace_ui_call(sys._getframe(1).f_code.co_name)
     return int(status["pid"]), None
+
+
+def _trace_ui_call(name: str) -> None:
+    """Log a UI tool in bridge_trace.log, which only bridge commands
+    reached before. A hidden Altium window followed a menu walk once, and
+    the FRAME_SHOWN line can only point at what the trace holds."""
+    from ..bridge import get_bridge
+    from ..bridge.altium_bridge import _trace_log
+
+    try:
+        _trace_log(get_bridge().config.workspace_dir, f"UI tool={name}")
+    except Exception:                            # noqa: BLE001
+        pass
 
 
 def _resolve_dialog_control(pid, control_label: str, dialog_title: str):
@@ -359,7 +384,10 @@ def register_uiauto_tools(mcp):
         try ``tool_guide`` first.
 
         Path by name, e.g. "Design|Rules" (accelerators and "..."
-        ignored). It needs the foreground: it brings Altium forward and
+        ignored). Give the English names on any language: a translated
+        Altium's own captions are matched from its install, and the
+        reply's ``ui_language`` says which it was. It needs the
+        foreground: it brings Altium forward and
         briefly moves the pointer, so ``may_steal_focus`` must be True.
         The menu bar depends on the focused editor, so focus the right
         document first. Read any dialog it opens with
@@ -409,8 +437,11 @@ def register_uiauto_tools(mcp):
                 "and briefly moving the pointer. Pass "
                 "may_steal_focus=True if that is acceptable now.")}
 
-        return await loop.run_in_executor(
+        out = await loop.run_in_executor(
             None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
+        if isinstance(out, dict) and menu.ui_language():
+            out["ui_language"] = menu.ui_language()
+        return out
 
     @mcp.tool()
     async def app_list_open_dialogs() -> dict[str, Any]:
@@ -427,6 +458,10 @@ def register_uiauto_tools(mcp):
         Differences"), ``engineering_change_order``, ``wizard``,
         ``progress`` or ``unknown``. Grids and owner-drawn lists can't be
         read (``has_unreadable_content``). Presses nothing.
+        ``needs_a_human`` means no driver answers it blindly: read the
+        message and press the answer the task calls for with
+        app_press_dialog_button. Ask the user only when the choice is
+        theirs, never to click a button for you.
 
         Returns:
             Dict with ``blocked``, ``dialog_count``, ``dialogs``,
@@ -437,16 +472,17 @@ def register_uiauto_tools(mcp):
                 "pywin32 is not importable, so no dialog can be inspected "
                 "from this host")}
 
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem:
             return problem
 
         return dialog_report.report(pid)
 
     @mcp.tool()
-    async def app_press_dialog_button(button_caption: str,
+    async def app_press_dialog_button(button_caption: str = "",
                                       dialog_title: str = "",
-                                      allow_irreversible: bool = False
+                                      allow_irreversible: bool = False,
+                                      button: str = "",
                                       ) -> dict[str, Any]:
         """Press ONE named button in an open Altium dialog.
 
@@ -461,11 +497,16 @@ def register_uiauto_tools(mcp):
             dialog_title: substring picking one dialog when several are
                 open. Empty uses the first.
             allow_irreversible: permit a committing press.
+            button: the same as ``button_caption``, the name clients reach
+                for first.
 
         Returns:
             ``ok``, the dialog and button actually matched, and whether
             the dialog closed afterwards.
         """
+        button_caption = button_caption or button
+        if not button_caption:
+            return {"ok": False, "reason": "give the button's caption"}
         pid, problem = _altium_pid()
         if problem:
             return problem
@@ -758,7 +799,8 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import panels
 
-        pid, problem = _altium_pid()
+        # offered_too clicks a menu, so only the plain listing is a read.
+        pid, problem = _altium_pid(reads_only=not offered_too)
         if problem is not None:
             return problem
         if not panels.available():
@@ -830,7 +872,7 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import panels
 
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
         return panels.read_panel(pid, name)
@@ -969,10 +1011,11 @@ def register_uiauto_tools(mcp):
             "ctrl+s"              a chord
             "tab tab enter"       three in order
 
-        Modifiers: ctrl, alt, shift. Keys: enter, escape, tab, space,
-        backspace, delete, the arrows, home, end, pageup, pagedown and
-        F1 to F12. An unknown name is refused and the known ones listed,
-        rather than sent as nothing.
+        Modifiers: ctrl, alt, shift. Keys: letters a to z, digits 0 to
+        9, enter, escape, tab, space, backspace, delete, insert, the
+        arrows, home, end, pageup, pagedown and F1 to F12. An unknown
+        name is refused and the known ones listed, rather than sent as
+        nothing. For literal text use app_type_text.
 
         THIS GOES WHEREVER FOCUS IS. Establish focus first, with
         app_click_menu or app_open_panel, and check the result
@@ -1067,7 +1110,7 @@ def register_uiauto_tools(mcp):
         a menu dropped as a result, since many toolbar buttons open one
         rather than acting.
         """
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=not name)
         if problem is not None:
             return problem
         if name:
@@ -1088,7 +1131,7 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import controls as ctl
 
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=not name)
         if problem is not None:
             return problem
         open_dialogs = windows.dialogs(pid)
@@ -1182,7 +1225,7 @@ def register_uiauto_tools(mcp):
 
         from ..ui import ocr
 
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
         if not ocr.available():
@@ -1208,9 +1251,13 @@ def register_uiauto_tools(mcp):
             from ..config import get_config
             path = os.path.join(str(get_config().workspace_dir),
                                 f"altium_{int(_time.time())}.png")
+        folder = os.path.dirname(os.path.abspath(path))
+        created_folder = not os.path.isdir(folder)
+        os.makedirs(folder, exist_ok=True)
         if not ocr.capture_png(target, path):
             return {"ok": False, "reason": "capture failed", "path": path}
         return {"ok": True, "path": path, "hwnd": target,
+                "created_folder": created_folder,
                 "note": "read the file to look at it"}
 
     @mcp.tool()
@@ -1257,7 +1304,7 @@ def register_uiauto_tools(mcp):
         to be safe, which is the pattern this layer spent the day
         removing everywhere else.
         """
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
         if not windows.available():
@@ -1279,7 +1326,7 @@ def register_uiauto_tools(mcp):
         because reading it needs no click; menu contents are not,
         because opening one does.
         """
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
         if not windows.available():
@@ -1349,7 +1396,7 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import uia
 
-        pid, problem = _altium_pid()
+        pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
         if not uia.available():

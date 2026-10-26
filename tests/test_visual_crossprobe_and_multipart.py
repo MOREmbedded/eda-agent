@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Offline coverage for visual cross-probe and multipart symbol composition."""
 
 from __future__ import annotations

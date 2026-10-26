@@ -98,6 +98,16 @@ def setup_logging() -> None:
     root = logging.getLogger("eda_agent")
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # A capped file in the workspace beside stderr, and secrets redacted
+    # from both. Best-effort: a workspace that cannot be written never
+    # stops the server.
+    try:
+        from .config import get_config
+        from .server_log import install
+
+        install(root, get_config().workspace_dir)
+    except Exception:  # noqa: BLE001
+        pass
 
     # A rotating, capped, secret-redacting file under %USERPROFILE%\EDA
     # Agent\logs\ (or EDA_AGENT_LOG_DIR), alongside the stderr handler
@@ -144,38 +154,40 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 #: a paragraph naming tools that are not there. A preamble that names a
 #: missing tool is read first and trusted most, which is the worst place
 #: for a dead end.
+#: Altium draws from a hand template (decided 2026-10-20: the automatic
+#: layout is being retired; a planned template came out clean first time
+#: where the engine did not after many rounds).
 _ENGINE_ALTIUM = (
-    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
-    "with sch_place_components and joining them with sch_place_wires\n"
-    "gives a netlist-correct sheet that reads like nothing a person\n"
-    "would draw, and it is the most common way this server is misused.\n"
-    "A schematic comes from a DesignPlan: build the plan, then\n"
-    "design_execute_plan places AND routes the whole sheet in one\n"
-    "call, through a layout engine measured against hand-drawn boards.\n"
-    "design_layout_schematic returns that same layout as data and\n"
-    "design_preview_plan renders it, both without touching the EDA.\n"
-    "One engine sits behind all three.\n"
+    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Plan the sheet the way\n"
+    "an engineer draws it, every coordinate on the 100 mil grid: the IC\n"
+    "in the middle, supply rails as straight wires with their capacitors\n"
+    "hanging straight down to ground, a feedback divider as a vertical\n"
+    "stack whose midpoint runs straight across to its pin, net labels\n"
+    "only where a signal leaves the block. Read each symbol's pins with\n"
+    "lib_get_pin_list, write the template (parts, wires through pin\n"
+    "anchors like U1.EN, power ports, labels and the expected nets),\n"
+    "check it with sch_preview_template and look at its PNG, then draw\n"
+    "it with sch_draw_template. That places the parts, works out every\n"
+    "pin end, checks the wiring against the placed pins and refuses a\n"
+    "short or a misplaced part before the first wire.\n"
     "\n"
-    "CHANGING an existing sheet goes the same way. Re-running\n"
-    "design_execute_plan on a project it drew before moves only what\n"
-    "the plan changed and leaves every other component alone, so an\n"
-    "edit is a plan edit. For a sheet it did not draw,\n"
-    "design_plan_from_sheet reads a plan back off the schematic and\n"
-    "design_hints_from_sheet reads the current positions to pass as\n"
-    "placement_hints. The sch_ and obj_ tools are for the few glyphs a\n"
-    "plan cannot express, and for repairs too small to re-lay-out.\n"
+    "To CHANGE a block, redraw it from a template on a fresh sheet\n"
+    "rather than moving parts one at a time. The sch_ and obj_ tools\n"
+    "are for small repairs.\n"
     "\n"
 )
 
 _ENGINE_EASYEDA = (
-    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
-    "with easyeda_place_schematic_components and joining them with\n"
-    "easyeda_add_wires gives a netlist-correct sheet that reads like\n"
-    "nothing a person would draw, and it is the most common way this\n"
-    "server is misused. A schematic comes from a DesignPlan: build the\n"
-    "plan, lay it out with design_layout_schematic, which runs the same\n"
-    "engine measured against hand-drawn boards, then apply it with\n"
-    "easyeda_emit_plan.\n"
+    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Build the DesignPlan,\n"
+    "then plan the sheet the way an engineer draws it, every coordinate\n"
+    "on the 100 mil grid: the IC in the middle, rails as straight wires\n"
+    "with their capacitors hanging straight down to ground, a divider\n"
+    "whose midpoint runs straight across to its pin, net labels only\n"
+    "where a signal leaves the block. easyeda_emit_template returns the\n"
+    "calls that place the parts there; run them, read the pins back with\n"
+    "easyeda_get_schematic_pins, and easyeda_emit_template_connections\n"
+    "checks the template's wiring against those pins and the plan's\n"
+    "nets and returns the calls that draw it.\n"
     "\n"
 )
 
@@ -195,16 +207,27 @@ _ENGINE_PARAGRAPHS = {
 # in a plan to edit 1,499 symbols through the Properties panel. The API
 # route existed for two of the three; the third was a real gap, now fixed.
 # "Usually" is the accurate word, and a genuine gap is worth reporting.
+# The paragraph then told sessions to ask the user before driving the
+# interface, and they did: they asked George to click things they could
+# click themselves. His rule (2026-10-23): the API route when there is
+# one, otherwise the interface, without asking.
 _UI_AUTOMATION_ALTIUM = (
-    "The app_ tools that press buttons, pick menus and type into Altium's\n"
-    "dialogs (app_click_menu, app_run_ui_command, app_set_dialog_control,\n"
-    "app_canvas and the rest) are a last resort, not a second route. When\n"
-    "an API tool seems to fail or be missing, the cause has usually been a\n"
-    "wrong argument or a tool that was not found, and driving a dialog\n"
-    "instead has ended with Altium crashed. Before reaching for one,\n"
-    "{reach} with what you are trying to do. If it still finds nothing,\n"
-    "say so and ask the user before driving the interface: a genuine gap\n"
-    "is worth reporting, because it gets fixed.\n"
+    "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
+    "press buttons, pick menus and type into Altium's dialogs\n"
+    "(app_click_menu, app_run_ui_command, app_press_dialog_button,\n"
+    "app_drive_dialogs, app_set_dialog_control, app_canvas and the rest)\n"
+    "come second to an API tool. When an API tool seems to fail or be\n"
+    "missing, the cause has usually been a wrong argument or a tool that\n"
+    "was not found, and driving a dialog instead has ended with Altium\n"
+    "crashed, so first {reach} with what you are trying to do. When there\n"
+    "is no API route, drive the interface yourself and carry on: never\n"
+    "ask the user to click, pick a menu or press a button you can press.\n"
+    "Read every dialog you raise (app_list_open_dialogs, app_screenshot)\n"
+    "and answer it as the task requires; needs_a_human marks one the\n"
+    "dialog driver will not answer blindly, not one to hand to the user.\n"
+    "Ask the user only for a decision that is theirs, never for a click.\n"
+    "Say in your report which step needed the interface: a missing API\n"
+    "route is worth reporting, because it gets fixed.\n"
     "\n"
 )
 
@@ -227,9 +250,9 @@ def build_server_instructions(
     saying which applies is the difference between guidance and a dead
     end for the clients that most need the guidance.
 
-    The backend does the same job for the schematic-engine paragraph:
-    design_execute_plan is Altium-only, so naming it to a KiCad client
-    sent it looking for a tool that backend never registers.
+    The backend does the same job for the schematic paragraph: the
+    template tools differ per backend, so naming Altium's to a KiCad
+    client would send it looking for a tool that backend never registers.
     """
     if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
         reach = ('reach tool_guide through tool_invoke, since this server '
@@ -261,6 +284,10 @@ def build_server_instructions(
         + ui
         + engine +
         "Coordinates are in mils throughout, on every backend.\n"
+        "\n"
+        "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
+        "the user what is new and ask; call server_update(apply=True) only\n"
+        "after they agree.\n"
     )
 
 
@@ -453,11 +480,18 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
                      name="workspace-housekeeping", daemon=True).start()
 
+    # The first 3D model would otherwise wait on a cold CadQuery import.
+    from .design.models3d import warm_cadquery
+    warm_cadquery()
+
     # Record this server and warn (stderr only) about others on the same
     # workspace. Never refuses and never stops anything: several sessions
     # at once are allowed. app_ping and app_get_status repeat the warning.
-    from . import server_registry
+    from . import server_registry, updates
     server_registry.register(config.workspace_dir)
+    # Once a day at most, in the background: a newer eda-agent is then
+    # reported by app_ping and app_context, never installed unasked.
+    updates.start_background_check()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
     if duplicate:
@@ -801,7 +835,13 @@ def main() -> int:
                             help="Print the command instead of running it.")
     relaunch_p.add_argument("--force", action="store_true",
                             help="Run it even when the bridge answers a ping.")
+    relaunch_p.add_argument("--restart", action="store_true",
+                            help="Stop the running loop after its current "
+                                 "command and start it again (after "
+                                 "install-scripts). Other sessions' calls "
+                                 "wait through it instead of failing.")
 
+    # update -- pull a newer eda-agent into this clone, after asking
     # health -- offline, fast
     subparsers.add_parser(
         "health",
@@ -992,6 +1032,14 @@ def main() -> int:
              "another git remote by name. A path that exists is "
              "treated as a folder.")
     update_p.add_argument(
+        "--yes", action="store_true",
+        help=("Apply the update instead of only reporting: fast-forward "
+              "this clone, reinstall if the dependencies changed, copy the "
+              "scripts and restart the Altium loop."))
+    update_p.add_argument(
+        "--no-relaunch", action="store_true",
+        help="With --yes, leave the Altium loop running the old scripts.")
+    update_p.add_argument(
         "--json", dest="json_out", action="store_true",
         help="Print the steps as JSON.")
 
@@ -1169,6 +1217,18 @@ def main() -> int:
                        help="Exit non-zero on a finding at/above this "
                             "severity (default: error).")
 
+    # calc -- the offline engineering calculators, without an MCP client.
+    calc_p = subparsers.add_parser(
+        "calc",
+        help=("Run an engineering calculator: `eda-agent calc fusing-current "
+              "seconds=1 area_sq_mils=103`. `eda-agent calc` lists them; "
+              "`eda-agent calc NAME --help` shows a calculator's inputs."),
+    )
+    calc_p.add_argument("name", nargs="?", help="Calculator name.")
+    calc_p.add_argument("inputs", nargs="*", metavar="KEY=VALUE",
+                        help="Inputs, named as the calculator's arguments.")
+    calc_p.add_argument("--json", action="store_true", help="Emit JSON.")
+
     args = parser.parse_args()
 
     # Resolve the active profile (see profile.py) before anything else runs,
@@ -1237,7 +1297,7 @@ def main() -> int:
         return cli.cmd_easyeda_extension(args.action, out=args.out)
     if args.command == "relaunch":
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
-                                force=args.force)
+                                force=args.force, restart=args.restart)
     if args.command == "dashboard":
         from .web.dashboard import main as dashboard_main
         return dashboard_main([
@@ -1275,21 +1335,14 @@ def main() -> int:
         except Exception as e:
             print(f"could not stop dashboard pid {pid}: {e}")
             return 1
-    if args.command == "vote":
-        from .web.server import main as vote_main
-        return vote_main([
-            "--plan", str(args.plan),
-            *(["--symbols", str(args.symbols)] if args.symbols else []),
-            "--host", args.host,
-            "--port", str(args.port),
-            *(["--debug"] if args.debug else []),
-        ])
     if args.command == "review":
         return _run_review(args)
     if args.command == "bom":
         return _run_bom(args)
     if args.command == "netlist":
         return _run_netlist(args)
+    if args.command == "calc":
+        return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":
@@ -1347,6 +1400,13 @@ def main() -> int:
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
 
     if args.command == "update":
+        # --yes is the APPLY half (fast-forward, reinstall, copy scripts,
+        # restart the loop). Without it the verb REPORTS what is stale
+        # across remote, package, deployed scripts and the compiled copy.
+        if getattr(args, "yes", False):
+            return cli.cmd_update_apply(
+                check_only=args.check_only, assume_yes=True,
+                relaunch=not args.no_relaunch)
         return cli.cmd_update(pull=args.pull, fetch=args.fetch,
                               check_only=args.check_only,
                               force_scripts=args.force_scripts,

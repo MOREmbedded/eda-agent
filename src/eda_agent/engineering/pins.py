@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Pin table import and validation.
 
 Input is a CSV pin table with header: number,name,type[,side][,description]

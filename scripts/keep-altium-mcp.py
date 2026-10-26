@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Keep the Altium network MCP endpoint and dashboard available."""
 
 from __future__ import annotations

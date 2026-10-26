@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Owner naming policy (config/ipc/naming.json).
 
 Every symbol, footprint and component name that the system generates or accepts must match the owner's

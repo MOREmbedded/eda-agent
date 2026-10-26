@@ -306,6 +306,8 @@ class _FakeBridge:
         if command == "library.reload_library":
             self.reloaded = True
             return {"reloaded": True, "library_path": "Demo.PcbLib"}
+        if command == "application.save_document":
+            return {"saved": True, "file_path": (params or {}).get("file_path")}
         return {}
 
 
@@ -326,6 +328,7 @@ def test_dry_run_is_the_default_and_writes_nothing(monkeypatch, tmp_path):
     commands = [c for c, _ in bridge.calls]
     assert "library.set_designators" not in commands
     assert "application.save_all" not in commands
+    assert "application.save_document" not in commands
     assert not (tmp_path / "designator_edits.tsv").exists()
 
 
@@ -344,7 +347,11 @@ def test_apply_sends_one_bulk_call_then_saves_once(monkeypatch, tmp_path):
     assert len(bulk) == 1  # NOT one call per footprint
     assert bulk[0]["library_path"] == "Demo.PcbLib"
     assert bulk[0]["edits_path"].endswith("designator_edits.tsv")
-    assert [c for c, _ in bridge.calls].count("application.save_all") == 1
+    # The library alone is written: save_all wrote every open document,
+    # other projects' sheets and boards included (issue #94).
+    saves = [p for c, p in bridge.calls if c == "application.save_document"]
+    assert len(saves) == 1 and saves[0]["file_path"] == "Demo.PcbLib"
+    assert "application.save_all" not in [c for c, _ in bridge.calls]
     # the per-footprint command must not be used any more
     assert "library.set_designator" not in [c for c, _ in bridge.calls]
 
@@ -515,9 +522,9 @@ class _ConvergingBridge(_FakeBridge):
             self.writes += 1
             return {"applied": 1, "created": 0, "failed": 0, "refused": 0,
                     "missing": []}
-        if command == "application.save_all":
+        if command == "application.save_document":
             self.saves += 1
-            return {}
+            return {"saved": True}
         if command == "library.reload_library":
             self.reloads += 1
             return {"reloaded": True, "library_path": "Demo.PcbLib"}
@@ -609,6 +616,8 @@ def test_convert_to_stroke_saves_and_reloads_when_something_changed(
             if command == "library.convert_designators_to_stroke":
                 return {"library_path": "Demo.PcbLib", "designators": 44,
                         "converted": 3, "names": ["A", "B", "C"]}
+            if command == "application.save_document":
+                return {"saved": True}
             return {}
 
     monkeypatch.setattr(lib, "get_bridge", lambda: _Bridge())
@@ -618,8 +627,9 @@ def test_convert_to_stroke_saves_and_reloads_when_something_changed(
     c = r[0] if isinstance(r, tuple) else r
     res = json.loads(c[0].text)
     assert res["converted"] == 3 and res["saved"] is True
-    # a change must be flushed AND the caches rebuilt
-    assert "application.save_all" in calls
+    # a change must be flushed AND the caches rebuilt, the library alone
+    assert "application.save_document" in calls
+    assert "application.save_all" not in calls
     assert "library.reload_library" in calls
 
 
@@ -644,6 +654,7 @@ def test_convert_to_stroke_no_save_when_nothing_to_convert(monkeypatch, tmp_path
     res = json.loads(c[0].text)
     assert res["converted"] == 0 and res["saved"] is False
     assert "application.save_all" not in calls
+    assert "application.save_document" not in calls
 
 
 def test_refused_creates_are_surfaced_as_failures(monkeypatch, tmp_path):

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Altium 365 / Nexar client: the 3.2 additions (update_parameters, entity,
 workspace_infos, library_components_params) confirmed new via Booster 3.2's
 own test_v32.py (update_parameters) and absent from its 3.1 test suite.

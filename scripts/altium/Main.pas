@@ -13,13 +13,17 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.25.2';
+    SCRIPT_VERSION = '2026.10.26.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
     // that in practice stops in the low tens. The bound is reported back so a
     // pair above it is known to have been skipped rather than judged clean.
     MechScanLimit = 64;
+
+    // The colour Altium gives a net label by default: maroon, RGB(128, 0, 0),
+    // packed as BGR. Every net label a tool places takes it.
+    NET_LABEL_COLOR = 128;
 
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns
@@ -73,6 +77,11 @@ Var
     WorkspaceDir : String;
     Running : Boolean;
 
+    { The last error reply built, unescaped: request id, code and message.  }
+    { The status window shows this instead of re-reading the JSON, which    }
+    { turns non-Latin text into '?'. See BuildErrorResponseDetailed.        }
+    LastErrorId, LastErrorCode, LastErrorMsg : String;
+
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
     PollIntervalActiveMs : Integer;
@@ -107,6 +116,18 @@ Var
     SaveScope : String;
     CleanLeftAlone : Integer;
     LastCompiledProject : IProject;
+    { Sheets a project-wide read asked for in the current request, and how }
+    { many were not loaded and so not read. Reset per request by           }
+    { ProcessCommand; see ProjectSheet and SheetCoverage.                  }
+    SheetsSeen : Integer;
+    SheetsSkipped : Integer;
+    { The board GetPCBBoardAnywhere answered from when none was focused,  }
+    { and the kind of the document that was in front; reset per request   }
+    { and put on the reply by BoardFallbackNote. BoardMissWhy says why it }
+    { gave no board at all, for the NO_PCB refusal.                       }
+    BoardFallbackPath : String;
+    BoardFallbackFrom : String;
+    BoardMissWhy : String;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -524,6 +545,13 @@ End;
 
 {..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
+{                                                                              }
+{ When no board is focused it answers from the first PcbDoc of the open        }
+{ projects, and the reply then names that board (BoardFallbackNote), so a     }
+{ caller can tell it from the one it meant. With a PcbLib in front the caller  }
+{ is working on a library, not a board: it answers only when exactly one board }
+{ is open, and with several gives Nil with the reason in BoardMissWhy, rather  }
+{ than reading or writing whichever board the walk reached first.             }
 {..............................................................................}
 
 Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
@@ -533,8 +561,8 @@ Var
     Doc : IDocument;
     ServerDoc : IServerDocument;
     PrevView : IServerDocumentView;
-    Path : String;
-    I, P : Integer;
+    Path, FocusKind, Candidates : String;
+    I, P, Found : Integer;
 Begin
     Result := Nil;
 
@@ -550,10 +578,46 @@ Begin
     { absent server) that Try/Except cannot swallow and that hangs the       }
     { polling loop. So only touch PCBServer when a PCB is actually focused.  }
     Doc := Workspace.DM_FocusedDocument;
-    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
+    FocusKind := '';
+    If Doc <> Nil Then
+        Try FocusKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    If FocusKind = 'PCB' Then
     Begin
         Result := PCBServer.GetCurrentPCBBoard;
         If Result <> Nil Then Exit;
+    End;
+
+    { A library in front: a board is meant only when there is just one. }
+    If FocusKind = 'PCBLIB' Then
+    Begin
+        Found := 0;
+        Candidates := '';
+        For P := 0 To Workspace.DM_ProjectCount - 1 Do
+        Begin
+            Project := Workspace.DM_Projects(P);
+            If Project = Nil Then Continue;
+            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+            Begin
+                Doc := Project.DM_LogicalDocuments(I);
+                If Doc = Nil Then Continue;
+                Path := '';
+                Try Path := Doc.DM_FullPath; Except End;
+                If Path = '' Then Continue;
+                If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
+                   (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
+                Found := Found + 1;
+                If Candidates <> '' Then Candidates := Candidates + ', ';
+                Candidates := Candidates + Path;
+            End;
+        End;
+        If Found > 1 Then
+        Begin
+            BoardMissWhy := 'A PCB library is in front and ' + IntToStr(Found)
+                + ' boards are open (' + Candidates + '), so no board was '
+                + 'picked. For the library use the lib_ tools; for a board, '
+                + 'focus it first.';
+            Exit;
+        End;
     End;
 
     { Fallback: no PCB tab is focused (the user is on a schematic, a library }
@@ -590,7 +654,12 @@ Begin
 
             Try Client.ShowDocument(ServerDoc); Except End;
             Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-            If Result <> Nil Then Break;
+            If Result <> Nil Then
+            Begin
+                BoardFallbackPath := Path;
+                BoardFallbackFrom := FocusKind;
+                Break;
+            End;
         End;
 
         If Result <> Nil Then Break;
@@ -832,6 +901,35 @@ Begin
         AgeAfter := -1;
         Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
         If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
+End;
+
+{ Write the project FILE itself. Adding or removing a document changes the  }
+{ project in memory without marking it modified, so a save that waits for   }
+{ the flag never writes the .PrjPcb and the change is gone after a reopen   }
+{ (issue #94; measured: two documents added, proj_save, file listed none).  }
+{ Called where membership changes, and by proj_save for the named project;  }
+{ never by the save-everything passes, which must not rewrite projects      }
+{ nobody touched.                                                           }
+Function SaveProjectFile(Project : IProject) : Boolean;
+Var
+    ProjDoc : IServerDocument;
+    Path : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
+    If ProjDoc = Nil Then Exit;
+    Try ProjDoc.SetModified(True); Except End;
+    Try
+        ProjDoc.DoFileSave('');
+        Result := True;
+    Except
+        Result := False;
+    End;
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -1640,6 +1738,49 @@ Begin
 End;
 
 {..............................................................................}
+{ ProjectSheet - a project sheet for a project-wide read, counted.            }
+{                                                                              }
+{ SchServer.GetSchDocumentByPath returns Nil for a sheet the editor has not    }
+{ loaded, and every project loop skipped it with Continue. An audit over a    }
+{ partly loaded project then answered checked:0 / violations:0, the same as   }
+{ "looked and found nothing". Each lookup through here is counted, and        }
+{ SheetCoverage puts the counts on the reply at the one dispatch point, so a  }
+{ loop added later is covered without remembering to.                         }
+{..............................................................................}
+Function ProjectSheet(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    Inc(SheetsSeen);
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+    If Result = Nil Then Inc(SheetsSkipped);
+End;
+
+{ The reply with the sheet counts added when a project-wide read skipped a   }
+{ sheet. Only a success whose data is an object is touched; an error, or a   }
+{ reply that read no project sheet, goes back unchanged.                     }
+Function SheetCoverage(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If SheetsSkipped = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
+        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
+        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
+        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
+        + 'and were NOT read, so counts and findings cover only the rest. '
+        + 'Run proj_load_sheets and ask again."';
+    { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{..............................................................................}
 { CROSS-DOCUMENT HINTS                                                        }
 {                                                                              }
 { "No PCB library is active" is true and unhelpful. It says what is missing    }
@@ -1735,6 +1876,9 @@ Begin
     { and must not be doubled. Decided on the handler's own words,       }
     { BEFORE the focus note is added, because a file name such as        }
     { power_lib_parts.SchLib contains "lib_" and would read as a pointer.}
+    { Why GetPCBBoardAnywhere gave no board, when it decided not to guess. }
+    If (ErrorCode = 'NO_PCB') And (BoardMissWhy <> '') Then
+        ErrorMsg := WithFullStop(ErrorMsg) + ' ' + BoardMissWhy;
     Hint := CrossDocumentHint(ErrorCode);
     Pointed := MessageNamesATool(ErrorMsg);
     If Hint <> '' Then
@@ -1782,6 +1926,13 @@ Begin
                   ',"id":"' + RequestId + '","success":false,"data":null,' +
                   '"error":{"code":"' + ErrorCode + '","message":"' + EscMsg +
                   '","details":' + DetailsJson + '}}';
+
+    { The message as written, for the status window. Read back out of the
+      JSON it loses every character above 255 to '?', since the unescaper
+      cannot build one in this script host (issue #91). }
+    LastErrorId := RequestId;
+    LastErrorCode := ErrorCode;
+    LastErrorMsg := ErrorMsg;
 End;
 
 Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : String) : String;
@@ -1977,6 +2128,29 @@ Begin
     Else Result := Lowest;
 End;
 
+{ SessionFocusAction - whether to put a session's document back in front    }
+{ before its command runs. Most commands act on the focused document, and   }
+{ any session can move it between two calls of another: measured on        }
+{ 2026-10-23, 309 of about 1500 commands in a day were set_active_document, }
+{ sessions taking the focus back from each other, with a gap in which a    }
+{ write could land on the wrong document. Pin is the document the session  }
+{ last had in front, Current what is in front now, both canonical.         }
+{   'keep'    no pin, or the pin is already in front                      }
+{   'restore' put the pin back in front first                             }
+{ A session's command always runs on the document that session chose, even }
+{ when a person at the keyboard clicked elsewhere in between, by choice    }
+{ (2026-10-23): a write on a document the session never picked             }
+{ is worse than a view that moves. A session is pointed at another         }
+{ document by focusing it, which moves its pin.                           }
+{ Pure strings, so the Free Pascal cross-check runs a verbatim copy.       }
+Function SessionFocusAction(Pin : String; Current : String) : String;
+Begin
+    Result := 'keep';
+    If Pin = '' Then Exit;
+    If UpperCase(Pin) = UpperCase(Current) Then Exit;
+    Result := 'restore';
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
     Files, Tags, BestSeq, BestName : TStringList;
@@ -2104,11 +2278,22 @@ End;
 {                                                                              }
 { The purged count is logged, so an operator can tell "the loop is slow" from }
 { "the loop is draining a backlog".                                          }
+{ EXCEPT DURING A RESTART. eda-agent relaunch --restart writes             }
+{ maintenance.json for as long as it takes, and other sessions' calls wait  }
+{ through it instead of failing, so the requests on disk then are live      }
+{ callers waiting for the new loop, not orphans. Each one still runs on its }
+{ own session's document (SessionFocus), and a caller that gave up has      }
+{ withdrawn its own request.                                               }
 Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
     Files : TStringList;
     I, Purged : Integer;
 Begin
+    If FileExists(WorkspaceDir + 'maintenance.json') Then
+    Begin
+        AppendLog(FormatLogStamp(0) + ',0,_purge_requests,kept for restart,0,');
+        Exit;
+    End;
     Purged := 0;
     Files := TStringList.Create;
     Try

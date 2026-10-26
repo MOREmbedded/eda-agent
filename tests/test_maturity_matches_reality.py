@@ -35,8 +35,8 @@ _BRIDGE_CALLS = {"get_bridge", "send_command", "send_command_async"}
 
 # COVERAGE LIMIT, stated so this guard is not over-trusted: detection is
 # DIRECT-CALL ONLY. A tool that delegates to a helper which talks to the
-# bridge (design_execute_plan -> execute_plan_from_json, and most of the
-# rest of _DESIGN_BRIDGE) looks bridge-free from here. So a failure is
+# bridge (design_plan_from_sheet -> plan_from_live_sheet, and most of
+# the rest of _DESIGN_BRIDGE) looks bridge-free from here. So a failure is
 # always a real mislabel, but a pass does NOT prove a tool is offline.
 # Following delegation would mean whole-program call-graph analysis, and
 # a heuristic approximation of it produced far more noise than signal

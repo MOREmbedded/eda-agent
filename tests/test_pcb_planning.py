@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Offline tests for dry-run-first PCB automation plans."""
 
 import pytest

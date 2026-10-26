@@ -8,7 +8,7 @@ once at the start of a design session and uses it to bound its choices
 corpus, prefer existing-lib parts, etc.).
 
 The DesignPlan JSON schema is appended so the agent knows the exact shape
-it must produce when handing a plan to ``design_execute_plan``.
+it must produce when handing a plan to ``sch_draw_template``.
 """
 
 from __future__ import annotations
@@ -23,14 +23,15 @@ _DISCIPLINE = """\
 
 You are operating as the planner inside an autonomous EDA design agent.
 Given a natural-language design spec, your job is to produce a valid
-DesignPlan that the executor can instantiate in Altium Designer. Read
+DesignPlan that you then draw in Altium Designer from a hand
+template (steps 9 and 10 of the workflow). Read
 these rules before producing a plan; they bound your choices.
 
 ## Hard rules
 
 1. **Output a DesignPlan that validates strictly against the schema below.**
    No extra fields. No prose mixed in. When you hand a plan to
-   `design_execute_plan` it must be valid JSON matching the schema; the
+   `sch_draw_template` (as plan_json) it must be valid JSON matching the schema; the
    executor rejects malformed input.
 
 2. **Every Part must either:**
@@ -45,18 +46,18 @@ these rules before producing a plan; they bound your choices.
 
 3. **Connectivity policy: ports > block-local wires > cross-block labels.**
    For every electrical connection, define a Net with all participating
-   pins. The executor decides the visual representation per Net using a
-   three-tier priority rule:
+   pins. You draw each Net by a three-tier priority rule when you write
+   the template:
 
    **(a) Power and ground = port glyphs.** Set `is_power=true` or
-   `is_ground=true` (see rule 4). The executor places a power-port glyph
-   at every pin on the net, no wires, no labels.
+   `is_ground=true` (see rule 4). A rail ends in a `bar` power port pointing up;
+   each ground drop gets its own `gnd_power` port pointing down.
+   No net labels on them.
 
    **(b) Block-local nets = WIRES (default).** When every pin on a Net
    lives in the same functional block (regulator + its passives, amp +
    its gain network, RF front-end + matching, MCU + its decoupling,
-   sensor + its filter, etc.), the executor draws actual wires from pin
-   to pin. Local sub-circuit topology MUST be visually traceable: a
+   sensor + its filter, etc.), draw actual wires from pin to pin. Local sub-circuit topology MUST be visually traceable: a
    reader looking at the buck block should see the FB divider,
    compensation, bootstrap and LC output as ONE connected drawing, not
    a maze of name-matched label stubs. This is the default for any net
@@ -80,15 +81,14 @@ these rules before producing a plan; they bound your choices.
    `open_questions` or in the Net comment.
 
    **Block membership** is expressed via `zones` (rule 11) or a `block`
-   field on each Part. The executor reads block membership and applies
-   (a)→(b)→(c) automatically; the planner's job is to assign each Part
-   to a block and let the executor pick the representation.
+   field on each Part. Assign each Part to a block and draw each block as
+   one group on the sheet, by (a)→(b)→(c).
 
    Buses are just named nets, one per signal: the same tier rule
    applies to each.
 
 4. **Power and ground are explicit Nets** with `is_power=true` or
-   `is_ground=true`. The executor uses power ports for those instead of
+   `is_ground=true`, and are drawn with power ports, not
    plain net labels. Standard names: VCC / V3V3 / V5 / V12 / VBAT for
    power, GND for ground.
 
@@ -119,7 +119,7 @@ these rules before producing a plan; they bound your choices.
     the spec needs sectioning (>30 parts, or distinct functional
     blocks).
 
-11. **Zones are optional** placement guidance for the executor. Use them
+11. **Zones are optional** grouping for your template. Use them
     to cluster decoupling near its IC, separate analog from digital, etc.
 
 12. **Atomic-parts contract.** When `status='existing'`, the planner
@@ -293,9 +293,11 @@ these rules before producing a plan; they bound your choices.
       net labels, and notes via `obj_get_font_spec` / `obj_get_font_id`
       (resolve the FontID an existing label uses; reuse THAT id, do not
       mint a new font).
-    - **Colours**: wire colour, net-label colour, text colour, and
-      symbol body fill, read from existing objects with `obj_query`
-      (don't hardcode a colour; sample what the sheet already uses).
+    - **Colours**: wire colour, text colour, and symbol body fill, read
+      from existing objects with `obj_query` (don't hardcode a colour;
+      sample what the sheet already uses). Net labels are the exception:
+      every label is Altium's native maroon (Color 128), and the label
+      tools write it whatever the older labels carry.
     - **Line widths / styles**: wire and bus width, junction size.
     - **Parameter presentation**: visibility, justification, and offset
       of Designator/Comment on already-placed components (match rule 16's
@@ -348,12 +350,15 @@ one design. They apply in every session.
    reads, prefer `scope=doc:<path>` (e.g. `obj_query`) over active-doc
    tools.
 
-6. **ECO (schematic → PCB) is not headless.** `proj_sync_pcb` fires the real
-   Engineering Change Order, but Altium's change-review dialog is
-   non-suppressible by design: a human must click **Execute Changes**.
-   Don't call `proj_sync_pcb` in an unattended run; it blocks until someone
-   interacts. After an attended ECO, the rest of the PCB tools work
-   normally.
+6. **The ECO (schematic → PCB) is a dialog, and you drive it.** Altium's
+   change-review dialog cannot be suppressed, so `proj_sync_pcb` blocks the
+   bridge while it is open. Open it without blocking instead:
+   `app_click_menu("Design|Import Changes From <Project>.PrjPcb",
+   expect_dialog="Engineering Change Order")`, read it with
+   `app_screenshot(dialog_title=...)`, then
+   `app_press_dialog_button("Execute Changes", allow_irreversible=True)` and
+   "Close". Do not ask the user to click it. Read board rules and counts
+   before opening it, since every bridge call waits while it is open.
 
 7. **`pcb_place_components` has two modes.** *Geometry only* (footprint +
    designator) leaves the board UNSYNCED, no link, no pad nets; pads are
@@ -368,8 +373,8 @@ one design. They apply in every session.
    `proj_get_connectivity_many`). That stamps the sch↔PCB link AND creates +
    assigns each pad's net, giving real connectivity (ratsnest + DRC) with
    NO ECO dialog: the headless way to populate a board from a compiled
-   schematic. (`proj_sync_pcb` / a real attended ECO remains the canonical
-   path when a human can click the dialog.)
+   schematic. (The real ECO, driven as in rule 6, remains the canonical
+   path.)
 
    After placement, force a recompile and require zero extras on BOTH sides.
    Equal schematic/PCB counts do not prove synchronization: the same
@@ -504,7 +509,7 @@ one design. They apply in every session.
            "params":{"signal_net":"NRST","rail_net":"VCC",
                      "lib_ref":"R_0402","value":"10k"}},
         ])
-        # -> design_generate_bom -> design_validate_plan -> design_execute_plan
+        # -> design_generate_bom -> design_validate_plan -> sch_draw_template
 
     Call `design_list_circuit_blocks` if unsure of a block's params, and
     `design_validate_plan` after every authoring step -- it returns the
@@ -564,7 +569,7 @@ buck, an LDO, an MCU board, an audio amp, or a sensor frontend.
      `value` field for capacitance / inductance / resistance.
    - One `Net` per electrical connection shown in the typical-app
      circuit, with all participating pins listed.
-   - Set `is_power` / `is_ground` on rails so the executor uses power
+   - Set `is_power` / `is_ground` on rails; they are drawn with power
      ports.
 
 7. **Tag nets with role** (`Net.role`) when the datasheet's layout
@@ -594,62 +599,54 @@ buck, an LDO, an MCU board, an audio amp, or a sensor frontend.
 8. **`design_validate_plan(plan_json=...)`**: schema + cross-check.
    Cheap, no Altium round-trip.
 
-9. **`design_execute_plan(plan_json=..., project_path=...)`**: opens
-   / creates the project, places parts, drops labels / power ports
-   at each pin endpoint, stamps Manufacturer / MPN / Value / Footprint
-   on every placed symbol, saves.
+9. **Draw each block from a hand template.** Read every symbol's pins
+   with `lib_get_pin_list`, then plan the block the way an engineer
+   draws it, every coordinate on the 100 mil grid: the IC in the
+   middle, the input rail as one straight wire with its capacitors
+   hanging straight down to ground, a feedback divider as a vertical
+   stack whose midpoint runs straight across to the FB pin, the output
+   rail straight with its capacitors and pull-ups hanging from it, net
+   labels only where a signal leaves the block, and room beside each
+   part for its value. Write it as a template (parts by designator and
+   position, wires through pin anchors such as `U1.EN`, power ports,
+   labels) and check it with
+   `sch_preview_template(template, plan_json=...)`: read the PNG and
+   fix every error and warning (a crossing, a wire through a body, a
+   dangling end, an off-grid point) before drawing.
 
-10. **Read `design_execute_plan`'s return.** Failures with
-    `pin_not_found` or `place_failed` are usually inventory / plan
-    mismatches (wrong pin number on the symbol, missing part). Fix
-    those before validating.
+10. **`sch_draw_template(template, document_path, plan_json=...)`**
+    places the parts, reads their pins back, checks the wiring against
+    the placed pins and against the plan's nets, and only then draws
+    the wires, ports and labels and stamps Value / Manufacturer / MPN /
+    Footprint from the plan. Read its return: any error stopped it
+    before the first wire. To change a block, redraw it on a fresh
+    sheet rather than moving parts one at a time.
 
 11. **`design_audit_schematic(project_path=...)`**: visual / layout
-    audit BEFORE ERC. Three violation classes, each with enough geometry
-    to compute a corrective move:
-    - `overlaps`: pairs of components whose bboxes intersect → push apart.
-    - `wire_crossings`: wires cutting through component bodies (not just
-      landing on pins) → re-route around.
-    - `stacked_ports`: 3+ power-port glyphs of the same net inside a
-      small radius → consolidate or redistribute.
-    Feed violations back into layout adjustments before ERC; messy layout
-    manufactures spurious ERC noise downstream.
+    audit BEFORE ERC: overlaps, wires through bodies, stacked ports.
 
 12. **`design_validate(project_path=...)`**: ERC + unconnected pins +
     atomic-parts warnings, structured ValidationReport.
 
-13. **Iterate.** If `passed: false`, read the report's errors
-    (`category` / `severity` / `refdes` / `pin` / `sheet` / `text`),
-    revise the plan, loop back to step 8. Cap at 3 rounds; escalate
-    with the latest report rather than thrashing.
+13. **Iterate.** If `passed: false`, read the report's errors, fix the
+    plan or the template, and redraw. Cap at 3 rounds; escalate with
+    the latest report rather than thrashing.
 
 ## Notes
 
-- The executor is mechanical: it only reads what is in the plan. Anything
-  the planner forgets stays missing. Decoupling caps do not appear unless
-  you put them in. Pull-ups, terminations, ESD diodes too.
-- "needs_creation" parts halt `design_execute_plan` with a clear error.
-  Treat that as a signal to either pick an existing part or branch into a
-  library authoring sub-task before resuming.
-- Net labels are dropped at the actual pin world coordinate via a Pascal
-  helper that iterates pins on the placed component instance. If you see
-  `PIN_NOT_FOUND` failures, your plan's pin id (number or name) does not
-  match what the symbol exposes; query the inventory or look up the
-  symbol to confirm the pin identifiers.
-- Power vs ground:
-  - `is_power=true` -> `sch_place_power_port` with a circle glyph (or a GND
-    glyph variant if the net name contains `GND`).
-  - `is_ground=true` -> `sch_place_power_port` with a GND glyph; `AGND` /
-    `ANALOG` net names get the signal-ground variant; `EARTH` / `PE`
-    get the earth glyph.
-  - Plain net (neither flag) -> `sch_place_net_label`.
-- Cross-sheet nets get a label on each sheet where a participating pin
-  lives. The executor handles this automatically as long as each Part's
-  `sheet` field is set correctly.
-- ERC only sees what's connected by net labels / power ports. A net with
-  one pin and no port is "floating" and ERC will flag it. Power and ground
-  nets with `is_power` / `is_ground` set are exempt because the power
-  port carries the connection.
+- Nothing is added for you: decoupling caps, pull-ups, terminations and
+  ESD diodes appear only if they are in the plan and the template.
+- "needs_creation" parts must be authored with the `lib_*` tools (or
+  replaced by an existing part) before the sheet is drawn.
+- A pin anchor names the pin by number or by name; a name shared by
+  several pins (PGND, SW) needs the number.
+- Altium draws its own junction dot wherever a wire ends on another or
+  three ends meet. Plan none; a manual junction is only for two wires
+  that cross and must connect, which a tidy sheet avoids.
+- Cross-sheet nets get a net label (or the same power port) on each
+  sheet where a participating pin lives.
+- ERC only sees what is connected by wires, net labels and power ports.
+  A net with one pin and no port or label is floating.
 
 ## PCB placement discipline (once the netlist is on the board)
 
@@ -820,20 +817,76 @@ discipline.
 """
 
 
-#: What runs a plan, per backend. The discipline text was written for
+#: What draws a plan, per backend. The discipline text was written for
 #: Altium and says so in its opening paragraph; on another backend that
 #: sentence names the wrong editor AND the wrong tool, which is the
 #: first thing a planner reads.
 _EXECUTOR = {
-    "altium": ("Altium Designer", "design_execute_plan"),
-    "easyeda": ("EasyEDA Pro", "easyeda_emit_plan then easyeda_run_plan"),
-    "kicad": ("KiCad", "design_execute_plan"),
+    "altium": ("Altium Designer", "sch_draw_template"),
+    "easyeda": ("EasyEDA Pro",
+                "easyeda_emit_template then easyeda_emit_template_connections"),
+    "kicad": ("KiCad", "kicad_generate_schematic"),
+}
+
+#: The drawing steps (9 to 13 and the notes) run from here to the PCB
+#: placement section. They name Altium's template tools, so another
+#: backend gets its own steps in their place.
+_DRAW_ANCHOR = "9. **Draw each block from a hand template.**"
+_PCB_SECTION_ANCHOR = "## PCB placement discipline"
+
+_DRAW_BLOCK = {
+    "easyeda": """9. **Draw each block from a hand template.** Plan the block the way an
+   engineer draws it, every coordinate on the 100 mil grid: the IC in the
+   middle, rails as straight wires with their capacitors hanging
+   straight down to ground, a divider whose midpoint runs straight across
+   to its pin, net labels only where a signal leaves the block. Write it
+   as a template: parts by designator and position, wires through pin
+   anchors by NUMBER (`U1.3`), power ports and labels.
+
+10. **`easyeda_emit_template(template, plan_json, resolved_parts)`**
+    returns the calls that place the parts there; resolve every part to
+    its library pair first, then run them with
+    `easyeda_run_plan(calls, confirm=true)`.
+
+11. **Read the pins back** with `easyeda_get_schematic_pins` and convert
+    to mils (its units times 10), then
+    **`easyeda_emit_template_connections(template, pin_positions,
+    plan_json)`** checks the wiring against the placed pins and the
+    plan's nets. Fix every error and warning, then run its calls.
+
+12. **`run_erc`**, and iterate on the plan or the template. Cap at 3
+    rounds; escalate with the latest report rather than thrashing.
+
+## Notes
+
+- Nothing is added for you: decoupling caps, pull-ups, terminations and
+  ESD diodes appear only if they are in the plan and the template.
+- Cross-sheet nets get a net label (or the same flag) on each sheet
+  where a participating pin lives.
+
+""",
+    "kicad": """9. **`kicad_generate_schematic(plan_json, output_path)`** writes the
+   plan as a sheet: every part placed on a grid and every net carried by
+   global labels. KiCad has no hand-template drawing here yet, so tidy the
+   blocks in Eeschema by the rules above (rails straight, capacitors
+   hanging to ground, wires within a block, labels between blocks).
+
+10. **`run_erc`**, and iterate on the plan. Cap at 3 rounds; escalate
+    with the latest report rather than thrashing.
+
+## Notes
+
+- Nothing is added for you: decoupling caps, pull-ups, terminations and
+  ESD diodes appear only if they are in the plan.
+
+""",
 }
 
 #: The first line of the schematic-to-PCB block, used as an anchor. The
 #: block runs from here to the first backend-neutral rule after the
-#: Altium-specific synchronization and recovery guidance.
-_ECO_ANCHOR = "6. **ECO (schematic → PCB) is not headless.**"
+#: Altium-specific synchronization and recovery guidance. Named for its
+#: position rather than its number, which has moved twice.
+_ECO_ANCHOR = "6. **The ECO (schematic → PCB) is a dialog, and you drive it.**"
 _POST_ECO_ANCHOR = "12. **Connectivity review uses the netlist, never the render.**"
 
 #: Rules 6 and 7 explain Altium's Engineering Change Order: a dialog a
@@ -875,8 +928,11 @@ _SCH_TO_PCB_BLOCK = {
 }
 
 
-def get_discipline() -> str:
+def get_discipline(include_schema: bool = True) -> str:
     """Return the discipline doc + the embedded DesignPlan JSON schema.
+
+    ``include_schema=False`` leaves the schema out, for a caller that
+    sends it separately (design_get_discipline sends it as a dict).
 
     The opening paragraph is rewritten for the active backend. Only
     that paragraph: the rest of the text names Altium tools inside
@@ -951,11 +1007,22 @@ def get_discipline() -> str:
                 "Change Order, which this backend does not have, and they "
                 "could not be replaced automatically. Ignore them here.\n")
 
-        target = "the executor can instantiate in Altium Designer."
+        block = _DRAW_BLOCK.get(backend)
+        start = text.find(_DRAW_ANCHOR)
+        end = text.find(_PCB_SECTION_ANCHOR)
+        if block and 0 <= start < end:
+            text = text[:start] + block + text[end:]
+        elif block:
+            text += (
+                f"\n\n> NOTE: the drawing steps name Altium's tools and could "
+                f"not be replaced automatically. On {editor} a plan is drawn "
+                f"with {executor}.\n")
+
+        target = "draw in Altium Designer from a hand\ntemplate"
+        how = " from a hand\ntemplate" if backend in _DRAW_BLOCK and \
+            "template" in _DRAW_BLOCK[backend].split("\n", 1)[0] else ""
         replaced = text.replace(
-            target,
-            f"the executor can instantiate in {editor} (via {executor}).",
-            1)
+            target, f"draw in {editor} (via {executor}){how}", 1)
         if replaced == text:
             # A silent no-op is the failure mode here: the planner
             # would read the Altium framing believing it was corrected.
@@ -966,6 +1033,8 @@ def get_discipline() -> str:
                 f"is {editor}; a plan is run there with {executor}.\n")
         text = replaced
 
+    if not include_schema:
+        return text
     return (
         text
         + "\n## DesignPlan JSON schema\n\nYour DesignPlan must validate "

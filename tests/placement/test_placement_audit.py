@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from eda_agent.design.placement_audit import audit_placement
 
 

@@ -39,7 +39,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                        log=live.progress_logger("route"))
     out = r.apply()
     new_tracks = out.tracks[len(board.tracks):]
-    new_vias = out.vias[len(board.vias):]
+    new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
     drc = run_drc(out)
     stages = finish_report(r, out)
     pub = live.publish_safe(out, f"Routed: {len(drc.unrouted)} nets still open, "
@@ -103,6 +103,24 @@ def _stage_notes(stages: dict) -> list[str]:
         notes.append(f"{len(stages['unreached'])} pads could not be reached; unreached gives "
                      "each one's place and the nets in its way.")
     return notes
+
+
+def _unique_vias(existing, new) -> list:
+    """The new vias less any that repeat one already there or listed.
+
+    A second (plane fan-out) run on a live take left two vias on one
+    spot, which Altium then reported as a short to itself. Not
+    reproduced; a via is never wanted twice in the same place, so the
+    list sent to the board holds each once.
+    """
+    seen = {(round(v.x, 3), round(v.y, 3), v.net) for v in existing}
+    out = []
+    for v in new:
+        key = (round(v.x, 3), round(v.y, 3), v.net)
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
 
 
 def _without_old_pours(board: LayoutBoard) -> tuple[LayoutBoard, list[str]]:

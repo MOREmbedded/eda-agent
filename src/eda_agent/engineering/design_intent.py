@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Shared engineering design-intent schema (model independent).
 
 Both ChatGPT and Claude read and write the SAME document through the

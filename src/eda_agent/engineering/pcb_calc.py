@@ -67,6 +67,9 @@ EXACT = "exact"
 PUBLISHED = "published"
 ESTIMATE = "estimate"
 
+#: Permeability of free space, H/m.
+_MU0 = 4.0e-7 * math.pi
+
 #: Speed of light in vacuum, m/s, exact by definition of the metre.
 _C = 299_792_458.0
 
@@ -415,6 +418,54 @@ def via_parasitics(drill_mils: float, length_mils: float,
                          "return path; they rank vias, they do not "
                          "size a margin")
     return result
+
+
+# =====================================================================
+# Via loop inductance -- with the return path named
+# =====================================================================
+
+def via_loop_inductance(plane_spacing_mils: float, via_diameter_mils: float,
+                        return_spacing_mils: float) -> dict[str, Any]:
+    """Loop inductance a via adds crossing between two planes.
+
+    A different question from via_parasitics, which gives the rule of
+    thumb for a via in isolation and says outright that it ignores the
+    return. Here the return is NAMED: a ground via, or a plane-to-plane
+    capacitor, ``return_spacing_mils`` away centre to centre::
+
+        L = (mu0 / 2 pi) * 2 * h * ln(s / r)
+
+    Only the part inside the interplane space; the pads and the traces
+    either side add their own. Johnson's measurements matched this to
+    about 10 per cent.
+
+    status: published
+    """
+    bad = _positive(plane_spacing_mils=plane_spacing_mils,
+                    via_diameter_mils=via_diameter_mils,
+                    return_spacing_mils=return_spacing_mils)
+    if bad:
+        return bad
+
+    radius_mils = via_diameter_mils / 2.0
+    if return_spacing_mils <= radius_mils:
+        return _fail(
+            f"the return ({return_spacing_mils:g} mil) must be further away "
+            f"than the via's radius ({radius_mils:g} mil); closer than that "
+            "the expression has no meaning")
+
+    height_m = plane_spacing_mils * MM_PER_MIL / 1000.0
+    henries = (_MU0 / (2.0 * math.pi)) * 2.0 * height_m * math.log(
+        return_spacing_mils / radius_mils)
+    return {
+        "ok": True,
+        "status": PUBLISHED,
+        "source": "Johnson, 'Via Inductance II' (sigcon.com, v6-08)",
+        "inductance_nh": round(henries * 1e9, 4),
+        "plane_spacing_mils": float(plane_spacing_mils),
+        "via_diameter_mils": float(via_diameter_mils),
+        "return_spacing_mils": float(return_spacing_mils),
+    }
 
 
 # =====================================================================

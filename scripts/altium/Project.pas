@@ -350,6 +350,26 @@ Begin
             Exit;
         End;
     End;
+    { NO MEMBER LOADED: nothing above could be shown, and the project could }
+    { not be closed. MEASURED: opening a member (load_project_sheets, or    }
+    { OpenObject) focuses the project and the close then works. The Client }
+    { API keeps the membership; RunProcess Client:OpenDocument does not.    }
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If (Path = '') Or (Not FileExists(Path)) Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.OpenDocument(Doc.DM_DocumentKind, Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        If FocusedProjectPathIs(Target) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
 End;
 
 { Paths in BeforeList that are gone from AfterList, other than TargetPath.   }
@@ -407,9 +427,12 @@ Begin
             { client projects included. app_save_all is the tool for that,    }
             { and its name says so.                                           }
             SaveProjectMembers(Project);
+            { The project file too: its document list changes without the }
+            { modified flag, so SaveProjectMembers alone left it unwritten. }
             Result := BuildSuccessResponse(RequestId,
                 '{"success":true,"project_path":"'
-                + EscapeJsonString(Project.DM_ProjectFullPath) + '"}');
+                + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+                + ',"project_file_saved":' + BoolToJsonStr(SaveProjectFile(Project)) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -640,7 +663,9 @@ Begin
         If Project <> Nil Then
         Begin
             Project.DM_AddSourceDocument(DocumentPath);
-            Result := BuildSuccessResponse(RequestId, '{"success":true}');
+            { Written now, or the add is gone after a reopen. }
+            Result := BuildSuccessResponse(RequestId, '{"success":true,"project_saved":'
+                + BoolToJsonStr(SaveProjectFile(Project)) + '}');
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -649,7 +674,45 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace available');
 End;
 
+{ The DocumentPath= line of the project FILE that names DocPath's file, or   }
+{ ''. Matched on the file name alone, so a same-named document in another    }
+{ folder reads as still listed: the error falls on "not removed", never on   }
+{ a false "removed".                                                          }
+Function ProjectFileEntryFor(ProjPath, DocPath : String) : String;
+Var
+    SL : TStringList;
+    I : Integer;
+    Line, Value, Want : String;
+Begin
+    Result := '';
+    Want := UpperCase(ExtractFileName(DocPath));
+    SL := TStringList.Create;
+    Try
+        If LoadTextFile(SL, ProjPath) Then
+        Begin
+            For I := 0 To SL.Count - 1 Do
+            Begin
+                Line := Trim(SL.Strings[I]);
+                If UpperCase(Copy(Line, 1, 13)) <> 'DOCUMENTPATH=' Then Continue;
+                Value := Copy(Line, 14, Length(Line));
+                If UpperCase(ExtractFileName(Value)) = Want Then
+                Begin
+                    Result := Line;
+                    Exit;
+                End;
+            End;
+        End;
+    Finally
+        SL.Free;
+    End;
+End;
+
 { Remove a document FROM A PROJECT. It does not delete the file.             }
+{                                                                             }
+{ THE PROJECT FILE IS WRITTEN AND READ BACK. Removal changed the project in  }
+{ memory only, so the .PrjPcb kept the [DocumentN] entry and the document    }
+{ was back after a reopen (issue #94). The project is saved, unless          }
+{ save_project is false, and the file itself is checked for the entry.       }
 {                                                                             }
 { This used to run WorkspaceManager:CloseObject on the document, which closes }
 { the editor WINDOW and leaves project membership untouched. Measured: the    }
@@ -662,12 +725,12 @@ End;
 { the tool and "I issued it" is not the same as "it happened".                }
 Function Proj_RemoveDocument(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, DocumentPath, DocPath : String;
+    ProjectPath, DocumentPath, DocPath, ProjPath, Entry, Members : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
     I : Integer;
-    StillMember, WasMember : Boolean;
+    StillMember, WasMember, ProjSaved : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     DocumentPath := ExtractJsonValue(Params, 'document_path');
@@ -701,7 +764,11 @@ Begin
             Begin
                 Try Project.DM_RemoveSourceDocument(DocumentPath); Except End;
 
+                { Members as Altium holds them now. The reply carries them so }
+                { the server can take leftover sections out of the file: only }
+                { sections past this count, and only when the rest match it.  }
                 StillMember := False;
+                Members := '';
                 For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
                 Begin
                     DocPath := '';
@@ -709,17 +776,57 @@ Begin
                     If Doc <> Nil Then Try DocPath := Doc.DM_FullPath; Except End;
                     If UpperCase(DocPath) = UpperCase(DocumentPath) Then
                         StillMember := True;
+                    If DocPath <> '' Then
+                    Begin
+                        If Members <> '' Then Members := Members + ',';
+                        Members := Members + '"' + EscapeJsonString(DocPath) + '"';
+                    End;
                 End;
 
                 If StillMember Then
+                Begin
                     Result := BuildSuccessResponse(RequestId,
                         '{"success":false,"removed":false,"reason":"the '
                         + 'document is still a member of the project after '
-                        + 'DM_RemoveSourceDocument was called"}')
+                        + 'DM_RemoveSourceDocument was called"}');
+                    Exit;
+                End;
+
+                ProjPath := '';
+                Try ProjPath := Project.DM_ProjectFullPath; Except End;
+                ProjSaved := False;
+                Entry := '';
+                { ALTIUM'S WRITER LEAVES THE OLD SECTIONS. Measured on AD 26: }
+                { it rewrites [Document1]..[DocumentN] for the new count and   }
+                { leaves every section past N in the file, so a removal leaves }
+                { an entry (or a shifted duplicate) behind and a reopen loads  }
+                { it again. Saving more does not help. The file is read back,  }
+                { and a leftover is reported with the members, for the server  }
+                { to take out (eda_agent.prjpcb); never called removed here.   }
+                If ExtractJsonValue(Params, 'save_project') <> 'false' Then
+                    ProjSaved := SaveProjectFile(Project);
+                Entry := ProjectFileEntryFor(ProjPath, DocumentPath);
+
+                If Entry <> '' Then
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":false,"removed":true,"project_saved":'
+                        + BoolToJsonStr(ProjSaved) + ',"in_project_file":true'
+                        + ',"project_file_entry":"' + EscapeJsonString(Entry)
+                        + '","document_path":"' + EscapeJsonString(DocumentPath)
+                        + '","project_path":"' + EscapeJsonString(ProjPath)
+                        + '","members":[' + Members + ']'
+                        + ',"reason":"removed in memory, but the project file '
+                        + 'on disk still lists it, so it comes back when the '
+                        + 'project is reopened. Altium rewrites only as many '
+                        + '[DocumentN] sections as the project now has and leaves '
+                        + 'the rest; another save does not remove them."}')
                 Else
                     Result := BuildSuccessResponse(RequestId,
-                        '{"success":true,"removed":true,"document_path":"'
-                        + EscapeJsonString(DocumentPath) + '"}');
+                        '{"success":true,"removed":true,"project_saved":'
+                        + BoolToJsonStr(ProjSaved) + ',"in_project_file":false'
+                        + ',"document_path":"' + EscapeJsonString(DocumentPath)
+                        + '","project_path":"' + EscapeJsonString(ProjPath)
+                        + '","members":[' + Members + ']}');
             End;
         End
         Else
@@ -2126,8 +2233,9 @@ Begin
 
             { Don't force-open, RunProcess Client:OpenDocument strips
               project association and creates a free document in the UI.
-              Skip sheets that aren't currently loaded. }
-            SchDoc := SchServer.GetSchDocumentByPath(FilePath);
+              Skip sheets that aren't currently loaded; ProjectSheet counts
+              them, so the reply says how many were left out. }
+            SchDoc := ProjectSheet(FilePath);
             If SchDoc = Nil Then Continue;
 
             Inc(ProcessedDocs);
@@ -2416,6 +2524,108 @@ Begin
 End;
 
 {..............................................................................}
+{ ProjectHoldingDoc - the first open project whose documents include FilePath, }
+{ or Nil for a free document.                                                 }
+{..............................................................................}
+Function ProjectHoldingDoc(FilePath : String) : IProject;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have : String;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Want := UpperCase(CanonicalPathValue('path', FilePath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        For J := 0 To Proj.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Proj.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Have := '';
+            Try Have := Doc.DM_FullPath; Except End;
+            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+            Begin
+                Result := Proj;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ Proj_ExportSTEPApi - write the board's 3D model through Altium's own        }
+{ exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel, read    }
+{ from the SDK interface assembly), with no dialog. The exporter keeps the    }
+{ options last used in File > Export > STEP 3D. format is the exporter's own  }
+{ code: 0 wrote STEP on AD 26.11.1.5 (7 MB in 17 s, no dialog).            }
+{ generated is true only when a new file is at output_path afterwards, so a  }
+{ build where the call does nothing says so and proj_export_step falls back  }
+{ to the dialog route.                                                        }
+{ Params: output_path (required), format (default 0)                          }
+{..............................................................................}
+Function Proj_ExportSTEPApi(Params : String; RequestId : String) : String;
+Var
+    OutputPath, Problem : String;
+    Board : IPCB_Board;
+    Exporter : IPCB_Board3DModelExporter;
+    Proj : IProject;
+    Format, AgeBefore, AgeAfter : Integer;
+Begin
+    OutputPath := ExtractJsonValue(Params, 'output_path');
+    Format := StrToIntDef(ExtractJsonValue(Params, 'format'), 0);
+    If OutputPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'output_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        Exit;
+    End;
+    Exporter := Nil;
+    Try Exporter := PCBServer.Board3DModelExporter; Except Exporter := Nil; End;
+    If Exporter = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', False)
+            + ',' + JsonStr('reason', 'this Altium build gives scripts no 3D model exporter')));
+        Exit;
+    End;
+    Proj := ProjectHoldingDoc(Board.FileName);
+    AgeBefore := -1;
+    Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
+    Problem := '';
+    Try
+        Exporter.ExportBoard3DModel(OutputPath, Format, Board, Proj);
+    Except
+        Problem := 'the exporter raised an error';
+    End;
+    AgeAfter := -1;
+    Try If FileExists(OutputPath) Then AgeAfter := FileAge(OutputPath); Except End;
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', True)
+            + ',' + JsonStr('output_path', OutputPath)
+            + ',' + JsonStr('board', Board.FileName)
+            + ',' + JsonBool('in_project', Proj <> Nil)))
+    Else
+    Begin
+        If Problem = '' Then Problem := 'the exporter returned and no new file is at output_path';
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', False)
+            + ',' + JsonStr('output_path', OutputPath)
+            + ',' + JsonStr('reason', Problem)));
+    End;
+End;
+
+{..............................................................................}
 { Export PCB to STEP 3D model                                                 }
 { Params: output_path (optional, if omitted, Altium may prompt)              }
 {..............................................................................}
@@ -2443,10 +2653,17 @@ Begin
     If OutputPath <> '' Then
         Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
 
+    { PCB:ExportSTEP3D is not a registered process, so it did nothing and  }
+    { said nothing. The STEP exporter is the 'STEP 3D' filter of           }
+    { PCB:Export (advpcb.ins), the route File > Export > STEP 3D takes. It }
+    { asks for the file name (already filled in from FileName), the       }
+    { export options, and closes with "Done!"; proj_export_step answers    }
+    { those three from outside while this waits in RunProcess.             }
     ResetParameters;
+    AddStringParameter('Format', 'STEP 3D');
     If OutputPath <> '' Then
         AddStringParameter('FileName', OutputPath);
-    RunProcess('PCB:ExportSTEP3D');
+    RunProcess('PCB:Export');
 
     { success:true used to come back whatever happened, and a reported    }
     { run that wrote nothing was indistinguishable from one that did.     }
@@ -2471,9 +2688,8 @@ Begin
             '{"generated":false,"dispatched":true,"output_path":"'
             + EscapeJsonString(OutputPath) + '"'
             + ',"reason":"the export was launched but no new file is at '
-            + 'output_path. PCB:ExportSTEP3D is not documented to take a file '
-            + 'name; run an OutJob with an ExportSTEP output through '
-            + 'proj_run_outjob for a result that can be confirmed"}');
+            + 'output_path. The export dialogs were cancelled or answered '
+            + 'with another file name"}');
 End;
 
 {..............................................................................}
@@ -2760,7 +2976,7 @@ Var
     IniFile : TIniFile;
     FoundContainerName, ContainerType, RelativePath, OutputDir : String;
     G, J : Integer;
-    Found : Boolean;
+    Found, OutJobOpened, OutJobActive : Boolean;
     OutJobDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
@@ -2805,18 +3021,37 @@ Begin
         Exit;
     End;
 
-    { Open/focus the OutJob document }
-    Try
-        If Not Client.IsDocumentOpen(OutJobPath) Then
+    { The container writes nothing unless the OutJob is the ACTIVE document: }
+    { focused but not shown, it ran cleanly and wrote 0 files (AD25, AD26).  }
+    { Open it the way the Projects panel does, then show it, then focus it.  }
+    OutJobOpened := False;
+    OutJobDoc := Nil;
+    Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+    If OutJobDoc = Nil Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', OutJobPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+        If OutJobDoc = Nil Then
         Begin
-            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
-        End
-        Else
-        Begin
-            OutJobDoc := Client.GetDocumentByPath(OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
+            Try OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath); Except OutJobDoc := Nil; End;
         End;
+        OutJobOpened := OutJobDoc <> Nil;
+    End;
+    If OutJobDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(OutJobDoc); Except End;
+        Try OutJobDoc.Focus; Except End;
+    End;
+    OutJobActive := False;
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+            If Workspace.DM_FocusedDocument <> Nil Then
+                OutJobActive := UpperCase(Workspace.DM_FocusedDocument.DM_FullPath)
+                    = UpperCase(OutJobPath);
     Except
     End;
 
@@ -2929,7 +3164,10 @@ Begin
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
-        ',"output_dir":"' + EscapeJsonString(OutputDir) + '"}');
+        ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
+        ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
+        ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
+        ',"outjob_active":' + BoolToJsonStr(OutJobActive) + '}');
 End;
 
 {..............................................................................}
@@ -3915,11 +4153,9 @@ Begin
     { Add to project }
     Project.DM_AddSourceDocument(DestPath);
 
-    { Save the project to persist the change }
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Project');
-    AddStringParameter('FileName', Project.DM_ProjectFullPath);
-    RunProcess('WorkspaceManager:SaveObject');
+    { Save the project to persist the change. WorkspaceManager:SaveObject }
+    { acts on the focused object, which need not be this project.         }
+    SaveProjectFile(Project);
 
     Result := BuildSuccessResponse(RequestId, '{"success":true,"source_path":"' + EscapeJsonString(SourcePath) + '","dest_path":"' + EscapeJsonString(DestPath) + '"}');
 End;
@@ -4726,6 +4962,208 @@ End;
 { recompiles, returns the new compile tick so callers can verify it moved.    }
 {..............................................................................}
 
+{..............................................................................}
+{ ERC REPORT LEVELS - read and set the project's Error Reporting options:     }
+{ for each violation type, No Report, Warning, Error or Fatal Error.           }
+{                                                                              }
+{ IProject.DM_ErrorLevels(TErrorKind) : TErrorLevel and DM_SetErrorLevels,    }
+{ TErrorLevel = (eErrorLevelNoReport, eErrorLevelWarning, eErrorLevelError,   }
+{ eErrorLevelFatal), 0 to 3 (workspace manager API reference). The types are  }
+{ named by IWorkspace.DM_ViolationTypeDescription(kind), so the list is read }
+{ from Altium rather than kept here. Asked for because a multichannel design }
+{ reports "Nets with multiple names" by construction, and there was no way   }
+{ to set the level without the Project Options dialog.                       }
+{..............................................................................}
+
+Function ErcLevelName(Level : Integer) : String;
+Begin
+    If Level = 0 Then Result := 'no_report'
+    Else If Level = 1 Then Result := 'warning'
+    Else If Level = 2 Then Result := 'error'
+    Else If Level = 3 Then Result := 'fatal'
+    Else Result := IntToStr(Level);
+End;
+
+{ -1 when the text names no level. }
+Function ErcLevelFromText(Text : String) : Integer;
+Var
+    T : String;
+Begin
+    T := LowerCase(Trim(Text));
+    T := StringReplace(T, ' ', '_', -1);
+    If (T = 'no_report') Or (T = 'noreport') Or (T = 'none') Or (T = '0') Then Result := 0
+    Else If (T = 'warning') Or (T = '1') Then Result := 1
+    Else If (T = 'error') Or (T = '2') Then Result := 2
+    Else If (T = 'fatal') Or (T = 'fatal_error') Or (T = '3') Then Result := 3
+    Else Result := -1;
+End;
+
+Function ErcProject(Params : String; Var Problem : String) : IProject;
+Var
+    Workspace : IWorkspace;
+    Path : String;
+Begin
+    Result := Nil;
+    Problem := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Problem := 'No workspace';
+        Exit;
+    End;
+    Path := ExtractJsonValue(Params, 'project_path');
+    If Path <> '' Then
+    Begin
+        Result := FindProjectByPath(Workspace, Path);
+        If Result = Nil Then Problem := 'Project not open: ' + Path;
+    End
+    Else
+    Begin
+        Result := Workspace.DM_FocusedProject;
+        If Result = Nil Then Problem := 'No focused project; pass project_path';
+    End;
+End;
+
+{ The violation type with this exact description (case ignored), or a      }
+{ number given as text. -1 when neither.                                    }
+Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+Var
+    I : Integer;
+    Desc : String;
+Begin
+    Result := -1;
+    If (Trim(Text) <> '') And (StrToIntDef(Trim(Text), -1) >= 0) Then
+    Begin
+        Result := StrToIntDef(Trim(Text), -1);
+        Exit;
+    End;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If (Desc <> '') And (LowerCase(Desc) = LowerCase(Trim(Text))) Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+    End;
+End;
+
+{ Proj_GetErcLevels - every violation type with its current report level. }
+{ Params: project_path (default the focused project), match (substring of  }
+{ the description, optional).                                              }
+Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
+Var
+    Project : IProject;
+    Workspace : IWorkspace;
+    Problem, Match, Desc, Items : String;
+    I, Level, Count : Integer;
+Begin
+    Project := ErcProject(Params, Problem);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', Problem);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    Match := LowerCase(ExtractJsonValue(Params, 'match'));
+    Items := '';
+    Count := 0;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If (Desc <> '') And ((Match = '') Or (Pos(Match, LowerCase(Desc)) > 0)) Then
+        Begin
+            Level := -1;
+            Try Level := Project.DM_ErrorLevels(I); Except Level := -1; End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"kind":' + IntToStr(I)
+                + ',"description":"' + EscapeJsonString(Desc) + '"'
+                + ',"level":"' + ErcLevelName(Level) + '"}';
+            Inc(Count);
+        End;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+        + ',"count":' + IntToStr(Count)
+        + ',"levels":[' + Items + ']}');
+End;
+
+{ Proj_SetErcLevels - set report levels. Params: project_path (default the }
+{ focused project), levels = 'kind=level~~kind=level', a kind being its    }
+{ number or its exact description, a level no_report, warning, error,     }
+{ fatal or 0 to 3. Every one is read back. The project is marked modified; }
+{ save it (proj_save) to keep the change.                                 }
+Function Proj_SetErcLevels(Params : String; RequestId : String) : String;
+Var
+    Project : IProject;
+    Workspace : IWorkspace;
+    Problem, LevelsStr, Remaining, Op, KindText, LevelText, Items, Desc : String;
+    Eq, Kind, Want, Got, Done, Failed : Integer;
+Begin
+    Project := ErcProject(Params, Problem);
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', Problem);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    LevelsStr := ExtractJsonValue(Params, 'levels');
+    If LevelsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'levels is required: kind=level~~kind=level');
+        Exit;
+    End;
+    Items := '';
+    Done := 0;
+    Failed := 0;
+    Remaining := LevelsStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        Eq := Pos('=', Op);
+        KindText := Trim(Copy(Op, 1, Eq - 1));
+        LevelText := Trim(Copy(Op, Eq + 1, Length(Op)));
+        Kind := -1;
+        If Eq > 0 Then Kind := ErcKindFromText(Workspace, KindText);
+        Want := ErcLevelFromText(LevelText);
+        Got := -1;
+        Desc := '';
+        If Kind >= 0 Then
+        Begin
+            Try Desc := Workspace.DM_ViolationTypeDescription(Kind); Except Desc := ''; End;
+        End;
+        If (Kind >= 0) And (Desc <> '') And (Want >= 0) Then
+        Begin
+            Try Project.DM_SetErrorLevels(Kind, Want); Except End;
+            Try Got := Project.DM_ErrorLevels(Kind); Except Got := -1; End;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '{"kind_given":"' + EscapeJsonString(KindText) + '"'
+            + ',"kind":' + IntToStr(Kind)
+            + ',"description":"' + EscapeJsonString(Desc) + '"'
+            + ',"level":"' + ErcLevelName(Got) + '"';
+        If (Kind < 0) Or (Desc = '') Then
+            Items := Items + ',"problem":"no violation type by that number or exact description"'
+        Else If Want < 0 Then
+            Items := Items + ',"problem":"level must be no_report, warning, error, fatal or 0 to 3"'
+        Else If Got <> Want Then
+            Items := Items + ',"problem":"written, but it reads back ' + ErcLevelName(Got) + '"';
+        Items := Items + '}';
+        If (Kind >= 0) And (Desc <> '') And (Want >= 0) And (Got = Want) Then Inc(Done)
+        Else Inc(Failed);
+    End;
+    If Done > 0 Then MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Result := BuildSuccessResponse(RequestId,
+        '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
+        + ',"set":' + IntToStr(Done)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"results":[' + Items + ']}');
+End;
+
 Function Proj_ForceRecompile(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -5032,6 +5470,7 @@ Begin
         'annotate':          Result := Proj_Annotate(Params, RequestId);
         'generate_output':   Result := Proj_GenerateOutput(Params, RequestId);
         'export_step':       Result := Proj_ExportSTEP(Params, RequestId);
+        'export_step_api':   Result := Proj_ExportSTEPApi(Params, RequestId);
         'export_dxf':        Result := Proj_ExportDXF(Params, RequestId);
         'export_image':      Result := Proj_ExportImage(Params, RequestId);
         'get_outjob_containers': Result := Proj_GetOutJobContainers(Params, RequestId);
@@ -5049,6 +5488,8 @@ Begin
         'get_connectivity':  Result := Proj_GetConnectivity(Params, RequestId);
         'get_connectivity_batch': Result := Proj_GetConnectivityBatch(Params, RequestId);
         'force_recompile':       Result := Proj_ForceRecompile(Params, RequestId);
+        'get_erc_levels':        Result := Proj_GetErcLevels(Params, RequestId);
+        'set_erc_levels':        Result := Proj_SetErcLevels(Params, RequestId);
         'get_compile_freshness': Result := Proj_GetCompileFreshness(Params, RequestId);
         'import_document':   Result := Proj_ImportDocument(Params, RequestId);
         'get_project_path':  Result := Proj_GetProjectPath(RequestId);

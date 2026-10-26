@@ -112,8 +112,16 @@ def test_the_release_procedure_names_the_current_script_version():
         f"should report, so a stale number there reads as a failed "
         f"deploy of a correct build.")
 
-    # And it must not still name an older one alongside it.
-    others = {v for v in re.findall(r"\b20\d\d\.\d\d\.\d\d\.\d+\b", text)
+    # And the PROCEDURE must not still name an older one alongside it.
+    #
+    # A line recording a past live run is exempt. "Live result, 2026-10-19,
+    # script 2026.10.25.2" is evidence of what was actually run that day;
+    # rewriting it to today's version would make the log lie, and nobody
+    # mistakes a dated result for the version app_ping should report now.
+    # Every other mention must agree with the current one.
+    procedure = "\n".join(ln for ln in text.splitlines()
+                          if "Live result" not in ln and "Run live on" not in ln)
+    others = {v for v in re.findall(r"\b20\d\d\.\d\d\.\d\d\.\d+\b", procedure)
               if v != version}
     assert not others, (
         f"the release procedure names other script versions {sorted(others)} "

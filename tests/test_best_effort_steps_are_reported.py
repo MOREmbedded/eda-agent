@@ -98,13 +98,16 @@ def workspace(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_failed_save_is_reported_by_the_checkpoint(
         monkeypatch, workspace):
-    bridge = _Bridge(fail_command="application.save_all",
+    # The checkpoint saves its own project only (project.save), never
+    # every open document.
+    bridge = _Bridge(fail_command="project.save",
                      project_dir=str(workspace))
     tool = _capture(application_module, "register_application_tools",
                     "app_checkpoint", monkeypatch, bridge)
 
     out = await tool()
 
+    assert "application.save_all" not in bridge.calls
     assert out["saved"] is False, (
         "a checkpoint taken after a failed save must not look like one "
         "taken after a successful save")

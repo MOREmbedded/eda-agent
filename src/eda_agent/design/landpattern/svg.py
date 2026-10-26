@@ -137,6 +137,10 @@ def _bounds(model: FootprintModel) -> tuple[float, float, float, float]:
         elif isinstance(g, Polygon):
             xs += [x for x, _ in g.points]
             ys += [y for _, y in g.points]
+    if not xs:
+        # An empty footprint, read from a library: draw the frame around
+        # the origin rather than fail.
+        return -1.0, -1.0, 1.0, 1.0
     return min(xs), min(ys), max(xs), max(ys)
 
 
@@ -184,8 +188,22 @@ def render_svg(model: FootprintModel, *, show_numbers: bool = True,
 
     # courtyard and assembly first, under the copper
     out.append('<g id="courtyard">')
-    out.append(_graphic(model.courtyard, _STYLE["courtyard"]))
+    drawn = model.layer("courtyard")
+    if drawn:
+        # A footprint read from a library has its courtyard as drawn,
+        # which is not always the rectangle model.courtyard holds.
+        for g in drawn:
+            out.append(_graphic(g, _STYLE["courtyard"]))
+    else:
+        out.append(_graphic(model.courtyard, _STYLE["courtyard"]))
     out.append('</g>')
+    others = [g for g in model.graphics
+              if g.layer not in ("courtyard", "assembly", "silk")]
+    if others:
+        out.append('<g id="other-layers">')
+        for g in others:
+            out.append(_graphic(g, _STYLE["origin"], dash="0.12,0.12"))
+        out.append('</g>')
     out.append('<g id="assembly">')
     for g in model.layer("assembly"):
         out.append(_graphic(g, _STYLE["assembly"], dash="0.25,0.15"))

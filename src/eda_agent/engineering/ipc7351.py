@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """IPC-7351B land-pattern calculator and naming.
 
 Equations (IPC-7351, section 3; confirmed in the standard's text and independent sources):

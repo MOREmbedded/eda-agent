@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """eng_validate_library_live: the live version of eng_validate_library,
 tested against synthetic payloads shaped exactly like the documented
 bridge responses (library.get_components, library.get_component_details,

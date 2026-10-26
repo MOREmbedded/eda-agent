@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Offline tests for Win32 Altium window/dialog MCP tools."""
 
 from __future__ import annotations
