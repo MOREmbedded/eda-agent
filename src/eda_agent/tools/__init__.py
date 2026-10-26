@@ -40,6 +40,7 @@ from .eda import register_eda_tools
 from .calc import register_calc_tools, register_pcb_calc_tools
 from .stackup import register_stackup_tools
 from .plan import register_plan_tools
+from .npi import register_npi_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
 from .engineering import register_engineering_tools
@@ -286,6 +287,14 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_calc_tools(mcp)
         register_plan_tools(mcp)
         register_offline_review_tools(mcp)
+    # NPI phase gates (feasibility / prototype / EVT / DVT / PVT) are a
+    # programme-level concern, not an EDA one: the gates are data and the
+    # evidence log is a local file, so every backend gets them. The
+    # criteria name Altium tools where Altium can answer them, which a
+    # KiCad user reads as "no tool here, attest it" rather than as a
+    # broken reference.
+    register_npi_tools(mcp)
+
     # The EDA-agnostic main-flow tools (review_design, get_board_info,
     # list_components, list_nets) work on whichever backend is active, so they
     # register for every backend.
@@ -323,6 +332,7 @@ __all__ = [
     "register_pcb_calc_tools",
     "register_stackup_tools",
     "register_plan_tools",
+    "register_npi_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",
     "register_offline_review_tools",

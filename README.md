@@ -396,6 +396,38 @@ It requires Python 3.12+, while eda-agent itself supports 3.11, which is
 why it is an extra rather than a core dependency. Without it the tool
 says so plainly instead of failing obscurely.
 
+## NPI phase gates
+
+Feasibility, prototype, EVT, DVT and PVT as gates the server holds you
+to, rather than a slide nobody opens after kickoff.
+
+```
+design_npi_gate     what this gate asks, and where it stands
+design_npi_record   answer one criterion, with evidence
+design_npi_status   which gate the programme is actually at
+```
+
+42 criteria across the five gates, 29 of them answerable by tools this
+server already has - ERC and DRC results, footprint audits against the
+datasheet, impedance profiles, diff-pair matching, fab-profile DFM,
+part lifecycle, fiducials. The rest need a person, and say so: pilot
+yield, EMC pre-scan and enclosure sign-off are not things a server can
+know. Each criterion records what passing looks like and **why it
+belongs to that gate rather than a later one**.
+
+The gate reports; it does not run the checks. It hands back
+`next_tools` for the blocking automatic ones and
+`awaiting_attestation` for the rest, so the loop stays the client's and
+nothing happens that you did not ask for.
+
+Three rules make it hard to pass by accident: evidence expires, evidence
+belongs to a design revision and stops counting against another one, and
+a waiver without a reason is refused. The current phase is the first
+gate that does not pass - a board whose feasibility gate never closed is
+at feasibility however much layout has been done.
+
+See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
+
 ## Measuring performance
 
 Two logs in the workspace time every call, from opposite ends:
