@@ -963,6 +963,40 @@ def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
 # perf -- where the time went, from the logs already being written
 # --------------------------------------------------------------------------
 
+def cmd_sdk_coverage(*, as_json: bool = False, detail: int = 0,
+                     sdk_json: str | None = None) -> int:
+    """Measure the generic property layer against Altium's own SDK.
+
+    Altium.SDK.Interfaces.dll declares every interface and property the
+    scripting engine exposes. The four Pascal If-chains are written by
+    hand, so what they reach was a guess until there was something to
+    compare them against. This prints the comparison.
+
+    It needs the reflected dump, which only exists on a machine with
+    Altium installed; without one it says how to produce it and exits
+    non-zero rather than reporting a coverage figure it cannot stand
+    behind.
+    """
+    import json as _json
+
+    from .sdk.coverage import build_report, format_report, report_as_dict
+    from .sdk.reflect import SdkUnavailable, load_sdk
+
+    try:
+        model = load_sdk(sdk_json)
+    except SdkUnavailable as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+
+    report = build_report(model)
+    if as_json:
+        print(_json.dumps(report_as_dict(report), indent=2))
+        return 0
+
+    print(format_report(report, detail=detail))
+    return 0
+
+
 def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
     """Report call timing by joining the workspace's two logs.
 
