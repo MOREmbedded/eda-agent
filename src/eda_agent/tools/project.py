@@ -1167,12 +1167,17 @@ def register_project_tools(mcp):
                                overwrite: bool = False) -> dict[str, Any]:
         """Export a board to a STEP 3D model with Altium's own exporter.
 
-        Runs PCB:Export with the STEP 3D format, the route File > Export >
-        STEP 3D takes, and answers its three dialogs: the file name
-        (already filled in), the export options (Altium's defaults) and
-        the closing "Done!". Only those three are pressed; any other
-        dialog stops the export and is reported. ``generated`` is true
-        only when a new file is at output_path afterwards.
+        First through Altium's exporter object
+        (``PCBServer.Board3DModelExporter``), which shows no dialog and
+        keeps the options last used in File > Export > STEP 3D
+        (``route: "exporter"``). If that writes nothing, it runs PCB:Export
+        with the STEP 3D format, the route File > Export > STEP 3D takes,
+        and answers its three dialogs: the file name (already filled in),
+        the export options (Altium's defaults) and the closing "Done!"
+        (``route: "dialogs"``, with ``exporter_reason``). Only those three
+        are pressed; any other dialog stops the export and is reported.
+        ``generated`` is true only when a new file is at output_path
+        afterwards.
 
         Args:
             output_path: Full path for the .step file.
@@ -1239,6 +1244,27 @@ def register_project_tools(mcp):
                 return {"ok": False, "output_path": output_path, "reason": (
                     f"the existing file could not be moved aside: {e}")}
         started = _time.time()
+
+        # Altium's exporter object first: no dialog to answer. The dialog
+        # route below stays for a build where it writes nothing.
+        api: dict[str, Any] = {}
+        try:
+            api = await bridge.send_command_async(
+                "project.export_step_api", {"output_path": output_path},
+                timeout=600.0) or {}
+        except AltiumError as e:
+            api = {"generated": False, "reason": str(e)}
+        if api.get("generated") and os.path.exists(output_path):
+            if aside:
+                try:
+                    os.remove(aside)
+                except OSError:
+                    pass
+            return {"ok": True, "generated": True, "output_path": output_path,
+                    "size_bytes": os.path.getsize(output_path),
+                    "front_document": front_path, "route": "exporter",
+                    "dialogs_answered": []}
+        api_reason = api.get("reason") or "no new file"
 
         # The handler blocks in RunProcess until the dialogs are answered,
         # and the bridge gives up on a call as soon as a modal shows, so
@@ -1345,6 +1371,8 @@ def register_project_tools(mcp):
             "generated": bool(written),
             "output_path": output_path,
             "front_document": front_path,
+            "route": "dialogs",
+            "exporter_reason": api_reason,
             "dialogs_answered": driven.get("answered", []),
         }
         if written:

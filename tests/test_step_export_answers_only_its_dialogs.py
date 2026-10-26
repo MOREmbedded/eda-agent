@@ -29,8 +29,9 @@ class _Dialog:
         return _Button(caption)
 
 
-def _tool(monkeypatch, tmp_path, titles, writes=True):
-    """The tool, with the given dialogs shown one after another."""
+def _tool(monkeypatch, tmp_path, titles, writes=True, exporter_writes=False):
+    """The tool, with the given dialogs shown one after another. The
+    exporter object writes nothing unless ``exporter_writes``."""
     board = str(tmp_path / "Board.PcbDoc")
     out = tmp_path / "Board.step"
     queue = [_Dialog(t, i) for i, t in enumerate(titles)]
@@ -42,6 +43,11 @@ def _tool(monkeypatch, tmp_path, titles, writes=True):
                 return {"file_path": board}
             if command == "project.export_step":
                 raise AltiumTimeoutError("Altium is showing a modal dialog")
+            if command == "project.export_step_api":
+                if exporter_writes:
+                    out.write_text("ISO-10303-21; exporter")
+                    return {"generated": True}
+                return {"generated": False, "reason": "no new file"}
             return {"focused": True}
 
     def _click(button):
@@ -196,3 +202,23 @@ def test_a_missing_output_folder_is_made(monkeypatch, tmp_path):
     monkeypatch.setattr(asyncio, "sleep", _no_wait)
     asyncio.run(tool(nested, board_path=board))
     assert os.path.isdir(os.path.dirname(nested))
+
+
+def test_the_exporter_object_writes_with_no_dialog(monkeypatch, tmp_path):
+    tool, out, board, pressed = _tool(monkeypatch, tmp_path, ["Export File"],
+                                      exporter_writes=True)
+    (tmp_path / "Board.step").write_text("earlier")
+    result = asyncio.run(tool(out, board_path=board, overwrite=True))
+    assert result["ok"] is True and result["route"] == "exporter"
+    assert pressed == [] and result["dialogs_answered"] == []
+    assert (tmp_path / "Board.step").read_text() == "ISO-10303-21; exporter"
+    assert not (tmp_path / "Board.step.previous").exists()
+
+
+def test_an_exporter_that_writes_nothing_falls_back_to_the_dialogs(monkeypatch, tmp_path):
+    tool, out, board, pressed = _tool(
+        monkeypatch, tmp_path, ["Export File", "Export Options", "Information"])
+    result = asyncio.run(tool(out, board_path=board))
+    assert result["ok"] is True and result["route"] == "dialogs"
+    assert result["exporter_reason"] == "no new file"
+    assert pressed[0] == ("Export File", "Save")

@@ -1,4 +1,4 @@
-# Release verification: 2026.10.25.7
+# Release verification: 2026.10.26.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -119,6 +119,12 @@ works elsewhere cannot be an undeclared identifier:
 | 40, body height | `OverallHeight` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
 | 40, body opacity | `BodyOpacity3D` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
 | 40, body layer | `Layer` written on a library 3D body | yes, `Lib_MoveBodiesToLayer` | low |
+| 41, symbol parts | `SetState_CurrentSchComponentAddPart`, `SetState_CurrentSchComponentRemovePart` on the library | no, nowhere | medium, each step read back; ran live both ways |
+| 41, display modes | `SetState_CurrentSchComponentAddDisplayMode`, `SetState_CurrentSchComponentRemoveDisplayMode` on the library | no, nowhere | medium, each step read back; ran live both ways |
+| 41, part to remove | `CurrentPartID`, `DisplayMode` written on a library symbol | yes, `Lib_CreateSymbol` | low |
+| 41, model to STEP | `ExportToStep` on a 3D model | no, nowhere | medium, writes a file only; ran live |
+| 41, board STEP | `Board3DModelExporter`, `ExportBoard3DModel` | no, nowhere | medium, writes a file only; ran live, and the dialog route stays behind it |
+| 41, impedance profiles | `GetImpedanceProfileCount`, `GetImpedanceProfileByIndex`, `GetTraceImpedanceByIndex`, `CalculatedImpedance` | no, nowhere | high for the per-profile reads, not yet run on a board with a profile; each read is guarded |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -294,7 +300,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.25.7`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2440,6 +2446,40 @@ before the guard and opened an empty library; the guard is unit-tested.
 Not run: a footprint with several STEP bodies, which the test library
 lacks, so that the saved records list in the editor's order is assumed
 and only checked by model file name and body count.
+
+---
+
+## 41. Calls found in Altium's SDK interface assembly
+
+New: `lib_set_symbol_parts`, `lib_export_3d_model`,
+`pcb_get_impedance_profiles`, and a dialog-free first route in
+`proj_export_step`. Each call was found by reflecting Altium's
+`Altium.SDK.Interfaces.dll` (the HTML API reference lists none of them),
+then measured live before use. Measured and NOT used: `IPCB_Model.GetState`
+runs, but its four var parameters come back unchanged, so a script cannot
+read a STEP model's 3D rotations (step 40's file read stays).
+
+1. **Symbol parts.** `lib_create_symbol name=<sym> part_count=3`, pins on
+   parts 1 and 3, then `lib_set_symbol_parts part_count=5
+   display_mode_count=2`: 5 parts, 2 modes, `pins_removed` 0,
+   `complete` true. `part_count=2`: 2 parts, `pins_removed` 2 (part 3's).
+   `display_mode_count=1`: 1 mode. An unknown symbol is refused.
+2. **Model to STEP.** `lib_export_3d_model` on a footprint with one
+   embedded STEP model: `written` true, a valid STEP file. It is
+   Altium's Open CASCADE re-encoding (117 KB from a 268 KB original),
+   not the vendor's bytes. `body_index=2` is refused with `NO_BODY`.
+3. **Board STEP.** `proj_export_step` on a scratch board: `route`
+   `exporter`, `dialogs_answered` empty, a valid 7 MB STEP file in 17 s.
+   Again with `overwrite=True`: the same, and no dialog is left open.
+4. **Impedance profiles.** `pcb_get_impedance_profiles` on three boards:
+   `profile_count` 0, `read_errors` 0 on each.
+
+Run live on AD 26.11.1.5 with 2026.10.26.3 on scratch libraries and a
+scratch board (closed without saving), pinging after every step. All
+passed. Not run: item 4 on a board that HAS a profile (none of the three
+did), so the per-profile and per-layer reads are unmeasured and each is
+guarded; a symbol's added display mode drawn and placed; a linked rather
+than embedded model.
 
 ---
 

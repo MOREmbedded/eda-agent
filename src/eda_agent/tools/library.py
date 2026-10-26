@@ -18,7 +18,7 @@ from ..library_db import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
-from ..units import format_length, length_in, normalise_units
+from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
 
 
@@ -5803,6 +5803,106 @@ def register_library_tools(mcp):
             "library.move_bodies_to_layer", params, timeout=60.0)
 
     @mcp.tool()
+    async def lib_set_symbol_parts(
+        name: str,
+        library_path: str = "",
+        part_count: Optional[int] = None,
+        display_mode_count: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Set how many parts and display modes a SchLib symbol has.
+
+        Uses the library editor's own Add Part / Remove Part and Add /
+        Remove Display Mode, one step at a time, each read back. Parts
+        and modes are added and removed at the end: a part count going
+        from 4 to 2 removes parts 4 and 3 WITH THEIR PINS and graphics
+        (``pins_removed`` says how many). A new part or mode is empty;
+        draw it with lib_add_pins and the lib_add_symbol_* tools.
+
+        Args:
+            name: The symbol (its library reference).
+            library_path: The .SchLib. Defaults to the focused library.
+            part_count: Parts wanted, from 1. Omit to leave as is.
+            display_mode_count: Display modes wanted, from 1 (the normal
+                mode only). Omit to leave as is.
+
+        Does NOT save the library.
+
+        Returns:
+            ``part_count_before``, ``part_count``,
+            ``display_mode_count_before``, ``display_mode_count``,
+            ``pins_removed``, and ``complete`` (false with ``stopped``
+            saying which step did not take).
+        """
+        if not name.strip():
+            return {"ok": False, "reason": "name is required"}
+        if part_count is None and display_mode_count is None:
+            return {"ok": False, "reason": "give part_count, display_mode_count or both"}
+        params: dict[str, Any] = {"name": name.strip()}
+        for key, value in (("part_count", part_count),
+                           ("display_mode_count", display_mode_count)):
+            if value is None:
+                continue
+            if value < 1:
+                return {"ok": False, "reason": f"{key} starts at 1"}
+            params[key] = str(value)
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False, "reason": f"{path} is not a file"}
+            params["library_path"] = path
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_symbol_parts", params, timeout=60.0)
+
+    @mcp.tool()
+    async def lib_export_3d_model(
+        footprint_name: str,
+        out_path: str,
+        library_path: str = "",
+        body_index: int = 1,
+    ) -> dict[str, Any]:
+        """Write the STEP model of a footprint's 3D body to a file, through Altium.
+
+        Altium re-encodes the model on the way out (measured on AD 26.11:
+        a 268 KB embedded original came out as a 117 KB Open CASCADE
+        file), so this gives the GEOMETRY, not the vendor's file. Use
+        lib_extract_embedded_models for the original bytes; use this one
+        when the library is not saved yet, or the model is linked rather
+        than embedded.
+
+        Args:
+            footprint_name: The footprint whose model to write.
+            out_path: Full path of the .step file to write.
+            library_path: The .PcbLib. Defaults to the focused library.
+            body_index: Which STEP body, 1-based, when a footprint has
+                several.
+
+        Returns:
+            ``written`` (a new file is at out_path), ``model`` (the model
+            file name Altium holds), ``footprint`` and ``out_path``.
+        """
+        if not footprint_name.strip():
+            return {"ok": False, "reason": "footprint_name is required"}
+        if not out_path or not Path(out_path).is_absolute():
+            return {"ok": False, "reason": "out_path must be a full path"}
+        if body_index < 1:
+            return {"ok": False, "reason": "body_index starts at 1"}
+        params: dict[str, Any] = {"footprint_name": footprint_name.strip(),
+                                  "out_path": out_path,
+                                  "body_index": str(body_index)}
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False, "reason": (
+                    f"{path} is not a file. Altium would open a new, empty "
+                    "library under that name.")}
+            params["library_path"] = path
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.export_model_step", params, timeout=120.0)
+
+    @mcp.tool()
     async def lib_set_3d_body(
         footprint_name: str,
         library_path: str = "",
@@ -5868,7 +5968,7 @@ def register_library_tools(mcp):
         unit = units.strip().lower()
         if unit not in ("mil", "mm"):
             return {"ok": False, "reason": f"units is 'mil' or 'mm', got {units!r}"}
-        scale = 1000.0 / 25.4 if unit == "mm" else 1.0
+        scale = MILS_PER_MM if unit == "mm" else 1.0
         params: dict[str, Any] = {"footprint_name": footprint_name.strip()}
         for name, value in (("standoff_height", standoff_height),
                             ("overall_height", overall_height)):

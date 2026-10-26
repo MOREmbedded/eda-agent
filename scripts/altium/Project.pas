@@ -2486,6 +2486,108 @@ Begin
 End;
 
 {..............................................................................}
+{ ProjectHoldingDoc - the first open project whose documents include FilePath, }
+{ or Nil for a free document.                                                 }
+{..............................................................................}
+Function ProjectHoldingDoc(FilePath : String) : IProject;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have : String;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Want := UpperCase(CanonicalPathValue('path', FilePath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        For J := 0 To Proj.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Proj.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Have := '';
+            Try Have := Doc.DM_FullPath; Except End;
+            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+            Begin
+                Result := Proj;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ Proj_ExportSTEPApi - write the board's 3D model through Altium's own        }
+{ exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel, read    }
+{ from the SDK interface assembly), with no dialog. The exporter keeps the    }
+{ options last used in File > Export > STEP 3D. format is the exporter's own  }
+{ code: 0 wrote STEP on AD 26.11.1.5 (7 MB in 17 s, no dialog).            }
+{ generated is true only when a new file is at output_path afterwards, so a  }
+{ build where the call does nothing says so and proj_export_step falls back  }
+{ to the dialog route.                                                        }
+{ Params: output_path (required), format (default 0)                          }
+{..............................................................................}
+Function Proj_ExportSTEPApi(Params : String; RequestId : String) : String;
+Var
+    OutputPath, Problem : String;
+    Board : IPCB_Board;
+    Exporter : IPCB_Board3DModelExporter;
+    Proj : IProject;
+    Format, AgeBefore, AgeAfter : Integer;
+Begin
+    OutputPath := ExtractJsonValue(Params, 'output_path');
+    Format := StrToIntDef(ExtractJsonValue(Params, 'format'), 0);
+    If OutputPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'output_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        Exit;
+    End;
+    Exporter := Nil;
+    Try Exporter := PCBServer.Board3DModelExporter; Except Exporter := Nil; End;
+    If Exporter = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', False)
+            + ',' + JsonStr('reason', 'this Altium build gives scripts no 3D model exporter')));
+        Exit;
+    End;
+    Proj := ProjectHoldingDoc(Board.FileName);
+    AgeBefore := -1;
+    Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
+    Problem := '';
+    Try
+        Exporter.ExportBoard3DModel(OutputPath, Format, Board, Proj);
+    Except
+        Problem := 'the exporter raised an error';
+    End;
+    AgeAfter := -1;
+    Try If FileExists(OutputPath) Then AgeAfter := FileAge(OutputPath); Except End;
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', True)
+            + ',' + JsonStr('output_path', OutputPath)
+            + ',' + JsonStr('board', Board.FileName)
+            + ',' + JsonBool('in_project', Proj <> Nil)))
+    Else
+    Begin
+        If Problem = '' Then Problem := 'the exporter returned and no new file is at output_path';
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', False)
+            + ',' + JsonStr('output_path', OutputPath)
+            + ',' + JsonStr('reason', Problem)));
+    End;
+End;
+
+{..............................................................................}
 { Export PCB to STEP 3D model                                                 }
 { Params: output_path (optional, if omitted, Altium may prompt)              }
 {..............................................................................}
@@ -5308,6 +5410,7 @@ Begin
         'annotate':          Result := Proj_Annotate(Params, RequestId);
         'generate_output':   Result := Proj_GenerateOutput(Params, RequestId);
         'export_step':       Result := Proj_ExportSTEP(Params, RequestId);
+        'export_step_api':   Result := Proj_ExportSTEPApi(Params, RequestId);
         'export_dxf':        Result := Proj_ExportDXF(Params, RequestId);
         'export_image':      Result := Proj_ExportImage(Params, RequestId);
         'get_outjob_containers': Result := Proj_GetOutJobContainers(Params, RequestId);
