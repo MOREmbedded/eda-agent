@@ -43,6 +43,33 @@ _SESSION_REMINDER = {
     "datasheet_rules": DATASHEET_RULES,
 }
 
+# The reminder is about 750 tokens. app_ping and app_attach carry it on
+# their first call in this server and then on every Nth call between
+# them, so a long session still sees it now and then without paying for
+# it on every health check. EDA_AGENT_REMINDER_EVERY sets N; 1 sends it
+# every time.
+_REMINDER_EVERY_ENV = "EDA_AGENT_REMINDER_EVERY"
+_REMINDER_EVERY_DEFAULT = 10
+_reminder_calls = 0
+
+
+def _reminder_every() -> int:
+    raw = (os.environ.get(_REMINDER_EVERY_ENV) or "").strip()
+    try:
+        every = int(raw) if raw else _REMINDER_EVERY_DEFAULT
+    except ValueError:
+        every = _REMINDER_EVERY_DEFAULT
+    return max(every, 1)
+
+
+def _with_session_reminder(reply: dict[str, Any]) -> dict[str, Any]:
+    """Add ``_system_reminder`` to ``reply`` when this call is due one."""
+    global _reminder_calls
+    _reminder_calls += 1
+    if (_reminder_calls - 1) % _reminder_every() == 0:
+        reply["_system_reminder"] = _SESSION_REMINDER
+    return reply
+
 
 def _reports_update(fn):
     """Add ``update`` to a reply when the daily check found a newer
@@ -552,21 +579,19 @@ def register_application_tools(mcp):
         try:
             bridge.attach()
             script_loaded = bridge.ping()
-            return {
+            return _with_session_reminder({
                 "attached": True,
                 "script_loaded": script_loaded,
                 "message": "Connected to Altium Designer, script is responding"
                 if script_loaded
                 else "Altium is running but script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
         except AltiumNotRunningError as e:
-            return {
+            return _with_session_reminder({
                 "attached": False,
                 "script_loaded": False,
                 "message": str(e),
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
 
     @mcp.tool()
     async def app_save_all() -> dict[str, Any]:
@@ -923,7 +948,7 @@ def register_application_tools(mcp):
             match = False
             msg = f"{msg} {stamp_warnings[0]}"
 
-        return {
+        return _with_session_reminder({
             "success": True,
             "mcp_server_version": _mcp_server_version,
             "altium_script_version": altium_ver,
@@ -941,8 +966,7 @@ def register_application_tools(mcp):
             "other_servers": servers,
             "warnings": warnings,
             "message": msg,
-            "_system_reminder": _SESSION_REMINDER,
-        }
+        })
 
     @mcp.tool()
     async def app_get_report() -> dict[str, Any]:
