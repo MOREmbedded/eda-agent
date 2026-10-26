@@ -489,6 +489,308 @@ Begin
     Else Obj.SetState_UnionIndex := UIndex;
 End;
 
+{ ---- MORE PROPERTIES NAMED IN ALTIUM'S SDK -------------------------------- }
+{ Hole tolerances on pads and vias, barcode and multiline text, dimension     }
+{ text and arrows, the rest of the pour options, and pin / part swapping on  }
+{ a placed part. Each is a GetState_ / SetState_ pair in Altium's SDK. A      }
+{ length is decimal mils both ways; a choice (BarCodeKind, TextPosition ...)  }
+{ is Altium's own ordinal, read back so a caller can copy one.                }
+
+{ Altium's "no hole tolerance set": the largest 32-bit integer, measured on }
+{ AD 26.11. Worked out here rather than written as a literal, because AD25  }
+{ refuses that literal while compiling (see MaxInt in Main.pas).           }
+Function UnsetTolerance(Dummy : Integer) : Integer;
+Var
+    Half : Integer;
+Begin
+    Half := 1073741823;
+    Result := Half + Half + 1;
+End;
+
+{ Which object type carries an extra property: 1 pad or via, 2 via only,     }
+{ 3 text, 4 dimension, 5 polygon, 6 component, 0 not one of these.           }
+Function ExtraPCBPropertyOwner(PropName : String) : Integer;
+Begin
+    Result := 0;
+    If (PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance') Then Result := 1
+    Else If PropName = 'IsCounterHole' Then Result := 2
+    Else If (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
+            (PropName = 'BarCodeFullWidth') Or (PropName = 'BarCodeFullHeight') Or
+            (PropName = 'BarCodeXMargin') Or (PropName = 'BarCodeYMargin') Or
+            (PropName = 'BarCodeMinWidth') Or (PropName = 'BarCodeInverted') Or
+            (PropName = 'BarCodeShowText') Or (PropName = 'BarCodeFontName') Or
+            (PropName = 'Multiline') Or (PropName = 'MultilineTextWidth') Or
+            (PropName = 'MultilineTextHeight') Or
+            (PropName = 'MultilineTextAutoPosition') Then Result := 3
+    Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
+            (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
+            (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
+            (PropName = 'TextPrecision') Or (PropName = 'TextFormat') Or
+            (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
+            (PropName = 'ArrowSize') Or (PropName = 'ArrowLineWidth') Or
+            (PropName = 'ArrowLength') Or (PropName = 'ArrowPosition') Or
+            (PropName = 'ExtensionOffset') Or (PropName = 'ExtensionLineWidth') Or
+            (PropName = 'ExtensionPickGap') Then Result := 4
+    Else If (PropName = 'PolygonType') Or (PropName = 'BorderWidth') Or
+            (PropName = 'AvoidObsticles') Or (PropName = 'ClipAcuteCorners') Or
+            (PropName = 'MitreCorners') Or (PropName = 'IgnoreViolations') Or
+            (PropName = 'ArcPourMode') Then Result := 5
+    Else If (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
+            (PropName = 'IsBGA') Then Result := 6;
+End;
+
+{ True when Obj is the type that carries PropName. }
+Function ExtraPCBPropertyFits(Oid : Integer; PropName : String) : Boolean;
+Var
+    Owner : Integer;
+Begin
+    Owner := ExtraPCBPropertyOwner(PropName);
+    Result := ((Owner = 1) And ((Oid = ePadObject) Or (Oid = eViaObject)))
+        Or ((Owner = 2) And (Oid = eViaObject))
+        Or ((Owner = 3) And (Oid = eTextObject))
+        Or ((Owner = 4) And (Oid = eDimensionObject))
+        Or ((Owner = 5) And (Oid = ePolyObject))
+        Or ((Owner = 6) And (Oid = eComponentObject));
+End;
+
+{ The value, '' when Obj is not the type that carries it. }
+Function PCBGetExtra(Obj : IPCB_Primitive; PropName : String) : String;
+Var
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Txt : IPCB_Text;
+    Dim : IPCB_Dimension;
+    Poly : IPCB_Polygon;
+    Comp : IPCB_Component;
+    Oid, Tol : Integer;
+Begin
+    Result := '';
+    Oid := Obj.ObjectId;
+    If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
+    If (PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance') Then
+    Begin
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If PropName = 'HolePositiveTolerance' Then Tol := Pad.HolePositiveTolerance
+            Else Tol := Pad.HoleNegativeTolerance;
+        End
+        Else
+        Begin
+            Via := Obj;
+            If PropName = 'HolePositiveTolerance' Then Tol := Via.HolePositiveTolerance
+            Else Tol := Via.HoleNegativeTolerance;
+        End;
+        If Tol = UnsetTolerance(0) Then Result := 'unset'
+        Else Result := FloatToJsonStr(CoordToMilsF(Tol));
+    End
+    Else If PropName = 'IsCounterHole' Then
+    Begin
+        Via := Obj;
+        Result := BoolToJsonStr(Via.IsCounterHole);
+    End
+    Else If Oid = eTextObject Then
+    Begin
+        Txt := Obj;
+        If PropName = 'BarCodeKind' Then Result := IntToStr(Txt.BarCodeKind)
+        Else If PropName = 'BarCodeRenderMode' Then Result := IntToStr(Txt.BarCodeRenderMode)
+        Else If PropName = 'BarCodeFullWidth' Then Result := FloatToJsonStr(CoordToMilsF(Txt.BarCodeFullWidth))
+        Else If PropName = 'BarCodeFullHeight' Then Result := FloatToJsonStr(CoordToMilsF(Txt.BarCodeFullHeight))
+        Else If PropName = 'BarCodeXMargin' Then Result := FloatToJsonStr(CoordToMilsF(Txt.BarCodeXMargin))
+        Else If PropName = 'BarCodeYMargin' Then Result := FloatToJsonStr(CoordToMilsF(Txt.BarCodeYMargin))
+        Else If PropName = 'BarCodeMinWidth' Then Result := FloatToJsonStr(CoordToMilsF(Txt.BarCodeMinWidth))
+        Else If PropName = 'BarCodeInverted' Then Result := BoolToJsonStr(Txt.BarCodeInverted)
+        Else If PropName = 'BarCodeShowText' Then Result := BoolToJsonStr(Txt.BarCodeShowText)
+        Else If PropName = 'BarCodeFontName' Then Result := Txt.BarCodeFontName
+        Else If PropName = 'Multiline' Then Result := BoolToJsonStr(Txt.Multiline)
+        Else If PropName = 'MultilineTextWidth' Then Result := FloatToJsonStr(CoordToMilsF(Txt.MultilineTextWidth))
+        Else If PropName = 'MultilineTextHeight' Then Result := FloatToJsonStr(CoordToMilsF(Txt.MultilineTextHeight))
+        Else If PropName = 'MultilineTextAutoPosition' Then Result := IntToStr(Txt.MultilineTextAutoPosition);
+    End
+    Else If Oid = eDimensionObject Then
+    Begin
+        Dim := Obj;
+        If PropName = 'TextHeight' Then Result := FloatToJsonStr(CoordToMilsF(Dim.TextHeight))
+        Else If PropName = 'TextWidth' Then Result := FloatToJsonStr(CoordToMilsF(Dim.TextWidth))
+        Else If PropName = 'TextLineWidth' Then Result := FloatToJsonStr(CoordToMilsF(Dim.TextLineWidth))
+        Else If PropName = 'TextGap' Then Result := FloatToJsonStr(CoordToMilsF(Dim.TextGap))
+        Else If PropName = 'TextPosition' Then Result := IntToStr(Dim.TextPosition)
+        Else If PropName = 'TextDimensionUnit' Then Result := IntToStr(Dim.TextDimensionUnit)
+        Else If PropName = 'TextPrecision' Then Result := IntToStr(Dim.TextPrecision)
+        Else If PropName = 'TextFormat' Then Result := Dim.TextFormat
+        Else If PropName = 'TextPrefix' Then Result := Dim.TextPrefix
+        Else If PropName = 'TextSuffix' Then Result := Dim.TextSuffix
+        Else If PropName = 'ArrowSize' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ArrowSize))
+        Else If PropName = 'ArrowLineWidth' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ArrowLineWidth))
+        Else If PropName = 'ArrowLength' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ArrowLength))
+        Else If PropName = 'ArrowPosition' Then Result := IntToStr(Dim.ArrowPosition)
+        Else If PropName = 'ExtensionOffset' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ExtensionOffset))
+        Else If PropName = 'ExtensionLineWidth' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ExtensionLineWidth))
+        Else If PropName = 'ExtensionPickGap' Then Result := FloatToJsonStr(CoordToMilsF(Dim.ExtensionPickGap));
+    End
+    Else If Oid = ePolyObject Then
+    Begin
+        Poly := Obj;
+        If PropName = 'PolygonType' Then Result := IntToStr(Poly.PolygonType)
+        Else If PropName = 'BorderWidth' Then Result := FloatToJsonStr(CoordToMilsF(Poly.BorderWidth))
+        Else If PropName = 'AvoidObsticles' Then Result := BoolToJsonStr(Poly.AvoidObsticles)
+        Else If PropName = 'ClipAcuteCorners' Then Result := BoolToJsonStr(Poly.ClipAcuteCorners)
+        Else If PropName = 'MitreCorners' Then Result := BoolToJsonStr(Poly.MitreCorners)
+        Else If PropName = 'IgnoreViolations' Then Result := BoolToJsonStr(Poly.IgnoreViolations)
+        Else If PropName = 'ArcPourMode' Then Result := BoolToJsonStr(Poly.ArcPourMode);
+    End
+    Else If Oid = eComponentObject Then
+    Begin
+        Comp := Obj;
+        If PropName = 'EnablePinSwapping' Then Result := BoolToJsonStr(Comp.EnablePinSwapping)
+        Else If PropName = 'EnablePartSwapping' Then Result := BoolToJsonStr(Comp.EnablePartSwapping)
+        Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA);
+    End;
+End;
+
+{ 1 written, 0 Obj is not the type that carries it, -1 refused: a read-only  }
+{ property, a value that is not a number (or true / false), or a negative    }
+{ length. Hole tolerances may be negative.                                   }
+Function PCBSetExtra(Obj : IPCB_Primitive; PropName : String; Value : String) : Integer;
+Var
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Txt : IPCB_Text;
+    Dim : IPCB_Dimension;
+    Poly : IPCB_Polygon;
+    Comp : IPCB_Component;
+    Oid, Owner, N : Integer;
+    F : Double;
+    B, IsBool, IsText, IsInt : Boolean;
+Begin
+    Result := 0;
+    Oid := Obj.ObjectId;
+    If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
+    Result := -1;
+    If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Then Exit;
+    Owner := ExtraPCBPropertyOwner(PropName);
+    If (Owner = 1) And (LowerCase(Value) = 'unset') Then
+    Begin
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If PropName = 'HolePositiveTolerance' Then Pad.HolePositiveTolerance := UnsetTolerance(0)
+            Else Pad.HoleNegativeTolerance := UnsetTolerance(0);
+        End
+        Else
+        Begin
+            Via := Obj;
+            If PropName = 'HolePositiveTolerance' Then Via.HolePositiveTolerance := UnsetTolerance(0)
+            Else Via.HoleNegativeTolerance := UnsetTolerance(0);
+        End;
+        Result := 1;
+        Exit;
+    End;
+    IsBool := (PropName = 'BarCodeInverted') Or (PropName = 'BarCodeShowText') Or
+        (PropName = 'Multiline') Or (PropName = 'AvoidObsticles') Or
+        (PropName = 'ClipAcuteCorners') Or (PropName = 'MitreCorners') Or
+        (PropName = 'IgnoreViolations') Or (PropName = 'ArcPourMode') Or
+        (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping');
+    IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
+        (PropName = 'TextPrefix') Or (PropName = 'TextSuffix');
+    IsInt := (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
+        (PropName = 'MultilineTextAutoPosition') Or (PropName = 'TextPosition') Or
+        (PropName = 'TextDimensionUnit') Or (PropName = 'TextPrecision') Or
+        (PropName = 'ArrowPosition') Or (PropName = 'PolygonType');
+    B := False;
+    F := 0;
+    N := 0;
+    If IsBool Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If Not IsText Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        F := StrToFloatDef(Value, 0);
+        If IsInt Then
+        Begin
+            If (Round(F) <> F) Or (F < 0) Then Exit;
+            N := Round(F);
+        End
+        Else If (F < 0) And (Owner <> 1) Then Exit;
+    End;
+
+    If Owner = 1 Then
+    Begin
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If PropName = 'HolePositiveTolerance' Then Pad.HolePositiveTolerance := MilsToCoordF(F)
+            Else Pad.HoleNegativeTolerance := MilsToCoordF(F);
+        End
+        Else
+        Begin
+            Via := Obj;
+            If PropName = 'HolePositiveTolerance' Then Via.HolePositiveTolerance := MilsToCoordF(F)
+            Else Via.HoleNegativeTolerance := MilsToCoordF(F);
+        End;
+    End
+    Else If Owner = 3 Then
+    Begin
+        Txt := Obj;
+        If PropName = 'BarCodeKind' Then Txt.BarCodeKind := N
+        Else If PropName = 'BarCodeRenderMode' Then Txt.BarCodeRenderMode := N
+        Else If PropName = 'BarCodeFullWidth' Then Txt.BarCodeFullWidth := MilsToCoordF(F)
+        Else If PropName = 'BarCodeFullHeight' Then Txt.BarCodeFullHeight := MilsToCoordF(F)
+        Else If PropName = 'BarCodeXMargin' Then Txt.BarCodeXMargin := MilsToCoordF(F)
+        Else If PropName = 'BarCodeYMargin' Then Txt.BarCodeYMargin := MilsToCoordF(F)
+        Else If PropName = 'BarCodeMinWidth' Then Txt.BarCodeMinWidth := MilsToCoordF(F)
+        Else If PropName = 'BarCodeInverted' Then Txt.BarCodeInverted := B
+        Else If PropName = 'BarCodeShowText' Then Txt.BarCodeShowText := B
+        Else If PropName = 'BarCodeFontName' Then Txt.BarCodeFontName := Value
+        Else If PropName = 'Multiline' Then Txt.Multiline := B
+        Else If PropName = 'MultilineTextWidth' Then Txt.MultilineTextWidth := MilsToCoordF(F)
+        Else If PropName = 'MultilineTextHeight' Then Txt.MultilineTextHeight := MilsToCoordF(F)
+        Else If PropName = 'MultilineTextAutoPosition' Then Txt.MultilineTextAutoPosition := N;
+    End
+    Else If Owner = 4 Then
+    Begin
+        Dim := Obj;
+        If PropName = 'TextHeight' Then Dim.TextHeight := MilsToCoordF(F)
+        Else If PropName = 'TextWidth' Then Dim.TextWidth := MilsToCoordF(F)
+        Else If PropName = 'TextLineWidth' Then Dim.TextLineWidth := MilsToCoordF(F)
+        Else If PropName = 'TextGap' Then Dim.TextGap := MilsToCoordF(F)
+        Else If PropName = 'TextPosition' Then Dim.TextPosition := N
+        Else If PropName = 'TextDimensionUnit' Then Dim.TextDimensionUnit := N
+        Else If PropName = 'TextPrecision' Then Dim.TextPrecision := N
+        Else If PropName = 'TextFormat' Then Dim.TextFormat := Value
+        Else If PropName = 'TextPrefix' Then Dim.TextPrefix := Value
+        Else If PropName = 'TextSuffix' Then Dim.TextSuffix := Value
+        Else If PropName = 'ArrowSize' Then Dim.ArrowSize := MilsToCoordF(F)
+        Else If PropName = 'ArrowLineWidth' Then Dim.ArrowLineWidth := MilsToCoordF(F)
+        Else If PropName = 'ArrowLength' Then Dim.ArrowLength := MilsToCoordF(F)
+        Else If PropName = 'ArrowPosition' Then Dim.ArrowPosition := N
+        Else If PropName = 'ExtensionOffset' Then Dim.ExtensionOffset := MilsToCoordF(F)
+        Else If PropName = 'ExtensionLineWidth' Then Dim.ExtensionLineWidth := MilsToCoordF(F)
+        Else If PropName = 'ExtensionPickGap' Then Dim.ExtensionPickGap := MilsToCoordF(F);
+    End
+    Else If Owner = 5 Then
+    Begin
+        Poly := Obj;
+        If PropName = 'PolygonType' Then Poly.PolygonType := N
+        Else If PropName = 'BorderWidth' Then Poly.BorderWidth := MilsToCoordF(F)
+        Else If PropName = 'AvoidObsticles' Then Poly.AvoidObsticles := B
+        Else If PropName = 'ClipAcuteCorners' Then Poly.ClipAcuteCorners := B
+        Else If PropName = 'MitreCorners' Then Poly.MitreCorners := B
+        Else If PropName = 'IgnoreViolations' Then Poly.IgnoreViolations := B
+        Else If PropName = 'ArcPourMode' Then Poly.ArcPourMode := B;
+    End
+    Else If Owner = 6 Then
+    Begin
+        Comp := Obj;
+        If PropName = 'EnablePinSwapping' Then Comp.EnablePinSwapping := B
+        Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B;
+    End;
+    Result := 1;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -919,6 +1221,8 @@ Begin
           Returned as a word rather than an ordinal. The numbers are not
           documented anywhere this project can verify, and publishing an
           unverified number invites a caller to write it back. }
+        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
+            Result := PCBGetExtra(Obj, PropName)
         Else If (PropName = 'Kind') Or (PropName = 'RegionKind') Then
         Begin
             If Oid = eRegionObject Then
@@ -1524,6 +1828,12 @@ Begin
             If Oid <> ePolyObject Then Matched := False
             Else If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
         End
+        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
+        Begin
+            PosVal := PCBSetExtra(Obj, PropName, Value);
+            If PosVal = 0 Then Matched := False
+            Else If PosVal < 0 Then Refused := True;
+        End
         Else Matched := False;
 
         If Refused Then
@@ -1690,7 +2000,8 @@ Begin
         (PropName = 'IslandAreaThreshold') Or
         (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
         (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
-        (PropName = 'Poured');
+        (PropName = 'Poured') Or
+        (ExtraPCBPropertyOwner(PropName) > 0);
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -1753,7 +2064,18 @@ Begin
         + 'IsAssyTestpoint_Bottom, BoundsLeft, BoundsBottom, BoundsRight, '
         + 'BoundsTop, UnionIndex, Identifier, Grid, TrackSize, MinTrack, '
         + 'ArcApproximation, NeckWidthThreshold, IslandAreaThreshold, '
-        + 'PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured';
+        + 'PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured, '
+        + 'HolePositiveTolerance, HoleNegativeTolerance, IsCounterHole, '
+        + 'BarCodeKind, BarCodeRenderMode, BarCodeFullWidth, BarCodeFullHeight, '
+        + 'BarCodeXMargin, BarCodeYMargin, BarCodeMinWidth, BarCodeInverted, '
+        + 'BarCodeShowText, BarCodeFontName, Multiline, MultilineTextWidth, '
+        + 'MultilineTextHeight, MultilineTextAutoPosition, TextHeight, TextWidth, '
+        + 'TextLineWidth, TextGap, TextPosition, TextDimensionUnit, TextPrecision, '
+        + 'TextFormat, TextPrefix, TextSuffix, ArrowSize, ArrowLineWidth, '
+        + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
+        + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
+        + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

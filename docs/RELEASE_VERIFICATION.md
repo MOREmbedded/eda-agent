@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.3
+# Release verification: 2026.10.26.6
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -25,7 +25,7 @@ works elsewhere cannot be an undeclared identifier:
 | 3, filled body | `AreaColor`, `IsSolid` | yes, `Generic.pas` | low |
 | 5, 3D placement | `MoveByXY` | yes, `PCB_ReplicateLayout` | low |
 | 11, copy and rename | `LibReference` | yes, `Lib_CreateSymbol` | low |
-| 12, delete variant | `DM_RemoveProjectVariant` | no, nowhere | highest, and it destroys work |
+| 12, delete variant | `DM_RemoveProjectVariant` | no, nowhere | medium, ran live; it still destroys the entries |
 | 13, sheet symbol filename | `Text` on a sheet symbol's sub-object | yes, on other objects | medium |
 | 14, polygon pour options | `RemoveDead`, `RemoveNarrowNecks`, `RemoveIslandsByArea` | new here, and in two places at once | high, and it can stop the loop |
 | 15, 3D body on a board | `StandoffHeight` on a free body | only by step 5, itself unverified | highest, shared with step 5 |
@@ -125,6 +125,18 @@ works elsewhere cannot be an undeclared identifier:
 | 41, model to STEP | `ExportToStep` on a 3D model | no, nowhere | medium, writes a file only; ran live |
 | 41, board STEP | `Board3DModelExporter`, `ExportBoard3DModel` | no, nowhere | medium, writes a file only; ran live, and the dialog route stays behind it |
 | 41, impedance profiles | `GetImpedanceProfileCount`, `GetImpedanceProfileByIndex`, `GetTraceImpedanceByIndex`, `CalculatedImpedance` | no, nowhere | high for the per-profile reads, not yet run on a board with a profile; each read is guarded |
+| 42, variant API | `DM_AddProjectVariant`, `DM_SetName`, `DM_SetDescription` on a project and its new variant | no, nowhere | medium, ran live; the process route stays behind it |
+| 42, variant entries | `DM_AddComponentVariation`, `DM_RemoveComponentVariation`, `DM_SetVariationKind`, `DM_SetAlternatePart` | no, nowhere | medium, ran live and read back |
+| 42, net colours | `DM_SetNetColorByName` on a project | no, nowhere | low, ran live, set and cleared |
+| 42, rule answers | `FindDominantRuleForObject`, `FindDominantRuleForObjectPair`, `Scope1Includes`, `CheckUnaryScope` | no, nowhere | low, reads only; ran live |
+| 42, net clean-up | `CleanNet` on the board | no, nowhere | medium, edits routing; ran live |
+| 42, drill pairs | `IsBackdrill`, `PlotDrillGuide`, `PlotDrillDrawing` on a drill pair | no, nowhere | low, ran live and restored |
+| 42, part 3D | `SaveModelToFile` on a placed part | no, nowhere | low, writes a file only; ran live |
+| 42, fast lookup | `GetPcbComponentByRefDes` on the board | no, nowhere | medium, every designator lookup runs it first; ran live, with the walk behind it |
+| 42, generic board properties | `HolePositiveTolerance`, `MitreCorners`, `BorderWidth`, `EnablePinSwapping`, `BarCodeShowText`, `Multiline` | no, nowhere | low, ran live and read back |
+| 42, pin swapping | `SetState_SwapIdPart`, `SetState_SwapIdPin` on a symbol pin | no, nowhere | low, ran live and read back |
+| 42, symbol aliases | `Alias_Add`, `Alias_Remove` on a symbol | no, nowhere | low, ran live and read back |
+| 42, sheet options | `SetState_ReferenceZonesOn`, `SetState_CustomXZones`, `SetState_ShowTemplateGraphics` on a sheet | no, nowhere | low, ran live and restored |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -300,7 +312,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.3`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.6`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -797,19 +809,16 @@ reporting 2 for a symbol created single-part whose every pin carries
 `OwnerPartId 1`, while `lib_get_component_details` reported 1 for an
 identically created symbol.
 
-## 12. Deleting a project variant (highest risk in this release)
+## 12. Deleting a project variant
 
-`DM_RemoveProjectVariant` is the only write in Altium's entire variant
-API, and nothing in this codebase has ever called it, so it carries the
-undeclared-identifier risk in full: if the name is wrong it faults where
-`Try/Except` cannot catch it and takes the polling loop with it.
+`DM_RemoveProjectVariant` ran live on AD 26.11.1.5 (step 42): a scratch
+variant with one entry was deleted, `verified` true, `entries_removed`
+1, and the loop kept answering.
 
-It is also the only step here that destroys work which cannot be
-rebuilt from this bridge. A variant's entries record which components
-are not fitted and which carry an alternate part, and there is no
-documented way to add a variation entry back. Deleting a populated
-variant means re-making every one of those decisions in the Variant
-Management dialog.
+Deleting a populated variant still destroys the decisions in it. They
+can now be rebuilt from this bridge, one part at a time, with
+`proj_set_component_variation` (step 42), but nothing records them
+first, so list them with `proj_list_variants` before deleting.
 
 **Work on a copy of a project, or take an `app_checkpoint` first.**
 
@@ -2473,12 +2482,66 @@ read a STEP model's 3D rotations (step 40's file read stays).
 4. **Impedance profiles.** `pcb_get_impedance_profiles` on three boards:
    `profile_count` 0, `read_errors` 0 on each.
 
-Run live on AD 26.11.1.5 with 2026.10.26.3 on scratch libraries and a
+Run live on AD 26.11.1.5 with that change's script on scratch libraries and a
 scratch board (closed without saving), pinging after every step. All
 passed. Not run: item 4 on a board that HAS a profile (none of the three
 did), so the per-profile and per-layer reads are unmeasured and each is
 guarded; a symbol's added display mode drawn and placed; a linked rather
 than embedded model.
+
+---
+
+## 42. More calls from Altium's SDK
+
+New: `proj_set_component_variation`, `proj_net_color`,
+`proj_get_declared_design_objects`, `pcb_find_dominant_rule`,
+`pcb_check_rule_scope`, `pcb_clean_net`, `pcb_get_drill_pairs`,
+`pcb_set_drill_pair`, `pcb_export_component_3d`, `lib_set_symbol_aliases`,
+`sch_set_sheet_options`, and new `obj_query` / `obj_modify` properties
+(hole tolerances, barcode and multiline text, dimension text and arrows,
+pour options, part and pin swapping). `proj_create_variant` now creates
+through `DM_AddProjectVariant` first, and every designator lookup on a
+board asks `GetPcbComponentByRefDes` first. Measured and NOT built:
+`Board.DoUndo` runs but takes back none of a script's edits.
+
+1. **Variants.** On a scratch project with none: `proj_create_variant`
+   `route` api, 1 variant. `proj_set_component_variation` on one part:
+   not_fitted, then alternate with a part name (read back, and listed by
+   `proj_list_variants`), then remove (`after` none), then fitted. Then
+   `proj_delete_variant`: `verified` true, 0 variants.
+2. **Net colour.** Read `none`, set `#FF8000` (read back), set `none`.
+3. **Rules.** `pcb_find_dominant_rule rule_name=Width` on three nets
+   with their own width rules and one without: each named its own rule
+   and the last the catch-all. A pad pair for Clearance: the board rule.
+   `pcb_check_rule_scope` on `InNet('VBUS')`: true for VBUS, false for
+   GND. An unknown pad is refused.
+4. **Net clean-up.** `pcb_clean_net` on a routed net: 21 to 23 pieces
+   (tracks split where others meet them).
+5. **Drill pairs.** Read the one pair; set backdrill and drill guide,
+   read back, restore.
+6. **Properties.** Read every new property on pads, vias, pours, parts
+   and texts (no dimension on the board). Pad tolerances `unset`, then
+   2 and -1.5 (read back 2 and 1.5: Altium keeps the size), then
+   `unset`. A part's pin swapping and a pour's mitre corners and border
+   written, read back and restored; `MitreCorners=maybe` refused. A
+   barcode text's show-text and multiline flags take; its sizes are
+   recalculated by Altium.
+7. **Part 3D.** `pcb_export_component_3d` on a capacitor: a STEP file;
+   an unknown part refused.
+8. **Library.** On a scratch symbol: pin swap ids written and read back
+   (`SwapIdPart` is the part's, shared by every pin); aliases added and
+   one removed.
+9. **Sheet.** `sch_set_sheet_options` read; reference zones, the custom
+   zones and margin and template graphics written, read back and
+   restored. On a standard sheet size `zones_x` and `margin_width` do
+   not take, and `not_applied` names them.
+10. **Declared objects.** `proj_get_declared_design_objects` on a
+    three-sheet project: `sheets_examined` 3, all lists empty.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project
+and library, pinging after every step. All passed as described. Not
+run: a dimension, a project that declares classes or pairs, and a
+barcode text made in the GUI to read its kind numbers from.
 
 ---
 

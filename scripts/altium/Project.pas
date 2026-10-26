@@ -2525,7 +2525,7 @@ End;
 {..............................................................................}
 { Proj_ExportSTEPApi - write the board's 3D model through Altium's own        }
 { exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel, read    }
-{ from the SDK interface assembly), with no dialog. The exporter keeps the    }
+{ from Altium's SDK), with no dialog. The exporter keeps the                  }
 { options last used in File > Export > STEP 3D. format is the exporter's own  }
 { code: 0 wrote STEP on AD 26.11.1.5 (7 MB in 17 s, no dialog).            }
 { generated is true only when a new file is at output_path afterwards, so a  }
@@ -3580,7 +3580,9 @@ Var
     ProjectPath, VarName, VarDesc : String;
     Workspace : IWorkspace;
     Project : IProject;
+    NewVariant : IProjectVariant;
     PreCount, PostCount : Integer;
+    Route : String;
 Begin
     VarName := ExtractJsonValue(Params, 'name');
     VarDesc := ExtractJsonValue(Params, 'description');
@@ -3599,35 +3601,363 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    { The DM API is read-only for variants (no DM_AddProjectVariant); the
-      WorkspaceManager:VariantManagement process is the only script lever and
-      it is unreliable. So we attempt it, then VERIFY via the variant count and
-      report the real outcome -- never a blind success (a false success here
-      masked that no variant was actually created). }
+    { Whichever route runs, the variant count is checked after it and the  }
+    { real outcome reported: a blind success here once masked that no      }
+    { variant was created.                                                 }
     PreCount := -1;
     Try PreCount := Project.DM_ProjectVariantCount; Except End;
 
-    ResetParameters;
-    AddStringParameter('Action', 'AddVariant');
-    AddStringParameter('VariantName', VarName);
-    If VarDesc <> '' Then
-        AddStringParameter('VariantDescription', VarDesc);
-    RunProcess('WorkspaceManager:VariantManagement');
-
-    Try Project.DM_Compile; Except End;
+    { IProject.DM_AddProjectVariant (Altium's SDK) first; the process    }
+    { route below stays for a build where it adds nothing.                }
+    Route := 'api';
+    NewVariant := Nil;
+    Try NewVariant := Project.DM_AddProjectVariant; Except NewVariant := Nil; End;
+    If NewVariant <> Nil Then
+    Begin
+        NewVariant.DM_SetName(VarName);
+        If VarDesc <> '' Then NewVariant.DM_SetDescription(VarDesc)
+        Else NewVariant.DM_SetDescription(VarName);
+        MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    End;
     PostCount := -1;
     Try PostCount := Project.DM_ProjectVariantCount; Except End;
+    If (PreCount < 0) Or (PostCount <= PreCount) Then
+    Begin
+        Route := 'process';
+        ResetParameters;
+        AddStringParameter('Action', 'AddVariant');
+        AddStringParameter('VariantName', VarName);
+        If VarDesc <> '' Then
+            AddStringParameter('VariantDescription', VarDesc);
+        RunProcess('WorkspaceManager:VariantManagement');
+
+        Try Project.DM_Compile; Except End;
+        PostCount := -1;
+        Try PostCount := Project.DM_ProjectVariantCount; Except End;
+    End;
 
     If (PreCount >= 0) And (PostCount > PreCount) Then
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"name":"' + EscapeJsonString(VarName) + '","description":"'
-            + EscapeJsonString(VarDesc) + '","variant_count":' + IntToStr(PostCount) + '}')
+            + EscapeJsonString(VarDesc) + '","variant_count":' + IntToStr(PostCount)
+            + ',"route":"' + Route + '"}')
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_UNCONFIRMED',
             'Variant creation could not be confirmed (count ' + IntToStr(PreCount)
             + ' -> ' + IntToStr(PostCount) + '). Script-based variant creation via '
             + 'WorkspaceManager:VariantManagement is unreliable; create the variant '
             + 'in the Variant Management dialog.');
+End;
+
+{..............................................................................}
+{ VariationKindWord - a component variation's kind as a word.                  }
+{..............................................................................}
+Function VariationKindWord(Kind : Integer) : String;
+Begin
+    If Kind = 0 Then Result := 'fitted'
+    Else If Kind = 1 Then Result := 'not_fitted'
+    Else If Kind = 2 Then Result := 'alternate'
+    Else Result := 'unknown(' + IntToStr(Kind) + ')';
+End;
+
+{..............................................................................}
+{ Proj_SetComponentVariation - add, change or remove one part's entry in a    }
+{ project variant: IProjectVariant.DM_AddComponentVariation,                  }
+{ DM_RemoveComponentVariation and the IComponentVariation DM_Set* writers     }
+{ (Altium's SDK). The part is found by its physical designator in the         }
+{ compiled project, and its variation by the part's unique id, the way the    }
+{ not-fitted audit reads them. The entry is read back afterwards.             }
+{ Params: variant (name or description, required), designator (required),    }
+{ kind (fitted | not_fitted | alternate | remove), alternate_part,            }
+{ project_path.                                                                }
+{..............................................................................}
+Function Proj_SetComponentVariation(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, VarWanted, Desig, KindStr, AltPart, UniqueId, Before, After : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Variant, V : IProjectVariant;
+    CompVar, Other : IComponentVariation;
+    FlatDoc : IDocument;
+    Comp : IComponent;
+    I, Kind, Found : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    VarWanted := ExtractJsonValue(Params, 'variant');
+    Desig := ExtractJsonValue(Params, 'designator');
+    KindStr := LowerCase(ExtractJsonValue(Params, 'kind'));
+    AltPart := ExtractJsonValue(Params, 'alternate_part');
+    If (VarWanted = '') Or (Desig = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'variant and designator are required');
+        Exit;
+    End;
+    If KindStr = 'fitted' Then Kind := 0
+    Else If KindStr = 'not_fitted' Then Kind := 1
+    Else If KindStr = 'alternate' Then Kind := 2
+    Else If KindStr = 'remove' Then Kind := -1
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'kind is fitted, not_fitted, alternate or remove');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+
+    Variant := Nil;
+    For I := 0 To Project.DM_ProjectVariantCount - 1 Do
+    Begin
+        V := Project.DM_ProjectVariants(I);
+        If V = Nil Then Continue;
+        If (UpperCase(V.DM_Name) = UpperCase(VarWanted))
+            Or (UpperCase(V.DM_Description) = UpperCase(VarWanted)) Then
+        Begin
+            Variant := V;
+            Break;
+        End;
+    End;
+    If Variant = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_VARIANT', 'No variant named ' + VarWanted);
+        Exit;
+    End;
+
+    UniqueId := '';
+    FlatDoc := Nil;
+    Try FlatDoc := Project.DM_DocumentFlattened; Except End;
+    If FlatDoc <> Nil Then
+    Begin
+        For I := 0 To FlatDoc.DM_ComponentCount - 1 Do
+        Begin
+            Comp := Nil;
+            Try Comp := FlatDoc.DM_Components(I); Except End;
+            If Comp = Nil Then Continue;
+            If UpperCase(Comp.DM_PhysicalDesignator) = UpperCase(Desig) Then
+            Begin
+                UniqueId := Comp.DM_UniqueId;
+                Break;
+            End;
+        End;
+    End;
+    If UniqueId = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No part ' + Desig + ' in the compiled project');
+        Exit;
+    End;
+
+    CompVar := Nil;
+    Try CompVar := Variant.DM_FindComponentVariationByUniqueId(UniqueId); Except End;
+    Before := 'none';
+    If CompVar <> Nil Then Before := VariationKindWord(CompVar.DM_VariationKind);
+
+    If Kind = -1 Then
+    Begin
+        If CompVar <> Nil Then
+        Begin
+            Found := -1;
+            For I := 0 To Variant.DM_VariationCount - 1 Do
+            Begin
+                Other := Variant.DM_Variations(I);
+                If Other = Nil Then Continue;
+                If Other.DM_UniqueId = UniqueId Then
+                Begin
+                    Found := I;
+                    Break;
+                End;
+            End;
+            If Found >= 0 Then Variant.DM_RemoveComponentVariation(Found);
+        End;
+    End
+    Else
+    Begin
+        If CompVar = Nil Then
+        Begin
+            CompVar := Variant.DM_AddComponentVariation;
+            CompVar.DM_SetUniqueId(UniqueId);
+            CompVar.DM_SetPhysicalDesignator(Desig);
+        End;
+        CompVar.DM_SetVariationKind(Kind);
+        If AltPart <> '' Then CompVar.DM_SetAlternatePart(AltPart);
+    End;
+
+    CompVar := Nil;
+    Try CompVar := Variant.DM_FindComponentVariationByUniqueId(UniqueId); Except End;
+    After := 'none';
+    AltPart := '';
+    If CompVar <> Nil Then
+    Begin
+        After := VariationKindWord(CompVar.DM_VariationKind);
+        Try AltPart := CompVar.DM_AlternatePart; Except End;
+    End;
+    MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('variant', Variant.DM_Description) + ','
+        + JsonStr('designator', Desig) + ','
+        + JsonStr('unique_id', UniqueId) + ','
+        + JsonStr('before', Before) + ','
+        + JsonStr('after', After) + ','
+        + JsonStr('alternate_part', AltPart) + ','
+        + JsonBool('applied', ((Kind = -1) And (After = 'none'))
+            Or ((Kind >= 0) And (After = VariationKindWord(Kind))))));
+End;
+
+{..............................................................................}
+{ Proj_NetColor - read, and optionally set, the colour the project gives a    }
+{ net: IProject.DM_GetNetColorByName / DM_SetNetColorByName (Altium's SDK).   }
+{ Colours are Altium's BGR integers; color = -1 reads only.                   }
+{ Params: net (required), color, project_path.                                }
+{..............................................................................}
+Function Proj_NetColor(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, NetName, ColorStr : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Before, After, Wanted : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    NetName := ExtractJsonValue(Params, 'net');
+    ColorStr := ExtractJsonValue(Params, 'color');
+    If NetName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net is required');
+        Exit;
+    End;
+    Wanted := StrToIntDef(ColorStr, -1);
+    { 536870912 (bit 29) is Altium's "no colour set" (measured on AD 26.11). }
+    If (ColorStr <> '') And ((Wanted < 0) Or ((Wanted > 16777215) And (Wanted <> 536870912))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE', 'color is 0 to 16777215, or 536870912 for none');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    Before := Project.DM_GetNetColorByName(NetName);
+    If Wanted >= 0 Then
+    Begin
+        Project.DM_SetNetColorByName(NetName, Wanted);
+        MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    End;
+    After := Project.DM_GetNetColorByName(NetName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('net', NetName) + ','
+        + JsonInt('color_before', Before) + ','
+        + JsonInt('color', After)));
+End;
+
+{ Member names of a compiled object class: nets by name, parts by designator. }
+Function ClassMembersJson(Cls : IObjectClass) : String;
+Var
+    I : Integer;
+    Member : IDMObject;
+    Name : String;
+Begin
+    Result := '';
+    For I := 0 To Cls.DM_MemberCount - 1 Do
+    Begin
+        Member := Nil;
+        Try Member := Cls.DM_Members(I); Except End;
+        If Member = Nil Then Continue;
+        Name := '';
+        Try Name := Member.DM_NetName; Except Name := ''; End;
+        If Name = '' Then
+        Begin
+            Try Name := Member.DM_PhysicalDesignator; Except Name := ''; End;
+        End;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Name) + '"';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+{..............................................................................}
+{ Proj_GetDeclaredDesignObjects - the net classes, component classes,         }
+{ differential pairs and rooms the compiled schematics declare (directives,   }
+{ class parameters, sheet-based rooms): IDocument.DM_NetClasses,               }
+{ DM_ComponentClasses, DM_DifferentialPairs and DM_Rooms (Altium's SDK).       }
+{ What an ECO would create on the board, read before it does.                  }
+{ Params: project_path.                                                        }
+{..............................................................................}
+Function Proj_GetDeclaredDesignObjects(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    Cls : IObjectClass;
+    Pair : IDifferentialPair;
+    Room : IRoom;
+    D, I, Sheets : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    NetCls := ''; CompCls := ''; Pairs := ''; Rooms := '';
+    Sheets := 0;
+    For D := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(D); Except End;
+        If Doc = Nil Then Continue;
+        If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
+        Inc(Sheets);
+        DocPath := ExtractFileName(Doc.DM_FullPath);
+        For I := 0 To Doc.DM_NetClassCount - 1 Do
+        Begin
+            Cls := Doc.DM_NetClasses(I);
+            If Cls = Nil Then Continue;
+            If NetCls <> '' Then NetCls := NetCls + ',';
+            NetCls := NetCls + JsonObj(JsonStr('name', Cls.DM_Name) + ','
+                + JsonStr('sheet', DocPath) + ',' + JsonRaw('members', ClassMembersJson(Cls)));
+        End;
+        For I := 0 To Doc.DM_ComponentClassCount - 1 Do
+        Begin
+            Cls := Doc.DM_ComponentClasses(I);
+            If Cls = Nil Then Continue;
+            If CompCls <> '' Then CompCls := CompCls + ',';
+            CompCls := CompCls + JsonObj(JsonStr('name', Cls.DM_Name) + ','
+                + JsonStr('sheet', DocPath) + ',' + JsonRaw('members', ClassMembersJson(Cls)));
+        End;
+        For I := 0 To Doc.DM_DifferentialPairCount - 1 Do
+        Begin
+            Pair := Doc.DM_DifferentialPairs(I);
+            If Pair = Nil Then Continue;
+            PosNet := ''; NegNet := '';
+            Try PosNet := Pair.DM_PositiveNet.DM_NetName; Except End;
+            Try NegNet := Pair.DM_NegativeNet.DM_NetName; Except End;
+            If Pairs <> '' Then Pairs := Pairs + ',';
+            Pairs := Pairs + JsonObj(JsonStr('name', Pair.DM_Name) + ','
+                + JsonStr('sheet', DocPath) + ','
+                + JsonStr('positive', PosNet) + ',' + JsonStr('negative', NegNet));
+        End;
+        For I := 0 To Doc.DM_RoomCount - 1 Do
+        Begin
+            Room := Doc.DM_Rooms(I);
+            If Room = Nil Then Continue;
+            If Rooms <> '' Then Rooms := Rooms + ',';
+            Rooms := Rooms + JsonObj(JsonStr('name', Room.DM_RoomName) + ','
+                + JsonStr('sheet', DocPath) + ','
+                + JsonStr('scope', Room.DM_Scope1Expression));
+        End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('sheets_examined', Sheets) + ','
+        + JsonRaw('net_classes', '[' + NetCls + ']') + ','
+        + JsonRaw('component_classes', '[' + CompCls + ']') + ','
+        + JsonRaw('differential_pairs', '[' + Pairs + ']') + ','
+        + JsonRaw('rooms', '[' + Rooms + ']')));
 End;
 
 {..............................................................................}
@@ -5420,6 +5750,9 @@ Begin
         'get_active_variant': Result := Proj_GetActiveVariant(Params, RequestId);
         'set_active_variant': Result := Proj_SetActiveVariant(Params, RequestId);
         'create_variant':    Result := Proj_CreateVariant(Params, RequestId);
+        'set_component_variation': Result := Proj_SetComponentVariation(Params, RequestId);
+        'net_color':         Result := Proj_NetColor(Params, RequestId);
+        'get_declared_design_objects': Result := Proj_GetDeclaredDesignObjects(Params, RequestId);
         'delete_variant':    Result := Proj_DeleteVariant(Params, RequestId);
         'get_open_projects': Result := Proj_GetOpenProjects(RequestId);
         'save_all':          Result := Proj_SaveAll(RequestId);

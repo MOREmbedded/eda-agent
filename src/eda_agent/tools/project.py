@@ -60,6 +60,10 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
     return out
 
 
+#: Altium's "no colour set" for a net (bit 29), measured on AD 26.11.
+_NO_NET_COLOR = 536870912
+
+
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
 
@@ -2351,7 +2355,8 @@ def register_project_tools(mcp):
         """Create a new project variant.
 
         After creating, use `proj_set_active_variant` to switch to it,
-        and `obj_modify` to configure component variations.
+        and `proj_set_component_variation` to mark parts not fitted or
+        give them an alternate part.
 
         Args:
             name: Name for the new variant
@@ -2371,6 +2376,125 @@ def register_project_tools(mcp):
             "project.create_variant", params
         )
         return result
+
+    @mcp.tool()
+    async def proj_set_component_variation(
+        variant: str,
+        designator: str,
+        kind: str,
+        alternate_part: str = "",
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Set one part's entry in a project variant: fitted, not fitted,
+        an alternate part, or no entry at all.
+
+        Adds the variation when the part has none in that variant, changes
+        it when it has one, and with ``kind="remove"`` deletes it, so the
+        part follows the base design again. The part is found by its
+        designator in the compiled project; the entry is read back.
+
+        Args:
+            variant: The variant's name or description.
+            designator: The part, e.g. "R12".
+            kind: "fitted", "not_fitted", "alternate" or "remove".
+            alternate_part: For ``alternate``: the alternate part's name.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Save the project (proj_save) to keep the change.
+
+        Returns:
+            ``before`` and ``after`` (the entry's kind, or "none"),
+            ``alternate_part``, ``unique_id`` and ``applied``.
+        """
+        kind = kind.strip().lower()
+        if kind not in ("fitted", "not_fitted", "alternate", "remove"):
+            return {"ok": False, "reason": (
+                "kind is fitted, not_fitted, alternate or remove")}
+        if not variant.strip() or not designator.strip():
+            return {"ok": False, "reason": "variant and designator are required"}
+        if kind == "alternate" and not alternate_part.strip():
+            return {"ok": False, "reason": "kind alternate needs alternate_part"}
+        params: dict[str, Any] = {"variant": variant.strip(),
+                                  "designator": designator.strip(), "kind": kind}
+        if alternate_part.strip():
+            params["alternate_part"] = alternate_part.strip()
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.set_component_variation", params, timeout=120.0)
+
+    @mcp.tool()
+    async def proj_net_color(
+        net: str,
+        color: str = "",
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the colour the project gives a net.
+
+        Args:
+            net: The net name.
+            color: "#RRGGBB", "none" to clear the project's colour for
+                the net, or empty to only read.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``color_before`` and ``color`` as "#RRGGBB", or "none" when the
+            project sets no colour (and Altium's own integers as
+            ``color_before_bgr`` / ``color_bgr``).
+        """
+        if not net.strip():
+            return {"ok": False, "reason": "net is required"}
+        params: dict[str, Any] = {"net": net.strip()}
+        if color.strip().lower() == "none":
+            params["color"] = str(_NO_NET_COLOR)
+        elif color.strip():
+            hexpart = color.strip().lstrip("#")
+            if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+                return {"ok": False, "reason": "color is #RRGGBB"}
+            r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+            params["color"] = str(r_ | (g_ << 8) | (b_ << 16))
+        if project_path:
+            params["project_path"] = project_path
+        reply = await get_bridge().send_command_async("project.net_color", params)
+
+        def _hex(bgr: Any) -> Any:
+            if bgr == _NO_NET_COLOR:
+                return "none"
+            if not isinstance(bgr, int) or bgr < 0:
+                return bgr
+            return "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF)
+
+        if isinstance(reply, dict):
+            for key in ("color_before", "color"):
+                if key in reply:
+                    reply[key + "_bgr"] = reply[key]
+                    reply[key] = _hex(reply[key])
+        return reply
+
+    @mcp.tool()
+    async def proj_get_declared_design_objects(
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """The net classes, component classes, differential pairs and rooms
+        the project's schematics declare, from the compiled project.
+
+        These are what an Update PCB would create on the board (from
+        directives, class parameters and sheet rooms), read before it
+        does. Compare them with pcb_get_net_classes /
+        pcb_get_differential_pairs to see what the board is missing.
+
+        Returns:
+            ``sheets_examined`` (an empty answer from 0 sheets means
+            nothing was read), ``net_classes`` and
+            ``component_classes`` (``name``, ``sheet``,
+            ``members``), ``differential_pairs`` (``name``, ``positive``,
+            ``negative``) and ``rooms`` (``name``, ``scope``).
+        """
+        params: dict[str, Any] = {}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.get_declared_design_objects", params, timeout=120.0)
 
     @mcp.tool()
     async def proj_delete_variant(

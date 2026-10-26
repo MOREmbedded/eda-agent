@@ -491,7 +491,21 @@ def register_generic_tools(mcp):
             set: Pipe-separated assignments, e.g. "Text=NEW_NAME" or
                 "Location.X=100|Location.Y=200". Board lengths are
                 decimal mils; a non-number is reported failed, never
-                written as 0.
+                written as 0. Board properties include, besides the
+                usual geometry: HolePositiveTolerance and
+                HoleNegativeTolerance on pads and vias ("unset" when
+                none is set; Altium keeps a negative tolerance as its
+                size; IsCounterHole reads); BarCode* and Multiline* on a
+                text (Altium recalculates the barcode and multiline sizes
+                from the text: read them back); TextHeight,
+                TextFormat, TextPrecision, TextPrefix, TextSuffix,
+                Arrow* and Extension* on a dimension; PolygonType,
+                BorderWidth, AvoidObsticles (Altium's spelling),
+                ClipAcuteCorners, MitreCorners, IgnoreViolations and
+                ArcPourMode on a pour; EnablePinSwapping and
+                EnablePartSwapping on a part (IsBGA reads). Symbol pins
+                take SwapIdPart (shared by every pin of the part),
+                SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
@@ -1552,6 +1566,81 @@ def register_generic_tools(mcp):
         if isinstance(result, dict) and result.get("success") is not False:
             result["reopened"] = await _reopen_sheet(bridge)
         return result
+
+    @mcp.tool()
+    async def sch_set_sheet_options(
+        zones_x: Optional[int] = None,
+        zones_y: Optional[int] = None,
+        margin_width: Optional[float] = None,
+        border_style: Optional[int] = None,
+        reference_zones: Optional[bool] = None,
+        show_template_graphics: Optional[bool] = None,
+        custom_zones_x: Optional[int] = None,
+        custom_zones_y: Optional[int] = None,
+        custom_margin_width: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the active sheet's reference zones, margin, border
+        style and template graphics. Call with nothing to read.
+
+        Measured on AD 26.11: on a standard sheet size the zones and
+        margin follow the size, so zones_x, zones_y and margin_width do
+        not take there; the custom_* ones (used by a custom-size sheet),
+        border, reference zones and template graphics do. Every value
+        written is read back, and one that did not take is listed in
+        ``not_applied``.
+
+        Args:
+            zones_x, zones_y: Reference zones across and down (from 1).
+            margin_width: Sheet margin in mils.
+            border_style: Altium's border style number (read one back
+                first; 0 is the standard border).
+            reference_zones: Show the zone letters and numbers.
+            show_template_graphics: Show the template's graphics.
+            custom_zones_x, custom_zones_y, custom_margin_width: The same
+                for a custom-size sheet.
+
+        Returns:
+            ``changed``, ``options`` (read back after any write) and
+            ``not_applied``.
+        """
+        params: dict[str, Any] = {}
+        for key, value in (("zones_x", zones_x), ("zones_y", zones_y),
+                           ("custom_zones_x", custom_zones_x),
+                           ("custom_zones_y", custom_zones_y),
+                           ("border_style", border_style)):
+            if value is not None:
+                if value < (0 if key == "border_style" else 1):
+                    return {"ok": False, "reason": f"{key} is out of range"}
+                params[key] = str(int(value))
+        for key, value in (("margin_width", margin_width),
+                           ("custom_margin_width", custom_margin_width)):
+            if value is not None:
+                if value < 0:
+                    return {"ok": False, "reason": f"{key} is mils from 0"}
+                params[key] = str(value)
+        for key, value in (("reference_zones", reference_zones),
+                           ("show_template_graphics", show_template_graphics)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        reply = await get_bridge().send_command_async("generic.sheet_options", params)
+        if isinstance(reply, dict) and params:
+            got = reply.get("options") or {}
+            keys = {"margin_width": "margin_width_mils",
+                    "custom_margin_width": "custom_margin_width_mils"}
+            missed = []
+            for key, sent in params.items():
+                have = got.get(keys.get(key, key))
+                if isinstance(have, bool):
+                    ok = have == (sent == "true")
+                else:
+                    try:
+                        ok = abs(float(have) - float(sent)) < 0.01
+                    except (TypeError, ValueError):
+                        ok = False
+                if not ok:
+                    missed.append(key)
+            reply["not_applied"] = missed
+        return reply
 
     @mcp.tool()
     async def sch_audit_outside_sheet(limit: int = 100,

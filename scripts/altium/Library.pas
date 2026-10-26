@@ -16223,7 +16223,7 @@ End;
 { Lib_SetSymbolParts - set how many parts and display modes a SchLib symbol   }
 { has, through the library's own part and mode commands                       }
 { (ISch_Lib.SetState_CurrentSchComponentAddPart / RemovePart / AddDisplayMode }
-{ / RemoveDisplayMode, read from Altium's SDK interface assembly). Parts and  }
+{ / RemoveDisplayMode, read from Altium's SDK). Parts and                     }
 { modes are added and removed at the END, one at a time, each step read back; }
 { a removed part or mode takes its pins and graphics with it, and             }
 { pins_removed says how many.                                                 }
@@ -16335,6 +16335,93 @@ Begin
         + JsonInt('pins_removed', PinsBefore - PinsAfter) + ','
         + JsonBool('complete', Stopped = '') + ','
         + JsonStr('stopped', Stopped)));
+End;
+
+{ A symbol's aliases as a JSON list. }
+Function SymbolAliasesJson(Comp : ISch_Component) : String;
+Var
+    I, Count : Integer;
+    Name : String;
+Begin
+    Result := '';
+    Count := 0;
+    Try Count := Comp.AliasCount; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Name := '';
+        Try Name := Comp.GetState_AliasAt(I); Except End;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Name) + '"';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+{ Lib_SetSymbolAliases - read, add and remove a SchLib symbol's aliases:      }
+{ ISch_Component.Alias_Add / Alias_Remove, AliasCount and GetState_AliasAt    }
+{ (Altium's SDK). An alias lets one symbol be placed under several part       }
+{ names. Removal happens before adding; the list is read back.                }
+{ Params: library_path, name (required), add, remove (each a tab-separated    }
+{ list of alias names).                                                        }
+Function Lib_SetSymbolAliases(Params : String; RequestId : String) : String;
+Var
+    LibPath, Name, AddStr, RemoveStr, Item, Before : String;
+    SchLib : ISch_Lib;
+    Comp : ISch_Component;
+    TabPos : Integer;
+    Changed : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Name := ExtractJsonValue(Params, 'name');
+    AddStr := ExtractJsonValue(Params, 'add');
+    RemoveStr := ExtractJsonValue(Params, 'remove');
+    If Name = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required');
+        Exit;
+    End;
+    SchLib := FocusSchLib(LibPath);
+    If SchLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library at ' + LibPath);
+        Exit;
+    End;
+    Comp := ScanLibForComponent(SchLib, Name);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No symbol named ' + Name + ' in ' + LibPath);
+        Exit;
+    End;
+    Before := SymbolAliasesJson(Comp);
+    Changed := (AddStr <> '') Or (RemoveStr <> '');
+    If Changed Then
+    Begin
+        SchServer.ProcessControl.PreProcess(SchLib, '');
+        Try
+            While RemoveStr <> '' Do
+            Begin
+                TabPos := Pos(#9, RemoveStr);
+                If TabPos = 0 Then Begin Item := RemoveStr; RemoveStr := ''; End
+                Else Begin Item := Copy(RemoveStr, 1, TabPos - 1); RemoveStr := Copy(RemoveStr, TabPos + 1, Length(RemoveStr)); End;
+                If Trim(Item) <> '' Then Comp.Alias_Remove(Trim(Item));
+            End;
+            While AddStr <> '' Do
+            Begin
+                TabPos := Pos(#9, AddStr);
+                If TabPos = 0 Then Begin Item := AddStr; AddStr := ''; End
+                Else Begin Item := Copy(AddStr, 1, TabPos - 1); AddStr := Copy(AddStr, TabPos + 1, Length(AddStr)); End;
+                If Trim(Item) <> '' Then Comp.Alias_Add(Trim(Item));
+            End;
+        Finally
+            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        End;
+        MarkDocDirtyByPath(LibPath);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('name', Name) + ','
+        + JsonRaw('aliases_before', Before) + ','
+        + JsonRaw('aliases', SymbolAliasesJson(Comp))));
 End;
 
 { Lib_ExportModelStep - write one footprint body's 3D model to a STEP file    }
@@ -19434,6 +19521,7 @@ Begin
         'move_bodies_to_layer': Result := Lib_MoveBodiesToLayer(Params, RequestId);
         'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
         'set_symbol_parts':     Result := Lib_SetSymbolParts(Params, RequestId);
+        'set_symbol_aliases':   Result := Lib_SetSymbolAliases(Params, RequestId);
         'export_model_step':    Result := Lib_ExportModelStep(Params, RequestId);
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);

@@ -940,6 +940,158 @@ def register_pcb_tools(mcp):
         }
 
     @mcp.tool()
+    async def pcb_find_dominant_rule(
+        object1: str,
+        object2: str = "",
+        rule_name: str = "",
+        rule_kind: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Which rule Altium itself applies to an object, or a pair of objects.
+
+        Altium's own resolution (scopes and priorities), the rule DRC and
+        the router use, not a reading of the scope text. Use it to check a
+        rule really reaches the copper it was written for.
+
+        Args:
+            object1: "U1" a part, "U1.3" pad 3 of U1, or "net:GND" a net.
+            object2: A second object, for a rule between two objects
+                (clearance, for example). Empty for a one-object rule.
+            rule_name: Any rule of the kind wanted (pcb_get_design_rules
+                lists them); its kind is used. Or give rule_kind.
+            rule_kind: The rule kind number, as pcb_get_design_rules
+                reports it.
+
+        Returns:
+            ``found`` and ``rule`` (``name``, ``kind``, ``priority``,
+            ``enabled``, ``scope1``, ``scope2``, ``descriptor``).
+        """
+        if not object1.strip():
+            return {"ok": False, "reason": "object1 is required"}
+        if not rule_name.strip() and rule_kind is None:
+            return {"ok": False, "reason": "give rule_name or rule_kind"}
+        params: dict[str, Any] = {"object1": object1.strip()}
+        if object2.strip():
+            params["object2"] = object2.strip()
+        if rule_name.strip():
+            params["rule_name"] = rule_name.strip()
+        elif rule_kind is not None:
+            params["rule_kind"] = str(int(rule_kind))
+        return await get_bridge().send_command_async("pcb.find_dominant_rule", params)
+
+    @mcp.tool()
+    async def pcb_check_rule_scope(
+        rule_name: str,
+        object1: str,
+        object2: str = "",
+    ) -> dict[str, Any]:
+        """Whether a rule's scopes take in an object, or a pair of objects.
+
+        Altium's own test of the rule's scope queries against the real
+        objects, before priorities: the check that a rule written as
+        InNet('VBUS') really matches the VBUS pads.
+
+        Args:
+            rule_name: The rule.
+            object1: "U1", "U1.3" or "net:GND".
+            object2: A second object, for a two-scope rule.
+
+        Returns:
+            ``scope1_includes_object1``, ``scope2_includes_object2``,
+            ``applies`` (Altium's unary or binary scope check), ``unary``
+            and the rule's summary.
+        """
+        if not rule_name.strip() or not object1.strip():
+            return {"ok": False, "reason": "rule_name and object1 are required"}
+        params: dict[str, Any] = {"rule_name": rule_name.strip(),
+                                  "object1": object1.strip()}
+        if object2.strip():
+            params["object2"] = object2.strip()
+        return await get_bridge().send_command_async("pcb.rule_scope_check", params)
+
+    @mcp.tool()
+    async def pcb_clean_net(net: str) -> dict[str, Any]:
+        """Run Altium's own clean-up on one net's routing.
+
+        Altium's own tidy of a net's routing. Measured on AD 26.11 it
+        split tracks where others meet them (a net went from 21 to 23
+        pieces), with nothing removed. Reports the net's track, arc and
+        via count before and after. The board is saved by the next
+        obj_modify or save, as usual; there is no script undo.
+
+        Args:
+            net: The net name.
+
+        Returns:
+            ``routing_before`` and ``routing_after``.
+        """
+        if not net.strip():
+            return {"ok": False, "reason": "net is required"}
+        return await get_bridge().send_command_async("pcb.clean_net", {"net": net.strip()})
+
+    @mcp.tool()
+    async def pcb_get_drill_pairs() -> dict[str, Any]:
+        """List the board's drill layer pairs.
+
+        Returns:
+            ``count`` and ``pairs``: ``index``, ``low_layer``,
+            ``high_layer``, ``description``, ``backdrill``,
+            ``plot_drill_drawing``, ``plot_drill_guide``.
+        """
+        return await get_bridge().send_command_async("pcb.get_drill_pairs", {})
+
+    @mcp.tool()
+    async def pcb_set_drill_pair(
+        index: int,
+        backdrill: Optional[bool] = None,
+        plot_drill_drawing: Optional[bool] = None,
+        plot_drill_guide: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Mark a drill pair as a backdrill, and choose whether its drill
+        drawing and drill guide are plotted.
+
+        Args:
+            index: The pair, from pcb_get_drill_pairs.
+            backdrill, plot_drill_drawing, plot_drill_guide: True or
+                False; omit to leave as it is.
+
+        Returns:
+            ``pair``, read back after the write.
+        """
+        params: dict[str, Any] = {"index": str(index)}
+        for key, value in (("backdrill", backdrill),
+                           ("plot_drill_drawing", plot_drill_drawing),
+                           ("plot_drill_guide", plot_drill_guide)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        if len(params) == 1:
+            return {"ok": False, "reason": "give at least one setting"}
+        return await get_bridge().send_command_async("pcb.set_drill_pair", params)
+
+    @mcp.tool()
+    async def pcb_export_component_3d(designator: str, out_path: str) -> dict[str, Any]:
+        """Write a placed part's 3D model to a STEP file.
+
+        The part's own bodies as placed on the board, through Altium.
+
+        Args:
+            designator: The part, e.g. "U3".
+            out_path: Full path of the .step file.
+
+        Returns:
+            ``written`` (a new file is at out_path) and ``reported``
+            (what Altium said).
+        """
+        import os
+        if not designator.strip():
+            return {"ok": False, "reason": "designator is required"}
+        if not out_path or not os.path.isabs(out_path):
+            return {"ok": False, "reason": "out_path must be a full path"}
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        return await get_bridge().send_command_async(
+            "pcb.save_component_model",
+            {"designator": designator.strip(), "out_path": out_path}, timeout=120.0)
+
+    @mcp.tool()
     async def pcb_get_design_rules() -> dict[str, Any]:
         """Get all design rules from the active PCB.
 

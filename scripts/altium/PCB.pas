@@ -1093,7 +1093,7 @@ Begin
 
     { 53 MinimumSolderMaskSliver, 54 SilkToSolderMaskClearance and 55
       SilkToSilkClearance carry no Gap: each has its own GetState_/SetState_
-      pair, named in Altium.SDK.Interfaces.dll. The ordinals follow 52 in
+      pair, named in Altium's SDK. The ordinals follow 52 in
       the ReturnViaCheck TRuleKind order. Same typed iterator local and
       the same read-back as the clearance kinds above. }
     If ((GapStr <> '') Or (GapMMStr <> '')) And
@@ -1334,7 +1334,7 @@ Begin
     { DIFFERENTIAL PAIR WIDTHS AND GAPS (kind 51), on every layer, through   }
     { IPCB_DifferentialPairsRoutingRule.SetState_MinWidth / MaxWidth /      }
     { PreferedWidth and MinGap / MaxGap / PreferedGap (Layer, Value), named  }
-    { in Altium.SDK.Interfaces.dll ("Prefered" is Altium's spelling). The   }
+    { in Altium's SDK ("Prefered" is Altium's spelling). The              }
     { width fields are the same min/max/favored_width ones the Width rule    }
     { takes. Read back from the rule's descriptor, which spells out both    }
     { the gap and the width constraints.                                    }
@@ -1433,7 +1433,7 @@ Begin
     { POLYGON AND PLANE CONNECT STYLE: Relief, Direct or None, and the      }
     { relief's conductor width, air gap, entries and angle (polygon) or     }
     { expansion (plane). Written through the SetState_ methods named in      }
-    { Altium.SDK.Interfaces.dll on IPCB_PolygonConnectStyleRule (kind 20)   }
+    { Altium's SDK on IPCB_PolygonConnectStyleRule (kind 20)                }
     { and IPCB_PowerPlaneConnectStyleRule (kind 6); their property spellings }
     { were unknown identifiers to DelphiScript when tried (see              }
     { ALTIUM_RULE_SETTERS), so nothing is read through them. What took is  }
@@ -1784,7 +1784,7 @@ Begin
     { THE DEFAULT IS THE BATCH CHECK, WHICH OPENS NO DIALOG.                 }
     { IPCB_Board.RunBatchDesignRuleCheck(ReportFilename, ReportFormat,      }
     { DisplayReportFile, PublishToWeb) : Boolean, read from                 }
-    { Altium.SDK.Interfaces.dll; the format is TDRCReportFileFormat, whose  }
+    { Altium's SDK; the format is TDRCReportFileFormat, whose               }
     { names run eDRC_HTML, eDRC_Text, used here as the literal 0 because an  }
     { unknown identifier halts the loop. The modal route above blocked every }
     { Claude session at once: on 2026-10-23 all 10 times the bridge was      }
@@ -4578,7 +4578,7 @@ End;
 {                                                                              }
 { Read through IPCB_MasterLayerStack2 (GetImpedanceProfileCount /             }
 { GetImpedanceProfileByIndex) and IPCB_ImpedanceProfile / IPCB_TraceImpedance, }
-{ names read from Altium's SDK interface assembly. Every member read is       }
+{ names read from Altium's SDK. Every member read is                         }
 { guarded, so a build missing one leaves that field at its default and the    }
 { rest of the answer stands; read_errors counts them.                         }
 {..............................................................................}
@@ -17142,6 +17142,21 @@ Var
     NameStr : String;
 Begin
     Result := Nil;
+    { Altium's own lookup first (Board.GetPcbComponentByRefDes, Altium's SDK), }
+    { kept only when its designator matches; the board walk below stays for   }
+    { a build or a board where it answers nothing.                            }
+    Comp := Nil;
+    Try Comp := Board.GetPcbComponentByRefDes(Desig); Except Comp := Nil; End;
+    If Comp <> Nil Then
+    Begin
+        NameStr := '';
+        Try NameStr := Comp.Name.Text; Except End;
+        If NameStr = Desig Then
+        Begin
+            Result := Comp;
+            Exit;
+        End;
+    End;
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
     Iter.AddFilter_LayerSet(AllLayers);
@@ -17160,6 +17175,455 @@ Begin
     End;
     Board.BoardIterator_Destroy(Iter);
 End;
+
+{..............................................................................}
+{ PadOfComponent - the pad of Comp whose designator is PadName, or Nil.        }
+{..............................................................................}
+Function PadOfComponent(Comp : IPCB_Component; PadName : String) : IPCB_Pad;
+Var
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    GrpIter := Comp.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := GrpIter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            If UpperCase(Pad.Name) = UpperCase(PadName) Then
+            Begin
+                Result := Pad;
+                Break;
+            End;
+            Pad := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GrpIter);
+    End;
+End;
+
+{..............................................................................}
+{ ResolveRuleObject - the board object a rule question is about, from a short  }
+{ spec: "U1" a component, "U1.3" pad 3 of U1, "net:GND" a net. Nil with       }
+{ Problem set when nothing matches.                                           }
+{..............................................................................}
+Function ResolveRuleObject(Board : IPCB_Board; Spec : String;
+    Var Problem : String) : IPCB_Primitive;
+Var
+    Comp : IPCB_Component;
+    Net : IPCB_Net;
+    Desig, PadName : String;
+    Dot : Integer;
+Begin
+    Result := Nil;
+    Problem := '';
+    Spec := Trim(Spec);
+    If Spec = '' Then
+    Begin
+        Problem := 'empty object';
+        Exit;
+    End;
+    If LowerCase(Copy(Spec, 1, 4)) = 'net:' Then
+    Begin
+        Net := FindNetByName(Board, Copy(Spec, 5, Length(Spec)));
+        If Net = Nil Then Problem := 'no net named ' + Copy(Spec, 5, Length(Spec))
+        Else Result := Net;
+        Exit;
+    End;
+    Dot := Pos('.', Spec);
+    If Dot > 0 Then
+    Begin
+        Desig := Copy(Spec, 1, Dot - 1);
+        PadName := Copy(Spec, Dot + 1, Length(Spec));
+    End
+    Else
+    Begin
+        Desig := Spec;
+        PadName := '';
+    End;
+    Comp := FindPCBComponentByDesignator(Board, Desig);
+    If Comp = Nil Then
+    Begin
+        Problem := 'no component ' + Desig;
+        Exit;
+    End;
+    If PadName = '' Then
+    Begin
+        Result := Comp;
+        Exit;
+    End;
+    Result := PadOfComponent(Comp, PadName);
+    If Result = Nil Then Problem := Desig + ' has no pad ' + PadName;
+End;
+
+{..............................................................................}
+{ RuleSummaryJson - name, kind, priority, enabled and scopes of a rule.        }
+{..............................................................................}
+Function RuleSummaryJson(Rule : IPCB_Rule) : String;
+Var
+    Name, S1, S2, Descr : String;
+    Kind, Prio : Integer;
+    Enabled : Boolean;
+Begin
+    Name := ''; S1 := ''; S2 := ''; Descr := '';
+    Kind := -1; Prio := -1; Enabled := False;
+    Try Name := Rule.Name; Except End;
+    Try Kind := Rule.RuleKind; Except End;
+    Try Prio := Rule.Priority; Except End;
+    Try Enabled := Rule.Enabled; Except End;
+    Try S1 := Rule.Scope1Expression; Except End;
+    Try S2 := Rule.Scope2Expression; Except End;
+    Try Descr := Rule.Descriptor; Except End;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonInt('kind', Kind) + ','
+        + JsonInt('priority', Prio) + ','
+        + JsonBool('enabled', Enabled) + ','
+        + JsonStr('scope1', S1) + ','
+        + JsonStr('scope2', S2) + ','
+        + JsonStr('descriptor', Descr));
+End;
+
+{..............................................................................}
+{ PCB_FindDominantRule - the rule Altium itself applies to one object, or to  }
+{ a pair of objects, for one rule kind: Board.FindDominantRuleForObject and   }
+{ FindDominantRuleForObjectPair (Altium's SDK). This is what DRC and the       }
+{ router use, priorities and scopes resolved, not a guess from scope text.    }
+{ Params: object1 (required), object2, rule_kind (integer) or rule_name (the  }
+{ kind of that rule).                                                          }
+{..............................................................................}
+Function PCB_FindDominantRule(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Spec1, Spec2, RuleName, Problem : String;
+    P1, P2 : IPCB_Primitive;
+    Named, Rule : IPCB_Rule;
+    Kind : Integer;
+Begin
+    Spec1 := ExtractJsonValue(Params, 'object1');
+    Spec2 := ExtractJsonValue(Params, 'object2');
+    RuleName := ExtractJsonValue(Params, 'rule_name');
+    Kind := StrToIntDef(ExtractJsonValue(Params, 'rule_kind'), -1);
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If RuleName <> '' Then
+    Begin
+        Named := PCB_FindRuleByName(Board, RuleName);
+        If Named = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_RULE', 'No rule named ' + RuleName);
+            Exit;
+        End;
+        Kind := Named.RuleKind;
+    End;
+    If Kind < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'give rule_kind, or rule_name of a rule of the kind wanted');
+        Exit;
+    End;
+    P1 := ResolveRuleObject(Board, Spec1, Problem);
+    If P1 = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem);
+        Exit;
+    End;
+    P2 := Nil;
+    If Spec2 <> '' Then
+    Begin
+        P2 := ResolveRuleObject(Board, Spec2, Problem);
+        If P2 = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem);
+            Exit;
+        End;
+    End;
+    Rule := Nil;
+    If P2 = Nil Then
+        Rule := Board.FindDominantRuleForObject(P1, Kind)
+    Else
+        Rule := Board.FindDominantRuleForObjectPair(P1, P2, Kind);
+    If Rule = Nil Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonInt('rule_kind', Kind) + ',' + JsonBool('found', False)))
+    Else
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonInt('rule_kind', Kind) + ',' + JsonBool('found', True) + ','
+            + JsonRaw('rule', RuleSummaryJson(Rule))));
+End;
+
+{..............................................................................}
+{ PCB_RuleScopeCheck - whether a named rule's scopes take in an object (and a  }
+{ second one, for a binary rule): Rule.Scope1Includes / Scope2Includes and     }
+{ CheckUnaryScope / CheckBinaryScope (Altium's SDK). applies is Altium's own   }
+{ answer to "does this rule cover these objects", before priorities.          }
+{ Params: rule_name, object1 (required), object2.                             }
+{..............................................................................}
+Function PCB_RuleScopeCheck(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Spec1, Spec2, RuleName, Problem : String;
+    P1, P2 : IPCB_Primitive;
+    Rule : IPCB_Rule;
+    In1, In2, Applies, Unary : Boolean;
+Begin
+    RuleName := ExtractJsonValue(Params, 'rule_name');
+    Spec1 := ExtractJsonValue(Params, 'object1');
+    Spec2 := ExtractJsonValue(Params, 'object2');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Rule := PCB_FindRuleByName(Board, RuleName);
+    If Rule = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_RULE', 'No rule named ' + RuleName);
+        Exit;
+    End;
+    P1 := ResolveRuleObject(Board, Spec1, Problem);
+    If P1 = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem);
+        Exit;
+    End;
+    P2 := Nil;
+    If Spec2 <> '' Then
+    Begin
+        P2 := ResolveRuleObject(Board, Spec2, Problem);
+        If P2 = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem);
+            Exit;
+        End;
+    End;
+    Unary := Rule.IsUnary;
+    In1 := Rule.Scope1Includes(P1);
+    In2 := False;
+    If P2 <> Nil Then In2 := Rule.Scope2Includes(P2)
+    Else In2 := Rule.Scope2Includes(P1);
+    If Unary Then Applies := Rule.CheckUnaryScope(P1)
+    Else If P2 <> Nil Then Applies := Rule.CheckBinaryScope(P1, P2)
+    Else Applies := In1;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('rule', RuleSummaryJson(Rule)) + ','
+        + JsonBool('unary', Unary) + ','
+        + JsonBool('scope1_includes_object1', In1) + ','
+        + JsonBool('scope2_includes_object2', In2) + ','
+        + JsonBool('applies', Applies)));
+End;
+
+{ Tracks, arcs and vias on a net, for PCB_CleanNet's before and after. }
+Function NetRoutingCount(Board : IPCB_Board; Net : IPCB_Net) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+Begin
+    Result := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.Net = Net Then Inc(Result);
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{..............................................................................}
+{ PCB_CleanNet - Altium's own net clean-up on one net (Board.CleanNet,        }
+{ Altium's SDK): the tidy that removes redundant and broken routing pieces.   }
+{ Reports the net's track, arc and via count before and after.                }
+{ Params: net (required).                                                      }
+{..............................................................................}
+Function PCB_CleanNet(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Net : IPCB_Net;
+    NetName : String;
+    Before, After : Integer;
+Begin
+    NetName := ExtractJsonValue(Params, 'net');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Net := FindNetByName(Board, NetName);
+    If Net = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_NET', 'No net named ' + NetName);
+        Exit;
+    End;
+    Before := NetRoutingCount(Board, Net);
+    PCBServer.PreProcess;
+    Try
+        Board.CleanNet(Net);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := NetRoutingCount(Board, Net);
+    Try Board.ViewManager_FullUpdate; Except End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('net', NetName) + ','
+        + JsonInt('routing_before', Before) + ','
+        + JsonInt('routing_after', After)));
+End;
+
+{ One drill pair as JSON, for PCB_GetDrillPairs and PCB_SetDrillPair. }
+Function DrillPairJson(Pair : IPCB_DrillLayerPair; PairIdx : Integer) : String;
+Var
+    Low, High : Integer;
+    Back, Drawing, Guide : Boolean;
+    Descr : String;
+Begin
+    Low := 0; High := 0; Back := False; Drawing := False; Guide := False; Descr := '';
+    Try Low := Pair.LowLayer; Except End;
+    Try High := Pair.HighLayer; Except End;
+    Try Back := Pair.IsBackdrill; Except End;
+    Try Drawing := Pair.PlotDrillDrawing; Except End;
+    Try Guide := Pair.PlotDrillGuide; Except End;
+    Try Descr := Pair.Description; Except End;
+    Result := JsonObj(JsonInt('index', PairIdx) + ','
+        + JsonStr('low_layer', LayerDisplayName(Low)) + ','
+        + JsonStr('high_layer', LayerDisplayName(High)) + ','
+        + JsonStr('description', Descr) + ','
+        + JsonBool('backdrill', Back) + ','
+        + JsonBool('plot_drill_drawing', Drawing) + ','
+        + JsonBool('plot_drill_guide', Guide));
+End;
+
+{..............................................................................}
+{ PCB_GetDrillPairs - the board's drill layer pairs (Board.LayerPair(i),       }
+{ Altium's SDK): layers, backdrill, and whether a drill drawing and guide are }
+{ plotted for each.                                                           }
+{..............................................................................}
+Function PCB_GetDrillPairs(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    I, Count : Integer;
+    Items : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Count := Board.DrillLayerPairsCount;
+    Items := '';
+    For I := 0 To Count - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except Pair := Nil; End;
+        If Pair = Nil Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + DrillPairJson(Pair, I);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('count', Count) + ',' + JsonRaw('pairs', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ PCB_SetDrillPair - mark one drill pair as a backdrill, and choose whether a  }
+{ drill drawing and a drill guide are plotted for it. Each value is read back. }
+{ Params: index (required, from PCB_GetDrillPairs), backdrill,                }
+{ plot_drill_drawing, plot_drill_guide ('true' / 'false'; empty = keep).      }
+{..............................................................................}
+Function PCB_SetDrillPair(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    PairIdx : Integer;
+    BackStr, DrawStr, GuideStr : String;
+Begin
+    PairIdx := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    BackStr := LowerCase(ExtractJsonValue(Params, 'backdrill'));
+    DrawStr := LowerCase(ExtractJsonValue(Params, 'plot_drill_drawing'));
+    GuideStr := LowerCase(ExtractJsonValue(Params, 'plot_drill_guide'));
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If (PairIdx < 0) Or (PairIdx >= Board.DrillLayerPairsCount) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PAIR',
+            'index is 0 to ' + IntToStr(Board.DrillLayerPairsCount - 1));
+        Exit;
+    End;
+    Pair := Board.LayerPair[PairIdx];
+    PCBServer.PreProcess;
+    Try
+        If BackStr <> '' Then Pair.IsBackdrill := (BackStr = 'true');
+        If DrawStr <> '' Then Pair.PlotDrillDrawing := (DrawStr = 'true');
+        If GuideStr <> '' Then Pair.PlotDrillGuide := (GuideStr = 'true');
+    Finally
+        PCBServer.PostProcess;
+    End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonRaw('pair', DrillPairJson(Pair, PairIdx))));
+End;
+
+{..............................................................................}
+{ PCB_SaveComponentModel - write a placed part's 3D model to a STEP file:     }
+{ IPCB_Component.SaveModelToFile (Altium's SDK). The part's own bodies, as    }
+{ placed, in one file. written is true only when a new file is there.         }
+{ Params: designator, out_path (both required).                               }
+{..............................................................................}
+Function PCB_SaveComponentModel(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    Desig, OutPath : String;
+    Said : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    Desig := ExtractJsonValue(Params, 'designator');
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    If (Desig = '') Or (OutPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator and out_path are required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Comp := FindPCBComponentByDesignator(Board, Desig);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component ' + Desig);
+        Exit;
+    End;
+    AgeBefore := -1;
+    Try If FileExists(OutPath) Then AgeBefore := FileAge(OutPath); Except End;
+    Said := Comp.SaveModelToFile(OutPath);
+    AgeAfter := -1;
+    Try If FileExists(OutPath) Then AgeAfter := FileAge(OutPath); Except End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('designator', Desig) + ','
+        + JsonStr('out_path', OutPath) + ','
+        + JsonBool('reported', Said) + ','
+        + JsonBool('written', (AgeAfter <> -1) And (AgeAfter <> AgeBefore))));
+End;
+
 
 {..............................................................................}
 { PCB_BindPadNets - Attach component pads to existing board nets. Second leg  }
@@ -19765,6 +20229,12 @@ Begin
         'get_trace_lengths':       Result := PCB_GetTraceLengths(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'get_impedance_profiles':  Result := PCB_GetImpedanceProfiles(Params, RequestId);
+        'find_dominant_rule':      Result := PCB_FindDominantRule(Params, RequestId);
+        'rule_scope_check':        Result := PCB_RuleScopeCheck(Params, RequestId);
+        'clean_net':               Result := PCB_CleanNet(Params, RequestId);
+        'get_drill_pairs':         Result := PCB_GetDrillPairs(Params, RequestId);
+        'set_drill_pair':          Result := PCB_SetDrillPair(Params, RequestId);
+        'save_component_model':    Result := PCB_SaveComponentModel(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

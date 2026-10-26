@@ -5855,6 +5855,47 @@ def register_library_tools(mcp):
             "library.set_symbol_parts", params, timeout=60.0)
 
     @mcp.tool()
+    async def lib_set_symbol_aliases(
+        name: str,
+        library_path: str = "",
+        add: Optional[list[str]] = None,
+        remove: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Read, add or remove a SchLib symbol's aliases.
+
+        An alias lets one symbol be placed under several part names (a
+        74HC00 drawn once, offered as 74HCT00 too). Removal runs before
+        adding. Call with only ``name`` to read.
+
+        Args:
+            name: The symbol (its library reference).
+            library_path: The .SchLib. Defaults to the focused library.
+            add: Alias names to add.
+            remove: Alias names to remove.
+
+        Does NOT save the library.
+
+        Returns:
+            ``aliases_before`` and ``aliases``.
+        """
+        if not name.strip():
+            return {"ok": False, "reason": "name is required"}
+        params: dict[str, Any] = {"name": name.strip()}
+        for key, values in (("add", add), ("remove", remove)):
+            items = [v.strip() for v in (values or []) if v and v.strip()]
+            if any("\t" in v for v in items):
+                return {"ok": False, "reason": f"{key}: an alias cannot hold a tab"}
+            if items:
+                params[key] = "\t".join(items)
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False, "reason": f"{path} is not a file"}
+            params["library_path"] = path
+        return await get_bridge().send_command_async(
+            "library.set_symbol_aliases", params, timeout=60.0)
+
+    @mcp.tool()
     async def lib_export_3d_model(
         footprint_name: str,
         out_path: str,

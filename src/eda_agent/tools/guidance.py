@@ -607,6 +607,137 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "OverallHeight in mils and BodyOpacity3D from 0 (clear) to 1 "
             "(solid), not a percentage."),
     },
+    {
+        "task": "Check which design rule really applies to a pad, part or net",
+        "keywords": ("rule", "applies", "dominant", "scope", "priority",
+                     "clearance", "width", "matches", "covers"),
+        "when": (("rule", "applies"), ("rule", "scope"), ("dominant", "rule"),
+                 ("which", "rule")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_find_dominant_rule", "pcb_check_rule_scope",
+                "pcb_get_design_rules"],
+        "avoid": [],
+        "note": (
+            "pcb_find_dominant_rule asks Altium which rule of a kind governs "
+            "one object, or a pair (\"U1.3\" a pad, \"U1\" a part, "
+            "\"net:GND\" a net), priorities resolved: what DRC and the router "
+            "use. pcb_check_rule_scope says whether one named rule's scopes "
+            "take in the objects at all. Run both after writing a rule."),
+    },
+    {
+        "task": "Mark parts not fitted, or give them an alternate part, in a variant",
+        "keywords": ("fitted", "dnp", "alternate", "populate",
+                     "variation"),
+        "when": (("not", "fitted"), ("dnp",), ("alternate", "part"),
+                 ("variation",)),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_list_variants", "proj_set_component_variation",
+                "proj_create_variant", "proj_delete_variant",
+                "proj_set_active_variant", "proj_save"],
+        "avoid": [],
+        "note": (
+            "proj_set_component_variation sets one part's entry in a "
+            "variant (fitted, not_fitted, alternate) or removes it, and "
+            "reads it back; save the project afterwards."),
+    },
+    {
+        "task": "Set up drill pairs, backdrills and drill drawings",
+        "keywords": ("drill", "pair", "backdrill", "back-drill", "drawing",
+                     "guide", "blind", "buried"),
+        "when": (("drill", "pair"), ("backdrill",), ("drill", "drawing")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_drill_pairs", "pcb_set_drill_pair"],
+        "avoid": [],
+        "note": "Hole tolerances are obj_modify HolePositiveTolerance / "
+                "HoleNegativeTolerance on pads and vias, in mils.",
+    },
+    {
+        "task": "Put a barcode, QR code or multiline text on the board",
+        "keywords": ("barcode", "qr", "serial", "label", "multiline",
+                     "text", "frame", "code"),
+        "when": (("barcode",), ("qr",), ("multiline",)),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_text", "obj_query", "obj_modify"],
+        "avoid": [],
+        "note": (
+            "Place the text, then obj_modify on eTextObject: BarCodeKind, "
+            "BarCodeRenderMode (Altium's numbers: read one back from a "
+            "barcode made in the GUI), BarCodeFullWidth / FullHeight / "
+            "XMargin / YMargin / MinWidth in mils, BarCodeShowText, "
+            "BarCodeInverted; or Multiline with MultilineTextWidth / Height."),
+    },
+    {
+        "task": "Format a board dimension's text and arrows",
+        "keywords": ("dimension", "arrow", "precision", "units", "prefix",
+                     "suffix", "extension"),
+        "when": (("dimension", "text"), ("dimension", "arrow"),
+                 ("dimension", "precision")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_place_dimension", "obj_query", "obj_modify"],
+        "avoid": [],
+        "note": (
+            "obj_modify on eDimensionObject: TextHeight, TextWidth, "
+            "TextLineWidth, TextGap, ArrowSize, ArrowLength, ArrowLineWidth, "
+            "ExtensionOffset, ExtensionLineWidth, ExtensionPickGap (mils); "
+            "TextPrecision, TextDimensionUnit, TextPosition, ArrowPosition "
+            "(Altium's numbers); TextFormat, TextPrefix, TextSuffix."),
+    },
+    {
+        "task": "Set a schematic sheet's reference zones, margin or border",
+        "keywords": ("zones", "zone", "margin", "border", "sheet",
+                     "template", "graphics"),
+        "when": (("sheet", "zone"), ("sheet", "margin"), ("sheet", "border")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["sch_set_sheet_options", "sch_set_sheet_size"],
+        "avoid": [],
+        "note": "sch_set_sheet_options with no arguments reads the settings.",
+    },
+    {
+        "task": "Give a library symbol aliases (other part names)",
+        "keywords": ("alias", "aliases", "symbol", "name", "variant", "part"),
+        "when": (("alias",), ("aliases",)),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_set_symbol_aliases"],
+        "avoid": [],
+        "note": "Save the library afterwards.",
+    },
+    {
+        "task": "Compare the classes and pairs the schematic declares with the board",
+        "keywords": ("class", "classes", "differential", "pair", "room",
+                     "declared", "directive", "schematic", "board"),
+        "when": (("declared", "class"), ("schematic", "class"),
+                 ("net", "class", "directive")),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_get_declared_design_objects", "pcb_get_net_classes",
+                "pcb_get_differential_pairs"],
+        "avoid": [],
+        "note": (
+            "proj_get_declared_design_objects reads the compiled project: "
+            "what an Update PCB would create. A class or pair there and not "
+            "on the board means the update has not been run."),
+    },
+    {
+        "task": "Set up pin and part swapping",
+        "keywords": ("swap", "swapping", "pin", "part", "gate", "equivalent"),
+        "when": (("swap",), ("swapping",)),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": (
+            "Symbol pins take SwapIdPart, SwapIdPin, SwapIdPair and "
+            "SwapIdPartPin through obj_modify (lib_component:NAME scope in "
+            "a SchLib). On the board, a part's EnablePinSwapping and "
+            "EnablePartSwapping switch it on."),
+    },
 )
 
 
