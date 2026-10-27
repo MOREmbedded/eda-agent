@@ -2519,6 +2519,7 @@ Var
     SlotLen : Double;
     PlatedStr, PasteStr, MaskStr : String;
     Slots, Unplated, Expanded, PropFailed : Integer;
+    PasteExpMils, SolderExpMils : Double;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then

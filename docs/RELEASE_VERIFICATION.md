@@ -1,10 +1,98 @@
-# Release verification: 2026.10.26.4
+# Release verification: 2026.10.27.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
 same: each accepts identifiers the other rejects, and an undeclared one
 faults at runtime where `Try/Except` cannot catch it, halting the
 polling loop.
+
+## 2026.10.27.2 - a half-applied refactor, and the linter that could not see it
+
+`Gen_GetPcbGeometry` moves seven JSON arrays from string concatenation
+onto `TStringList`. The merge at `8f0ef25` applied that to two of them
+(regions, components) and half-applied it to five. Each of those five
+kept `XxxJson := XxxJson +` and gained the `Add` call's trailing `)`,
+so Altium refused the unit with a bare `; expected`.
+
+Five identical-looking errors, surfaced one reload at a time.
+
+The compile error was the smaller half. Three more faults were sitting
+behind it, none of which would have produced any error at all:
+
+| What | Effect |
+| --- | --- |
+| `TracksJson` and four siblings are overwritten from their (empty) `Parts` lists after the walk | `tracks`, `arcs`, `pads`, `vias` and `texts` all return `[]` |
+| `RegionPoints` is created, read and freed but never added to; the vertex loop appends to `RegionsJson`, which is then overwritten | every region returns `"pts":[]` |
+| `XxxJson := '['` seeds that nothing reads | the arrays look populated in the source |
+
+So a board render would have come back with an outline, regions with no
+outline of their own, components, and nothing else - and reported
+success.
+
+### Why the linter was silent
+
+`_blank_block_comments` ignored string literals and nested its braces.
+Pascal brace comments do not nest, and these units are full of JSON:
+
+```pascal
+Result := '{"matched":' + IntToStr(TotalMatched) +
+```
+
+That `{` opened a comment. The next real comment's `}` lowered the depth
+to 1 rather than closing it, and everything after stayed blanked. In
+`Generic.pas` that hid **124 of 174 routines** from every rule built on
+the helper; across the eleven units, 146 of 1,030.
+
+Three rules now cover this release's two failure classes:
+
+- **`unbalanced-bracket`** - brackets that do not close within a routine.
+  Catches the `; expected` class, and reports an unclosed opener at the
+  line that opened it rather than at the next routine's header.
+- **`undeclared-assignment`** - an identifier assigned or `Inc`/`Dec`-ed
+  that no enclosing scope declares. Sharper than the existing
+  `undeclared-local` rule, which only considers a name the same file
+  declares in two *other* routines and so matched none of the ten found
+  in `2026.10.27.1`. An assignment target needs no such hedge: `X := ...`
+  requires a real variable.
+- **`_blank_block_comments`** itself, now string-aware and non-nesting,
+  with a test asserting every routine in every unit stays visible to the
+  line-based rules. A silent drop in coverage there disables several
+  rules at once and nothing else would notice.
+
+Run against the pre-fix tree, the three rules report all ten undeclared
+variables and all five stray parentheses. `build.py` runs the linter
+first, so this class now fails the build rather than the reload.
+
+## 2026.10.27.1 - ten undeclared variables, found by Altium
+
+The merge at `8f0ef25` brought in uses of ten local variables without
+their declarations. Altium refused to compile the project and reported
+`Variable <OpFailed> not defined` - one at a time, so each would have
+cost a close/reopen/run cycle to find the next.
+
+Neither the linter nor the test suite caught this class at the time:
+the linter scanned for parse-time hazards by regex, and the Python tests
+never compile Pascal. What found them was a scope-resolving scan of
+every routine for assignment targets that no enclosing scope declares -
+since folded into the linter as `undeclared-assignment` (see
+2026.10.27.2 above).
+
+| File | Routine | Variable | Type |
+| --- | --- | --- | --- |
+| `Generic.pas` | `Gen_CreateObject` | `DiagJson` | String |
+| `Generic.pas` | `Gen_BatchModify` | `Keyed` | Boolean |
+| `Generic.pas` | `Gen_PlaceNetLabel` | `SepPos` | Integer |
+| `Generic.pas` | `Gen_PlacePort` | `SheetPath` | String |
+| `Generic.pas` | `Gen_PlacePort` | `SepPos` | Integer |
+| `Generic.pas` | `Gen_BatchDelete` | `OpFailed` | Integer |
+| `Generic.pas` | `Gen_BatchDelete` | `FailCode` | String |
+| `Generic.pas` | `Gen_BatchDelete` | `OpResp` | String |
+| `Library.pas` | `Lib_AddFootprintPads` | `PasteExpMils` | Double |
+| `Library.pas` | `Lib_AddFootprintPads` | `SolderExpMils` | Double |
+
+Every type is read off the assignment, not guessed: `Pos()` gives an
+Integer, `ExtractJsonValue` and `ProcessActivePCBDoc` give a String,
+`StrToFloatDef` gives a Double.
 
 Work top to bottom. Step 1 needs nothing but Altium and takes seconds,
 and is the step most likely to catch a compile-level problem. If it
@@ -302,7 +390,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.4`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
