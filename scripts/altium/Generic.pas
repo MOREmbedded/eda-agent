@@ -446,20 +446,38 @@ End;
 { HiddenNetName, and DefinedFunctions (the pin's functions, ';'-separated;   }
 { writing replaces the list). Parts: ShowHiddenPins, ShowHiddenFields,       }
 { PinsMoveable, PartIdLocked, DisplayFieldNames, OverideColors (Altium's     }
-{ spelling) and PinColor.                                                    }
+{ spelling) and PinColor. Pins also: where the name and designator sit      }
+{ (Name_PositionMode, Name_CustomPosition_Margin, ..._RotationAnchor,        }
+{ ..._RotationRelative, and the same for Designator_). Parameters:          }
+{ ReadOnlyState, ParamType, AllowLibrarySynchronize,                        }
+{ AllowDatabaseSynchronize. Ports: AutoSize, OverrideDisplayString,         }
+{ HarnessColor.                                                              }
 
-{ 1 a pin property, 2 a part property, 0 neither. }
+{ 1 a pin property, 2 a part property, 3 a parameter property, 4 a port     }
+{ property, 0 none of these.                                                }
 Function SchExtraOwner(PropName : String) : Integer;
 Begin
     Result := 0;
     If (PropName = 'Symbol_Inner') Or (PropName = 'Symbol_Outer') Or
        (PropName = 'Symbol_InnerEdge') Or (PropName = 'Symbol_OuterEdge') Or
        (PropName = 'Symbol_LineWidth') Or (PropName = 'HiddenNetName') Or
-       (PropName = 'DefinedFunctions') Then Result := 1
+       (PropName = 'DefinedFunctions') Or
+       (PropName = 'Name_PositionMode') Or (PropName = 'Name_CustomPosition_Margin') Or
+       (PropName = 'Name_CustomPosition_RotationAnchor') Or
+       (PropName = 'Name_CustomPosition_RotationRelative') Or
+       (PropName = 'Designator_PositionMode') Or
+       (PropName = 'Designator_CustomPosition_Margin') Or
+       (PropName = 'Designator_CustomPosition_RotationAnchor') Or
+       (PropName = 'Designator_CustomPosition_RotationRelative') Then Result := 1
     Else If (PropName = 'ShowHiddenPins') Or (PropName = 'ShowHiddenFields') Or
        (PropName = 'PinsMoveable') Or (PropName = 'PartIdLocked') Or
        (PropName = 'DisplayFieldNames') Or (PropName = 'OverideColors') Or
-       (PropName = 'PinColor') Then Result := 2;
+       (PropName = 'PinColor') Then Result := 2
+    Else If (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
+       (PropName = 'AllowLibrarySynchronize') Or
+       (PropName = 'AllowDatabaseSynchronize') Then Result := 3
+    Else If (PropName = 'AutoSize') Or (PropName = 'OverrideDisplayString') Or
+       (PropName = 'HarnessColor') Then Result := 4;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -469,7 +487,33 @@ Var
 Begin
     Owner := SchExtraOwner(PropName);
     Result := ((Owner = 1) And (Obj.ObjectId = ePin))
-        Or ((Owner = 2) And (Obj.ObjectId = eSchComponent));
+        Or ((Owner = 2) And (Obj.ObjectId = eSchComponent))
+        Or ((Owner = 3) And (Obj.ObjectId = eParameter))
+        Or ((Owner = 4) And (Obj.ObjectId = ePort));
+End;
+
+{ A whole-number extra (0 or more), a true / false one, or neither (text). }
+Function SchExtraIsInt(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Symbol_Inner') Or (PropName = 'Symbol_Outer') Or
+        (PropName = 'Symbol_InnerEdge') Or (PropName = 'Symbol_OuterEdge') Or
+        (PropName = 'Symbol_LineWidth') Or (PropName = 'PinColor') Or
+        (PropName = 'Name_PositionMode') Or (PropName = 'Name_CustomPosition_Margin') Or
+        (PropName = 'Name_CustomPosition_RotationAnchor') Or
+        (PropName = 'Name_CustomPosition_RotationRelative') Or
+        (PropName = 'Designator_PositionMode') Or
+        (PropName = 'Designator_CustomPosition_Margin') Or
+        (PropName = 'Designator_CustomPosition_RotationAnchor') Or
+        (PropName = 'Designator_CustomPosition_RotationRelative') Or
+        (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
+        (PropName = 'HarnessColor');
+End;
+
+Function SchExtraIsBool(PropName : String) : Boolean;
+Begin
+    Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor'))
+        Or (PropName = 'AllowLibrarySynchronize') Or
+        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize');
 End;
 
 { A pin's functions, ';'-separated. }
@@ -497,6 +541,8 @@ Function SchGetExtra(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     Pin : ISch_Pin;
     Comp : ISch_Component;
+    Par : ISch_Parameter;
+    Port : ISch_Port;
 Begin
     Result := '';
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -509,7 +555,30 @@ Begin
         Else If PropName = 'Symbol_OuterEdge' Then Result := IntToStr(Pin.Symbol_OuterEdge)
         Else If PropName = 'Symbol_LineWidth' Then Result := IntToStr(Pin.Symbol_LineWidth)
         Else If PropName = 'HiddenNetName' Then Result := Pin.HiddenNetName
-        Else If PropName = 'DefinedFunctions' Then Result := PinFunctionsText(Pin);
+        Else If PropName = 'DefinedFunctions' Then Result := PinFunctionsText(Pin)
+        Else If PropName = 'Name_PositionMode' Then Result := IntToStr(Pin.Name_PositionMode)
+        Else If PropName = 'Name_CustomPosition_Margin' Then Result := IntToStr(Pin.Name_CustomPosition_Margin)
+        Else If PropName = 'Name_CustomPosition_RotationAnchor' Then Result := IntToStr(Pin.Name_CustomPosition_RotationAnchor)
+        Else If PropName = 'Name_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Name_CustomPosition_RotationRelative)
+        Else If PropName = 'Designator_PositionMode' Then Result := IntToStr(Pin.Designator_PositionMode)
+        Else If PropName = 'Designator_CustomPosition_Margin' Then Result := IntToStr(Pin.Designator_CustomPosition_Margin)
+        Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationAnchor)
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationRelative);
+    End
+    Else If Obj.ObjectId = eParameter Then
+    Begin
+        Par := Obj;
+        If PropName = 'ReadOnlyState' Then Result := IntToStr(Par.ReadOnlyState)
+        Else If PropName = 'ParamType' Then Result := IntToStr(Par.ParamType)
+        Else If PropName = 'AllowLibrarySynchronize' Then Result := BoolToJsonStr(Par.AllowLibrarySynchronize)
+        Else If PropName = 'AllowDatabaseSynchronize' Then Result := BoolToJsonStr(Par.AllowDatabaseSynchronize);
+    End
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        Port := Obj;
+        If PropName = 'AutoSize' Then Result := BoolToJsonStr(Port.AutoSize)
+        Else If PropName = 'OverrideDisplayString' Then Result := Port.OverrideDisplayString
+        Else If PropName = 'HarnessColor' Then Result := IntToStr(Port.HarnessColor);
     End
     Else
     Begin
@@ -531,23 +600,23 @@ Function SchSetExtra(Obj : ISch_GraphicalObject; PropName : String; Value : Stri
 Var
     Pin : ISch_Pin;
     Comp : ISch_Component;
+    Par : ISch_Parameter;
+    Port : ISch_Port;
     Rest, Item, Wanted : String;
     SemiPos, N : Integer;
     B, IsBool, IsInt : Boolean;
 Begin
     Result := False;
     If Not SchExtraFits(Obj, PropName) Then Exit;
-    IsInt := (PropName = 'Symbol_Inner') Or (PropName = 'Symbol_Outer') Or
-        (PropName = 'Symbol_InnerEdge') Or (PropName = 'Symbol_OuterEdge') Or
-        (PropName = 'Symbol_LineWidth') Or (PropName = 'PinColor');
-    IsBool := SchExtraOwner(PropName) = 2;
-    If IsInt Then IsBool := False;
+    IsInt := SchExtraIsInt(PropName);
+    IsBool := SchExtraIsBool(PropName);
     N := 0;
     B := False;
     If IsInt Then
     Begin
         If Not IsIntStr(Value) Then Exit;
         N := StrToInt(Value);
+        If N < 0 Then Exit;
     End
     Else If IsBool Then
     Begin
@@ -580,7 +649,30 @@ Begin
                     Wanted := Wanted + Trim(Item);
                 End;
             End;
-        End;
+        End
+        Else If PropName = 'Name_PositionMode' Then Pin.Name_PositionMode := N
+        Else If PropName = 'Name_CustomPosition_Margin' Then Pin.Name_CustomPosition_Margin := N
+        Else If PropName = 'Name_CustomPosition_RotationAnchor' Then Pin.Name_CustomPosition_RotationAnchor := N
+        Else If PropName = 'Name_CustomPosition_RotationRelative' Then Pin.Name_CustomPosition_RotationRelative := N
+        Else If PropName = 'Designator_PositionMode' Then Pin.Designator_PositionMode := N
+        Else If PropName = 'Designator_CustomPosition_Margin' Then Pin.Designator_CustomPosition_Margin := N
+        Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Pin.Designator_CustomPosition_RotationAnchor := N
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Pin.Designator_CustomPosition_RotationRelative := N;
+    End
+    Else If Obj.ObjectId = eParameter Then
+    Begin
+        Par := Obj;
+        If PropName = 'ReadOnlyState' Then Par.ReadOnlyState := N
+        Else If PropName = 'ParamType' Then Par.ParamType := N
+        Else If PropName = 'AllowLibrarySynchronize' Then Par.AllowLibrarySynchronize := B
+        Else If PropName = 'AllowDatabaseSynchronize' Then Par.AllowDatabaseSynchronize := B;
+    End
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        Port := Obj;
+        If PropName = 'AutoSize' Then Port.AutoSize := B
+        Else If PropName = 'OverrideDisplayString' Then Port.OverrideDisplayString := Value
+        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N;
     End
     Else
     Begin

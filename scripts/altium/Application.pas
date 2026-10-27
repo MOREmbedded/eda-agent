@@ -1099,6 +1099,56 @@ Begin
         + 'anything: call app_save_all afterwards and check still_dirty."}');
 End;
 
+{ App_Autosave - read, or set, Altium's auto-save (document recovery): on or  }
+{ off and the interval in minutes. Both are read back. Altium keeps the      }
+{ interval in milliseconds (measured on AD 26.11: 30 minutes reads 1800000). }
+{ Params: enabled ('true' / 'false'; empty = keep), interval (minutes, 1 or  }
+{ more; empty = keep).                                                       }
+Function App_Autosave(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    EnStr, IntStr : String;
+    Enabled, Changed : Boolean;
+    Interval : Integer;
+Begin
+    EnStr := LowerCase(ExtractJsonValue(Params, 'enabled'));
+    IntStr := ExtractJsonValue(Params, 'interval');
+    If (IntStr <> '') And (Not IsIntStr(IntStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'interval must be a whole number of minutes');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Enabled := Workspace.DM_GetRecoveryIsEnabled;
+    Interval := Workspace.DM_GetRecoveryInterval;
+    Changed := False;
+    If EnStr <> '' Then
+    Begin
+        Enabled := EnStr = 'true';
+        Changed := True;
+    End;
+    If IntStr <> '' Then
+    Begin
+        Interval := StrToInt(IntStr) * 60000;
+        If Interval < 60000 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'interval is 1 minute or more');
+            Exit;
+        End;
+        Changed := True;
+    End;
+    If Changed Then Workspace.DM_SetRecoveryParameters(Enabled, Interval);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('changed', Changed) + ','
+        + JsonBool('enabled', Workspace.DM_GetRecoveryIsEnabled) + ','
+        + JsonInt('interval_minutes', Workspace.DM_GetRecoveryInterval Div 60000)));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1118,6 +1168,7 @@ Begin
         'save_document':       Result := App_SaveDocument(Params, RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
         'stop_server':         Result := App_StopServer(RequestId);
+        'autosave':            Result := App_Autosave(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

@@ -6,8 +6,9 @@ Symbol parts, display modes and aliases, model and part STEP export,
 impedance profiles, variant entries, net colours, the rule Altium applies,
 rule scopes, net clean-up, drill pairs, declared classes and rooms,
 sheet zones, xSignals, shared packages, part text positions, net naming
-objects, the library rule check, project setup, and the extra board and
-pin properties. What each sends, what each refuses before Altium sees
+objects, the library rule check, project setup, board grids, part model
+export, auto-save, and the extra board, pin, parameter and port
+properties. What each sends, what each refuses before Altium sees
 it, and the Pascal shapes that keep a refused or missing call from
 passing for a success.
 """
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from eda_agent.tools import generic, library, pcb, project
+from eda_agent.tools import application, generic, library, pcb, project
 
 ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 
@@ -253,7 +254,7 @@ def test_extra_properties_fit_only_their_owner():
     assert "(ExtraPCBPropertyOwner(PropName) > 0);" in text
     body = _body("PCBGeneric.pas", "PCBSetExtra")
     assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
-            "       (PropName = 'PackageSpecificHash') Then Exit;") in body
+            "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;") in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
@@ -601,4 +602,118 @@ def test_pad_jumpers_and_swap_ids_are_pad_only():
     assert "If PropName = 'JumperID' Then Pad.JumperID := N" in put
     # JumperID is a whole number of 0 or more; the shared check refuses
     # anything else before the write.
-    assert "(PropName = 'JumperID');" in put
+    ints = put[put.index("IsInt :="):]
+    assert "(PropName = 'JumperID')" in ints[:ints.index(";")]
+
+
+def test_board_grids_send_mils_and_refuse_zero(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_grids",
+                    snap_x=5, track=25.4, dot_grid=True)
+    assert sent == [("pcb.set_grids", {"snap_x": "5.0", "track": "25.4",
+                                       "dot_grid": "true"})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_grids")
+    assert sent == [("pcb.set_grids", {})]
+    for kwargs in ({"track": 0}, {"via": -5}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_set_grids", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_SetGrids")
+    # The component grid follows the snap grid; it is read, never written.
+    assert "ComponentGridSizeX :=" not in body
+    # Every value is read back against what was asked.
+    assert "If Abs(Got - V) > 0.001 Then" in body
+    assert body.index("Board.DrawDotGrid := (DotStr = 'true');") < body.index(
+        "If Board.DrawDotGrid <> (DotStr = 'true') Then")
+
+
+def test_component_model_export_sends_and_refuses(monkeypatch, tmp_path):
+    out = tmp_path / "U1.step"
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        out.write_bytes(b"ISO-10303-21;")
+        return {"saved": True}
+
+    bridge.send_command_async = send
+    result = asyncio.run(tools["pcb_export_component_model"](
+        designator=" U1 ", out_path=str(out)))
+    assert bridge.sent == [("pcb.export_component_model",
+                            {"designator": "U1", "out_path": str(out)})]
+    assert result["written"] is True
+    for kwargs in ({"designator": "U1", "out_path": "rel.step"},
+                   {"designator": " ", "out_path": str(out)},
+                   {"designator": "U1", "out_path": str(tmp_path / "U1.stl")}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_export_component_model", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_ExportComponentModel")
+    assert "Saved := Comp.SaveModelToFileAsPart(OutPath)" in body
+    assert "'NOT_FOUND'" in body
+
+
+def test_autosave_sends_minutes_and_converts(monkeypatch):
+    _, sent = _sent(application, "register_application_tools", monkeypatch,
+                    "app_autosave", enabled=True, interval_minutes=10)
+    assert sent == [("application.autosave", {"enabled": "true", "interval": "10"})]
+    result, sent = _sent(application, "register_application_tools", monkeypatch,
+                         "app_autosave", interval_minutes=0)
+    assert sent == [] and result["ok"] is False
+    # Altium keeps the interval in milliseconds.
+    body = _body("Application.pas", "App_Autosave")
+    assert "Interval := StrToInt(IntStr) * 60000;" in body
+    assert "Workspace.DM_GetRecoveryInterval Div 60000" in body
+
+
+def test_rule_list_stays_off_names_a_script_cannot_reach():
+    # Measured on AD 26.11: IPCB_Rule DataSummaryString is "Undeclared
+    # identifier" to a script, a modal that halts the loop.
+    body = _body("PCB.pas", "PCB_GetDesignRules")
+    assert "DataSummaryString" not in body
+    assert "ScopeDescriptorString" not in body
+
+
+@pytest.mark.parametrize("key", ["append_sheet_number_to_local_nets",
+                                 "pin_swap_by_net_label", "pin_swap_by_pin"])
+def test_project_setup_sends_the_swap_and_local_net_options(monkeypatch, key):
+    _, sent = _sent(project, "register_project_tools", monkeypatch,
+                    "proj_project_setup", **{key: False})
+    assert sent == [("project.project_setup", {key: "false"})]
+    body = _body("Project.pas", "Proj_ProjectSetup")
+    assert f"'\"{key}\",'" in body
+
+
+def test_net_items_say_what_kind_of_net():
+    kind = _body("Project.pas", "NetKindJson")
+    assert "JsonBool('local_scope', IsLocal)" in kind
+    assert "JsonStr('electrical', Electric)" in kind
+    assert "JsonBool('erc_suppressed', NoErc)" in kind
+    # The kind is defined before the routine that calls it: a call to a
+    # function defined later resolves to nothing at runtime.
+    text = (ALTIUM / "Project.pas").read_text(encoding="utf-8-sig")
+    assert text.index("Function NetKindJson(") < text.index("Function NetContentsJson(")
+    assert "+ NetKindJson(Net) + ','" in _body("Project.pas", "NetContentsJson")
+
+
+def test_parameters_ports_and_pin_label_positions_go_to_their_own_type():
+    fits = _body("Generic.pas", "SchExtraFits")
+    assert "((Owner = 3) And (Obj.ObjectId = eParameter))" in fits
+    assert "((Owner = 4) And (Obj.ObjectId = ePort))" in fits
+    owner = _body("Generic.pas", "SchExtraOwner")
+    for name in ("Name_PositionMode", "Designator_CustomPosition_Margin"):
+        assert owner.index(f"'{name}'") < owner.index("Then Result := 1")
+    put = _body("Generic.pas", "SchSetExtra")
+    assert "If N < 0 Then Exit;" in put
+    assert "If PropName = 'ReadOnlyState' Then Par.ReadOnlyState := N" in put
+    assert "If PropName = 'AutoSize' Then Port.AutoSize := B" in put
+
+
+def test_pour_and_text_extras_are_typed_and_converted_string_reads_only():
+    fits = _body("PCBGeneric.pas", "ExtraPCBPropertyOwner")
+    pour = fits[fits.index("'PolygonType'"):fits.index("Then Result := 5")]
+    for name in ("DrawRemovedNecks", "DrawDeadCopper", "AutoGenerateName"):
+        assert f"'{name}'" in pour
+    put = _body("PCBGeneric.pas", "PCBSetExtra")
+    refused = put[put.index("Result := -1;"):put.index("Owner := ExtraPCBPropertyOwner")]
+    assert "'ConvertedString'" in refused
+    assert "Txt.InvertedTTTextBorder := MilsToCoordF(F)" in put

@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.15
+# Release verification: 2026.10.27.4
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -153,6 +153,16 @@ works elsewhere cannot be an undeclared identifier:
 | 44, more pin symbols | `Symbol_Inner`, `Symbol_Outer`, `Symbol_LineWidth`, `HiddenNetName` on a pin | no, nowhere | low, ran live and read back |
 | 44, part display | `ShowHiddenPins`, `PinsMoveable`, `OverideColors`, `PinColor` on a symbol | no, nowhere | low, ran live, read back and restored |
 | 44, pad ids | `JumperID`, `SwapID_Pad`, `SwapID_Part` on a pad | no, nowhere | low, ran live, read back and cleared |
+| 45, board grids | `SnapGridSizeX`, `TrackGridSize`, `ViaGridSize`, `DrawDotGrid` on the board | no, nowhere | low, ran live, read back and restored |
+| 45, part STEP | `SaveModelToFileAsPart` on a placed part | no, nowhere | low, writes a file only; ran live |
+| 45, auto-save | `DM_SetRecoveryParameters` on the workspace | no, nowhere | medium, changes an Altium setting; ran live and restored |
+| 45, net kinds | `DM_IsLocal`, `DM_ElectricalString`, `DM_SuppressERC`, bus members on a net | no, nowhere | low, reads only; ran live |
+| 45, project options | `DM_SetAppendSheetNumberToLocalNets`, `DM_SetPinSwapBy_Netlabel`, `DM_SetPinSwapBy_Pin` | no, nowhere | low, ran live, read back and restored |
+| 45, pour switches | `DrawDeadCopper`, `DrawRemovedNecks`, `DrawRemovedIslands`, `ExpandOutline`, `AutoGenerateName` on a pour | no, nowhere | low, ran live and restored; `AutoGenerateName` renames the pour |
+| 45, inverted text | `InvertedTTTextBorder`, `TTFInvertedTextJustify`, `TTFOffsetFromInvertedRect` on board text | no, nowhere | low, ran live, read back and restored |
+| 45, text inversion | `Inverted`, `UseInvertedRectangle` on board text | yes, `Lib_ConvertDesignatorsToStroke` | low, ran live, read back and restored |
+| 45, parameters and ports | `ReadOnlyState`, `ParamType`, synchronize switches; port `AutoSize`, `OverrideDisplayString`, `HarnessColor` | no, nowhere | low, ran live, read back and restored |
+| 45, pin label positions | `Name_PositionMode`, `Name_CustomPosition_Margin`, `Designator_PositionMode`, `Designator_CustomPosition_Margin` and their rotations on a pin | no, nowhere | low, ran live, read back and cleared |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -328,7 +338,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.15`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.4`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2653,6 +2663,65 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project,
 board and libraries. All passed as described. Not run: a pin function
 list on a placed part on a sheet, and the scope's effect on a compiled
 hierarchical design.
+
+---
+
+## 45. Board grids, part STEP export, auto-save, net kinds, project options and more properties
+
+New: `pcb_set_grids`, `pcb_export_component_model`, `app_autosave`;
+`proj_project_setup` gains `append_sheet_number_to_local_nets`,
+`pin_swap_by_net_label` and `pin_swap_by_pin`; `proj_get_net_items` gains
+`local_scope`, `electrical`, `erc_suppressed` and bus membership;
+`obj_query` / `obj_modify` gain pour `DrawRemovedNecks`,
+`DrawRemovedIslands`, `DrawDeadCopper`, `ExpandOutline` and
+`AutoGenerateName`, board text `Inverted`, `UseInvertedRectangle`,
+`InvertedTTTextBorder`, `TTFInvertedTextJustify`,
+`TTFOffsetFromInvertedRect` and `ConvertedString` (read only), schematic
+parameter `ReadOnlyState`, `ParamType`, `AllowLibrarySynchronize` and
+`AllowDatabaseSynchronize`, port `AutoSize`, `OverrideDisplayString` and
+`HarnessColor`, and pin `Name_PositionMode`, `Name_CustomPosition_Margin`,
+`Name_CustomPosition_RotationAnchor`, `Name_CustomPosition_RotationRelative`
+and the same four for `Designator_`. Measured and NOT built: a rule's
+`DataSummaryString` (an undeclared identifier to a script, which stopped
+the loop) and a port's `CrossRef` (not known to the script engine).
+
+1. **Grids.** Snap 10, track 2.5, via 12.5, visible 50 and 500 and lines
+   instead of dots set and read back, then restored; 0 refused. The grid
+   for moving parts follows the snap grid: 25 read back as 10 and was
+   listed in `not_applied`, so it is read only.
+2. **Part STEP.** U1 written as a 99 KB STEP file (Altium's own STEP
+   writer); an unknown designator refused.
+3. **Auto-save.** Read off at 30 minutes (Altium keeps 1800000 ms); set
+   on at 12 minutes and read back; 0 refused; restored.
+4. **Net kinds.** 91 nets: `local_scope` false only on the three nets
+   that power ports name (GND, +5V, +3V3); USB_DP, joined across sheets
+   by ports, reads true. 16 nets with a No ERC marker read
+   `erc_suppressed`. Electrical types Passive, Input, Output and I/O.
+   The signal type answered empty on every net and is not reported.
+5. **Project options.** Sheet numbers on local nets on and both pin swap
+   options off, read back, then restored; the project closed unsaved.
+6. **Pours.** All five switches written and read back; writing
+   `AutoGenerateName` renamed the pour at once (GND_L01_P000); restored
+   with its name; `maybe` refused.
+7. **Board text.** Inverted with a 12.5 mil border, justification 4 and
+   a 3 mil offset written and read back, then restored; a negative
+   border and a write to `ConvertedString` refused.
+8. **Parameters.** A sheet parameter made writable, typed 1 and kept from
+   library and database updates, read back, then restored; `perhaps`
+   refused.
+9. **Ports.** On a port placed for the test: auto size off, a display
+   override and a harness colour written and read back; a colour that is
+   not a number refused; the port deleted.
+10. **Pin label positions.** On a library pin: name position mode,
+    margin, rotation anchor and relative rotation and the designator's
+    mode and margin written and read back, then cleared; a negative
+    margin refused. A port property aimed at a pin was refused as not
+    belonging to it.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project,
+board and library; every document closed without saving. All passed as
+described. Not run: a bus member net, and a STEP export of a part with no
+3D body.
 
 ---
 

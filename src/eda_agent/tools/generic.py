@@ -508,14 +508,28 @@ def register_generic_tools(mcp):
                 (Altium's anchor numbers; writing one moves the text
                 there), FootprintDescription, DefaultPCB3DModel
                 (PackageSpecificHash reads); on a board pad JumperID,
-                SwapID_Pad and SwapID_Part. Schematic pins take
+                SwapID_Pad and SwapID_Part; on a pour DrawRemovedNecks,
+                DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
+                AutoGenerateName; on board text Inverted,
+                UseInvertedRectangle, InvertedTTTextBorder,
+                TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
+                ConvertedString (reads: the text as shown, special
+                strings resolved). Schematic pins take
                 Symbol_Inner, Symbol_Outer, Symbol_InnerEdge,
                 Symbol_OuterEdge and Symbol_LineWidth (Altium's numbers),
                 HiddenNetName and DefinedFunctions (the pin's functions,
                 ";"-separated; writing replaces the list); schematic parts
                 take ShowHiddenPins, ShowHiddenFields, PinsMoveable,
                 PartIdLocked, DisplayFieldNames, OverideColors (Altium's
-                spelling) and PinColor. Symbol pins
+                spelling) and PinColor. Pins also take where their name
+                and number sit: Name_PositionMode,
+                Name_CustomPosition_Margin,
+                Name_CustomPosition_RotationAnchor,
+                Name_CustomPosition_RotationRelative and the same four
+                for Designator_ (Altium's numbers). Schematic parameters
+                take ReadOnlyState, ParamType, AllowLibrarySynchronize
+                and AllowDatabaseSynchronize; ports take AutoSize,
+                OverrideDisplayString and HarnessColor. Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),

@@ -867,7 +867,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "Symbol_InnerEdge, Symbol_OuterEdge, Symbol_LineWidth "
                  "(Altium's numbers) and HiddenNetName. On eSchComponent: "
                  "ShowHiddenPins, ShowHiddenFields, PinsMoveable, "
-                 "PartIdLocked, DisplayFieldNames, OverideColors, PinColor."),
+                 "PartIdLocked, DisplayFieldNames, OverideColors, PinColor. "
+                 "Where a pin's name and number sit: Name_PositionMode, "
+                 "Name_CustomPosition_Margin and the same for Designator_."),
     },
     {
         "task": "Mark board pads as jumper ends or swap groups",
@@ -894,8 +896,77 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                                          "name; the option does not change")],
         "note": ("proj_project_setup also sets the net identifier scope "
                  "(hierarchy_mode: automatic, flat, hierarchical, global, "
-                 "strict_hierarchical) and the output path. Changes stay in "
+                 "strict_hierarchical), the output path, sheet numbers on "
+                 "local net names and the pin swap options. Changes stay in "
                  "memory until proj_save."),
+    },
+    {
+        "task": "Set the board's snap, track, via or visible grid",
+        "keywords": ("grid", "snap", "track", "via", "visible", "dot",
+                     "board"),
+        "when": (("board", "grid"), ("snap", "grid"), ("track", "grid"),
+                 ("via", "grid")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_set_grids"],
+        "avoid": [("obj_set_grid", "sets the schematic's grid, not the board's")],
+        "note": ("Mils. Every value is read back; the grid for moving parts "
+                 "follows the snap grid."),
+    },
+    {
+        "task": "Export one placed part's 3D model to STEP",
+        "keywords": ("step", "3d", "model", "export", "part", "component",
+                     "placed"),
+        "when": (("part", "step"), ("component", "model", "export"),
+                 ("one", "part", "3d")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_export_component_model"],
+        "avoid": [("proj_export_step", "writes the whole board")],
+        "note": "Writes the part's bodies as placed, with no dialog.",
+    },
+    {
+        "task": "Turn Altium's auto-save on or off or change how often it runs",
+        "keywords": ("autosave", "auto", "save", "backup", "recovery",
+                     "interval"),
+        "when": (("auto", "save"), ("autosave",), ("backup", "interval")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["app_autosave"],
+        "avoid": [],
+        "note": "A setting of Altium itself, for every document; minutes.",
+    },
+    {
+        "task": "Lock a schematic parameter or keep it from library updates",
+        "keywords": ("parameter", "lock", "read", "only", "synchronize",
+                     "update", "library", "database"),
+        "when": (("parameter", "read", "only"), ("parameter", "synchronize"),
+                 ("lock", "parameter")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify on eParameter: ReadOnlyState and ParamType "
+                 "(Altium's numbers), AllowLibrarySynchronize, "
+                 "AllowDatabaseSynchronize. Ports (ePort): AutoSize, "
+                 "OverrideDisplayString, HarnessColor."),
+    },
+    {
+        "task": "Show a pour's removed copper or let Altium name pours",
+        "keywords": ("pour", "polygon", "dead", "copper", "necks", "islands",
+                     "name", "removed"),
+        "when": (("dead", "copper"), ("removed", "necks"),
+                 ("removed", "islands"), ("pour", "name")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify on ePolyObject: DrawDeadCopper, "
+                 "DrawRemovedNecks, DrawRemovedIslands, ExpandOutline, "
+                 "AutoGenerateName (renames the pour from Altium's "
+                 "template at once). Board text: Inverted, "
+                 "UseInvertedRectangle, InvertedTTTextBorder; "
+                 "ConvertedString reads the text as shown."),
     },
 )
 

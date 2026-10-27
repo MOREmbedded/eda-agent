@@ -3960,6 +3960,36 @@ Begin
         + JsonRaw('rooms', '[' + Rooms + ']')));
 End;
 
+{ What kind of net it is, as JSON members (no braces): whether its name is  }
+{ local (False when a power port gives it a global name; measured on AD      }
+{ 26.11, a net joined across sheets by ports still reads local), its        }
+{ electrical type as Altium words it, whether ERC is suppressed on it, and, }
+{ for a bus member, the bus prefix and its index.                           }
+Function NetKindJson(Net : INet) : String;
+Var
+    IsLocal, NoErc, InBus : Boolean;
+    Electric, Prefix : String;
+    BusIdx : Integer;
+Begin
+    IsLocal := False; NoErc := False; InBus := False;
+    Electric := ''; Prefix := ''; BusIdx := -1;
+    Try IsLocal := Net.DM_IsLocal; Except End;
+    Try Electric := Net.DM_ElectricalString; Except End;
+    Try NoErc := Net.DM_SuppressERC; Except End;
+    Try InBus := Net.DM_IsBusMember; Except End;
+    If InBus Then
+    Begin
+        Try Prefix := Net.DM_BusPrefix; Except End;
+        Try BusIdx := Net.DM_BusIndex; Except End;
+    End;
+    Result := JsonBool('local_scope', IsLocal) + ','
+        + JsonStr('electrical', Electric) + ','
+        + JsonBool('erc_suppressed', NoErc) + ','
+        + JsonBool('bus_member', InBus);
+    If InBus Then
+        Result := Result + ',' + JsonStr('bus_prefix', Prefix) + ',' + JsonInt('bus_index', BusIdx);
+End;
+
 { One naming object on a compiled net (label, power port, port, sheet       }
 { entry, off-sheet connector) as JSON: its text, sheet and location in      }
 { mils. A power port answers no text of its own, so the net name stands in. }
@@ -4055,6 +4085,7 @@ Begin
         + JsonStr('full_name', Text) + ','
         + JsonBool('auto_generated', AutoGen) + ','
         + JsonInt('pin_count', PinCount) + ','
+        + NetKindJson(Net) + ','
         + JsonRaw('net_labels', '[' + Labels + ']') + ','
         + JsonRaw('power_objects', '[' + Powers + ']') + ','
         + JsonRaw('ports', '[' + Ports + ']') + ','
@@ -4162,7 +4193,7 @@ Var
     I, Idx, Total, Mode : Integer;
     Order : TStringList;
     OutPath : String;
-    Sub, AllowPort, AllowEntry : Boolean;
+    Sub, AllowPort, AllowEntry, AppendSheet, SwapLabel, SwapPin : Boolean;
 Begin
     Order := TStringList.Create;
     Total := Project.DM_LogicalDocumentCount + Project.DM_PhysicalDocumentCount;
@@ -4225,13 +4256,20 @@ Begin
     Try Mode := Project.DM_HierarchyMode; Except End;
     OutPath := '';
     Try OutPath := Project.DM_GetOutputPath; Except End;
+    AppendSheet := False; SwapLabel := False; SwapPin := False;
+    Try AppendSheet := Project.DM_GetAppendSheetNumberToLocalNets; Except End;
+    Try SwapLabel := Project.DM_GetPinSwapBy_Netlabel; Except End;
+    Try SwapPin := Project.DM_GetPinSwapBy_Pin; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
         + JsonBool('allow_port_net_names', AllowPort) + ','
         + JsonBool('allow_sheet_entry_net_names', AllowEntry) + ','
         + JsonInt('hierarchy_mode', Mode) + ','
-        + JsonStr('output_path', OutPath);
+        + JsonStr('output_path', OutPath) + ','
+        + JsonBool('append_sheet_number_to_local_nets', AppendSheet) + ','
+        + JsonBool('pin_swap_by_net_label', SwapLabel) + ','
+        + JsonBool('pin_swap_by_pin', SwapPin);
 End;
 
 {..............................................................................}
@@ -4241,12 +4279,14 @@ End;
 { the output path. Every change is read back; save the project to keep it.   }
 { Params: project_path, move_document + move_to_index, add_search_path +     }
 { include_subfolders, allow_port_net_names, allow_sheet_entry_net_names      }
-{ ('true' / 'false'; empty = keep). No change params = read only.            }
+{ ('true' / 'false'; empty = keep), append_sheet_number_to_local_nets,       }
+{ pin_swap_by_net_label, pin_swap_by_pin (the same). No change params =     }
+{ read only.                                                                }
 {..............................................................................}
 Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
-    ModeStr, OutStr : String;
+    ModeStr, OutStr, AppendStr, SwapLabelStr, SwapPinStr : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
@@ -4262,6 +4302,9 @@ Begin
     EntryStr := LowerCase(ExtractJsonValue(Params, 'allow_sheet_entry_net_names'));
     ModeStr := ExtractJsonValue(Params, 'hierarchy_mode');
     OutStr := ExtractJsonValue(Params, 'output_path');
+    AppendStr := LowerCase(ExtractJsonValue(Params, 'append_sheet_number_to_local_nets'));
+    SwapLabelStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_net_label'));
+    SwapPinStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_pin'));
     If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
@@ -4340,6 +4383,27 @@ Begin
         If UpperCase(NoTrailingSlash(Project.DM_GetOutputPath))
            <> UpperCase(NoTrailingSlash(OutStr)) Then
             NotApplied := NotApplied + '"output_path",';
+    End;
+    If AppendStr <> '' Then
+    Begin
+        Project.DM_SetAppendSheetNumberToLocalNets(AppendStr = 'true');
+        Changed := True;
+        If Project.DM_GetAppendSheetNumberToLocalNets <> (AppendStr = 'true') Then
+            NotApplied := NotApplied + '"append_sheet_number_to_local_nets",';
+    End;
+    If SwapLabelStr <> '' Then
+    Begin
+        Project.DM_SetPinSwapBy_Netlabel(SwapLabelStr = 'true');
+        Changed := True;
+        If Project.DM_GetPinSwapBy_Netlabel <> (SwapLabelStr = 'true') Then
+            NotApplied := NotApplied + '"pin_swap_by_net_label",';
+    End;
+    If SwapPinStr <> '' Then
+    Begin
+        Project.DM_SetPinSwapBy_Pin(SwapPinStr = 'true');
+        Changed := True;
+        If Project.DM_GetPinSwapBy_Pin <> (SwapPinStr = 'true') Then
+            NotApplied := NotApplied + '"pin_swap_by_pin",';
     End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(

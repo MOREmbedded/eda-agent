@@ -2487,8 +2487,13 @@ def register_project_tools(mcp):
 
         For each net: its net labels, power ports, ports, sheet entries
         and off-sheet connectors with sheet and location, whether the
-        compiler made the name up (``auto_generated``) and whether it is
-        local to one sheet. With one net, its pins too.
+        compiler made the name up (``auto_generated``),
+        ``local_scope`` (False when a power port gives the net a global
+        name; a net joined across sheets by ports still reads True), its
+        ``electrical`` type as Altium words it (Passive, Input, Output,
+        I/O ...), ``erc_suppressed`` (a No ERC marker sits on it), and
+        for a bus member ``bus_prefix`` and ``bus_index``. With one net,
+        its pins too.
 
         Args:
             net: One net (any case). Empty lists every net.
@@ -2523,10 +2528,14 @@ def register_project_tools(mcp):
         allow_sheet_entry_net_names: Optional[bool] = None,
         hierarchy_mode: Optional[str] = None,
         output_path: str = "",
+        append_sheet_number_to_local_nets: Optional[bool] = None,
+        pin_swap_by_net_label: Optional[bool] = None,
+        pin_swap_by_pin: Optional[bool] = None,
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or change, a project's document order, library search
-        paths, net naming options, net identifier scope and output path.
+        paths, net naming options, net identifier scope, output path and
+        pin swap options.
 
         Call with no changes to read. Every change is read back, and
         any that did not take is listed in ``not_applied``. Save the
@@ -2543,6 +2552,12 @@ def register_project_tools(mcp):
                 hierarchical, global or strict_hierarchical (or Altium's
                 number 0 to 4, in that order).
             output_path: The folder outputs are written to.
+            append_sheet_number_to_local_nets: Add the sheet number to
+                the names of nets local to one sheet.
+            pin_swap_by_net_label: Pin swaps on the board may change
+                net labels on the schematic.
+            pin_swap_by_pin: Pin swaps on the board may move pins on
+                the schematic.
             project_path: The .PrjPcb. Defaults to the focused project.
 
         Returns:
@@ -2550,6 +2565,8 @@ def register_project_tools(mcp):
             ``generated_documents``, the two naming options,
             ``hierarchy_mode`` (Altium's number) and
             ``hierarchy_mode_name``, ``output_path``,
+            ``append_sheet_number_to_local_nets``,
+            ``pin_swap_by_net_label``, ``pin_swap_by_pin``,
             ``changed``, ``moved_from`` / ``moved_to`` and
             ``not_applied``.
         """
@@ -2566,7 +2583,11 @@ def register_project_tools(mcp):
             params["add_search_path"] = add_search_path.strip()
             params["include_subfolders"] = "true" if include_subfolders else "false"
         for key, value in (("allow_port_net_names", allow_port_net_names),
-                           ("allow_sheet_entry_net_names", allow_sheet_entry_net_names)):
+                           ("allow_sheet_entry_net_names", allow_sheet_entry_net_names),
+                           ("append_sheet_number_to_local_nets",
+                            append_sheet_number_to_local_nets),
+                           ("pin_swap_by_net_label", pin_swap_by_net_label),
+                           ("pin_swap_by_pin", pin_swap_by_pin)):
             if value is not None:
                 params[key] = "true" if value else "false"
         if hierarchy_mode is not None:

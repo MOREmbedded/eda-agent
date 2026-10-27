@@ -1248,6 +1248,32 @@ def register_application_tools(mcp):
         return result
 
     @mcp.tool()
+    async def app_autosave(
+        enabled: Optional[bool] = None,
+        interval_minutes: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, Altium's auto-save: whether it saves backup
+        copies of open documents, and how often.
+
+        Call with nothing to read. Both values are read back.
+
+        Args:
+            enabled: Auto-save on (True) or off (False).
+            interval_minutes: Minutes between saves, 1 or more.
+
+        Returns:
+            ``enabled``, ``interval_minutes`` and ``changed``.
+        """
+        params: dict[str, Any] = {}
+        if enabled is not None:
+            params["enabled"] = "true" if enabled else "false"
+        if interval_minutes is not None:
+            if interval_minutes < 1:
+                return {"ok": False, "reason": "interval_minutes is 1 or more"}
+            params["interval"] = str(interval_minutes)
+        return await get_bridge().send_command_async("application.autosave", params)
+
+    @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:
         """Dispatch a menu command by path. DISPATCH IS NOT EXECUTION:
         Altium accepts an unknown or unavailable process in silence, so

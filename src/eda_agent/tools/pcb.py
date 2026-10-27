@@ -1308,6 +1308,88 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.net_display", params)
 
     @mcp.tool()
+    async def pcb_set_grids(
+        snap_x: Optional[float] = None,
+        snap_y: Optional[float] = None,
+        track: Optional[float] = None,
+        via: Optional[float] = None,
+        visible: Optional[float] = None,
+        visible_big: Optional[float] = None,
+        dot_grid: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the active board's grids, in mils.
+
+        Call with nothing to read. Every value set is read back, and any
+        that did not take is listed in ``not_applied``. The grid for
+        moving parts (``component_x`` / ``component_y``) is read only: it
+        follows the snap grid (measured on AD 26.11). obj_set_grid is the
+        schematic's grid.
+
+        Args:
+            snap_x: Snap grid across.
+            snap_y: Snap grid up.
+            track: Grid for routing tracks.
+            via: Grid for placing vias.
+            visible: The fine visible grid.
+            visible_big: The coarse visible grid.
+            dot_grid: Draw the visible grid as dots (True) or lines.
+
+        Returns:
+            ``snap_x``, ``snap_y``, ``component_x``, ``component_y``,
+            ``track``, ``via``, ``visible``, ``visible_big``,
+            ``dot_grid`` and ``not_applied``.
+        """
+        params: dict[str, Any] = {}
+        for key, value in (("snap_x", snap_x), ("snap_y", snap_y),
+                           ("track", track), ("via", via), ("visible", visible),
+                           ("visible_big", visible_big)):
+            if value is None:
+                continue
+            if value <= 0:
+                return {"ok": False, "reason": f"{key} is more than 0 mils"}
+            params[key] = repr(float(value))
+        if dot_grid is not None:
+            params["dot_grid"] = "true" if dot_grid else "false"
+        return await get_bridge().send_command_async("pcb.set_grids", params)
+
+    @mcp.tool()
+    async def pcb_export_component_model(
+        designator: str,
+        out_path: str,
+    ) -> dict[str, Any]:
+        """Write one placed part's 3D model, as it sits on the board, to
+        a STEP file. No dialog.
+
+        proj_export_step writes the whole board; lib_export_3d_model
+        writes a model from a library footprint.
+
+        Args:
+            designator: The part, e.g. "U1".
+            out_path: Full path of the .step file to write.
+
+        Returns:
+            ``saved`` (what Altium answered) and ``written`` (a file is
+            at out_path that was not there before, or is newer).
+        """
+        import os
+        if not designator.strip():
+            return {"ok": False, "reason": "designator is required"}
+        if not out_path or not os.path.isabs(out_path):
+            return {"ok": False, "reason": "out_path must be a full path"}
+        if os.path.splitext(out_path)[1].lower() not in (".step", ".stp"):
+            return {"ok": False, "reason": "out_path is a .step or .stp file"}
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        before = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
+        reply = await get_bridge().send_command_async(
+            "pcb.export_component_model",
+            {"designator": designator.strip(), "out_path": out_path},
+            timeout=120.0)
+        if isinstance(reply, dict) and "saved" in reply:
+            after = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
+            reply["written"] = after is not None and after != before
+        return reply
+
+    @mcp.tool()
     async def pcb_get_design_rules() -> dict[str, Any]:
         """Get all design rules from the active PCB.
 
