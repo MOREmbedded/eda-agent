@@ -57,6 +57,20 @@ def _altium_process_running() -> Check:
     )
 
 
+def bundled_script_version() -> str:
+    """SCRIPT_VERSION as this tree declares it, or '' if unreadable."""
+    try:
+        from eda_agent.cli import get_bundled_scripts_path
+        main_pas = get_bundled_scripts_path() / "Main.pas"
+        if main_pas.exists():
+            for line in main_pas.read_text(encoding="utf-8").splitlines():
+                if "SCRIPT_VERSION" in line and "=" in line:
+                    return line.split("=", 1)[1].strip().strip(";").strip("'")
+    except Exception:
+        pass
+    return ""
+
+
 def _ping_altium() -> Optional[dict]:
     """Send a ping. Returns the response dict, or None on any failure."""
     try:
@@ -95,18 +109,7 @@ def _check_script_version_match(ping: Optional[dict]) -> Check:
         )
 
     altium_v = ping.get("script_version", "")
-    bundled_v = ""
-    try:
-        from eda_agent.cli import get_bundled_scripts_path
-        main_pas = get_bundled_scripts_path() / "Main.pas"
-        if main_pas.exists():
-            for line in main_pas.read_text(encoding="utf-8").splitlines():
-                if "SCRIPT_VERSION" in line and "=" in line:
-                    parts = line.split("=", 1)
-                    bundled_v = parts[1].strip().strip(";").strip().strip("'")
-                    break
-    except Exception:
-        pass
+    bundled_v = bundled_script_version()
 
     if not altium_v or not bundled_v:
         return Check(

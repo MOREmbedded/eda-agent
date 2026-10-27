@@ -1110,6 +1110,25 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
         _, take, _ = candidates_for(model, "component", "read", table)
         names = [name for name, _prop in take]
 
+    # A probe list built from today's table against yesterday's script
+    # is how the debugger gets halted: the running block may still read
+    # a name with a spelling the engine does not resolve.
+    from .diag.doctor import _ping_altium, bundled_script_version
+    ping = _ping_altium()
+    if ping is None:
+        print("Altium did not answer a ping, so the polling loop is not "
+              "running. Start it with Dispatcher.pas > StartMCPServer.",
+              file=sys.stderr)
+        return 1
+    running, bundled = ping.get("script_version", ""), bundled_script_version()
+    if running and bundled and running != bundled:
+        print(f"the running script is {running} and this tree generated "
+              f"{bundled}. Probing across that gap can touch a property the "
+              f"running block reads with the old spelling, which halts the "
+              f"debugger. Reload the script project in Altium and run "
+              f"StartMCPServer again.", file=sys.stderr)
+        return 1
+
     params = {"properties": ",".join(names)}
     if designator:
         params["designator"] = designator

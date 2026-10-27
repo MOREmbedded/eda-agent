@@ -148,7 +148,8 @@ The assembly is ground truth for what Altium's SDK **declares**. It is
 not ground truth for what the scripting engine will **resolve**, and
 the gap is large: of 1,688 distinct property names in the dump, 79.9%
 are reachable as `Obj.Name`, 12.6% only through `Obj.GetState_Name`,
-and 7.5% not at all.
+and 7.5% not at all. Both spellings work, so 92.5% is reachable by one
+or the other.
 
 Reaching for one it cannot resolve raises `Undeclared identifier` and
 **halts the script debugger on that line**. Altium then refuses to
@@ -215,6 +216,36 @@ be the table being wrong. The test
 `test_the_table_never_contradicts_the_shipped_pascal` fails on exactly
 that.
 
+### Two spellings
+
+A member registered only as `GetState_Name` is not lost, it is spelled
+differently. `Obj.GetState_DescriptionString` returns `Part C38` off a
+real component on a real sheet; the bare `Obj.DescriptionString` halts
+the debugger. Same property, same object, same session.
+
+So `member_spelling()` picks the form the engine registers, and the
+caller's vocabulary does not change: a probe still asks for
+`DescriptionString`, because that is what the SDK declares and what a
+tool user would name.
+
+This matters most where the bare name is the exception rather than the
+rule:
+
+| interface | plain | getter only |
+|-----------|-------|-------------|
+| `ISch_HarnessWire` | 12 | 17 |
+| `ISch_HarnessWireData` | 7 | 15 |
+| `ISch_HarnessShield` | 4 | 6 |
+| `ISch_Lib` | 6 | 8 |
+
+Those interfaces are majority-unreachable under the bare-name idiom
+alone.
+
+`BLOCK_ALLOW_GETTER` decides whether the deployed block uses the second
+spelling. The test that compares the block against its generator reads
+the same constant, so the two cannot drift. It is `True` because
+`ISch_Component` then probes 30 of 30 live, up from 26 of 30.
+
 ### The probe, now a confirmation
 
 The probe reads names off a real component and reports which answered.
@@ -257,10 +288,10 @@ silently reverts whatever was edited into it.
 The generator refuses what it cannot express, and says why rather than
 dropping it: an indexed property has no way to receive its index
 through a name lookup, a declared `Object` or `Void` does not cross the
-String bridge the chains report through, and a name the engine
-registers only as a getter does not resolve as a property. Pass the
-table and the block carries capabilities; omit it and the block carries
-candidates.
+String bridge the chains report through. A name registered only as a
+getter is not refused but re-spelled, since that form resolves. Pass
+the table and the block carries capabilities; omit it and the block
+carries candidates.
 
 ## Running the tests without Altium
 

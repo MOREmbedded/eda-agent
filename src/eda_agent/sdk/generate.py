@@ -30,7 +30,7 @@ from typing import Iterable
 
 from .coverage import handled_heads, interface_for, supported_sch_types
 from .reflect import Property, SdkModel
-from .symbols import ABSENT, GETTER, SymbolTable
+from .symbols import ABSENT, GETTER, PLAIN, SymbolTable
 
 #: Reading a property into the chain's String result. The chains report
 #: every value as text, so each declared type needs the conversion the
@@ -96,8 +96,22 @@ class Generated:
                 f"{len(self.skipped)} skipped")
 
 
+def member_spelling(name: str, table: SymbolTable | None = None,
+                    allow_getter: bool = False) -> str:
+    """How to write this member so the engine resolves it.
+
+    Most members answer to their bare name. A few hundred are registered
+    only as GetState_Name, and for those the bare name raises
+    "Undeclared identifier" however plainly the assembly declares it.
+    """
+    if allow_getter and table is not None and table.reach(name) == GETTER:
+        return f"GetState_{name}"
+    return name
+
+
 def _reject(prop: Property, kind: str,
-            table: SymbolTable | None = None) -> str | None:
+            table: SymbolTable | None = None,
+            allow_getter: bool = False) -> str | None:
     """Why this property cannot be a plain chain entry, or None.
 
     Order matters only for the message: an indexed write-only Object is
@@ -121,7 +135,7 @@ def _reject(prop: Property, kind: str,
         return f"declared {declared}, which does not cross the String bridge"
     if table is not None:
         reach = table.reach(prop.name)
-        if reach == GETTER:
+        if reach == GETTER and not (allow_getter and kind == "read"):
             return (f"registered only as GetState_{prop.name}, so property "
                     f"syntax does not resolve")
         if reach == ABSENT:
@@ -131,7 +145,8 @@ def _reject(prop: Property, kind: str,
 
 def plan(model: SdkModel, interface: str, kind: str, *,
          already: Iterable[str] = (),
-         table: SymbolTable | None = None
+         table: SymbolTable | None = None,
+         allow_getter: bool = False
          ) -> tuple[list[tuple[str, Property]], list[Skipped]]:
     """Split an interface's properties into emittable and skipped.
 
@@ -146,7 +161,7 @@ def plan(model: SdkModel, interface: str, kind: str, *,
     for name in sorted(props):
         if name.lower() in known:
             continue
-        reason = _reject(props[name], kind, table)
+        reason = _reject(props[name], kind, table, allow_getter)
         if reason:
             skip.append(Skipped(name, reason))
         else:
@@ -156,7 +171,8 @@ def plan(model: SdkModel, interface: str, kind: str, *,
 
 def render_probe(model: SdkModel, interface: str, var_type: str, *,
                  function_name: str, already: Iterable[str] = (),
-                 table: SymbolTable | None = None
+                 table: SymbolTable | None = None,
+                 allow_getter: bool = False
                  ) -> Generated:
     """A routine that reads one named property off a typed object.
 
@@ -170,7 +186,7 @@ def render_probe(model: SdkModel, interface: str, var_type: str, *,
     trusting the value that came back.
     """
     take, skip = plan(model, interface, "read", already=already,
-                      table=table)
+                      table=table, allow_getter=allow_getter)
     var = "Obj"
     lines = [
         "{..............................................................................}",
@@ -190,7 +206,8 @@ def render_probe(model: SdkModel, interface: str, var_type: str, *,
         "    Found := False;",
     ]
     for n, (name, prop) in enumerate(take):
-        cast = READ_CAST[prop.get].format(var=var, name=name)
+        member = member_spelling(name, table, allow_getter)
+        cast = READ_CAST[prop.get].format(var=var, name=member)
         head = "    If" if n == 0 else "    Else If"
         lines.append(_aligned(f"{head} PropName = '{name}'",
                               f"Then Result := {cast}"))
@@ -247,9 +264,19 @@ BEGIN_MARKER = ("{ BEGIN GENERATED - SDK property probe. Produced by "
                 "`eda-agent sdk-generate`. }")
 END_MARKER = "{ END GENERATED - SDK property probe. }"
 
+#: Whether the deployed block reads getter-only members through
+#: Obj.GetState_Name. The engine registers that spelling for 213
+#: property names, which is most of the harness interfaces, but
+#: registering is not the same as resolving and only a live read
+#: settles it. Set False and regenerate if the spelling turns out not
+#: to resolve; the test that compares the block to the generator reads
+#: this same constant, so the two cannot drift apart.
+BLOCK_ALLOW_GETTER = True
+
 
 def render_block(model: SdkModel,
-                 table: SymbolTable | None = None) -> str:
+                 table: SymbolTable | None = None,
+                 allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
     """The whole generated region, markers included.
 
     One probe per object type. Only ISch_Component today: the point of
@@ -263,7 +290,8 @@ def render_block(model: SdkModel,
     body = render_probe(
         model, "ISch_Component", "ISch_Component",
         function_name="ProbeSchComponentProperty",
-        already=handled_heads("GetSchProperty"), table=table).pascal
+        already=handled_heads("GetSchProperty"), table=table,
+        allow_getter=allow_getter).pascal
     return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
 
 
@@ -275,7 +303,8 @@ def replace_block(source: str, block: str) -> str:
 
 
 def candidates_for(model: SdkModel, object_type: str, kind: str = "read",
-                   table: SymbolTable | None = None
+                   table: SymbolTable | None = None,
+                   allow_getter: bool = BLOCK_ALLOW_GETTER
                    ) -> tuple[str, list[tuple[str, Property]], list[Skipped]]:
     """Resolve a schematic object type name and plan its missing properties.
 
@@ -290,6 +319,9 @@ def candidates_for(model: SdkModel, object_type: str, kind: str = "read",
                        f"known: {', '.join(sorted(types))}")
     interface = interface_for(constant, "SCH")
     chain = "GetSchProperty" if kind == "read" else "SetSchProperty"
+    # Defaults to what the deployed block carries, so a probe list and
+    # the Pascal that answers it cannot disagree about the spelling.
     take, skip = plan(model, interface, kind,
-                      already=handled_heads(chain), table=table)
+                      already=handled_heads(chain), table=table,
+                      allow_getter=allow_getter)
     return interface, take, skip

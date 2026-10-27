@@ -15134,6 +15134,7 @@ Begin
     Else If PropName = 'CompilationMasked'          Then Result := BoolToJsonStr(Obj.CompilationMasked)
     Else If PropName = 'ConfigurationParameters'    Then Result := Obj.ConfigurationParameters
     Else If PropName = 'ConfiguratorName'           Then Result := Obj.ConfiguratorName
+    Else If PropName = 'DescriptionString'          Then Result := Obj.GetState_DescriptionString
     Else If PropName = 'DesignatorLocked'           Then Result := BoolToJsonStr(Obj.DesignatorLocked)
     Else If PropName = 'Dimmed'                     Then Result := BoolToJsonStr(Obj.Dimmed)
     Else If PropName = 'Disabled'                   Then Result := BoolToJsonStr(Obj.Disabled)
@@ -15142,10 +15143,12 @@ Begin
     Else If PropName = 'EnableDraw'                 Then Result := BoolToJsonStr(Obj.EnableDraw)
     Else If PropName = 'ErrorString'                Then Result := Obj.ErrorString
     Else If PropName = 'Handle'                     Then Result := Obj.Handle
+    Else If PropName = 'IdentifierString'           Then Result := Obj.GetState_IdentifierString
     Else If PropName = 'IsUserConfigurable'         Then Result := BoolToJsonStr(Obj.IsUserConfigurable)
     Else If PropName = 'LibraryPath'                Then Result := Obj.LibraryPath
     Else If PropName = 'LiveHighlightValue'         Then Result := Obj.LiveHighlightValue
     Else If PropName = 'OverideColors'              Then Result := BoolToJsonStr(Obj.OverideColors)
+    Else If PropName = 'PartCountNoPart0'           Then Result := IntToStr(Obj.GetState_PartCountNoPart0)
     Else If PropName = 'PartIdLocked'               Then Result := BoolToJsonStr(Obj.PartIdLocked)
     Else If PropName = 'PinsMoveable'               Then Result := BoolToJsonStr(Obj.PinsMoveable)
     Else If PropName = 'SelectedInLibrary'          Then Result := BoolToJsonStr(Obj.SelectedInLibrary)
@@ -15155,6 +15158,7 @@ Begin
     Else If PropName = 'TargetFileName'             Then Result := Obj.TargetFileName
     Else If PropName = 'UseDBTableName'             Then Result := BoolToJsonStr(Obj.UseDBTableName)
     Else If PropName = 'UseLibraryName'             Then Result := BoolToJsonStr(Obj.UseLibraryName)
+    Else If PropName = 'WiringDiagramOriginUniqueId' Then Result := Obj.GetState_WiringDiagramOriginUniqueId
     Else Exit;
     { Reached only when a branch read without faulting. That is the }
     { whole measurement: the line proves the member resolved.       }

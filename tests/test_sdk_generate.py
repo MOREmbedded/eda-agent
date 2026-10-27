@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from eda_agent.sdk.generate import (BEGIN_MARKER, END_MARKER, Skipped,
-                                    _reject, plan, render_block, render_probe,
+from eda_agent.sdk.generate import (BEGIN_MARKER, BLOCK_ALLOW_GETTER,
+                                    END_MARKER, Skipped,
+                                    _reject, member_spelling, plan,
+                                    render_block, render_probe,
                                     render_write, replace_block)
 from eda_agent.sdk.reflect import Property, SdkModel, SdkUnavailable, load_sdk
 from eda_agent.sdk.symbols import (SymbolsUnavailable, SymbolTable,
@@ -103,6 +105,40 @@ def test_a_name_the_engine_cannot_resolve_is_refused(model):
     take, skip = plan(model, "ISch_Thing", "read", table=table)
     assert "Count" not in [n for n, _p in take]
     assert "Count" in {s.name for s in skip}
+
+
+def test_a_getter_only_member_is_read_through_its_getter(model):
+    """The spelling the engine does register for those 213 names.
+
+    Registering is not resolving, so this stays behind allow_getter
+    until a live read settles it.
+    """
+    table = SymbolTable({"names": ["Caption", "GetState_Count"],
+                         "min_reliable": 3})
+    out = render_probe(model, "ISch_Thing", "ISch_Thing",
+                       function_name="ProbeThing", table=table,
+                       allow_getter=True)
+    assert "Then Result := IntToStr(Obj.GetState_Count)" in out.pascal
+    # The caller's vocabulary does not change: it still asks for the
+    # property the SDK declares, not for the accessor underneath it.
+    assert "If PropName = 'Count'" in out.pascal
+    assert "'GetState_Count'" not in out.pascal
+
+
+def test_the_getter_form_is_off_unless_asked(model):
+    table = SymbolTable({"names": ["Caption", "GetState_Count"],
+                         "min_reliable": 3})
+    out = render_probe(model, "ISch_Thing", "ISch_Thing",
+                       function_name="ProbeThing", table=table)
+    assert "GetState_" not in out.pascal
+    assert "Count" not in out.included
+
+
+def test_a_plain_member_is_never_rewritten_to_its_getter(model):
+    """Obj.Caption resolves, so nothing may redirect it through a getter."""
+    table = SymbolTable({"names": ["Caption", "GetState_Caption"],
+                         "min_reliable": 3})
+    assert member_spelling("Caption", table, allow_getter=True) == "Caption"
 
 
 def test_without_a_table_the_plan_is_candidates_not_capabilities(model):
