@@ -1571,6 +1571,62 @@ def register_pcb_tools(mcp):
             "smart_track_ends": smart_track_ends})
 
     @mcp.tool()
+    async def pcb_grow_pour(name: str, distance_mils: float) -> dict[str, Any]:
+        """Move a pour's outline out by a distance all round, or in with a
+        negative distance, as Altium's own Grow does: to pull a pour back
+        from the board edge or spread it to a new keepout.
+
+        The copper is not repoured: call pcb_repour_polygons afterwards.
+
+        Args:
+            name: The pour's name (pcb_get_polygons lists them).
+            distance_mils: How far to move the outline; negative shrinks.
+
+        Returns:
+            ``name``, ``distance_mils``, ``bounds_before`` and
+            ``bounds_after`` (left, bottom, right, top in mils).
+        """
+        if not name.strip():
+            return {"ok": False, "reason": "name is required"}
+        if distance_mils == 0:
+            return {"ok": False, "reason": "distance_mils is not 0"}
+        return await get_bridge().send_command_async(
+            "pcb.grow_pour", {"name": name.strip(),
+                              "distance_mils": repr(float(distance_mils))})
+
+    @mcp.tool()
+    async def pcb_plane_connections(designator: str, pad: str = "") -> dict[str, Any]:
+        """How each pad of a part meets the internal planes, as the
+        board's rules decide it: relief, direct or no connection, and the
+        relief and clearance (conductor width, entries, air gap, relief
+        expansion, plane clearance).
+
+        Use it to check that a power pad joins its plane solidly and a
+        signal pad clears the planes it passes.
+
+        Args:
+            designator: The part, e.g. "U1".
+            pad: One pad name; empty lists every pad.
+
+        Returns:
+            ``plane_layers`` and ``pads``, each with ``net``,
+            ``connection`` (relief, direct or none; ``rule_style`` is
+            Altium's number) and the relief values in mils.
+        """
+        if not designator.strip():
+            return {"ok": False, "reason": "designator is required"}
+        params: dict[str, Any] = {"designator": designator.strip()}
+        if pad.strip():
+            params["pad"] = pad.strip()
+        reply = await get_bridge().send_command_async("pcb.plane_connections", params)
+        if isinstance(reply, dict):
+            for item in reply.get("pads") or []:
+                style = item.get("rule_style")
+                # Measured on AD 26.11 by switching the rule.
+                item["connection"] = {0: "relief", 1: "direct", 2: "none"}.get(style, str(style))
+        return reply
+
+    @mcp.tool()
     async def pcb_pours_at(x: float, y: float) -> dict[str, Any]:
         """Which pours on the active board have a point inside their
         outline, with each pour's net and layer: is this via inside the
@@ -7477,6 +7533,25 @@ def register_pcb_tools(mcp):
         dp_min_impedance: float | None = None,
         dp_max_impedance: float | None = None,
         dp_preferred_impedance: float | None = None,
+        height_min_mils: float | None = None,
+        height_max_mils: float | None = None,
+        height_preferred_mils: float | None = None,
+        vertical_gap_mils: float | None = None,
+        show_distances: bool | None = None,
+        collision_check_mode: int | None = None,
+        corner_min_setback_mils: float | None = None,
+        corner_max_setback_mils: float | None = None,
+        antenna_tolerance_mils: float | None = None,
+        fanout_style: int | None = None,
+        fanout_direction: int | None = None,
+        bga_fanout_direction: int | None = None,
+        bga_via_mode: int | None = None,
+        fanout_via_grid_mils: float | None = None,
+        width_impedance_driven: bool | None = None,
+        width_min_impedance: float | None = None,
+        width_max_impedance: float | None = None,
+        width_preferred_impedance: float | None = None,
+        check_connected_copper: bool | None = None,
         min_hole_size_mils: int | None = None,
         max_hole_size_mils: int | None = None,
         min_via_size_mils: float | None = None,
@@ -7524,6 +7599,23 @@ def register_pcb_tools(mcp):
                 rule's width and gap follow an impedance profile, and its
                 limits in ohms. Read back in ``impedance``; any that did not
                 take is in ``impedance_not_applied``.
+            height_min_mils / height_max_mils / height_preferred_mils: a
+                Height rule's part height limits.
+            vertical_gap_mils, show_distances, collision_check_mode: a
+                Component Clearance rule's vertical gap, whether it shows
+                the distances, and its check mode (Altium's number).
+            corner_min_setback_mils / corner_max_setback_mils: a Routing
+                Corners rule's setbacks.
+            antenna_tolerance_mils: a Net Antennae rule's tolerance.
+            fanout_style, fanout_direction, bga_fanout_direction,
+                bga_via_mode (Altium's numbers) and fanout_via_grid_mils:
+                a Fanout Control rule.
+            width_impedance_driven, width_min_impedance /
+                width_max_impedance / width_preferred_impedance (ohms) and
+                check_connected_copper: a Width rule.
+                These settings are read back in ``settings``; any that did
+                not take is in ``settings_not_applied``. A setting for a
+                rule of another kind is refused.
             connect_style: Polygon Connect (kind 20) or Power Plane Connect
                 (kind 6) rule: "relief", "direct" or "none". Confirmed from
                 the rule's own descriptor (``connect_style_confirmed``).
@@ -7578,14 +7670,45 @@ def register_pcb_tools(mcp):
             ("dp_min_impedance", dp_min_impedance),
             ("dp_max_impedance", dp_max_impedance),
             ("dp_preferred_impedance", dp_preferred_impedance),
+            ("height_min_mils", height_min_mils),
+            ("height_max_mils", height_max_mils),
+            ("height_preferred_mils", height_preferred_mils),
+            ("vertical_gap_mils", vertical_gap_mils),
+            ("collision_check_mode", collision_check_mode),
+            ("corner_min_setback_mils", corner_min_setback_mils),
+            ("corner_max_setback_mils", corner_max_setback_mils),
+            ("antenna_tolerance_mils", antenna_tolerance_mils),
+            ("fanout_style", fanout_style),
+            ("fanout_direction", fanout_direction),
+            ("bga_fanout_direction", bga_fanout_direction),
+            ("bga_via_mode", bga_via_mode),
+            ("fanout_via_grid_mils", fanout_via_grid_mils),
+            ("width_min_impedance", width_min_impedance),
+            ("width_max_impedance", width_max_impedance),
+            ("width_preferred_impedance", width_preferred_impedance),
         ]:
             if value is not None:
                 params[key] = str(value)
-        for key in ("dp_min_impedance", "dp_max_impedance", "dp_preferred_impedance"):
+        for key in ("dp_min_impedance", "dp_max_impedance", "dp_preferred_impedance",
+                    "width_min_impedance", "width_max_impedance",
+                    "width_preferred_impedance"):
             if key in params and float(params[key]) <= 0:
                 return {"ok": False, "reason": f"{key} is more than 0 ohms"}
         if enabled is not None:
             params["enabled"] = "true" if enabled else "false"
+        for key in ("height_min_mils", "height_max_mils", "height_preferred_mils",
+                    "vertical_gap_mils", "corner_min_setback_mils",
+                    "corner_max_setback_mils", "antenna_tolerance_mils",
+                    "fanout_via_grid_mils", "collision_check_mode", "fanout_style",
+                    "fanout_direction", "bga_fanout_direction", "bga_via_mode"):
+            if key in params and float(params[key]) < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        for key, value in (("width_impedance_driven", width_impedance_driven),
+                           ("check_connected_copper", check_connected_copper)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        if show_distances is not None:
+            params["show_distances"] = "true" if show_distances else "false"
         if dp_impedance_driven is not None:
             params["dp_impedance_driven"] = "true" if dp_impedance_driven else "false"
 

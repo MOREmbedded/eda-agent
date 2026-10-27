@@ -856,6 +856,286 @@ Begin
         + GapField + '}');
 End;
 
+{ MORE RULE SETTINGS, by rule kind: Width (2) impedance limits and the      }
+{ connected-copper check, Height (50) limits, Component Clearance           }
+{ (24) vertical gap, distance display and check mode, Routing Corners (10)  }
+{ setbacks, Net Antennae (56) tolerance and Fanout Control (49) style,     }
+{ direction, BGA direction, BGA via mode and via grid. Each helper finds   }
+{ the rule through a typed local assigned straight from the iterator,      }
+{ which is where DelphiScript narrows, writes what was asked and reads it  }
+{ back. Lengths are mils; choices are Altium's numbers. Each returns JSON  }
+{ members (no braces) and adds a name to Missed for every value that read  }
+{ back otherwise.                                                          }
+
+Function RuleMilsTook(Got : Integer; Wanted : String) : Boolean;
+Begin
+    Result := Abs(CoordToMilsF(Got) - StrToFloatDef(Wanted, -1)) < 0.01;
+End;
+
+Function RuleExtrasWidth(Board : IPCB_Board; RuleName, DrvS, MinS, MaxS, FavS, CopperS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_MaxMinWidthConstraint;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 2) And (R.Name = RuleName) Then
+            Begin
+                If DrvS <> '' Then
+                Begin
+                    R.ImpedanceDriven := (DrvS = 'true');
+                    If R.ImpedanceDriven <> (DrvS = 'true') Then Missed := Missed + '"width_impedance_driven",';
+                End;
+                If MinS <> '' Then
+                Begin
+                    R.MinImpedance := StrToFloatDef(MinS, 0);
+                    If Abs(R.MinImpedance - StrToFloatDef(MinS, 0)) > 0.001 Then Missed := Missed + '"width_min_impedance",';
+                End;
+                If MaxS <> '' Then
+                Begin
+                    R.MaxImpedance := StrToFloatDef(MaxS, 0);
+                    If Abs(R.MaxImpedance - StrToFloatDef(MaxS, 0)) > 0.001 Then Missed := Missed + '"width_max_impedance",';
+                End;
+                If FavS <> '' Then
+                Begin
+                    R.FavoredImpedance := StrToFloatDef(FavS, 0);
+                    If Abs(R.FavoredImpedance - StrToFloatDef(FavS, 0)) > 0.001 Then Missed := Missed + '"width_preferred_impedance",';
+                End;
+                If CopperS <> '' Then
+                Begin
+                    R.CheckConnectedCopper := (CopperS = 'true');
+                    If R.CheckConnectedCopper <> (CopperS = 'true') Then Missed := Missed + '"check_connected_copper",';
+                End;
+                Result := '"width_impedance_driven":' + BoolToJsonStr(R.ImpedanceDriven)
+                    + ',"width_min_impedance":' + FloatToJsonStr(R.MinImpedance)
+                    + ',"width_max_impedance":' + FloatToJsonStr(R.MaxImpedance)
+                    + ',"width_preferred_impedance":' + FloatToJsonStr(R.FavoredImpedance)
+                    + ',"check_connected_copper":' + BoolToJsonStr(R.CheckConnectedCopper);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasHeight(Board : IPCB_Board; RuleName, MinS, MaxS, PrefS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_MaxMinHeightConstraint;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 50) And (R.Name = RuleName) Then
+            Begin
+                If MinS <> '' Then
+                Begin
+                    R.MinHeight := MilsToCoordF(StrToFloatDef(MinS, 0));
+                    If Not RuleMilsTook(R.MinHeight, MinS) Then Missed := Missed + '"height_min_mils",';
+                End;
+                If MaxS <> '' Then
+                Begin
+                    R.MaxHeight := MilsToCoordF(StrToFloatDef(MaxS, 0));
+                    If Not RuleMilsTook(R.MaxHeight, MaxS) Then Missed := Missed + '"height_max_mils",';
+                End;
+                If PrefS <> '' Then
+                Begin
+                    R.PreferedHeight := MilsToCoordF(StrToFloatDef(PrefS, 0));
+                    If Not RuleMilsTook(R.PreferedHeight, PrefS) Then Missed := Missed + '"height_preferred_mils",';
+                End;
+                Result := '"height_min_mils":' + FloatToJsonStr(CoordToMilsF(R.MinHeight))
+                    + ',"height_max_mils":' + FloatToJsonStr(CoordToMilsF(R.MaxHeight))
+                    + ',"height_preferred_mils":' + FloatToJsonStr(CoordToMilsF(R.PreferedHeight));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasCompClear(Board : IPCB_Board; RuleName, VGapS, ShowS, ModeS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_ComponentClearanceConstraint;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 24) And (R.Name = RuleName) Then
+            Begin
+                If VGapS <> '' Then
+                Begin
+                    R.VerticalGap := MilsToCoordF(StrToFloatDef(VGapS, 0));
+                    If Not RuleMilsTook(R.VerticalGap, VGapS) Then Missed := Missed + '"vertical_gap_mils",';
+                End;
+                If ShowS <> '' Then
+                Begin
+                    R.ShowDistances := (ShowS = 'true');
+                    If R.ShowDistances <> (ShowS = 'true') Then Missed := Missed + '"show_distances",';
+                End;
+                If ModeS <> '' Then
+                Begin
+                    R.CollisionCheckMode := StrToInt(ModeS);
+                    If R.CollisionCheckMode <> StrToInt(ModeS) Then Missed := Missed + '"collision_check_mode",';
+                End;
+                Result := '"vertical_gap_mils":' + FloatToJsonStr(CoordToMilsF(R.VerticalGap))
+                    + ',"show_distances":' + BoolToJsonStr(R.ShowDistances)
+                    + ',"collision_check_mode":' + IntToStr(R.CollisionCheckMode);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasCorners(Board : IPCB_Board; RuleName, MinS, MaxS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_RoutingCornerStyleRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 10) And (R.Name = RuleName) Then
+            Begin
+                If MinS <> '' Then
+                Begin
+                    R.MinSetBack := MilsToCoordF(StrToFloatDef(MinS, 0));
+                    If Not RuleMilsTook(R.MinSetBack, MinS) Then Missed := Missed + '"corner_min_setback_mils",';
+                End;
+                If MaxS <> '' Then
+                Begin
+                    R.MaxSetBack := MilsToCoordF(StrToFloatDef(MaxS, 0));
+                    If Not RuleMilsTook(R.MaxSetBack, MaxS) Then Missed := Missed + '"corner_max_setback_mils",';
+                End;
+                Result := '"corner_min_setback_mils":' + FloatToJsonStr(CoordToMilsF(R.MinSetBack))
+                    + ',"corner_max_setback_mils":' + FloatToJsonStr(CoordToMilsF(R.MaxSetBack));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasAntennae(Board : IPCB_Board; RuleName, TolS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_CheckNetAntennaeRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 56) And (R.Name = RuleName) Then
+            Begin
+                If TolS <> '' Then
+                Begin
+                    R.NetAntennaeTolerance := MilsToCoordF(StrToFloatDef(TolS, 0));
+                    If Not RuleMilsTook(R.NetAntennaeTolerance, TolS) Then Missed := Missed + '"antenna_tolerance_mils",';
+                End;
+                Result := '"antenna_tolerance_mils":' + FloatToJsonStr(CoordToMilsF(R.NetAntennaeTolerance));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasFanout(Board : IPCB_Board; RuleName, StyleS, DirS, BgaDirS, BgaViaS, GridS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_FanoutControlRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 49) And (R.Name = RuleName) Then
+            Begin
+                If StyleS <> '' Then
+                Begin
+                    R.FanoutStyle := StrToInt(StyleS);
+                    If R.FanoutStyle <> StrToInt(StyleS) Then Missed := Missed + '"fanout_style",';
+                End;
+                If DirS <> '' Then
+                Begin
+                    R.FanoutDirection := StrToInt(DirS);
+                    If R.FanoutDirection <> StrToInt(DirS) Then Missed := Missed + '"fanout_direction",';
+                End;
+                If BgaDirS <> '' Then
+                Begin
+                    R.BGAFanoutDirection := StrToInt(BgaDirS);
+                    If R.BGAFanoutDirection <> StrToInt(BgaDirS) Then Missed := Missed + '"bga_fanout_direction",';
+                End;
+                If BgaViaS <> '' Then
+                Begin
+                    R.BGAFanoutViaMode := StrToInt(BgaViaS);
+                    If R.BGAFanoutViaMode <> StrToInt(BgaViaS) Then Missed := Missed + '"bga_via_mode",';
+                End;
+                If GridS <> '' Then
+                Begin
+                    R.ViaGrid := MilsToCoordF(StrToFloatDef(GridS, 0));
+                    If Not RuleMilsTook(R.ViaGrid, GridS) Then Missed := Missed + '"fanout_via_grid_mils",';
+                End;
+                Result := '"fanout_style":' + IntToStr(R.FanoutStyle)
+                    + ',"fanout_direction":' + IntToStr(R.FanoutDirection)
+                    + ',"bga_fanout_direction":' + IntToStr(R.BGAFanoutDirection)
+                    + ',"bga_via_mode":' + IntToStr(R.BGAFanoutViaMode)
+                    + ',"fanout_via_grid_mils":' + FloatToJsonStr(CoordToMilsF(R.ViaGrid));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 {..............................................................................}
 { PCB_SetRuleProperties - Update metadata + constraint values of a rule.        }
 {                                                                               }
@@ -906,6 +1186,9 @@ Var
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
     DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport : String;
     ImpDriven, ImpMin, ImpMax, ImpFav, ImpReport, ImpMissed : String;
+    XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt : String;
+    XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
+    XWDrv, XWMin, XWMax, XWFav, XWCopper : String;
     DiffAsked : Integer;
     RulePlaneConn : IPCB_PowerPlaneConnectStyleRule;
     MinWMM, MaxWMM, FavWMM, CStyle, CWidth, CWidthMM, CGap, CGapMM, CEntries, CAngle, CExp : String;
@@ -1021,6 +1304,25 @@ Begin
     ImpMin := ExtractJsonValue(Params, 'dp_min_impedance');
     ImpMax := ExtractJsonValue(Params, 'dp_max_impedance');
     ImpFav := ExtractJsonValue(Params, 'dp_preferred_impedance');
+    XHMin := ExtractJsonValue(Params, 'height_min_mils');
+    XHMax := ExtractJsonValue(Params, 'height_max_mils');
+    XHPref := ExtractJsonValue(Params, 'height_preferred_mils');
+    XVGap := ExtractJsonValue(Params, 'vertical_gap_mils');
+    XShow := LowerCase(ExtractJsonValue(Params, 'show_distances'));
+    XMode := ExtractJsonValue(Params, 'collision_check_mode');
+    XCMin := ExtractJsonValue(Params, 'corner_min_setback_mils');
+    XCMax := ExtractJsonValue(Params, 'corner_max_setback_mils');
+    XAnt := ExtractJsonValue(Params, 'antenna_tolerance_mils');
+    XFStyle := ExtractJsonValue(Params, 'fanout_style');
+    XFDir := ExtractJsonValue(Params, 'fanout_direction');
+    XFBgaDir := ExtractJsonValue(Params, 'bga_fanout_direction');
+    XFBgaVia := ExtractJsonValue(Params, 'bga_via_mode');
+    XFGrid := ExtractJsonValue(Params, 'fanout_via_grid_mils');
+    XWDrv := LowerCase(ExtractJsonValue(Params, 'width_impedance_driven'));
+    XWMin := ExtractJsonValue(Params, 'width_min_impedance');
+    XWMax := ExtractJsonValue(Params, 'width_max_impedance');
+    XWFav := ExtractJsonValue(Params, 'width_preferred_impedance');
+    XWCopper := LowerCase(ExtractJsonValue(Params, 'check_connected_copper'));
     MaxWStr := ExtractJsonValue(Params, 'max_width_mils');
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
@@ -1440,6 +1742,43 @@ Begin
             + ',"diff_pair_descriptor":"' + EscapeJsonString(Desc) + '"';
     End;
 
+    { MORE RULE SETTINGS (see RuleExtrasHeight and its neighbours). A value }
+    { given for a rule of another kind is refused, not ignored.              }
+    XReport := '';
+    XMissed := '';
+    XBad := '';
+    If ((XHMin <> '') Or (XHMax <> '') Or (XHPref <> '')) And (Kind <> 50) Then XBad := 'height_*_mils is for a Height rule';
+    If ((XVGap <> '') Or (XShow <> '') Or (XMode <> '')) And (Kind <> 24) Then XBad := 'vertical_gap_mils, show_distances and collision_check_mode are for a Component Clearance rule';
+    If ((XCMin <> '') Or (XCMax <> '')) And (Kind <> 10) Then XBad := 'corner_*_setback_mils is for a Routing Corners rule';
+    If (XAnt <> '') And (Kind <> 56) Then XBad := 'antenna_tolerance_mils is for a Net Antennae rule';
+    If ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> ''))
+        And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
+    If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
+        And (Kind <> 49) Then XBad := 'fanout_* and bga_* are for a Fanout Control rule';
+    If XBad <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_RULE_KIND', XBad + '; ' + RuleName + ' is kind ' + IntToStr(Kind));
+        Exit;
+    End;
+    If (Kind = 50) And ((XHMin <> '') Or (XHMax <> '') Or (XHPref <> '')) Then
+        XReport := RuleExtrasHeight(Board, RuleName, XHMin, XHMax, XHPref, XMissed);
+    If (Kind = 24) And ((XVGap <> '') Or (XShow <> '') Or (XMode <> '')) Then
+        XReport := RuleExtrasCompClear(Board, RuleName, XVGap, XShow, XMode, XMissed);
+    If (Kind = 10) And ((XCMin <> '') Or (XCMax <> '')) Then
+        XReport := RuleExtrasCorners(Board, RuleName, XCMin, XCMax, XMissed);
+    If (Kind = 2) And ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> '')) Then
+        XReport := RuleExtrasWidth(Board, RuleName, XWDrv, XWMin, XWMax, XWFav, XWCopper, XMissed);
+    If (Kind = 56) And (XAnt <> '') Then
+        XReport := RuleExtrasAntennae(Board, RuleName, XAnt, XMissed);
+    If (Kind = 49) And ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> '')) Then
+        XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
+    If XReport <> '' Then
+    Begin
+        Inc(UpdatedCount);
+        If XMissed <> '' Then XMissed := Copy(XMissed, 1, Length(XMissed) - 1);
+        XReport := ',"settings":{' + XReport + '},"settings_not_applied":[' + XMissed + ']';
+    End;
+
     { DIFFERENTIAL PAIR IMPEDANCE (kind 51): whether the pair's width and   }
     { gap follow an impedance profile, and the impedance limits in ohms.    }
     { Each is read back; one that reads otherwise is in impedance_not_applied. }
@@ -1647,7 +1986,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + '}');
+        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
 End;
 
 {..............................................................................}
@@ -18883,6 +19222,190 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_PlaneConnections - how each pad of a part meets the internal planes,  }
+{ as the board's rules decide it: the connection style (0 relief, 1 direct, }
+{ 2 none, measured on AD 26.11 by switching the rule) and the relief and    }
+{ clearance (conductor width, entries, air gap, expansion, plane clearance). }
+{ The per-layer style the pad answers stayed 0 whatever the rule said, so  }
+{ it is not reported.                                                       }
+{ Params: designator (required), pad (optional, one pad name).              }
+{..............................................................................}
+Function PCB_PlaneConnections(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    DesStr, OnePad, PadName, NetName, Items : String;
+    Count, PlaneCount : Integer;
+Begin
+    DesStr := Trim(ExtractJsonValue(Params, 'designator'));
+    OnePad := Trim(ExtractJsonValue(Params, 'pad'));
+    If DesStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator is required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Comp := Board.GetPcbComponentByRefDes(DesStr);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + DesStr);
+        Exit;
+    End;
+    { The internal plane layers in the stack, top first. }
+    PlaneCount := 0;
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    If LayerStack <> Nil Then
+    Begin
+        LayerObj := LayerStack.FirstLayer;
+        While LayerObj <> Nil Do
+        Begin
+            Lyr := LayerObj.LayerID;
+            If (Lyr >= eInternalPlane1) And (Lyr <= eInternalPlane16) Then
+                Inc(PlaneCount);
+            LayerObj := LayerStack.NextLayer(LayerObj);
+        End;
+    End;
+    Items := '';
+    Count := 0;
+    GrpIter := Comp.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := GrpIter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            PadName := '';
+            Try PadName := Pad.Name; Except End;
+            If (OnePad = '') Or (UpperCase(PadName) = UpperCase(OnePad)) Then
+            Begin
+                NetName := '';
+                Try If Pad.Net <> Nil Then NetName := Pad.Net.Name; Except End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('pad', PadName) + ','
+                    + JsonStr('net', NetName) + ','
+                    + JsonInt('rule_style', Pad.PowerPlaneConnectStyle) + ','
+                    + JsonRaw('relief_width_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefConductorWidth))) + ','
+                    + JsonInt('relief_entries', Pad.ReliefEntries) + ','
+                    + JsonRaw('air_gap_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefAirGap))) + ','
+                    + JsonRaw('relief_expansion_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneReliefExpansion))) + ','
+                    + JsonRaw('plane_clearance_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneClearance))));
+                Inc(Count);
+            End;
+            Pad := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GrpIter);
+    End;
+    If (OnePad <> '') And (Count = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', DesStr + ' has no pad ' + OnePad);
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('designator', DesStr) + ','
+        + JsonInt('plane_layers', PlaneCount) + ','
+        + JsonRaw('pads', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ PCB_GrowPour - move a pour's outline out (or, negative, in) by a distance   }
+{ all round, as Altium's own Grow does. The copper is not repoured here:     }
+{ repour afterwards (pcb_repour_polygons). Reports the outline's bounds      }
+{ before and after, in mils.                                                 }
+{ Params: name (the pour's name, required), distance_mils (non-zero).        }
+{..............................................................................}
+Function PourBoundsJson(Poly : IPCB_Polygon) : String;
+Var
+    R : TCoordRect;
+Begin
+    R := Poly.BoundingRectangle;
+    Result := JsonObj(JsonRaw('left', FloatToJsonStr(CoordToMilsF(R.Left))) + ','
+        + JsonRaw('bottom', FloatToJsonStr(CoordToMilsF(R.Bottom))) + ','
+        + JsonRaw('right', FloatToJsonStr(CoordToMilsF(R.Right))) + ','
+        + JsonRaw('top', FloatToJsonStr(CoordToMilsF(R.Top))));
+End;
+
+Function PCB_GrowPour(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly, Found : IPCB_Polygon;
+    PourName, DistStr, Before : String;
+    Dist : Double;
+Begin
+    PourName := ExtractJsonValue(Params, 'name');
+    DistStr := ExtractJsonValue(Params, 'distance_mils');
+    If (PourName = '') Or (Not IsFloatStr(DistStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name and distance_mils are required');
+        Exit;
+    End;
+    Dist := StrToFloatDef(DistStr, 0);
+    If Dist = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'distance_mils is not 0');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Found := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Poly := Iter.FirstPCBObject;
+        While Poly <> Nil Do
+        Begin
+            If UpperCase(Poly.Name) = UpperCase(PourName) Then
+            Begin
+                Found := Poly;
+                Break;
+            End;
+            Poly := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If Found = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No pour named ' + PourName);
+        Exit;
+    End;
+    Before := PourBoundsJson(Found);
+    PCBServer.PreProcess;
+    Try
+        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+        Found.GrowPolyshape(MilsToCoordF(Dist));
+        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    Try Found.GraphicallyInvalidate; Except End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('name', Found.Name) + ','
+        + JsonRaw('distance_mils', FloatToJsonStr(Dist)) + ','
+        + JsonRaw('bounds_before', Before) + ','
+        + JsonRaw('bounds_after', PourBoundsJson(Found)) + ','
+        + JsonStr('note', 'The outline moved; repour to refill the copper.')));
+End;
+
+{..............................................................................}
 { PCB_ExportComponentModel - write a placed part's 3D model (all its bodies,  }
 { as placed) to a STEP file, with no dialog.                                 }
 { Params: designator, out_path (full path, required).                        }
@@ -21544,6 +22067,8 @@ Begin
         'editor_options':          Result := PCB_EditorOptions(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
+        'plane_connections':       Result := PCB_PlaneConnections(Params, RequestId);
+        'grow_pour':               Result := PCB_GrowPour(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

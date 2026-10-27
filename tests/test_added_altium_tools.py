@@ -905,3 +905,78 @@ def test_undo_and_violation_clearing_stay_out():
     pcb_text = (ALTIUM / "PCB.pas").read_text(encoding="utf-8-sig")
     assert "Board.DoUndo" not in pcb_text
     assert "DM_ClearViolations" not in (ALTIUM / "Project.pas").read_text(encoding="utf-8-sig")
+
+
+def test_grow_pour_sends_and_refuses(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_grow_pour",
+                    name=" Top Layer-GND ", distance_mils=-20)
+    assert sent == [("pcb.grow_pour", {"name": "Top Layer-GND", "distance_mils": "-20.0"})]
+    for kwargs in ({"name": " ", "distance_mils": 5}, {"name": "P", "distance_mils": 0}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_grow_pour", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_GrowPour")
+    assert "Found.GrowPolyshape(MilsToCoordF(Dist));" in body
+    assert body.index("Before := PourBoundsJson(Found);") < body.index("GrowPolyshape")
+
+
+def test_plane_connections_name_the_rule_style(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        return {"pads": [{"pad": "1", "rule_style": 0}, {"pad": "2", "rule_style": 1},
+                         {"pad": "3", "rule_style": 2}]}
+
+    bridge.send_command_async = send
+    result = asyncio.run(tools["pcb_plane_connections"](designator="U1", pad="2"))
+    assert bridge.sent == [("pcb.plane_connections", {"designator": "U1", "pad": "2"})]
+    assert [p["connection"] for p in result["pads"]] == ["relief", "direct", "none"]
+    # The per-layer style read 0 whatever the rule said; it is not reported.
+    assert "PlaneConnectionStyleForLayer" not in _body("PCB.pas", "PCB_PlaneConnections")
+
+
+def test_more_rule_settings_go_to_their_own_kind(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                    name="Height", height_max_mils=900, show_distances=True,
+                    width_impedance_driven=False)
+    assert sent == [("pcb.set_rule_properties", {
+        "name": "Height", "height_max_mils": "900", "width_impedance_driven": "false",
+        "show_distances": "true"})]
+    for kwargs in ({"corner_min_setback_mils": -1}, {"width_min_impedance": 0}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_set_rule_properties", name="R", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert "'WRONG_RULE_KIND'" in body
+    for helper, kind in (("RuleExtrasWidth", 2), ("RuleExtrasHeight", 50),
+                         ("RuleExtrasCompClear", 24), ("RuleExtrasCorners", 10),
+                         ("RuleExtrasAntennae", 56), ("RuleExtrasFanout", 49)):
+        assert f"(R.RuleKind = {kind}) And (R.Name = RuleName)" in _body("PCB.pas", helper)
+        assert f"XReport := {helper}(Board, RuleName" in body
+
+
+def test_optimize_wires_counts_before_and_after(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch, "sch_optimize_wires")
+    assert sent == [("generic.optimize_wires", {})]
+    body = _body("Generic.pas", "Gen_OptimizeWires")
+    assert body.index("CountSheetWires(SchDoc, WiresBefore, VertsBefore);") < body.index(
+        "Sheet.OptimizeUseOfPolylines;") < body.index("CountSheetWires(SchDoc, WiresAfter, VertsAfter);")
+
+
+def test_pre_route_and_paste_settings_are_typed():
+    owner = _body("PCBGeneric.pas", "ExtraPCBPropertyOwner")
+    assert owner.index("'IsPreRoute'") < owner.index("Then Result := 9")
+    assert owner.index("'PasteMaskPercent'") < owner.index("Then Result := 1")
+    put = _body("PCBGeneric.pas", "PCBSetExtra")
+    assert "If (PropName = 'PasteMaskPercent') And (F > 100) Then" in put
+    # Only the hole tolerances take 'unset'.
+    assert ("If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))"
+            in put)
+
+
+def test_compile_mask_stays_out():
+    # Measured on AD 26.11: a part's compile mask read back unset after it
+    # was written.
+    text = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
+    assert "CompilationMasked" not in text
+

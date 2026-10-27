@@ -549,7 +549,11 @@ def register_generic_tools(mcp):
                 (PackageSpecificHash reads), SourceDescription,
                 JumpersVisible, ChannelOffset and GroupNum; on a board
                 pad JumperID, SwapID_Pad, SwapID_Part, SwappedPadName and
-                OwnerPart_ID; on a pour DrawRemovedNecks,
+                OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
+                SolderMaskExpansionMode (Altium's numbers: from the rule or
+                manual), PasteMaskUsePercent, PasteMaskPercent and
+                PasteMaskEnabled; on tracks, arcs and vias IsPreRoute
+                (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
@@ -2139,6 +2143,18 @@ def register_generic_tools(mcp):
             params["hotspot_grid_on"] = "true" if hotspot_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
         return result
+
+    @mcp.tool()
+    async def sch_optimize_wires() -> dict[str, Any]:
+        """Tidy the wires on the active sheet with Altium's own wire
+        optimiser: wires that continue one another are joined and
+        overlapping pieces trimmed. Connectivity is unchanged.
+
+        Returns:
+            ``sheet``, ``wires_before`` / ``wires_after`` and
+            ``vertices_before`` / ``vertices_after``.
+        """
+        return await get_bridge().send_command_async("generic.optimize_wires", {})
 
     @mcp.tool()
     async def sch_editor_options(

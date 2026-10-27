@@ -35,12 +35,20 @@ End;
 { 3 text, 4 dimension, 5 polygon, 6 component, 7 pad only, 8 3D body, 0     }
 { none of these. A 3D body's OverrideColor says whether its own colour is    }
 { drawn instead of the model's; Texture is an image file laid on it.          }
+{ 9 a track, arc or via: IsPreRoute (kept by the autorouter) and UserRouted. }
+{ Pads and vias also take the mask modes (PasteMaskExpansionMode,           }
+{ SolderMaskExpansionMode, Altium's numbers: from the rule or manual) and   }
+{ the paste opening as a percentage (PasteMaskUsePercent,                   }
+{ PasteMaskPercent) or switched off (PasteMaskEnabled).                     }
 { Text ConvertedString is the text as shown, special strings resolved; it   }
 { is read only.                                                              }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
-    If (PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance') Then Result := 1
+    If (PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance') Or
+       (PropName = 'PasteMaskExpansionMode') Or (PropName = 'SolderMaskExpansionMode') Or
+       (PropName = 'PasteMaskUsePercent') Or (PropName = 'PasteMaskPercent') Or
+       (PropName = 'PasteMaskEnabled') Then Result := 1
     Else If PropName = 'IsCounterHole' Then Result := 2
     Else If (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
             (PropName = 'BarCodeFullWidth') Or (PropName = 'BarCodeFullHeight') Or
@@ -81,7 +89,8 @@ Begin
             (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
             (PropName = 'OwnerPart_ID') Then Result := 7
     Else If (PropName = 'OverrideColor') Or (PropName = 'Texture') Or
-            (PropName = 'TextureRotation') Then Result := 8;
+            (PropName = 'TextureRotation') Then Result := 8
+    Else If (PropName = 'IsPreRoute') Or (PropName = 'UserRouted') Then Result := 9;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -97,7 +106,8 @@ Begin
         Or ((Owner = 5) And (Oid = ePolyObject))
         Or ((Owner = 6) And (Oid = eComponentObject))
         Or ((Owner = 7) And (Oid = ePadObject))
-        Or ((Owner = 8) And (Oid = eComponentBodyObject));
+        Or ((Owner = 8) And (Oid = eComponentBodyObject))
+        Or ((Owner = 9) And ((Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eViaObject)));
 End;
 
 { The value, '' when Obj is not the type that carries it. }
@@ -115,6 +125,36 @@ Begin
     Result := '';
     Oid := Obj.ObjectId;
     If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
+    If ExtraPCBPropertyOwner(PropName) = 9 Then
+    Begin
+        If PropName = 'IsPreRoute' Then Result := BoolToJsonStr(Obj.IsPreRoute)
+        Else Result := BoolToJsonStr(Obj.UserRouted);
+        Exit;
+    End;
+    If (PropName = 'PasteMaskExpansionMode') Or (PropName = 'SolderMaskExpansionMode') Or
+       (PropName = 'PasteMaskUsePercent') Or (PropName = 'PasteMaskPercent') Or
+       (PropName = 'PasteMaskEnabled') Then
+    Begin
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If PropName = 'PasteMaskExpansionMode' Then Result := IntToStr(Pad.PasteMaskExpansionMode)
+            Else If PropName = 'SolderMaskExpansionMode' Then Result := IntToStr(Pad.SolderMaskExpansionMode)
+            Else If PropName = 'PasteMaskUsePercent' Then Result := BoolToJsonStr(Pad.PasteMaskUsePercent)
+            Else If PropName = 'PasteMaskPercent' Then Result := FloatToJsonStr(Pad.PasteMaskPercent)
+            Else Result := BoolToJsonStr(Pad.PasteMaskEnabled);
+        End
+        Else
+        Begin
+            Via := Obj;
+            If PropName = 'PasteMaskExpansionMode' Then Result := IntToStr(Via.PasteMaskExpansionMode)
+            Else If PropName = 'SolderMaskExpansionMode' Then Result := IntToStr(Via.SolderMaskExpansionMode)
+            Else If PropName = 'PasteMaskUsePercent' Then Result := BoolToJsonStr(Via.PasteMaskUsePercent)
+            Else If PropName = 'PasteMaskPercent' Then Result := FloatToJsonStr(Via.PasteMaskPercent)
+            Else Result := BoolToJsonStr(Via.PasteMaskEnabled);
+        End;
+        Exit;
+    End;
     If (PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance') Then
     Begin
         If Oid = ePadObject Then
@@ -256,7 +296,8 @@ Begin
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
-    If (Owner = 1) And (LowerCase(Value) = 'unset') Then
+    If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
+        And (LowerCase(Value) = 'unset') Then
     Begin
         If Oid = ePadObject Then
         Begin
@@ -282,7 +323,9 @@ Begin
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
-        (PropName = 'JumpersVisible') Or (PropName = 'OverrideColor');
+        (PropName = 'JumpersVisible') Or (PropName = 'OverrideColor') Or
+        (PropName = 'PasteMaskUsePercent') Or (PropName = 'PasteMaskEnabled') Or
+        (PropName = 'IsPreRoute') Or (PropName = 'UserRouted');
     IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
         (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
@@ -296,7 +339,8 @@ Begin
         (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
         (PropName = 'JumperID') Or (PropName = 'TTFInvertedTextJustify') Or
         (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
-        (PropName = 'OwnerPart_ID');
+        (PropName = 'OwnerPart_ID') Or (PropName = 'PasteMaskExpansionMode') Or
+        (PropName = 'SolderMaskExpansionMode');
     B := False;
     F := 0;
     N := 0;
@@ -317,7 +361,40 @@ Begin
         Else If (F < 0) And (Owner <> 1) Then Exit;
     End;
 
-    If Owner = 1 Then
+    If Owner = 9 Then
+    Begin
+        If PropName = 'IsPreRoute' Then Obj.IsPreRoute := B
+        Else Obj.UserRouted := B;
+    End
+    Else If (Owner = 1) And ((PropName = 'PasteMaskExpansionMode') Or
+        (PropName = 'SolderMaskExpansionMode') Or (PropName = 'PasteMaskUsePercent') Or
+        (PropName = 'PasteMaskPercent') Or (PropName = 'PasteMaskEnabled')) Then
+    Begin
+        If (PropName = 'PasteMaskPercent') And (F > 100) Then
+        Begin
+            Result := -1;
+            Exit;
+        End;
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If PropName = 'PasteMaskExpansionMode' Then Pad.PasteMaskExpansionMode := N
+            Else If PropName = 'SolderMaskExpansionMode' Then Pad.SolderMaskExpansionMode := N
+            Else If PropName = 'PasteMaskUsePercent' Then Pad.PasteMaskUsePercent := B
+            Else If PropName = 'PasteMaskPercent' Then Pad.PasteMaskPercent := F
+            Else Pad.PasteMaskEnabled := B;
+        End
+        Else
+        Begin
+            Via := Obj;
+            If PropName = 'PasteMaskExpansionMode' Then Via.PasteMaskExpansionMode := N
+            Else If PropName = 'SolderMaskExpansionMode' Then Via.SolderMaskExpansionMode := N
+            Else If PropName = 'PasteMaskUsePercent' Then Via.PasteMaskUsePercent := B
+            Else If PropName = 'PasteMaskPercent' Then Via.PasteMaskPercent := F
+            Else Via.PasteMaskEnabled := B;
+        End;
+    End
+    Else If Owner = 1 Then
     Begin
         If Oid = ePadObject Then
         Begin
@@ -2196,7 +2273,9 @@ Begin
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
-        + 'TextureRotation';
+        + 'TextureRotation, IsPreRoute, UserRouted, PasteMaskExpansionMode, '
+        + 'SolderMaskExpansionMode, PasteMaskUsePercent, PasteMaskPercent, '
+        + 'PasteMaskEnabled';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

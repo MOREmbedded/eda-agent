@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.11
+# Release verification: 2026.10.27.13
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -177,6 +177,11 @@ works elsewhere cannot be an undeclared identifier:
 | 47, schematic display options | `ExpandComponentDesignators`, `WatermarkReadOnlySheet`, `AlwaysDrag`, `DefaultTemplateFileName` on the schematic preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
 | 47, pair impedance | `ImpedanceDriven`, `MinImpedance`, `MaxImpedance`, `FavoredImpedance` on a differential pair rule | no, nowhere | low, ran live and read back |
 | 47, 3D body extras | `Texture`, `TextureRotation` on a 3D body | no, nowhere | low, ran live and restored |
+| 48, grow pour | `GrowPolyshape` on a pour | no, nowhere | medium, moves a pour outline; ran live and moved back |
+| 48, rule settings | `MaxHeight`, `VerticalGap`, `MinSetBack`, `NetAntennaeTolerance`, `FanoutStyle`, `CheckConnectedCopper` on rules | no, nowhere | low, ran live, read back and restored |
+| 48, wire tidy | `OptimizeUseOfPolylines` on a sheet | no, nowhere | medium, rewrites a sheet's wires; ran live, closed unsaved |
+| 48, pre-routes | `IsPreRoute`, `UserRouted` on tracks, arcs and vias | no, nowhere | low, ran live and cleared |
+| 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | no, nowhere | low, ran live, board closed unsaved |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -352,7 +357,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.11`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.13`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2827,6 +2832,48 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project
 and board; every document closed without saving. All passed as
 described. Not run: a texture image that exists on disk, and the routing
 mode change during an interactive route.
+
+---
+
+## 48. Pour growth, plane connections, wire tidy, rule settings, pre-routes and paste openings
+
+New: `pcb_grow_pour`, `pcb_plane_connections`, `sch_optimize_wires`;
+`pcb_set_rule_properties` gains Width impedance limits and
+`check_connected_copper`, Height limits, Component Clearance
+`vertical_gap_mils`, `show_distances` and `collision_check_mode`, Routing
+Corners setbacks, Net Antennae tolerance and the Fanout Control settings,
+each refused on a rule of another kind; `obj_query` / `obj_modify` gain
+`IsPreRoute` and `UserRouted` on tracks, arcs and vias and the mask modes
+and paste percentage on pads and vias. Measured and NOT built: a
+schematic object's compile mask (J1 read back unmasked after the write
+took), and the per-plane-layer connection style a pad answers (0 for
+every layer whatever the rule said).
+
+1. **Grow pour.** Top Layer-GND moved in 20 mils on every side and out
+   again to its first bounds; 0 and an unknown pour refused.
+2. **Plane connections.** U1's pads on a board with two planes: the rule
+   style switched to direct, none and relief read 1, 2 and 0, with the
+   relief width, entries, air gap, expansion and clearance of the rule.
+3. **Rule settings.** Height 10/900/400 mils, component vertical gap 12
+   mils with distances shown, corner setbacks 50 and 150 mils, antenna
+   tolerance 2 mils, a fanout style and via grid, and Width
+   impedance-driven 45/55/50 ohms with the connected-copper check, each
+   read back and restored; a height setting on a Width rule and a Width
+   setting on the Height rule refused, naming the rule's kind.
+4. **Wire tidy.** On a scratch sheet 45 wires became 19 (90 vertices 55);
+   two wires drawn end to end became one; the sheet closed unsaved and
+   reopened with 45.
+5. **Pre-routes.** `IsPreRoute` set on the top-layer tracks, read back,
+   cleared.
+6. **Paste openings.** On pads: paste mode 2, percentage on at 80, read
+   back; 150 percent refused.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project
+and board; every document closed without saving. One earlier test call to
+`proj_force_recompile` saved the scratch sheet, as that tool does with
+any unsaved document; the sheet held only restored values then. All
+passed as described. Not run: a pour grown into a keepout, and paste
+percentages on a stencil output.
 
 ---
 

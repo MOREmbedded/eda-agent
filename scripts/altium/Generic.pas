@@ -8387,6 +8387,69 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_OptimizeWires - Altium's own wire tidy on the active sheet: wires that  }
+{ continue one another are joined and overlaps trimmed                        }
+{ (ISch_Sheet.OptimizeUseOfPolylines). Connectivity is unchanged; the wire   }
+{ count and the vertex count are reported before and after.                  }
+{..............................................................................}
+Procedure CountSheetWires(SchDoc : ISch_Document; Var Wires : Integer; Var Vertices : Integer);
+Var
+    Iter : ISch_Iterator;
+    Wire : ISch_GraphicalObject;
+    N : Integer;
+Begin
+    Wires := 0;
+    Vertices := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eWire));
+        Wire := Iter.FirstSchObject;
+        While Wire <> Nil Do
+        Begin
+            Inc(Wires);
+            N := 0;
+            Try N := Wire.GetState_VerticesCount; Except N := 0; End;
+            Vertices := Vertices + N;
+            Wire := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function Gen_OptimizeWires(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Sheet : ISch_Sheet;
+    WiresBefore, VertsBefore, WiresAfter, VertsAfter : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    CountSheetWires(SchDoc, WiresBefore, VertsBefore);
+    Sheet := SchDoc;
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        Sheet.OptimizeUseOfPolylines;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    End;
+    SchDoc.GraphicallyInvalidate;
+    CountSheetWires(SchDoc, WiresAfter, VertsAfter);
+    If (WiresAfter <> WiresBefore) Or (VertsAfter <> VertsBefore) Then
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonInt('wires_before', WiresBefore) + ','
+        + JsonInt('wires_after', WiresAfter) + ','
+        + JsonInt('vertices_before', VertsBefore) + ','
+        + JsonInt('vertices_after', VertsAfter)));
+End;
+
+{..............................................................................}
 { Set snap grid and visible grid size for the active schematic                }
 { Params: snap_grid, visible_grid, hotspot_grid (in mils), snap_grid_on,      }
 { visible_grid_on, hotspot_grid_on. The hotspot grid is the electrical grid: }
@@ -15025,6 +15088,7 @@ Begin
         'shift_sheet':     Result := Gen_ShiftSheet(Params, RequestId);
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
         'sch_editor_options': Result := Gen_SchEditorOptions(Params, RequestId);
+        'optimize_wires':   Result := Gen_OptimizeWires(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);
