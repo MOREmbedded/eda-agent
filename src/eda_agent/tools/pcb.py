@@ -1227,6 +1227,87 @@ def register_pcb_tools(mcp):
             "pcb.auto_position_text", params, timeout=120.0)
 
     @mcp.tool()
+    async def pcb_delete_xsignals(
+        names: Optional[list[str]] = None,
+        all: bool = False,
+    ) -> dict[str, Any]:
+        """Delete xSignals by name, or all of them.
+
+        Args:
+            names: xSignal names, as pcb_get_xsignals lists them (any case).
+            all: Delete every xSignal on the board.
+
+        Returns:
+            ``count_before``, ``count_after`` and ``deleted`` (names).
+        """
+        items = [n.strip() for n in (names or []) if n and n.strip()]
+        if all and items:
+            return {"ok": False, "reason": "give names or all, not both"}
+        if not all and not items:
+            return {"ok": False, "reason": "give names, or all=True"}
+        if any("\t" in n for n in items):
+            return {"ok": False, "reason": "a name cannot hold a tab"}
+        params: dict[str, Any] = {"all": "true"} if all else {"names": "\t".join(items)}
+        return await get_bridge().send_command_async(
+            "pcb.delete_xsignals", params, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_add_drill_pair(low_layer: str, high_layer: str) -> dict[str, Any]:
+        """Add a drill layer pair between two copper layers, for blind and
+        buried vias.
+
+        Args:
+            low_layer, high_layer: Layer names as the board shows them
+                ("Top Layer", "Mid-Layer 1", ...).
+
+        Returns:
+            ``count_before``, ``count_after`` and ``pairs`` (as
+            pcb_get_drill_pairs lists them).
+        """
+        if not low_layer.strip() or not high_layer.strip():
+            return {"ok": False, "reason": "low_layer and high_layer are required"}
+        if low_layer.strip().lower() == high_layer.strip().lower():
+            return {"ok": False, "reason": "low_layer and high_layer are the same"}
+        return await get_bridge().send_command_async(
+            "pcb.add_drill_pair",
+            {"low_layer": low_layer.strip(), "high_layer": high_layer.strip()})
+
+    @mcp.tool()
+    async def pcb_net_display(
+        nets: list[str],
+        show_connections: Optional[bool] = None,
+        loop_removal: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, whether nets show their connection lines and
+        whether loop removal applies to them.
+
+        Hiding the connection lines of GND or a supply clears the view
+        while routing signals; loop removal off keeps a deliberate
+        second path when routing over an existing one.
+
+        Args:
+            nets: Net names.
+            show_connections: Show (True) or hide (False) their
+                connection lines; omit to leave as they are.
+            loop_removal: Loop removal on or off; omit to leave.
+
+        Returns:
+            ``nets`` (``connections_shown``, ``loop_removal``, read
+            back) and ``not_found``.
+        """
+        items = [n.strip() for n in (nets or []) if n and n.strip()]
+        if not items:
+            return {"ok": False, "reason": "nets is required"}
+        if any("\t" in n for n in items):
+            return {"ok": False, "reason": "a net name cannot hold a tab"}
+        params: dict[str, Any] = {"nets": "\t".join(items)}
+        for key, value in (("show_connections", show_connections),
+                           ("loop_removal", loop_removal)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        return await get_bridge().send_command_async("pcb.net_display", params)
+
+    @mcp.tool()
     async def pcb_get_design_rules() -> dict[str, Any]:
         """Get all design rules from the active PCB.
 

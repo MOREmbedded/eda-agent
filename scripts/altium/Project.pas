@@ -4143,6 +4143,15 @@ Begin
         + JsonRaw('nets', '[' + Items + ']')));
 End;
 
+{ S without trailing path separators. }
+Function NoTrailingSlash(S : String) : String;
+Begin
+    Result := S;
+    While (Length(Result) > 3) And ((Copy(Result, Length(Result), 1) = '\')
+        Or (Copy(Result, Length(Result), 1) = '/')) Do
+        Result := Copy(Result, 1, Length(Result) - 1);
+End;
+
 { The project's documents in project order, its search paths and its        }
 { generated documents, as JSON members (no braces).                         }
 Function ProjectSetupJson(Project : IProject) : String;
@@ -4150,8 +4159,9 @@ Var
     Docs, Paths, Gens, Path : String;
     Doc : IDocument;
     SP : ISearchPath;
-    I, Idx, Total : Integer;
+    I, Idx, Total, Mode : Integer;
     Order : TStringList;
+    OutPath : String;
     Sub, AllowPort, AllowEntry : Boolean;
 Begin
     Order := TStringList.Create;
@@ -4211,17 +4221,24 @@ Begin
     AllowPort := False; AllowEntry := False;
     Try AllowPort := Project.DM_GetAllowPortNetNames; Except End;
     Try AllowEntry := Project.DM_GetAllowSheetEntryNetNames; Except End;
+    Mode := -1;
+    Try Mode := Project.DM_HierarchyMode; Except End;
+    OutPath := '';
+    Try OutPath := Project.DM_GetOutputPath; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
         + JsonBool('allow_port_net_names', AllowPort) + ','
-        + JsonBool('allow_sheet_entry_net_names', AllowEntry);
+        + JsonBool('allow_sheet_entry_net_names', AllowEntry) + ','
+        + JsonInt('hierarchy_mode', Mode) + ','
+        + JsonStr('output_path', OutPath);
 End;
 
 {..............................................................................}
 { Proj_ProjectSetup - read, and optionally change, a project's document      }
-{ order, library search paths and the "ports / sheet entries name nets"      }
-{ options. Every change is read back; save the project to keep it.           }
+{ order, library search paths, the "ports / sheet entries name nets"        }
+{ options, the net identifier scope (hierarchy_mode, Altium's number) and    }
+{ the output path. Every change is read back; save the project to keep it.   }
 { Params: project_path, move_document + move_to_index, add_search_path +     }
 { include_subfolders, allow_port_net_names, allow_sheet_entry_net_names      }
 { ('true' / 'false'; empty = keep). No change params = read only.            }
@@ -4229,6 +4246,7 @@ End;
 Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
+    ModeStr, OutStr : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
@@ -4242,6 +4260,13 @@ Begin
     SubStr := LowerCase(ExtractJsonValue(Params, 'include_subfolders'));
     PortStr := LowerCase(ExtractJsonValue(Params, 'allow_port_net_names'));
     EntryStr := LowerCase(ExtractJsonValue(Params, 'allow_sheet_entry_net_names'));
+    ModeStr := ExtractJsonValue(Params, 'hierarchy_mode');
+    OutStr := ExtractJsonValue(Params, 'output_path');
+    If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
+        Exit;
+    End;
     Workspace := GetWorkspace;
     If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
     If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
@@ -4301,6 +4326,21 @@ Begin
         If Project.DM_GetAllowSheetEntryNetNames <> (EntryStr = 'true') Then
             NotApplied := NotApplied + '"allow_sheet_entry_net_names",';
     End;
+    If ModeStr <> '' Then
+    Begin
+        Project.DM_SetHierarchyMode(StrToInt(ModeStr));
+        Changed := True;
+        If Project.DM_HierarchyMode <> StrToInt(ModeStr) Then
+            NotApplied := NotApplied + '"hierarchy_mode",';
+    End;
+    If OutStr <> '' Then
+    Begin
+        Project.DM_SetOutputPath(OutStr);
+        Changed := True;
+        If UpperCase(NoTrailingSlash(Project.DM_GetOutputPath))
+           <> UpperCase(NoTrailingSlash(OutStr)) Then
+            NotApplied := NotApplied + '"output_path",';
+    End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('project', Project.DM_ProjectFullPath) + ','
@@ -4309,6 +4349,65 @@ Begin
         + JsonInt('moved_to', NowIdx) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
         + ProjectSetupJson(Project)));
+End;
+
+{..............................................................................}
+{ Proj_MakeSchematicLibrary - write a schematic library of every symbol      }
+{ placed in the project (ISch_Document.CreateLibraryFromProject, quiet), and }
+{ optionally add it to the project. Run from the first loaded sheet.         }
+{ Params: project_path (optional), out_path (required), add_to_project.      }
+{..............................................................................}
+Function Proj_MakeSchematicLibrary(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, OutPath, SheetPath : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    SchDoc : ISch_Document;
+    AddIt : Boolean;
+    D : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    AddIt := LowerCase(ExtractJsonValue(Params, 'add_to_project')) = 'true';
+    If OutPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'out_path is required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SchDoc := Nil;
+    SheetPath := '';
+    For D := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(D); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        If UpperCase(Doc.DM_DocumentKind) <> 'SCH' Then Continue;
+        Try SchDoc := SchServer.GetSchDocumentByPath(Doc.DM_FullPath); Except SchDoc := Nil; End;
+        If SchDoc <> Nil Then
+        Begin
+            SheetPath := Doc.DM_FullPath;
+            Break;
+        End;
+    End;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'No sheet of the project is loaded. Call proj_load_sheets first.');
+        Exit;
+    End;
+    SchDoc.CreateLibraryFromProject(AddIt, OutPath, True);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('project', Project.DM_ProjectFullPath) + ','
+        + JsonStr('sheet', SheetPath) + ','
+        + JsonStr('out_path', OutPath) + ','
+        + JsonBool('add_to_project', AddIt) + ','
+        + JsonBool('in_project', Project.DM_IndexOfSourceDocument(OutPath) >= 0)));
 End;
 
 {..............................................................................}
@@ -5441,14 +5540,16 @@ Begin
         Data := Data + ',"output_path":""';
     End;
 
-    { Hierarchy mode (If/Else chain, Case on enum crashes DelphiScript) }
+    { Hierarchy mode, the net identifier scope: TFlattenMode is Smart,     }
+    { Flat, Hierarchical, Global, Strict hierarchical, in that order.       }
+    { (If/Else chain, Case on enum crashes DelphiScript.)                   }
     Try
-        If Project.DM_HierarchyMode = 0 Then
-            HierMode := 'Flat'
-        Else If Project.DM_HierarchyMode = 1 Then
-            HierMode := 'GlobalScope'
-        Else
-            HierMode := IntToStr(Project.DM_HierarchyMode);
+        HierMode := IntToStr(Project.DM_HierarchyMode);
+        If Project.DM_HierarchyMode = 0 Then HierMode := 'Automatic';
+        If Project.DM_HierarchyMode = 1 Then HierMode := 'Flat';
+        If Project.DM_HierarchyMode = 2 Then HierMode := 'Hierarchical';
+        If Project.DM_HierarchyMode = 3 Then HierMode := 'Global';
+        If Project.DM_HierarchyMode = 4 Then HierMode := 'StrictHierarchical';
         Data := Data + ',"hierarchy_mode":"' + HierMode + '"';
     Except
         Data := Data + ',"hierarchy_mode":"unknown"';
@@ -6105,6 +6206,7 @@ Begin
         'net_color':         Result := Proj_NetColor(Params, RequestId);
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'project_setup':     Result := Proj_ProjectSetup(Params, RequestId);
+        'make_schematic_library': Result := Proj_MakeSchematicLibrary(Params, RequestId);
         'get_declared_design_objects': Result := Proj_GetDeclaredDesignObjects(Params, RequestId);
         'delete_variant':    Result := Proj_DeleteVariant(Params, RequestId);
         'get_open_projects': Result := Proj_GetOpenProjects(RequestId);

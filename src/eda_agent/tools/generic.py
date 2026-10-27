@@ -507,7 +507,15 @@ def register_generic_tools(mcp):
                 part LockStrings, NameAutoPosition and CommentAutoPosition
                 (Altium's anchor numbers; writing one moves the text
                 there), FootprintDescription, DefaultPCB3DModel
-                (PackageSpecificHash reads). Symbol pins
+                (PackageSpecificHash reads); on a board pad JumperID,
+                SwapID_Pad and SwapID_Part. Schematic pins take
+                Symbol_Inner, Symbol_Outer, Symbol_InnerEdge,
+                Symbol_OuterEdge and Symbol_LineWidth (Altium's numbers),
+                HiddenNetName and DefinedFunctions (the pin's functions,
+                ";"-separated; writing replaces the list); schematic parts
+                take ShowHiddenPins, ShowHiddenFields, PinsMoveable,
+                PartIdLocked, DisplayFieldNames, OverideColors (Altium's
+                spelling) and PinColor. Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),

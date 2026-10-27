@@ -64,6 +64,11 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
 _NO_NET_COLOR = 536870912
 
 
+#: The net identifier scope in Altium's own order (TFlattenMode).
+_HIERARCHY_MODES = ("automatic", "flat", "hierarchical", "global",
+                    "strict_hierarchical")
+
+
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
 
@@ -2516,10 +2521,12 @@ def register_project_tools(mcp):
         include_subfolders: bool = False,
         allow_port_net_names: Optional[bool] = None,
         allow_sheet_entry_net_names: Optional[bool] = None,
+        hierarchy_mode: Optional[str] = None,
+        output_path: str = "",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or change, a project's document order, library search
-        paths and net naming options.
+        paths, net naming options, net identifier scope and output path.
 
         Call with no changes to read. Every change is read back, and
         any that did not take is listed in ``not_applied``. Save the
@@ -2532,11 +2539,17 @@ def register_project_tools(mcp):
             include_subfolders: Search below that folder too.
             allow_port_net_names: Ports name nets.
             allow_sheet_entry_net_names: Sheet entries name nets.
+            hierarchy_mode: The net identifier scope: automatic, flat,
+                hierarchical, global or strict_hierarchical (or Altium's
+                number 0 to 4, in that order).
+            output_path: The folder outputs are written to.
             project_path: The .PrjPcb. Defaults to the focused project.
 
         Returns:
             ``documents`` (in project order), ``search_paths``,
             ``generated_documents``, the two naming options,
+            ``hierarchy_mode`` (Altium's number) and
+            ``hierarchy_mode_name``, ``output_path``,
             ``changed``, ``moved_from`` / ``moved_to`` and
             ``not_applied``.
         """
@@ -2556,10 +2569,71 @@ def register_project_tools(mcp):
                            ("allow_sheet_entry_net_names", allow_sheet_entry_net_names)):
             if value is not None:
                 params[key] = "true" if value else "false"
+        if hierarchy_mode is not None:
+            text = str(hierarchy_mode).strip().lower().replace(" ", "_").replace("-", "_")
+            if text in _HIERARCHY_MODES:
+                params["hierarchy_mode"] = str(_HIERARCHY_MODES.index(text))
+            elif text.isdigit() and int(text) < len(_HIERARCHY_MODES):
+                params["hierarchy_mode"] = text
+            else:
+                return {"ok": False, "reason": "hierarchy_mode is one of "
+                        + ", ".join(_HIERARCHY_MODES) + " or 0 to 4"}
+        if output_path.strip():
+            params["output_path"] = output_path.strip()
         if project_path:
             params["project_path"] = project_path
-        return await get_bridge().send_command_async(
+        reply = await get_bridge().send_command_async(
             "project.project_setup", params, timeout=60.0)
+        if isinstance(reply, dict) and isinstance(reply.get("hierarchy_mode"), int):
+            mode = reply["hierarchy_mode"]
+            if 0 <= mode < len(_HIERARCHY_MODES):
+                reply["hierarchy_mode_name"] = _HIERARCHY_MODES[mode]
+        return reply
+
+    @mcp.tool()
+    async def proj_make_schematic_library(
+        out_path: str,
+        add_to_project: bool = False,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Make a schematic library of every symbol placed in the project.
+
+        Altium's Make Schematic Library, run without its dialogs, then
+        saved. One sheet of the project must be loaded
+        (proj_load_sheets). The new library stays open in Altium.
+
+        Args:
+            out_path: Full path of the new .SchLib.
+            add_to_project: Add the library to the project.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``saved``, ``written`` (a new file is at out_path),
+            ``sheet`` (the one it ran from) and ``in_project``.
+        """
+        import os
+        if not out_path or not os.path.isabs(out_path):
+            return {"ok": False, "reason": "out_path must be a full path"}
+        if not out_path.lower().endswith(".schlib"):
+            return {"ok": False, "reason": "out_path is a .SchLib"}
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        before = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
+        params: dict[str, Any] = {"out_path": out_path,
+                                  "add_to_project": "true" if add_to_project else "false"}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        reply = await bridge.send_command_async(
+            "project.make_schematic_library", params, timeout=300.0)
+        if isinstance(reply, dict) and "sheet" in reply:
+            # Altium opens the new library in the editor and leaves it
+            # unsaved (measured on AD 26.11), so it is saved here.
+            saved = await bridge.send_command_async(
+                "application.save_document", {"file_path": out_path}, timeout=60.0)
+            reply["saved"] = bool(isinstance(saved, dict) and saved.get("saved"))
+            after = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
+            reply["written"] = after is not None and after != before
+        return reply
 
     @mcp.tool()
     async def proj_get_declared_design_objects(

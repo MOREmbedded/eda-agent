@@ -258,7 +258,7 @@ def test_extra_properties_fit_only_their_owner():
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
     assert "SwapPin.SetState_SwapIdPart(Value)" in swaps
-    assert "And (Obj.ObjectId <> ePin)) Then" in swaps
+    assert "And (Obj.ObjectId <> ePin))" in swaps
 
 
 def test_net_color_none_is_altiums_unset_flag(monkeypatch):
@@ -448,3 +448,157 @@ def test_schlib_check_report_is_read_per_symbol(tmp_path):
         {"symbol": "LM317 ADJ", "problems": ["Duplicate Pins: 2"]}]
     # A report older than the run is not this run's report.
     assert library._schlib_check_report(lib, 4102444800) == (None, [])
+
+
+def test_xsignal_delete_sends_and_refuses(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_delete_xsignals",
+                    names=["A_PP1", " B_PP2 "])
+    assert sent == [("pcb.delete_xsignals", {"names": "A_PP1\tB_PP2"})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_delete_xsignals", all=True)
+    assert sent == [("pcb.delete_xsignals", {"all": "true"})]
+    for kwargs in ({}, {"names": ["A"], "all": True}, {"names": [" "]}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_delete_xsignals", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    # Deleting while walking forward would skip the one after each delete.
+    body = _body("PCB.pas", "PCB_DeleteXSignals")
+    assert "For I := Before - 1 DownTo 0 Do" in body
+
+
+def test_drill_pair_add_refuses_a_copy_and_a_non_copper_layer(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_add_drill_pair",
+                    low_layer="Top Layer", high_layer="Mid-Layer 1")
+    assert sent == [("pcb.add_drill_pair",
+                     {"low_layer": "Top Layer", "high_layer": "Mid-Layer 1"})]
+    for kwargs in ({"low_layer": "Top Layer", "high_layer": " "},
+                   {"low_layer": "Top Layer", "high_layer": "top layer"}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_add_drill_pair", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_AddDrillPair")
+    add = body.index("Board.AddLayerPair(LowLayer, HighLayer);")
+    assert body.index("LayerUtils.IsElectricalLayer(LowLayer)") < add
+    assert body.index("'ALREADY_EXISTS'") < add
+
+
+def test_net_display_sends_and_reads_back(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display",
+                    nets=["GND", "VBUS"], show_connections=False)
+    assert sent == [("pcb.net_display",
+                     {"nets": "GND\tVBUS", "show_connections": "false"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display", nets=[])
+    assert sent == [] and result["ok"] is False
+    body = _body("PCB.pas", "PCB_NetDisplay")
+    assert "Net.HideNetConnects;" in body and "Net.ShowNetConnects;" in body
+    assert body.index("Net.LoopRemoval := (LoopStr = 'true');") < body.index("NetDisplayJson(Net)")
+
+
+def test_footprint_library_save_sends_and_refuses(monkeypatch, tmp_path):
+    lib = tmp_path / "Src.PcbLib"
+    lib.write_bytes(b"")
+    out = tmp_path / "out" / "One.PcbLib"
+    _, sent = _sent(library, "register_library_tools", monkeypatch,
+                    "lib_save_footprint_library", footprint_name="SOT23",
+                    out_path=str(out), library_path=str(lib))
+    assert sent == [("library.save_footprint_library", {
+        "footprint_name": "SOT23", "out_path": str(out), "library_path": str(lib)})]
+    for kwargs in ({"footprint_name": "SOT23", "out_path": "rel.PcbLib"},
+                   {"footprint_name": " ", "out_path": str(out)},
+                   {"footprint_name": "SOT23", "out_path": str(tmp_path / "x.step")},
+                   {"footprint_name": "SOT23", "out_path": str(lib), "library_path": str(lib)}):
+        result, sent = _sent(library, "register_library_tools", monkeypatch,
+                             "lib_save_footprint_library", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_library_splitting_stays_out():
+    # Measured on AD 26.11: ISch_Lib and IPCB_Library SplitIntoComponents
+    # are "Undeclared identifier" to a script, a modal that halts the loop.
+    for unit in ALTIUM.glob("*.pas"):
+        if unit.name == "Altium_MCP.pas":
+            continue
+        assert "SplitIntoComponents" not in unit.read_text(encoding="utf-8-sig"), unit.name
+
+
+def test_schematic_library_is_made_then_saved(monkeypatch, tmp_path):
+    out = tmp_path / "Made.SchLib"
+    tools, bridge = _tools(project, "register_project_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        if command == "application.save_document":
+            out.write_bytes(b"x")
+            return {"saved": True}
+        return {"sheet": "S.SchDoc"}
+
+    bridge.send_command_async = send
+    result = asyncio.run(tools["proj_make_schematic_library"](out_path=str(out)))
+    assert [c for c, _ in bridge.sent] == ["project.make_schematic_library",
+                                          "application.save_document"]
+    assert result["saved"] is True and result["written"] is True
+    for kwargs in ({"out_path": "rel.SchLib"}, {"out_path": str(tmp_path / "x.PcbLib")}):
+        result, sent = _sent(project, "register_project_tools", monkeypatch,
+                             "proj_make_schematic_library", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("Project.pas", "Proj_MakeSchematicLibrary")
+    assert "SchDoc.CreateLibraryFromProject(AddIt, OutPath, True);" in body
+    assert "'NOT_LOADED'" in body
+
+
+@pytest.mark.parametrize("given, sent_as", [
+    ("automatic", "0"), ("Flat", "1"), ("hierarchical", "2"), ("global", "3"),
+    ("strict hierarchical", "4"), ("2", "2")])
+def test_hierarchy_mode_takes_names(monkeypatch, given, sent_as):
+    _, sent = _sent(project, "register_project_tools", monkeypatch,
+                    "proj_project_setup", hierarchy_mode=given)
+    assert sent == [("project.project_setup", {"hierarchy_mode": sent_as})]
+
+
+def test_hierarchy_mode_refuses_and_is_read_back(monkeypatch):
+    for value in ("sideways", "5", "-1"):
+        result, sent = _sent(project, "register_project_tools", monkeypatch,
+                             "proj_project_setup", hierarchy_mode=value)
+        assert sent == [] and result["ok"] is False, value
+    body = _body("Project.pas", "Proj_ProjectSetup")
+    assert body.index("Project.DM_SetHierarchyMode(StrToInt(ModeStr));") < body.index(
+        "If Project.DM_HierarchyMode <> StrToInt(ModeStr) Then")
+    assert body.index("Project.DM_SetOutputPath(OutStr);") < body.index("NoTrailingSlash(OutStr)")
+
+
+def test_project_options_name_the_scope_in_altiums_order():
+    body = _body("Project.pas", "Proj_GetProjectOptions")
+    order = ["'Automatic'", "'Flat'", "'Hierarchical'", "'Global'", "'StrictHierarchical'"]
+    for n, name in enumerate(order):
+        assert f"If Project.DM_HierarchyMode = {n} Then HierMode := {name};" in body
+    assert project._HIERARCHY_MODES == ("automatic", "flat", "hierarchical",
+                                        "global", "strict_hierarchical")
+
+
+def test_pin_functions_count_from_one():
+    body = _body("Generic.pas", "PinFunctionsText")
+    assert "For I := 1 To Count Do" in body
+    put = _body("Generic.pas", "SchSetExtra")
+    assert put.index("Pin.ClearDefinedFunctions;") < put.index("Pin.AddDefinedFunction(Trim(Item));")
+    assert "Result := SchGetExtra(Obj, PropName) = Wanted" in put
+
+
+def test_schematic_extras_go_to_their_own_type():
+    text = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
+    assert "Or ((SchExtraOwner(PropName) > 0) And (Not SchExtraFits(Obj, PropName))) Then" in text
+    get = _body("Generic.pas", "GetSchProperty")
+    assert "If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName)" in get
+    put = _body("Generic.pas", "SetSchProperty")
+    assert "WroteOK := SchSetExtra(Obj, PropName, Value);" in put
+    fits = _body("Generic.pas", "SchExtraFits")
+    assert "((Owner = 1) And (Obj.ObjectId = ePin))" in fits
+    assert "((Owner = 2) And (Obj.ObjectId = eSchComponent))" in fits
+
+
+def test_pad_jumpers_and_swap_ids_are_pad_only():
+    fits = _body("PCBGeneric.pas", "ExtraPCBPropertyFits")
+    assert "((Owner = 7) And (Oid = ePadObject))" in fits
+    put = _body("PCBGeneric.pas", "PCBSetExtra")
+    assert "If PropName = 'JumperID' Then Pad.JumperID := N" in put
+    # JumperID is a whole number of 0 or more; the shared check refuses
+    # anything else before the write.
+    assert "(PropName = 'JumperID');" in put

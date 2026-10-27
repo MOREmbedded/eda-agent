@@ -32,7 +32,7 @@ Begin
 End;
 
 { Which object type carries an extra property: 1 pad or via, 2 via only,     }
-{ 3 text, 4 dimension, 5 polygon, 6 component, 0 not one of these.           }
+{ 3 text, 4 dimension, 5 polygon, 6 component, 7 pad only, 0 none of these.  }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -63,7 +63,9 @@ Begin
             (PropName = 'IsBGA') Or (PropName = 'LockStrings') Or
             (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
-            (PropName = 'PackageSpecificHash') Then Result := 6;
+            (PropName = 'PackageSpecificHash') Then Result := 6
+    Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
+            (PropName = 'SwapID_Part') Then Result := 7;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -77,7 +79,8 @@ Begin
         Or ((Owner = 3) And (Oid = eTextObject))
         Or ((Owner = 4) And (Oid = eDimensionObject))
         Or ((Owner = 5) And (Oid = ePolyObject))
-        Or ((Owner = 6) And (Oid = eComponentObject));
+        Or ((Owner = 6) And (Oid = eComponentObject))
+        Or ((Owner = 7) And (Oid = ePadObject));
 End;
 
 { The value, '' when Obj is not the type that carries it. }
@@ -178,6 +181,13 @@ Begin
         Else If PropName = 'FootprintDescription' Then Result := Comp.FootprintDescription
         Else If PropName = 'DefaultPCB3DModel' Then Result := Comp.DefaultPCB3DModel
         Else If PropName = 'PackageSpecificHash' Then Result := Comp.PackageSpecificHash;
+    End
+    Else If ExtraPCBPropertyOwner(PropName) = 7 Then
+    Begin
+        Pad := Obj;
+        If PropName = 'JumperID' Then Result := IntToStr(Pad.JumperID)
+        Else If PropName = 'SwapID_Pad' Then Result := Pad.SwapID_Pad
+        Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part;
     End;
 End;
 
@@ -228,12 +238,14 @@ Begin
         (PropName = 'LockStrings');
     IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
-        (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel');
+        (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
+        (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part');
     IsInt := (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
         (PropName = 'MultilineTextAutoPosition') Or (PropName = 'TextPosition') Or
         (PropName = 'TextDimensionUnit') Or (PropName = 'TextPrecision') Or
         (PropName = 'ArrowPosition') Or (PropName = 'PolygonType') Or
-        (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition');
+        (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
+        (PropName = 'JumperID');
     B := False;
     F := 0;
     N := 0;
@@ -331,6 +343,13 @@ Begin
         Else If PropName = 'CommentAutoPosition' Then Comp.ChangeCommentAutoposition(N)
         Else If PropName = 'FootprintDescription' Then Comp.FootprintDescription := Value
         Else If PropName = 'DefaultPCB3DModel' Then Comp.DefaultPCB3DModel := Value;
+    End
+    Else If Owner = 7 Then
+    Begin
+        Pad := Obj;
+        If PropName = 'JumperID' Then Pad.JumperID := N
+        Else If PropName = 'SwapID_Pad' Then Pad.SwapID_Pad := Value
+        Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value;
     End;
     Result := 1;
 End;
@@ -2097,7 +2116,7 @@ Begin
         + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
         + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, '
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
-        + 'DefaultPCB3DModel, PackageSpecificHash';
+        + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

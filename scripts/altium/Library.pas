@@ -16472,6 +16472,82 @@ Begin
         JsonStr('library', LibPath) + ',' + JsonBool('ran', Ran)));
 End;
 
+{ The PCB library at LibPath, focused first; Nil when it cannot be focused  }
+{ or is not a PCB library. An empty LibPath takes the focused document.    }
+Function FocusPcbLibAt(Var LibPath : String) : IPCB_Library;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    FocusedPath : String;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then
+    Begin
+        Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    End;
+    If LibPath = '' Then LibPath := FocusedPath;
+    If LibPath = '' Then Exit;
+    If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        FocusedPath := '';
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then
+        Begin
+            Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+        End;
+        If UpperCase(FocusedPath) <> UpperCase(LibPath) Then Exit;
+    End;
+    Result := PCBServer.GetCurrentPCBLibrary;
+End;
+
+{..............................................................................}
+{ Lib_SaveFootprintLibrary - write one footprint of a PCB library to a new    }
+{ PCB library file of its own (IPCB_Library.SaveComponentWithLibrary).       }
+{ Params: library_path (optional), footprint_name, out_path (required).      }
+{..............................................................................}
+Function Lib_SaveFootprintLibrary(Params : String; RequestId : String) : String;
+Var
+    LibPath, FpWanted, OutPath : String;
+    PcbLib : IPCB_Library;
+    Said : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpWanted := ExtractJsonValue(Params, 'footprint_name');
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    If (FpWanted = '') Or (OutPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'footprint_name and out_path are required');
+        Exit;
+    End;
+    PcbLib := FocusPcbLibAt(LibPath);
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library at ' + LibPath);
+        Exit;
+    End;
+    If FootprintByName(PcbLib, FpWanted) = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT',
+            'Footprint not found in ' + LibPath + ': ' + FpWanted);
+        Exit;
+    End;
+    Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library', LibPath) + ','
+        + JsonStr('footprint_name', FpWanted) + ','
+        + JsonStr('out_path', OutPath) + ','
+        + JsonBool('reported', Said)));
+End;
+
 { Lib_ExportModelStep - write one footprint body's 3D model to a STEP file    }
 { through IPCB_Model.ExportToStep. MEASURED on AD 26.11.1.5: no dialog, and   }
 { the file is Altium's Open CASCADE re-encoding (117 KB from a 268 KB         }
@@ -19571,6 +19647,7 @@ Begin
         'set_symbol_parts':     Result := Lib_SetSymbolParts(Params, RequestId);
         'set_symbol_aliases':   Result := Lib_SetSymbolAliases(Params, RequestId);
         'check_schlib':         Result := Lib_CheckSchLib(Params, RequestId);
+        'save_footprint_library': Result := Lib_SaveFootprintLibrary(Params, RequestId);
         'export_model_step':    Result := Lib_ExportModelStep(Params, RequestId);
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);

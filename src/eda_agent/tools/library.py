@@ -29,6 +29,18 @@ _SCHLIB_CHECKS = (
 )
 
 
+def _file_stamps(folder: Path) -> dict:
+    """Each file directly in ``folder`` and its modified time."""
+    stamps = {}
+    try:
+        for entry in folder.iterdir():
+            if entry.is_file():
+                stamps[str(entry)] = entry.stat().st_mtime
+    except OSError:
+        pass
+    return stamps
+
+
 def _schlib_check_report(library: Path, since: float):
     """Altium's component rule check report for ``library``: the
     ``<library>.ERR`` written beside it since ``since``. Returns the path
@@ -5976,6 +5988,49 @@ def register_library_tools(mcp):
         reply["report"] = str(report) if report else None
         reply["symbols_with_problems"] = len(problems)
         reply["problems"] = problems
+        return reply
+
+    @mcp.tool()
+    async def lib_save_footprint_library(
+        footprint_name: str,
+        out_path: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Write one footprint of a PCB library to a new .PcbLib of its own.
+
+        Args:
+            footprint_name: The footprint.
+            out_path: Full path of the new .PcbLib.
+            library_path: The source library. Defaults to the focused one.
+
+        Returns:
+            ``written`` (a new file is at out_path) and ``reported``
+            (what Altium said).
+        """
+        import os
+        if not footprint_name.strip():
+            return {"ok": False, "reason": "footprint_name is required"}
+        if not out_path or not os.path.isabs(out_path):
+            return {"ok": False, "reason": "out_path must be a full path"}
+        if Path(out_path).suffix.lower() != ".pcblib":
+            return {"ok": False, "reason": "out_path is a .PcbLib"}
+        path = library_path.strip()
+        if path:
+            if not Path(path).is_file():
+                return {"ok": False, "reason": f"{path} is not a file"}
+            if Path(path).resolve() == Path(out_path).resolve():
+                return {"ok": False, "reason": "out_path is the source library"}
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        before = _file_stamps(Path(out_path).parent).get(str(Path(out_path)))
+        params: dict[str, Any] = {"footprint_name": footprint_name.strip(),
+                                  "out_path": out_path}
+        if path:
+            params["library_path"] = path
+        reply = await get_bridge().send_command_async(
+            "library.save_footprint_library", params, timeout=120.0)
+        if isinstance(reply, dict) and "reported" in reply:
+            after = _file_stamps(Path(out_path).parent).get(str(Path(out_path)))
+            reply["written"] = after is not None and after != before
         return reply
 
     @mcp.tool()

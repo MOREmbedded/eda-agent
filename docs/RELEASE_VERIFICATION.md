@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.10
+# Release verification: 2026.10.26.15
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -19,7 +19,7 @@ works elsewhere cannot be an undeclared identifier:
 |---|---|---|---|
 | 5, 3D placement | `StandoffHeight` | only by step 15, itself unverified | highest |
 | 5, 3D placement | `Rotation` on a body | other object types only | high |
-| 2, pin edges | `Symbol_OuterEdge`, `Symbol_InnerEdge` | no, nowhere | high, and can stop the loop |
+| 2, pin edges | `Symbol_OuterEdge`, `Symbol_InnerEdge` | only by `Library.pas` and, since step 44, `Generic.pas` | high, and can stop the loop; the inner edge has since run live through obj_modify |
 | 7, enum words | `StrToPinElectrical` | yes, `Lib_AddPins` | medium |
 | 4, DNP paste | `PasteMaskExpansion` | yes, `PCB_MakePasteGrid` | low, but it edits the board |
 | 3, filled body | `AreaColor`, `IsSolid` | yes, `Generic.pas` | low |
@@ -143,6 +143,16 @@ works elsewhere cannot be an undeclared identifier:
 | 43, part text properties | `LockStrings`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, the first two written and read back live |
 | 43, project setup | `DM_MoveSourceDocument`, `DM_AddSearchPath`, `DM_SetAllowPortNetNames`, `DM_SetAllowSheetEntryNetNames` on a project | no, nowhere | medium, ran live, read back, saved and reopened |
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
+| 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
+| 44, net display | `ShowNetConnects`, `HideNetConnects`, `LoopRemoval` on a net | no, nowhere | low, ran live, read back and restored |
+| 44, one footprint | `SaveComponentWithLibrary` on a library | no, nowhere | low, writes a file only; ran live |
+| 44, project library | `CreateLibraryFromProject` on a sheet | no, nowhere | low, writes a new library only; ran live |
+| 44, scope and output | `DM_SetHierarchyMode`, `DM_SetOutputPath` on a project | no, nowhere | medium, ran live, read back and restored |
+| 44, pin functions | `AddDefinedFunction`, `ClearDefinedFunctions` on a pin | no, nowhere | low, ran live and read back |
+| 44, pin symbols | `Symbol_InnerEdge` written on a pin | yes, `Lib_AddPins` | low, ran live and read back |
+| 44, more pin symbols | `Symbol_Inner`, `Symbol_Outer`, `Symbol_LineWidth`, `HiddenNetName` on a pin | no, nowhere | low, ran live and read back |
+| 44, part display | `ShowHiddenPins`, `PinsMoveable`, `OverideColors`, `PinColor` on a symbol | no, nowhere | low, ran live, read back and restored |
+| 44, pad ids | `JumperID`, `SwapID_Pad`, `SwapID_Part` on a pad | no, nowhere | low, ran live, read back and cleared |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -318,7 +328,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.10`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.15`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2594,6 +2604,55 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project,
 board and library. All passed as described. Not run: an xSignal class
 read back by name (the class listing shows net classes only), and a
 project with ports or sheet entries.
+
+---
+
+## 44. Drill pairs, xSignal removal, net display, single-footprint and project libraries, pin and pad properties
+
+New: `pcb_add_drill_pair`, `pcb_delete_xsignals`, `pcb_net_display`,
+`lib_save_footprint_library`, `proj_make_schematic_library`;
+`proj_project_setup` gains `hierarchy_mode` (the net identifier scope)
+and `output_path`; `obj_query` / `obj_modify` gain pin `DefinedFunctions`,
+`Symbol_Inner`, `Symbol_Outer`, `Symbol_InnerEdge`, `Symbol_OuterEdge`,
+`Symbol_LineWidth` and `HiddenNetName`, schematic part `ShowHiddenPins`,
+`ShowHiddenFields`, `PinsMoveable`, `PartIdLocked`, `DisplayFieldNames`,
+`OverideColors` and `PinColor`, and board pad `JumperID`, `SwapID_Pad`
+and `SwapID_Part`. `proj_get_options` now names the scope in Altium's own
+order (it had called 0 "Flat" and 1 "GlobalScope"). Measured and NOT
+built: splitting a library into one file per part; `SplitIntoComponents`
+is an undeclared identifier to a script on both library kinds.
+
+1. **Drill pairs.** On a board with two internal planes: Top Layer to
+   Internal Plane 1 added (2 pairs, read back); the same pair the other
+   way round refused as `ALREADY_EXISTS`; Mechanical 1 refused; Internal
+   Plane 2 to Bottom Layer added (3 pairs).
+2. **xSignals.** An unknown name deletes nothing; the one xSignal deleted
+   by name in another case; one made again and deleted with `all`.
+3. **Net display.** GND's connection lines hidden and loop removal off,
+   both read back, then restored; an unknown net listed in `not_found`.
+4. **One footprint.** `lib_save_footprint_library` wrote a 138 KB
+   library holding only that footprint, with the source's two pads; an
+   unknown footprint refused.
+5. **Project library.** With the sheets loaded,
+   `proj_make_schematic_library` wrote and saved a library of the
+   project's 15 placed symbols.
+6. **Project setup.** The scope set to each of 0 to 4 and read back;
+   `global` read back as 3 and named Global by `proj_get_options`;
+   restored to automatic. The output path set and read back, then
+   restored; an unknown scope name refused.
+7. **Pins.** On a library symbol's pin: inner edge, outer symbol and
+   line width, a hidden net name and two functions written and read
+   back, then cleared; a symbol value that is not a number refused.
+   Pin functions read from 1: read from 0 the list lost its last name.
+8. **Parts.** Show hidden pins, pins movable, override colours and a pin
+   colour written, read back and restored.
+9. **Pads.** A pad's jumper id and both swap ids written and read back,
+   a negative jumper id refused, all cleared.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project,
+board and libraries. All passed as described. Not run: a pin function
+list on a placed part on a sheet, and the scope's effect on a compiled
+hierarchical design.
 
 ---
 

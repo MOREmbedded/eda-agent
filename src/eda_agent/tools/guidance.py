@@ -649,10 +649,13 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "when": (("drill", "pair"), ("backdrill",), ("drill", "drawing")),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["pcb_get_drill_pairs", "pcb_set_drill_pair"],
+        "use": ["pcb_get_drill_pairs", "pcb_add_drill_pair",
+                "pcb_set_drill_pair"],
         "avoid": [],
-        "note": "Hole tolerances are obj_modify HolePositiveTolerance / "
-                "HoleNegativeTolerance on pads and vias, in mils.",
+        "note": "pcb_add_drill_pair adds a blind or buried pair between two "
+                "copper layers. Hole tolerances are obj_modify "
+                "HolePositiveTolerance / HoleNegativeTolerance on pads and "
+                "vias, in mils.",
     },
     {
         "task": "Put a barcode, QR code or multiline text on the board",
@@ -746,7 +749,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_create_xsignals", "pcb_get_xsignals",
-                "pcb_create_design_rule", "pcb_tune_length"],
+                "pcb_delete_xsignals", "pcb_create_design_rule",
+                "pcb_tune_length"],
         "avoid": [("pcb_get_trace_lengths", "measures one net, so it "
                                             "stops at the series part")],
         "note": (
@@ -773,8 +777,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
     },
     {
         "task": "Check a schematic library with Altium's component rule check",
-        "keywords": ("schlib", "library", "check", "rule", "duplicate",
-                     "missing", "footprint", "description", "pins"),
+        "keywords": ("schlib", "check", "rule", "missing", "errors",
+                     "description", "symbols"),
         "when": (("library", "check"), ("schlib", "check"),
                  ("missing", "footprint", "symbol")),
         "document_kind": "library",
@@ -784,11 +788,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "Reads Altium's <library>.ERR report back as one entry per symbol.",
     },
     {
-        "task": "Find parts with the same package, to copy a channel's layout",
-        "keywords": ("same", "package", "identical", "channel", "repeat",
-                     "copy", "replicate", "footprint"),
-        "when": (("same", "package"), ("identical", "parts"),
-                 ("repeated", "channel")),
+        "task": "Group placed components by package before replicating a channel layout",
+        "keywords": ("same", "package", "channel", "repeated", "placed"),
+        "when": (("same", "package"), ("repeated", "channel")),
         "document_kind": "board",
         "backends": ("altium",),
         "use": ["pcb_find_same_package", "pcb_replicate_layout",
@@ -815,16 +817,85 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "looks for silk clearance."),
     },
     {
+        "task": "Hide a net's connection lines or keep its loops while routing",
+        "keywords": ("ratsnest", "connection", "lines", "hide", "show",
+                     "loop", "removal", "loops"),
+        "when": (("hide", "ratsnest"), ("connection", "lines"),
+                 ("loop", "removal")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_net_display"],
+        "avoid": [],
+        "note": "Reads back each net's connections_shown and loop_removal.",
+    },
+    {
+        "task": "Make a schematic library from a project's placed symbols",
+        "keywords": ("make", "schematic", "library", "symbols", "project",
+                     "extract", "harvest"),
+        "when": (("schematic", "library", "project"),
+                 ("symbols", "project", "library")),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_load_sheets", "proj_make_schematic_library"],
+        "avoid": [],
+        "note": "One sheet must be loaded; the new library is saved and left open.",
+    },
+    {
+        "task": "Write one footprint to a PCB library file of its own",
+        "keywords": ("footprint", "single", "own", "file", "export", "pcblib",
+                     "separate"),
+        "when": (("footprint", "own", "library"), ("one", "footprint", "file")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_save_footprint_library"],
+        "avoid": [],
+        "note": ("Splitting a whole library into one file per part is not "
+                 "reachable from a script on AD 26.11; call this once per "
+                 "footprint instead."),
+    },
+    {
+        "task": "Set a symbol pin's functions, symbols or hidden net",
+        "keywords": ("pin", "function", "functions", "alternate", "symbol",
+                     "dot", "clock", "hidden", "net"),
+        "when": (("pin", "function"), ("pin", "symbol"), ("hidden", "net")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify on ePin: DefinedFunctions (\"PA0;ADC_IN0\", "
+                 "writing replaces the list), Symbol_Inner, Symbol_Outer, "
+                 "Symbol_InnerEdge, Symbol_OuterEdge, Symbol_LineWidth "
+                 "(Altium's numbers) and HiddenNetName. On eSchComponent: "
+                 "ShowHiddenPins, ShowHiddenFields, PinsMoveable, "
+                 "PartIdLocked, DisplayFieldNames, OverideColors, PinColor."),
+    },
+    {
+        "task": "Mark board pads as jumper ends or swap groups",
+        "keywords": ("jumper", "swap", "pad", "group", "board"),
+        "when": (("jumper",), ("pad", "swap")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": "obj_modify on ePadObject: JumperID (0 none), SwapID_Pad, SwapID_Part.",
+    },
+    {
         "task": "Reorder a project's documents or add library search paths",
         "keywords": ("order", "reorder", "document", "sheet", "search",
-                     "path", "library", "port", "entry", "names"),
+                     "path", "port", "entry", "names", "identifier",
+                     "scope", "hierarchy", "output"),
         "when": (("reorder",), ("search", "path"), ("document", "order"),
-                 ("port", "net", "names")),
+                 ("port", "net", "names"), ("net", "identifier", "scope"),
+                 ("output", "path")),
         "document_kind": "project",
         "backends": ("altium",),
         "use": ["proj_project_setup", "proj_save", "proj_get_options"],
-        "avoid": [],
-        "note": "Changes stay in memory until proj_save.",
+        "avoid": [("proj_set_parameter", "makes a user parameter of that "
+                                         "name; the option does not change")],
+        "note": ("proj_project_setup also sets the net identifier scope "
+                 "(hierarchy_mode: automatic, flat, hierarchical, global, "
+                 "strict_hierarchical) and the output path. Changes stay in "
+                 "memory until proj_save."),
     },
 )
 

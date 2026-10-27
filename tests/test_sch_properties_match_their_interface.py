@@ -261,7 +261,7 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     routines = "\n".join(_routine(source, name) for name in
                          ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                           "SchObjectHasFontId", "SchObjectHasTextFontId",
-                          "UnsupportedSchProperty"))
+                          "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
@@ -291,6 +291,10 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         ("eNetLabel", "IsHidden|Text=GOOD", ""),
         ("eNetLabel", "Text=contains=equals", ""),
         ("eNetLabel", "", ""),
+        ("ePin", "Symbol_Outer=1|DefinedFunctions=A;B", ""),
+        ("eWire", "Symbol_Outer=1", "Symbol_Outer"),
+        ("ePin", "PinsMoveable=true", "PinsMoveable"),
+        ("eSchComponent", "ShowHiddenPins=true", ""),
     ]
     calls = "\n".join(
         f"  Obj.ObjectId := {kind}; if UnsupportedSchProperty(Obj, '{props}') <> '{expected}' then Halt({i});"
@@ -326,7 +330,8 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     main = MAIN.read_text(encoding="utf-8")
     guards = "\n".join(_routine(source, name) for name in
                        ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
-                        "SchObjectHasFontId", "SchObjectHasTextFontId", "UnsupportedSchProperty"))
+                        "SchObjectHasFontId", "SchObjectHasTextFontId",
+                        "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))

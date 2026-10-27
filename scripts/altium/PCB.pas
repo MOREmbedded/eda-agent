@@ -18114,6 +18114,237 @@ Begin
         + JsonRaw('changed', '[' + Items + ']')));
 End;
 
+{..............................................................................}
+{ PCB_DeleteXSignals - delete xSignals by name, or all of them               }
+{ (PinPairsManager.Delete). Walks from the end so the indices stay valid,    }
+{ and reports the count before and after.                                    }
+{ Params: names (tab-separated), all ('true').                               }
+{..............................................................................}
+Function PCB_DeleteXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    NamesStr, Name, Deleted : String;
+    I, Before, After : Integer;
+    All : Boolean;
+Begin
+    NamesStr := ExtractJsonValue(Params, 'names');
+    All := LowerCase(ExtractJsonValue(Params, 'all')) = 'true';
+    If (NamesStr = '') And (Not All) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'give names, or all');
+        Exit;
+    End;
+    NamesStr := #9 + UpperCase(NamesStr) + #9;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS', 'The board has no xSignal manager');
+        Exit;
+    End;
+    Before := Mgr.PinPairsCount;
+    Deleted := '';
+    PCBServer.PreProcess;
+    Try
+        For I := Before - 1 DownTo 0 Do
+        Begin
+            PP := Nil;
+            Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+            If PP = Nil Then Continue;
+            Name := '';
+            Try Name := PP.Name; Except End;
+            If (Not All) And (Pos(#9 + UpperCase(Name) + #9, NamesStr) = 0) Then Continue;
+            Mgr.Delete(PP);
+            If Deleted <> '' Then Deleted := Deleted + ',';
+            Deleted := Deleted + '"' + EscapeJsonString(Name) + '"';
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := Mgr.PinPairsCount;
+    If After <> Before Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonRaw('deleted', '[' + Deleted + ']')));
+End;
+
+{..............................................................................}
+{ PCB_AddDrillPair - add a drill layer pair between two copper layers        }
+{ (Board.AddLayerPair), for blind and buried vias. Reports the pairs after.  }
+{ Params: low_layer, high_layer (layer names, required).                     }
+{..............................................................................}
+Function PCB_AddDrillPair(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    LowStr, HighStr, Items : String;
+    LowLayer, HighLayer : TLayer;
+    I, Before, After : Integer;
+Begin
+    LowStr := ExtractJsonValue(Params, 'low_layer');
+    HighStr := ExtractJsonValue(Params, 'high_layer');
+    If (LowStr = '') Or (HighStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'low_layer and high_layer are required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    LowLayer := ResolveLayerId(Board, LowStr);
+    HighLayer := ResolveLayerId(Board, HighStr);
+    If (LowLayer = eNoLayer) Or (HighLayer = eNoLayer) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer: ' + LowStr + ' / ' + HighStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+    If LowLayer = HighLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'low_layer and high_layer are the same layer');
+        Exit;
+    End;
+    If (Not LayerUtils.IsElectricalLayer(LowLayer)) Or (Not LayerUtils.IsElectricalLayer(HighLayer)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'A drill pair joins two copper layers');
+        Exit;
+    End;
+    Before := Board.DrillLayerPairsCount;
+    For I := 0 To Before - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except Pair := Nil; End;
+        If Pair = Nil Then Continue;
+        If ((Pair.LowLayer = LowLayer) And (Pair.HighLayer = HighLayer))
+           Or ((Pair.LowLayer = HighLayer) And (Pair.HighLayer = LowLayer)) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS',
+                'The board already has this drill pair (index ' + IntToStr(I) + ')');
+            Exit;
+        End;
+    End;
+    PCBServer.PreProcess;
+    Try
+        Board.AddLayerPair(LowLayer, HighLayer);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := Board.DrillLayerPairsCount;
+    If After <> Before Then MarkDocDirtyByPath(Board.FileName);
+    Items := '';
+    For I := 0 To After - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except Pair := Nil; End;
+        If Pair = Nil Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + DrillPairJson(Pair, I);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonRaw('pairs', '[' + Items + ']')));
+End;
+
+{ One net's connection-line and loop-removal settings as JSON. }
+Function NetDisplayJson(Net : IPCB_Net) : String;
+Var
+    Shown, Loops : Boolean;
+Begin
+    Shown := False; Loops := False;
+    Try Shown := Net.ConnectsVisible; Except End;
+    Try Loops := Net.LoopRemoval; Except End;
+    Result := JsonObj(JsonStr('net', Net.Name) + ','
+        + JsonBool('connections_shown', Shown) + ','
+        + JsonBool('loop_removal', Loops));
+End;
+
+{..............................................................................}
+{ PCB_NetDisplay - read, or set, whether nets show their connection lines    }
+{ (ShowNetConnects / HideNetConnects) and whether loop removal applies to    }
+{ them (LoopRemoval). Each net is read back.                                 }
+{ Params: nets (tab-separated, required), show_connections, loop_removal     }
+{ ('true' / 'false'; empty = keep).                                          }
+{..............................................................................}
+Function PCB_NetDisplay(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Net : IPCB_Net;
+    NetsStr, ShowStr, LoopStr, Item, Items, Missing : String;
+    TabPos : Integer;
+    Changed : Boolean;
+Begin
+    NetsStr := ExtractJsonValue(Params, 'nets');
+    ShowStr := LowerCase(ExtractJsonValue(Params, 'show_connections'));
+    LoopStr := LowerCase(ExtractJsonValue(Params, 'loop_removal'));
+    If NetsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'nets is required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Items := '';
+    Missing := '';
+    Changed := False;
+    PCBServer.PreProcess;
+    Try
+        While NetsStr <> '' Do
+        Begin
+            TabPos := Pos(#9, NetsStr);
+            If TabPos = 0 Then Begin Item := NetsStr; NetsStr := ''; End
+            Else Begin Item := Copy(NetsStr, 1, TabPos - 1); NetsStr := Copy(NetsStr, TabPos + 1, Length(NetsStr)); End;
+            Item := Trim(Item);
+            If Item = '' Then Continue;
+            Net := FindNetByName(Board, Item);
+            If Net = Nil Then
+            Begin
+                If Missing <> '' Then Missing := Missing + ',';
+                Missing := Missing + '"' + EscapeJsonString(Item) + '"';
+                Continue;
+            End;
+            If ShowStr = 'true' Then
+            Begin
+                Net.ShowNetConnects;
+                Changed := True;
+            End;
+            If ShowStr = 'false' Then
+            Begin
+                Net.HideNetConnects;
+                Changed := True;
+            End;
+            If LoopStr <> '' Then
+            Begin
+                Net.LoopRemoval := (LoopStr = 'true');
+                Changed := True;
+            End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + NetDisplayJson(Net);
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Changed Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('nets', '[' + Items + ']') + ','
+        + JsonRaw('not_found', '[' + Missing + ']')));
+End;
+
 
 {..............................................................................}
 { PCB_BindPadNets - Attach component pads to existing board nets. Second leg  }
@@ -20729,6 +20960,9 @@ Begin
         'create_xsignals':         Result := PCB_CreateXSignals(Params, RequestId);
         'find_same_package':       Result := PCB_FindSamePackage(Params, RequestId);
         'auto_position_text':      Result := PCB_AutoPositionText(Params, RequestId);
+        'delete_xsignals':         Result := PCB_DeleteXSignals(Params, RequestId);
+        'add_drill_pair':          Result := PCB_AddDrillPair(Params, RequestId);
+        'net_display':             Result := PCB_NetDisplay(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
