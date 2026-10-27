@@ -29,6 +29,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from ..noconsole import no_window
+
 #: Batch-mode executables, the console build first (it never opens a window).
 NGSPICE_NAMES = ("ngspice_con", "ngspice")
 
@@ -63,7 +65,7 @@ def find_ngspice() -> Optional[str]:
 def ngspice_version(path: str) -> str:
     try:
         out = subprocess.run([path, "-v"], capture_output=True, text=True,
-                             timeout=20).stdout
+                             timeout=20, **no_window()).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
     m = re.search(r"ngspice-(\d+(?:\.\d+)?)", out)
@@ -112,7 +114,7 @@ def run_deck(deck: str, outputs: tuple[str, ...] = (), timeout: float = 120,
         try:
             proc = subprocess.run([exe, "-b", "deck.cir"], cwd=tmp,
                                   capture_output=True, text=True,
-                                  timeout=timeout)
+                                  timeout=timeout, **no_window())
         except subprocess.TimeoutExpired:
             return {"ok": False, "reason": f"ngspice ran past {timeout:g} s"}
         files = {}

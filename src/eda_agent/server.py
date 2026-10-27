@@ -1037,8 +1037,9 @@ def main() -> int:
                 # On Windows, SIGTERM isn't honoured for native procs;
                 # use TerminateProcess via taskkill for reliability.
                 import subprocess as _sp
+                from .noconsole import no_window
                 _sp.run(["taskkill", "/PID", str(pid), "/F"],
-                        capture_output=True, check=False)
+                        capture_output=True, check=False, **no_window())
             else:
                 _os.kill(pid, _sig.SIGTERM)
             print(f"stopped dashboard pid {pid}")

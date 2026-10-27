@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from .noconsole import no_window
+
 REMOTE = "origin"
 BRANCH = "main"
 REPO_URL = "https://github.com/salitronic/eda-agent"
@@ -52,7 +54,7 @@ def repo_root() -> Optional[Path]:
 
 def _git(root: Path, *args: str, timeout: float = _GIT_TIMEOUT_S) -> str:
     done = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, timeout=timeout, **no_window())
     if done.returncode != 0:
         raise RuntimeError((done.stderr or done.stdout).strip()
                            or f"git {' '.join(args)} failed")
@@ -173,7 +175,7 @@ def start_background_check() -> None:
 def _step(argv: list[str], cwd: Path, timeout: float) -> dict[str, Any]:
     try:
         done = subprocess.run(argv, cwd=str(cwd), capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, **no_window())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "output": str(exc)}
     tail = (done.stdout + done.stderr).strip().splitlines()[-6:]

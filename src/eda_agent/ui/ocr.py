@@ -34,6 +34,7 @@ import os
 import subprocess
 import tempfile
 
+from ..noconsole import no_window
 from . import windows as win
 
 #: PrintWindow flag. Renders the full window content including anything
@@ -160,7 +161,7 @@ def read_window_text(hwnd: int, timeout: float = 30.0) -> list:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-File", script, "-Path", png],
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, timeout=timeout, **no_window())
         if proc.returncode != 0:
             return []
         return [line.strip() for line in proc.stdout.splitlines()
