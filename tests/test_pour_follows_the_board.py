@@ -113,7 +113,8 @@ def test_the_board_pour_draws_the_keepout_first(monkeypatch):
     assert sent == [
         ("pcb.keepout_board_outline", {"width": "24"}),
         ("pcb.place_polygon_board", {"net": "GND", "layer": "BottomLayer",
-                                     "pour_over": "true", "remove_dead": "true"})]
+                                     "pour_over": "true", "remove_dead": "true",
+                                     "pour": "true"})]
     assert out["keepout"] == {"success": True}
 
 

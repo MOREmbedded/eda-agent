@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.33
+# Release verification: 2026.10.27.46
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -196,6 +196,8 @@ works elsewhere cannot be an undeclared identifier:
 | 51, grids and pads | `BigVisibleGridMultFactor`, `SnapGridUnit` on the board; `DrillType` on a pad; `BorderSpaceType` on board text | no, nowhere | low, ran live, read back and restored |
 | 51, net colours | `Color` on a board net, taken from the project's net colour | yes, `Generic.pas` (schematic objects) | low, ran live and restored |
 | 51, sheet zones | `ObjectReferenceZone` on a sheet | no, nowhere | none, read only |
+| 52, unpoured pours | `GetDefaultName` on a polygon | no, nowhere | low, names an unnamed pour; ran live |
+| 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -371,7 +373,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.33`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.46`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -3020,6 +3022,57 @@ are shown); special string resolution through the project (every name,
 CurrentDate included, answered not resolved); a dimension's TextValue
 (read 0 on a 1000 mil dimension). Simulation probes, profiles and
 waveform data are not reachable from a script.
+
+Run live on AD 26.11.1.5 with that change's script on scratch copies;
+every document closed without saving and the files hashed the same
+before and after. All passed as described.
+
+---
+
+## 52. Contributed fixes, the via delete, unpoured pours, bodies by identifier, the via middle size
+
+Taken from pull requests #137 (a lone via mask value sets both sides),
+#138 (object walks always filtered) and #139 (decimal mils in the
+remaining handlers), and fixes for issues #141, #136, #135 and #140.
+`pcb_delete_object` searches every layer when no layer is given and
+reports the layer of what it deleted; `pcb_place_polygon_rect` and
+`pcb_place_polygon_board` take `pour` and report `pour_skipped`, `poured`,
+`repour_mode` and `name`; `lib_select_footprint_primitives` and
+`lib_delete_footprint_primitives` pick 3D bodies by `identifier` prefix;
+a footprint via's unreadable middle size reads null with
+`mid_unreadable`. `lib_delete_footprint_primitives` no longer faults.
+
+1. **Decimal mils (#139).** A via array from -2000.25, -2000.75 at a
+   33.3 mil pitch: four vias at X -2000.25, -1966.95, -1933.65,
+   -1900.35, no drift.
+2. **Via delete (#141).** Each of those four deleted with no layer
+   given, at distance 0, reported on Multi Layer; the via count back to
+   279.
+3. **Mask (#137).** A board via with a manual mask: 4 / 2 written, then
+   6 alone gave 6 / 6, then 8 with a bottom of 3 kept 8 / 3. A library
+   via: 0.1 / 0.05 mm separate, then 0.2 alone gave 0.2 / 0.2. On a via
+   whose mask follows the rule, the same board write did not take.
+4. **Walks (#138).** Library select by type (2 pads) and by layer (2
+   objects) still selects.
+5. **Bodies by identifier (#135).** Two bodies added with identifiers
+   Envelope_Test_Body and Envelope_Test_Courtyard beside the footprint's
+   STEP body; select by prefix took the two; delete by prefix removed
+   the two and left the STEP body. A pad set with an identifier refused.
+   Delete by object_type body and by layer also ran.
+6. **Library delete.** It faulted with an access violation in the
+   script engine: reading I_ObjectAddress off the footprint after its
+   library iterator was gone. The footprint is now fetched by name,
+   compared by name, and sent no modify messages. A crash leaves later
+   footprint writes faulting in the same Altium session, so every
+   result above was taken again after a clean restart.
+7. **Unpoured pours (#136).** Placed with pour false: the reply says
+   pour_skipped and names the polygon (Top Layer-GND 1), which
+   pcb_repour_polygons then found by name. On AD 26.11 Altium poured
+   the new polygon anyway, also with its repour preference at never,
+   and `poured` reports that.
+8. **Via middle size (#140).** A footprint via set top-middle-bottom
+   1.0 / 0.7 / 0.9 mm: the middle reads 0 on AD 26.11 too, and is
+   reported null with mid_unreadable.
 
 Run live on AD 26.11.1.5 with that change's script on scratch copies;
 every document closed without saving and the files hashed the same

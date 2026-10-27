@@ -9475,7 +9475,7 @@ Var
     Dist, BestDist, Px, Py : Double;
     Ties : Integer;
     BRect : TCoordRect;
-    Why, NetName : String;
+    Why, NetName, FoundLayer : String;
 Begin
     { This DELETES, so it may not wander to find a board. See
       GetPCBBoardForMutation: the wandering lookup opens the first board
@@ -9505,8 +9505,11 @@ Begin
     TargetX := StrToFloatDef(XStr, 0);
     TargetY := StrToFloatDef(YStr, 0);
 
-    If LayerStr = '' Then TargetLayer := eTopLayer
-    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    { No layer means every layer: a through via, a through-hole pad and a }
+    { part sit on the multi-layer, so a walk of the top layer alone never   }
+    { found them. The reply names the layer of what was deleted.           }
+    TargetLayer := eTopLayer;
+    If LayerStr <> '' Then TargetLayer := ResolveLayerId(Board, LayerStr);
     If TargetLayer = eNoLayer Then
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
@@ -9548,7 +9551,10 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjFilter));
-    Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
+    If LayerStr = '' Then
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+    Else
+        Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
     Iterator.AddFilter_Method(eProcessAll);
 
     Px := TargetX * 1.0;
@@ -9614,6 +9620,8 @@ Begin
     { Described BEFORE it goes, so the caller can check it was the one meant. }
     NetName := '';
     Try If FoundObj.Net <> Nil Then NetName := FoundObj.Net.Name; Except End;
+    FoundLayer := '';
+    Try FoundLayer := Layer2String(FoundObj.Layer); Except End;
     BRect := FoundObj.BoundingRectangle;
 
     PCBServer.PreProcess;
@@ -9632,6 +9640,7 @@ Begin
         + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
         + '"distance_mils":' + FloatToJsonStr(BestDist) + ','
         + '"net":"' + EscapeJsonString(NetName) + '",'
+        + '"layer":"' + EscapeJsonString(FoundLayer) + '",'
         + '"bbox_mils":[' + FloatToJsonStr(BRect.Left / 10000.0) + ','
         + FloatToJsonStr(BRect.Bottom / 10000.0) + ','
         + FloatToJsonStr(BRect.Right / 10000.0) + ','
@@ -10937,9 +10946,24 @@ Begin
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
 End;
 
+{ Altium's own repour preference as a name: 'never', 'threshold' or         }
+{ 'always' ('' when unreadable), reported beside what the placer did.     }
+Function RepourModeName(Dummy : Integer) : String;
+Var
+    Mode : Integer;
+Begin
+    Result := '';
+    Mode := -1;
+    Try Mode := PCBServer.SystemOptions.PolygonRepour; Except Mode := -1; End;
+    If Mode = 0 Then Result := 'never'
+    Else If Mode = 1 Then Result := 'threshold'
+    Else If Mode = 2 Then Result := 'always';
+End;
+
 {..............................................................................}
 { PCB_PlacePolygonRect - Drop a copper polygon pour on a rectangular area     }
-{ Params: x1,y1,x2,y2 in mils, net=<name>, layer=<layer>, pour_over=<bool>   }
+{ Params: x1,y1,x2,y2 in mils, net=<name>, layer=<layer>, pour_over=<bool>,  }
+{ pour=<bool> (false places the outline unpoured).                           }
 {..............................................................................}
 
 Function PCB_PlacePolygonRect(Params : String; RequestId : String) : String;
@@ -10952,6 +10976,8 @@ Var
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
     TargetLayer : TLayer;
+    Skipped, CopperExact : Boolean;
+    CopperSqMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -11037,7 +11063,16 @@ Begin
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Polygon.I_ObjectAddress);
-        Polygon.Rebuild;
+        { pour = false skips the pour, for a caller who sets the hatch, grid }
+        { or thresholds next and pours once, with pcb_repour_polygons. On AD }
+        { 26.11 Altium poured the new polygon anyway, even with its repour   }
+        { preference at never, so the reply says what copper is there.       }
+        Skipped := LowerCase(ExtractJsonValue(Params, 'pour')) = 'false';
+        If Not Skipped Then Polygon.Rebuild;
+        { Altium names a pour when it pours it; one left without a name is  }
+        { given its default name, so it can be poured later by name. Set    }
+        { before the polygon joined the board, the name stayed empty.       }
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
         PCBServer.PostProcess;
     End;
@@ -11049,6 +11084,10 @@ Begin
         + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"remove_dead":' + BoolToJsonStr(Polygon.RemoveDead) + ','
+        + '"pour_skipped":' + BoolToJsonStr(Skipped) + ','
+        + '"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0) + ','
+        + '"repour_mode":"' + RepourModeName(0) + '",'
+        + '"name":"' + EscapeJsonString(Polygon.Name) + '",'
         + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -11215,7 +11254,7 @@ End;
 { follows a round or flanged board exactly. The edge distance comes from the  }
 { keep-out outline (PCB_KeepoutBoardOutline), which the Python tool draws     }
 { first.                                                                        }
-{ Params: net, layer, pour_over, remove_dead (as PCB_PlacePolygonRect).        }
+{ Params: net, layer, pour_over, remove_dead, pour (as PCB_PlacePolygonRect). }
 {..............................................................................}
 
 Function PCB_PlacePolygonBoard(Params : String; RequestId : String) : String;
@@ -11228,6 +11267,8 @@ Var
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
     I, N : Integer;
+    Skipped, CopperExact : Boolean;
+    CopperSqMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -11305,7 +11346,16 @@ Begin
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Polygon.I_ObjectAddress);
-        Polygon.Rebuild;
+        { pour = false skips the pour, for a caller who sets the hatch, grid }
+        { or thresholds next and pours once, with pcb_repour_polygons. On AD }
+        { 26.11 Altium poured the new polygon anyway, even with its repour   }
+        { preference at never, so the reply says what copper is there.       }
+        Skipped := LowerCase(ExtractJsonValue(Params, 'pour')) = 'false';
+        If Not Skipped Then Polygon.Rebuild;
+        { Altium names a pour when it pours it; one left without a name is  }
+        { given its default name, so it can be poured later by name. Set    }
+        { before the polygon joined the board, the name stayed empty.       }
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
         PCBServer.PostProcess;
     End;
@@ -11313,6 +11363,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"vertices":' + IntToStr(N)
         + ',"remove_dead":' + BoolToJsonStr(Polygon.RemoveDead)
+        + ',"pour_skipped":' + BoolToJsonStr(Skipped)
+        + ',"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0)
+        + ',"repour_mode":"' + RepourModeName(0) + '"'
+        + ',"name":"' + EscapeJsonString(Polygon.Name) + '"'
         + ',"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '"'
         + ',"net":"' + EscapeJsonString(NetStr) + '"}');
 End;

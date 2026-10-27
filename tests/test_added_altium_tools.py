@@ -1270,3 +1270,64 @@ def test_net_colour_highlighting_sends_bgr_and_reads_hex(monkeypatch):
     assert "Given := Project.DM_GetNetColorByName(Net.Name);" in body
     # A net the project gives no colour is left as it is, and named.
     assert body.index("NoColour := NoColour +") < body.index("Net.Color := Given;")
+
+
+def test_delete_object_searches_every_layer_unless_one_is_named(monkeypatch):
+    _, s = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_delete_object",
+                 x=-2000.25, y=-2000.75, object_type="via")
+    assert s == [("pcb.delete_object", {"x": "-2000.25", "y": "-2000.75", "layer": "",
+                                        "object_type": "via"})]
+    body = _body("PCB.pas", "PCB_DeleteObject")
+    # A through via sits on the multi-layer: a top-layer walk never found it.
+    assert "If LayerStr = '' Then\n        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)" in body
+    assert "'\"layer\":\"' + EscapeJsonString(FoundLayer)" in body
+
+
+def test_polygon_placers_can_leave_the_pour_for_later(monkeypatch):
+    _, s = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_place_polygon_rect",
+                 x1=0, y1=0, x2=100, y2=100, net="GND", pour=False)
+    assert s[0][1]["pour"] == "false"
+    for name in ("PCB_PlacePolygonRect", "PCB_PlacePolygonBoard"):
+        body = _body("PCB.pas", name)
+        assert "If Not Skipped Then Polygon.Rebuild;" in body, name
+        # Named once it is on the board (before, the name stayed empty); the
+        # reply says what copper is there.
+        assert body.index("Polygon.Name := Polygon.GetDefaultName") > body.index(
+            "Board.AddPCBObject(Polygon)"), name
+        assert "PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0" in body, name
+        assert "RepourModeName(0)" in body, name
+        assert "Polygon.Name := Polygon.GetDefaultName" in body, name
+
+
+def test_footprint_bodies_go_by_identifier_prefix(monkeypatch):
+    _, s = _sent(library, "register_library_tools", monkeypatch,
+                 "lib_select_footprint_primitives", footprint_name="SOT23",
+                 objects=[{"object_type": "body", "identifier": "Envelope_"}])
+    assert s[0][1]["objects"] == "object_type=body;identifier=Envelope_"
+    _, s = _sent(library, "register_library_tools", monkeypatch,
+                 "lib_delete_footprint_primitives", footprint_name="SOT23",
+                 identifier="Envelope_", confirm=True)
+    assert s[0][1]["identifier"] == "Envelope_" and "object_type" not in s[0][1]
+    result, s = _sent(library, "register_library_tools", monkeypatch,
+                      "lib_delete_footprint_primitives", footprint_name="SOT23",
+                      identifier="Envelope_", object_type="track", confirm=True)
+    assert s == [] and result["ok"] is False
+    match = _body("Library.pas", "BodyIdentifierMatches")
+    assert "Copy(Ident, 1, Length(Prefix)) = Prefix" in match
+    assert "Prim.ObjectId <> eComponentBodyObject" in match
+    delete = _body("Library.pas", "Lib_DeleteFootprintPrimitives")
+    assert delete.count("BodyIdentifierMatches(Prim, IdentStr)") == 1
+    assert "CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr)" in delete
+    # The footprint is fetched by name once the walk is over, and footprints
+    # are compared and messaged without reading their I_ObjectAddress: both
+    # faulted on AD 26.11.
+    assert "Target := PcbLib.GetComponentByName(FoundName)" in delete
+    assert "Target.I_ObjectAddress" not in delete
+    assert "Result := Cur.Name = Target.Name;" in _body("Library.pas", "IsCurrentFootprint")
+    assert "I_ObjectAddress" not in _body("Library.pas", "FootprintToHoldFocus")
+
+
+def test_an_unreadable_via_middle_is_null_not_zero():
+    body = _body("Library.pas", "LibViaDetailJson")
+    assert "If (MidSize = 0) And (ModeName = 'top-middle-bottom') Then" in body
+    assert "MidJson := 'null,\"mid_unreadable\":true'" in body

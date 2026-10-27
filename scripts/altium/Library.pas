@@ -12967,7 +12967,8 @@ End;
 Function LibViaDetailJson(Via : IPCB_Via) : String;
 Var
     Cache : TPadCache;
-    Src, ModeName : String;
+    Src, ModeName, MidJson : String;
+    MidSize : TCoord;
 Begin
     Result := '';
     Try
@@ -12998,11 +12999,18 @@ Begin
     Except End;
     Result := Result + ',"stack_mode":"' + ModeName + '"';
     { A simple via stores no middle size: it reads 0 there, and some builds  }
-    { read 0 even after a middle size was written (issue #65).               }
+    { read 0 even after a middle size was written (issues #65, #140). On a   }
+    { top-middle-bottom via a 0 middle is not a size, so it is reported as   }
+    { null with mid_unreadable rather than as a measurement.                 }
     Try
+        MidSize := Via.SizeOnLayer(eMidLayers);
+        If (MidSize = 0) And (ModeName = 'top-middle-bottom') Then
+            MidJson := 'null,"mid_unreadable":true'
+        Else
+            MidJson := FloatToJsonStr(CoordToMM(MidSize));
         Result := Result
             + ',"diameter_top":' + FloatToJsonStr(CoordToMM(Via.SizeOnLayer(eTopLayer)))
-            + ',"diameter_mid":' + FloatToJsonStr(CoordToMM(Via.SizeOnLayer(eMidLayers)))
+            + ',"diameter_mid":' + MidJson
             + ',"diameter_bottom":' + FloatToJsonStr(CoordToMM(Via.SizeOnLayer(eBottomLayer)));
     Except End;
 End;
@@ -13030,6 +13038,22 @@ End;
 { bracket a programmatic Selected := True sets the flag but leaves the      }
 { editor's selection list, which commands act on, empty (see                }
 { CollectSelectedPCBPrims in PCB.pas).                                      }
+{ True when Prim is a 3D body whose Identifier starts with Prefix. A tool  }
+{ that builds bodies marks them with one prefix and several suffixes, and   }
+{ one prefix takes them all, never the footprint's own model beside them.   }
+Function BodyIdentifierMatches(Prim : IPCB_Primitive; Prefix : String) : Boolean;
+Var
+    Body : IPCB_ComponentBody;
+    Ident : String;
+Begin
+    Result := False;
+    If Prim.ObjectId <> eComponentBodyObject Then Exit;
+    Body := Prim;
+    Ident := '';
+    Try Ident := Body.Identifier; Except Ident := ''; End;
+    Result := (Prefix <> '') And (Copy(Ident, 1, Length(Prefix)) = Prefix);
+End;
+
 Function SelectSpecProblem(PcbLib : IPCB_Library; Spec : String) : String;
 Var
     T, L : String;
@@ -13039,9 +13063,15 @@ Begin
     T := GetBatchField(Spec, 'object_type');
     L := GetBatchField(Spec, 'layer');
     If (T = '') And (L = '') And (GetBatchField(Spec, 'name') = '')
-       And (GetBatchField(Spec, 'box') = '') Then
+       And (GetBatchField(Spec, 'box') = '') And (GetBatchField(Spec, 'identifier') = '') Then
     Begin
-        Result := 'a set with no object_type, layer, name or box would select the whole footprint';
+        Result := 'a set with no object_type, layer, name, box or identifier would select the whole footprint';
+        Exit;
+    End;
+    If (GetBatchField(Spec, 'identifier') <> '') And (T <> '')
+       And (ObjectTypeFromStringPCB(T) <> eComponentBodyObject) Then
+    Begin
+        Result := 'identifier picks 3D bodies; object_type ' + T + ' has none';
         Exit;
     End;
     If (T <> '') And (ObjectTypeFromStringPCB(T) = -1) Then
@@ -13110,7 +13140,7 @@ End;
 
 Function SelectSpecMatches(PcbLib : IPCB_Library; Spec : String; Prim : IPCB_Primitive) : Boolean;
 Var
-    T, L, N, NameOf, Box : String;
+    T, L, N, NameOf, Box, Ident : String;
     Pad : IPCB_Pad;
     Rgn : IPCB_Region;
 Begin
@@ -13119,6 +13149,8 @@ Begin
     L := GetBatchField(Spec, 'layer');
     N := GetBatchField(Spec, 'name');
     Box := GetBatchField(Spec, 'box');
+    Ident := GetBatchField(Spec, 'identifier');
+    If (Ident <> '') And (Not BodyIdentifierMatches(Prim, Ident)) Then Exit;
     If (T <> '') And (Prim.ObjectId <> ObjectTypeFromStringPCB(T)) Then Exit;
     If (L <> '') And (Prim.Layer <> ResolveLayerId(PcbLib.Board, L)) Then Exit;
     If (Box <> '') And (Not SelectBoxMatches(PcbLib, Box, Prim)) Then Exit;
@@ -14758,7 +14790,7 @@ Begin
         Footprint := Iter.FirstPCBObject;
         While Footprint <> Nil Do
         Begin
-            If Footprint.I_ObjectAddress <> Target.I_ObjectAddress Then
+            If Footprint.Name <> Target.Name Then
             Begin
                 Result := Footprint;
                 Break;
@@ -14785,8 +14817,11 @@ Begin
     Result := False;
     Cur := Nil;
     Try Cur := PcbLib.CurrentComponent; Except End;
+    { By name, unique in a library: reading I_ObjectAddress off a footprint }
+    { passed in here faulted with an access violation no Try catches       }
+    { (measured on AD 26.11, issue #135), while its Name read cleanly.      }
     If Cur <> Nil Then
-        Result := Cur.I_ObjectAddress = Target.I_ObjectAddress;
+        Result := Cur.Name = Target.Name;
 End;
 
 { The primitives a footprint delete may meet, as one object set. Every walk  }
@@ -14806,7 +14841,7 @@ End;
 { How many primitives of Target match the delete's filters, each counted    }
 { once by address (a footprint can list one twice).                         }
 Function CountFootprintMatches(Target : IPCB_LibComponent; ObjFilter : Integer;
-    WantLayer : TLayer; IncludePads : Boolean) : Integer;
+    WantLayer : TLayer; IncludePads : Boolean; IdentStr : String) : Integer;
 Var
     GrpIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
@@ -14821,7 +14856,8 @@ Begin
         While Prim <> Nil Do
         Begin
             If ((WantLayer = eNoLayer) Or (Prim.Layer = WantLayer))
-               And (IncludePads Or (Prim.ObjectId <> ePadObject)) Then
+               And (IncludePads Or (Prim.ObjectId <> ePadObject))
+               And ((IdentStr = '') Or BodyIdentifierMatches(Prim, IdentStr)) Then
             Begin
                 Addr := IntToStr(Prim.I_ObjectAddress);
                 If Pos(#9 + Addr + #9, Seen) = 0 Then
@@ -14840,7 +14876,7 @@ End;
 Function Lib_DeleteFootprintPrimitives(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpWanted, FpName, ObjTypeStr, LayerStr : String;
-    ConfirmStr, RemovedJson, Hint : String;
+    ConfirmStr, RemovedJson, Hint, IdentStr, FoundName : String;
     Matched, Leftover : Integer;
     Workspace : IWorkspace;
     Doc : IDocument;
@@ -14864,6 +14900,9 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     ConfirmStr := ExtractJsonValue(Params, 'confirm');
     IncludePads := (ExtractJsonValue(Params, 'include_pads') = 'true');
+    { 3D bodies whose Identifier starts with this; implies object_type body. }
+    IdentStr := ExtractJsonValue(Params, 'identifier');
+    If (IdentStr <> '') And (ObjTypeStr = '') Then ObjTypeStr := 'body';
 
     If FpWanted = '' Then
     Begin
@@ -14933,7 +14972,13 @@ Begin
         Exit;
     End;
 
+    { The walk finds the footprint's exact name; the footprint itself is   }
+    { fetched by that name once the iterator is gone. A footprint held from }
+    { the walk dangled after LibraryIterator_Destroy, and the first read of }
+    { it faulted with an access violation no Try catches (measured on AD   }
+    { 26.11, issue #135).                                                  }
     Target := Nil;
+    FoundName := '';
     Iter := PcbLib.LibraryIterator_Create;
     Try
         Footprint := Iter.FirstPCBObject;
@@ -14943,7 +14988,7 @@ Begin
             Try FpName := Footprint.Name; Except End;
             If UpperCase(FpName) = UpperCase(FpWanted) Then
             Begin
-                Target := Footprint;
+                FoundName := FpName;
                 Break;
             End;
             Footprint := Iter.NextPCBObject;
@@ -14951,6 +14996,8 @@ Begin
     Finally
         PcbLib.LibraryIterator_Destroy(Iter);
     End;
+    If FoundName <> '' Then
+        Try Target := PcbLib.GetComponentByName(FoundName); Except Target := Nil; End;
 
     If Target = Nil Then
     Begin
@@ -14964,6 +15011,12 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_TYPE',
             'Unknown PCB object type: ' + ObjTypeStr);
+        Exit;
+    End;
+    If (IdentStr <> '') And (ObjFilter <> eComponentBodyObject) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE',
+            'identifier picks 3D bodies; object_type ' + ObjTypeStr + ' has none');
         Exit;
     End;
 
@@ -15023,7 +15076,7 @@ Begin
 
     { Counted here, once Target is off screen, so a primitive the board view }
     { also lists is counted once.                                              }
-    Matched := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads);
+    Matched := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr);
     GrpIter := Target.GroupIterator_Create;
     Try
         FilterFootprintWalk(GrpIter, -1);
@@ -15037,11 +15090,12 @@ Begin
         Target.GroupIterator_Destroy(GrpIter);
     End;
 
+    { No modify messages for Target: it is not the current footprint here, }
+    { and reading its I_ObjectAddress faulted with an access violation no  }
+    { Try catches (measured on AD 26.11, issue #135). Altium's own library }
+    { scripts remove primitives within PreProcess / PostProcess alone.     }
     PCBServer.PreProcess;
     Try
-        PCBServer.SendMessageToRobots(Target.I_ObjectAddress,
-            c_Broadcast, PCBM_BeginModify, c_NoEventData);
-
         { Bounded, so a RemovePCBObject that silently refuses cannot spin  }
         { here forever re-finding the same primitive.                       }
         For I := 1 To 5000 Do
@@ -15056,7 +15110,8 @@ Begin
                 Begin
                     If ((ObjFilter = -1) Or (Prim.ObjectId = ObjFilter))
                        And ((WantLayer = eNoLayer) Or (Prim.Layer = WantLayer))
-                       And (IncludePads Or (Prim.ObjectId <> ePadObject)) Then
+                       And (IncludePads Or (Prim.ObjectId <> ePadObject))
+                       And ((IdentStr = '') Or BodyIdentifierMatches(Prim, IdentStr)) Then
                     Begin
                         MatchLayer := Prim.Layer;
                         Found := True;
@@ -15105,9 +15160,6 @@ Begin
 
             If Not Found Then Break;
         End;
-
-        PCBServer.SendMessageToRobots(Target.I_ObjectAddress,
-            c_Broadcast, PCBM_EndModify, c_NoEventData);
     Finally
         PCBServer.PostProcess;
         If WasCurrent Then
@@ -15130,7 +15182,7 @@ Begin
 
     { Counted again: "nothing matched" and "matched and would not go" must  }
     { not read alike. RemovePCBObject can refuse without an error.          }
-    Leftover := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads);
+    Leftover := CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr);
     Hint := '';
     If Leftover > 0 Then
         Hint := IntToStr(Leftover) + ' matching primitive(s) are still in the '

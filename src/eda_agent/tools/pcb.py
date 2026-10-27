@@ -6543,6 +6543,7 @@ def register_pcb_tools(mcp):
         layer: str = "TopLayer",
         pour_over: bool = True,
         remove_dead: bool = True,
+        pour: bool = True,
     ) -> dict[str, Any]:
         """Drop a copper polygon pour on a rectangular area.
 
@@ -6567,9 +6568,17 @@ def register_pcb_tools(mcp):
             pour_over: Pour over same-net objects (default True)
             remove_dead: Remove copper islands joined to nothing
                 (default True).
+            pour: Pour it now (default True). False skips the pour, so
+                its hatch, grid or thresholds can be set first and it is
+                poured once, with pcb_repour_polygons by the ``name`` in
+                the reply; on a dense board a pour can take seconds to
+                minutes. Some builds pour a new polygon anyway (AD 26.11
+                did, whatever pcb_polygon_repour_mode said): ``poured``
+                reports the copper that is there.
 
         Returns:
-            Dictionary confirming the polygon placement
+            Dictionary confirming the polygon placement, with
+            ``pour_skipped``, ``poured``, ``repour_mode`` and ``name``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -6583,6 +6592,7 @@ def register_pcb_tools(mcp):
                 "layer": layer,
                 "pour_over": "true" if pour_over else "false",
                 "remove_dead": "true" if remove_dead else "false",
+                "pour": "true" if pour else "false",
             },
         )
         return result
@@ -6618,6 +6628,7 @@ def register_pcb_tools(mcp):
         edge_clearance_mils: int = 10,
         pour_over: bool = True,
         remove_dead: bool = True,
+        pour: bool = True,
     ) -> dict[str, Any]:
         """Pour copper over the whole board shape, following its outline.
 
@@ -6636,10 +6647,17 @@ def register_pcb_tools(mcp):
             pour_over: Pour over same-net objects (default True).
             remove_dead: Remove copper islands joined to nothing
                 (default True).
+            pour: Pour it now (default True); False skips the pour, to
+                pour once with pcb_repour_polygons (by the ``name`` in the
+                reply) after its settings are made. Some builds pour a new
+                polygon anyway (AD 26.11 did): ``poured`` reports the
+                copper that is there.
 
         Returns:
-            The pour (``vertices``, ``layer``, ``net``, ``remove_dead``)
-            and ``keepout`` (what the keep-out outline added).
+            The pour (``vertices``, ``name``, ``layer``, ``net``,
+            ``remove_dead``, ``pour_skipped``, ``poured``,
+            ``repour_mode``) and ``keepout`` (what the keep-out outline
+            added).
         """
         bridge = get_bridge()
         keepout: Any = None
@@ -6654,7 +6672,8 @@ def register_pcb_tools(mcp):
             "pcb.place_polygon_board",
             {"net": net, "layer": layer,
              "pour_over": "true" if pour_over else "false",
-             "remove_dead": "true" if remove_dead else "false"})
+             "remove_dead": "true" if remove_dead else "false",
+             "pour": "true" if pour else "false"})
         if isinstance(result, dict):
             result["keepout"] = keepout
         return result
@@ -7531,7 +7550,7 @@ def register_pcb_tools(mcp):
     async def pcb_delete_object(
         x: float,
         y: float,
-        layer: str = "TopLayer",
+        layer: str = "",
         object_type: str = "track",
     ) -> dict[str, Any]:
         """Delete a PCB object closest to specific coordinates on a layer.
@@ -7546,7 +7565,9 @@ def register_pcb_tools(mcp):
         Args:
             x: Target X position in mils
             y: Target Y position in mils
-            layer: PCB layer name (default "TopLayer")
+            layer: PCB layer name to search; empty searches every layer,
+                which is where a through via, a through-hole pad or a part
+                is found (they sit on the multi-layer).
             object_type: Type of object to delete. Options:
                 "track" - Track segment
                 "via" - Via
@@ -7561,7 +7582,7 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with deleted status, object_type, distance_mils,
-            the deleted object's net and bbox_mils, and others_as_close:
+            the deleted object's net, layer and bbox_mils, and others_as_close:
             how many other objects were exactly as near, so a pick among
             equals is visible.
         """

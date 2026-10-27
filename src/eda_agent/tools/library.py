@@ -5756,6 +5756,7 @@ def register_library_tools(mcp):
         library_path: str = "",
         include_pads: bool = False,
         confirm: bool = False,
+        identifier: str = "",
     ) -> dict[str, Any]:
         """Delete primitives inside ONE footprint of a PCB library.
 
@@ -5776,6 +5777,11 @@ def register_library_tools(mcp):
             include_pads: Allow pads to be removed.
             confirm: Required True; check first with
                 ``lib_probe_footprint``.
+            identifier: 3D bodies whose Identifier starts with this (one
+                prefix takes every suffix a tool wrote); implies
+                object_type "body". Bodies built by a tool can be taken
+                away without the footprint's own STEP model, which sits
+                on the same layer.
 
         Returns:
             ``library``, ``footprint``, ``matched``, ``removed``,
@@ -5786,10 +5792,12 @@ def register_library_tools(mcp):
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
-        if not object_type.strip() and not layer.strip():
+        if not object_type.strip() and not layer.strip() and not identifier.strip():
             return {"ok": False, "reason": (
-                "give object_type or layer. Emptying a whole footprint is "
-                "not something to reach by leaving both filters off")}
+                "give object_type, layer or identifier. Emptying a whole "
+                "footprint is not something to reach by leaving them off")}
+        if identifier.strip() and object_type.strip() not in ("", "body"):
+            return {"ok": False, "reason": "identifier picks 3D bodies; object_type is body"}
 
         params: dict[str, Any] = {"footprint_name": footprint_name}
         if object_type.strip():
@@ -5802,6 +5810,8 @@ def register_library_tools(mcp):
             params["include_pads"] = "true"
         if confirm:
             params["confirm"] = "true"
+        if identifier.strip():
+            params["identifier"] = identifier.strip()
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -6794,9 +6804,12 @@ def register_library_tools(mcp):
                 selected. Each set has any of ``object_type`` ("pad",
                 "region", "track", ...), ``layer`` ("TopLayer",
                 "MultiLayer", ...), ``name`` (a pad's designator or a
-                region's Name) and ``box`` ([x1, y1, x2, y2] in mm from the
+                region's Name), ``box`` ([x1, y1, x2, y2] in mm from the
                 footprint origin, the box lib_get_footprint_primitives
-                gives a region, fill or text; matched within 0.001 mm).
+                gives a region, fill or text; matched within 0.001 mm)
+                and ``identifier`` (3D bodies whose Identifier starts with
+                it, as lib_get_footprint_primitives reports in
+                ``body_models``).
             clear: Deselect everything else first (default True).
 
         Returns:
@@ -6808,7 +6821,7 @@ def register_library_tools(mcp):
             if not isinstance(spec, dict):
                 return {"ok": False, "reason": f"set {i} is not an object"}
             fields: list[str] = []
-            for key in ("object_type", "layer", "name"):
+            for key in ("object_type", "layer", "name", "identifier"):
                 value = str(spec.get(key) or "").strip()
                 if value:
                     fields.append(f"{key}={payload_safe(value)}")
