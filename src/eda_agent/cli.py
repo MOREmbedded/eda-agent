@@ -997,6 +997,179 @@ def cmd_sdk_coverage(*, as_json: bool = False, detail: int = 0,
     return 0
 
 
+def cmd_sdk_symbols(*, refresh: bool = False, as_json: bool = False,
+                    name: str = "", sdk_json: str | None = None) -> int:
+    """Report what the scripting engine will actually resolve.
+
+    `sdk-coverage` counts what the chains reach and `sdk-probe` asks the
+    running Altium. This answers the same question offline, by reading
+    the engine's own registered symbol table out of ScriptingSystem.dll,
+    which matters because the live answer costs a halted debugger every
+    time it is "no".
+    """
+    import json as _json
+
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import (ABSENT, GETTER, PLAIN, UNKNOWN,
+                              SymbolsUnavailable, load_symbols, refresh as
+                              refresh_symbols)
+
+    if refresh:
+        try:
+            target = refresh_symbols(load_sdk(sdk_json).source)
+        except (SdkUnavailable, SymbolsUnavailable) as missing:
+            print(str(missing), file=sys.stderr)
+            return 1
+        print(f"extracted to {target}")
+
+    try:
+        table = load_symbols()
+    except SymbolsUnavailable as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+
+    if name:
+        reach = table.reach(name)
+        explain = {
+            PLAIN: f"Obj.{name} resolves",
+            GETTER: f"only Obj.GetState_{name} is registered; property "
+                    f"syntax faults",
+            ABSENT: "the engine registers neither spelling",
+            UNKNOWN: f"shorter than {table.min_reliable} characters, so the "
+                     f"extraction cannot tell it from its neighbours",
+        }[reach]
+        if as_json:
+            print(_json.dumps({"name": name, "reach": reach,
+                               "explain": explain}, indent=2))
+        else:
+            print(f"{name}: {reach} -- {explain}")
+        return 0
+
+    summary = {
+        "source": table.source,
+        "extracted_at": table.extracted_at,
+        "names": len(table.names),
+        "getters": len(table.getters),
+        "setters": len(table.setters),
+        "min_reliable": table.min_reliable,
+    }
+    if as_json:
+        print(_json.dumps(summary, indent=2))
+        return 0
+    print(f"Scripting symbol table from {table.source}")
+    print(f"  extracted   {table.extracted_at}")
+    print(f"  names       {len(table.names)}")
+    print(f"  GetState_   {len(table.getters)}")
+    print(f"  SetState_   {len(table.setters)}")
+    print()
+    print(f"Names shorter than {table.min_reliable} characters are reported "
+          f"as unknown, not absent: the extraction reads maximal printable "
+          f"runs, and a short name merges with whatever sits beside it.")
+    return 0
+
+
+def cmd_sdk_probe(*, designator: str = "", properties: str = "",
+                  doc_path: str = "", as_json: bool = False,
+                  sdk_json: str | None = None) -> int:
+    """Ask the running Altium which DECLARED properties it actually exposes.
+
+    `sdk-coverage` counts what the chains reach. This measures something
+    the assembly cannot answer: whether a property the SDK declares is
+    reachable from the scripting engine at all. DelphiScript binds late,
+    so the generated probe compiles either way, and a member the engine
+    does not expose faults where Try/Except cannot catch it.
+
+    THAT FAULT KILLS THE POLLING LOOP, and this is written around that.
+    Every attempt is logged inside Altium before it is made, so when the
+    call does not come back, the last 'attempt=' line in activity.log
+    names the property responsible. Re-run without it, after
+    `eda-agent relaunch`.
+    """
+    import asyncio
+    import json as _json
+
+    from .bridge import get_bridge
+    from .config import get_config
+    from .sdk.generate import candidates_for
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import SymbolsUnavailable, load_symbols
+
+    names = [n.strip() for n in properties.split(",") if n.strip()]
+    if not names:
+        try:
+            model = load_sdk(sdk_json)
+        except SdkUnavailable as missing:
+            print(str(missing), file=sys.stderr)
+            return 1
+        try:
+            table = load_symbols()
+        except SymbolsUnavailable:
+            # Without the table this is the old behaviour: a list of
+            # candidates, one of which may halt the debugger.
+            table = None
+        _, take, _ = candidates_for(model, "component", "read", table)
+        names = [name for name, _prop in take]
+
+    params = {"properties": ",".join(names)}
+    if designator:
+        params["designator"] = designator
+    if doc_path:
+        params["doc_path"] = doc_path
+
+    async def _run():
+        return await get_bridge().send_command_async(
+            "generic.probe_sdk_properties", params, timeout=120.0)
+
+    try:
+        reply = asyncio.run(_run())
+    except Exception as failed:  # noqa: BLE001 - the point is to explain it
+        print(f"probe did not return: {failed}", file=sys.stderr)
+        print(_last_attempt_hint(get_config().workspace_dir), file=sys.stderr)
+        return 1
+
+    if not isinstance(reply, dict) or "results" not in reply:
+        print(f"unexpected reply: {reply!r}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(_json.dumps(reply, indent=2))
+        return 0
+
+    rows = reply["results"]
+    exposed = [r for r in rows if r.get("exposed")]
+    print(f"Probed {len(rows)} declared properties on "
+          f"{reply.get('interface', '?')} "
+          f"(component {reply.get('designator') or '?'})")
+    print(f"  {len(exposed)} of {len(rows)} answered "
+          f"({100.0 * len(exposed) / len(rows):.0f}%)" if rows else "  nothing probed")
+    print()
+    for row in rows:
+        mark = "ok  " if row.get("exposed") else "MISS"
+        value = row.get("value", "")
+        shown = value if len(value) <= 48 else value[:45] + "..."
+        print(f"  [{mark}] {row['name']:<32} {shown}")
+    return 0
+
+
+def _last_attempt_hint(workspace) -> str:
+    """What the activity log says the probe was doing when it stopped."""
+    log = workspace / "activity.log"
+    if not log.is_file():
+        return "no activity.log to say which property it died on"
+    attempted = None
+    completed = None
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if ",_sdk_probe,attempt=" in line:
+            attempted = line.split("attempt=", 1)[1].split(",", 1)[0]
+        elif ",_sdk_probe,done=" in line:
+            completed = line.split("done=", 1)[1].split(",", 1)[0]
+    if attempted and attempted != completed:
+        return (f"the loop stopped on {attempted!r}: it is declared but not "
+                f"exposed. Run `eda-agent relaunch`, then probe again with "
+                f"--properties listing the rest.")
+    return "the log shows no unfinished probe, so the loop stopped elsewhere"
+
+
 def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
     """Report call timing by joining the workspace's two logs.
 
