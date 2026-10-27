@@ -9904,8 +9904,8 @@ Begin
         If Doc = Nil Then Continue;
         If Doc.DM_DocumentKind <> 'SCH' Then Continue;
         SheetPath := Doc.DM_FullPath;
-        SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        { Counted, so the reply also says how many sheets were not read. }
+        SchDoc := ProjectSheet(SheetPath);
         If SchDoc = Nil Then
         Begin
             If NotLoaded <> '' Then NotLoaded := NotLoaded + ',';
