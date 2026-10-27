@@ -1040,6 +1040,36 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "modes (Altium's numbers: rule or manual)."),
     },
     {
+        "task": "Set up a rigid-flex board: split it into regions, give each a layer stack, add bend lines",
+        "keywords": ("rigid", "flex", "rigid-flex", "region", "regions", "split",
+                     "bend", "bending", "stack", "substack", "fold", "planning"),
+        "when": (("rigid", "flex"), ("bend", "line"), ("split", "region"),
+                 ("layer", "stack", "region"), ("flex", "region")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_board_regions", "pcb_split_board", "pcb_set_board_region",
+                "pcb_layer_stacks", "pcb_add_bend_line", "pcb_modify_bend_line",
+                "pcb_delete_bend_line", "pcb_remove_split_line"],
+        "avoid": [("pcb_set_board_shape", "reshapes the outline and rebuilds every "
+                   "region from the split lines")],
+        "note": ("Split, name the halves (they come back alike), make a flex "
+                 "stack with only the flex copper layers, assign it, then draw "
+                 "bend lines across the flex region. A board whose regions were "
+                 "not made by split lines refuses split changes."),
+    },
+    {
+        "task": "Gloss or retrace existing routing",
+        "keywords": ("gloss", "retrace", "smooth", "clean", "routing", "tracks",
+                     "shorten", "tidy"),
+        "when": (("gloss",), ("retrace",), ("smooth", "routing")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_gloss"],
+        "avoid": [("pcb_cleanup_tracks", "removes broken and overlapping pieces; "
+                   "it does not reshape a route")],
+        "note": "Per net; reports track count and length before and after. Check hand-routed copper.",
+    },
+    {
         "task": "Set the board's snap, track, via or visible grid",
         "keywords": ("grid", "snap", "track", "via", "visible", "dot",
                      "board"),

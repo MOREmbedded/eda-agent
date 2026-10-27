@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.13
+# Release verification: 2026.10.27.25
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -182,6 +182,10 @@ works elsewhere cannot be an undeclared identifier:
 | 48, wire tidy | `OptimizeUseOfPolylines` on a sheet | no, nowhere | medium, rewrites a sheet's wires; ran live, closed unsaved |
 | 48, pre-routes | `IsPreRoute`, `UserRouted` on tracks, arcs and vias | no, nowhere | low, ran live and cleared |
 | 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | no, nowhere | low, ran live, board closed unsaved |
+| 49, split lines | `CreateSplitLine`, `DeleteSplitLine`, `RebuildSplitBoardRegions` on the outline | yes, `RefreshBoardOutline` (rebuild) | high, rebuilds regions; refused on a board whose regions are not all from split lines; ran live |
+| 49, region settings | `Locked3D` on a board region | no, nowhere | low, ran live and read back |
+| 49, layer stacks | `CreateSubstack`, `RemoveSubstack`, `EnableLayer`, `DisableLayer`, `IsFlex` on the layer stack | no, nowhere | medium, changes the stack; ran live and restored |
+| 49, bend lines | `CreateBendingLine`, `DeleteBendingLine`, `FoldIndex` on a region's bend lines | no, nowhere | low, ran live and restored |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -357,7 +361,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.13`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.25`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2874,6 +2878,47 @@ and board; every document closed without saving. One earlier test call to
 any unsaved document; the sheet held only restored values then. All
 passed as described. Not run: a pour grown into a keepout, and paste
 percentages on a stencil output.
+
+---
+
+## 49. Rigid-flex regions, layer stacks, bend lines, Gloss and Retrace
+
+New: `pcb_get_board_regions`, `pcb_split_board`, `pcb_remove_split_line`,
+`pcb_set_board_region`, `pcb_layer_stacks`, `pcb_add_bend_line`,
+`pcb_modify_bend_line`, `pcb_delete_bend_line`, `pcb_gloss`.
+
+1. **Read.** A plain board: one region on "Board Layer Stack" with its
+   four copper layers. A rigid-flex fixture: nine regions (five rigid,
+   four flex arms on "Research Flex" with GND and PWR), one bend line per
+   arm with its points, radius 300 mils, angle -90 and fold order.
+2. **Split.** A line across the plain board made two regions, both named
+   alike; renamed by index ("#0", "#1"); the split removed again gave one
+   region. A line off the board added no region and was taken out
+   (`SPLIT_DID_NOT_DIVIDE`). On the fixture, whose regions were not made
+   by split lines, a split was refused (`REGIONS_NOT_FROM_SPLIT_LINES`)
+   and its nine regions stayed: before that guard a split there merged
+   them into two.
+3. **Layer stacks.** A flex stack created, Top and Bottom Layer enabled
+   in it, one disabled again, renamed, assigned to a region and back,
+   removed; an unknown stack refused.
+4. **Bend lines.** On a fixture arm: radius, angle and fold order
+   changed and restored, the line deleted and added again with the same
+   points. On the plain board: a line across a region stretched to its
+   edges; one outside it refused (`BEND_OUTSIDE_REGION`) and removed.
+5. **Lock.** A region locked in 3D and read back.
+6. **Gloss and Retrace.** Gloss on two nets: 8 tracks to 11 and 297 to
+   293 mils, 9 tracks to 5 and 463 to 453 mils; Retrace then left the
+   first net as it was.
+
+Measured and NOT built: reading a split line's points ("Undeclared
+identifier: FromPoint"); `TCoordPoint` records (their fields are
+undeclared to a script, so points are `TPoint` from `Point()`); split
+lines made with the full region rebuild (the line was thrown away).
+
+Run live on AD 26.11.1.5 with that change's script on scratch copies of
+the plain board and the fixture; every document closed without saving.
+All passed as described. Not run: bend lines folded in the 3D view, and a
+split on a board with existing split lines.
 
 ---
 

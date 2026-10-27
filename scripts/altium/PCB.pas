@@ -19405,6 +19405,742 @@ Begin
         + JsonStr('note', 'The outline moved; repour to refill the copper.')));
 End;
 
+{ RIGID-FLEX: BOARD REGIONS, SPLIT LINES, BEND LINES AND LAYER STACKS.        }
+{ A board region is a region object whose ViewableObjectID is               }
+{ eViewableObject_BoardRegion; split lines and bend lines hang off the       }
+{ board outline; the layer stacks are the master stack's substacks. Points    }
+{ are TPoint records, made with Point(): TCoordPoint is not a type the      }
+{ script engine declares ("Undeclared identifier: x" on its fields, AD      }
+{ 26.11). Lengths are mils, angles degrees.                                 }
+
+{ A point as [x, y] in mils from the board origin. }
+Function FlexPointJson(Board : IPCB_Board; Name : String; P : TPoint) : String;
+Begin
+    Result := JsonRaw(Name, '[' + FloatToJsonStr(CoordToMilsF(P.X - Board.XOrigin)) + ','
+        + FloatToJsonStr(CoordToMilsF(P.Y - Board.YOrigin)) + ']');
+End;
+
+{ A substack's name, '' when there is none. }
+Function FlexStackName(S : IPCB_LayerStack) : String;
+Begin
+    Result := '';
+    If S = Nil Then Exit;
+    Try Result := S.Name; Except Result := ''; End;
+End;
+
+{ The copper layers a stack holds, as a JSON array of names. }
+Function FlexStackLayersJson(S : IPCB_LayerStack) : String;
+Var
+    L : IPCB_LayerObject;
+    Items : String;
+Begin
+    Items := '';
+    L := S.First(eLayerClass_Electrical);
+    While L <> Nil Do
+    Begin
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(L.Name) + '"';
+        L := S.Next(eLayerClass_Electrical, L);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+Function FlexBendJson(Board : IPCB_Board; BL : IPCB_BendingLine; At : Integer) : String;
+Var
+    P : TPoint;
+    Q : TPoint;
+Begin
+    P := BL.FromPoint;
+    Q := BL.ToPoint;
+    Result := JsonObj(JsonInt('index', At) + ','
+        + FlexPointJson(Board, 'from', P) + ','
+        + FlexPointJson(Board, 'to', Q) + ','
+        + JsonRaw('radius_mils', FloatToJsonStr(CoordToMilsF(BL.Radius))) + ','
+        + JsonRaw('angle', FloatToJsonStr(BL.Angle)) + ','
+        + JsonInt('fold_index', BL.FoldIndex));
+End;
+
+{ Every board region with its bend lines, as a JSON array. Bend lines belong }
+{ to a region (measured on AD 26.11: the outline's own list was empty on a  }
+{ board whose flex regions each had one).                                   }
+Function FlexRegionsJson(Board : IPCB_Board) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Reg : IPCB_BoardRegion;
+    S : IPCB_LayerStack;
+    BL : IPCB_BendingLine;
+    Items, StackName, Bends : String;
+    I, RegIdx : Integer;
+Begin
+    Items := '';
+    RegIdx := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.ViewableObjectID = eViewableObject_BoardRegion Then
+            Begin
+                Reg := Prim;
+                S := Nil;
+                Try S := Reg.LayerStack; Except S := Nil; End;
+                StackName := FlexStackName(S);
+                Bends := '';
+                For I := 0 To Reg.BendingLinesCount - 1 Do
+                Begin
+                    BL := Reg.GetBendingLines(I);
+                    If Bends <> '' Then Bends := Bends + ',';
+                    Bends := Bends + FlexBendJson(Board, BL, I);
+                End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonInt('index', RegIdx) + ','
+                    + JsonStr('name', Reg.Name) + ','
+                    + JsonStr('layer_stack', StackName) + ','
+                    + JsonBool('locked_3d', Reg.Locked3D) + ','
+                    + JsonRaw('bend_lines', '[' + Bends + ']'));
+                Inc(RegIdx);
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+{ The board region named Name, or '#N' for the Nth (0-based, the order the   }
+{ region list gives: a split names both halves alike), Nil when none.       }
+Function FlexFindRegion(Board : IPCB_Board; Name : String) : IPCB_BoardRegion;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Reg : IPCB_BoardRegion;
+    Want, At : Integer;
+Begin
+    Result := Nil;
+    Want := -1;
+    If (Copy(Name, 1, 1) = '#') And IsIntStr(Copy(Name, 2, Length(Name))) Then
+        Want := StrToInt(Copy(Name, 2, Length(Name)));
+    At := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.ViewableObjectID = eViewableObject_BoardRegion Then
+            Begin
+                Reg := Prim;
+                If ((Want >= 0) And (At = Want))
+                   Or ((Want < 0) And (UpperCase(Reg.Name) = UpperCase(Name))) Then
+                Begin
+                    Result := Reg;
+                    Break;
+                End;
+                Inc(At);
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ How many board regions the board has. }
+Function FlexRegionCount(Board : IPCB_Board) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+Begin
+    Result := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.ViewableObjectID = eViewableObject_BoardRegion Then Inc(Result);
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ The master stack's substack named Name, Nil when there is none. }
+Function FlexFindStack(MLS : IPCB_MasterLayerStack; Name : String) : IPCB_LayerStack;
+Var
+    I : Integer;
+    S : IPCB_LayerStack;
+Begin
+    Result := Nil;
+    For I := 0 To MLS.SubstackCount - 1 Do
+    Begin
+        S := MLS.GetState_Substacks(I);
+        If UpperCase(FlexStackName(S)) = UpperCase(Name) Then
+        Begin
+            Result := S;
+            Exit;
+        End;
+    End;
+End;
+
+{ Split lines, bend lines, regions and stacks, as JSON members (no braces). }
+Function FlexStateJson(Board : IPCB_Board) : String;
+Var
+    Outline : IPCB_BoardOutline;
+    SLine : IPCB_SplitBoardRegionWithArcs;
+    Side : IPCB_BoardRegion;
+    MLS : IPCB_MasterLayerStack;
+    S : IPCB_LayerStack;
+    I : Integer;
+    Splits, Stacks, LeftName, RightName : String;
+Begin
+    Outline := Board.BoardOutline;
+    Splits := '';
+    { A split line answers no points to a script ("Undeclared identifier:   }
+    { FromPoint", AD 26.11); it is named by the regions on its two sides.   }
+    For I := 0 To Outline.GetState_SplitLineCount - 1 Do
+    Begin
+        SLine := Outline.GetState_SplitLine(I);
+        LeftName := '';
+        RightName := '';
+        Side := Nil;
+        Try Side := SLine.GetProperty_LeftBoardRegion; Except Side := Nil; End;
+        If Side <> Nil Then LeftName := Side.Name;
+        Side := Nil;
+        Try Side := SLine.GetProperty_RightBoardRegion; Except Side := Nil; End;
+        If Side <> Nil Then RightName := Side.Name;
+        If Splits <> '' Then Splits := Splits + ',';
+        Splits := Splits + JsonObj(JsonInt('index', I) + ',' + JsonStr('left_region', LeftName)
+            + ',' + JsonStr('right_region', RightName));
+    End;
+    Stacks := '';
+    MLS := Board.MasterLayerStack;
+    For I := 0 To MLS.SubstackCount - 1 Do
+    Begin
+        S := MLS.GetState_Substacks(I);
+        If Stacks <> '' Then Stacks := Stacks + ',';
+        Stacks := Stacks + JsonObj(JsonStr('name', FlexStackName(S)) + ','
+            + JsonBool('flex', S.IsFlex) + ','
+            + JsonRaw('copper_layers', FlexStackLayersJson(S)));
+    End;
+    Result := JsonRaw('regions', FlexRegionsJson(Board)) + ','
+        + JsonRaw('split_lines', '[' + Splits + ']') + ','
+        + JsonRaw('layer_stacks', '[' + Stacks + ']');
+End;
+
+{..............................................................................}
+{ PCB_BoardRegions - read the rigid-flex setup, or change it.                  }
+{ Params: action = read (default) | split | unsplit | add_bend | modify_bend |  }
+{ delete_bend | lock_3d | rename.                                              }
+{   split: x1, y1, x2, y2 (mils); unsplit: index (a split line).               }
+{   rename: region, name.                                                      }
+{ Regions are rebuilt partly (RebuildSplitBoardRegions(False)) after a       }
+{ split: the full rebuild threw the new line away. Any rebuild remakes the   }
+{ regions from the split lines alone: on a board whose regions were not made }
+{ by split lines it merged nine regions into two (measured on AD 26.11), so  }
+{ split and unsplit are refused there, and a split that does not add exactly }
+{ one region is taken out again.                                             }
+{   add_bend: region, x1, y1, x2, y2, radius_mils, angle, fold_index.          }
+{   modify_bend: region, index and any of radius_mils, angle, fold_index.      }
+{   delete_bend: region, index.                                                }
+{   lock_3d: region, locked ('true'/'false').                                  }
+{ Answers with the whole setup after the change.                               }
+{..............................................................................}
+Function PCB_BoardRegions(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Outline : IPCB_BoardOutline;
+    BL : IPCB_BendingLine;
+    Reg : IPCB_BoardRegion;
+    Op, X1S, Y1S, X2S, Y2S, IdxStr, RadS, AngS, FoldS, RegName, LockS, NewName : String;
+    SLine : IPCB_SplitBoardRegionWithArcs;
+    P, Q : TPoint;
+    Idx, Before, After, RegBefore, RegAfter : Integer;
+    Changed, Made : Boolean;
+    NewObj : IPCB_Primitive;
+Begin
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
+    If Op = '' Then Op := 'read';
+    X1S := ExtractJsonValue(Params, 'x1'); Y1S := ExtractJsonValue(Params, 'y1');
+    X2S := ExtractJsonValue(Params, 'x2'); Y2S := ExtractJsonValue(Params, 'y2');
+    IdxStr := ExtractJsonValue(Params, 'index');
+    RadS := ExtractJsonValue(Params, 'radius_mils');
+    AngS := ExtractJsonValue(Params, 'angle');
+    FoldS := ExtractJsonValue(Params, 'fold_index');
+    RegName := ExtractJsonValue(Params, 'region');
+    LockS := LowerCase(ExtractJsonValue(Params, 'locked'));
+    NewName := ExtractJsonValue(Params, 'name');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Changed := False;
+    Made := False;
+    Before := -1;
+    After := -1;
+    If (Op = 'add_bend') Or (Op = 'split') Then
+    Begin
+        If (Not IsFloatStr(X1S)) Or (Not IsFloatStr(Y1S)) Or (Not IsFloatStr(X2S)) Or (Not IsFloatStr(Y2S)) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'x1, y1, x2 and y2 are required, in mils');
+            Exit;
+        End;
+        P := Point(MilsToCoordF(StrToFloatDef(X1S, 0)) + Board.XOrigin,
+            MilsToCoordF(StrToFloatDef(Y1S, 0)) + Board.YOrigin);
+        Q := Point(MilsToCoordF(StrToFloatDef(X2S, 0)) + Board.XOrigin,
+            MilsToCoordF(StrToFloatDef(Y2S, 0)) + Board.YOrigin);
+    End;
+    If (Op = 'modify_bend') Or (Op = 'delete_bend') Or (Op = 'unsplit') Then
+    Begin
+        If Not IsIntStr(IdxStr) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'index is required');
+            Exit;
+        End;
+        Idx := StrToInt(IdxStr);
+    End;
+    PCBServer.PreProcess;
+    Try
+        If (Op = 'split') Or (Op = 'unsplit') Then
+        Begin
+            Outline := Board.BoardOutline;
+            RegBefore := FlexRegionCount(Board);
+            If RegBefore > Outline.GetState_SplitLineCount + 1 Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'REGIONS_NOT_FROM_SPLIT_LINES',
+                    'This board has ' + IntToStr(RegBefore) + ' regions but '
+                    + IntToStr(Outline.GetState_SplitLineCount) + ' split lines: its regions '
+                    + 'were not all made by split lines, and changing a split line '
+                    + 'rebuilds the regions from split lines alone, merging them. '
+                    + 'Change it in Altium''s Board Planning Mode.');
+                Exit;
+            End;
+        End;
+        If Op = 'split' Then
+        Begin
+            Before := Outline.GetState_SplitLineCount;
+            NewObj := Outline.CreateSplitLine(P, Q);
+            Made := NewObj <> Nil;
+            After := Outline.GetState_SplitLineCount;
+            If After > Before Then
+            Begin
+                Board.RebuildSplitBoardRegions(False);
+                RegAfter := FlexRegionCount(Board);
+                If RegAfter <> RegBefore + 1 Then
+                Begin
+                    { The line did not cut one region in two: take it out. }
+                    SLine := Outline.GetState_SplitLine(After - 1);
+                    Outline.DeleteSplitLine(SLine);
+                    Board.RebuildSplitBoardRegions(False);
+                    Result := BuildErrorResponse(RequestId, 'SPLIT_DID_NOT_DIVIDE',
+                        'The split line did not divide a region in two (' + IntToStr(RegBefore)
+                        + ' regions, then ' + IntToStr(RegAfter) + '); it was removed. Draw it '
+                        + 'across the board, past the outline at both ends.');
+                    Exit;
+                End;
+                Changed := True;
+            End;
+        End
+        Else If Op = 'unsplit' Then
+        Begin
+            If (Idx < 0) Or (Idx >= Outline.GetState_SplitLineCount) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No split line ' + IdxStr);
+                Exit;
+            End;
+            Before := Outline.GetState_SplitLineCount;
+            SLine := Outline.GetState_SplitLine(Idx);
+            Outline.DeleteSplitLine(SLine);
+            After := Outline.GetState_SplitLineCount;
+            Board.RebuildSplitBoardRegions(False);
+            Changed := After <> Before;
+        End
+        Else If Op = 'rename' Then
+        Begin
+            Reg := FlexFindRegion(Board, RegName);
+            If Reg = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No board region named ' + RegName);
+                Exit;
+            End;
+            Reg.Name := NewName;
+            Changed := True;
+        End
+        Else If Op = 'add_bend' Then
+        Begin
+            Reg := FlexFindRegion(Board, RegName);
+            If Reg = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No board region named ' + RegName);
+                Exit;
+            End;
+            Before := Reg.BendingLinesCount;
+            NewObj := Reg.CreateBendingLine(P, Q, StrToIntDef(FoldS, 0),
+                MilsToCoordF(StrToFloatDef(RadS, 0)), StrToFloatDef(AngS, 0));
+            Made := NewObj <> Nil;
+            After := Reg.BendingLinesCount;
+            Changed := After <> Before;
+            { Altium stretches a bend line to the region's edges; one that   }
+            { misses the region comes back as a single point (measured on   }
+            { AD 26.11). That one is taken out again and refused.           }
+            If After > Before Then
+            Begin
+                BL := Reg.GetBendingLines(After - 1);
+                P := BL.FromPoint;
+                Q := BL.ToPoint;
+                If (P.X = Q.X) And (P.Y = Q.Y) Then
+                Begin
+                    Reg.DeleteBendingLine(BL);
+                    Result := BuildErrorResponse(RequestId, 'BEND_OUTSIDE_REGION',
+                        'The bend line does not cross region ' + RegName + '; it was removed. '
+                        + 'Draw it across that region.');
+                    Exit;
+                End;
+            End;
+        End
+        Else If (Op = 'modify_bend') Or (Op = 'delete_bend') Then
+        Begin
+            Reg := FlexFindRegion(Board, RegName);
+            If Reg = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No board region named ' + RegName);
+                Exit;
+            End;
+            If (Idx < 0) Or (Idx >= Reg.BendingLinesCount) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', RegName + ' has no bend line ' + IdxStr);
+                Exit;
+            End;
+            BL := Reg.GetBendingLines(Idx);
+            If Op = 'delete_bend' Then
+                Reg.DeleteBendingLine(BL)
+            Else
+            Begin
+                If RadS <> '' Then BL.Radius := MilsToCoordF(StrToFloatDef(RadS, 0));
+                If AngS <> '' Then BL.Angle := StrToFloatDef(AngS, 0);
+                If FoldS <> '' Then BL.FoldIndex := StrToIntDef(FoldS, 0);
+            End;
+            Changed := True;
+        End
+        Else If Op = 'lock_3d' Then
+        Begin
+            Reg := FlexFindRegion(Board, RegName);
+            If Reg = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No board region named ' + RegName);
+                Exit;
+            End;
+            Reg.Locked3D := (LockS = 'true');
+            Changed := True;
+        End
+        Else If Op <> 'read' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'Unknown action ' + Op);
+            Exit;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Changed Then
+    Begin
+        Try Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('action', Op) + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonBool('created', Made) + ','
+        + JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + FlexStateJson(Board)));
+End;
+
+{..............................................................................}
+{ PCB_LayerStacks - list, create, rename, remove the board's layer stacks,     }
+{ mark one flex, switch a copper layer in or out of one, or give a board      }
+{ region its stack. Params: action = list (default) | create | rename |       }
+{ remove | set_flex | enable_layer | disable_layer | assign; stack (name),     }
+{ name (new name), flex ('true'/'false'), layer (copper layer name), region.  }
+{..............................................................................}
+Function PCB_LayerStacks(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    S, NewS : IPCB_LayerStack;
+    L, Found : IPCB_LayerObject;
+    Reg : IPCB_BoardRegion;
+    Op, StackName, NewName, FlexS, LayerName, RegName : String;
+    Changed : Boolean;
+Begin
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
+    If Op = '' Then Op := 'list';
+    StackName := ExtractJsonValue(Params, 'stack');
+    NewName := ExtractJsonValue(Params, 'name');
+    FlexS := LowerCase(ExtractJsonValue(Params, 'flex'));
+    LayerName := ExtractJsonValue(Params, 'layer');
+    RegName := ExtractJsonValue(Params, 'region');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    MLS := Board.MasterLayerStack;
+    Changed := False;
+    S := Nil;
+    If (Op <> 'list') And (Op <> 'create') Then
+    Begin
+        S := FlexFindStack(MLS, StackName);
+        If S = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No layer stack named ' + StackName);
+            Exit;
+        End;
+    End;
+    PCBServer.PreProcess;
+    Try
+        If Op = 'create' Then
+        Begin
+            NewS := MLS.CreateSubstack;
+            If NewName <> '' Then NewS.Name := NewName;
+            If FlexS <> '' Then NewS.IsFlex := (FlexS = 'true');
+            Changed := True;
+        End
+        Else If Op = 'rename' Then
+        Begin
+            S.Name := NewName;
+            Changed := True;
+        End
+        Else If Op = 'remove' Then
+        Begin
+            MLS.RemoveSubstack(S);
+            Changed := True;
+        End
+        Else If Op = 'set_flex' Then
+        Begin
+            S.IsFlex := (FlexS = 'true');
+            Changed := True;
+        End
+        Else If (Op = 'enable_layer') Or (Op = 'disable_layer') Then
+        Begin
+            Found := Nil;
+            L := MLS.First(eLayerClass_Electrical);
+            While L <> Nil Do
+            Begin
+                If UpperCase(L.Name) = UpperCase(LayerName) Then
+                Begin
+                    Found := L;
+                    Break;
+                End;
+                L := MLS.Next(eLayerClass_Electrical, L);
+            End;
+            If Found = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No copper layer named ' + LayerName);
+                Exit;
+            End;
+            If Op = 'enable_layer' Then MLS.EnableLayer(S, Found)
+            Else MLS.DisableLayer(S, Found);
+            Changed := True;
+        End
+        Else If Op = 'assign' Then
+        Begin
+            Reg := FlexFindRegion(Board, RegName);
+            If Reg = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No board region named ' + RegName);
+                Exit;
+            End;
+            Reg.LayerStack := S;
+            Changed := True;
+        End
+        Else If Op <> 'list' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'Unknown action ' + Op);
+            Exit;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Changed Then
+    Begin
+        Try Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('action', Op) + ','
+        + JsonBool('changed', Changed) + ','
+        + FlexStateJson(Board)));
+End;
+
+{..............................................................................}
+{ PCB_Gloss - Altium's Gloss Selected (PCB:Gloss) or Retrace Selected         }
+{ (PCB:Retrace) on the routing of the given nets: their tracks and arcs are   }
+{ selected through the editor's own selection list, the command runs, and    }
+{ the selection is cleared. Each net's track count and routed length are      }
+{ reported before and after.                                                  }
+{ Params: nets (tab-separated, required), mode ('gloss' default | 'retrace'). }
+{..............................................................................}
+Procedure NetRouteStats(Board : IPCB_Board; NetName : String; Var Count : Integer; Var LenMils : Double);
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Trk : IPCB_Track;
+    Arc : IPCB_Arc;
+Begin
+    Count := 0;
+    LenMils := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.Net <> Nil Then
+            Begin
+                If UpperCase(Prim.Net.Name) = UpperCase(NetName) Then
+                Begin
+                    Inc(Count);
+                    If Prim.ObjectId = eTrackObject Then
+                    Begin
+                        Trk := Prim;
+                        LenMils := LenMils + CoordToMilsF(Round(Sqrt(Sqr(Trk.x2 - Trk.x1) + Sqr(Trk.y2 - Trk.y1))));
+                    End
+                    Else
+                    Begin
+                        Arc := Prim;
+                        LenMils := LenMils + CoordToMilsF(Arc.Radius) * Abs(Arc.EndAngle - Arc.StartAngle) * 3.14159265358979 / 180;
+                    End;
+                End;
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function PCB_Gloss(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    NetsStr, Mode, Rest, Item, Items, Wanted, Process : String;
+    TabPos, CountBefore, CountAfter, Selected : Integer;
+    LenBefore, LenAfter : Double;
+    Names : TStringList;
+    I : Integer;
+    Befores, Lens : TStringList;
+Begin
+    NetsStr := ExtractJsonValue(Params, 'nets');
+    Mode := LowerCase(ExtractJsonValue(Params, 'mode'));
+    If Mode = '' Then Mode := 'gloss';
+    If (Mode <> 'gloss') And (Mode <> 'retrace') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'mode is gloss or retrace');
+        Exit;
+    End;
+    If NetsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'nets is required');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Names := TStringList.Create;
+    Befores := TStringList.Create;
+    Lens := TStringList.Create;
+    Rest := NetsStr;
+    While Rest <> '' Do
+    Begin
+        TabPos := Pos(#9, Rest);
+        If TabPos = 0 Then Begin Item := Rest; Rest := ''; End
+        Else Begin Item := Copy(Rest, 1, TabPos - 1); Rest := Copy(Rest, TabPos + 1, Length(Rest)); End;
+        Item := Trim(Item);
+        If Item = '' Then Continue;
+        Names.Add(Item);
+        NetRouteStats(Board, Item, CountBefore, LenBefore);
+        Befores.Add(IntToStr(CountBefore));
+        Lens.Add(FloatToJsonStr(LenBefore));
+    End;
+    Wanted := Chr(9);
+    For I := 0 To Names.Count - 1 Do Wanted := Wanted + UpperCase(Names.Strings[I]) + Chr(9);
+    Selected := 0;
+    Try Board.SelectedObjects_BeginUpdate; Except End;
+    Try
+        Try Board.SelectedObjects_Clear; Except End;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Prim := Iter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                If Prim.Net <> Nil Then
+                Begin
+                    If Pos(Chr(9) + UpperCase(Prim.Net.Name) + Chr(9), Wanted) > 0 Then
+                    Begin
+                        Prim.Selected := True;
+                        Inc(Selected);
+                    End;
+                End;
+                Prim := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    Finally
+        Try Board.SelectedObjects_EndUpdate; Except End;
+    End;
+    If Mode = 'gloss' Then Process := 'PCB:Gloss' Else Process := 'PCB:Retrace';
+    If Selected > 0 Then
+    Begin
+        ResetParameters;
+        AddStringParameter('Track', 'True');
+        RunProcess(Process);
+    End;
+    Try Board.SelectedObjects_Clear; Except End;
+    Try Board.ViewManager_FullUpdate; Except End;
+    Items := '';
+    For I := 0 To Names.Count - 1 Do
+    Begin
+        NetRouteStats(Board, Names.Strings[I], CountAfter, LenAfter);
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('net', Names.Strings[I]) + ','
+            + JsonRaw('tracks_before', Befores.Strings[I]) + ','
+            + JsonInt('tracks_after', CountAfter) + ','
+            + JsonRaw('length_before_mils', Lens.Strings[I]) + ','
+            + JsonRaw('length_after_mils', FloatToJsonStr(LenAfter)));
+    End;
+    Names.Free;
+    Befores.Free;
+    Lens.Free;
+    If Selected > 0 Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('mode', Mode) + ','
+        + JsonInt('selected', Selected) + ','
+        + JsonRaw('nets', '[' + Items + ']')));
+End;
+
 {..............................................................................}
 { PCB_ExportComponentModel - write a placed part's 3D model (all its bodies,  }
 { as placed) to a STEP file, with no dialog.                                 }
@@ -22069,6 +22805,9 @@ Begin
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'plane_connections':       Result := PCB_PlaneConnections(Params, RequestId);
         'grow_pour':               Result := PCB_GrowPour(Params, RequestId);
+        'board_regions':           Result := PCB_BoardRegions(Params, RequestId);
+        'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
+        'gloss':                   Result := PCB_Gloss(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

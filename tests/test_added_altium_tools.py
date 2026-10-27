@@ -980,3 +980,86 @@ def test_compile_mask_stays_out():
     text = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
     assert "CompilationMasked" not in text
 
+
+def test_rigid_flex_tools_send_and_refuse(monkeypatch):
+    def sent(tool, **kwargs):
+        return _sent(pcb, "register_pcb_tools", monkeypatch, tool, **kwargs)
+
+    _, s = sent("pcb_get_board_regions")
+    assert s == [("pcb.board_regions", {"action": "read"})]
+    _, s = sent("pcb_split_board", x1=1, y1=2, x2=3, y2=4)
+    assert s == [("pcb.board_regions", {"action": "split", "x1": "1.0", "y1": "2.0",
+                                        "x2": "3.0", "y2": "4.0"})]
+    _, s = sent("pcb_add_bend_line", region=" Flex ", x1=0, y1=0, x2=10, y2=0,
+                radius_mils=40, angle=-90, fold_index=1)
+    assert s[0][1]["region"] == "Flex" and s[0][1]["angle"] == "-90.0"
+    _, s = sent("pcb_modify_bend_line", region="#1", index=0, fold_index=2)
+    assert s == [("pcb.board_regions", {"action": "modify_bend", "region": "#1",
+                                        "index": "0", "fold_index": "2"})]
+    for tool, kwargs in (("pcb_remove_split_line", {"index": -1}),
+                         ("pcb_add_bend_line", {"region": "", "x1": 0, "y1": 0, "x2": 1,
+                                                "y2": 1, "radius_mils": 1, "angle": 9}),
+                         ("pcb_add_bend_line", {"region": "R", "x1": 0, "y1": 0, "x2": 1,
+                                                "y2": 1, "radius_mils": -1, "angle": 9}),
+                         ("pcb_modify_bend_line", {"region": "R", "index": 0}),
+                         ("pcb_delete_bend_line", {"region": " ", "index": 0}),
+                         ("pcb_set_board_region", {"region": "R"})):
+        result, s = sent(tool, **kwargs)
+        assert s == [] and result["ok"] is False, (tool, kwargs)
+
+
+def test_set_board_region_renames_then_locks_by_the_new_name(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        return {"regions": []}
+
+    bridge.send_command_async = send
+    asyncio.run(tools["pcb_set_board_region"](region="#1", name="Flex Tail", locked_3d=True))
+    assert bridge.sent == [
+        ("pcb.board_regions", {"action": "rename", "region": "#1", "name": "Flex Tail"}),
+        ("pcb.board_regions", {"action": "lock_3d", "region": "Flex Tail", "locked": "true"})]
+
+
+def test_layer_stacks_need_their_arguments(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_layer_stacks",
+                    action="enable_layer", stack="Flex", layer="Top Layer")
+    assert sent == [("pcb.layer_stacks", {"action": "enable_layer", "stack": "Flex",
+                                          "layer": "Top Layer"})]
+    for kwargs in ({"action": "explode"}, {"action": "assign", "stack": "Flex"},
+                   {"action": "set_flex", "stack": "Flex"}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_layer_stacks", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_rigid_flex_pascal_keeps_its_measured_guards():
+    body = _body("PCB.pas", "PCB_BoardRegions")
+    # A full rebuild threw a new split line away and merged regions.
+    assert "RebuildSplitBoardRegions(True)" not in body
+    assert "'REGIONS_NOT_FROM_SPLIT_LINES'" in body
+    assert body.index("'REGIONS_NOT_FROM_SPLIT_LINES'") < body.index("Outline.CreateSplitLine(P, Q)")
+    assert "'SPLIT_DID_NOT_DIVIDE'" in body and "'BEND_OUTSIDE_REGION'" in body
+    # Points are TPoint records made with Point(); TCoordPoint fields are
+    # undeclared to the script engine.
+    assert "P := Point(" in body
+    assert "TCoordPoint" not in body.replace("TCoordPoint is not", "")
+    # Bend lines belong to regions, not to the outline.
+    assert "Reg.CreateBendingLine(P, Q," in body
+    regions = _body("PCB.pas", "FlexRegionsJson")
+    assert "Prim.ViewableObjectID = eViewableObject_BoardRegion" in regions
+    assert "BL := Reg.GetBendingLines(I);" in regions
+
+
+def test_gloss_sends_and_selects_through_the_editor(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_gloss",
+                    nets=["GND", " VBUS "], mode="Retrace")
+    assert sent == [("pcb.gloss", {"nets": "GND\tVBUS", "mode": "retrace"})]
+    for kwargs in ({"nets": []}, {"nets": ["A"], "mode": "smooth"}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_gloss", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_Gloss")
+    assert body.index("Board.SelectedObjects_BeginUpdate") < body.index("Prim.Selected := True;")
+    assert "If Mode = 'gloss' Then Process := 'PCB:Gloss' Else Process := 'PCB:Retrace';" in body
+    assert body.index("RunProcess(Process);") < body.index("Board.SelectedObjects_Clear; Except End;\n    Try Board.ViewManager_FullUpdate")
+

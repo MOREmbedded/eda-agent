@@ -1626,6 +1626,235 @@ def register_pcb_tools(mcp):
                 item["connection"] = {0: "relief", 1: "direct", 2: "none"}.get(style, str(style))
         return reply
 
+    async def _board_regions(params: dict[str, Any]) -> dict[str, Any]:
+        return await get_bridge().send_command_async("pcb.board_regions", params)
+
+    def _points(x1: float, y1: float, x2: float, y2: float) -> dict[str, str]:
+        return {"x1": repr(float(x1)), "y1": repr(float(y1)),
+                "x2": repr(float(x2)), "y2": repr(float(y2))}
+
+    @mcp.tool()
+    async def pcb_get_board_regions() -> dict[str, Any]:
+        """Read the active board's rigid-flex setup: its board regions
+        (index, name, layer stack, 3D lock and bend lines), the split
+        lines that divide it, and the layer stacks with their copper
+        layers and whether each is flex.
+
+        Returns:
+            ``regions`` (each with its ``bend_lines``: ``from``, ``to``
+            in mils, ``radius_mils``, ``angle``, ``fold_index``),
+            ``split_lines`` (by index) and ``layer_stacks``. A region is
+            named in the other tools by its name or by "#<index>".
+        """
+        return await _board_regions({"action": "read"})
+
+    @mcp.tool()
+    async def pcb_split_board(x1: float, y1: float, x2: float, y2: float) -> dict[str, Any]:
+        """Divide the board into layer stack regions along a split line
+        from (x1, y1) to (x2, y2), in mils from the board origin, as
+        Board Planning Mode's Define Split Line does. Draw it across the
+        board, past the outline at both ends.
+
+        Both halves may come back with the same name: tell them apart by
+        index and give each its own (pcb_set_board_region), then a layer
+        stack (pcb_layer_stacks assign).
+
+        Returns:
+            The rigid-flex setup afterwards, with ``changed`` true when a
+            split line was added.
+        """
+        return await _board_regions({"action": "split", **_points(x1, y1, x2, y2)})
+
+    @mcp.tool()
+    async def pcb_remove_split_line(index: int) -> dict[str, Any]:
+        """Remove a split line (its index from pcb_get_board_regions); the
+        regions on either side join again.
+        """
+        if index < 0:
+            return {"ok": False, "reason": "index is 0 or more"}
+        return await _board_regions({"action": "unsplit", "index": str(index)})
+
+    @mcp.tool()
+    async def pcb_add_bend_line(
+        region: str,
+        x1: float, y1: float, x2: float, y2: float,
+        radius_mils: float, angle: float, fold_index: int = 0,
+    ) -> dict[str, Any]:
+        """Add a bend line across a flex board region, from (x1, y1) to
+        (x2, y2) in mils from the board origin, with its bend radius, bend
+        angle in degrees and fold order (the order bends are folded in 3D).
+        The region is named as pcb_get_board_regions lists it, or
+        "#<index>". Altium stretches the line to the region's edges; a
+        line that does not cross the region is refused.
+
+        Returns:
+            The rigid-flex setup afterwards, the new line in
+            ``bend_lines``.
+        """
+        if radius_mils < 0:
+            return {"ok": False, "reason": "radius_mils is 0 or more"}
+        if not -360 <= angle <= 360:
+            return {"ok": False, "reason": "angle is from -360 to 360 degrees"}
+        if fold_index < 0:
+            return {"ok": False, "reason": "fold_index is 0 or more"}
+        if not region.strip():
+            return {"ok": False, "reason": "region is required"}
+        return await _board_regions({
+            "action": "add_bend", "region": region.strip(), **_points(x1, y1, x2, y2),
+            "radius_mils": repr(float(radius_mils)), "angle": repr(float(angle)),
+            "fold_index": str(fold_index)})
+
+    @mcp.tool()
+    async def pcb_modify_bend_line(
+        region: str,
+        index: int,
+        radius_mils: Optional[float] = None,
+        angle: Optional[float] = None,
+        fold_index: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Change a bend line's radius, angle or fold order: the region it
+        belongs to and its index there, as pcb_get_board_regions lists
+        them. Read back in the region's ``bend_lines``.
+        """
+        if index < 0:
+            return {"ok": False, "reason": "index is 0 or more"}
+        if not region.strip():
+            return {"ok": False, "reason": "region is required"}
+        params: dict[str, Any] = {"action": "modify_bend", "region": region.strip(),
+                                  "index": str(index)}
+        if radius_mils is not None:
+            if radius_mils < 0:
+                return {"ok": False, "reason": "radius_mils is 0 or more"}
+            params["radius_mils"] = repr(float(radius_mils))
+        if angle is not None:
+            if not -360 <= angle <= 360:
+                return {"ok": False, "reason": "angle is from -360 to 360 degrees"}
+            params["angle"] = repr(float(angle))
+        if fold_index is not None:
+            if fold_index < 0:
+                return {"ok": False, "reason": "fold_index is 0 or more"}
+            params["fold_index"] = str(fold_index)
+        if len(params) == 3:
+            return {"ok": False, "reason": "give radius_mils, angle or fold_index"}
+        return await _board_regions(params)
+
+    @mcp.tool()
+    async def pcb_delete_bend_line(region: str, index: int) -> dict[str, Any]:
+        """Delete a bend line: the region it belongs to and its index there,
+        as pcb_get_board_regions lists them."""
+        if index < 0:
+            return {"ok": False, "reason": "index is 0 or more"}
+        if not region.strip():
+            return {"ok": False, "reason": "region is required"}
+        return await _board_regions({"action": "delete_bend", "region": region.strip(),
+                                     "index": str(index)})
+
+    @mcp.tool()
+    async def pcb_set_board_region(
+        region: str,
+        name: str = "",
+        locked_3d: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Rename a board region, or lock it in 3D (folding the board then
+        moves the other regions around it) or unlock it.
+
+        Args:
+            region: The region, by name or "#<index>" (pcb_get_board_regions).
+            name: Its new name.
+            locked_3d: Lock (True) or unlock (False).
+        """
+        if not region.strip():
+            return {"ok": False, "reason": "region is required"}
+        if not name.strip() and locked_3d is None:
+            return {"ok": False, "reason": "give name or locked_3d"}
+        reply: dict[str, Any] = {}
+        if name.strip():
+            reply = await _board_regions({"action": "rename", "region": region.strip(),
+                                          "name": name.strip()})
+            if not (isinstance(reply, dict) and "regions" in reply):
+                return reply
+            region = name.strip()
+        if locked_3d is not None:
+            reply = await _board_regions({"action": "lock_3d", "region": region.strip(),
+                                          "locked": "true" if locked_3d else "false"})
+        return reply
+
+    @mcp.tool()
+    async def pcb_layer_stacks(
+        action: str = "list",
+        stack: str = "",
+        name: str = "",
+        flex: Optional[bool] = None,
+        layer: str = "",
+        region: str = "",
+    ) -> dict[str, Any]:
+        """List or change the board's layer stacks for rigid-flex: each
+        region uses one stack, and a flex region a stack with fewer
+        copper layers.
+
+        Args:
+            action: list, create (name, flex), rename (stack, name),
+                remove (stack), set_flex (stack, flex), enable_layer /
+                disable_layer (stack, layer: a copper layer of the board),
+                or assign (stack, region: give a board region this stack).
+            stack: The stack to act on, by name.
+            name: The new stack's name, or the new name.
+            flex: Whether the stack is flex.
+            layer: A copper layer name, e.g. "Top Layer".
+            region: A board region's name.
+
+        Returns:
+            The rigid-flex setup afterwards (see pcb_get_board_regions).
+        """
+        action = action.strip().lower()
+        needs = {"list": (), "create": (), "rename": ("stack", "name"),
+                 "remove": ("stack",), "set_flex": ("stack", "flex"),
+                 "enable_layer": ("stack", "layer"),
+                 "disable_layer": ("stack", "layer"),
+                 "assign": ("stack", "region")}
+        if action not in needs:
+            return {"ok": False, "reason": "action is one of " + ", ".join(needs)}
+        given = {"stack": stack.strip(), "name": name.strip(),
+                 "flex": "" if flex is None else ("true" if flex else "false"),
+                 "layer": layer.strip(), "region": region.strip()}
+        missing = [k for k in needs[action] if not given[k]]
+        if missing:
+            return {"ok": False, "reason": f"{action} needs " + ", ".join(missing)}
+        params: dict[str, Any] = {"action": action}
+        params.update({k: v for k, v in given.items() if v})
+        return await get_bridge().send_command_async("pcb.layer_stacks", params)
+
+    @mcp.tool()
+    async def pcb_gloss(nets: list[str], mode: str = "gloss") -> dict[str, Any]:
+        """Run Altium's Gloss (smooth and shorten the routing) or Retrace
+        (re-run it at the current width and clearance rules) on the
+        routing of the given nets, and report each net's track count and
+        routed length before and after.
+
+        Only these nets' tracks and arcs are touched: they are selected,
+        the command runs on the selection, and the selection is cleared.
+        Gloss can reshape copper routed by hand: check the result.
+
+        Args:
+            nets: Net names.
+            mode: "gloss" or "retrace".
+
+        Returns:
+            ``mode``, ``selected`` and ``nets`` (``tracks_before`` /
+            ``tracks_after``, ``length_before_mils`` /
+            ``length_after_mils``).
+        """
+        items = [n.strip() for n in (nets or []) if n and n.strip()]
+        if not items:
+            return {"ok": False, "reason": "nets is required"}
+        if any("\t" in n for n in items):
+            return {"ok": False, "reason": "a net name cannot hold a tab"}
+        mode = mode.strip().lower()
+        if mode not in ("gloss", "retrace"):
+            return {"ok": False, "reason": "mode is gloss or retrace"}
+        return await get_bridge().send_command_async(
+            "pcb.gloss", {"nets": "\t".join(items), "mode": mode}, timeout=300.0)
+
     @mcp.tool()
     async def pcb_pours_at(x: float, y: float) -> dict[str, Any]:
         """Which pours on the active board have a point inside their
