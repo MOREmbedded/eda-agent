@@ -8197,10 +8197,13 @@ Begin
        (Name = 'ExpandNetLabelsText') Or (Name = 'ExpandPortsName') Or
        (Name = 'ExpandSheetNumber') Or (Name = 'ExpandDocumentNumber') Or
        (Name = 'WatermarkReadOnlySheet') Or (Name = 'AlwaysDrag') Or
-       (Name = 'DisplayPrinterFonts') Then Result := 'b'
+       (Name = 'DisplayPrinterFonts') Or (Name = 'StringIncRemoveLeadingZero') Or
+       (Name = 'CtrlDbleClickGoesDown') Or (Name = 'ConfirmSelectionMemoryClear') Or
+       (Name = 'AllowDeviceSheetEditing') Or (Name = 'WatermarkDeviceSheet') Then Result := 'b'
     Else If (Name = 'HotSpotGridDistance') Or (Name = 'UndoRedoStackSize') Or
        (Name = 'PinNameMargin') Or (Name = 'PinNumberMargin') Or
-       (Name = 'MultiPartNamingMethod') Then Result := 'i'
+       (Name = 'MultiPartNamingMethod') Or (Name = 'CutterGridSizeMultiple') Or
+       (Name = 'CutterFixedLength') Or (Name = 'PhysicalViewDimLevel') Then Result := 'i'
     Else If (Name = 'StringIncA') Or (Name = 'StringIncB') Or
        (Name = 'DefaultPowerGndName') Or (Name = 'DefaultSignalGndName') Or
        (Name = 'DefaultEarthName') Or (Name = 'DefaultTemplateFileName') Then Result := 't';
@@ -8229,6 +8232,14 @@ Begin
     Else If Name = 'WatermarkReadOnlySheet' Then Result := BoolToJsonStr(Prefs.WatermarkReadOnlySheet)
     Else If Name = 'AlwaysDrag' Then Result := BoolToJsonStr(Prefs.AlwaysDrag)
     Else If Name = 'DisplayPrinterFonts' Then Result := BoolToJsonStr(Prefs.DisplayPrinterFonts)
+    Else If Name = 'StringIncRemoveLeadingZero' Then Result := BoolToJsonStr(Prefs.StringIncRemoveLeadingZero)
+    Else If Name = 'CtrlDbleClickGoesDown' Then Result := BoolToJsonStr(Prefs.CtrlDbleClickGoesDown)
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Result := BoolToJsonStr(Prefs.ConfirmSelectionMemoryClear)
+    Else If Name = 'AllowDeviceSheetEditing' Then Result := BoolToJsonStr(Prefs.AllowDeviceSheetEditing)
+    Else If Name = 'WatermarkDeviceSheet' Then Result := BoolToJsonStr(Prefs.WatermarkDeviceSheet)
+    Else If Name = 'CutterGridSizeMultiple' Then Result := IntToStr(Prefs.CutterGridSizeMultiple)
+    Else If Name = 'CutterFixedLength' Then Result := IntToStr(Prefs.CutterFixedLength)
+    Else If Name = 'PhysicalViewDimLevel' Then Result := IntToStr(Prefs.PhysicalViewDimLevel)
     Else If Name = 'HotSpotGridDistance' Then Result := IntToStr(Prefs.HotSpotGridDistance)
     Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Prefs.UndoRedoStackSize)
     Else If Name = 'PinNameMargin' Then Result := IntToStr(Prefs.PinNameMargin)
@@ -8284,6 +8295,14 @@ Begin
     Else If Name = 'WatermarkReadOnlySheet' Then Prefs.WatermarkReadOnlySheet := B
     Else If Name = 'AlwaysDrag' Then Prefs.AlwaysDrag := B
     Else If Name = 'DisplayPrinterFonts' Then Prefs.DisplayPrinterFonts := B
+    Else If Name = 'StringIncRemoveLeadingZero' Then Prefs.StringIncRemoveLeadingZero := B
+    Else If Name = 'CtrlDbleClickGoesDown' Then Prefs.CtrlDbleClickGoesDown := B
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Prefs.ConfirmSelectionMemoryClear := B
+    Else If Name = 'AllowDeviceSheetEditing' Then Prefs.AllowDeviceSheetEditing := B
+    Else If Name = 'WatermarkDeviceSheet' Then Prefs.WatermarkDeviceSheet := B
+    Else If Name = 'CutterGridSizeMultiple' Then Prefs.CutterGridSizeMultiple := N
+    Else If Name = 'CutterFixedLength' Then Prefs.CutterFixedLength := N
+    Else If Name = 'PhysicalViewDimLevel' Then Prefs.PhysicalViewDimLevel := N
     Else If Name = 'HotSpotGridDistance' Then Prefs.HotSpotGridDistance := N
     Else If Name = 'UndoRedoStackSize' Then Prefs.UndoRedoStackSize := N
     Else If Name = 'PinNameMargin' Then Prefs.PinNameMargin := N
@@ -8447,6 +8466,106 @@ Begin
         + JsonInt('wires_after', WiresAfter) + ','
         + JsonInt('vertices_before', VertsBefore) + ','
         + JsonInt('vertices_after', VertsAfter)));
+End;
+
+{..............................................................................}
+{ Gen_ReferenceZones - the border zone ('B3') each part, net label, port,     }
+{ power port, sheet symbol and off-sheet connector sits in on the active    }
+{ sheet, the way a printed drawing is read. The zone is Altium's own answer }
+{ (ISch_Document.ObjectReferenceZone); a sheet without zones answers ''.    }
+{ Params: kinds (comma-separated: component, net_label, port, power_port,  }
+{ sheet_symbol, cross_sheet; empty = all).                                 }
+{..............................................................................}
+Function Gen_ReferenceZones(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Lbl : ISch_NetLabel;
+    Port : ISch_Port;
+    Pwr : ISch_PowerObject;
+    Sym : ISch_SheetSymbol;
+    Kinds, Kind, Text, Zone, Items : String;
+    Oid, Count : Integer;
+Begin
+    Kinds := LowerCase(ExtractJsonValue(Params, 'kinds'));
+    If Kinds = '' Then Kinds := 'component,net_label,port,power_port,sheet_symbol,cross_sheet';
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    Items := '';
+    Count := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent, eNetLabel, ePort, ePowerObject,
+            eSheetSymbol, eCrossSheetConnector));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Oid := Obj.ObjectId;
+            Kind := '';
+            Text := '';
+            If Oid = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Kind := 'component';
+                Try Text := Comp.Designator.Text; Except End;
+            End
+            Else If Oid = eNetLabel Then
+            Begin
+                Lbl := Obj;
+                Kind := 'net_label';
+                Text := Lbl.Text;
+            End
+            Else If Oid = ePort Then
+            Begin
+                Port := Obj;
+                Kind := 'port';
+                Text := Port.Name;
+            End
+            Else If Oid = ePowerObject Then
+            Begin
+                Pwr := Obj;
+                Kind := 'power_port';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eCrossSheetConnector Then
+            Begin
+                Pwr := Obj;
+                Kind := 'cross_sheet';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eSheetSymbol Then
+            Begin
+                Sym := Obj;
+                Kind := 'sheet_symbol';
+                Try Text := Sym.SheetName.Text; Except End;
+            End;
+            If (Kind <> '') And (Pos(',' + Kind + ',', ',' + Kinds + ',') > 0) Then
+            Begin
+                Zone := '';
+                Try Zone := SchDoc.ObjectReferenceZone(Obj); Except Zone := ''; End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('kind', Kind) + ','
+                    + JsonStr('text', Text) + ','
+                    + JsonStr('zone', Zone) + ','
+                    + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Obj.Location.X))) + ','
+                    + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Obj.Location.Y))));
+                Inc(Count);
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonInt('count', Count) + ','
+        + JsonRaw('objects', '[' + Items + ']')));
 End;
 
 {..............................................................................}
@@ -15089,6 +15208,7 @@ Begin
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
         'sch_editor_options': Result := Gen_SchEditorOptions(Params, RequestId);
         'optimize_wires':   Result := Gen_OptimizeWires(Params, RequestId);
+        'reference_zones':  Result := Gen_ReferenceZones(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);

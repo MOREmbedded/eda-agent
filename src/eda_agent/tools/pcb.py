@@ -633,6 +633,20 @@ _PCB_VIEW_OPTIONS = {
     "from_tos_display": "FromTosDisplayMode",
     "layer_name_display": "LayerNameDisplayMode",
     "draft_track_threshold_mils": "DraftTrackThreshold",
+    "show_invisible_objects": "ShowInvisibleObjects",
+    "transparent_layers": "UseTransparent",
+    "clean_redraw": "CleanRedraw",
+    "redraw_layer_on_toggle": "RedrawLayerOnToggle",
+    "text_as_box_below": "TextToRectSize",
+    "pad_net_font": "PadViaFontName",
+    "pad_net_min_font_size": "PadViaMinFontSize",
+    "pad_net_font_color": "PadViaFontColor",
+    "pad_net_font_background": "PadViaFontBkColor",
+    "default_truetype_font": "DefaultTTFont",
+    "board_area_color": "BoardAreaColor",
+    "board_line_color": "BoardLineColor",
+    "sheet_area_color": "SheetAreaColor",
+    "sheet_line_color": "SheetLineColor",
 }
 
 #: Board editor editing preferences: argument name to Altium's.
@@ -648,6 +662,52 @@ _PCB_EDIT_OPTIONS = {
     "auto_pan": "AutoPan",
     "drag_mode": "DragMode",
     "component_move": "ComponentMoveKind",
+    "confirm_delete": "QuestionDelete",
+    "confirm_global_edit": "QuestionGlobalChange",
+    "confirm_drag": "QuestionDrag",
+    "confirm_selection_memory_clear": "ConfirmSelectionMemoryClear",
+    "shift_to_select": "MustHoldShiftToSelect",
+    "global_edit_includes_arcs": "GlobalEditIncludeArcsWithTracks",
+    "pick_nearest_component": "NearestComponent",
+    "defaults_permanent": "DefaultPrimsPermanent",
+    "check_board_on_load": "ValidateOnLoad",
+    "netlist_remove_unconnected_parts": "DeleteUnconnectedComps",
+    "netlist_remove_unconnected_objects": "DeleteUnconnectedPrims",
+    "netlist_check_footprints": "CheckPatterns",
+    "netlist_check_comments": "CheckComments",
+    "auto_pan_mode": "AutoPanMode",
+    "auto_pan_step": "AutoPanSmallStep",
+    "auto_pan_big_step": "AutoPanLargeStep",
+    "auto_pan_speed": "AutoPanSpeed",
+    "pour_redraw_threshold": "PolygonThreshold",
+}
+
+def _option_number_refusal(counts: dict[str, Any],
+                           colors: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """A refusal for a whole number below 0 or a colour outside 0 to
+    16777215 (Altium's colour number), else None."""
+    for key, value in counts.items():
+        if value is not None and value < 0:
+            return {"ok": False, "reason": f"{key} is 0 or more"}
+    for key, value in colors.items():
+        if value is not None and not 0 <= value <= 0xFFFFFF:
+            return {"ok": False, "reason": f"{key} is a colour from 0 to 16777215"}
+    return None
+
+
+#: Paste and paste-array preferences: argument name to Altium's.
+_PCB_PASTE_OPTIONS = {
+    "paste_same_net": "Paste_InSameNet",
+    "paste_same_class": "Paste_InSameClass",
+    "paste_same_layer": "Paste_OnSameLayer",
+    "paste_same_designator": "Paste_HasSameDesignator",
+    "repeat_count": "RepeatCountDefault",
+    "repeat_increment": "RepeatInc",
+    "repeat_circular": "RepeatCircular",
+    "repeat_angle": "RepeatDegrees",
+    "repeat_rotate": "RepeatRotateItem",
+    "repeat_x_mils": "RepeatX",
+    "repeat_y_mils": "RepeatY",
 }
 
 #: Board editor routing preferences: argument name to Altium's.
@@ -659,6 +719,53 @@ _PCB_ROUTE_OPTIONS = {
     "lock_pre_routes": "LockPreRoutes",
     "delete_dead_ends": "DeleteDeadEnds",
     "smart_track_ends": "UseSmartTrackEnds",
+}
+
+#: The board's Gerber settings: argument name to Altium's.
+_GERBER_OPTIONS = {
+    "units": "GerberUnits",
+    "decimals": "GerberDecs",
+    "sort_output": "SortOutput",
+    "software_arcs": "UseSoftwareArcs",
+    "centre_on_film": "CenterPhotoPlots",
+    "embed_apertures": "EmbedApertures",
+    "panelize": "Panelize",
+    "g54": "G54",
+    "relief_shapes_allowed": "ReliefShapesAllowed",
+    "flash_pads_only": "PadsFlashOnly",
+    "flash_all_fills": "FlashAllFills",
+    "plus_tolerance_mils": "PlusTol",
+    "minus_tolerance_mils": "MinusTol",
+    "film_x_mils": "FilmSizeX",
+    "film_y_mils": "FilmSizeY",
+    "border_mils": "BorderSize",
+    "max_aperture_mils": "MaxAperSize",
+}
+
+#: The board's print settings: argument name to Altium's.
+_PRINT_OPTIONS = {
+    "scale": "Scale",
+    "scale_to_fit_page": "ScaleToFitPage",
+    "x_correction": "XCorrect",
+    "y_correction": "YCorrect",
+    "show_holes": "ShowHoles",
+    "printer_fonts": "UsePrinterFonts",
+    "software_arcs": "UseSoftwareArcs",
+    "pad_nets": "PlotPadNets",
+    "pad_numbers": "PlotPadNumbers",
+    "border_mils": "cBorderSize",
+    "composite_type": "CompositeType",
+    "batch_type": "BatchType",
+}
+
+#: The Testpoint Style rule settings pcb_set_rule_properties takes, and
+#: whether each is a switch (else a length in mils).
+_TESTPOINT_SETTINGS = {
+    "min_size_mils": False, "max_size_mils": False, "preferred_size_mils": False,
+    "min_hole_mils": False, "max_hole_mils": False, "preferred_hole_mils": False,
+    "grid_mils": False, "grid_tolerance_mils": False, "min_spacing_mils": False,
+    "body_clearance_mils": False, "edge_clearance_mils": False,
+    "under_component": True, "use_grid": True,
 }
 
 
@@ -1321,37 +1428,55 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_net_display(
-        nets: list[str],
+        nets: Optional[list[str]] = None,
         show_connections: Optional[bool] = None,
         loop_removal: Optional[bool] = None,
         use_net_color: Optional[bool] = None,
         show_jumpers: Optional[bool] = None,
+        color: str = "",
+        from_project: bool = False,
     ) -> dict[str, Any]:
         """Read, or set, whether nets show their connection lines,
-        whether loop removal applies to them, whether they draw in their
-        own net colour, and whether their jumpers show.
+        whether loop removal applies to them, their net colour and
+        whether they draw in it, and whether their jumpers show.
+
+        Net colour highlighting: give ``color`` and ``use_net_color=True``
+        to draw nets in a colour of your own, or ``from_project=True`` to
+        give each net the colour its project sets for it
+        (proj_net_color, the schematic's net colour) and switch it on, so
+        the board and the schematic highlight alike. pcb_view_options
+        ``highlight_in_net_color`` makes a highlighted net use it too.
 
         Hiding the connection lines of GND or a supply clears the view
         while routing signals; loop removal off keeps a deliberate
         second path when routing over an existing one.
 
         Args:
-            nets: Net names.
+            nets: Net names; with from_project and no nets, every net on
+                the board.
             show_connections: Show (True) or hide (False) their
                 connection lines; omit to leave as they are.
             loop_removal: Loop removal on or off; omit to leave.
             use_net_color: Draw the net in its own net colour on the
                 board; omit to leave.
             show_jumpers: Show the net's jumpers; omit to leave.
+            color: "#RRGGBB" to give the nets this colour; empty to leave.
+            from_project: Give each net its project colour and draw it in
+                it; a net the project gives no colour is listed in
+                ``no_project_color`` and left as it is.
 
         Returns:
-            ``nets`` (``connections_shown``, ``loop_removal``,
-            ``use_net_color``, ``jumpers_shown`` and
-            ``in_differential_pair``, read back) and ``not_found``.
+            ``board``, ``project`` (with from_project), ``nets``
+            (``connections_shown``, ``loop_removal``, ``use_net_color``,
+            ``color`` as "#RRGGBB", ``jumpers_shown`` and
+            ``in_differential_pair``, read back), ``no_project_color`` and
+            ``not_found``.
         """
         items = [n.strip() for n in (nets or []) if n and n.strip()]
-        if not items:
+        if not items and not from_project:
             return {"ok": False, "reason": "nets is required"}
+        if color.strip() and from_project:
+            return {"ok": False, "reason": "give color or from_project, not both"}
         if any("\t" in n for n in items):
             return {"ok": False, "reason": "a net name cannot hold a tab"}
         params: dict[str, Any] = {"nets": "\t".join(items)}
@@ -1361,7 +1486,22 @@ def register_pcb_tools(mcp):
                            ("show_jumpers", show_jumpers)):
             if value is not None:
                 params[key] = "true" if value else "false"
-        return await get_bridge().send_command_async("pcb.net_display", params)
+        if color.strip():
+            hexpart = color.strip().lstrip("#")
+            if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+                return {"ok": False, "reason": "color is #RRGGBB"}
+            r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+            params["color"] = str(r_ | (g_ << 8) | (b_ << 16))
+        if from_project:
+            params["from_project"] = "true"
+        reply = await get_bridge().send_command_async("pcb.net_display", params)
+        # Altium keeps colours as blue, green, red bytes.
+        for entry in (reply.get("nets") if isinstance(reply, dict) else None) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("color"), int):
+                bgr = entry["color"]
+                entry["color"] = "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF,
+                                                    (bgr >> 16) & 0xFF)
+        return reply
 
     @mcp.tool()
     async def pcb_set_grids(
@@ -1372,6 +1512,10 @@ def register_pcb_tools(mcp):
         visible: Optional[float] = None,
         visible_big: Optional[float] = None,
         dot_grid: Optional[bool] = None,
+        visible_big_factor: Optional[float] = None,
+        snap_unit: Optional[str] = None,
+        visible_unit: Optional[str] = None,
+        visible_big_unit: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or set, the active board's grids, in mils.
 
@@ -1389,11 +1533,19 @@ def register_pcb_tools(mcp):
             visible: The fine visible grid.
             visible_big: The coarse visible grid.
             dot_grid: Draw the visible grid as dots (True) or lines.
+            visible_big_factor: The coarse visible grid as a multiple of
+                the snap grid. The fine one's (``visible_factor``) is
+                reported only: it stayed 1 whatever was written (measured
+                on AD 26.11).
+            snap_unit / visible_unit / visible_big_unit: "mm" or "mil",
+                the unit each grid is shown and stepped in.
 
         Returns:
             ``snap_x``, ``snap_y``, ``component_x``, ``component_y``,
             ``track``, ``via``, ``visible``, ``visible_big``,
-            ``dot_grid`` and ``not_applied``.
+            ``visible_factor``, ``visible_big_factor``, ``snap_unit``,
+            ``visible_unit``, ``visible_big_unit``, ``dot_grid`` and
+            ``not_applied``.
         """
         params: dict[str, Any] = {}
         for key, value in (("snap_x", snap_x), ("snap_y", snap_y),
@@ -1406,6 +1558,17 @@ def register_pcb_tools(mcp):
             params[key] = repr(float(value))
         if dot_grid is not None:
             params["dot_grid"] = "true" if dot_grid else "false"
+        if visible_big_factor is not None:
+            if visible_big_factor <= 0:
+                return {"ok": False, "reason": "visible_big_factor is more than 0"}
+            params["visible_big_factor"] = repr(float(visible_big_factor))
+        for key, value in (("snap_unit", snap_unit), ("visible_unit", visible_unit),
+                           ("visible_big_unit", visible_big_unit)):
+            if value is None:
+                continue
+            if value.strip().lower() not in ("mm", "mil"):
+                return {"ok": False, "reason": f"{key} is mm or mil"}
+            params[key] = value.strip().lower()
         return await get_bridge().send_command_async("pcb.set_grids", params)
 
     @mcp.tool()
@@ -1425,6 +1588,20 @@ def register_pcb_tools(mcp):
         from_tos_display: Optional[int] = None,
         layer_name_display: Optional[int] = None,
         draft_track_threshold_mils: Optional[float] = None,
+        show_invisible_objects: Optional[bool] = None,
+        transparent_layers: Optional[bool] = None,
+        clean_redraw: Optional[bool] = None,
+        redraw_layer_on_toggle: Optional[bool] = None,
+        text_as_box_below: Optional[int] = None,
+        pad_net_font: Optional[str] = None,
+        pad_net_min_font_size: Optional[int] = None,
+        pad_net_font_color: Optional[int] = None,
+        pad_net_font_background: Optional[int] = None,
+        default_truetype_font: Optional[str] = None,
+        board_area_color: Optional[int] = None,
+        board_line_color: Optional[int] = None,
+        sheet_area_color: Optional[int] = None,
+        sheet_line_color: Optional[int] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor draws a board: net names
         and numbers on pads and vias, test points, single layer mode,
@@ -1454,11 +1631,37 @@ def register_pcb_tools(mcp):
                 tabs (Altium's number).
             draft_track_threshold_mils: Tracks narrower than this are
                 drawn in outline in draft mode.
+            show_invisible_objects: Draw objects on hidden layers too.
+            transparent_layers: Draw layers see-through.
+            clean_redraw: Clear the view before each redraw.
+            redraw_layer_on_toggle: Redraw when a layer is switched.
+            text_as_box_below: Text smaller than this many pixels is
+                drawn as a box.
+            pad_net_font: Font of the net names and numbers drawn on pads
+                and vias; pad_net_min_font_size the smallest size it is
+                drawn at.
+            pad_net_font_color / pad_net_font_background: Its colours.
+            default_truetype_font: TrueType font new board text starts
+                with.
+            board_area_color, board_line_color, sheet_area_color,
+                sheet_line_color: Colours of the board area and outline
+                and of the sheet area and border.
+                Colours are Altium's numbers: red + 256 * green +
+                65536 * blue, 0 to 16777215.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
             ``not_applied``, ``refused`` and ``unknown``.
         """
+        refusal = _option_number_refusal({
+            "text_as_box_below": text_as_box_below,
+            "pad_net_min_font_size": pad_net_min_font_size}, {
+            "pad_net_font_color": pad_net_font_color,
+            "pad_net_font_background": pad_net_font_background,
+            "board_area_color": board_area_color, "board_line_color": board_line_color,
+            "sheet_area_color": sheet_area_color, "sheet_line_color": sheet_line_color})
+        if refusal:
+            return refusal
         return await run_options("pcb.editor_options", _PCB_VIEW_OPTIONS, {
             "show_pad_nets": show_pad_nets, "show_pad_numbers": show_pad_numbers,
             "show_via_nets": show_via_nets, "show_test_points": show_test_points,
@@ -1473,7 +1676,17 @@ def register_pcb_tools(mcp):
             "from_tos_display": from_tos_display,
             "layer_name_display": layer_name_display,
             "draft_track_threshold_mils": None if draft_track_threshold_mils is None
-            else float(draft_track_threshold_mils)})
+            else float(draft_track_threshold_mils),
+            "show_invisible_objects": show_invisible_objects,
+            "transparent_layers": transparent_layers, "clean_redraw": clean_redraw,
+            "redraw_layer_on_toggle": redraw_layer_on_toggle,
+            "text_as_box_below": text_as_box_below, "pad_net_font": pad_net_font,
+            "pad_net_min_font_size": pad_net_min_font_size,
+            "pad_net_font_color": pad_net_font_color,
+            "pad_net_font_background": pad_net_font_background,
+            "default_truetype_font": default_truetype_font,
+            "board_area_color": board_area_color, "board_line_color": board_line_color,
+            "sheet_area_color": sheet_area_color, "sheet_line_color": sheet_line_color})
 
     @mcp.tool()
     async def pcb_edit_options(
@@ -1487,6 +1700,24 @@ def register_pcb_tools(mcp):
         auto_pan: Optional[bool] = None,
         drag_mode: Optional[int] = None,
         component_move: Optional[int] = None,
+        confirm_delete: Optional[bool] = None,
+        confirm_global_edit: Optional[bool] = None,
+        confirm_drag: Optional[bool] = None,
+        confirm_selection_memory_clear: Optional[bool] = None,
+        shift_to_select: Optional[bool] = None,
+        global_edit_includes_arcs: Optional[bool] = None,
+        pick_nearest_component: Optional[bool] = None,
+        defaults_permanent: Optional[bool] = None,
+        check_board_on_load: Optional[bool] = None,
+        netlist_remove_unconnected_parts: Optional[bool] = None,
+        netlist_remove_unconnected_objects: Optional[bool] = None,
+        netlist_check_footprints: Optional[bool] = None,
+        netlist_check_comments: Optional[bool] = None,
+        auto_pan_mode: Optional[int] = None,
+        auto_pan_step: Optional[int] = None,
+        auto_pan_big_step: Optional[int] = None,
+        auto_pan_speed: Optional[int] = None,
+        pour_redraw_threshold: Optional[int] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor behaves while editing.
 
@@ -1509,6 +1740,26 @@ def register_pcb_tools(mcp):
             drag_mode: What follows a dragged track (Altium's number).
             component_move: What a moved part takes with it (Altium's
                 number).
+            confirm_delete / confirm_global_edit / confirm_drag /
+                confirm_selection_memory_clear: Ask before a delete, a
+                change to many objects, dragging a selection, or clearing
+                a selection memory.
+            shift_to_select: Objects are picked only with Shift held.
+            global_edit_includes_arcs: A change to tracks takes arcs along.
+            pick_nearest_component: A click picks the nearest component.
+            defaults_permanent: Object defaults stay as set, not taken
+                from the last object placed.
+            check_board_on_load: Check a board's objects when it opens.
+            netlist_remove_unconnected_parts /
+                netlist_remove_unconnected_objects: A netlist load removes
+                components the netlist leaves out, and copper on no net.
+            netlist_check_footprints / netlist_check_comments: A netlist
+                load checks footprints and comments.
+            auto_pan_mode: How the view pans at its edge (Altium's
+                number); auto_pan_step, auto_pan_big_step (Shift held)
+                and auto_pan_speed its steps and speed.
+            pour_redraw_threshold: Pours of more pieces than this are drawn
+                as outlines while they are edited.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -1516,9 +1767,13 @@ def register_pcb_tools(mcp):
         """
         if rotation_step is not None and rotation_step < 0:
             return {"ok": False, "reason": "rotation_step is 0 or more"}
-        for key, value in (("drag_mode", drag_mode), ("component_move", component_move)):
-            if value is not None and value < 0:
-                return {"ok": False, "reason": f"{key} is 0 or more"}
+        refusal = _option_number_refusal({
+            "drag_mode": drag_mode, "component_move": component_move,
+            "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
+            "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
+            "pour_redraw_threshold": pour_redraw_threshold}, {})
+        if refusal:
+            return refusal
         return await run_options("pcb.editor_options", _PCB_EDIT_OPTIONS, {
             "rotation_step": None if rotation_step is None else float(rotation_step),
             "protect_locked": protect_locked,
@@ -1528,7 +1783,86 @@ def register_pcb_tools(mcp):
             "snap_to_centre": snap_to_centre,
             "allow_duplicate_designators": allow_duplicate_designators,
             "auto_pan": auto_pan, "drag_mode": drag_mode,
-            "component_move": component_move})
+            "component_move": component_move,
+            "confirm_delete": confirm_delete, "confirm_global_edit": confirm_global_edit,
+            "confirm_drag": confirm_drag,
+            "confirm_selection_memory_clear": confirm_selection_memory_clear,
+            "shift_to_select": shift_to_select,
+            "global_edit_includes_arcs": global_edit_includes_arcs,
+            "pick_nearest_component": pick_nearest_component,
+            "defaults_permanent": defaults_permanent,
+            "check_board_on_load": check_board_on_load,
+            "netlist_remove_unconnected_parts": netlist_remove_unconnected_parts,
+            "netlist_remove_unconnected_objects": netlist_remove_unconnected_objects,
+            "netlist_check_footprints": netlist_check_footprints,
+            "netlist_check_comments": netlist_check_comments,
+            "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
+            "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
+            "pour_redraw_threshold": pour_redraw_threshold})
+
+    @mcp.tool()
+    async def pcb_paste_options(
+        paste_same_net: Optional[bool] = None,
+        paste_same_class: Optional[bool] = None,
+        paste_same_layer: Optional[bool] = None,
+        paste_same_designator: Optional[bool] = None,
+        repeat_count: Optional[int] = None,
+        repeat_increment: Optional[str] = None,
+        repeat_circular: Optional[bool] = None,
+        repeat_angle: Optional[float] = None,
+        repeat_rotate: Optional[bool] = None,
+        repeat_x_mils: Optional[float] = None,
+        repeat_y_mils: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, what the board editor keeps when pasting, and
+        its paste array (Paste Special > Paste Array): how many
+        instances, how designators step, and a line or circle of them.
+
+        These are Altium's own preferences and apply to every board. A
+        board must be open. Call with nothing to read; every option set
+        is read back.
+
+        Args:
+            paste_same_net / paste_same_class / paste_same_layer /
+                paste_same_designator: Pasted objects keep their net,
+                classes, layer and designators.
+            repeat_count: How many instances a paste array places.
+            repeat_increment: How each instance's designator steps, e.g.
+                "1".
+            repeat_circular: Lay the instances on a circle instead of a
+                line.
+            repeat_angle: Degrees between instances on a circle.
+            repeat_rotate: Turn each instance on a circle with it.
+            repeat_x_mils / repeat_y_mils: Step between instances in a
+                line; may be negative.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        refusal = _option_number_refusal({"repeat_count": repeat_count}, {})
+        if refusal:
+            return refusal
+        if repeat_angle is not None and repeat_angle < 0:
+            return {"ok": False, "reason": "repeat_angle is 0 or more"}
+        reply = await run_options("pcb.editor_options", _PCB_PASTE_OPTIONS, {
+            "paste_same_net": paste_same_net, "paste_same_class": paste_same_class,
+            "paste_same_layer": paste_same_layer,
+            "paste_same_designator": paste_same_designator,
+            "repeat_count": repeat_count, "repeat_increment": repeat_increment,
+            "repeat_circular": repeat_circular,
+            "repeat_angle": None if repeat_angle is None else float(repeat_angle),
+            "repeat_rotate": repeat_rotate,
+            # Altium keeps the steps at 10000 to the mil (measured: 1000 mils
+            # read 10000000).
+            "repeat_x_mils": None if repeat_x_mils is None else float(repeat_x_mils) * 10000,
+            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000})
+        options = reply.get("options") if isinstance(reply, dict) else None
+        if isinstance(options, dict):
+            for key in ("repeat_x_mils", "repeat_y_mils"):
+                if isinstance(options.get(key), (int, float)):
+                    options[key] = options[key] / 10000
+        return reply
 
     @mcp.tool()
     async def pcb_route_options(
@@ -2086,6 +2420,130 @@ def register_pcb_tools(mcp):
                 return {"ok": False, "reason": "polygon_name_template is 0 or more"}
             params["polygon_name_template"] = str(polygon_name_template)
         return await get_bridge().send_command_async("pcb.board_options", params)
+
+    @mcp.tool()
+    async def pcb_gerber_options(
+        units: Optional[int] = None,
+        decimals: Optional[int] = None,
+        sort_output: Optional[bool] = None,
+        software_arcs: Optional[bool] = None,
+        centre_on_film: Optional[bool] = None,
+        embed_apertures: Optional[bool] = None,
+        panelize: Optional[bool] = None,
+        g54: Optional[bool] = None,
+        relief_shapes_allowed: Optional[bool] = None,
+        flash_pads_only: Optional[bool] = None,
+        flash_all_fills: Optional[bool] = None,
+        plus_tolerance_mils: Optional[float] = None,
+        minus_tolerance_mils: Optional[float] = None,
+        film_x_mils: Optional[float] = None,
+        film_y_mils: Optional[float] = None,
+        border_mils: Optional[float] = None,
+        max_aperture_mils: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the Gerber setup saved in the active board: the
+        units and decimals, apertures, flashing, film size and border.
+
+        Call with nothing to read; every option set is read back.
+        proj_generate_fab_package writes the files.
+
+        Args:
+            units: Altium's number for the Gerber units (read it first).
+            decimals: Altium's number for the coordinate format.
+            sort_output: Sort the plot output.
+            software_arcs: Write arcs as short straight segments.
+            centre_on_film: Centre the plots on the film.
+            embed_apertures: Write the apertures into each file (RS-274X).
+            panelize: Plot the panel's layers.
+            g54: Write G54 before each aperture change.
+            relief_shapes_allowed: Allow relief apertures.
+            flash_pads_only: Flash pad shapes only.
+            flash_all_fills: Flash every fill.
+            plus_tolerance_mils / minus_tolerance_mils: Aperture match
+                tolerances.
+            film_x_mils / film_y_mils: Film size.
+            border_mils: Border around the plot.
+            max_aperture_mils: Largest aperture.
+
+        Returns:
+            ``board``, ``options`` (by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {"units": units, "decimals": decimals, "sort_output": sort_output,
+                  "software_arcs": software_arcs, "centre_on_film": centre_on_film,
+                  "embed_apertures": embed_apertures, "panelize": panelize, "g54": g54,
+                  "relief_shapes_allowed": relief_shapes_allowed,
+                  "flash_pads_only": flash_pads_only, "flash_all_fills": flash_all_fills,
+                  "plus_tolerance_mils": plus_tolerance_mils,
+                  "minus_tolerance_mils": minus_tolerance_mils,
+                  "film_x_mils": film_x_mils, "film_y_mils": film_y_mils,
+                  "border_mils": border_mils, "max_aperture_mils": max_aperture_mils}
+        for key, value in values.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < 0:
+                    return {"ok": False, "reason": f"{key} is 0 or more"}
+                if key.endswith("_mils"):
+                    values[key] = float(value)
+        return await run_options("pcb.output_options", _GERBER_OPTIONS, values,
+                                 {"group": "gerber"})
+
+    @mcp.tool()
+    async def pcb_print_options(
+        scale: Optional[float] = None,
+        scale_to_fit_page: Optional[bool] = None,
+        x_correction: Optional[float] = None,
+        y_correction: Optional[float] = None,
+        show_holes: Optional[bool] = None,
+        printer_fonts: Optional[bool] = None,
+        software_arcs: Optional[bool] = None,
+        pad_nets: Optional[bool] = None,
+        pad_numbers: Optional[bool] = None,
+        border_mils: Optional[float] = None,
+        composite_type: Optional[int] = None,
+        batch_type: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the print setup saved in the active board:
+        scale, fit to page, corrections, holes and pad labels.
+
+        Call with nothing to read; every option set is read back.
+        proj_export_pdf prints.
+
+        Args:
+            scale: Print scale (1 is full size).
+            scale_to_fit_page: Fit the board to the page instead.
+            x_correction / y_correction: Scale corrections for the
+                printer (1 is none).
+            show_holes: Draw the holes.
+            printer_fonts: Print text with the printer's fonts.
+            software_arcs: Draw arcs as short straight segments.
+            pad_nets: Print net names on pads.
+            pad_numbers: Print pad numbers.
+            border_mils: Border around the print.
+            composite_type / batch_type: Altium's numbers for how layers
+                are combined and split into pages (read them first).
+
+        Returns:
+            ``board``, ``options`` (by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {"scale": scale, "scale_to_fit_page": scale_to_fit_page,
+                  "x_correction": x_correction, "y_correction": y_correction,
+                  "show_holes": show_holes, "printer_fonts": printer_fonts,
+                  "software_arcs": software_arcs, "pad_nets": pad_nets,
+                  "pad_numbers": pad_numbers, "border_mils": border_mils,
+                  "composite_type": composite_type, "batch_type": batch_type}
+        for key in ("scale", "x_correction", "y_correction"):
+            if values[key] is not None:
+                if values[key] <= 0:
+                    return {"ok": False, "reason": f"{key} is more than 0"}
+                values[key] = float(values[key])
+        for key in ("border_mils", "composite_type", "batch_type"):
+            if values[key] is not None and values[key] < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        if border_mils is not None:
+            values["border_mils"] = float(border_mils)
+        return await run_options("pcb.output_options", _PRINT_OPTIONS, values,
+                                 {"group": "print"})
 
     @mcp.tool()
     async def pcb_export_component_model(
@@ -7984,6 +8442,7 @@ def register_pcb_tools(mcp):
         min_via_hole_mils: float | None = None,
         max_via_hole_mils: float | None = None,
         preferred_via_hole_mils: float | None = None,
+        testpoint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
@@ -8048,6 +8507,13 @@ def register_pcb_tools(mcp):
                 relief_expansion_mils (plane only): the relief's settings.
             min_hole_size_mils / max_hole_size_mils: HoleSize
                 constraint limits.
+            testpoint: a Testpoint Style rule's settings, by name:
+                min_size_mils, max_size_mils, preferred_size_mils,
+                min_hole_mils, max_hole_mils, preferred_hole_mils,
+                grid_mils, grid_tolerance_mils, min_spacing_mils,
+                body_clearance_mils, edge_clearance_mils (0 or more) and
+                under_component, use_grid (True / False). Read back in
+                ``settings`` like the settings above.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
@@ -8135,6 +8601,18 @@ def register_pcb_tools(mcp):
             params["show_distances"] = "true" if show_distances else "false"
         if dp_impedance_driven is not None:
             params["dp_impedance_driven"] = "true" if dp_impedance_driven else "false"
+        for key, value in (testpoint or {}).items():
+            if key not in _TESTPOINT_SETTINGS:
+                return {"ok": False, "reason": f"testpoint has no setting {key}; it takes "
+                        + ", ".join(_TESTPOINT_SETTINGS)}
+            if _TESTPOINT_SETTINGS[key]:
+                if not isinstance(value, bool):
+                    return {"ok": False, "reason": f"testpoint {key} is True or False"}
+                params["testpoint_" + key] = "true" if value else "false"
+            else:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    return {"ok": False, "reason": f"testpoint {key} is a length of 0 or more"}
+                params["testpoint_" + key] = repr(float(value))
 
         bridge = get_bridge()
         return await bridge.send_command_async(

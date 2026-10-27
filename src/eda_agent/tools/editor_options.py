@@ -24,11 +24,13 @@ def _text(value: Any) -> str:
 
 
 async def run_options(command: str, names: dict[str, str],
-                      values: dict[str, Any]) -> dict[str, Any]:
+                      values: dict[str, Any],
+                      extra: dict[str, str] | None = None) -> dict[str, Any]:
     """Read every option in ``names`` and write the ``values`` given.
 
     ``names`` maps an argument name to Altium's; ``values`` holds the
-    arguments, None meaning "leave as it is".
+    arguments, None meaning "leave as it is". ``extra`` is sent as it is
+    (the board output tools name their group there).
     """
     pairs = []
     for arg, value in values.items():
@@ -38,7 +40,8 @@ async def run_options(command: str, names: dict[str, str],
         if "|" in text or "\n" in text:
             return {"ok": False, "reason": f"{arg} cannot hold '|' or a line break"}
         pairs.append(f"{names[arg]}={text}")
-    params = {"names": ",".join(names.values())}
+    params = dict(extra or {})
+    params["names"] = ",".join(names.values())
     if pairs:
         params["set"] = "|".join(pairs)
     reply = await get_bridge().send_command_async(command, params)

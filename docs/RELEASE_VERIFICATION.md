@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.30
+# Release verification: 2026.10.27.33
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -190,6 +190,12 @@ works elsewhere cannot be an undeclared identifier:
 | 50, stack style | `LayerStackStyle` on the master stack | no, nowhere | medium, ran live and restored |
 | 50, impedance profiles | `CreateImpedanceProfile`, `RemoveImpedanceProfile`, `CreateTraceImpedance`, `TraceMinWidth`, `UseSolderMask` | no, nowhere | low, ran live on a copy |
 | 50, layer order | `InsertInStackBelow`, `InsertInStackAbove` on the stack | no, nowhere | medium, ran live on a copy |
+| 51, output setup | `GerberOptions`, `PrinterOptions` on the board | no, nowhere | low, saved in the board; ran live, read back and restored |
+| 51, testpoint rules | `SetState_MinSize` and the other Testpoint Style setters | no, nowhere | low, ran live and restored |
+| 51, preferences | `Paste_InSameNet`, `RepeatX`, `QuestionDelete`, `AutoPanSpeed`, `PadViaFontName`, `BoardAreaColor` in the board editor preferences; `StringIncRemoveLeadingZero`, `CutterFixedLength` in the schematic ones | no, nowhere | low, Altium-wide; ran live and restored |
+| 51, grids and pads | `BigVisibleGridMultFactor`, `SnapGridUnit` on the board; `DrillType` on a pad; `BorderSpaceType` on board text | no, nowhere | low, ran live, read back and restored |
+| 51, net colours | `Color` on a board net, taken from the project's net colour | yes, `Generic.pas` (schematic objects) | low, ran live and restored |
+| 51, sheet zones | `ObjectReferenceZone` on a sheet | no, nowhere | none, read only |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -365,7 +371,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.30`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.33`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2963,6 +2969,61 @@ Run live on AD 26.11.1.5 with that change's script on scratch copies;
 every document closed without saving. All passed as described. Not run:
 a via with a protection structure or back drilling, and a layer
 inserted above another.
+
+---
+
+## 51. Board output and editor settings, testpoint rules, sheet zones, net colours
+
+New: `pcb_gerber_options`, `pcb_print_options`, `pcb_paste_options`,
+`sch_reference_zones`. `pcb_set_rule_properties` takes `testpoint`;
+`pcb_set_grids` gains `visible_big_factor` and the grid units;
+`pcb_view_options`, `pcb_edit_options` and `sch_editor_options` gain more
+preferences; `pcb_net_display` gains `color` and `from_project`;
+`obj_query` / `obj_modify` gain DrillType, IsVirtualPin, FlippedOnLayer
+and BorderSpaceType.
+
+1. **Gerber and print setup.** Read on a 4-layer board; embed apertures,
+   film width 25000 mils, decimals 2 and plus tolerance 0.01 mils
+   written, read back and restored; print scale 2, pad numbers off,
+   holes on and composite type 1 the same.
+2. **Testpoint rules.** Fabrication Testpoint (kind 43) and Assembly
+   Testpoint (kind 57): sizes, edge clearance, grid and under-part
+   settings written, read back and restored; the Clearance rule refused
+   (`WRONG_RULE_KIND`).
+3. **Grids.** Coarse factor 10 and snap unit mil written and restored.
+   The fine factor reads 1 and stayed 1 for 2, 5, 0.5 and 10; it is
+   reported only.
+4. **Board preferences.** Paste keeps its net, array count 4, increment
+   "2", step -150 and angle 30; transparent layers, pad net font
+   Consolas, its minimum size, board area colour; confirm delete,
+   netlist comment check, auto-pan speed and pour redraw threshold: each
+   written, read back and restored. The repeat step reads 10000 to the
+   mil (1000 mils read 10000000).
+5. **Schematic preferences.** Increment without the leading zero,
+   Ctrl + double-click, selection memory confirm, device sheet editing
+   and watermark, cutter grid multiple, cutter length (10000 to the mil)
+   and physical view dimming: written, read back and restored.
+6. **Object properties.** Pad MH1 drill type 2 written and read back,
+   7 refused, restored to 0; board text BorderSpaceType 1 and back;
+   IsVirtualPin and FlippedOnLayer read (a bottom-side part reads false:
+   it is the "flip on layer" option, not the side).
+7. **Sheet zones.** 29 objects on a sheet with their zones ("3B"),
+   filtered to ports and power ports.
+8. **Net colours.** GND given orange and switched on: the pour drew
+   orange on screen. +3V3 given a project colour, then `from_project`:
+   +3V3 took it and switched on, GND and every net without one listed in
+   `no_project_color`. All restored.
+
+Measured and NOT built: hole symbols (the call showed nothing on the
+board with the drill drawing layer on, and nothing reads whether they
+are shown); special string resolution through the project (every name,
+CurrentDate included, answered not resolved); a dimension's TextValue
+(read 0 on a 1000 mil dimension). Simulation probes, profiles and
+waveform data are not reachable from a script.
+
+Run live on AD 26.11.1.5 with that change's script on scratch copies;
+every document closed without saving and the files hashed the same
+before and after. All passed as described.
 
 ---
 

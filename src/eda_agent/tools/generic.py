@@ -318,10 +318,18 @@ _SCH_EDITOR_OPTIONS = {
     "always_drag": "AlwaysDrag",
     "use_printer_fonts": "DisplayPrinterFonts",
     "default_template": "DefaultTemplateFileName",
+    "increment_drops_leading_zero": "StringIncRemoveLeadingZero",
+    "ctrl_double_click_goes_down": "CtrlDbleClickGoesDown",
+    "confirm_selection_memory_clear": "ConfirmSelectionMemoryClear",
+    "allow_device_sheet_editing": "AllowDeviceSheetEditing",
+    "watermark_device_sheets": "WatermarkDeviceSheet",
+    "cutter_grid_multiple": "CutterGridSizeMultiple",
+    "cutter_fixed_length": "CutterFixedLength",
+    "physical_view_dim_level": "PhysicalViewDimLevel",
 }
 
-#: The schematic options given in mils.
-_SCH_MARGINS = ("pin_name_margin", "pin_number_margin")
+#: The schematic options given in mils (Altium keeps 10000 to the mil).
+_SCH_MARGINS = ("pin_name_margin", "pin_number_margin", "cutter_fixed_length")
 
 
 def register_generic_tools(mcp):
@@ -561,7 +569,12 @@ def register_generic_tools(mcp):
                 ConvertedString (reads: the text as shown, special
                 strings resolved); on a 3D body OverrideColor (draw its
                 own colour, not the model's), Texture (an image file) and
-                TextureRotation. Schematic pins take
+                TextureRotation; on a board pad DrillType (how the hole
+                is made: 0 drilled, 1 punched, 2 laser, 3 plasma) and
+                IsVirtualPin (reads); on a placed part FlippedOnLayer
+                (reads: its "flip on layer" option, not its side); on
+                board text BorderSpaceType (Altium's number).
+                Schematic pins take
                 Symbol_Inner, Symbol_Outer, Symbol_InnerEdge,
                 Symbol_OuterEdge and Symbol_LineWidth (Altium's numbers),
                 HiddenNetName and DefinedFunctions (the pin's functions,
@@ -2157,6 +2170,36 @@ def register_generic_tools(mcp):
         return await get_bridge().send_command_async("generic.optimize_wires", {})
 
     @mcp.tool()
+    async def sch_reference_zones(
+        kinds: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Where each part, net label, port, power port, sheet symbol and
+        off-sheet connector sits on the active sheet, as the border zone
+        a printed drawing is read by ("B3"). The zone is Altium's own; a
+        sheet without zones gives an empty one.
+
+        Args:
+            kinds: Any of "component", "net_label", "port", "power_port",
+                "sheet_symbol", "cross_sheet"; None for all.
+
+        Returns:
+            ``sheet``, ``count`` and ``objects``: each ``kind``, ``text``
+            (designator, label, port or sheet name), ``zone`` and ``x`` /
+            ``y`` in mils.
+        """
+        allowed = ("component", "net_label", "port", "power_port", "sheet_symbol",
+                   "cross_sheet")
+        params: dict[str, Any] = {}
+        if kinds:
+            wanted = [k.strip().lower() for k in kinds]
+            bad = [k for k in wanted if k not in allowed]
+            if bad:
+                return {"ok": False, "reason": f"unknown kind {bad[0]}; kinds are "
+                        + ", ".join(allowed)}
+            params["kinds"] = ",".join(wanted)
+        return await get_bridge().send_command_async("generic.reference_zones", params)
+
+    @mcp.tool()
     async def sch_editor_options(
         snap_to_electrical_grid: Optional[bool] = None,
         electrical_grid_distance: Optional[int] = None,
@@ -2188,6 +2231,14 @@ def register_generic_tools(mcp):
         always_drag: Optional[bool] = None,
         use_printer_fonts: Optional[bool] = None,
         default_template: Optional[str] = None,
+        increment_drops_leading_zero: Optional[bool] = None,
+        ctrl_double_click_goes_down: Optional[bool] = None,
+        confirm_selection_memory_clear: Optional[bool] = None,
+        allow_device_sheet_editing: Optional[bool] = None,
+        watermark_device_sheets: Optional[bool] = None,
+        cutter_grid_multiple: Optional[int] = None,
+        cutter_fixed_length: Optional[int] = None,
+        physical_view_dim_level: Optional[int] = None,
     ) -> dict[str, Any]:
         """Read, or set, the schematic editor's preferences.
 
@@ -2231,6 +2282,18 @@ def register_generic_tools(mcp):
             always_drag: Moving a part drags its wires along.
             use_printer_fonts: Draw text with the printer's fonts.
             default_template: The template file new sheets start from.
+            increment_drops_leading_zero: Repeated placement drops a
+                leading zero (R09 is followed by R10, not R010).
+            ctrl_double_click_goes_down: Ctrl + double-click on a sheet
+                symbol opens the sheet below.
+            confirm_selection_memory_clear: Ask before a selection
+                memory is cleared.
+            allow_device_sheet_editing: Device sheets may be edited.
+            watermark_device_sheets: Mark device sheets.
+            cutter_grid_multiple: The wire cutter's length in snap grids.
+            cutter_fixed_length: The wire cutter's fixed length, in mils.
+            physical_view_dim_level: How far the physical view dims what
+                is not in focus (Altium's number).
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -2267,6 +2330,14 @@ def register_generic_tools(mcp):
             "always_drag": always_drag,
             "use_printer_fonts": use_printer_fonts,
             "default_template": default_template,
+            "increment_drops_leading_zero": increment_drops_leading_zero,
+            "ctrl_double_click_goes_down": ctrl_double_click_goes_down,
+            "confirm_selection_memory_clear": confirm_selection_memory_clear,
+            "allow_device_sheet_editing": allow_device_sheet_editing,
+            "watermark_device_sheets": watermark_device_sheets,
+            "cutter_grid_multiple": cutter_grid_multiple,
+            "cutter_fixed_length": cutter_fixed_length,
+            "physical_view_dim_level": physical_view_dim_level,
         }
         for key, value in values.items():
             if isinstance(value, int) and not isinstance(value, bool) and value < 0:

@@ -41,7 +41,10 @@ End;
 { the paste opening as a percentage (PasteMaskUsePercent,                   }
 { PasteMaskPercent) or switched off (PasteMaskEnabled).                     }
 { Text ConvertedString is the text as shown, special strings resolved; it   }
-{ is read only.                                                              }
+{ is read only. A pad's DrillType is how its hole is made (0 drilled, 1     }
+{ punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
+{ (its "flip on layer" option, not its side) are read only. A text's       }
+{ BorderSpaceType is Altium's number for how its inverted border is sized. }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -62,7 +65,7 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Then Result := 3
+            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -84,10 +87,11 @@ Begin
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
             (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
             (PropName = 'JumpersVisible') Or (PropName = 'ChannelOffset') Or
-            (PropName = 'GroupNum') Then Result := 6
+            (PropName = 'GroupNum') Or (PropName = 'FlippedOnLayer') Then Result := 6
     Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
             (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
-            (PropName = 'OwnerPart_ID') Then Result := 7
+            (PropName = 'OwnerPart_ID') Or (PropName = 'DrillType') Or
+            (PropName = 'IsVirtualPin') Then Result := 7
     Else If (PropName = 'OverrideColor') Or (PropName = 'Texture') Or
             (PropName = 'TextureRotation') Then Result := 8
     Else If (PropName = 'IsPreRoute') Or (PropName = 'UserRouted') Then Result := 9;
@@ -199,7 +203,8 @@ Begin
         Else If PropName = 'InvertedTTTextBorder' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvertedTTTextBorder))
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
-        Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString;
+        Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
+        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType);
     End
     Else If Oid = eDimensionObject Then
     Begin
@@ -253,7 +258,8 @@ Begin
         Else If PropName = 'SourceDescription' Then Result := Comp.SourceDescription
         Else If PropName = 'JumpersVisible' Then Result := BoolToJsonStr(Comp.JumpersVisible)
         Else If PropName = 'ChannelOffset' Then Result := IntToStr(Comp.ChannelOffset)
-        Else If PropName = 'GroupNum' Then Result := IntToStr(Comp.GroupNum);
+        Else If PropName = 'GroupNum' Then Result := IntToStr(Comp.GroupNum)
+        Else If PropName = 'FlippedOnLayer' Then Result := BoolToJsonStr(Comp.FlippedOnLayer);
     End
     Else If ExtraPCBPropertyOwner(PropName) = 7 Then
     Begin
@@ -262,7 +268,9 @@ Begin
         Else If PropName = 'SwapID_Pad' Then Result := Pad.SwapID_Pad
         Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part
         Else If PropName = 'SwappedPadName' Then Result := Pad.SwappedPadName
-        Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID);
+        Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID)
+        Else If PropName = 'DrillType' Then Result := IntToStr(Pad.DrillType)
+        Else If PropName = 'IsVirtualPin' Then Result := BoolToJsonStr(Pad.IsVirtualPin);
     End
     Else If ExtraPCBPropertyOwner(PropName) = 8 Then
     Begin
@@ -294,7 +302,8 @@ Begin
     If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
     Result := -1;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
-       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;
+       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
+       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -340,7 +349,8 @@ Begin
         (PropName = 'JumperID') Or (PropName = 'TTFInvertedTextJustify') Or
         (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
         (PropName = 'OwnerPart_ID') Or (PropName = 'PasteMaskExpansionMode') Or
-        (PropName = 'SolderMaskExpansionMode');
+        (PropName = 'SolderMaskExpansionMode') Or (PropName = 'DrillType') Or
+        (PropName = 'BorderSpaceType');
     B := False;
     F := 0;
     N := 0;
@@ -430,7 +440,8 @@ Begin
         Else If PropName = 'UseInvertedRectangle' Then Txt.UseInvertedRectangle := B
         Else If PropName = 'InvertedTTTextBorder' Then Txt.InvertedTTTextBorder := MilsToCoordF(F)
         Else If PropName = 'TTFInvertedTextJustify' Then Txt.TTFInvertedTextJustify := N
-        Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F);
+        Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F)
+        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N;
     End
     Else If Owner = 4 Then
     Begin
@@ -493,7 +504,13 @@ Begin
         Else If PropName = 'SwapID_Pad' Then Pad.SwapID_Pad := Value
         Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value
         Else If PropName = 'SwappedPadName' Then Pad.SwappedPadName := Value
-        Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N;
+        Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N
+        Else If PropName = 'DrillType' Then
+        Begin
+            { Drilled, punched, laser or plasma: 0 to 3. }
+            If N > 3 Then Exit;
+            Pad.DrillType := N;
+        End;
     End
     Else If Owner = 8 Then
     Begin
@@ -2275,7 +2292,8 @@ Begin
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
         + 'TextureRotation, IsPreRoute, UserRouted, PasteMaskExpansionMode, '
         + 'SolderMaskExpansionMode, PasteMaskUsePercent, PasteMaskPercent, '
-        + 'PasteMaskEnabled';
+        + 'PasteMaskEnabled, DrillType, IsVirtualPin, FlippedOnLayer, '
+        + 'BorderSpaceType';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

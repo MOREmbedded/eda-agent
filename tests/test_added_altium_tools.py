@@ -254,7 +254,8 @@ def test_extra_properties_fit_only_their_owner():
     assert "(ExtraPCBPropertyOwner(PropName) > 0);" in text
     body = _body("PCBGeneric.pas", "PCBSetExtra")
     assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
-            "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;") in body
+            "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or\n"
+            "       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;") in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
@@ -1122,3 +1123,150 @@ def test_stack_pascal_keeps_its_measured_shapes():
     assert "LayerStack.InsertInStackBelow(RefObj, NewObj)" in add
     # ResolveStackLayerObject is defined after PCB_AddLayer: not called here.
     assert "ResolveStackLayerObject" not in add
+
+
+def test_board_output_options_send_their_group_and_map_names(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+    monkeypatch.setattr("eda_agent.tools.editor_options.get_bridge", lambda: bridge)
+    asyncio.run(tools["pcb_gerber_options"](embed_apertures=True, film_x_mils=20000))
+    command, params = bridge.sent[0]
+    assert command == "pcb.output_options" and params["group"] == "gerber"
+    assert params["set"] == "EmbedApertures=true|FilmSizeX=20000.0"
+    assert params["names"].split(",") == list(pcb._GERBER_OPTIONS.values())
+    bridge.sent.clear()
+    asyncio.run(tools["pcb_print_options"](scale=2, pad_numbers=False))
+    command, params = bridge.sent[0]
+    assert params["group"] == "print"
+    assert params["set"] == "Scale=2.0|PlotPadNumbers=false"
+    for tool, kwargs in (("pcb_gerber_options", {"border_mils": -1}),
+                         ("pcb_print_options", {"scale": 0}),
+                         ("pcb_print_options", {"batch_type": -1})):
+        bridge.sent.clear()
+        result = asyncio.run(tools[tool](**kwargs))
+        assert bridge.sent == [] and result["ok"] is False, (tool, kwargs)
+    kind = _body("PCB.pas", "OutputOptionKind")
+    setter = _body("PCB.pas", "OutputOptionSet")
+    for altium in pcb._GERBER_OPTIONS.values():
+        assert f"'{altium}'" in kind and f"G.{altium} := " in setter, altium
+    for altium in pcb._PRINT_OPTIONS.values():
+        assert f"'{altium}'" in kind and f"P.{altium} := " in setter, altium
+
+
+def test_grid_factors_and_units_send_and_refuse(monkeypatch):
+    def sent(module, register, tool, **kwargs):
+        return _sent(module, register, monkeypatch, tool, **kwargs)
+
+    _, s = sent(pcb, "register_pcb_tools", "pcb_set_grids", visible_big_factor=5,
+                snap_unit="MM")
+    assert s == [("pcb.set_grids", {"visible_big_factor": "5.0", "snap_unit": "mm"})]
+    for tool, kwargs in (("pcb_set_grids", {"visible_big_factor": 0}),
+                         ("pcb_set_grids", {"visible_unit": "inch"})):
+        result, s = sent(pcb, "register_pcb_tools", tool, **kwargs)
+        assert s == [] and result["ok"] is False, (tool, kwargs)
+    grids = _body("PCB.pas", "PCB_SetGrids")
+    assert "Board.BigVisibleGridMultFactor := V" in grids
+    # The fine factor stayed 1 whatever was written: it is only reported.
+    assert "Board.VisibleGridMultFactor :=" not in grids
+    assert "If UnitGot <> UnitWanted Then" in grids
+
+
+def test_testpoint_rule_settings_go_to_their_own_kind(monkeypatch):
+    _, s = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                 name="TP", testpoint={"min_size_mils": 30, "use_grid": False})
+    assert s == [("pcb.set_rule_properties", {"name": "TP",
+                                              "testpoint_min_size_mils": "30.0",
+                                              "testpoint_use_grid": "false"})]
+    for bad in ({"size": 3}, {"min_size_mils": -1}, {"use_grid": 1},
+                {"grid_mils": True}):
+        result, s = _sent(pcb, "register_pcb_tools", monkeypatch,
+                          "pcb_set_rule_properties", name="TP", testpoint=bad)
+        assert s == [] and result["ok"] is False, bad
+    keys = _body("PCB.pas", "TestpointKeys")
+    for key, switch in pcb._TESTPOINT_SETTINGS.items():
+        if not switch:
+            assert "testpoint_" + key in keys, key
+    handler = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert "TestpointAsked(Params) And (Not IsTestpointStyleKind(Kind))" in handler
+    assert "(Kind = 43) Or (Kind = 57)" in _body("PCB.pas", "IsTestpointStyleKind")
+
+
+def test_reference_zones_send_and_refuse(monkeypatch):
+    _, s = _sent(generic, "register_generic_tools", monkeypatch, "sch_reference_zones",
+                 kinds=["Port", "net_label"])
+    assert s == [("generic.reference_zones", {"kinds": "port,net_label"})]
+    result, s = _sent(generic, "register_generic_tools", monkeypatch,
+                      "sch_reference_zones", kinds=["wire"])
+    assert s == [] and result["ok"] is False
+    zones = _body("Generic.pas", "Gen_ReferenceZones")
+    assert "SchDoc.ObjectReferenceZone(Obj)" in zones
+
+
+def test_pad_drill_type_and_read_only_extras_are_typed():
+    owner = _body("PCBGeneric.pas", "ExtraPCBPropertyOwner")
+    for name in ("DrillType", "IsVirtualPin", "FlippedOnLayer", "BorderSpaceType"):
+        assert f"'{name}'" in owner, name
+    setter = _body("PCBGeneric.pas", "PCBSetExtra")
+    read_only = setter[:setter.index("Owner := ExtraPCBPropertyOwner")]
+    for name in ("IsVirtualPin", "FlippedOnLayer"):
+        assert f"'{name}'" in read_only, name
+    assert "If N > 3 Then Exit;" in setter
+
+
+def test_paste_and_more_editor_options_send_and_refuse(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+    monkeypatch.setattr("eda_agent.tools.editor_options.get_bridge", lambda: bridge)
+    asyncio.run(tools["pcb_paste_options"](repeat_count=4, repeat_x_mils=-100,
+                                           repeat_increment="2"))
+    command, params = bridge.sent[0]
+    assert command == "pcb.editor_options"
+    assert params["set"] == "RepeatCountDefault=4|RepeatInc=2|RepeatX=-1000000.0"
+    bridge.sent.clear()
+    asyncio.run(tools["pcb_view_options"](board_area_color=0x203040, pad_net_font="Arial"))
+    assert bridge.sent[0][1]["set"] == "PadViaFontName=Arial|BoardAreaColor=2109504"
+    bridge.sent.clear()
+    asyncio.run(tools["pcb_edit_options"](confirm_delete=False, auto_pan_speed=3))
+    assert bridge.sent[0][1]["set"] == "QuestionDelete=false|AutoPanSpeed=3"
+    for tool, kwargs in (("pcb_paste_options", {"repeat_count": -1}),
+                         ("pcb_paste_options", {"repeat_angle": -5}),
+                         ("pcb_view_options", {"sheet_line_color": 0x1000000}),
+                         ("pcb_view_options", {"text_as_box_below": -1}),
+                         ("pcb_edit_options", {"auto_pan_step": -2})):
+        bridge.sent.clear()
+        result = asyncio.run(tools[tool](**kwargs))
+        assert bridge.sent == [] and result["ok"] is False, (tool, kwargs)
+    kind = _body("PCB.pas", "PcbOptionKind")
+    setter = _body("PCB.pas", "PcbOptionSet")
+    for altium in pcb._PCB_PASTE_OPTIONS.values():
+        assert f"'{altium}'" in kind and f"Opts.{altium} := " in setter, altium
+    # Only the repeat steps may be negative.
+    assert "(F < 0) And (Name <> 'RepeatX') And (Name <> 'RepeatY')" in setter
+    handler = _body("PCB.pas", "PCB_EditorOptions")
+    assert "Took := Got = '\"' + EscapeJsonString(Value) + '\"'" in handler
+
+
+def test_net_colour_highlighting_sends_bgr_and_reads_hex(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        return {"nets": [{"net": "GND", "color": 0x0080FF}]}
+
+    bridge.send_command_async = send
+    result = asyncio.run(tools["pcb_net_display"](nets=["GND"], color="#FF8000",
+                                                  use_net_color=True))
+    assert bridge.sent == [("pcb.net_display", {"nets": "GND", "use_net_color": "true",
+                                                "color": str(0x0080FF)})]
+    assert result["nets"][0]["color"] == "#FF8000"
+    bridge.sent.clear()
+    asyncio.run(tools["pcb_net_display"](from_project=True))
+    assert bridge.sent == [("pcb.net_display", {"nets": "", "from_project": "true"})]
+    for kwargs in ({"nets": ["GND"], "color": "orange"},
+                   {"nets": ["GND"], "color": "#FF8000", "from_project": True},
+                   {"nets": []}):
+        bridge.sent.clear()
+        result = asyncio.run(tools["pcb_net_display"](**kwargs))
+        assert bridge.sent == [] and result["ok"] is False, kwargs
+    body = _body("PCB.pas", "PCB_NetDisplay")
+    assert "Given := Project.DM_GetNetColorByName(Net.Name);" in body
+    # A net the project gives no colour is left as it is, and named.
+    assert body.index("NoColour := NoColour +") < body.index("Net.Color := Given;")
