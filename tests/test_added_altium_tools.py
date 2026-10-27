@@ -1063,3 +1063,62 @@ def test_gloss_sends_and_selects_through_the_editor(monkeypatch):
     assert "If Mode = 'gloss' Then Process := 'PCB:Gloss' Else Process := 'PCB:Retrace';" in body
     assert body.index("RunProcess(Process);") < body.index("Board.SelectedObjects_Clear; Except End;\n    Try Board.ViewManager_FullUpdate")
 
+
+def test_stack_manager_tools_send_and_refuse(monkeypatch):
+    def sent(tool, **kwargs):
+        return _sent(pcb, "register_pcb_tools", monkeypatch, tool, **kwargs)
+
+    _, s = sent("pcb_physical_stack", style=1)
+    assert s == [("pcb.physical_stack", {"style": "1"})]
+    _, s = sent("pcb_set_dielectric", layer="Dielectric 1", loss_tangent=0.02, stiffener=True)
+    assert s == [("pcb.set_dielectric", {"layer": "Dielectric 1", "loss_tangent": "0.02",
+                                         "stiffener": "true"})]
+    _, s = sent("pcb_impedance_profile", action="Create", profile="Z50", target_ohms=50,
+                differential=False)
+    assert s == [("pcb.impedance_profile", {"action": "create", "profile": "Z50",
+                                            "target_ohms": "50.0", "differential": "false"})]
+    _, s = sent("pcb_add_layer", layer="MidLayer1", below="Top Layer")
+    assert s == [("pcb.add_layer", {"layer": "MidLayer1", "below": "Top Layer"})]
+    for tool, kwargs in (("pcb_physical_stack", {"style": -1}),
+                         ("pcb_set_dielectric", {"layer": "D"}),
+                         ("pcb_set_dielectric", {"layer": "D", "constant": 0.5}),
+                         ("pcb_impedance_profile", {"action": "explode", "profile": "Z"}),
+                         ("pcb_impedance_profile", {"action": "create", "profile": "Z",
+                                                    "target_ohms": 0}),
+                         ("pcb_impedance_profile_layer", {"profile": "Z", "layer": " "}),
+                         ("pcb_impedance_profile_layer", {"profile": "Z", "layer": "L",
+                                                          "min_width_mils": -1}),
+                         ("pcb_add_layer", {"layer": "MidLayer1", "above": "A", "below": "B"}),
+                         ("pcb_via_structures", {"limit": 0})):
+        result, s = sent(tool, **kwargs)
+        assert s == [] and result["ok"] is False, (tool, kwargs)
+
+
+def test_profile_layer_reports_no_limit_as_null(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        return {"max_width_mils": 214748.3647, "max_gap_mils": 8, "min_width_mils": 4}
+
+    bridge.send_command_async = send
+    result = asyncio.run(tools["pcb_impedance_profile_layer"](profile="Z", layer="Top Layer"))
+    assert result["max_width_mils"] is None and result["max_gap_mils"] == 8
+
+
+def test_stack_pascal_keeps_its_measured_shapes():
+    stack = _body("PCB.pas", "PCB_PhysicalStack")
+    # Altium's Z runs down from the top copper.
+    assert "CoordToMilsF(ZBot - ZTop)" in stack
+    layer = _body("PCB.pas", "PCB_ImpedanceProfileLayer")
+    # A record's own layer is a handle a script cannot name; layers go by ID.
+    assert "P.GetTraceImpedanceForLayer(Sub, WantId)" in layer
+    assert "P.CreateTraceImpedance(Sub, WantId)" in layer
+    assert "T.Layer" not in layer
+    reader = _body("PCB.pas", "PCB_GetImpedanceProfiles")
+    assert "Profile.GetTraceImpedanceForLayer(Sub, Layer.LayerID)" in reader
+    assert "Trace.Layer" not in reader and "RefTopLayer" not in reader
+    assert "ImpLayerName" not in (ALTIUM / "PCB.pas").read_text(encoding="utf-8-sig")
+    add = _body("PCB.pas", "PCB_AddLayer")
+    assert "LayerStack.InsertInStackBelow(RefObj, NewObj)" in add
+    # ResolveStackLayerObject is defined after PCB_AddLayer: not called here.
+    assert "ResolveStackLayerObject" not in add

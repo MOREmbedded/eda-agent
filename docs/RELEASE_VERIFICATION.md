@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.25
+# Release verification: 2026.10.27.30
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -124,7 +124,7 @@ works elsewhere cannot be an undeclared identifier:
 | 41, part to remove | `CurrentPartID`, `DisplayMode` written on a library symbol | yes, `Lib_CreateSymbol` | low |
 | 41, model to STEP | `ExportToStep` on a 3D model | no, nowhere | medium, writes a file only; ran live |
 | 41, board STEP | `Board3DModelExporter`, `ExportBoard3DModel` | no, nowhere | medium, writes a file only; ran live, and the dialog route stays behind it |
-| 41, impedance profiles | `GetImpedanceProfileCount`, `GetImpedanceProfileByIndex`, `GetTraceImpedanceByIndex`, `CalculatedImpedance` | no, nowhere | high for the per-profile reads, not yet run on a board with a profile; each read is guarded |
+| 41, impedance profiles | `GetImpedanceProfileCount`, `GetImpedanceProfileByIndex`, `GetTraceImpedanceForLayer`, `CalculatedImpedance` | no, nowhere | low since step 50: per-profile reads ran on a board with profiles; the layer is asked for by ID |
 | 42, variant API | `DM_AddProjectVariant`, `DM_SetName`, `DM_SetDescription` on a project and its new variant | no, nowhere | medium, ran live; the process route stays behind it |
 | 42, variant entries | `DM_AddComponentVariation`, `DM_RemoveComponentVariation`, `DM_SetVariationKind`, `DM_SetAlternatePart` | no, nowhere | medium, ran live and read back |
 | 42, net colours | `DM_SetNetColorByName` on a project | no, nowhere | low, ran live, set and cleared |
@@ -186,6 +186,10 @@ works elsewhere cannot be an undeclared identifier:
 | 49, region settings | `Locked3D` on a board region | no, nowhere | low, ran live and read back |
 | 49, layer stacks | `CreateSubstack`, `RemoveSubstack`, `EnableLayer`, `DisableLayer`, `IsFlex` on the layer stack | no, nowhere | medium, changes the stack; ran live and restored |
 | 49, bend lines | `CreateBendingLine`, `DeleteBendingLine`, `FoldIndex` on a region's bend lines | no, nowhere | low, ran live and restored |
+| 50, dielectrics | `DielectricLossTangent`, `IsStiffener`, `DielectricHeight` on a dielectric or mask layer | no, nowhere | medium, changes the stack; ran live and restored |
+| 50, stack style | `LayerStackStyle` on the master stack | no, nowhere | medium, ran live and restored |
+| 50, impedance profiles | `CreateImpedanceProfile`, `RemoveImpedanceProfile`, `CreateTraceImpedance`, `TraceMinWidth`, `UseSolderMask` | no, nowhere | low, ran live on a copy |
+| 50, layer order | `InsertInStackBelow`, `InsertInStackAbove` on the stack | no, nowhere | medium, ran live on a copy |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -361,7 +365,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.25`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.30`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2919,6 +2923,46 @@ Run live on AD 26.11.1.5 with that change's script on scratch copies of
 the plain board and the fixture; every document closed without saving.
 All passed as described. Not run: bend lines folded in the 3D view, and a
 split on a board with existing split lines.
+
+---
+
+## 50. Layer stack manager: physical stack, dielectrics, impedance profiles, layer order, vias
+
+New: `pcb_physical_stack`, `pcb_set_dielectric`, `pcb_impedance_profile`,
+`pcb_impedance_profile_layer`, `pcb_via_structures`; `pcb_add_layer`
+gains `above` / `below`. `pcb_get_impedance_profiles` now reads a
+profile's layers by asking for each copper layer; it no longer reports
+the reference layers, which a script cannot name.
+
+1. **Physical stack.** A 4-layer board: 13 layers top down (paste,
+   overlay, mask, copper and dielectrics) with Z, thickness, Dk,
+   material and type, 64.25 mils in all; the rigid-flex fixture: 13
+   layers, 23.86 mils. Altium's Z runs down from the top copper.
+2. **Dielectric.** Dielectric 1 set to Df 0.021, a stiffener, Dk 4.3,
+   one mil thicker and Isola 370HR, read back (the board then 65.25
+   mils), restored; Top Solder Dk 3.5 to 3.8 and back; a copper layer
+   refused.
+3. **Stack style.** 0 to 1 and back, read back.
+4. **Profiles.** A 50 ohm single and a 90 ohm differential profile
+   created; Top Layer added to the first with width limits 4 to 12
+   mils, solder mask modelled 0.8 mils, then width 9 mils locked;
+   Bottom Layer added to the second with gap 6 (5 to 8) mils; renamed,
+   retargeted and removed; a second profile of the same name refused.
+   A newly added layer starts disabled with no width until Altium's
+   solver runs.
+5. **Layer order.** MidLayer1 added below Top Layer went in second.
+6. **Vias.** 279 vias read: no protection structure and no back
+   drilling on that board.
+
+Measured and NOT built: a trace record's own layer and its reference
+layers (V7 layer handles a script cannot name: "Undeclared identifier:
+Name"); the layer object as the profile's layer argument ("Could not
+convert variant of type (Dispatch) into type (Integer)"; the ID works).
+
+Run live on AD 26.11.1.5 with that change's script on scratch copies;
+every document closed without saving. All passed as described. Not run:
+a via with a protection structure or back drilling, and a layer
+inserted above another.
 
 ---
 

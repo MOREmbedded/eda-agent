@@ -1856,6 +1856,194 @@ def register_pcb_tools(mcp):
             "pcb.gloss", {"nets": "\t".join(items), "mode": mode}, timeout=300.0)
 
     @mcp.tool()
+    async def pcb_physical_stack(style: Optional[int] = None) -> dict[str, Any]:
+        """Read the board's whole physical layer stack top down, as Altium's
+        Layer Stack Manager shows it: copper, dielectric, solder mask,
+        overlay and paste layers, each with its Z top, Z bottom and
+        thickness in mils; a dielectric or mask layer also with its type
+        (Altium's number), material, constant, loss tangent and stiffener
+        flag. Also the stack style and the finished board thickness.
+
+        Args:
+            style: Set the stack style (Altium's number; read it first).
+
+        Returns:
+            ``style``, ``total_thickness_mils`` and ``layers``.
+        """
+        params: dict[str, Any] = {}
+        if style is not None:
+            if style < 0:
+                return {"ok": False, "reason": "style is 0 or more"}
+            params["style"] = str(style)
+        return await get_bridge().send_command_async("pcb.physical_stack", params)
+
+    @mcp.tool()
+    async def pcb_set_dielectric(
+        layer: str,
+        dielectric_type: Optional[int] = None,
+        material: Optional[str] = None,
+        constant: Optional[float] = None,
+        loss_tangent: Optional[float] = None,
+        thickness_mils: Optional[float] = None,
+        stiffener: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Set a dielectric or solder mask (coverlay) layer of the stack:
+        its type (Altium's number), material, dielectric constant (Dk),
+        loss tangent (Df), thickness and whether it is a stiffener. Each
+        value is read back; any that did not take is in ``not_applied``.
+
+        Args:
+            layer: The layer's name as pcb_physical_stack lists it.
+        """
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        params: dict[str, Any] = {"layer": layer.strip()}
+        if dielectric_type is not None:
+            if dielectric_type < 0:
+                return {"ok": False, "reason": "dielectric_type is 0 or more"}
+            params["type"] = str(dielectric_type)
+        if material is not None:
+            params["material"] = material
+        for key, value, low in (("constant", constant, 1.0),
+                                ("loss_tangent", loss_tangent, 0.0),
+                                ("thickness_mils", thickness_mils, 0.0)):
+            if value is not None:
+                if value < low:
+                    return {"ok": False, "reason": f"{key} is {low} or more"}
+                params[key] = repr(float(value))
+        if stiffener is not None:
+            params["stiffener"] = "true" if stiffener else "false"
+        if len(params) == 1:
+            return {"ok": False, "reason": "nothing to set"}
+        return await get_bridge().send_command_async("pcb.set_dielectric", params)
+
+    @mcp.tool()
+    async def pcb_impedance_profile(
+        action: str,
+        profile: str,
+        name: str = "",
+        target_ohms: Optional[float] = None,
+        tolerance: Optional[float] = None,
+        differential: Optional[bool] = None,
+        coplanar: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Create, change or remove an impedance profile in the Layer Stack
+        Manager. pcb_get_impedance_profiles reads them, with the width
+        Altium's solver works out per layer; pcb_impedance_profile_layer
+        sets a profile's limits on one layer.
+
+        Args:
+            action: create, set or remove.
+            profile: The profile's name (the new one's, for create).
+            name: A new name (set).
+            target_ohms: The target impedance.
+            tolerance: The tolerance, in percent.
+            differential: A differential pair profile.
+            coplanar: Coplanar (reference copper beside the trace).
+
+        Returns:
+            ``profiles_before``, ``profiles_after`` and ``not_applied``.
+        """
+        action = action.strip().lower()
+        if action not in ("create", "set", "remove"):
+            return {"ok": False, "reason": "action is create, set or remove"}
+        if not profile.strip():
+            return {"ok": False, "reason": "profile is required"}
+        params: dict[str, Any] = {"action": action, "profile": profile.strip()}
+        if name.strip():
+            params["name"] = name.strip()
+        for key, value in (("target_ohms", target_ohms), ("tolerance", tolerance)):
+            if value is not None:
+                if value <= 0:
+                    return {"ok": False, "reason": f"{key} is more than 0"}
+                params[key] = repr(float(value))
+        for key, value in (("differential", differential), ("coplanar", coplanar)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        return await get_bridge().send_command_async("pcb.impedance_profile", params)
+
+    @mcp.tool()
+    async def pcb_impedance_profile_layer(
+        profile: str,
+        layer: str,
+        enabled: Optional[bool] = None,
+        width_locked: Optional[bool] = None,
+        gap_locked: Optional[bool] = None,
+        width_mils: Optional[float] = None,
+        min_width_mils: Optional[float] = None,
+        max_width_mils: Optional[float] = None,
+        gap_mils: Optional[float] = None,
+        min_gap_mils: Optional[float] = None,
+        max_gap_mils: Optional[float] = None,
+        clearance_to_plane_mils: Optional[float] = None,
+        use_solder_mask: Optional[bool] = None,
+        mask_between_mils: Optional[float] = None,
+        mask_on_top_mils: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, one impedance profile's settings on one layer:
+        whether it applies there, the trace width (locked, or worked out by
+        Altium within its limits), the pair gap and its limits, clearance
+        to plane for coplanar work, and how the solder mask over the trace
+        is modelled. Every value set is read back.
+
+        Args:
+            profile: The profile's name.
+            layer: The copper layer's name.
+
+        A layer the profile does not hold yet is added to it
+        (``layer_added``); it starts disabled with no width until Altium's
+        solver runs in the Layer Stack Manager.
+
+        Returns:
+            The layer's settings with ``calculated_ohms`` (a maximum of
+            ``null`` is no limit), and ``not_applied``.
+        """
+        if not profile.strip() or not layer.strip():
+            return {"ok": False, "reason": "profile and layer are required"}
+        params: dict[str, Any] = {"profile": profile.strip(), "layer": layer.strip()}
+        for key, value in (("enabled", enabled), ("width_locked", width_locked),
+                           ("gap_locked", gap_locked), ("use_solder_mask", use_solder_mask)):
+            if value is not None:
+                params[key] = "true" if value else "false"
+        for key, value in (("width_mils", width_mils), ("min_width_mils", min_width_mils),
+                           ("max_width_mils", max_width_mils), ("gap_mils", gap_mils),
+                           ("min_gap_mils", min_gap_mils), ("max_gap_mils", max_gap_mils),
+                           ("clearance_to_plane_mils", clearance_to_plane_mils),
+                           ("mask_between_mils", mask_between_mils),
+                           ("mask_on_top_mils", mask_on_top_mils)):
+            if value is not None:
+                if value < 0:
+                    return {"ok": False, "reason": f"{key} is 0 or more"}
+                params[key] = repr(float(value))
+        reply = await get_bridge().send_command_async("pcb.impedance_profile_layer", params)
+        if isinstance(reply, dict):
+            # Altium keeps "no limit" as the largest coordinate, 214748.36 mils.
+            for key in ("max_width_mils", "max_gap_mils"):
+                if isinstance(reply.get(key), (int, float)) and reply[key] > 200000:
+                    reply[key] = None
+        return reply
+
+    @mcp.tool()
+    async def pcb_via_structures(limit: int = 200) -> dict[str, Any]:
+        """How the board's vias are protected and drilled: each via's
+        structure type and its features (the IPC-4761 tenting, plugging,
+        filling and capping, each with side and material; Altium's numbers)
+        and its back drilling (stub lengths and hole oversize). Vias that
+        agree are counted together.
+
+        Args:
+            limit: The most distinct kinds listed.
+
+        Returns:
+            ``vias`` and ``structures`` (``vias``, ``structure_type``,
+            ``features``, ``back_drilled``, ``top_stub_mils``,
+            ``bottom_stub_mils``, ``oversize_mils``).
+        """
+        if limit < 1:
+            return {"ok": False, "reason": "limit is 1 or more"}
+        return await get_bridge().send_command_async("pcb.via_structures", {"limit": str(limit)})
+
+    @mcp.tool()
     async def pcb_pours_at(x: float, y: float) -> dict[str, Any]:
         """Which pours on the active board have a point inside their
         outline, with each pour's net and layer: is this via inside the
@@ -5366,11 +5554,12 @@ def register_pcb_tools(mcp):
             ``profile_count``, ``read_errors`` (fields this build would
             not report) and ``profiles``: each with ``name``,
             ``target_ohms``, ``tolerance``, ``differential`` and
-            ``layers``: ``layer``, ``ref_top_layer``, ``ref_bottom_layer``,
-            ``enabled``, ``trace_width_mils``, ``diff_pair_gap_mils``,
+            ``layers``: ``layer``, ``enabled``, ``trace_width_mils``,
+            ``diff_pair_gap_mils``,
             ``calculated_impedance_ohms``, ``impedance_error``,
             ``etch_factor``, ``propagation_speed``. A board with no
-            profiles returns an empty list.
+            profiles returns an empty list. The reference layers above and
+            below are not readable from a script.
         """
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.get_impedance_profiles", {})
@@ -5428,25 +5617,31 @@ def register_pcb_tools(mcp):
         }
 
     @mcp.tool()
-    async def pcb_add_layer(layer: str) -> dict[str, Any]:
+    async def pcb_add_layer(layer: str, above: str = "", below: str = "") -> dict[str, Any]:
         """Insert a copper layer into the PCB layer stack.
 
-        Calls IPCB_LayerStack.InsertLayer with the requested TLayer enum.
         Valid names include MidLayer1..MidLayer30 (signal layers) and
         InternalPlane1..InternalPlane16 (power / ground planes). Top / Bottom
-        are always present, they cannot be added.
+        are always present, they cannot be added. With ``above`` or
+        ``below`` (a layer already in the stack) it goes in at that place;
+        otherwise Altium chooses.
 
         Args:
             layer: Layer name, e.g. "MidLayer1", "InternalPlane1"
+            above: Put it directly above this layer.
+            below: Put it directly below this layer.
 
         Returns:
-            Dictionary confirming the layer was inserted.
+            ``layer`` and ``stack_order``, the copper layers top down.
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.add_layer", {"layer": layer}
-        )
-        return result
+        if above.strip() and below.strip():
+            return {"ok": False, "reason": "give above or below, not both"}
+        params: dict[str, Any] = {"layer": layer}
+        if above.strip():
+            params["above"] = above.strip()
+        if below.strip():
+            params["below"] = below.strip()
+        return await get_bridge().send_command_async("pcb.add_layer", params)
 
     @mcp.tool()
     async def pcb_remove_layer(layer: str) -> dict[str, Any]:

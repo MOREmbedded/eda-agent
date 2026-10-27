@@ -1070,6 +1070,24 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "Per net; reports track count and length before and after. Check hand-routed copper.",
     },
     {
+        "task": "Work in the layer stack manager: dielectrics, thickness, impedance profiles, layer order",
+        "keywords": ("stack", "stackup", "dielectric", "loss", "tangent", "df", "dk",
+                     "thickness", "impedance", "profile", "solder", "mask", "coverlay",
+                     "stiffener", "insert", "above", "below", "via", "backdrill"),
+        "when": (("loss", "tangent"), ("impedance", "profile"), ("board", "thickness"),
+                 ("stack", "thickness"), ("dielectric",), ("stiffener",),
+                 ("insert", "layer"), ("back", "drill"), ("via", "plugged")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_physical_stack", "pcb_set_dielectric", "pcb_add_layer",
+                "pcb_impedance_profile", "pcb_impedance_profile_layer",
+                "pcb_get_impedance_profiles", "pcb_via_structures"],
+        "avoid": [("pcb_modify_layer", "edits a copper layer's own settings")],
+        "note": ("pcb_physical_stack lists every layer with Z and thickness; "
+                 "pcb_set_dielectric sets Dk, Df, thickness and stiffener on a "
+                 "dielectric or mask layer; pcb_add_layer takes above / below."),
+    },
+    {
         "task": "Set the board's snap, track, via or visible grid",
         "keywords": ("grid", "snap", "track", "via", "visible", "dot",
                      "board"),

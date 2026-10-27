@@ -4971,16 +4971,6 @@ End;
 
 {..............................................................................}
 { PCB_GetLayerStackup - Get full layer stack info                             }
-{..............................................................................}
-{ ImpLayerName - the name of a layer an impedance record points at, or '' when  }
-{ it points at none (a trace impedance with no top or bottom reference).      }
-{..............................................................................}
-Function ImpLayerName(Layer : IPCB_LayerObject_V7) : String;
-Begin
-    Result := '';
-    If Layer = Nil Then Exit;
-    Try Result := Layer.Name; Except Result := ''; End;
-End;
 
 {..............................................................................}
 { PCB_GetImpedanceProfiles - the impedance profiles in the board's Layer      }
@@ -5000,8 +4990,9 @@ Var
     Profile : IPCB_ImpedanceProfile;
     Trace : IPCB_TraceImpedance;
     Layer : IPCB_LayerObject_V7;
-    PCount, TCount, I, J, Misses : Integer;
-    Items, Traces, PName, LName, RefTop, RefBottom : String;
+    Sub : IPCB_LayerStack;
+    PCount, I, Misses : Integer;
+    Items, Traces, PName, LName : String;
     Target, Tol, Calc, Err, Etch, Speed : Double;
     IsDiff, Enabled : Boolean;
     Width, Gap : TCoord;
@@ -5050,59 +5041,49 @@ Begin
         Try Tol := Profile.ImpedanceTolerance; Except Inc(Misses); End;
         Try IsDiff := Profile.IsDiffPair; Except Inc(Misses); End;
 
+        { A trace record's own layer is a V7 layer handle a script cannot name }
+        { ("Undeclared identifier: Name", AD 26.11), so the profile is asked  }
+        { for its record on each copper layer of the first stack instead.    }
         Traces := '';
-        TCount := 0;
-        Try TCount := Profile.GetTraceImpedanceCount; Except Inc(Misses); End;
-        For J := 0 To TCount - 1 Do
+        Sub := Nil;
+        Try Sub := Stack.GetState_Substacks(0); Except Sub := Nil; End;
+        Layer := Board.LayerStack_V7.FirstLayer;
+        While (Layer <> Nil) And (Sub <> Nil) Do
         Begin
             Trace := Nil;
-            Try Trace := Profile.GetTraceImpedanceByIndex(J); Except Trace := Nil; End;
-            If Trace = Nil Then
+            Try Trace := Profile.GetTraceImpedanceForLayer(Sub, Layer.LayerID); Except Trace := Nil; End;
+            If Trace <> Nil Then
             Begin
-                Inc(Misses);
-                Continue;
+                LName := Layer.Name;
+                Enabled := True;
+                Width := 0;
+                Gap := 0;
+                Calc := 0;
+                Err := 0;
+                Etch := 0;
+                Speed := 0;
+                Try Enabled := Trace.IsEnabled; Except Inc(Misses); End;
+                Try Width := Trace.TraceWidth; Except Inc(Misses); End;
+                Try Calc := Trace.CalculatedImpedance; Except Inc(Misses); End;
+                Try Err := Trace.ImpedanceError; Except Inc(Misses); End;
+                Try Etch := Trace.EtchFactor; Except Inc(Misses); End;
+                Try Speed := Trace.PropagationSpeed; Except Inc(Misses); End;
+                If IsDiff Then
+                Begin
+                    Try Gap := Trace.DiffPairGap; Except Inc(Misses); End;
+                End;
+                If Traces <> '' Then Traces := Traces + ',';
+                Traces := Traces + JsonObj(
+                    JsonStr('layer', LName) + ','
+                    + JsonBool('enabled', Enabled) + ','
+                    + JsonFloat('trace_width_mils', CoordToMilsF(Width)) + ','
+                    + JsonFloat('diff_pair_gap_mils', CoordToMilsF(Gap)) + ','
+                    + JsonFloat('calculated_impedance_ohms', Calc) + ','
+                    + JsonFloat('impedance_error', Err) + ','
+                    + JsonFloat('etch_factor', Etch) + ','
+                    + JsonFloat('propagation_speed', Speed));
             End;
-            LName := '';
-            RefTop := '';
-            RefBottom := '';
-            Enabled := True;
-            Width := 0;
-            Gap := 0;
-            Calc := 0;
-            Err := 0;
-            Etch := 0;
-            Speed := 0;
-            Layer := Nil;
-            Try Layer := Trace.Layer; Except Inc(Misses); End;
-            LName := ImpLayerName(Layer);
-            Layer := Nil;
-            Try Layer := Trace.RefTopLayer; Except Inc(Misses); End;
-            RefTop := ImpLayerName(Layer);
-            Layer := Nil;
-            Try Layer := Trace.RefBottomLayer; Except Inc(Misses); End;
-            RefBottom := ImpLayerName(Layer);
-            Try Enabled := Trace.IsEnabled; Except Inc(Misses); End;
-            Try Width := Trace.TraceWidth; Except Inc(Misses); End;
-            Try Calc := Trace.CalculatedImpedance; Except Inc(Misses); End;
-            Try Err := Trace.ImpedanceError; Except Inc(Misses); End;
-            Try Etch := Trace.EtchFactor; Except Inc(Misses); End;
-            Try Speed := Trace.PropagationSpeed; Except Inc(Misses); End;
-            If IsDiff Then
-            Begin
-                Try Gap := Trace.DiffPairGap; Except Inc(Misses); End;
-            End;
-            If Traces <> '' Then Traces := Traces + ',';
-            Traces := Traces + JsonObj(
-                JsonStr('layer', LName) + ','
-                + JsonStr('ref_top_layer', RefTop) + ','
-                + JsonStr('ref_bottom_layer', RefBottom) + ','
-                + JsonBool('enabled', Enabled) + ','
-                + JsonFloat('trace_width_mils', CoordToMilsF(Width)) + ','
-                + JsonFloat('diff_pair_gap_mils', CoordToMilsF(Gap)) + ','
-                + JsonFloat('calculated_impedance_ohms', Calc) + ','
-                + JsonFloat('impedance_error', Err) + ','
-                + JsonFloat('etch_factor', Etch) + ','
-                + JsonFloat('propagation_speed', Speed));
+            Layer := Board.LayerStack_V7.NextLayer(Layer);
         End;
         If Items <> '' Then Items := Items + ',';
         Items := Items + JsonObj(
@@ -5118,6 +5099,580 @@ Begin
         + JsonInt('profile_count', PCount) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('profiles', '[' + Items + ']')));
+End;
+
+{ LAYER STACK MANAGER: the whole physical stack (copper, dielectric, solder    }
+{ mask, overlay, paste) in order with Z heights; dielectric settings; the    }
+{ stack style; impedance profiles; via structures and back drilling. Lengths }
+{ are mils.                                                                   }
+
+{ '|name|name|' of the master stack's layers of one class. }
+Function StackClassNames(MLS : IPCB_MasterLayerStack; Cls : Integer) : String;
+Var
+    L : IPCB_LayerObject;
+Begin
+    Result := '|';
+    L := MLS.First(Cls);
+    While L <> Nil Do
+    Begin
+        Result := Result + L.Name + '|';
+        L := MLS.Next(Cls, L);
+    End;
+End;
+
+{ The physical layer named Name (any case), Nil when there is none. }
+Function StackFindPhysical(MLS : IPCB_MasterLayerStack; Name : String) : IPCB_LayerObject;
+Var
+    L : IPCB_LayerObject;
+Begin
+    Result := Nil;
+    L := MLS.First(eLayerClass_Physical);
+    While L <> Nil Do
+    Begin
+        If UpperCase(L.Name) = UpperCase(Name) Then
+        Begin
+            Result := L;
+            Exit;
+        End;
+        L := MLS.Next(eLayerClass_Physical, L);
+    End;
+End;
+
+{ One dielectric or mask layer's settings as JSON members (no braces). }
+Function StackDielectricJson(DL : IPCB_DielectricLayer) : String;
+Begin
+    Result := JsonInt('dielectric_type', DL.DielectricType) + ','
+        + JsonStr('material', DL.DielectricMaterial) + ','
+        + JsonRaw('constant', FloatToJsonStr(DL.DielectricConstant)) + ','
+        + JsonRaw('loss_tangent', FloatToJsonStr(DL.DielectricLossTangent)) + ','
+        + JsonBool('stiffener', DL.IsStiffener);
+End;
+
+{..............................................................................}
+{ PCB_PhysicalStack - every physical layer of the board's stack in order, top }
+{ down: its kind, Z top and bottom and thickness, and for a dielectric or     }
+{ mask layer its type, material, constant, loss tangent and stiffener flag;   }
+{ the stack style and the finished thickness. Params: style (optional, a     }
+{ whole number: sets the stack style, Altium's number, read back).           }
+{..............................................................................}
+Function PCB_PhysicalStack(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    L : IPCB_LayerObject;
+    DL : IPCB_DielectricLayer;
+    StyleStr, Copper, Dielectric, Mask, Overlay, Paste, Kind, Key, Items, Extra : String;
+    ZTop, ZBot, MaxTop, MinBot, Order : Integer;
+    Changed : Boolean;
+Begin
+    StyleStr := ExtractJsonValue(Params, 'style');
+    If (StyleStr <> '') And (Not IsIntStr(StyleStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'style is a whole number');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    MLS := Board.MasterLayerStack;
+    Changed := False;
+    If StyleStr <> '' Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            MLS.LayerStackStyle := StrToInt(StyleStr);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Changed := True;
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+    Copper := StackClassNames(MLS, eLayerClass_Electrical);
+    Dielectric := StackClassNames(MLS, eLayerClass_Dielectric);
+    Mask := StackClassNames(MLS, eLayerClass_SolderMask);
+    Overlay := StackClassNames(MLS, eLayerClass_Overlay);
+    Paste := StackClassNames(MLS, eLayerClass_PasteMask);
+    Items := '';
+    MaxTop := 0;
+    MinBot := 0;
+    Order := 0;
+    L := MLS.First(eLayerClass_Physical);
+    While L <> Nil Do
+    Begin
+        Key := '|' + L.Name + '|';
+        Kind := 'other';
+        If Pos(Key, Copper) > 0 Then Kind := 'copper'
+        Else If Pos(Key, Mask) > 0 Then Kind := 'solder_mask'
+        Else If Pos(Key, Dielectric) > 0 Then Kind := 'dielectric'
+        Else If Pos(Key, Overlay) > 0 Then Kind := 'overlay'
+        Else If Pos(Key, Paste) > 0 Then Kind := 'paste';
+        { Altium's Z runs down from the top copper: a layer's top is the    }
+        { smaller number (measured on AD 26.11).                           }
+        ZTop := MLS.Get_ZTop(L);
+        ZBot := MLS.Get_ZBottom(L);
+        If (Order = 0) Or (ZBot > MaxTop) Then MaxTop := ZBot;
+        If (Order = 0) Or (ZTop < MinBot) Then MinBot := ZTop;
+        Extra := '';
+        If (Kind = 'dielectric') Or (Kind = 'solder_mask') Then
+        Begin
+            DL := L;
+            Extra := ',' + StackDielectricJson(DL);
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonInt('order', Order) + ','
+            + JsonStr('name', L.Name) + ','
+            + JsonStr('kind', Kind) + ','
+            + JsonRaw('z_top_mils', FloatToJsonStr(CoordToMilsF(ZTop))) + ','
+            + JsonRaw('z_bottom_mils', FloatToJsonStr(CoordToMilsF(ZBot))) + ','
+            + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(ZBot - ZTop))) + Extra);
+        Inc(Order);
+        L := MLS.Next(eLayerClass_Physical, L);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('style', MLS.LayerStackStyle) + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('total_thickness_mils', FloatToJsonStr(CoordToMilsF(MaxTop - MinBot))) + ','
+        + JsonRaw('layers', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ PCB_SetDielectric - set a dielectric or solder mask layer's type (Altium's  }
+{ number), material, constant, loss tangent, thickness (mils) and stiffener  }
+{ flag; each value is read back. Params: layer (required), type, material,    }
+{ constant, loss_tangent, thickness_mils, stiffener ('true'/'false').         }
+{..............................................................................}
+Function PCB_SetDielectric(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    L : IPCB_LayerObject;
+    DL : IPCB_DielectricLayer;
+    LayerName, TypeS, MatS, ConstS, TanS, ThickS, StiffS, Key, Missed : String;
+Begin
+    LayerName := ExtractJsonValue(Params, 'layer');
+    TypeS := ExtractJsonValue(Params, 'type');
+    MatS := ExtractJsonValue(Params, 'material');
+    ConstS := ExtractJsonValue(Params, 'constant');
+    TanS := ExtractJsonValue(Params, 'loss_tangent');
+    ThickS := ExtractJsonValue(Params, 'thickness_mils');
+    StiffS := LowerCase(ExtractJsonValue(Params, 'stiffener'));
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    MLS := Board.MasterLayerStack;
+    L := StackFindPhysical(MLS, LayerName);
+    Key := '|' + LayerName + '|';
+    If L <> Nil Then Key := '|' + L.Name + '|';
+    If (L = Nil) Or ((Pos(Key, StackClassNames(MLS, eLayerClass_Dielectric)) = 0)
+        And (Pos(Key, StackClassNames(MLS, eLayerClass_SolderMask)) = 0)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_DIELECTRIC',
+            LayerName + ' is not a dielectric or solder mask layer of this stack; '
+            + 'pcb_physical_stack lists them');
+        Exit;
+    End;
+    DL := L;
+    Missed := '';
+    PCBServer.PreProcess;
+    Try
+        If TypeS <> '' Then
+        Begin
+            DL.DielectricType := StrToInt(TypeS);
+            If DL.DielectricType <> StrToInt(TypeS) Then Missed := Missed + '"type",';
+        End;
+        If MatS <> '' Then
+        Begin
+            DL.DielectricMaterial := MatS;
+            If DL.DielectricMaterial <> MatS Then Missed := Missed + '"material",';
+        End;
+        If ConstS <> '' Then
+        Begin
+            DL.DielectricConstant := StrToFloatDef(ConstS, 1);
+            If Abs(DL.DielectricConstant - StrToFloatDef(ConstS, 1)) > 0.0001 Then Missed := Missed + '"constant",';
+        End;
+        If TanS <> '' Then
+        Begin
+            DL.DielectricLossTangent := StrToFloatDef(TanS, 0);
+            If Abs(DL.DielectricLossTangent - StrToFloatDef(TanS, 0)) > 0.00001 Then Missed := Missed + '"loss_tangent",';
+        End;
+        If ThickS <> '' Then
+        Begin
+            DL.DielectricHeight := MilsToCoordF(StrToFloatDef(ThickS, 0));
+            If Abs(CoordToMilsF(DL.DielectricHeight) - StrToFloatDef(ThickS, 0)) > 0.01 Then Missed := Missed + '"thickness_mils",';
+        End;
+        If StiffS <> '' Then
+        Begin
+            DL.IsStiffener := (StiffS = 'true');
+            If DL.IsStiffener <> (StiffS = 'true') Then Missed := Missed + '"stiffener",';
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Missed <> '' Then Missed := Copy(Missed, 1, Length(Missed) - 1);
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('layer', L.Name) + ','
+        + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(DL.DielectricHeight))) + ','
+        + StackDielectricJson(DL) + ','
+        + JsonRaw('not_applied', '[' + Missed + ']')));
+End;
+
+{ The impedance profile named Name, Nil when there is none. }
+Function ImpFindProfile(Stack : IPCB_MasterLayerStack2; Name : String) : IPCB_ImpedanceProfile;
+Var
+    I : Integer;
+    P : IPCB_ImpedanceProfile;
+Begin
+    Result := Nil;
+    For I := 0 To Stack.GetImpedanceProfileCount - 1 Do
+    Begin
+        P := Stack.GetImpedanceProfileByIndex(I);
+        If P <> Nil Then
+        Begin
+            If UpperCase(P.Name) = UpperCase(Name) Then
+            Begin
+                Result := P;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ PCB_ImpedanceProfile - create, change or remove an impedance profile in the  }
+{ Layer Stack Manager. Params: action = create | set | remove; profile (the   }
+{ name to act on, or the new profile's name), name (a new name), target_ohms,  }
+{ tolerance (percent), differential, coplanar ('true'/'false'). Read back.    }
+{..............................................................................}
+Function PCB_ImpedanceProfile(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack2;
+    P : IPCB_ImpedanceProfile;
+    Op, ProfName, NewName, TargetS, TolS, DiffS, CoplS, Missed : String;
+    Before, After : Integer;
+Begin
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
+    ProfName := ExtractJsonValue(Params, 'profile');
+    NewName := ExtractJsonValue(Params, 'name');
+    TargetS := ExtractJsonValue(Params, 'target_ohms');
+    TolS := ExtractJsonValue(Params, 'tolerance');
+    DiffS := LowerCase(ExtractJsonValue(Params, 'differential'));
+    CoplS := LowerCase(ExtractJsonValue(Params, 'coplanar'));
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Stack := Board.MasterLayerStack;
+    Before := Stack.GetImpedanceProfileCount;
+    P := Nil;
+    If Op <> 'create' Then
+    Begin
+        P := ImpFindProfile(Stack, ProfName);
+        If P = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No impedance profile named ' + ProfName);
+            Exit;
+        End;
+    End
+    Else If ImpFindProfile(Stack, ProfName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS', 'An impedance profile named ' + ProfName + ' exists');
+        Exit;
+    End;
+    Missed := '';
+    PCBServer.PreProcess;
+    Try
+        If Op = 'remove' Then
+            Stack.RemoveImpedanceProfile(P)
+        Else
+        Begin
+            If Op = 'create' Then
+            Begin
+                P := Stack.CreateImpedanceProfile;
+                P.Name := ProfName;
+            End;
+            If NewName <> '' Then P.Name := NewName;
+            If DiffS <> '' Then
+            Begin
+                P.IsDiffPair := (DiffS = 'true');
+                If P.IsDiffPair <> (DiffS = 'true') Then Missed := Missed + '"differential",';
+            End;
+            If CoplS <> '' Then
+            Begin
+                P.IsCoplanar := (CoplS = 'true');
+                If P.IsCoplanar <> (CoplS = 'true') Then Missed := Missed + '"coplanar",';
+            End;
+            If TargetS <> '' Then
+            Begin
+                P.Impedance := StrToFloatDef(TargetS, 0);
+                If Abs(P.Impedance - StrToFloatDef(TargetS, 0)) > 0.001 Then Missed := Missed + '"target_ohms",';
+            End;
+            If TolS <> '' Then
+            Begin
+                P.ImpedanceTolerance := StrToFloatDef(TolS, 0);
+                If Abs(P.ImpedanceTolerance - StrToFloatDef(TolS, 0)) > 0.001 Then Missed := Missed + '"tolerance",';
+            End;
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := Stack.GetImpedanceProfileCount;
+    If Missed <> '' Then Missed := Copy(Missed, 1, Length(Missed) - 1);
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('action', Op) + ','
+        + JsonInt('profiles_before', Before) + ','
+        + JsonInt('profiles_after', After) + ','
+        + JsonRaw('not_applied', '[' + Missed + ']')));
+End;
+
+{..............................................................................}
+{ PCB_ImpedanceProfileLayer - one profile's settings on one layer: enabled,   }
+{ width and gap locks, width and its limits, pair gap and its limits,         }
+{ clearance to plane, and how the solder mask over the trace is modelled.     }
+{ Params: profile, layer (required); enabled, width_locked, gap_locked,       }
+{ use_solder_mask ('true'/'false'); width_mils, min_width_mils,               }
+{ max_width_mils, gap_mils, min_gap_mils, max_gap_mils,                       }
+{ clearance_to_plane_mils, mask_between_mils, mask_on_top_mils. Read back.    }
+{..............................................................................}
+Function ImpTraceJson(T : IPCB_TraceImpedance) : String;
+Begin
+    Result := JsonBool('enabled', T.IsEnabled) + ','
+        + JsonBool('width_locked', T.IsTraceWidthLocked) + ','
+        + JsonBool('gap_locked', T.IsTraceGapLocked) + ','
+        + JsonRaw('width_mils', FloatToJsonStr(CoordToMilsF(T.TraceWidth))) + ','
+        + JsonRaw('min_width_mils', FloatToJsonStr(CoordToMilsF(T.TraceMinWidth))) + ','
+        + JsonRaw('max_width_mils', FloatToJsonStr(CoordToMilsF(T.TraceMaxWidth))) + ','
+        + JsonRaw('gap_mils', FloatToJsonStr(CoordToMilsF(T.DiffPairGap))) + ','
+        + JsonRaw('min_gap_mils', FloatToJsonStr(CoordToMilsF(T.GetState_DiffPairMinGap))) + ','
+        + JsonRaw('max_gap_mils', FloatToJsonStr(CoordToMilsF(T.GetState_DiffPairMaxGap))) + ','
+        + JsonRaw('clearance_to_plane_mils', FloatToJsonStr(CoordToMilsF(T.ClearanceToPlane))) + ','
+        + JsonBool('use_solder_mask', T.UseSolderMask) + ','
+        + JsonRaw('mask_between_mils', FloatToJsonStr(CoordToMilsF(T.SolderMaskThicknessBetweenTraces))) + ','
+        + JsonRaw('mask_on_top_mils', FloatToJsonStr(CoordToMilsF(T.SolderMaskThicknessOnTopOfTraces))) + ','
+        + JsonRaw('calculated_ohms', FloatToJsonStr(T.CalculatedImpedance));
+End;
+
+{ Set one mils field and note it in Missed when it does not read back. }
+Function ImpMilsTook(Got : Integer; Wanted : String) : Boolean;
+Begin
+    Result := Abs(CoordToMilsF(Got) - StrToFloatDef(Wanted, -1)) < 0.01;
+End;
+
+Function PCB_ImpedanceProfileLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack2;
+    P : IPCB_ImpedanceProfile;
+    T, Found : IPCB_TraceImpedance;
+    Want : IPCB_LayerObject_V7;
+    Sub : IPCB_LayerStack;
+    ProfName, LayerName, V, Missed : String;
+    WantId : TLayer;
+    Added : Boolean;
+Begin
+    ProfName := ExtractJsonValue(Params, 'profile');
+    LayerName := ExtractJsonValue(Params, 'layer');
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Stack := Board.MasterLayerStack;
+    P := ImpFindProfile(Stack, ProfName);
+    If P = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No impedance profile named ' + ProfName);
+        Exit;
+    End;
+    { Found by layer ID on the first stack: a record's own layer is a V7     }
+    { layer handle a script cannot name. A layer the profile does not hold  }
+    { yet is added to it.                                                   }
+    WantId := ResolveLayerId(Board, LayerName);
+    Want := Nil;
+    If WantId <> eNoLayer Then Want := Board.LayerStack_V7.LayerObject(WantId);
+    If Want = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No copper layer named ' + LayerName);
+        Exit;
+    End;
+    Sub := Stack.GetState_Substacks(0);
+    Found := Nil;
+    Try Found := P.GetTraceImpedanceForLayer(Sub, WantId); Except Found := Nil; End;
+    Added := False;
+    If Found = Nil Then
+    Begin
+        { The layer goes as its ID: the layer object raised "Could not       }
+        { convert variant of type (Dispatch) into type (Integer)" (AD 26.11).  }
+        PCBServer.PreProcess;
+        Try
+            Try Found := P.CreateTraceImpedance(Sub, WantId); Except Found := Nil; End;
+        Finally
+            PCBServer.PostProcess;
+        End;
+        If Found = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_ADDED', 'Altium did not add layer ' + LayerName
+                + ' to profile ' + ProfName);
+            Exit;
+        End;
+        Added := True;
+    End;
+    T := Found;
+    Missed := '';
+    PCBServer.PreProcess;
+    Try
+        V := LowerCase(ExtractJsonValue(Params, 'enabled'));
+        If V <> '' Then Begin T.IsEnabled := (V = 'true'); If T.IsEnabled <> (V = 'true') Then Missed := Missed + '"enabled",'; End;
+        V := LowerCase(ExtractJsonValue(Params, 'width_locked'));
+        If V <> '' Then Begin T.IsTraceWidthLocked := (V = 'true'); If T.IsTraceWidthLocked <> (V = 'true') Then Missed := Missed + '"width_locked",'; End;
+        V := LowerCase(ExtractJsonValue(Params, 'gap_locked'));
+        If V <> '' Then Begin T.IsTraceGapLocked := (V = 'true'); If T.IsTraceGapLocked <> (V = 'true') Then Missed := Missed + '"gap_locked",'; End;
+        V := LowerCase(ExtractJsonValue(Params, 'use_solder_mask'));
+        If V <> '' Then Begin T.UseSolderMask := (V = 'true'); If T.UseSolderMask <> (V = 'true') Then Missed := Missed + '"use_solder_mask",'; End;
+        V := ExtractJsonValue(Params, 'width_mils');
+        If V <> '' Then Begin T.TraceWidth := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.TraceWidth, V) Then Missed := Missed + '"width_mils",'; End;
+        V := ExtractJsonValue(Params, 'min_width_mils');
+        If V <> '' Then Begin T.TraceMinWidth := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.TraceMinWidth, V) Then Missed := Missed + '"min_width_mils",'; End;
+        V := ExtractJsonValue(Params, 'max_width_mils');
+        If V <> '' Then Begin T.TraceMaxWidth := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.TraceMaxWidth, V) Then Missed := Missed + '"max_width_mils",'; End;
+        V := ExtractJsonValue(Params, 'gap_mils');
+        If V <> '' Then Begin T.DiffPairGap := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.DiffPairGap, V) Then Missed := Missed + '"gap_mils",'; End;
+        V := ExtractJsonValue(Params, 'min_gap_mils');
+        If V <> '' Then Begin T.SetState_DiffPairMinGap(MilsToCoordF(StrToFloatDef(V, 0))); If Not ImpMilsTook(T.GetState_DiffPairMinGap, V) Then Missed := Missed + '"min_gap_mils",'; End;
+        V := ExtractJsonValue(Params, 'max_gap_mils');
+        If V <> '' Then Begin T.SetState_DiffPairMaxGap(MilsToCoordF(StrToFloatDef(V, 0))); If Not ImpMilsTook(T.GetState_DiffPairMaxGap, V) Then Missed := Missed + '"max_gap_mils",'; End;
+        V := ExtractJsonValue(Params, 'clearance_to_plane_mils');
+        If V <> '' Then Begin T.ClearanceToPlane := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.ClearanceToPlane, V) Then Missed := Missed + '"clearance_to_plane_mils",'; End;
+        V := ExtractJsonValue(Params, 'mask_between_mils');
+        If V <> '' Then Begin T.SolderMaskThicknessBetweenTraces := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.SolderMaskThicknessBetweenTraces, V) Then Missed := Missed + '"mask_between_mils",'; End;
+        V := ExtractJsonValue(Params, 'mask_on_top_mils');
+        If V <> '' Then Begin T.SolderMaskThicknessOnTopOfTraces := MilsToCoordF(StrToFloatDef(V, 0)); If Not ImpMilsTook(T.SolderMaskThicknessOnTopOfTraces, V) Then Missed := Missed + '"mask_on_top_mils",'; End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Missed <> '' Then Missed := Copy(Missed, 1, Length(Missed) - 1);
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('profile', P.Name) + ','
+        + JsonStr('layer', LayerName) + ','
+        + JsonBool('layer_added', Added) + ','
+        + ImpTraceJson(T) + ','
+        + JsonRaw('not_applied', '[' + Missed + ']')));
+End;
+
+{..............................................................................}
+{ PCB_ViaStructures - each via's protection structure (Altium's structure     }
+{ type, and each feature: its type, side and material, the IPC-4761 tenting, }
+{ plugging, filling and capping) and back drilling (stubs, oversize). Vias   }
+{ that agree are counted together. Params: limit (vias listed, default 200).  }
+{..............................................................................}
+Function ViaStructureJson(Via : IPCB_Via) : String;
+Var
+    VS : IPCB_ViaStructure;
+    F : IPCB_ViaStructureFeature;
+    BD : IPCB_BackDrilling;
+    I : Integer;
+    Feats : String;
+Begin
+    Feats := '';
+    VS := Nil;
+    Try VS := Via.ViaStructure; Except VS := Nil; End;
+    If VS <> Nil Then
+    Begin
+        For I := 0 To VS.FeaturesCount - 1 Do
+        Begin
+            F := VS.GetState_Feature(I);
+            If F = Nil Then Continue;
+            If Feats <> '' Then Feats := Feats + ',';
+            Feats := Feats + JsonObj(JsonInt('type', F.FeatureType) + ','
+                + JsonInt('side', F.Side) + ',' + JsonStr('material', F.Material));
+        End;
+        Result := JsonInt('structure_type', VS.StructureType);
+    End
+    Else
+        Result := JsonInt('structure_type', -1);
+    BD := Via;
+    Result := Result + ',' + JsonRaw('features', '[' + Feats + ']') + ','
+        + JsonBool('back_drilled', BD.IsBackdrill) + ','
+        + JsonRaw('top_stub_mils', FloatToJsonStr(CoordToMilsF(BD.TopUnusedStub))) + ','
+        + JsonRaw('bottom_stub_mils', FloatToJsonStr(CoordToMilsF(BD.BottomUnusedStub))) + ','
+        + JsonRaw('oversize_mils', FloatToJsonStr(CoordToMilsF(BD.HoleOversize)));
+End;
+
+Function PCB_ViaStructures(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    Kinds, Counts : TStringList;
+    Key, Items : String;
+    I, Limit, Total : Integer;
+Begin
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 200);
+    If Limit < 1 Then Limit := 200;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Kinds := TStringList.Create;
+    Counts := TStringList.Create;
+    Total := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            Inc(Total);
+            Key := ViaStructureJson(Via);
+            I := Kinds.IndexOf(Key);
+            If I < 0 Then
+            Begin
+                If Kinds.Count < Limit Then
+                Begin
+                    Kinds.Add(Key);
+                    Counts.Add('1');
+                End;
+            End
+            Else
+                Counts.Strings[I] := IntToStr(StrToInt(Counts.Strings[I]) + 1);
+            Via := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Items := '';
+    For I := 0 To Kinds.Count - 1 Do
+    Begin
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '{' + JsonRaw('vias', Counts.Strings[I]) + ',' + Kinds.Strings[I] + '}';
+    End;
+    Kinds.Free;
+    Counts.Free;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('vias', Total) + ','
+        + JsonRaw('structures', '[' + Items + ']')));
 End;
 
 {..............................................................................}
@@ -5202,16 +5757,19 @@ End;
 
 {..............................................................................}
 { PCB_AddLayer - Insert a copper layer (MidLayer1..30 / InternalPlane1..16)   }
-{ into the stack via IPCB_LayerStack.InsertLayer.                             }
-{ Params: layer (e.g. MidLayer1)                                              }
+{ into the stack via IPCB_LayerStack.InsertLayer, or, with above / below (a   }
+{ layer of the stack), at that place via InsertInStackAbove / Below.          }
+{ Params: layer (e.g. MidLayer1), above, below. Answers with the copper      }
+{ layers in stack order.                                                      }
 {..............................................................................}
 
 Function PCB_AddLayer(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     LayerStack : IPCB_LayerStack_V7;
-    LayerName : String;
-    TargetLayer : TLayer;
+    LayerName, AboveName, BelowName, Order : String;
+    TargetLayer, RefLayer : TLayer;
+    RefObj, NewObj, Walk : IPCB_LayerObject_V7;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -5243,9 +5801,33 @@ Begin
         Exit;
     End;
 
+    AboveName := ExtractJsonValue(Params, 'above');
+    BelowName := ExtractJsonValue(Params, 'below');
+    RefObj := Nil;
+    If (AboveName <> '') Or (BelowName <> '') Then
+    Begin
+        RefLayer := ResolveLayerId(Board, AboveName + BelowName);
+        If RefLayer <> eNoLayer Then RefObj := LayerStack.LayerObject(RefLayer);
+        If RefObj = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
+                'The reference layer ' + AboveName + BelowName + ' is not in the stack');
+            Exit;
+        End;
+    End;
+
     PCBServer.PreProcess;
     Try
-        Try LayerStack.InsertLayer(TargetLayer); Except End;
+        If RefObj = Nil Then
+        Begin
+            Try LayerStack.InsertLayer(TargetLayer); Except End;
+        End
+        Else
+        Begin
+            NewObj := LayerStack.LayerObject(TargetLayer);
+            If AboveName <> '' Then LayerStack.InsertInStackAbove(RefObj, NewObj)
+            Else LayerStack.InsertInStackBelow(RefObj, NewObj);
+        End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
@@ -5253,8 +5835,17 @@ Begin
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+    Order := '';
+    Walk := LayerStack.FirstLayer;
+    While Walk <> Nil Do
+    Begin
+        If Order <> '' Then Order := Order + ',';
+        Order := Order + '"' + EscapeJsonString(Walk.Name) + '"';
+        Walk := LayerStack.NextLayer(Walk);
+    End;
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"'
+        + ',"stack_order":[' + Order + ']}');
 End;
 
 {..............................................................................}
@@ -22808,6 +23399,11 @@ Begin
         'board_regions':           Result := PCB_BoardRegions(Params, RequestId);
         'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
         'gloss':                   Result := PCB_Gloss(Params, RequestId);
+        'physical_stack':          Result := PCB_PhysicalStack(Params, RequestId);
+        'set_dielectric':          Result := PCB_SetDielectric(Params, RequestId);
+        'impedance_profile':       Result := PCB_ImpedanceProfile(Params, RequestId);
+        'impedance_profile_layer': Result := PCB_ImpedanceProfileLayer(Params, RequestId);
+        'via_structures':          Result := PCB_ViaStructures(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
