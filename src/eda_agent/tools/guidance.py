@@ -942,6 +942,44 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "electrical grid is obj_set_grid hotspot_grid."),
     },
     {
+        "task": "Change the board editor's routing preferences",
+        "keywords": ("routing", "route", "mode", "walkaround", "push", "via",
+                     "plow", "pour", "shove", "dead", "ends", "preferences"),
+        "when": (("routing", "mode"), ("auto", "via"), ("plow", "pour"),
+                 ("dead", "ends")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_route_options"],
+        "avoid": [("pcb_create_design_rule", "a design rule constrains the "
+                   "route; these say how the editor routes")],
+        "note": "Altium's own preferences, for every board; a board must be open.",
+    },
+    {
+        "task": "Find which pours contain a point on the board",
+        "keywords": ("pour", "pours", "polygon", "point", "inside", "contains",
+                     "via", "overlap"),
+        "when": (("inside", "pour"), ("point", "pour"), ("which", "pour")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_pours_at"],
+        "avoid": [],
+        "note": "Tests the pour outline, not the poured copper.",
+    },
+    {
+        "task": "Set a differential pair rule's impedance limits",
+        "keywords": ("differential", "pair", "impedance", "ohms", "rule",
+                     "driven", "profile"),
+        "when": (("differential", "impedance"), ("pair", "impedance")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_design_rules", "pcb_set_rule_properties"],
+        "avoid": [],
+        "note": ("pcb_set_rule_properties dp_impedance_driven and "
+                 "dp_min/max/preferred_impedance on the Differential Pairs "
+                 "Routing rule. A rule with from_schematic true is rewritten "
+                 "from the schematic: change it there."),
+    },
+    {
         "task": "Set the board's snap, track, via or visible grid",
         "keywords": ("grid", "snap", "track", "via", "visible", "dot",
                      "board"),

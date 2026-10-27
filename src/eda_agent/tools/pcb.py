@@ -628,6 +628,11 @@ _PCB_VIEW_OPTIONS = {
     "highlight_full": "HighlightFull",
     "highlight_whole_net": "ShowAllPrimitivesInHighlightedNets",
     "show_component_reference_point": "ShowComponentRefPoint",
+    "plane_draw_mode": "PlaneDrawMode",
+    "pad_types_display": "PadTypesDisplayMode",
+    "from_tos_display": "FromTosDisplayMode",
+    "layer_name_display": "LayerNameDisplayMode",
+    "draft_track_threshold_mils": "DraftTrackThreshold",
 }
 
 #: Board editor editing preferences: argument name to Altium's.
@@ -641,6 +646,19 @@ _PCB_EDIT_OPTIONS = {
     "snap_to_centre": "SnapToCentre",
     "allow_duplicate_designators": "DuplicateDesignatorsAllowed",
     "auto_pan": "AutoPan",
+    "drag_mode": "DragMode",
+    "component_move": "ComponentMoveKind",
+}
+
+#: Board editor routing preferences: argument name to Altium's.
+_PCB_ROUTE_OPTIONS = {
+    "route_mode": "InteractiveRouteMode",
+    "plow_through_pours": "PlowThroughPolygons",
+    "auto_via": "AutoVia",
+    "shove_depth": "PlaceShoveDepth",
+    "lock_pre_routes": "LockPreRoutes",
+    "delete_dead_ends": "DeleteDeadEnds",
+    "smart_track_ends": "UseSmartTrackEnds",
 }
 
 
@@ -1402,6 +1420,11 @@ def register_pcb_tools(mcp):
         highlight_full: Optional[bool] = None,
         highlight_whole_net: Optional[bool] = None,
         show_component_reference_point: Optional[bool] = None,
+        plane_draw_mode: Optional[int] = None,
+        pad_types_display: Optional[int] = None,
+        from_tos_display: Optional[int] = None,
+        layer_name_display: Optional[int] = None,
+        draft_track_threshold_mils: Optional[float] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor draws a board: net names
         and numbers on pads and vias, test points, single layer mode,
@@ -1422,6 +1445,15 @@ def register_pcb_tools(mcp):
             highlight_full: Highlight with a solid fill.
             highlight_whole_net: Highlight every object of the net.
             show_component_reference_point: Mark each part's origin.
+            plane_draw_mode: How internal planes are drawn (Altium's
+                number: read the current one first).
+            pad_types_display: How pad types are shown (Altium's number).
+            from_tos_display: How connection lines are drawn (Altium's
+                number).
+            layer_name_display: How layer names are shown on the layer
+                tabs (Altium's number).
+            draft_track_threshold_mils: Tracks narrower than this are
+                drawn in outline in draft mode.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -1435,7 +1467,13 @@ def register_pcb_tools(mcp):
             "highlight_in_net_color": highlight_in_net_color,
             "highlight_full": highlight_full,
             "highlight_whole_net": highlight_whole_net,
-            "show_component_reference_point": show_component_reference_point})
+            "show_component_reference_point": show_component_reference_point,
+            "plane_draw_mode": plane_draw_mode,
+            "pad_types_display": pad_types_display,
+            "from_tos_display": from_tos_display,
+            "layer_name_display": layer_name_display,
+            "draft_track_threshold_mils": None if draft_track_threshold_mils is None
+            else float(draft_track_threshold_mils)})
 
     @mcp.tool()
     async def pcb_edit_options(
@@ -1447,6 +1485,8 @@ def register_pcb_tools(mcp):
         snap_to_centre: Optional[bool] = None,
         allow_duplicate_designators: Optional[bool] = None,
         auto_pan: Optional[bool] = None,
+        drag_mode: Optional[int] = None,
+        component_move: Optional[int] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor behaves while editing.
 
@@ -1466,6 +1506,9 @@ def register_pcb_tools(mcp):
             snap_to_centre: Objects are picked up by their centre.
             allow_duplicate_designators: Parts may share a designator.
             auto_pan: Pan the view when dragging to its edge.
+            drag_mode: What follows a dragged track (Altium's number).
+            component_move: What a moved part takes with it (Altium's
+                number).
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -1473,6 +1516,9 @@ def register_pcb_tools(mcp):
         """
         if rotation_step is not None and rotation_step < 0:
             return {"ok": False, "reason": "rotation_step is 0 or more"}
+        for key, value in (("drag_mode", drag_mode), ("component_move", component_move)):
+            if value is not None and value < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
         return await run_options("pcb.editor_options", _PCB_EDIT_OPTIONS, {
             "rotation_step": None if rotation_step is None else float(rotation_step),
             "protect_locked": protect_locked,
@@ -1481,7 +1527,92 @@ def register_pcb_tools(mcp):
             "double_click_runs_inspector": double_click_runs_inspector,
             "snap_to_centre": snap_to_centre,
             "allow_duplicate_designators": allow_duplicate_designators,
-            "auto_pan": auto_pan})
+            "auto_pan": auto_pan, "drag_mode": drag_mode,
+            "component_move": component_move})
+
+    @mcp.tool()
+    async def pcb_route_options(
+        route_mode: Optional[int] = None,
+        plow_through_pours: Optional[bool] = None,
+        auto_via: Optional[bool] = None,
+        shove_depth: Optional[int] = None,
+        lock_pre_routes: Optional[bool] = None,
+        delete_dead_ends: Optional[bool] = None,
+        smart_track_ends: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the board editor's routing preferences.
+
+        These are Altium's own preferences and apply to every board. A
+        board must be open. Call with nothing to read; every option set
+        is read back.
+
+        Args:
+            route_mode: The interactive routing conflict mode (Altium's
+                number: ignore, walkaround, push ...; read it first).
+            plow_through_pours: Route through pours rather than around.
+            auto_via: Add a via when the routing layer changes.
+            shove_depth: How far placement may push other parts.
+            lock_pre_routes: Keep existing routes when re-routing.
+            delete_dead_ends: Remove track stubs left after a reroute.
+            smart_track_ends: Track ends follow the connection they make.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        for key, value in (("route_mode", route_mode), ("shove_depth", shove_depth)):
+            if value is not None and value < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        return await run_options("pcb.editor_options", _PCB_ROUTE_OPTIONS, {
+            "route_mode": route_mode, "plow_through_pours": plow_through_pours,
+            "auto_via": auto_via, "shove_depth": shove_depth,
+            "lock_pre_routes": lock_pre_routes,
+            "delete_dead_ends": delete_dead_ends,
+            "smart_track_ends": smart_track_ends})
+
+    @mcp.tool()
+    async def pcb_pours_at(x: float, y: float) -> dict[str, Any]:
+        """Which pours on the active board have a point inside their
+        outline, with each pour's net and layer: is this via inside the
+        GND pour, which pours overlap here.
+
+        The outline, not the poured copper: a point in a gap of a poured
+        pour still counts.
+
+        Args:
+            x: X in mils, from the board origin.
+            y: Y in mils, from the board origin.
+
+        Returns:
+            ``pours`` (``name``, ``net``, ``layer``), ``found`` and
+            ``pours_examined``.
+        """
+        return await get_bridge().send_command_async(
+            "pcb.pours_at", {"x": repr(float(x)), "y": repr(float(y))})
+
+    @mcp.tool()
+    async def pcb_board_options(
+        polygon_name_template: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, settings saved in the active board: the template
+        new pours are named from, and (read only) whether split planes
+        are made automatically.
+
+        Args:
+            polygon_name_template: Altium's number for the naming
+                template (read the current one first). A pour with
+                AutoGenerateName set takes its name from it.
+
+        Returns:
+            ``polygon_name_template``, ``automatic_split_planes``,
+            ``changed`` and ``not_applied``.
+        """
+        params: dict[str, Any] = {}
+        if polygon_name_template is not None:
+            if polygon_name_template < 0:
+                return {"ok": False, "reason": "polygon_name_template is 0 or more"}
+            params["polygon_name_template"] = str(polygon_name_template)
+        return await get_bridge().send_command_async("pcb.board_options", params)
 
     @mcp.tool()
     async def pcb_export_component_model(
@@ -1529,11 +1660,15 @@ def register_pcb_tools(mcp):
         values. Clearance-family rules also carry ``gap_mm``; trust it
         over the descriptor for Board Outline Clearance, whose descriptor
         always says ``Gap=0mil`` (measured, AD 26.10). That rule's
-        per-object table is not readable from scripts.
+        per-object table is not readable from scripts. ``from_schematic``
+        is true for a rule defined by a directive or parameter on the
+        schematic: the next update from the schematic rewrites it, so
+        change it there.
 
         Returns:
             Dictionary with "rules" array (each with name, rule_kind,
-            enabled, priority, scope_1, scope_2, comment, descriptor, and
+            enabled, priority, scope_1, scope_2, comment, descriptor,
+            from_schematic, and
             gap_mm for clearance, component, hole-to-hole and board
             outline clearance rules) and "count".
         """
@@ -7338,6 +7473,10 @@ def register_pcb_tools(mcp):
         dp_min_gap_mm: float | None = None,
         dp_max_gap_mm: float | None = None,
         dp_preferred_gap_mm: float | None = None,
+        dp_impedance_driven: bool | None = None,
+        dp_min_impedance: float | None = None,
+        dp_max_impedance: float | None = None,
+        dp_preferred_impedance: float | None = None,
         min_hole_size_mils: int | None = None,
         max_hole_size_mils: int | None = None,
         min_via_size_mils: float | None = None,
@@ -7380,6 +7519,11 @@ def register_pcb_tools(mcp):
             dp_min_gap_mils / dp_max_gap_mils / dp_preferred_gap_mils and
                 the *_mm forms: a Differential Pairs Routing rule's gaps,
                 every layer. Read back in ``diff_pair_descriptor``.
+            dp_impedance_driven, dp_min_impedance / dp_max_impedance /
+                dp_preferred_impedance: a Differential Pairs Routing
+                rule's width and gap follow an impedance profile, and its
+                limits in ohms. Read back in ``impedance``; any that did not
+                take is in ``impedance_not_applied``.
             connect_style: Polygon Connect (kind 20) or Power Plane Connect
                 (kind 6) rule: "relief", "direct" or "none". Confirmed from
                 the rule's own descriptor (``connect_style_confirmed``).
@@ -7431,11 +7575,19 @@ def register_pcb_tools(mcp):
             ("min_via_hole_mils", min_via_hole_mils),
             ("max_via_hole_mils", max_via_hole_mils),
             ("preferred_via_hole_mils", preferred_via_hole_mils),
+            ("dp_min_impedance", dp_min_impedance),
+            ("dp_max_impedance", dp_max_impedance),
+            ("dp_preferred_impedance", dp_preferred_impedance),
         ]:
             if value is not None:
                 params[key] = str(value)
+        for key in ("dp_min_impedance", "dp_max_impedance", "dp_preferred_impedance"):
+            if key in params and float(params[key]) <= 0:
+                return {"ok": False, "reason": f"{key} is more than 0 ohms"}
         if enabled is not None:
             params["enabled"] = "true" if enabled else "false"
+        if dp_impedance_driven is not None:
+            params["dp_impedance_driven"] = "true" if dp_impedance_driven else "false"
 
         bridge = get_bridge()
         return await bridge.send_command_async(

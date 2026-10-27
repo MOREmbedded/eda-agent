@@ -451,7 +451,9 @@ End;
 { ..._RotationRelative, and the same for Designator_). Parameters:          }
 { ReadOnlyState, ParamType, AllowLibrarySynchronize,                        }
 { AllowDatabaseSynchronize. Ports: AutoSize, OverrideDisplayString,         }
-{ HarnessColor. Pins also DefaultValue and FormalType; parts also           }
+{ HarnessColor. Parameters also report NameIsReadOnly, ValueIsReadOnly,     }
+{ IsRule, IsSystemParameter and IsConfigurable (read only).                 }
+{ Pins also DefaultValue and FormalType; parts also                         }
 { LibraryPath (the library the symbol came from) and AliasAsText.           }
 
 { 1 a pin property, 2 a part property, 3 a parameter property, 4 a port     }
@@ -478,7 +480,9 @@ Begin
        (PropName = 'AliasAsText') Then Result := 2
     Else If (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
        (PropName = 'AllowLibrarySynchronize') Or
-       (PropName = 'AllowDatabaseSynchronize') Then Result := 3
+       (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'NameIsReadOnly') Or
+       (PropName = 'ValueIsReadOnly') Or (PropName = 'IsRule') Or
+       (PropName = 'IsSystemParameter') Or (PropName = 'IsConfigurable') Then Result := 3
     Else If (PropName = 'AutoSize') Or (PropName = 'OverrideDisplayString') Or
        (PropName = 'HarnessColor') Then Result := 4;
 End;
@@ -577,7 +581,12 @@ Begin
         If PropName = 'ReadOnlyState' Then Result := IntToStr(Par.ReadOnlyState)
         Else If PropName = 'ParamType' Then Result := IntToStr(Par.ParamType)
         Else If PropName = 'AllowLibrarySynchronize' Then Result := BoolToJsonStr(Par.AllowLibrarySynchronize)
-        Else If PropName = 'AllowDatabaseSynchronize' Then Result := BoolToJsonStr(Par.AllowDatabaseSynchronize);
+        Else If PropName = 'AllowDatabaseSynchronize' Then Result := BoolToJsonStr(Par.AllowDatabaseSynchronize)
+        Else If PropName = 'NameIsReadOnly' Then Result := BoolToJsonStr(Par.NameIsReadOnly)
+        Else If PropName = 'ValueIsReadOnly' Then Result := BoolToJsonStr(Par.ValueIsReadOnly)
+        Else If PropName = 'IsRule' Then Result := BoolToJsonStr(Par.IsRule)
+        Else If PropName = 'IsSystemParameter' Then Result := BoolToJsonStr(Par.IsSystemParameter)
+        Else If PropName = 'IsConfigurable' Then Result := BoolToJsonStr(Par.IsConfigurable);
     End
     Else If Obj.ObjectId = ePort Then
     Begin
@@ -616,6 +625,10 @@ Var
 Begin
     Result := False;
     If Not SchExtraFits(Obj, PropName) Then Exit;
+    { Read only: what Altium says about the parameter, not a setting. }
+    If (PropName = 'NameIsReadOnly') Or (PropName = 'ValueIsReadOnly') Or
+       (PropName = 'IsRule') Or (PropName = 'IsSystemParameter') Or
+       (PropName = 'IsConfigurable') Then Exit;
     IsInt := SchExtraIsInt(PropName);
     IsBool := SchExtraIsBool(PropName);
     N := 0;
@@ -8180,13 +8193,17 @@ Begin
        (Name = 'SingleSlashNegation') Or (Name = 'ConvertSpecialStrings') Or
        (Name = 'MarkManualParameters') Or (Name = 'ShowPinDirection') Or
        (Name = 'AutoZoom') Or (Name = 'ClickClearsSelection') Or
-       (Name = 'DoubleClickRunsInspector') Then Result := 'b'
+       (Name = 'DoubleClickRunsInspector') Or (Name = 'ExpandComponentDesignators') Or
+       (Name = 'ExpandNetLabelsText') Or (Name = 'ExpandPortsName') Or
+       (Name = 'ExpandSheetNumber') Or (Name = 'ExpandDocumentNumber') Or
+       (Name = 'WatermarkReadOnlySheet') Or (Name = 'AlwaysDrag') Or
+       (Name = 'DisplayPrinterFonts') Then Result := 'b'
     Else If (Name = 'HotSpotGridDistance') Or (Name = 'UndoRedoStackSize') Or
        (Name = 'PinNameMargin') Or (Name = 'PinNumberMargin') Or
        (Name = 'MultiPartNamingMethod') Then Result := 'i'
     Else If (Name = 'StringIncA') Or (Name = 'StringIncB') Or
        (Name = 'DefaultPowerGndName') Or (Name = 'DefaultSignalGndName') Or
-       (Name = 'DefaultEarthName') Then Result := 't';
+       (Name = 'DefaultEarthName') Or (Name = 'DefaultTemplateFileName') Then Result := 't';
 End;
 
 { The value as JSON text. }
@@ -8204,6 +8221,14 @@ Begin
     Else If Name = 'AutoZoom' Then Result := BoolToJsonStr(Prefs.AutoZoom)
     Else If Name = 'ClickClearsSelection' Then Result := BoolToJsonStr(Prefs.ClickClearsSelection)
     Else If Name = 'DoubleClickRunsInspector' Then Result := BoolToJsonStr(Prefs.DoubleClickRunsInspector)
+    Else If Name = 'ExpandComponentDesignators' Then Result := BoolToJsonStr(Prefs.ExpandComponentDesignators)
+    Else If Name = 'ExpandNetLabelsText' Then Result := BoolToJsonStr(Prefs.ExpandNetLabelsText)
+    Else If Name = 'ExpandPortsName' Then Result := BoolToJsonStr(Prefs.ExpandPortsName)
+    Else If Name = 'ExpandSheetNumber' Then Result := BoolToJsonStr(Prefs.ExpandSheetNumber)
+    Else If Name = 'ExpandDocumentNumber' Then Result := BoolToJsonStr(Prefs.ExpandDocumentNumber)
+    Else If Name = 'WatermarkReadOnlySheet' Then Result := BoolToJsonStr(Prefs.WatermarkReadOnlySheet)
+    Else If Name = 'AlwaysDrag' Then Result := BoolToJsonStr(Prefs.AlwaysDrag)
+    Else If Name = 'DisplayPrinterFonts' Then Result := BoolToJsonStr(Prefs.DisplayPrinterFonts)
     Else If Name = 'HotSpotGridDistance' Then Result := IntToStr(Prefs.HotSpotGridDistance)
     Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Prefs.UndoRedoStackSize)
     Else If Name = 'PinNameMargin' Then Result := IntToStr(Prefs.PinNameMargin)
@@ -8213,7 +8238,8 @@ Begin
     Else If Name = 'StringIncB' Then Result := '"' + EscapeJsonString(Prefs.StringIncB) + '"'
     Else If Name = 'DefaultPowerGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultPowerGndName) + '"'
     Else If Name = 'DefaultSignalGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultSignalGndName) + '"'
-    Else If Name = 'DefaultEarthName' Then Result := '"' + EscapeJsonString(Prefs.DefaultEarthName) + '"';
+    Else If Name = 'DefaultEarthName' Then Result := '"' + EscapeJsonString(Prefs.DefaultEarthName) + '"'
+    Else If Name = 'DefaultTemplateFileName' Then Result := '"' + EscapeJsonString(Prefs.DefaultTemplateFileName) + '"';
 End;
 
 { Write one; False when the value is not of the option's kind. }
@@ -8250,6 +8276,14 @@ Begin
     Else If Name = 'AutoZoom' Then Prefs.AutoZoom := B
     Else If Name = 'ClickClearsSelection' Then Prefs.ClickClearsSelection := B
     Else If Name = 'DoubleClickRunsInspector' Then Prefs.DoubleClickRunsInspector := B
+    Else If Name = 'ExpandComponentDesignators' Then Prefs.ExpandComponentDesignators := B
+    Else If Name = 'ExpandNetLabelsText' Then Prefs.ExpandNetLabelsText := B
+    Else If Name = 'ExpandPortsName' Then Prefs.ExpandPortsName := B
+    Else If Name = 'ExpandSheetNumber' Then Prefs.ExpandSheetNumber := B
+    Else If Name = 'ExpandDocumentNumber' Then Prefs.ExpandDocumentNumber := B
+    Else If Name = 'WatermarkReadOnlySheet' Then Prefs.WatermarkReadOnlySheet := B
+    Else If Name = 'AlwaysDrag' Then Prefs.AlwaysDrag := B
+    Else If Name = 'DisplayPrinterFonts' Then Prefs.DisplayPrinterFonts := B
     Else If Name = 'HotSpotGridDistance' Then Prefs.HotSpotGridDistance := N
     Else If Name = 'UndoRedoStackSize' Then Prefs.UndoRedoStackSize := N
     Else If Name = 'PinNameMargin' Then Prefs.PinNameMargin := N
@@ -8259,7 +8293,8 @@ Begin
     Else If Name = 'StringIncB' Then Prefs.StringIncB := Value
     Else If Name = 'DefaultPowerGndName' Then Prefs.DefaultPowerGndName := Value
     Else If Name = 'DefaultSignalGndName' Then Prefs.DefaultSignalGndName := Value
-    Else If Name = 'DefaultEarthName' Then Prefs.DefaultEarthName := Value;
+    Else If Name = 'DefaultEarthName' Then Prefs.DefaultEarthName := Value
+    Else If Name = 'DefaultTemplateFileName' Then Prefs.DefaultTemplateFileName := Value;
     Result := True;
 End;
 

@@ -32,7 +32,9 @@ Begin
 End;
 
 { Which object type carries an extra property: 1 pad or via, 2 via only,     }
-{ 3 text, 4 dimension, 5 polygon, 6 component, 7 pad only, 0 none of these.  }
+{ 3 text, 4 dimension, 5 polygon, 6 component, 7 pad only, 8 3D body, 0     }
+{ none of these. A 3D body's OverrideColor says whether its own colour is    }
+{ drawn instead of the model's; Texture is an image file laid on it.          }
 { Text ConvertedString is the text as shown, special strings resolved; it   }
 { is read only.                                                              }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
@@ -77,7 +79,9 @@ Begin
             (PropName = 'GroupNum') Then Result := 6
     Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
             (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
-            (PropName = 'OwnerPart_ID') Then Result := 7;
+            (PropName = 'OwnerPart_ID') Then Result := 7
+    Else If (PropName = 'OverrideColor') Or (PropName = 'Texture') Or
+            (PropName = 'TextureRotation') Then Result := 8;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -92,7 +96,8 @@ Begin
         Or ((Owner = 4) And (Oid = eDimensionObject))
         Or ((Owner = 5) And (Oid = ePolyObject))
         Or ((Owner = 6) And (Oid = eComponentObject))
-        Or ((Owner = 7) And (Oid = ePadObject));
+        Or ((Owner = 7) And (Oid = ePadObject))
+        Or ((Owner = 8) And (Oid = eComponentBodyObject));
 End;
 
 { The value, '' when Obj is not the type that carries it. }
@@ -104,6 +109,7 @@ Var
     Dim : IPCB_Dimension;
     Poly : IPCB_Polygon;
     Comp : IPCB_Component;
+    Body : IPCB_ComponentBody;
     Oid, Tol : Integer;
 Begin
     Result := '';
@@ -217,6 +223,13 @@ Begin
         Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part
         Else If PropName = 'SwappedPadName' Then Result := Pad.SwappedPadName
         Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID);
+    End
+    Else If ExtraPCBPropertyOwner(PropName) = 8 Then
+    Begin
+        Body := Obj;
+        If PropName = 'OverrideColor' Then Result := BoolToJsonStr(Body.OverrideColor)
+        Else If PropName = 'Texture' Then Result := Body.Texture
+        Else If PropName = 'TextureRotation' Then Result := FloatToJsonStr(Body.TextureRotation);
     End;
 End;
 
@@ -231,6 +244,7 @@ Var
     Dim : IPCB_Dimension;
     Poly : IPCB_Polygon;
     Comp : IPCB_Component;
+    Body : IPCB_ComponentBody;
     Oid, Owner, N : Integer;
     F : Double;
     B, IsBool, IsText, IsInt : Boolean;
@@ -268,12 +282,13 @@ Begin
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
-        (PropName = 'JumpersVisible');
+        (PropName = 'JumpersVisible') Or (PropName = 'OverrideColor');
     IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
         (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
         (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part') Or
-        (PropName = 'SourceDescription') Or (PropName = 'SwappedPadName');
+        (PropName = 'SourceDescription') Or (PropName = 'SwappedPadName') Or
+        (PropName = 'Texture');
     IsInt := (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
         (PropName = 'MultilineTextAutoPosition') Or (PropName = 'TextPosition') Or
         (PropName = 'TextDimensionUnit') Or (PropName = 'TextPrecision') Or
@@ -402,6 +417,13 @@ Begin
         Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value
         Else If PropName = 'SwappedPadName' Then Pad.SwappedPadName := Value
         Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N;
+    End
+    Else If Owner = 8 Then
+    Begin
+        Body := Obj;
+        If PropName = 'OverrideColor' Then Body.OverrideColor := B
+        Else If PropName = 'Texture' Then Body.Texture := Value
+        Else If PropName = 'TextureRotation' Then Body.TextureRotation := F;
     End;
     Result := 1;
 End;
@@ -2173,7 +2195,8 @@ Begin
         + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
-        + 'GroupNum, SwappedPadName, OwnerPart_ID';
+        + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
+        + 'TextureRotation';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

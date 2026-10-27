@@ -524,7 +524,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First : Boolean;
+    First, FromSch : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -599,6 +599,11 @@ Begin
             + '"scope_2":"' + EscapeJsonString(Rule.Scope2Expression) + '",'
             + '"comment":"' + EscapeJsonString(Rule.Comment) + '",'
             + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"';
+        { True for a rule that comes from a directive or parameter on the    }
+        { schematic: it is rewritten from there at the next update.          }
+        FromSch := False;
+        Try FromSch := Rule.DefinedByLogicalDocument; Except FromSch := False; End;
+        JsonItems := JsonItems + ',"from_schematic":' + BoolToJsonStr(FromSch);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -900,6 +905,7 @@ Var
     RulePolyConn : IPCB_PolygonConnectStyleRule;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
     DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport : String;
+    ImpDriven, ImpMin, ImpMax, ImpFav, ImpReport, ImpMissed : String;
     DiffAsked : Integer;
     RulePlaneConn : IPCB_PowerPlaneConnectStyleRule;
     MinWMM, MaxWMM, FavWMM, CStyle, CWidth, CWidthMM, CGap, CGapMM, CEntries, CAngle, CExp : String;
@@ -1011,6 +1017,10 @@ Begin
     DGapMinMM := ExtractJsonValue(Params, 'dp_min_gap_mm');
     DGapMaxMM := ExtractJsonValue(Params, 'dp_max_gap_mm');
     DGapPrefMM := ExtractJsonValue(Params, 'dp_preferred_gap_mm');
+    ImpDriven := LowerCase(ExtractJsonValue(Params, 'dp_impedance_driven'));
+    ImpMin := ExtractJsonValue(Params, 'dp_min_impedance');
+    ImpMax := ExtractJsonValue(Params, 'dp_max_impedance');
+    ImpFav := ExtractJsonValue(Params, 'dp_preferred_impedance');
     MaxWStr := ExtractJsonValue(Params, 'max_width_mils');
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
@@ -1430,6 +1440,68 @@ Begin
             + ',"diff_pair_descriptor":"' + EscapeJsonString(Desc) + '"';
     End;
 
+    { DIFFERENTIAL PAIR IMPEDANCE (kind 51): whether the pair's width and   }
+    { gap follow an impedance profile, and the impedance limits in ohms.    }
+    { Each is read back; one that reads otherwise is in impedance_not_applied. }
+    ImpReport := '';
+    If (Kind = 51) And ((ImpDriven <> '') Or (ImpMin <> '') Or (ImpMax <> '')
+        Or (ImpFav <> '')) Then
+    Begin
+        ImpMissed := '';
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Found := False;
+        Try
+            RuleDiff := Iter.FirstPCBObject;
+            While (RuleDiff <> Nil) And (Not Found) Do
+            Begin
+                If (RuleDiff.RuleKind = 51) And (RuleDiff.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    If ImpDriven <> '' Then
+                    Begin
+                        RuleDiff.ImpedanceDriven := (ImpDriven = 'true');
+                        Inc(UpdatedCount);
+                        If RuleDiff.ImpedanceDriven <> (ImpDriven = 'true') Then
+                            ImpMissed := ImpMissed + '"dp_impedance_driven",';
+                    End;
+                    If ImpMin <> '' Then
+                    Begin
+                        RuleDiff.MinImpedance := StrToFloatDef(ImpMin, 0);
+                        Inc(UpdatedCount);
+                        If Abs(RuleDiff.MinImpedance - StrToFloatDef(ImpMin, 0)) > 0.001 Then
+                            ImpMissed := ImpMissed + '"dp_min_impedance",';
+                    End;
+                    If ImpMax <> '' Then
+                    Begin
+                        RuleDiff.MaxImpedance := StrToFloatDef(ImpMax, 0);
+                        Inc(UpdatedCount);
+                        If Abs(RuleDiff.MaxImpedance - StrToFloatDef(ImpMax, 0)) > 0.001 Then
+                            ImpMissed := ImpMissed + '"dp_max_impedance",';
+                    End;
+                    If ImpFav <> '' Then
+                    Begin
+                        RuleDiff.FavoredImpedance := StrToFloatDef(ImpFav, 0);
+                        Inc(UpdatedCount);
+                        If Abs(RuleDiff.FavoredImpedance - StrToFloatDef(ImpFav, 0)) > 0.001 Then
+                            ImpMissed := ImpMissed + '"dp_preferred_impedance",';
+                    End;
+                    If ImpMissed <> '' Then ImpMissed := Copy(ImpMissed, 1, Length(ImpMissed) - 1);
+                    ImpReport := ',"impedance":{"driven":' + BoolToJsonStr(RuleDiff.ImpedanceDriven)
+                        + ',"min":' + FloatToJsonStr(RuleDiff.MinImpedance)
+                        + ',"max":' + FloatToJsonStr(RuleDiff.MaxImpedance)
+                        + ',"preferred":' + FloatToJsonStr(RuleDiff.FavoredImpedance) + '}'
+                        + ',"impedance_not_applied":[' + ImpMissed + ']';
+                End;
+                If Not Found Then RuleDiff := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    End;
+
     { POLYGON AND PLANE CONNECT STYLE: Relief, Direct or None, and the      }
     { relief's conductor width, air gap, entries and angle (polygon) or     }
     { expansion (plane). Written through the SetState_ methods of           }
@@ -1575,7 +1647,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + ViaReport + ConnReport + DiffReport + '}');
+        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + '}');
 End;
 
 {..............................................................................}
@@ -18467,9 +18539,10 @@ End;
 
 { BOARD EDITOR PREFERENCES (Preferences > PCB Editor), Altium's own, kept for }
 { every board. Each is read as JSON text: true / false, or a number.         }
-{ 'b' a switch, 'f' a number of 0 or more, 'r' read only, '' not one of     }
-{ these. Undo levels are read only: a write did not take (measured on AD    }
-{ 26.11, 33 read back as 50).                                                }
+{ 'b' a switch, 'f' a number of 0 or more, 'n' a whole number of 0 or more  }
+{ (Altium's own numbering for a choice), 'm' a length in mils, 'r' read     }
+{ only, '' not one of these. Undo levels are read only: a write did not    }
+{ take (measured on AD 26.11, 33 read back as 50).                         }
 Function PcbOptionKind(Name : String) : String;
 Begin
     Result := '';
@@ -18482,7 +18555,14 @@ Begin
        (Name = 'ProtectLockedPrimitives') Or (Name = 'OnlySelectVisible') Or
        (Name = 'ClickClearsSelection') Or (Name = 'DoubleClickRunsInspector') Or
        (Name = 'SnapToCentre') Or (Name = 'DuplicateDesignatorsAllowed') Or
-       (Name = 'AutoPan') Then Result := 'b'
+       (Name = 'AutoPan') Or (Name = 'PlowThroughPolygons') Or
+       (Name = 'AutoVia') Or (Name = 'LockPreRoutes') Or
+       (Name = 'DeleteDeadEnds') Or (Name = 'UseSmartTrackEnds') Then Result := 'b'
+    Else If (Name = 'PlaneDrawMode') Or (Name = 'PadTypesDisplayMode') Or
+       (Name = 'FromTosDisplayMode') Or (Name = 'LayerNameDisplayMode') Or
+       (Name = 'DragMode') Or (Name = 'ComponentMoveKind') Or
+       (Name = 'InteractiveRouteMode') Or (Name = 'PlaceShoveDepth') Then Result := 'n'
+    Else If Name = 'DraftTrackThreshold' Then Result := 'm'
     Else If Name = 'UndoRedoStackSize' Then Result := 'r'
     Else If Name = 'RotationStep' Then Result := 'f';
 End;
@@ -18507,6 +18587,20 @@ Begin
     Else If Name = 'SnapToCentre' Then Result := BoolToJsonStr(Opts.SnapToCentre)
     Else If Name = 'DuplicateDesignatorsAllowed' Then Result := BoolToJsonStr(Opts.DuplicateDesignatorsAllowed)
     Else If Name = 'AutoPan' Then Result := BoolToJsonStr(Opts.AutoPan)
+    Else If Name = 'PlowThroughPolygons' Then Result := BoolToJsonStr(Opts.PlowThroughPolygons)
+    Else If Name = 'AutoVia' Then Result := BoolToJsonStr(Opts.AutoVia)
+    Else If Name = 'LockPreRoutes' Then Result := BoolToJsonStr(Opts.LockPreRoutes)
+    Else If Name = 'DeleteDeadEnds' Then Result := BoolToJsonStr(Opts.DeleteDeadEnds)
+    Else If Name = 'UseSmartTrackEnds' Then Result := BoolToJsonStr(Opts.UseSmartTrackEnds)
+    Else If Name = 'PlaneDrawMode' Then Result := IntToStr(Opts.PlaneDrawMode)
+    Else If Name = 'PadTypesDisplayMode' Then Result := IntToStr(Opts.PadTypesDisplayMode)
+    Else If Name = 'FromTosDisplayMode' Then Result := IntToStr(Opts.FromTosDisplayMode)
+    Else If Name = 'LayerNameDisplayMode' Then Result := IntToStr(Opts.LayerNameDisplayMode)
+    Else If Name = 'DragMode' Then Result := IntToStr(Opts.DragMode)
+    Else If Name = 'ComponentMoveKind' Then Result := IntToStr(Opts.ComponentMoveKind)
+    Else If Name = 'InteractiveRouteMode' Then Result := IntToStr(Opts.InteractiveRouteMode)
+    Else If Name = 'PlaceShoveDepth' Then Result := IntToStr(Opts.PlaceShoveDepth)
+    Else If Name = 'DraftTrackThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Opts.DraftTrackThreshold))
     Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Opts.UndoRedoStackSize)
     Else If Name = 'RotationStep' Then Result := FloatToJsonStr(Opts.RotationStep);
 End;
@@ -18518,21 +18612,29 @@ Var
     Kind : String;
     B : Boolean;
     F : Double;
+    N : Integer;
 Begin
     Result := False;
     Kind := PcbOptionKind(Name);
     B := False;
     F := 0;
+    N := 0;
     If Kind = 'b' Then
     Begin
         If LowerCase(Value) = 'true' Then B := True
         Else If LowerCase(Value) <> 'false' Then Exit;
     End
-    Else If Kind = 'f' Then
+    Else If (Kind = 'f') Or (Kind = 'm') Then
     Begin
         If Not IsFloatStr(Value) Then Exit;
         F := StrToFloatDef(Value, -1);
         If F < 0 Then Exit;
+    End
+    Else If Kind = 'n' Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
     End
     Else Exit;
     If Name = 'ShowPadNets' Then Opts.ShowPadNets := B
@@ -18552,6 +18654,20 @@ Begin
     Else If Name = 'SnapToCentre' Then Opts.SnapToCentre := B
     Else If Name = 'DuplicateDesignatorsAllowed' Then Opts.DuplicateDesignatorsAllowed := B
     Else If Name = 'AutoPan' Then Opts.AutoPan := B
+    Else If Name = 'PlowThroughPolygons' Then Opts.PlowThroughPolygons := B
+    Else If Name = 'AutoVia' Then Opts.AutoVia := B
+    Else If Name = 'LockPreRoutes' Then Opts.LockPreRoutes := B
+    Else If Name = 'DeleteDeadEnds' Then Opts.DeleteDeadEnds := B
+    Else If Name = 'UseSmartTrackEnds' Then Opts.UseSmartTrackEnds := B
+    Else If Name = 'PlaneDrawMode' Then Opts.PlaneDrawMode := N
+    Else If Name = 'PadTypesDisplayMode' Then Opts.PadTypesDisplayMode := N
+    Else If Name = 'FromTosDisplayMode' Then Opts.FromTosDisplayMode := N
+    Else If Name = 'LayerNameDisplayMode' Then Opts.LayerNameDisplayMode := N
+    Else If Name = 'DragMode' Then Opts.DragMode := N
+    Else If Name = 'ComponentMoveKind' Then Opts.ComponentMoveKind := N
+    Else If Name = 'InteractiveRouteMode' Then Opts.InteractiveRouteMode := N
+    Else If Name = 'PlaceShoveDepth' Then Opts.PlaceShoveDepth := N
+    Else If Name = 'DraftTrackThreshold' Then Opts.DraftTrackThreshold := MilsToCoordF(F)
     Else If Name = 'RotationStep' Then Opts.RotationStep := F;
     Result := True;
 End;
@@ -18614,7 +18730,7 @@ Begin
         End;
         Changed := True;
         Got := PcbOptionGet(Opts, Name);
-        If PcbOptionKind(Name) = 'f' Then
+        If (PcbOptionKind(Name) = 'f') Or (PcbOptionKind(Name) = 'm') Then
             Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.0001
         Else
             Took := Got = LowerCase(Value);
@@ -18659,6 +18775,111 @@ Begin
         + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
         + JsonRaw('refused', '[' + Refused + ']') + ','
         + JsonRaw('unknown', '[' + Unknown + ']')));
+End;
+
+{..............................................................................}
+{ PCB_BoardOptions - read, or set, settings kept in the board itself: the     }
+{ template Altium names pours from (PolygonNameTemplate, Altium's number),    }
+{ read back; and whether split planes are made automatically, read only: a   }
+{ write did not take (measured on AD 26.11).                                 }
+{ Params: polygon_name_template (whole number of 0 or more; empty = keep).   }
+{..............................................................................}
+Function PCB_BoardOptions(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    TemplStr, NotApplied : String;
+    Changed : Boolean;
+Begin
+    TemplStr := ExtractJsonValue(Params, 'polygon_name_template');
+    If (TemplStr <> '') And (Not IsIntStr(TemplStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'polygon_name_template is a whole number');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    NotApplied := '';
+    Changed := False;
+    If TemplStr <> '' Then
+    Begin
+        Board.PolygonNameTemplate := StrToInt(TemplStr);
+        Changed := True;
+        If Board.PolygonNameTemplate <> StrToInt(TemplStr) Then
+            NotApplied := NotApplied + '"polygon_name_template",';
+    End;
+    If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
+    If Changed Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('polygon_name_template', Board.PolygonNameTemplate) + ','
+        + JsonBool('automatic_split_planes', Board.AutomaticSplitPlanes) + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']')));
+End;
+
+{..............................................................................}
+{ PCB_PoursAt - the pours whose outline holds a point, each with its net and  }
+{ layer. The outline, not the poured copper: a point in a hole of a poured   }
+{ pour still counts.                                                         }
+{ Params: x, y (mils, required).                                              }
+{..............................................................................}
+Function PCB_PoursAt(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly : IPCB_Polygon;
+    XStr, YStr, Items, NetName : String;
+    X, Y, Examined, Found : Integer;
+Begin
+    XStr := ExtractJsonValue(Params, 'x');
+    YStr := ExtractJsonValue(Params, 'y');
+    If (Not IsFloatStr(XStr)) Or (Not IsFloatStr(YStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'x and y are required, in mils');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    X := MilsToCoordF(StrToFloatDef(XStr, 0)) + Board.XOrigin;
+    Y := MilsToCoordF(StrToFloatDef(YStr, 0)) + Board.YOrigin;
+    Items := '';
+    Examined := 0;
+    Found := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Poly := Iter.FirstPCBObject;
+        While Poly <> Nil Do
+        Begin
+            Inc(Examined);
+            If Poly.PointInPolygon(X, Y) Then
+            Begin
+                Inc(Found);
+                NetName := '';
+                Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('name', Poly.Name) + ','
+                    + JsonStr('net', NetName) + ','
+                    + JsonStr('layer', Layer2String(Poly.Layer)));
+            End;
+            Poly := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('pours_examined', Examined) + ','
+        + JsonInt('found', Found) + ','
+        + JsonRaw('pours', '[' + Items + ']')));
 End;
 
 {..............................................................................}
@@ -21321,6 +21542,8 @@ Begin
         'set_grids':               Result := PCB_SetGrids(Params, RequestId);
         'export_component_model':  Result := PCB_ExportComponentModel(Params, RequestId);
         'editor_options':          Result := PCB_EditorOptions(Params, RequestId);
+        'board_options':           Result := PCB_BoardOptions(Params, RequestId);
+        'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

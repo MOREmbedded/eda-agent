@@ -309,6 +309,15 @@ _SCH_EDITOR_OPTIONS = {
     "power_ground_name": "DefaultPowerGndName",
     "signal_ground_name": "DefaultSignalGndName",
     "earth_name": "DefaultEarthName",
+    "expand_designators": "ExpandComponentDesignators",
+    "expand_net_labels": "ExpandNetLabelsText",
+    "expand_ports": "ExpandPortsName",
+    "expand_sheet_number": "ExpandSheetNumber",
+    "expand_document_number": "ExpandDocumentNumber",
+    "watermark_read_only_sheets": "WatermarkReadOnlySheet",
+    "always_drag": "AlwaysDrag",
+    "use_printer_fonts": "DisplayPrinterFonts",
+    "default_template": "DefaultTemplateFileName",
 }
 
 #: The schematic options given in mils.
@@ -546,7 +555,9 @@ def register_generic_tools(mcp):
                 UseInvertedRectangle, InvertedTTTextBorder,
                 TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
                 ConvertedString (reads: the text as shown, special
-                strings resolved). Schematic pins take
+                strings resolved); on a 3D body OverrideColor (draw its
+                own colour, not the model's), Texture (an image file) and
+                TextureRotation. Schematic pins take
                 Symbol_Inner, Symbol_Outer, Symbol_InnerEdge,
                 Symbol_OuterEdge and Symbol_LineWidth (Altium's numbers),
                 HiddenNetName and DefinedFunctions (the pin's functions,
@@ -562,7 +573,9 @@ def register_generic_tools(mcp):
                 FormalType; schematic parts also LibraryPath (the library
                 the symbol came from) and AliasAsText. Schematic parameters
                 take ReadOnlyState, ParamType, AllowLibrarySynchronize
-                and AllowDatabaseSynchronize; ports take AutoSize,
+                and AllowDatabaseSynchronize, and report NameIsReadOnly,
+                ValueIsReadOnly, IsRule, IsSystemParameter and
+                IsConfigurable; ports take AutoSize,
                 OverrideDisplayString and HarnessColor. Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
@@ -2150,6 +2163,15 @@ def register_generic_tools(mcp):
         power_ground_name: Optional[str] = None,
         signal_ground_name: Optional[str] = None,
         earth_name: Optional[str] = None,
+        expand_designators: Optional[bool] = None,
+        expand_net_labels: Optional[bool] = None,
+        expand_ports: Optional[bool] = None,
+        expand_sheet_number: Optional[bool] = None,
+        expand_document_number: Optional[bool] = None,
+        watermark_read_only_sheets: Optional[bool] = None,
+        always_drag: Optional[bool] = None,
+        use_printer_fonts: Optional[bool] = None,
+        default_template: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or set, the schematic editor's preferences.
 
@@ -2184,6 +2206,15 @@ def register_generic_tools(mcp):
             power_ground_name: Net name of a new power ground port.
             signal_ground_name: Net name of a new signal ground port.
             earth_name: Net name of a new earth port.
+            expand_designators / expand_net_labels / expand_ports /
+                expand_sheet_number / expand_document_number: In a
+                multi-channel design, show these as they are on each
+                channel rather than as drawn.
+            watermark_read_only_sheets: Mark sheets that cannot be
+                edited.
+            always_drag: Moving a part drags its wires along.
+            use_printer_fonts: Draw text with the printer's fonts.
+            default_template: The template file new sheets start from.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -2211,6 +2242,15 @@ def register_generic_tools(mcp):
             "power_ground_name": power_ground_name,
             "signal_ground_name": signal_ground_name,
             "earth_name": earth_name,
+            "expand_designators": expand_designators,
+            "expand_net_labels": expand_net_labels,
+            "expand_ports": expand_ports,
+            "expand_sheet_number": expand_sheet_number,
+            "expand_document_number": expand_document_number,
+            "watermark_read_only_sheets": watermark_read_only_sheets,
+            "always_drag": always_drag,
+            "use_printer_fonts": use_printer_fonts,
+            "default_template": default_template,
         }
         for key, value in values.items():
             if isinstance(value, int) and not isinstance(value, bool) and value < 0:

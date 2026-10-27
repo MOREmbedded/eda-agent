@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.7
+# Release verification: 2026.10.27.11
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -171,6 +171,12 @@ works elsewhere cannot be an undeclared identifier:
 | 46, board part extras | `SourceDescription`, `ChannelOffset`, `GroupNum` on a part | no, nowhere | low, ran live and restored |
 | 46, board pad extras | `SwappedPadName`, `OwnerPart_ID` on a pad | no, nowhere | low, ran live and cleared |
 | 46, pin and part extras | `DefaultValue`, `FormalType` on a pin; `LibraryPath`, `AliasAsText` on a part | no, nowhere | low, ran live and restored |
+| 47, routing options | `InteractiveRouteMode`, `PlowThroughPolygons`, `AutoVia`, `PlaceShoveDepth`, `UseSmartTrackEnds` on the PCB preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 47, view and edit additions | `PlaneDrawMode`, `DraftTrackThreshold`, `DragMode`, `ComponentMoveKind` on the PCB preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 47, board options | `PolygonNameTemplate` on the board | no, nowhere | low, ran live and restored |
+| 47, schematic display options | `ExpandComponentDesignators`, `WatermarkReadOnlySheet`, `AlwaysDrag`, `DefaultTemplateFileName` on the schematic preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 47, pair impedance | `ImpedanceDriven`, `MinImpedance`, `MaxImpedance`, `FavoredImpedance` on a differential pair rule | no, nowhere | low, ran live and read back |
+| 47, 3D body extras | `Texture`, `TextureRotation` on a 3D body | no, nowhere | low, ran live and restored |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -346,7 +352,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.7`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.11`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2774,6 +2780,53 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project,
 board and library; every document closed without saving. All passed as
 described. Not run: the jumper display on a board that has jumpers, and
 an electrical grid distance other than 0.
+
+---
+
+## 47. Routing preferences, board options, pours at a point, pair impedance and more
+
+New: `pcb_route_options`, `pcb_board_options`, `pcb_pours_at`;
+`pcb_view_options` gains `plane_draw_mode`, `pad_types_display`,
+`from_tos_display`, `layer_name_display` and `draft_track_threshold_mils`;
+`pcb_edit_options` gains `drag_mode` and `component_move`;
+`sch_editor_options` gains the five multi-channel expansions,
+`watermark_read_only_sheets`, `always_drag`, `use_printer_fonts` and
+`default_template`; `pcb_set_rule_properties` gains
+`dp_impedance_driven` and `dp_min_impedance` / `dp_max_impedance` /
+`dp_preferred_impedance`; `pcb_get_design_rules` reports
+`from_schematic`; `obj_query` / `obj_modify` gain 3D body
+`OverrideColor`, `Texture` and `TextureRotation`, and the schematic
+parameter flags `NameIsReadOnly`, `ValueIsReadOnly`, `IsRule`,
+`IsSystemParameter` and `IsConfigurable` (read only). Measured and NOT
+built: the board's undo (a scripted move of R1 by 100 mils stayed after
+undo and redo), clearing compile violations (the count stayed at 2), a
+dimension's text value (0 on a 500 mil dimension), and writing automatic
+split planes (did not take; it is reported only).
+
+1. **Routing options.** All seven read; auto via, shove depth and smart
+   track ends written, read back and restored.
+2. **View and edit additions.** Plane drawing mode and the draft track
+   threshold (7 mils) written, read back and restored; drag mode the same.
+3. **Board options.** The pour naming template written, read back and
+   restored.
+4. **Schematic display options.** All nine read; designator expansion,
+   always drag and a default template written, read back and restored.
+5. **Pair impedance.** On the board's DiffPairsRouting rule:
+   impedance-driven with 85, 95 and 90 ohms written and read back, then
+   switched off; 0 ohms refused before Altium.
+6. **Rules from the schematic.** The three "Schematic Supply Nets" rules
+   read `from_schematic`, the rest do not.
+7. **3D body.** On U1's body: colour override, a texture file and a 45
+   degree texture rotation written and read back, then restored.
+8. **Parameter flags.** Read on a sheet's parameters (system parameters
+   with fixed names); a write to one refused.
+9. **Pours at a point.** At R1 both GND pours (top and bottom) found; a
+   point off the board found none.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project
+and board; every document closed without saving. All passed as
+described. Not run: a texture image that exists on disk, and the routing
+mode change during an interactive route.
 
 ---
 

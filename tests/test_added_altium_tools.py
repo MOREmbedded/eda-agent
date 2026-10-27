@@ -821,3 +821,87 @@ def test_part_pad_and_pin_extras_are_typed():
     # A part's library path and aliases are text, not switches.
     is_bool = _body("Generic.pas", "SchExtraIsBool")
     assert "(PropName <> 'LibraryPath') And (PropName <> 'AliasAsText')" in is_bool
+
+
+def test_route_options_and_board_options_send_and_refuse(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+    monkeypatch.setattr("eda_agent.tools.editor_options.get_bridge", lambda: bridge)
+    asyncio.run(tools["pcb_route_options"](auto_via=False, shove_depth=2))
+    command, params = bridge.sent[0]
+    assert command == "pcb.editor_options"
+    assert params["set"] == "AutoVia=false|PlaceShoveDepth=2"
+    assert params["names"].split(",") == list(pcb._PCB_ROUTE_OPTIONS.values())
+    bridge.sent.clear()
+    result = asyncio.run(tools["pcb_route_options"](route_mode=-1))
+    assert bridge.sent == [] and result["ok"] is False
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_board_options",
+                    polygon_name_template=2)
+    assert sent == [("pcb.board_options", {"polygon_name_template": "2"})]
+    # Automatic split planes is reported only: a write did not take.
+    body = _body("PCB.pas", "PCB_BoardOptions")
+    assert "Board.AutomaticSplitPlanes :=" not in body
+    assert "Board.PolygonNameTemplate := StrToInt(TemplStr);" in body
+    for altium in pcb._PCB_ROUTE_OPTIONS.values():
+        assert f"Opts.{altium} := " in _body("PCB.pas", "PcbOptionSet"), altium
+
+
+def test_new_view_and_edit_options_are_wired():
+    for altium in ("PlaneDrawMode", "DraftTrackThreshold", "DragMode", "ComponentMoveKind"):
+        assert f"'{altium}'" in _body("PCB.pas", "PcbOptionKind"), altium
+    put = _body("PCB.pas", "PcbOptionSet")
+    assert "Opts.DraftTrackThreshold := MilsToCoordF(F)" in put
+
+
+def test_pours_at_sends_mils_and_reads_the_outline():
+    body = _body("PCB.pas", "PCB_PoursAt")
+    assert "If Poly.PointInPolygon(X, Y) Then" in body
+    assert "MilsToCoordF(StrToFloatDef(XStr, 0)) + Board.XOrigin" in body
+
+
+def test_pours_at_tool_sends(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_pours_at", x=100, y=50.5)
+    assert sent == [("pcb.pours_at", {"x": "100.0", "y": "50.5"})]
+
+
+def test_diff_pair_impedance_is_sent_read_back_and_refused(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                    name="DP", dp_impedance_driven=True, dp_preferred_impedance=90)
+    assert sent == [("pcb.set_rule_properties", {
+        "name": "DP", "dp_preferred_impedance": "90", "dp_impedance_driven": "true"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                         name="DP", dp_min_impedance=0)
+    assert sent == [] and result["ok"] is False
+    body = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert body.index("RuleDiff.FavoredImpedance := StrToFloatDef(ImpFav, 0);") < body.index(
+        "'\"dp_preferred_impedance\",'")
+
+
+def test_rules_say_when_the_schematic_defines_them():
+    body = _body("PCB.pas", "PCB_GetDesignRules")
+    assert "Try FromSch := Rule.DefinedByLogicalDocument; Except" in body
+
+
+def test_body_extras_and_parameter_flags_are_typed():
+    owner = _body("PCBGeneric.pas", "ExtraPCBPropertyOwner")
+    assert owner.index("'OverrideColor'") < owner.index("Then Result := 8")
+    assert "((Owner = 8) And (Oid = eComponentBodyObject))" in _body(
+        "PCBGeneric.pas", "ExtraPCBPropertyFits")
+    put = _body("Generic.pas", "SchSetExtra")
+    # The parameter flags are Altium's answers, never written.
+    flags = put[put.index("If (PropName = 'NameIsReadOnly')"):put.index("IsInt := ")]
+    assert "Then Exit;" in flags and "'IsConfigurable'" in flags
+
+
+def test_schematic_display_options_are_wired():
+    for altium in ("ExpandComponentDesignators", "WatermarkReadOnlySheet",
+                   "DefaultTemplateFileName", "AlwaysDrag"):
+        assert altium in generic._SCH_EDITOR_OPTIONS.values()
+        assert f"Prefs.{altium} := " in _body("Generic.pas", "SchOptionSet"), altium
+
+
+def test_undo_and_violation_clearing_stay_out():
+    # Measured on AD 26.11: the board's undo did not step back a scripted
+    # change, and clearing violations left the count where it was.
+    pcb_text = (ALTIUM / "PCB.pas").read_text(encoding="utf-8-sig")
+    assert "Board.DoUndo" not in pcb_text
+    assert "DM_ClearViolations" not in (ALTIUM / "Project.pas").read_text(encoding="utf-8-sig")
