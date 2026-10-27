@@ -451,7 +451,8 @@ End;
 { ..._RotationRelative, and the same for Designator_). Parameters:          }
 { ReadOnlyState, ParamType, AllowLibrarySynchronize,                        }
 { AllowDatabaseSynchronize. Ports: AutoSize, OverrideDisplayString,         }
-{ HarnessColor.                                                              }
+{ HarnessColor. Pins also DefaultValue and FormalType; parts also           }
+{ LibraryPath (the library the symbol came from) and AliasAsText.           }
 
 { 1 a pin property, 2 a part property, 3 a parameter property, 4 a port     }
 { property, 0 none of these.                                                }
@@ -468,11 +469,13 @@ Begin
        (PropName = 'Designator_PositionMode') Or
        (PropName = 'Designator_CustomPosition_Margin') Or
        (PropName = 'Designator_CustomPosition_RotationAnchor') Or
-       (PropName = 'Designator_CustomPosition_RotationRelative') Then Result := 1
+       (PropName = 'Designator_CustomPosition_RotationRelative') Or
+       (PropName = 'DefaultValue') Or (PropName = 'FormalType') Then Result := 1
     Else If (PropName = 'ShowHiddenPins') Or (PropName = 'ShowHiddenFields') Or
        (PropName = 'PinsMoveable') Or (PropName = 'PartIdLocked') Or
        (PropName = 'DisplayFieldNames') Or (PropName = 'OverideColors') Or
-       (PropName = 'PinColor') Then Result := 2
+       (PropName = 'PinColor') Or (PropName = 'LibraryPath') Or
+       (PropName = 'AliasAsText') Then Result := 2
     Else If (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
        (PropName = 'AllowLibrarySynchronize') Or
        (PropName = 'AllowDatabaseSynchronize') Then Result := 3
@@ -506,12 +509,13 @@ Begin
         (PropName = 'Designator_CustomPosition_RotationAnchor') Or
         (PropName = 'Designator_CustomPosition_RotationRelative') Or
         (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
-        (PropName = 'HarnessColor');
+        (PropName = 'HarnessColor') Or (PropName = 'FormalType');
 End;
 
 Function SchExtraIsBool(PropName : String) : Boolean;
 Begin
-    Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor'))
+    Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor')
+            And (PropName <> 'LibraryPath') And (PropName <> 'AliasAsText'))
         Or (PropName = 'AllowLibrarySynchronize') Or
         (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize');
 End;
@@ -563,7 +567,9 @@ Begin
         Else If PropName = 'Designator_PositionMode' Then Result := IntToStr(Pin.Designator_PositionMode)
         Else If PropName = 'Designator_CustomPosition_Margin' Then Result := IntToStr(Pin.Designator_CustomPosition_Margin)
         Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationAnchor)
-        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationRelative);
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationRelative)
+        Else If PropName = 'DefaultValue' Then Result := Pin.DefaultValue
+        Else If PropName = 'FormalType' Then Result := IntToStr(Pin.FormalType);
     End
     Else If Obj.ObjectId = eParameter Then
     Begin
@@ -589,7 +595,9 @@ Begin
         Else If PropName = 'PartIdLocked' Then Result := BoolToJsonStr(Comp.PartIdLocked)
         Else If PropName = 'DisplayFieldNames' Then Result := BoolToJsonStr(Comp.DisplayFieldNames)
         Else If PropName = 'OverideColors' Then Result := BoolToJsonStr(Comp.OverideColors)
-        Else If PropName = 'PinColor' Then Result := IntToStr(Comp.PinColor);
+        Else If PropName = 'PinColor' Then Result := IntToStr(Comp.PinColor)
+        Else If PropName = 'LibraryPath' Then Result := Comp.LibraryPath
+        Else If PropName = 'AliasAsText' Then Result := Comp.AliasAsText;
     End;
 End;
 
@@ -657,7 +665,9 @@ Begin
         Else If PropName = 'Designator_PositionMode' Then Pin.Designator_PositionMode := N
         Else If PropName = 'Designator_CustomPosition_Margin' Then Pin.Designator_CustomPosition_Margin := N
         Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Pin.Designator_CustomPosition_RotationAnchor := N
-        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Pin.Designator_CustomPosition_RotationRelative := N;
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Pin.Designator_CustomPosition_RotationRelative := N
+        Else If PropName = 'DefaultValue' Then Pin.DefaultValue := Value
+        Else If PropName = 'FormalType' Then Pin.FormalType := N;
     End
     Else If Obj.ObjectId = eParameter Then
     Begin
@@ -683,7 +693,9 @@ Begin
         Else If PropName = 'PartIdLocked' Then Comp.PartIdLocked := B
         Else If PropName = 'DisplayFieldNames' Then Comp.DisplayFieldNames := B
         Else If PropName = 'OverideColors' Then Comp.OverideColors := B
-        Else If PropName = 'PinColor' Then Comp.PinColor := N;
+        Else If PropName = 'PinColor' Then Comp.PinColor := N
+        Else If PropName = 'LibraryPath' Then Comp.LibraryPath := Value
+        Else If PropName = 'AliasAsText' Then Comp.AliasAsText := Value;
     End;
     If IsInt Then Result := SchGetExtra(Obj, PropName) = IntToStr(N)
     Else If IsBool Then Result := SchGetExtra(Obj, PropName) = BoolToJsonStr(B)
@@ -8157,16 +8169,200 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
 End;
 
+{ SCHEMATIC EDITOR PREFERENCES (Preferences > Schematic), Altium's own, kept  }
+{ for every sheet. 'b' a switch, 'i' a whole number of 0 or more, 't' text,   }
+{ '' not one of these.                                                        }
+Function SchOptionKind(Name : String) : String;
+Begin
+    Result := '';
+    If (Name = 'SnapToHotSpot') Or (Name = 'MaintainOrthogonal') Or
+       (Name = 'ComponentsCutWires') Or (Name = 'OptimizePolylines') Or
+       (Name = 'SingleSlashNegation') Or (Name = 'ConvertSpecialStrings') Or
+       (Name = 'MarkManualParameters') Or (Name = 'ShowPinDirection') Or
+       (Name = 'AutoZoom') Or (Name = 'ClickClearsSelection') Or
+       (Name = 'DoubleClickRunsInspector') Then Result := 'b'
+    Else If (Name = 'HotSpotGridDistance') Or (Name = 'UndoRedoStackSize') Or
+       (Name = 'PinNameMargin') Or (Name = 'PinNumberMargin') Or
+       (Name = 'MultiPartNamingMethod') Then Result := 'i'
+    Else If (Name = 'StringIncA') Or (Name = 'StringIncB') Or
+       (Name = 'DefaultPowerGndName') Or (Name = 'DefaultSignalGndName') Or
+       (Name = 'DefaultEarthName') Then Result := 't';
+End;
+
+{ The value as JSON text. }
+Function SchOptionGet(Prefs : ISch_Preferences; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'SnapToHotSpot' Then Result := BoolToJsonStr(Prefs.SnapToHotSpot)
+    Else If Name = 'MaintainOrthogonal' Then Result := BoolToJsonStr(Prefs.MaintainOrthogonal)
+    Else If Name = 'ComponentsCutWires' Then Result := BoolToJsonStr(Prefs.ComponentsCutWires)
+    Else If Name = 'OptimizePolylines' Then Result := BoolToJsonStr(Prefs.OptimizePolylines)
+    Else If Name = 'SingleSlashNegation' Then Result := BoolToJsonStr(Prefs.SingleSlashNegation)
+    Else If Name = 'ConvertSpecialStrings' Then Result := BoolToJsonStr(Prefs.ConvertSpecialStrings)
+    Else If Name = 'MarkManualParameters' Then Result := BoolToJsonStr(Prefs.MarkManualParameters)
+    Else If Name = 'ShowPinDirection' Then Result := BoolToJsonStr(Prefs.ShowPinDirection)
+    Else If Name = 'AutoZoom' Then Result := BoolToJsonStr(Prefs.AutoZoom)
+    Else If Name = 'ClickClearsSelection' Then Result := BoolToJsonStr(Prefs.ClickClearsSelection)
+    Else If Name = 'DoubleClickRunsInspector' Then Result := BoolToJsonStr(Prefs.DoubleClickRunsInspector)
+    Else If Name = 'HotSpotGridDistance' Then Result := IntToStr(Prefs.HotSpotGridDistance)
+    Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Prefs.UndoRedoStackSize)
+    Else If Name = 'PinNameMargin' Then Result := IntToStr(Prefs.PinNameMargin)
+    Else If Name = 'PinNumberMargin' Then Result := IntToStr(Prefs.PinNumberMargin)
+    Else If Name = 'MultiPartNamingMethod' Then Result := IntToStr(Prefs.MultiPartNamingMethod)
+    Else If Name = 'StringIncA' Then Result := '"' + EscapeJsonString(Prefs.StringIncA) + '"'
+    Else If Name = 'StringIncB' Then Result := '"' + EscapeJsonString(Prefs.StringIncB) + '"'
+    Else If Name = 'DefaultPowerGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultPowerGndName) + '"'
+    Else If Name = 'DefaultSignalGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultSignalGndName) + '"'
+    Else If Name = 'DefaultEarthName' Then Result := '"' + EscapeJsonString(Prefs.DefaultEarthName) + '"';
+End;
+
+{ Write one; False when the value is not of the option's kind. }
+Function SchOptionSet(Prefs : ISch_Preferences; Name : String; Value : String) : Boolean;
+Var
+    Kind : String;
+    B : Boolean;
+    N : Integer;
+Begin
+    Result := False;
+    Kind := SchOptionKind(Name);
+    B := False;
+    N := 0;
+    If Kind = 'b' Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If Kind = 'i' Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
+    End
+    Else If Kind <> 't' Then Exit;
+    If Name = 'SnapToHotSpot' Then Prefs.SnapToHotSpot := B
+    Else If Name = 'MaintainOrthogonal' Then Prefs.MaintainOrthogonal := B
+    Else If Name = 'ComponentsCutWires' Then Prefs.ComponentsCutWires := B
+    Else If Name = 'OptimizePolylines' Then Prefs.OptimizePolylines := B
+    Else If Name = 'SingleSlashNegation' Then Prefs.SingleSlashNegation := B
+    Else If Name = 'ConvertSpecialStrings' Then Prefs.ConvertSpecialStrings := B
+    Else If Name = 'MarkManualParameters' Then Prefs.MarkManualParameters := B
+    Else If Name = 'ShowPinDirection' Then Prefs.ShowPinDirection := B
+    Else If Name = 'AutoZoom' Then Prefs.AutoZoom := B
+    Else If Name = 'ClickClearsSelection' Then Prefs.ClickClearsSelection := B
+    Else If Name = 'DoubleClickRunsInspector' Then Prefs.DoubleClickRunsInspector := B
+    Else If Name = 'HotSpotGridDistance' Then Prefs.HotSpotGridDistance := N
+    Else If Name = 'UndoRedoStackSize' Then Prefs.UndoRedoStackSize := N
+    Else If Name = 'PinNameMargin' Then Prefs.PinNameMargin := N
+    Else If Name = 'PinNumberMargin' Then Prefs.PinNumberMargin := N
+    Else If Name = 'MultiPartNamingMethod' Then Prefs.MultiPartNamingMethod := N
+    Else If Name = 'StringIncA' Then Prefs.StringIncA := Value
+    Else If Name = 'StringIncB' Then Prefs.StringIncB := Value
+    Else If Name = 'DefaultPowerGndName' Then Prefs.DefaultPowerGndName := Value
+    Else If Name = 'DefaultSignalGndName' Then Prefs.DefaultSignalGndName := Value
+    Else If Name = 'DefaultEarthName' Then Prefs.DefaultEarthName := Value;
+    Result := True;
+End;
+
+{..............................................................................}
+{ Gen_SchEditorOptions - read, or set, schematic editor preferences by name.   }
+{ Params: names (comma-separated, to read), set ('Name=Value|Name=Value').    }
+{ Every option set is read back: one that reads otherwise is in not_applied, }
+{ a value of the wrong kind in refused, a name not offered in unknown.       }
+{..............................................................................}
+Function Gen_SchEditorOptions(Params : String; RequestId : String) : String;
+Var
+    Prefs : ISch_Preferences;
+    Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got, Wanted : String;
+    CommaPos, PipePos, EqPos : Integer;
+    Changed : Boolean;
+Begin
+    Names := ExtractJsonValue(Params, 'names');
+    SetStr := ExtractJsonValue(Params, 'set');
+    Prefs := Nil;
+    Try Prefs := SchServer.Preferences; Except Prefs := Nil; End;
+    If Prefs = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PREFERENCES', 'Could not reach the schematic editor preferences');
+        Exit;
+    End;
+    Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
+    Changed := False;
+    While SetStr <> '' Do
+    Begin
+        PipePos := Pos('|', SetStr);
+        If PipePos = 0 Then Begin Item := SetStr; SetStr := ''; End
+        Else Begin Item := Copy(SetStr, 1, PipePos - 1); SetStr := Copy(SetStr, PipePos + 1, Length(SetStr)); End;
+        EqPos := Pos('=', Item);
+        If EqPos = 0 Then Continue;
+        Name := Trim(Copy(Item, 1, EqPos - 1));
+        Value := Copy(Item, EqPos + 1, Length(Item));
+        If SchOptionKind(Name) = '' Then
+        Begin
+            If Unknown <> '' Then Unknown := Unknown + ',';
+            Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        If SchOptionKind(Name) <> 't' Then Value := Trim(Value);
+        If Not SchOptionSet(Prefs, Name, Value) Then
+        Begin
+            If Refused <> '' Then Refused := Refused + ',';
+            Refused := Refused + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        Changed := True;
+        Got := SchOptionGet(Prefs, Name);
+        If SchOptionKind(Name) = 't' Then Wanted := '"' + EscapeJsonString(Value) + '"'
+        Else Wanted := LowerCase(Value);
+        If Got <> Wanted Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Name + '"';
+        End;
+        If Pos(',' + Name + ',', ',' + Names + ',') = 0 Then
+        Begin
+            If Names <> '' Then Names := Names + ',';
+            Names := Names + Name;
+        End;
+    End;
+    While Names <> '' Do
+    Begin
+        CommaPos := Pos(',', Names);
+        If CommaPos = 0 Then Begin Name := Names; Names := ''; End
+        Else Begin Name := Copy(Names, 1, CommaPos - 1); Names := Copy(Names, CommaPos + 1, Length(Names)); End;
+        Name := Trim(Name);
+        If Name = '' Then Continue;
+        If SchOptionKind(Name) = '' Then
+        Begin
+            If Pos('"' + Name + '"', Unknown) = 0 Then
+            Begin
+                If Unknown <> '' Then Unknown := Unknown + ',';
+                Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            End;
+            Continue;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + Name + '":' + SchOptionGet(Prefs, Name);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('options', '{' + Items + '}') + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
+        + JsonRaw('refused', '[' + Refused + ']') + ','
+        + JsonRaw('unknown', '[' + Unknown + ']')));
+End;
+
 {..............................................................................}
 { Set snap grid and visible grid size for the active schematic                }
-{ Params: snap_grid, visible_grid (in mils)                                   }
+{ Params: snap_grid, visible_grid, hotspot_grid (in mils), snap_grid_on,      }
+{ visible_grid_on, hotspot_grid_on. The hotspot grid is the electrical grid: }
+{ how far a wire end is pulled onto a pin or wire.                           }
 {..............................................................................}
 
 Function Gen_SetGrid(Params : String; RequestId : String) : String;
 Var
-    SnapGrid, VisibleGrid : Double;
-    SnapOnStr, VisibleOnStr : String;
-    SetSnapOn, SetVisibleOn : Boolean;
+    SnapGrid, VisibleGrid, HotGrid : Double;
+    SnapOnStr, VisibleOnStr, HotOnStr : String;
+    SetSnapOn, SetVisibleOn, SetHotOn : Boolean;
     SchDoc : ISch_Document;
 Begin
     SnapGrid := StrToFloatDef(ExtractJsonValue(Params, 'snap_grid'), 0);
@@ -8175,6 +8371,9 @@ Begin
     VisibleOnStr := LowerCase(ExtractJsonValue(Params, 'visible_grid_on'));
     SetSnapOn := (SnapOnStr = 'true') Or (SnapOnStr = 'false');
     SetVisibleOn := (VisibleOnStr = 'true') Or (VisibleOnStr = 'false');
+    HotGrid := StrToFloatDef(ExtractJsonValue(Params, 'hotspot_grid'), 0);
+    HotOnStr := LowerCase(ExtractJsonValue(Params, 'hotspot_grid_on'));
+    SetHotOn := (HotOnStr = 'true') Or (HotOnStr = 'false');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -8183,9 +8382,10 @@ Begin
         Exit;
     End;
 
-    If (SnapGrid <= 0) And (VisibleGrid <= 0) And (Not SetSnapOn) And (Not SetVisibleOn) Then
+    If (SnapGrid <= 0) And (VisibleGrid <= 0) And (HotGrid <= 0) And (Not SetSnapOn)
+        And (Not SetVisibleOn) And (Not SetHotOn) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'Give snap_grid or visible_grid (mils) and/or snap_grid_on or visible_grid_on (true/false)');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'Give snap_grid, visible_grid or hotspot_grid (mils) and/or snap_grid_on, visible_grid_on or hotspot_grid_on (true/false)');
         Exit;
     End;
 
@@ -8205,6 +8405,10 @@ Begin
     Begin
         Try SchDoc.VisibleGridOn := (VisibleOnStr = 'true'); Except End;
     End;
+    If HotGrid > 0 Then
+        SchDoc.HotspotGridSize := MilsToCoordF(HotGrid);
+    If SetHotOn Then
+        SchDoc.HotspotGridOn := (HotOnStr = 'true');
 
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
@@ -8219,7 +8423,9 @@ Begin
         ',"snap_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.SnapGridSize)) +
         ',"visible_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.VisibleGridSize)) +
         ',"snap_grid_on":' + SnapOnStr +
-        ',"visible_grid_on":' + VisibleOnStr + '}');
+        ',"visible_grid_on":' + VisibleOnStr +
+        ',"hotspot_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.HotspotGridSize)) +
+        ',"hotspot_grid_on":' + BoolToJsonStr(SchDoc.HotspotGridOn) + '}');
 End;
 
 {..............................................................................}
@@ -14783,6 +14989,7 @@ Begin
         'get_sheet_frame': Result := Gen_GetSheetFrame(Params, RequestId);
         'shift_sheet':     Result := Gen_ShiftSheet(Params, RequestId);
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
+        'sch_editor_options': Result := Gen_SchEditorOptions(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);

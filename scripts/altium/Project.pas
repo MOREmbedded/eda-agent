@@ -5996,8 +5996,9 @@ Var
     ServerDoc : IServerDocument;
     I, DirtyCount, OpenCount : Integer;
     DirtyList, FullPath : String;
-    First : Boolean;
+    First, NeedsCompile : Boolean;
     AgeMs, CurrentTick : Cardinal;
+    Violations : Integer;
 Begin
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -6056,8 +6057,17 @@ Begin
         End;
     Except End;
 
+    { Altium's own view: whether the project needs compiling now, and how  }
+    { many violations its last compile left in the Messages panel.         }
+    NeedsCompile := False;
+    Try NeedsCompile := Project.DM_NeedsCompile; Except End;
+    Violations := -1;
+    Try Violations := Project.DM_ExistingViolationCount; Except End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"compile_age_ms":' + IntToStr(AgeMs) + ','
+        + '"needs_compile":' + BoolToJsonStr(NeedsCompile) + ','
+        + '"violation_count":' + IntToStr(Violations) + ','
         + '"compile_cached":' + BoolToJsonStr(LastCompileTick > 0) + ','
         + '"ttl_ms":' + IntToStr(COMPILE_CACHE_TTL_MS) + ','
         + '"open_doc_count":' + IntToStr(OpenCount) + ','

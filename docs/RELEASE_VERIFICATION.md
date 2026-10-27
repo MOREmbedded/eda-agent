@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.4
+# Release verification: 2026.10.27.7
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -163,6 +163,14 @@ works elsewhere cannot be an undeclared identifier:
 | 45, text inversion | `Inverted`, `UseInvertedRectangle` on board text | yes, `Lib_ConvertDesignatorsToStroke` | low, ran live, read back and restored |
 | 45, parameters and ports | `ReadOnlyState`, `ParamType`, synchronize switches; port `AutoSize`, `OverrideDisplayString`, `HarnessColor` | no, nowhere | low, ran live, read back and restored |
 | 45, pin label positions | `Name_PositionMode`, `Name_CustomPosition_Margin`, `Designator_PositionMode`, `Designator_CustomPosition_Margin` and their rotations on a pin | no, nowhere | low, ran live, read back and cleared |
+| 46, board view options | `ShowPadNets`, `ShowPadNumbers`, `ShowViaNets`, `SingleLayerMode`, `DisplaySpecialStrings`, `HighlightFull` on the PCB preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 46, board edit options | `RotationStep`, `ProtectLockedPrimitives`, `OnlySelectVisible`, `DuplicateDesignatorsAllowed` on the PCB preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 46, schematic options | `SnapToHotSpot`, `ComponentsCutWires`, `PinNameMargin`, `StringIncA`, `DefaultPowerGndName` on the schematic preferences | no, nowhere | medium, changes Altium's preferences; ran live and restored |
+| 46, electrical grid | `HotspotGridSize`, `HotspotGridOn` on a sheet | no, nowhere | low, ran live and read back |
+| 46, net colour and jumpers | `OverrideColorForDraw` on a net | no, nowhere | low, ran live and restored |
+| 46, board part extras | `SourceDescription`, `ChannelOffset`, `GroupNum` on a part | no, nowhere | low, ran live and restored |
+| 46, board pad extras | `SwappedPadName`, `OwnerPart_ID` on a pad | no, nowhere | low, ran live and cleared |
+| 46, pin and part extras | `DefaultValue`, `FormalType` on a pin; `LibraryPath`, `AliasAsText` on a part | no, nowhere | low, ran live and restored |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -338,7 +346,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.4`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.7`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -2722,6 +2730,50 @@ Run live on AD 26.11.1.5 with that change's script on a scratch project,
 board and library; every document closed without saving. All passed as
 described. Not run: a bus member net, and a STEP export of a part with no
 3D body.
+
+---
+
+## 46. Editor preferences, the electrical grid, net colour and jumpers, compile state and more properties
+
+New: `pcb_view_options`, `pcb_edit_options`, `sch_editor_options`;
+`obj_set_grid` gains `hotspot_grid` and `hotspot_grid_on`;
+`pcb_net_display` gains `use_net_color`, `show_jumpers` and reads
+`in_differential_pair`; `proj_get_compile_freshness` gains
+`needs_compile` and `violation_count`; `obj_query` / `obj_modify` gain
+board part `SourceDescription`, `JumpersVisible`, `ChannelOffset` and
+`GroupNum`, board pad `SwappedPadName` and `OwnerPart_ID`, schematic pin
+`DefaultValue` and `FormalType`, and schematic part `LibraryPath` and
+`AliasAsText`.
+
+1. **Board view options.** All ten read; pad net names and single layer
+   mode flipped, read back and restored.
+2. **Board edit options.** Rotation step 45 and then 15, and locked-object
+   protection off, read back and restored to 90 and on. Undo levels did
+   not take (33 read back as 50, listed in `not_applied`), so they are
+   reported and not offered for writing.
+3. **Schematic editor options.** All 21 read; components cutting wires,
+   the pin name margin, the increment step and the power ground name
+   written, read back and restored. The pin margins are kept at 10000 to
+   the mil (the defaults read 500000 and 800000, 50 and 80 mils), so the
+   tool takes and reports mils; 6 mils read back as 6.
+4. **Electrical grid.** 40 mils, switched off and on again, read back.
+5. **Net colour and jumpers.** GND drawn in its net colour with jumpers
+   hidden, read back and restored; USB_DP reads `in_differential_pair`.
+6. **Compile state.** `needs_compile` false and 2 violations read, before
+   and after a compile.
+7. **Board part.** U1's source description, jumpers, channel offset and
+   group written, read back and restored; `x` for the group refused.
+8. **Board pads.** Swap name and owner part written on the 66 pads named 4,
+   read back and cleared.
+9. **Schematic pin.** Default value and formal type written, read back
+   and restored.
+10. **Schematic part.** Aliases and library path written on J1, read back
+    and restored (`*`, any library).
+
+Run live on AD 26.11.1.5 with that change's script on a scratch project,
+board and library; every document closed without saving. All passed as
+described. Not run: the jumper display on a board that has jumpers, and
+an electrical grid distance other than 0.
 
 ---
 

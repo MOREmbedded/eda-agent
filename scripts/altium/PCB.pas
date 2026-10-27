@@ -18257,37 +18257,48 @@ Begin
         + JsonRaw('pairs', '[' + Items + ']')));
 End;
 
-{ One net's connection-line and loop-removal settings as JSON. }
+{ One net's connection-line, loop-removal, colour and jumper settings, and  }
+{ whether it is in a differential pair, as JSON.                            }
 Function NetDisplayJson(Net : IPCB_Net) : String;
 Var
-    Shown, Loops : Boolean;
+    Shown, Loops, OwnColour, Jumpers, InPair : Boolean;
 Begin
-    Shown := False; Loops := False;
+    Shown := False; Loops := False; OwnColour := False; Jumpers := False; InPair := False;
     Try Shown := Net.ConnectsVisible; Except End;
     Try Loops := Net.LoopRemoval; Except End;
+    Try OwnColour := Net.OverrideColorForDraw; Except End;
+    Try Jumpers := Net.JumpersVisible; Except End;
+    Try InPair := Net.InDifferentialPair; Except End;
     Result := JsonObj(JsonStr('net', Net.Name) + ','
         + JsonBool('connections_shown', Shown) + ','
-        + JsonBool('loop_removal', Loops));
+        + JsonBool('loop_removal', Loops) + ','
+        + JsonBool('use_net_color', OwnColour) + ','
+        + JsonBool('jumpers_shown', Jumpers) + ','
+        + JsonBool('in_differential_pair', InPair));
 End;
 
 {..............................................................................}
 { PCB_NetDisplay - read, or set, whether nets show their connection lines    }
-{ (ShowNetConnects / HideNetConnects) and whether loop removal applies to    }
-{ them (LoopRemoval). Each net is read back.                                 }
-{ Params: nets (tab-separated, required), show_connections, loop_removal     }
-{ ('true' / 'false'; empty = keep).                                          }
+{ (ShowNetConnects / HideNetConnects), whether loop removal applies to      }
+{ them (LoopRemoval), whether they draw in their own net colour            }
+{ (OverrideColorForDraw) and whether their jumpers show. Each net is read  }
+{ back.                                                                     }
+{ Params: nets (tab-separated, required), show_connections, loop_removal,   }
+{ use_net_color, show_jumpers ('true' / 'false'; empty = keep).             }
 {..............................................................................}
 Function PCB_NetDisplay(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Net : IPCB_Net;
-    NetsStr, ShowStr, LoopStr, Item, Items, Missing : String;
+    NetsStr, ShowStr, LoopStr, ColourStr, JumperStr, Item, Items, Missing : String;
     TabPos : Integer;
     Changed : Boolean;
 Begin
     NetsStr := ExtractJsonValue(Params, 'nets');
     ShowStr := LowerCase(ExtractJsonValue(Params, 'show_connections'));
     LoopStr := LowerCase(ExtractJsonValue(Params, 'loop_removal'));
+    ColourStr := LowerCase(ExtractJsonValue(Params, 'use_net_color'));
+    JumperStr := LowerCase(ExtractJsonValue(Params, 'show_jumpers'));
     If NetsStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'nets is required');
@@ -18331,6 +18342,16 @@ Begin
             If LoopStr <> '' Then
             Begin
                 Net.LoopRemoval := (LoopStr = 'true');
+                Changed := True;
+            End;
+            If ColourStr <> '' Then
+            Begin
+                Net.OverrideColorForDraw := (ColourStr = 'true');
+                Changed := True;
+            End;
+            If JumperStr <> '' Then
+            Begin
+                Net.JumpersVisible := (JumperStr = 'true');
                 Changed := True;
             End;
             If Items <> '' Then Items := Items + ',';
@@ -18442,6 +18463,202 @@ Begin
     Result := BuildSuccessResponse(RequestId, JsonObj(
         BoardGridsJson(Board) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']')));
+End;
+
+{ BOARD EDITOR PREFERENCES (Preferences > PCB Editor), Altium's own, kept for }
+{ every board. Each is read as JSON text: true / false, or a number.         }
+{ 'b' a switch, 'f' a number of 0 or more, 'r' read only, '' not one of     }
+{ these. Undo levels are read only: a write did not take (measured on AD    }
+{ 26.11, 33 read back as 50).                                                }
+Function PcbOptionKind(Name : String) : String;
+Begin
+    Result := '';
+    If (Name = 'ShowPadNets') Or (Name = 'ShowPadNumbers') Or
+       (Name = 'ShowViaNets') Or (Name = 'ShowTestPoints') Or
+       (Name = 'SingleLayerMode') Or (Name = 'DisplaySpecialStrings') Or
+       (Name = 'UseNetColorForHighlight') Or (Name = 'HighlightFull') Or
+       (Name = 'ShowAllPrimitivesInHighlightedNets') Or
+       (Name = 'ShowComponentRefPoint') Or
+       (Name = 'ProtectLockedPrimitives') Or (Name = 'OnlySelectVisible') Or
+       (Name = 'ClickClearsSelection') Or (Name = 'DoubleClickRunsInspector') Or
+       (Name = 'SnapToCentre') Or (Name = 'DuplicateDesignatorsAllowed') Or
+       (Name = 'AutoPan') Then Result := 'b'
+    Else If Name = 'UndoRedoStackSize' Then Result := 'r'
+    Else If Name = 'RotationStep' Then Result := 'f';
+End;
+
+Function PcbOptionGet(Opts : IPCB_SystemOptions; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'ShowPadNets' Then Result := BoolToJsonStr(Opts.ShowPadNets)
+    Else If Name = 'ShowPadNumbers' Then Result := BoolToJsonStr(Opts.ShowPadNumbers)
+    Else If Name = 'ShowViaNets' Then Result := BoolToJsonStr(Opts.ShowViaNets)
+    Else If Name = 'ShowTestPoints' Then Result := BoolToJsonStr(Opts.ShowTestPoints)
+    Else If Name = 'SingleLayerMode' Then Result := BoolToJsonStr(Opts.SingleLayerMode)
+    Else If Name = 'DisplaySpecialStrings' Then Result := BoolToJsonStr(Opts.DisplaySpecialStrings)
+    Else If Name = 'UseNetColorForHighlight' Then Result := BoolToJsonStr(Opts.UseNetColorForHighlight)
+    Else If Name = 'HighlightFull' Then Result := BoolToJsonStr(Opts.HighlightFull)
+    Else If Name = 'ShowAllPrimitivesInHighlightedNets' Then Result := BoolToJsonStr(Opts.ShowAllPrimitivesInHighlightedNets)
+    Else If Name = 'ShowComponentRefPoint' Then Result := BoolToJsonStr(Opts.ShowComponentRefPoint)
+    Else If Name = 'ProtectLockedPrimitives' Then Result := BoolToJsonStr(Opts.ProtectLockedPrimitives)
+    Else If Name = 'OnlySelectVisible' Then Result := BoolToJsonStr(Opts.OnlySelectVisible)
+    Else If Name = 'ClickClearsSelection' Then Result := BoolToJsonStr(Opts.ClickClearsSelection)
+    Else If Name = 'DoubleClickRunsInspector' Then Result := BoolToJsonStr(Opts.DoubleClickRunsInspector)
+    Else If Name = 'SnapToCentre' Then Result := BoolToJsonStr(Opts.SnapToCentre)
+    Else If Name = 'DuplicateDesignatorsAllowed' Then Result := BoolToJsonStr(Opts.DuplicateDesignatorsAllowed)
+    Else If Name = 'AutoPan' Then Result := BoolToJsonStr(Opts.AutoPan)
+    Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Opts.UndoRedoStackSize)
+    Else If Name = 'RotationStep' Then Result := FloatToJsonStr(Opts.RotationStep);
+End;
+
+{ Write one, as text from the caller; False when the value is not of the    }
+{ option's kind (nothing is written then).                                   }
+Function PcbOptionSet(Opts : IPCB_SystemOptions; Name : String; Value : String) : Boolean;
+Var
+    Kind : String;
+    B : Boolean;
+    F : Double;
+Begin
+    Result := False;
+    Kind := PcbOptionKind(Name);
+    B := False;
+    F := 0;
+    If Kind = 'b' Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If Kind = 'f' Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        F := StrToFloatDef(Value, -1);
+        If F < 0 Then Exit;
+    End
+    Else Exit;
+    If Name = 'ShowPadNets' Then Opts.ShowPadNets := B
+    Else If Name = 'ShowPadNumbers' Then Opts.ShowPadNumbers := B
+    Else If Name = 'ShowViaNets' Then Opts.ShowViaNets := B
+    Else If Name = 'ShowTestPoints' Then Opts.ShowTestPoints := B
+    Else If Name = 'SingleLayerMode' Then Opts.SingleLayerMode := B
+    Else If Name = 'DisplaySpecialStrings' Then Opts.DisplaySpecialStrings := B
+    Else If Name = 'UseNetColorForHighlight' Then Opts.UseNetColorForHighlight := B
+    Else If Name = 'HighlightFull' Then Opts.HighlightFull := B
+    Else If Name = 'ShowAllPrimitivesInHighlightedNets' Then Opts.ShowAllPrimitivesInHighlightedNets := B
+    Else If Name = 'ShowComponentRefPoint' Then Opts.ShowComponentRefPoint := B
+    Else If Name = 'ProtectLockedPrimitives' Then Opts.ProtectLockedPrimitives := B
+    Else If Name = 'OnlySelectVisible' Then Opts.OnlySelectVisible := B
+    Else If Name = 'ClickClearsSelection' Then Opts.ClickClearsSelection := B
+    Else If Name = 'DoubleClickRunsInspector' Then Opts.DoubleClickRunsInspector := B
+    Else If Name = 'SnapToCentre' Then Opts.SnapToCentre := B
+    Else If Name = 'DuplicateDesignatorsAllowed' Then Opts.DuplicateDesignatorsAllowed := B
+    Else If Name = 'AutoPan' Then Opts.AutoPan := B
+    Else If Name = 'RotationStep' Then Opts.RotationStep := F;
+    Result := True;
+End;
+
+{..............................................................................}
+{ PCB_EditorOptions - read, or set, board editor preferences by name.          }
+{ Params: names (comma-separated, to read), set ('Name=Value|Name=Value').    }
+{ Every option set is read back: one that reads otherwise is in not_applied, }
+{ a value of the wrong kind in refused, a name not offered in unknown.       }
+{..............................................................................}
+Function PCB_EditorOptions(Params : String; RequestId : String) : String;
+Var
+    Opts : IPCB_SystemOptions;
+    Board : IPCB_Board;
+    Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got : String;
+    CommaPos, PipePos, EqPos : Integer;
+    Changed, Took : Boolean;
+Begin
+    Names := ExtractJsonValue(Params, 'names');
+    SetStr := ExtractJsonValue(Params, 'set');
+    { The PCB server holds these, and is loaded with the first board: on a   }
+    { fresh Altium with no board open, PCBServer.SystemOptions halted the    }
+    { script (see PCB_PolygonRepourMode).                                    }
+    If GetPCBBoardAnywhere(0) = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'Open a PCB document first: Altium loads its PCB server, which '
+            + 'holds these preferences, with the first board.');
+        Exit;
+    End;
+    Opts := Nil;
+    Try Opts := PCBServer.SystemOptions; Except Opts := Nil; End;
+    If Opts = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SYSTEM_OPTIONS', 'Could not reach the PCB editor preferences');
+        Exit;
+    End;
+    Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
+    Changed := False;
+    While SetStr <> '' Do
+    Begin
+        PipePos := Pos('|', SetStr);
+        If PipePos = 0 Then Begin Item := SetStr; SetStr := ''; End
+        Else Begin Item := Copy(SetStr, 1, PipePos - 1); SetStr := Copy(SetStr, PipePos + 1, Length(SetStr)); End;
+        EqPos := Pos('=', Item);
+        If EqPos = 0 Then Continue;
+        Name := Trim(Copy(Item, 1, EqPos - 1));
+        Value := Trim(Copy(Item, EqPos + 1, Length(Item)));
+        If PcbOptionKind(Name) = '' Then
+        Begin
+            If Unknown <> '' Then Unknown := Unknown + ',';
+            Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        If Not PcbOptionSet(Opts, Name, Value) Then
+        Begin
+            If Refused <> '' Then Refused := Refused + ',';
+            Refused := Refused + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        Changed := True;
+        Got := PcbOptionGet(Opts, Name);
+        If PcbOptionKind(Name) = 'f' Then
+            Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.0001
+        Else
+            Took := Got = LowerCase(Value);
+        If Not Took Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Name + '"';
+        End;
+        If Pos(',' + Name + ',', ',' + Names + ',') = 0 Then
+        Begin
+            If Names <> '' Then Names := Names + ',';
+            Names := Names + Name;
+        End;
+    End;
+    While Names <> '' Do
+    Begin
+        CommaPos := Pos(',', Names);
+        If CommaPos = 0 Then Begin Name := Names; Names := ''; End
+        Else Begin Name := Copy(Names, 1, CommaPos - 1); Names := Copy(Names, CommaPos + 1, Length(Names)); End;
+        Name := Trim(Name);
+        If Name = '' Then Continue;
+        If PcbOptionKind(Name) = '' Then
+        Begin
+            If Pos('"' + Name + '"', Unknown) = 0 Then
+            Begin
+                If Unknown <> '' Then Unknown := Unknown + ',';
+                Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            End;
+            Continue;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + Name + '":' + PcbOptionGet(Opts, Name);
+    End;
+    If Changed Then
+    Begin
+        Board := GetPCBBoardAnywhere(0);
+        Try Board.ViewManager_FullUpdate; Except End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('options', '{' + Items + '}') + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
+        + JsonRaw('refused', '[' + Refused + ']') + ','
+        + JsonRaw('unknown', '[' + Unknown + ']')));
 End;
 
 {..............................................................................}
@@ -21103,6 +21320,7 @@ Begin
         'net_display':             Result := PCB_NetDisplay(Params, RequestId);
         'set_grids':               Result := PCB_SetGrids(Params, RequestId);
         'export_component_model':  Result := PCB_ExportComponentModel(Params, RequestId);
+        'editor_options':          Result := PCB_EditorOptions(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

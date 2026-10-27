@@ -72,9 +72,12 @@ Begin
             (PropName = 'IsBGA') Or (PropName = 'LockStrings') Or
             (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
-            (PropName = 'PackageSpecificHash') Then Result := 6
+            (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
+            (PropName = 'JumpersVisible') Or (PropName = 'ChannelOffset') Or
+            (PropName = 'GroupNum') Then Result := 6
     Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
-            (PropName = 'SwapID_Part') Then Result := 7;
+            (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
+            (PropName = 'OwnerPart_ID') Then Result := 7;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -200,14 +203,20 @@ Begin
         Else If PropName = 'CommentAutoPosition' Then Result := IntToStr(Comp.CommentAutoPosition)
         Else If PropName = 'FootprintDescription' Then Result := Comp.FootprintDescription
         Else If PropName = 'DefaultPCB3DModel' Then Result := Comp.DefaultPCB3DModel
-        Else If PropName = 'PackageSpecificHash' Then Result := Comp.PackageSpecificHash;
+        Else If PropName = 'PackageSpecificHash' Then Result := Comp.PackageSpecificHash
+        Else If PropName = 'SourceDescription' Then Result := Comp.SourceDescription
+        Else If PropName = 'JumpersVisible' Then Result := BoolToJsonStr(Comp.JumpersVisible)
+        Else If PropName = 'ChannelOffset' Then Result := IntToStr(Comp.ChannelOffset)
+        Else If PropName = 'GroupNum' Then Result := IntToStr(Comp.GroupNum);
     End
     Else If ExtraPCBPropertyOwner(PropName) = 7 Then
     Begin
         Pad := Obj;
         If PropName = 'JumperID' Then Result := IntToStr(Pad.JumperID)
         Else If PropName = 'SwapID_Pad' Then Result := Pad.SwapID_Pad
-        Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part;
+        Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part
+        Else If PropName = 'SwappedPadName' Then Result := Pad.SwappedPadName
+        Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID);
     End;
 End;
 
@@ -258,17 +267,21 @@ Begin
         (PropName = 'LockStrings') Or (PropName = 'Inverted') Or
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
-        (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName');
+        (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
+        (PropName = 'JumpersVisible');
     IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
         (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
-        (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part');
+        (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part') Or
+        (PropName = 'SourceDescription') Or (PropName = 'SwappedPadName');
     IsInt := (PropName = 'BarCodeKind') Or (PropName = 'BarCodeRenderMode') Or
         (PropName = 'MultilineTextAutoPosition') Or (PropName = 'TextPosition') Or
         (PropName = 'TextDimensionUnit') Or (PropName = 'TextPrecision') Or
         (PropName = 'ArrowPosition') Or (PropName = 'PolygonType') Or
         (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
-        (PropName = 'JumperID') Or (PropName = 'TTFInvertedTextJustify');
+        (PropName = 'JumperID') Or (PropName = 'TTFInvertedTextJustify') Or
+        (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
+        (PropName = 'OwnerPart_ID');
     B := False;
     F := 0;
     N := 0;
@@ -375,14 +388,20 @@ Begin
         Else If PropName = 'NameAutoPosition' Then Comp.ChangeNameAutoposition(N)
         Else If PropName = 'CommentAutoPosition' Then Comp.ChangeCommentAutoposition(N)
         Else If PropName = 'FootprintDescription' Then Comp.FootprintDescription := Value
-        Else If PropName = 'DefaultPCB3DModel' Then Comp.DefaultPCB3DModel := Value;
+        Else If PropName = 'DefaultPCB3DModel' Then Comp.DefaultPCB3DModel := Value
+        Else If PropName = 'SourceDescription' Then Comp.SourceDescription := Value
+        Else If PropName = 'JumpersVisible' Then Comp.JumpersVisible := B
+        Else If PropName = 'ChannelOffset' Then Comp.ChannelOffset := N
+        Else If PropName = 'GroupNum' Then Comp.GroupNum := N;
     End
     Else If Owner = 7 Then
     Begin
         Pad := Obj;
         If PropName = 'JumperID' Then Pad.JumperID := N
         Else If PropName = 'SwapID_Pad' Then Pad.SwapID_Pad := Value
-        Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value;
+        Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value
+        Else If PropName = 'SwappedPadName' Then Pad.SwappedPadName := Value
+        Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N;
     End;
     Result := 1;
 End;
@@ -2153,7 +2172,8 @@ Begin
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
         + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
-        + 'AutoGenerateName';
+        + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
+        + 'GroupNum, SwappedPadName, OwnerPart_ID';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

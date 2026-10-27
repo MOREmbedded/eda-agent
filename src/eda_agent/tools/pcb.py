@@ -27,6 +27,7 @@ from ..placement import (
 )
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
+from .editor_options import run_options
 from .library import _angle_text, _edge_arc
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
@@ -613,6 +614,34 @@ def _text_anchor(value: Any) -> Optional[int]:
     if text.isdigit() and int(text) < len(_TEXT_ANCHORS):
         return int(text)
     return None
+
+
+#: Board editor display preferences: argument name to Altium's.
+_PCB_VIEW_OPTIONS = {
+    "show_pad_nets": "ShowPadNets",
+    "show_pad_numbers": "ShowPadNumbers",
+    "show_via_nets": "ShowViaNets",
+    "show_test_points": "ShowTestPoints",
+    "single_layer_mode": "SingleLayerMode",
+    "show_special_strings": "DisplaySpecialStrings",
+    "highlight_in_net_color": "UseNetColorForHighlight",
+    "highlight_full": "HighlightFull",
+    "highlight_whole_net": "ShowAllPrimitivesInHighlightedNets",
+    "show_component_reference_point": "ShowComponentRefPoint",
+}
+
+#: Board editor editing preferences: argument name to Altium's.
+_PCB_EDIT_OPTIONS = {
+    "rotation_step": "RotationStep",
+    "undo_levels": "UndoRedoStackSize",
+    "protect_locked": "ProtectLockedPrimitives",
+    "select_only_visible": "OnlySelectVisible",
+    "click_clears_selection": "ClickClearsSelection",
+    "double_click_runs_inspector": "DoubleClickRunsInspector",
+    "snap_to_centre": "SnapToCentre",
+    "allow_duplicate_designators": "DuplicateDesignatorsAllowed",
+    "auto_pan": "AutoPan",
+}
 
 
 def register_pcb_tools(mcp):
@@ -1277,9 +1306,12 @@ def register_pcb_tools(mcp):
         nets: list[str],
         show_connections: Optional[bool] = None,
         loop_removal: Optional[bool] = None,
+        use_net_color: Optional[bool] = None,
+        show_jumpers: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Read, or set, whether nets show their connection lines and
-        whether loop removal applies to them.
+        """Read, or set, whether nets show their connection lines,
+        whether loop removal applies to them, whether they draw in their
+        own net colour, and whether their jumpers show.
 
         Hiding the connection lines of GND or a supply clears the view
         while routing signals; loop removal off keeps a deliberate
@@ -1290,10 +1322,14 @@ def register_pcb_tools(mcp):
             show_connections: Show (True) or hide (False) their
                 connection lines; omit to leave as they are.
             loop_removal: Loop removal on or off; omit to leave.
+            use_net_color: Draw the net in its own net colour on the
+                board; omit to leave.
+            show_jumpers: Show the net's jumpers; omit to leave.
 
         Returns:
-            ``nets`` (``connections_shown``, ``loop_removal``, read
-            back) and ``not_found``.
+            ``nets`` (``connections_shown``, ``loop_removal``,
+            ``use_net_color``, ``jumpers_shown`` and
+            ``in_differential_pair``, read back) and ``not_found``.
         """
         items = [n.strip() for n in (nets or []) if n and n.strip()]
         if not items:
@@ -1302,7 +1338,9 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "a net name cannot hold a tab"}
         params: dict[str, Any] = {"nets": "\t".join(items)}
         for key, value in (("show_connections", show_connections),
-                           ("loop_removal", loop_removal)):
+                           ("loop_removal", loop_removal),
+                           ("use_net_color", use_net_color),
+                           ("show_jumpers", show_jumpers)):
             if value is not None:
                 params[key] = "true" if value else "false"
         return await get_bridge().send_command_async("pcb.net_display", params)
@@ -1351,6 +1389,99 @@ def register_pcb_tools(mcp):
         if dot_grid is not None:
             params["dot_grid"] = "true" if dot_grid else "false"
         return await get_bridge().send_command_async("pcb.set_grids", params)
+
+    @mcp.tool()
+    async def pcb_view_options(
+        show_pad_nets: Optional[bool] = None,
+        show_pad_numbers: Optional[bool] = None,
+        show_via_nets: Optional[bool] = None,
+        show_test_points: Optional[bool] = None,
+        single_layer_mode: Optional[bool] = None,
+        show_special_strings: Optional[bool] = None,
+        highlight_in_net_color: Optional[bool] = None,
+        highlight_full: Optional[bool] = None,
+        highlight_whole_net: Optional[bool] = None,
+        show_component_reference_point: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, how the board editor draws a board: net names
+        and numbers on pads and vias, test points, single layer mode,
+        special strings shown as their values, and net highlighting.
+
+        These are Altium's own preferences and apply to every board. A
+        board must be open. Call with nothing to read; every option set
+        is read back.
+
+        Args:
+            show_pad_nets: Net names on pads.
+            show_pad_numbers: Pad numbers on pads.
+            show_via_nets: Net names on vias.
+            show_test_points: Mark test points.
+            single_layer_mode: Show only the current layer.
+            show_special_strings: Show special strings as their values.
+            highlight_in_net_color: Highlight a net in its own colour.
+            highlight_full: Highlight with a solid fill.
+            highlight_whole_net: Highlight every object of the net.
+            show_component_reference_point: Mark each part's origin.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        return await run_options("pcb.editor_options", _PCB_VIEW_OPTIONS, {
+            "show_pad_nets": show_pad_nets, "show_pad_numbers": show_pad_numbers,
+            "show_via_nets": show_via_nets, "show_test_points": show_test_points,
+            "single_layer_mode": single_layer_mode,
+            "show_special_strings": show_special_strings,
+            "highlight_in_net_color": highlight_in_net_color,
+            "highlight_full": highlight_full,
+            "highlight_whole_net": highlight_whole_net,
+            "show_component_reference_point": show_component_reference_point})
+
+    @mcp.tool()
+    async def pcb_edit_options(
+        rotation_step: Optional[float] = None,
+        protect_locked: Optional[bool] = None,
+        select_only_visible: Optional[bool] = None,
+        click_clears_selection: Optional[bool] = None,
+        double_click_runs_inspector: Optional[bool] = None,
+        snap_to_centre: Optional[bool] = None,
+        allow_duplicate_designators: Optional[bool] = None,
+        auto_pan: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, how the board editor behaves while editing.
+
+        These are Altium's own preferences and apply to every board. A
+        board must be open. Call with nothing to read; every option set
+        is read back. ``undo_levels`` is reported but cannot be set from
+        here (a write did not take on AD 26.11).
+
+        Args:
+            rotation_step: Degrees per rotate (Space), 0 or more.
+            protect_locked: Locked objects cannot be moved or deleted.
+            select_only_visible: Selection takes visible objects only.
+            click_clears_selection: A click on empty space clears the
+                selection.
+            double_click_runs_inspector: Double-click opens the
+                Inspector instead of the properties.
+            snap_to_centre: Objects are picked up by their centre.
+            allow_duplicate_designators: Parts may share a designator.
+            auto_pan: Pan the view when dragging to its edge.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        if rotation_step is not None and rotation_step < 0:
+            return {"ok": False, "reason": "rotation_step is 0 or more"}
+        return await run_options("pcb.editor_options", _PCB_EDIT_OPTIONS, {
+            "rotation_step": None if rotation_step is None else float(rotation_step),
+            "protect_locked": protect_locked,
+            "select_only_visible": select_only_visible,
+            "click_clears_selection": click_clears_selection,
+            "double_click_runs_inspector": double_click_runs_inspector,
+            "snap_to_centre": snap_to_centre,
+            "allow_duplicate_designators": allow_duplicate_designators,
+            "auto_pan": auto_pan})
 
     @mcp.tool()
     async def pcb_export_component_model(

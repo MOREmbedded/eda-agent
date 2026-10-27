@@ -16,6 +16,7 @@ from ..safety import refuse_process, untrusted_text_note
 from .pin_hints import pin_location_hint
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
+from .editor_options import run_options
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -285,6 +286,35 @@ async def _reopen_sheet(bridge) -> dict[str, Any]:
         return {"done": False, "reason": str(exc)}
 
 
+#: Schematic editor preferences: argument name to Altium's.
+_SCH_EDITOR_OPTIONS = {
+    "snap_to_electrical_grid": "SnapToHotSpot",
+    "electrical_grid_distance": "HotSpotGridDistance",
+    "drag_orthogonal": "MaintainOrthogonal",
+    "components_cut_wires": "ComponentsCutWires",
+    "optimize_wires": "OptimizePolylines",
+    "single_slash_negation": "SingleSlashNegation",
+    "convert_special_strings": "ConvertSpecialStrings",
+    "mark_manual_parameters": "MarkManualParameters",
+    "show_pin_direction": "ShowPinDirection",
+    "auto_zoom": "AutoZoom",
+    "click_clears_selection": "ClickClearsSelection",
+    "double_click_runs_inspector": "DoubleClickRunsInspector",
+    "undo_levels": "UndoRedoStackSize",
+    "pin_name_margin": "PinNameMargin",
+    "pin_number_margin": "PinNumberMargin",
+    "multi_part_naming": "MultiPartNamingMethod",
+    "increment_primary": "StringIncA",
+    "increment_secondary": "StringIncB",
+    "power_ground_name": "DefaultPowerGndName",
+    "signal_ground_name": "DefaultSignalGndName",
+    "earth_name": "DefaultEarthName",
+}
+
+#: The schematic options given in mils.
+_SCH_MARGINS = ("pin_name_margin", "pin_number_margin")
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -507,8 +537,10 @@ def register_generic_tools(mcp):
                 part LockStrings, NameAutoPosition and CommentAutoPosition
                 (Altium's anchor numbers; writing one moves the text
                 there), FootprintDescription, DefaultPCB3DModel
-                (PackageSpecificHash reads); on a board pad JumperID,
-                SwapID_Pad and SwapID_Part; on a pour DrawRemovedNecks,
+                (PackageSpecificHash reads), SourceDescription,
+                JumpersVisible, ChannelOffset and GroupNum; on a board
+                pad JumperID, SwapID_Pad, SwapID_Part, SwappedPadName and
+                OwnerPart_ID; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
@@ -526,7 +558,9 @@ def register_generic_tools(mcp):
                 Name_CustomPosition_Margin,
                 Name_CustomPosition_RotationAnchor,
                 Name_CustomPosition_RotationRelative and the same four
-                for Designator_ (Altium's numbers). Schematic parameters
+                for Designator_ (Altium's numbers), DefaultValue and
+                FormalType; schematic parts also LibraryPath (the library
+                the symbol came from) and AliasAsText. Schematic parameters
                 take ReadOnlyState, ParamType, AllowLibrarySynchronize
                 and AllowDatabaseSynchronize; ports take AutoSize,
                 OverrideDisplayString and HarnessColor. Symbol pins
@@ -2057,14 +2091,21 @@ def register_generic_tools(mcp):
         visible_grid: int = 0,
         snap_grid_on: Optional[bool] = None,
         visible_grid_on: Optional[bool] = None,
+        hotspot_grid: int = 0,
+        hotspot_grid_on: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Set the snap grid and/or visible grid for the active schematic.
+        """Set the snap, visible and electrical grids for the active
+        schematic. pcb_set_grids sets a board's grids.
 
         Args:
             snap_grid: Snap grid size in mils (0 = don't change)
             visible_grid: Visible grid size in mils (0 = don't change)
             snap_grid_on: Switch the snap grid on or off (None = don't change)
             visible_grid_on: Switch the visible grid on or off (None = don't change)
+            hotspot_grid: Electrical grid in mils, how far a wire end is
+                pulled onto a pin or wire (0 = don't change)
+            hotspot_grid_on: Switch the electrical grid on or off (None =
+                don't change)
 
         Returns:
             Dictionary with the resulting grid sizes and on/off state
@@ -2079,8 +2120,114 @@ def register_generic_tools(mcp):
             params["snap_grid_on"] = "true" if snap_grid_on else "false"
         if visible_grid_on is not None:
             params["visible_grid_on"] = "true" if visible_grid_on else "false"
+        if hotspot_grid > 0:
+            params["hotspot_grid"] = str(hotspot_grid)
+        if hotspot_grid_on is not None:
+            params["hotspot_grid_on"] = "true" if hotspot_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
         return result
+
+    @mcp.tool()
+    async def sch_editor_options(
+        snap_to_electrical_grid: Optional[bool] = None,
+        electrical_grid_distance: Optional[int] = None,
+        drag_orthogonal: Optional[bool] = None,
+        components_cut_wires: Optional[bool] = None,
+        optimize_wires: Optional[bool] = None,
+        single_slash_negation: Optional[bool] = None,
+        convert_special_strings: Optional[bool] = None,
+        mark_manual_parameters: Optional[bool] = None,
+        show_pin_direction: Optional[bool] = None,
+        auto_zoom: Optional[bool] = None,
+        click_clears_selection: Optional[bool] = None,
+        double_click_runs_inspector: Optional[bool] = None,
+        undo_levels: Optional[int] = None,
+        pin_name_margin: Optional[int] = None,
+        pin_number_margin: Optional[int] = None,
+        multi_part_naming: Optional[int] = None,
+        increment_primary: Optional[str] = None,
+        increment_secondary: Optional[str] = None,
+        power_ground_name: Optional[str] = None,
+        signal_ground_name: Optional[str] = None,
+        earth_name: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the schematic editor's preferences.
+
+        These are Altium's own preferences and apply to every sheet. Call
+        with nothing to read; every option set is read back.
+
+        Args:
+            snap_to_electrical_grid: Pull wire ends onto pins and wires.
+            electrical_grid_distance: How far they are pulled (Altium's
+                number).
+            drag_orthogonal: Wires stay at right angles when dragging.
+            components_cut_wires: A part dropped on a wire cuts it.
+            optimize_wires: Join and trim overlapping wires.
+            single_slash_negation: One leading backslash bars the
+                whole name.
+            convert_special_strings: Show special strings as values.
+            mark_manual_parameters: Mark parameters moved by hand.
+            show_pin_direction: Draw each pin's direction arrow.
+            auto_zoom: Zoom to a part found by a cross-probe.
+            click_clears_selection: A click on empty space clears it.
+            double_click_runs_inspector: Double-click opens the
+                Inspector.
+            undo_levels: How many steps undo keeps.
+            pin_name_margin: Gap between the body edge and a pin name,
+                in mils.
+            pin_number_margin: Gap from the body edge to a pin number,
+                in mils.
+            multi_part_naming: How multi-part designators are written
+                (Altium's number: U1A, U1:1 ...).
+            increment_primary: The step for repeated placement, e.g. "1".
+            increment_secondary: The second step, e.g. "1".
+            power_ground_name: Net name of a new power ground port.
+            signal_ground_name: Net name of a new signal ground port.
+            earth_name: Net name of a new earth port.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {
+            "snap_to_electrical_grid": snap_to_electrical_grid,
+            "electrical_grid_distance": electrical_grid_distance,
+            "drag_orthogonal": drag_orthogonal,
+            "components_cut_wires": components_cut_wires,
+            "optimize_wires": optimize_wires,
+            "single_slash_negation": single_slash_negation,
+            "convert_special_strings": convert_special_strings,
+            "mark_manual_parameters": mark_manual_parameters,
+            "show_pin_direction": show_pin_direction,
+            "auto_zoom": auto_zoom,
+            "click_clears_selection": click_clears_selection,
+            "double_click_runs_inspector": double_click_runs_inspector,
+            "undo_levels": undo_levels,
+            "pin_name_margin": pin_name_margin,
+            "pin_number_margin": pin_number_margin,
+            "multi_part_naming": multi_part_naming,
+            "increment_primary": increment_primary,
+            "increment_secondary": increment_secondary,
+            "power_ground_name": power_ground_name,
+            "signal_ground_name": signal_ground_name,
+            "earth_name": earth_name,
+        }
+        for key, value in values.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        # Altium keeps the pin margins at 10000 to the mil, like every
+        # schematic length (measured: its defaults read 500000 and 800000,
+        # 50 and 80 mils).
+        for key in _SCH_MARGINS:
+            if values[key] is not None:
+                values[key] = values[key] * 10000
+        reply = await run_options("generic.sch_editor_options", _SCH_EDITOR_OPTIONS, values)
+        options = reply.get("options") if isinstance(reply, dict) else None
+        if isinstance(options, dict):
+            for key in _SCH_MARGINS:
+                if isinstance(options.get(key), int):
+                    options[key] = options[key] / 10000
+        return reply
 
     @mcp.tool()
     async def sch_set_units(

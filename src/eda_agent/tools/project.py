@@ -3033,9 +3033,14 @@ def register_project_tools(mcp):
         been saved yet. A dirty doc means the netlist does NOT
         reflect what the user is looking at.
 
+        ``needs_compile`` and ``violation_count`` are Altium's own
+        answer: whether the project needs compiling now, and how many
+        violations its last compile left (-1 when it would not say).
+
         Returns:
-            Dict with compile_age_ms, compile_cached (bool), ttl_ms,
-            open_doc_count, dirty_doc_count, dirty_docs[], project.
+            Dict with compile_age_ms, needs_compile, violation_count,
+            compile_cached (bool), ttl_ms, open_doc_count,
+            dirty_doc_count, dirty_docs[], project.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(

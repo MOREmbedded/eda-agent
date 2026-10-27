@@ -7,8 +7,8 @@ impedance profiles, variant entries, net colours, the rule Altium applies,
 rule scopes, net clean-up, drill pairs, declared classes and rooms,
 sheet zones, xSignals, shared packages, part text positions, net naming
 objects, the library rule check, project setup, board grids, part model
-export, auto-save, and the extra board, pin, parameter and port
-properties. What each sends, what each refuses before Altium sees
+export, auto-save, board and schematic editor preferences, and the extra
+board, pin, parameter and port properties. What each sends, what each refuses before Altium sees
 it, and the Pascal shapes that keep a refused or missing call from
 passing for a success.
 """
@@ -357,7 +357,7 @@ def test_part_text_properties_write_through_the_moving_call():
     assert "Comp.ChangeCommentAutoposition(N)" in body
     assert "Comp.LockStrings := B" in body
     get = _body("PCBGeneric.pas", "PCBGetExtra")
-    assert "Result := Comp.PackageSpecificHash;" in get
+    assert "Result := Comp.PackageSpecificHash" in get
 
 
 def test_net_items_sends_and_refuses(monkeypatch):
@@ -717,3 +717,107 @@ def test_pour_and_text_extras_are_typed_and_converted_string_reads_only():
     refused = put[put.index("Result := -1;"):put.index("Owner := ExtraPCBPropertyOwner")]
     assert "'ConvertedString'" in refused
     assert "Txt.InvertedTTTextBorder := MilsToCoordF(F)" in put
+
+
+def test_board_view_and_edit_options_map_names_both_ways(monkeypatch):
+    tools, bridge = _tools(pcb, "register_pcb_tools", monkeypatch)
+
+    async def send(command, params, **kwargs):
+        bridge.sent.append((command, params))
+        return {"options": {"ShowPadNets": True, "SingleLayerMode": False},
+                "not_applied": ["SingleLayerMode"], "refused": []}
+
+    monkeypatch.setattr("eda_agent.tools.editor_options.get_bridge", lambda: bridge)
+    bridge.send_command_async = send
+    result = asyncio.run(tools["pcb_view_options"](show_pad_nets=True,
+                                                   single_layer_mode=False))
+    command, params = bridge.sent[0]
+    assert command == "pcb.editor_options"
+    assert params["set"] == "ShowPadNets=true|SingleLayerMode=false"
+    assert params["names"].split(",") == list(pcb._PCB_VIEW_OPTIONS.values())
+    assert result["options"] == {"show_pad_nets": True, "single_layer_mode": False}
+    assert result["not_applied"] == ["single_layer_mode"]
+    bridge.sent.clear()
+    asyncio.run(tools["pcb_edit_options"](rotation_step=45, auto_pan=False))
+    assert bridge.sent[0][1]["set"] == "RotationStep=45.0|AutoPan=false"
+    for kwargs in ({"rotation_step": -1},):
+        bridge.sent.clear()
+        result = asyncio.run(tools["pcb_edit_options"](**kwargs))
+        assert bridge.sent == [] and result["ok"] is False, kwargs
+
+
+def test_board_options_reach_only_names_the_script_knows():
+    kind = _body("PCB.pas", "PcbOptionKind")
+    for altium in list(pcb._PCB_VIEW_OPTIONS.values()) + list(pcb._PCB_EDIT_OPTIONS.values()):
+        assert f"'{altium}'" in kind, altium
+        if altium == "UndoRedoStackSize":
+            # Read only: a write did not take on AD 26.11.
+            assert "Opts.UndoRedoStackSize :=" not in _body("PCB.pas", "PcbOptionSet")
+            continue
+        assert f"Opts.{altium} := " in _body("PCB.pas", "PcbOptionSet"), altium
+    handler = _body("PCB.pas", "PCB_EditorOptions")
+    # The PCB server holds these and loads with the first board.
+    assert handler.index("GetPCBBoardAnywhere(0) = Nil") < handler.index(
+        "Opts := PCBServer.SystemOptions")
+
+
+def test_schematic_editor_options_map_names_and_refuse(monkeypatch):
+    tools, bridge = _tools(generic, "register_generic_tools", monkeypatch)
+    monkeypatch.setattr("eda_agent.tools.editor_options.get_bridge", lambda: bridge)
+    asyncio.run(tools["sch_editor_options"](power_ground_name="GND",
+                                            components_cut_wires=False,
+                                            pin_name_margin=5))
+    command, params = bridge.sent[0]
+    assert command == "generic.sch_editor_options"
+    assert params["set"] == ("ComponentsCutWires=false|PinNameMargin=50000|"
+                             "DefaultPowerGndName=GND")
+    for kwargs in ({"undo_levels": -1}, {"earth_name": "A|B"}):
+        bridge.sent.clear()
+        result = asyncio.run(tools["sch_editor_options"](**kwargs))
+        assert bridge.sent == [] and result["ok"] is False, kwargs
+    kind = _body("Generic.pas", "SchOptionKind")
+    for altium in generic._SCH_EDITOR_OPTIONS.values():
+        assert f"'{altium}'" in kind, altium
+        assert f"Prefs.{altium} := " in _body("Generic.pas", "SchOptionSet"), altium
+
+
+def test_sheet_grid_takes_the_electrical_grid(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch, "obj_set_grid",
+                    hotspot_grid=40, hotspot_grid_on=False)
+    assert sent == [("generic.set_grid", {"hotspot_grid": "40",
+                                          "hotspot_grid_on": "false"})]
+    body = _body("Generic.pas", "Gen_SetGrid")
+    assert "SchDoc.HotspotGridSize := MilsToCoordF(HotGrid);" in body
+    assert "BoolToJsonStr(SchDoc.HotspotGridOn)" in body
+
+
+def test_net_display_sends_colour_and_jumpers(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display",
+                    nets=["GND"], use_net_color=True, show_jumpers=False)
+    assert sent == [("pcb.net_display", {"nets": "GND", "use_net_color": "true",
+                                         "show_jumpers": "false"})]
+    body = _body("PCB.pas", "PCB_NetDisplay")
+    assert "Net.OverrideColorForDraw := (ColourStr = 'true');" in body
+    assert "Net.JumpersVisible := (JumperStr = 'true');" in body
+    assert "JsonBool('in_differential_pair', InPair)" in _body("PCB.pas", "NetDisplayJson")
+
+
+def test_compile_freshness_carries_altiums_own_answer():
+    body = _body("Project.pas", "Proj_GetCompileFreshness")
+    assert "Try NeedsCompile := Project.DM_NeedsCompile; Except End;" in body
+    assert "Try Violations := Project.DM_ExistingViolationCount; Except End;" in body
+
+
+def test_part_pad_and_pin_extras_are_typed():
+    owner = _body("PCBGeneric.pas", "ExtraPCBPropertyOwner")
+    part = owner[owner.index("'EnablePinSwapping'"):owner.index("Then Result := 6")]
+    for name in ("SourceDescription", "JumpersVisible", "ChannelOffset", "GroupNum"):
+        assert f"'{name}'" in part, name
+    pad = owner[owner.index("'JumperID'"):owner.index("Then Result := 7")]
+    assert "'SwappedPadName'" in pad and "'OwnerPart_ID'" in pad
+    sch = _body("Generic.pas", "SchExtraOwner")
+    assert sch.index("'DefaultValue'") < sch.index("Then Result := 1")
+    assert sch.index("'LibraryPath'") < sch.index("Then Result := 2")
+    # A part's library path and aliases are text, not switches.
+    is_bool = _body("Generic.pas", "SchExtraIsBool")
+    assert "(PropName <> 'LibraryPath') And (PropName <> 'AliasAsText')" in is_bool
