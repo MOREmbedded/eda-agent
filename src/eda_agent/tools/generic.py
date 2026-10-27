@@ -3121,20 +3121,23 @@ def register_generic_tools(mcp):
         y: int,
         net_name: str = "",
         probe_method: str = "probed_nets_only",
+        name: str = "",
     ) -> dict[str, Any]:
-        """Place a probe/measurement marker on the active schematic.
+        """Place a simulation voltage probe on the active schematic.
 
-        Probes mark nodes for SPICE/simulation output. Attach one to a
-        wire to declare "capture voltage / current at this point" in
-        simulation runs.
+        The probe measures the voltage of the net under it, so place it
+        on a wire. It is the probe Altium's Place > Probes > Voltage
+        makes: a simulation run reports and plots it, and
+        sim_get_probes lists it with the node it resolved to.
 
         Args:
-            x, y: Probe location in mils.
-            net_name: Optional explicit net label text.
-            probe_method: "probed_nets_only" (default) or "all_nets".
+            x, y: Probe location in mils, on a wire.
+            net_name: Echoed back; the net comes from the wire.
+            probe_method: Echoed back.
+            name: A name shown instead of the net's (ProbeCustomName).
 
         Returns:
-            Dict with success, x, y, net_name.
+            Dict with success, x, y, net_name, name, measures.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -3143,6 +3146,7 @@ def register_generic_tools(mcp):
                 "x": str(x), "y": str(y),
                 "net_name": net_name,
                 "probe_method": probe_method,
+                "name": name,
             },
         )
 

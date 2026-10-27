@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.46
+# Release verification: 2026.10.27.48
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -198,6 +198,8 @@ works elsewhere cannot be an undeclared identifier:
 | 51, sheet zones | `ObjectReferenceZone` on a sheet | no, nowhere | none, read only |
 | 52, unpoured pours | `GetDefaultName` on a polygon | no, nowhere | low, names an unnamed pour; ran live |
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
+| 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live |
+| 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -373,7 +375,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.46`, `version_match` =
+Expect `altium_script_version` = `2026.10.27.48`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -3077,6 +3079,49 @@ a footprint via's unreadable middle size reads null with
 Run live on AD 26.11.1.5 with that change's script on scratch copies;
 every document closed without saving and the files hashed the same
 before and after. All passed as described.
+
+---
+
+## 53. Simulation probes, the setup a run uses, a run for a sheet
+
+`sch_place_probe` places the probe Altium's Place > Probes > Voltage
+makes and takes `name`; `sim_get_probes` lists the probes on the
+project's sheets; `sim_get_setup` reports the analyses a run would do and
+their settings; `sim_run` runs a sheet's setup the way the Simulation
+Dashboard does, takes `analyses` and `sheet`, and reports `run_mode` and
+`ran_analyses`. The settings file reloads on AD 26.11, which reports it
+cannot.
+
+1. **Probe.** A probe placed by Altium's own command carried
+   SimulationProbe=V (shown), ProbeVoltage=True (hidden), ProbeName,
+   ProbeCustomName (hidden) and ProbeValueDisplay; the probe the script
+   placed before had only ProbeValueDisplay and the simulator passed it
+   over. Placed now on a wire of the Simulation Quick Start example's
+   first sheet with name NODE_A: `sim_get_probes` lists it as a
+   simulation probe of kind V, Altium resolved ProbeName to V_NetQ11_3,
+   and every analysis of the next run carried v(netq11_3). The old bare
+   probe is listed with `simulation` false.
+2. **Setup.** `sim_get_setup` on that sheet read `affect` Document, the
+   sheet's own settings, the analyses on, the DC sweep (R7, 100 to 1k,
+   step 1, output v(out)), transient and AC settings, and the run history.
+3. **Run for a sheet.** With only DC switched on in the file, the
+   project's first simulator output (the old form) ran operating point,
+   DC, transient and AC; the dashboard's form for the sheet ran DC alone.
+   After the project was reopened, OP only in the file gave OP alone.
+4. **Selection kept.** A later change of the switches, with the settings
+   document reloaded or closed, did not change what ran: Altium keeps the
+   selection it read at the first run after the project opened, and each
+   run turns OP, DC, transient and AC back on in its copy. `sim_run`
+   reports what ran from the results and, with `analyses`, says
+   `selection_applied` false and why.
+5. **Reload.** On AD 26.11 the settings document reports SupportsReload
+   False; asked to load anyway, it did: OP and AC written to the file,
+   reloaded, saved by Altium, read back OP and AC. Before, the refusal
+   stopped `sim_setup_analysis`.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch copy of
+Altium's Simulation Quick Start example; every document closed without
+saving. All passed as described.
 
 ---
 

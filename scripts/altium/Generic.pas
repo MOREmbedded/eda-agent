@@ -9734,16 +9734,42 @@ Begin
 End;
 
 {..............................................................................}
-{ Gen_PlaceProbe - Place an ISch_Probe marker for SPICE / simulation            }
-{ measurement nodes. Probe sits at a wire and names the node to measure.       }
-{ Params: x, y, net_name, probe_method (all_nets | probed_nets_only, default    }
-{         probed_nets_only)                                                    }
+{ AddProbeParam - Add one named parameter to a probe, offset from its spot.     }
+{..............................................................................}
+
+Procedure AddProbeParam(Probe : ISch_GraphicalObject; PName, PText : String;
+    Hidden : Boolean; DX, DY : Double);
+Var
+    Param : ISch_Parameter;
+Begin
+    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+    If Param = Nil Then Exit;
+    Param.Name := PName;
+    Param.Text := PText;
+    Try Param.IsHidden := Hidden; Except End;
+    Try Param.Location := Point(Probe.Location.X + MilsToCoordF(DX),
+        Probe.Location.Y + MilsToCoordF(DY)); Except End;
+    Probe.AddSchObject(Param);
+    SchRegisterObject(Probe, Param);
+End;
+
+{..............................................................................}
+{ Gen_PlaceProbe - Place a simulation voltage probe on a wire.                  }
+{ Params: x, y, name (shown instead of the net name), net_name and            }
+{         probe_method (echoed back).                                         }
+{                                                                              }
+{ MEASURED on AD 26.11: Altium's own voltage probe (Sch:PlaceProbe with       }
+{ ProbeType=SimulationProbe|MeasurementType=Voltage) is a probe carrying the  }
+{ parameters SimulationProbe=V (shown), ProbeVoltage=True (hidden),           }
+{ ProbeName, ProbeCustomName (hidden) and ProbeValueDisplay. A bare probe got  }
+{ only ProbeValueDisplay, and the simulator, which finds probes by their      }
+{ SimulationProbe parameter, passed it over.                                  }
 {..............................................................................}
 
 Function Gen_PlaceProbe(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
-    NetName, MethodStr : String;
+    NetName, MethodStr, CustomName : String;
     SchDoc : ISch_Document;
     Probe : ISch_GraphicalObject;
 Begin
@@ -9751,6 +9777,7 @@ Begin
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     NetName := ExtractJsonValue(Params, 'net_name');
     MethodStr := LowerCase(ExtractJsonValue(Params, 'probe_method'));
+    CustomName := ExtractJsonValue(Params, 'name');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -9771,11 +9798,13 @@ Begin
     { ISch_Probe exposes essentially nothing settable from DelphiScript:
       ``Text``, ``NetName`` and ``ProbeMethod`` all raise "Undeclared
       identifier" at compile (Try/Except cannot catch). The probe
-      auto-picks up the net of the wire it lands on, and the default
-      probe method ("probed nets only") is what we want anyway.
-      ``net_name`` and ``probe_method`` from the request are accepted
-      for forward compatibility but currently echoed back in the
-      response without being applied. }
+      picks up the net of the wire it lands on. ``net_name`` and
+      ``probe_method`` are echoed back without being applied. What makes
+      it a simulation probe is its parameters, set as Altium sets them. }
+    AddProbeParam(Probe, 'SimulationProbe', 'V', False, 100, 100);
+    AddProbeParam(Probe, 'ProbeVoltage', 'True', True, 0, 200);
+    AddProbeParam(Probe, 'ProbeName', '', False, 0, 100);
+    AddProbeParam(Probe, 'ProbeCustomName', CustomName, True, 0, 100);
 
     SchDoc.RegisterSchObjectInContainer(Probe);
     SchRegisterObject(SchDoc, Probe);
@@ -9792,7 +9821,118 @@ Begin
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y)
-        + ',"net_name":"' + EscapeJsonString(NetName) + '"}');
+        + ',"net_name":"' + EscapeJsonString(NetName) + '",'
+        + '"name":"' + EscapeJsonString(CustomName) + '","measures":"voltage"}');
+End;
+
+{..............................................................................}
+{ ProbeJson - One probe: where it is and every parameter it carries.          }
+{..............................................................................}
+
+Function ProbeJson(Probe : ISch_GraphicalObject; SheetPath : String) : String;
+Var
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+    ParamsJson, Kind : String;
+    First : Boolean;
+Begin
+    ParamsJson := '';
+    Kind := '';
+    First := True;
+    Iter := Probe.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If Not First Then ParamsJson := ParamsJson + ',';
+            First := False;
+            ParamsJson := ParamsJson + '"' + EscapeJsonString(Param.Name) + '":"'
+                + EscapeJsonString(Param.Text) + '"';
+            If SameText(Param.Name, 'SimulationProbe') Then Kind := Param.Text;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Probe.SchIterator_Destroy(Iter);
+    End;
+    Result := '{"sheet":"' + EscapeJsonString(SheetPath) + '",'
+        + '"x":' + FloatToJsonStr(CoordToMilsF(Probe.Location.X)) + ','
+        + '"y":' + FloatToJsonStr(CoordToMilsF(Probe.Location.Y)) + ','
+        + JsonBool('simulation', Kind <> '') + ','
+        + '"kind":"' + EscapeJsonString(Kind) + '",'
+        + '"parameters":{' + ParamsJson + '}}';
+End;
+
+{..............................................................................}
+{ Gen_GetProbes - Every probe on the focused project's sheets.                 }
+{ Params: none.                                                               }
+{                                                                              }
+{ Each probe with its location and parameters: SimulationProbe (V, I, P, VD+  }
+{ or VD-) marks one the simulator uses, ProbeName is the node Altium resolved }
+{ ("Empty Probe" off a wire), ProbeCustomName the name shown instead, and     }
+{ ProbeValueDisplay the value shown on the sheet. A sheet that is not open is }
+{ listed in not_loaded rather than read.                                      }
+{..............................................................................}
+
+Function Gen_GetProbes(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Probe : ISch_GraphicalObject;
+    I, Count : Integer;
+    Items, NotLoaded, SheetPath : String;
+Begin
+    Project := Nil;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'No focused project. Activate one of the project''s schematic sheets first.');
+        Exit;
+    End;
+
+    Items := '';
+    NotLoaded := '';
+    Count := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        If Doc.DM_DocumentKind <> 'SCH' Then Continue;
+        SheetPath := Doc.DM_FullPath;
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            If NotLoaded <> '' Then NotLoaded := NotLoaded + ',';
+            NotLoaded := NotLoaded + '"' + EscapeJsonString(SheetPath) + '"';
+            Continue;
+        End;
+        Iter := SchDoc.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eProbe));
+            Probe := Iter.FirstSchObject;
+            While Probe <> Nil Do
+            Begin
+                If Count > 0 Then Items := Items + ',';
+                Items := Items + ProbeJson(Probe, SheetPath);
+                Inc(Count);
+                Probe := Iter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(Iter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '",'
+        + '"count":' + IntToStr(Count) + ','
+        + '"probes":[' + Items + '],'
+        + '"not_loaded":[' + NotLoaded + ']}');
 End;
 
 {..............................................................................}
@@ -10732,9 +10872,10 @@ End;
 {..............................................................................}
 { Gen_RunSimulation - Run the focused project's mixed-signal simulation and    }
 { report the results document it produced.                                   }
-{ Params: analysis (optional label, echoed back). The analyses come from the  }
-{         project's simulation setup; a project without one runs Altium's    }
-{         default, an operating point.                                       }
+{ Params: analysis (optional label, echoed back), sheet (the schematic whose  }
+{         settings to run; empty uses the sheet in front). The analyses come }
+{         from the project's simulation setup; a project without one runs    }
+{         Altium's default, an operating point.                              }
 {                                                                              }
 { MEASURED on AD 26.10.1.6: Sim:RunMixedSim, sent here before, is not a       }
 { process on this build. It ran nothing, wrote nothing, raised no message,   }
@@ -10742,6 +10883,15 @@ End;
 { is WorkspaceManager:GenerateReport with ObjectKind=Simulator, Index=1 and  }
 { Action=Run: the first simulator output of the project. A run opens its     }
 { results as a .sdf document and focuses it, so that is the proof it ran.    }
+{                                                                              }
+{ MEASURED on AD 26.11: that run did operating point, DC sweep, transient and }
+{ AC whatever the setup's on/off switches said. The Simulation Dashboard's   }
+{ run adds Kind=AdvSimNetlist and SimulationDashboardConfig=Document=<sheet>, }
+{ and with it only the analyses switched on ran (DC sweep alone, on the same }
+{ setup). Altium reads that selection at the first run after the project     }
+{ opens and keeps it until the project is reopened. So a run for a sheet    }
+{ uses the dashboard's form, and the first simulator output is used only    }
+{ when no sheet is given or in front.                                       }
 {..............................................................................}
 
 Function Gen_RunSimulation(Params : String; RequestId : String) : String;
@@ -10749,10 +10899,11 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     ServerDoc : IServerDocument;
-    AnalysisStr, Before, After, SavedStr : String;
+    AnalysisStr, Before, After, SavedStr, Sheet, RunMode : String;
     OldAge, NewAge : Integer;
 Begin
     AnalysisStr := ExtractJsonValue(Params, 'analysis');
+    Sheet := ExtractJsonValue(Params, 'sheet');
 
     Project := Nil;
     Workspace := GetWorkspace;
@@ -10766,10 +10917,26 @@ Begin
     SmartCompile(Project);
 
     Before := CurrentFocusedDocPath(0);
+    If (Sheet = '') And SameText(ExtractFileExt(Before), '.SchDoc') Then Sheet := Before;
     ResetParameters;
     AddStringParameter('ObjectKind', 'Simulator');
-    AddStringParameter('Index', '1');
-    AddStringParameter('Action', 'Run');
+    If Sheet <> '' Then
+    Begin
+        RunMode := 'sheet';
+        AddStringParameter('Kind', 'AdvSimNetlist');
+        AddStringParameter('DoEditProperties', 'False');
+        AddStringParameter('DoReportStatus', 'False');
+        AddStringParameter('Action', 'Run');
+        AddStringParameter('DefaultCaption', 'True');
+        AddStringParameter('ReturnGeneratedDocuments', 'False');
+        AddStringParameter('SimulationDashboardConfig', 'Document=' + Sheet);
+    End
+    Else
+    Begin
+        RunMode := 'project';
+        AddStringParameter('Index', '1');
+        AddStringParameter('Action', 'Run');
+    End;
     RunProcess('WorkspaceManager:GenerateReport');
     After := CurrentFocusedDocPath(0);
 
@@ -10809,6 +10976,7 @@ Begin
         '{"success":true,"ran":true,"analysis":"' + EscapeJsonString(AnalysisStr) + '",'
         + '"results_document":"' + EscapeJsonString(After) + '",'
         + '"results_saved":' + SavedStr + ','
+        + '"run_mode":"' + RunMode + '","sheet":"' + EscapeJsonString(Sheet) + '",'
         + '"note":"The analyses come from the project''s simulation setup."}');
 End;
 
@@ -10948,12 +11116,8 @@ Begin
     End
     Else
     Begin
-        If Not ServerDoc.SupportsReload Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'RELOAD_UNSUPPORTED',
-                'Altium does not reload this document: ' + FilePath);
-            Exit;
-        End;
+        { AD 26.11 reports SupportsReload False for a settings file, yet }
+        { the document loads its file again when asked.                 }
         Try Done := ServerDoc.DoFileLoad; Except Done := False; End;
         { Without this Altium still holds the old file date and asks to }
         { reload a second time.                                         }
@@ -15233,6 +15397,7 @@ Begin
         'set_component_unique_id':    Result := Gen_SetComponentUniqueId(Params, RequestId);
         'replicate_sch_component':    Result := Gen_ReplicateSchComponent(Params, RequestId);
         'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
+        'get_probes':                 Result := Gen_GetProbes(Params, RequestId);
         'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
         'get_simulation_readiness':   Result := Gen_GetSimulationReadiness(Params, RequestId);
         'attach_spice_primitive':     Result := Gen_AttachSpicePrimitive(Params, RequestId);

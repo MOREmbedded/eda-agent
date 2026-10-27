@@ -442,7 +442,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "any",
         "backends": ("altium",),
         "use": ["sim_run_deck", "sim_get_results", "sim_get_readiness",
-                "sim_setup_analysis", "sim_run"],
+                "sim_setup_analysis", "sim_run", "sim_get_setup",
+                "sim_get_probes", "sch_place_probe"],
         "avoid": [
             ("sim_attach_primitives", "it writes parameters, not the model "
                                       "link Altium needs, so a sheet of your "
@@ -455,8 +456,11 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "line, .END) in Altium's simulator and opens the waves as a "
             "chart; the reply gives each wave's min, max and final value. "
             "sim_run runs a schematic whose parts all carry simulation "
-            "models, such as Altium's own simulation examples. An IC's "
-            "behaviour needs its vendor's SPICE model."),
+            "models, such as Altium's own simulation examples; "
+            "sim_run(analyses=[\"dc\"]) runs only the analyses named, and "
+            "sim_get_setup shows what a run would do. sch_place_probe puts "
+            "a voltage probe on a wire and sim_get_probes lists the probes. "
+            "An IC's behaviour needs its vendor's SPICE model."),
     },
     {
         "task": "Place parts in a ring or on an arc (LED rings, round boards)",
