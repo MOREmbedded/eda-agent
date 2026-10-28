@@ -1217,8 +1217,9 @@ def register_uiauto_tools(mcp):
                 window.
 
         Returns:
-            ``{"ok": true, "path": ..., "hwnd": ...}``. Read the file to
-            look at it.
+            ``ok``, ``path``, ``hwnd``, and the picture's ``width`` and
+            ``height`` in pixels; it is the window at its real size, so
+            things can be measured on it. Read the file to look at it.
         """
         import os
         import time as _time
@@ -1256,7 +1257,14 @@ def register_uiauto_tools(mcp):
         os.makedirs(folder, exist_ok=True)
         if not ocr.capture_png(target, path):
             return {"ok": False, "reason": "capture failed", "path": path}
-        return {"ok": True, "path": path, "hwnd": target,
+        pixels: dict[str, int] = {}
+        try:
+            from PIL import Image
+            with Image.open(path) as picture:
+                pixels = dict(zip(("width", "height"), picture.size))
+        except Exception:  # noqa: BLE001 - the file is the answer; its size is a bonus
+            pass
+        return {"ok": True, "path": path, "hwnd": target, **pixels,
                 "created_folder": created_folder,
                 "note": "read the file to look at it"}
 

@@ -33,7 +33,7 @@ def test_a_named_project_is_found_before_anything_is_created():
 def test_the_document_goes_to_that_project_only():
     body = load(_ALT / "Application.pas", minimum=20)["App_CreateDocument"]
     start = body.index("Added := False;")
-    add = body[start:body.index("If Not Saved Then", start)]
+    add = body[start:body.index("If Added Then ProjSaved", start)]
     assert "Project.DM_AddSourceDocument(FilePath);" in add
     assert "DM_FocusedProject" not in add
 
@@ -107,9 +107,10 @@ def _run(module, register, tool, monkeypatch, *args, **kw):
     return bridge.params
 
 
-def test_the_create_tool_sends_the_project(monkeypatch):
+def test_the_create_tool_sends_the_project(monkeypatch, tmp_path):
+    # A real folder: a missing one is refused before anything is sent.
     sent = _run(app_tools, "register_application_tools", "app_create_document",
-                monkeypatch, "SCH", r"C:\t\x.SchDoc",
+                monkeypatch, "SCH", str(tmp_path / "x.SchDoc"),
                 project_path=r"C:\t\Scratch.PrjPcb")
     assert sent["project_path"] == r"C:\t\Scratch.PrjPcb"
 

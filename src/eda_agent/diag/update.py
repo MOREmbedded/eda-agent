@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+from ..noconsole import no_window
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,7 +77,7 @@ def _run_git(args: list[str], cwd: Path,
     try:
         completed = subprocess.run(
             ["git"] + args, cwd=str(cwd), capture_output=True, text=True,
-            timeout=timeout, check=False)
+            timeout=timeout, check=False, **no_window())
     except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:

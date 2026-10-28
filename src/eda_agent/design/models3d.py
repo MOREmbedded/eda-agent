@@ -35,6 +35,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from ..noconsole import no_window
+
 __all__ = [
     "Solid",
     "ModelPlan",
@@ -720,7 +722,8 @@ def _write_freecad(plan: ModelPlan, path: Path) -> None:
         script.write_text(_FREECAD_SCRIPT, encoding="utf-8")
         data.write_text(json.dumps(plan.to_dict()), encoding="utf-8")
         proc = subprocess.run([exe, str(script), str(data), str(path)],
-                              capture_output=True, text=True, timeout=180)
+                              capture_output=True, text=True, timeout=180,
+                              **no_window())
         if not path.is_file():
             raise RuntimeError("freecadcmd wrote no STEP: "
                                + (proc.stderr or proc.stdout)[-400:])

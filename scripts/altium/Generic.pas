@@ -260,7 +260,7 @@ End;
 
 { NO-ERC MARKERS: what they suppress. ISch_NoERC carries IsActive,         }
 { SuppressAll, StrErrorKindSetToSuppress, StrConnectionPairsToSuppress and  }
-{ StrSuppressableErrors (Altium.SDK.Interfaces.dll). Read here under the   }
+{ StrSuppressableErrors. Read here under the                              }
 { names ErrorKindSetToSuppress, ConnectionPairsToSuppress and              }
 { SuppressableErrors. Callers check the type first: the names exist on no  }
 { other object, and an undeclared one halts the loop.                      }
@@ -404,7 +404,7 @@ End;
 { FontId belongs to ISch_Label and the types built on it (net labels,
   power objects, cross-sheet connectors, parameters, designators, sheet
   names and file names), to ISch_Port and to ISch_TextFrame (text frames,
-  notes): the interfaces Altium.SDK.Interfaces.dll gives Get/SetState_FontId.
+  notes): the interfaces that carry Get/SetState_FontId.
   On a sheet entry it raised an undeclared-identifier modal and stopped the
   polling loop (AD 25.8), so this is an allowlist. }
 Function SchObjectHasFontId(Obj : ISch_GraphicalObject) : Boolean;
@@ -427,6 +427,77 @@ Begin
     Result := (Obj.ObjectId = eSheetEntry) Or (Obj.ObjectId = eHarnessEntry);
 End;
 
+{ The font that most objects of one kind on a sheet carry (TextFontID for }
+{ a sheet entry, FontId for the other kinds that have one); 0 when the    }
+{ sheet has no such object.                                                }
+Function SheetFontFor(SchDoc : ISch_Document; Kind : Integer) : Integer;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Entry : ISch_SheetEntry;
+    Fonts, Hits : TStringList;
+    At, Most, FontPick : Integer;
+Begin
+    Result := 0;
+    If SchDoc = Nil Then Exit;
+    { Fonts holds each font id seen once; Hits, at the same index, how often. }
+    Fonts := TStringList.Create;
+    Hits := TStringList.Create;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(Kind));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            FontPick := 0;
+            If SchObjectHasTextFontId(Obj) Then
+            Begin
+                Entry := Obj;
+                Try FontPick := Entry.TextFontID; Except FontPick := 0; End;
+            End
+            Else If SchObjectHasFontId(Obj) Then
+            Begin
+                Try FontPick := Obj.FontId; Except FontPick := 0; End;
+            End;
+            If FontPick > 0 Then
+            Begin
+                At := Fonts.IndexOf(IntToStr(FontPick));
+                If At >= 0 Then
+                    Hits.Strings[At] := IntToStr(StrToInt(Hits.Strings[At]) + 1)
+                Else
+                Begin
+                    Fonts.Add(IntToStr(FontPick));
+                    Hits.Add('1');
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+        Most := 0;
+        For At := 0 To Fonts.Count - 1 Do
+            If StrToInt(Hits.Strings[At]) > Most Then
+            Begin
+                Most := StrToInt(Hits.Strings[At]);
+                Result := StrToInt(Fonts.Strings[At]);
+            End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+        Fonts.Free;
+        Hits.Free;
+    End;
+End;
+
+{ Which font a new port, power port, text frame or sheet entry gets: the   }
+{ font_id asked for; otherwise what that kind already uses on the sheet;  }
+{ otherwise the sheet's net-label font. 0 keeps Altium's default (font 1,  }
+{ Times New Roman 10), which every new object used to get. Called before  }
+{ the object is made, so it does not count itself.                       }
+Function NewObjectFontId(SchDoc : ISch_Document; Kind : Integer; Params : String) : Integer;
+Begin
+    Result := StrToIntDef(ExtractJsonValue(Params, 'font_id'), 0);
+    If Result <= 0 Then Result := SheetFontFor(SchDoc, Kind);
+    If (Result <= 0) And (Kind <> eNetLabel) Then Result := SheetFontFor(SchDoc, eNetLabel);
+End;
+
 { Only these types answer to Name. Anything else (a free text, a note,
   a net label) faults with an undeclared-identifier modal that
   Try/Except cannot contain, which stops the bridge (issue #74). This is
@@ -439,6 +510,286 @@ Begin
         Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
         Or (Obj.ObjectId = eHarnessEntry)
         Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName);
+End;
+
+{ SCHEMATIC PROPERTIES OF ONE OBJECT TYPE.                                    }
+{ Pins: the four pin symbols and their line width (Altium's numbers),        }
+{ HiddenNetName, and DefinedFunctions (the pin's functions, ';'-separated;   }
+{ writing replaces the list). Parts: ShowHiddenPins, ShowHiddenFields,       }
+{ PinsMoveable, PartIdLocked, DisplayFieldNames, OverideColors (Altium's     }
+{ spelling) and PinColor. Pins also: where the name and designator sit      }
+{ (Name_PositionMode, Name_CustomPosition_Margin, ..._RotationAnchor,        }
+{ ..._RotationRelative, and the same for Designator_). Parameters:          }
+{ ReadOnlyState, ParamType, AllowLibrarySynchronize,                        }
+{ AllowDatabaseSynchronize. Ports: AutoSize, OverrideDisplayString,         }
+{ HarnessColor, ConnectedEnd (read only: 0 none, 1 the port's location end, }
+{ 2 the far end, 3 both). Parameters also report NameIsReadOnly, ValueIsReadOnly,     }
+{ IsRule, IsSystemParameter and IsConfigurable (read only).                 }
+{ Pins also DefaultValue and FormalType; parts also                         }
+{ LibraryPath (the library the symbol came from) and AliasAsText.           }
+
+{ 1 a pin property, 2 a part property, 3 a parameter property, 4 a port     }
+{ property, 0 none of these.                                                }
+Function SchExtraOwner(PropName : String) : Integer;
+Begin
+    Result := 0;
+    If (PropName = 'Symbol_Inner') Or (PropName = 'Symbol_Outer') Or
+       (PropName = 'Symbol_InnerEdge') Or (PropName = 'Symbol_OuterEdge') Or
+       (PropName = 'Symbol_LineWidth') Or (PropName = 'HiddenNetName') Or
+       (PropName = 'DefinedFunctions') Or
+       (PropName = 'Name_PositionMode') Or (PropName = 'Name_CustomPosition_Margin') Or
+       (PropName = 'Name_CustomPosition_RotationAnchor') Or
+       (PropName = 'Name_CustomPosition_RotationRelative') Or
+       (PropName = 'Designator_PositionMode') Or
+       (PropName = 'Designator_CustomPosition_Margin') Or
+       (PropName = 'Designator_CustomPosition_RotationAnchor') Or
+       (PropName = 'Designator_CustomPosition_RotationRelative') Or
+       (PropName = 'DefaultValue') Or (PropName = 'FormalType') Then Result := 1
+    Else If (PropName = 'ShowHiddenPins') Or (PropName = 'ShowHiddenFields') Or
+       (PropName = 'PinsMoveable') Or (PropName = 'PartIdLocked') Or
+       (PropName = 'DisplayFieldNames') Or (PropName = 'OverideColors') Or
+       (PropName = 'PinColor') Or (PropName = 'LibraryPath') Or
+       (PropName = 'AliasAsText') Then Result := 2
+    Else If (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
+       (PropName = 'AllowLibrarySynchronize') Or
+       (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'NameIsReadOnly') Or
+       (PropName = 'ValueIsReadOnly') Or (PropName = 'IsRule') Or
+       (PropName = 'IsSystemParameter') Or (PropName = 'IsConfigurable') Then Result := 3
+    Else If (PropName = 'AutoSize') Or (PropName = 'OverrideDisplayString') Or
+       (PropName = 'HarnessColor') Or (PropName = 'ConnectedEnd') Then Result := 4;
+End;
+
+{ True when Obj is the type that carries PropName. }
+Function SchExtraFits(Obj : ISch_GraphicalObject; PropName : String) : Boolean;
+Var
+    Owner : Integer;
+Begin
+    Owner := SchExtraOwner(PropName);
+    Result := ((Owner = 1) And (Obj.ObjectId = ePin))
+        Or ((Owner = 2) And (Obj.ObjectId = eSchComponent))
+        Or ((Owner = 3) And (Obj.ObjectId = eParameter))
+        Or ((Owner = 4) And (Obj.ObjectId = ePort));
+End;
+
+{ A whole-number extra (0 or more), a true / false one, or neither (text). }
+Function SchExtraIsInt(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Symbol_Inner') Or (PropName = 'Symbol_Outer') Or
+        (PropName = 'Symbol_InnerEdge') Or (PropName = 'Symbol_OuterEdge') Or
+        (PropName = 'Symbol_LineWidth') Or (PropName = 'PinColor') Or
+        (PropName = 'Name_PositionMode') Or (PropName = 'Name_CustomPosition_Margin') Or
+        (PropName = 'Name_CustomPosition_RotationAnchor') Or
+        (PropName = 'Name_CustomPosition_RotationRelative') Or
+        (PropName = 'Designator_PositionMode') Or
+        (PropName = 'Designator_CustomPosition_Margin') Or
+        (PropName = 'Designator_CustomPosition_RotationAnchor') Or
+        (PropName = 'Designator_CustomPosition_RotationRelative') Or
+        (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
+        (PropName = 'HarnessColor') Or (PropName = 'FormalType') Or
+        (PropName = 'ConnectedEnd');
+End;
+
+Function SchExtraIsBool(PropName : String) : Boolean;
+Begin
+    Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor')
+            And (PropName <> 'LibraryPath') And (PropName <> 'AliasAsText'))
+        Or (PropName = 'AllowLibrarySynchronize') Or
+        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize');
+End;
+
+{ A pin's functions, ';'-separated. }
+Function PinFunctionsText(Pin : ISch_Pin) : String;
+Var
+    I, Count : Integer;
+    Item : String;
+Begin
+    Result := '';
+    { GetDefinedFunction counts from 1 (measured on AD 26.11: index 0      }
+    { answers nothing and the last function is at Count).                  }
+    Count := Pin.GetDefinedFunctionsCount;
+    For I := 1 To Count Do
+    Begin
+        Item := '';
+        Try Item := Pin.GetDefinedFunction(I); Except Item := ''; End;
+        If Item = '' Then Continue;
+        If Result <> '' Then Result := Result + ';';
+        Result := Result + Item;
+    End;
+End;
+
+{ The value, '' when Obj is not the type that carries it. }
+Function SchGetExtra(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    Pin : ISch_Pin;
+    Comp : ISch_Component;
+    Par : ISch_Parameter;
+    Port : ISch_Port;
+Begin
+    Result := '';
+    If Not SchExtraFits(Obj, PropName) Then Exit;
+    If Obj.ObjectId = ePin Then
+    Begin
+        Pin := Obj;
+        If PropName = 'Symbol_Inner' Then Result := IntToStr(Pin.Symbol_Inner)
+        Else If PropName = 'Symbol_Outer' Then Result := IntToStr(Pin.Symbol_Outer)
+        Else If PropName = 'Symbol_InnerEdge' Then Result := IntToStr(Pin.Symbol_InnerEdge)
+        Else If PropName = 'Symbol_OuterEdge' Then Result := IntToStr(Pin.Symbol_OuterEdge)
+        Else If PropName = 'Symbol_LineWidth' Then Result := IntToStr(Pin.Symbol_LineWidth)
+        Else If PropName = 'HiddenNetName' Then Result := Pin.HiddenNetName
+        Else If PropName = 'DefinedFunctions' Then Result := PinFunctionsText(Pin)
+        Else If PropName = 'Name_PositionMode' Then Result := IntToStr(Pin.Name_PositionMode)
+        Else If PropName = 'Name_CustomPosition_Margin' Then Result := IntToStr(Pin.Name_CustomPosition_Margin)
+        Else If PropName = 'Name_CustomPosition_RotationAnchor' Then Result := IntToStr(Pin.Name_CustomPosition_RotationAnchor)
+        Else If PropName = 'Name_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Name_CustomPosition_RotationRelative)
+        Else If PropName = 'Designator_PositionMode' Then Result := IntToStr(Pin.Designator_PositionMode)
+        Else If PropName = 'Designator_CustomPosition_Margin' Then Result := IntToStr(Pin.Designator_CustomPosition_Margin)
+        Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationAnchor)
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Result := IntToStr(Pin.Designator_CustomPosition_RotationRelative)
+        Else If PropName = 'DefaultValue' Then Result := Pin.DefaultValue
+        Else If PropName = 'FormalType' Then Result := IntToStr(Pin.FormalType);
+    End
+    Else If Obj.ObjectId = eParameter Then
+    Begin
+        Par := Obj;
+        If PropName = 'ReadOnlyState' Then Result := IntToStr(Par.ReadOnlyState)
+        Else If PropName = 'ParamType' Then Result := IntToStr(Par.ParamType)
+        Else If PropName = 'AllowLibrarySynchronize' Then Result := BoolToJsonStr(Par.AllowLibrarySynchronize)
+        Else If PropName = 'AllowDatabaseSynchronize' Then Result := BoolToJsonStr(Par.AllowDatabaseSynchronize)
+        Else If PropName = 'NameIsReadOnly' Then Result := BoolToJsonStr(Par.NameIsReadOnly)
+        Else If PropName = 'ValueIsReadOnly' Then Result := BoolToJsonStr(Par.ValueIsReadOnly)
+        Else If PropName = 'IsRule' Then Result := BoolToJsonStr(Par.IsRule)
+        Else If PropName = 'IsSystemParameter' Then Result := BoolToJsonStr(Par.IsSystemParameter)
+        Else If PropName = 'IsConfigurable' Then Result := BoolToJsonStr(Par.IsConfigurable);
+    End
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        Port := Obj;
+        If PropName = 'AutoSize' Then Result := BoolToJsonStr(Port.AutoSize)
+        Else If PropName = 'OverrideDisplayString' Then Result := Port.OverrideDisplayString
+        Else If PropName = 'HarnessColor' Then Result := IntToStr(Port.HarnessColor)
+        Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd);
+    End
+    Else
+    Begin
+        Comp := Obj;
+        If PropName = 'ShowHiddenPins' Then Result := BoolToJsonStr(Comp.ShowHiddenPins)
+        Else If PropName = 'ShowHiddenFields' Then Result := BoolToJsonStr(Comp.ShowHiddenFields)
+        Else If PropName = 'PinsMoveable' Then Result := BoolToJsonStr(Comp.PinsMoveable)
+        Else If PropName = 'PartIdLocked' Then Result := BoolToJsonStr(Comp.PartIdLocked)
+        Else If PropName = 'DisplayFieldNames' Then Result := BoolToJsonStr(Comp.DisplayFieldNames)
+        Else If PropName = 'OverideColors' Then Result := BoolToJsonStr(Comp.OverideColors)
+        Else If PropName = 'PinColor' Then Result := IntToStr(Comp.PinColor)
+        Else If PropName = 'LibraryPath' Then Result := Comp.LibraryPath
+        Else If PropName = 'AliasAsText' Then Result := Comp.AliasAsText;
+    End;
+End;
+
+{ Write, then read back: True only when the value read equals the value     }
+{ asked for. A number property refuses a value that is not a whole number,  }
+{ a switch one that is not true / false.                                    }
+Function SchSetExtra(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    Pin : ISch_Pin;
+    Comp : ISch_Component;
+    Par : ISch_Parameter;
+    Port : ISch_Port;
+    Rest, Item, Wanted : String;
+    SemiPos, N : Integer;
+    B, IsBool, IsInt : Boolean;
+Begin
+    Result := False;
+    If Not SchExtraFits(Obj, PropName) Then Exit;
+    { Read only: what Altium says about the parameter, not a setting. }
+    If (PropName = 'NameIsReadOnly') Or (PropName = 'ValueIsReadOnly') Or
+       (PropName = 'IsRule') Or (PropName = 'IsSystemParameter') Or
+       (PropName = 'IsConfigurable') Then Exit;
+    { Altium works out which end of a port is wired; a write did not hold. }
+    If PropName = 'ConnectedEnd' Then Exit;
+    IsInt := SchExtraIsInt(PropName);
+    IsBool := SchExtraIsBool(PropName);
+    N := 0;
+    B := False;
+    If IsInt Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
+    End
+    Else If IsBool Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End;
+    If Obj.ObjectId = ePin Then
+    Begin
+        Pin := Obj;
+        If PropName = 'Symbol_Inner' Then Pin.Symbol_Inner := N
+        Else If PropName = 'Symbol_Outer' Then Pin.Symbol_Outer := N
+        Else If PropName = 'Symbol_InnerEdge' Then Pin.Symbol_InnerEdge := N
+        Else If PropName = 'Symbol_OuterEdge' Then Pin.Symbol_OuterEdge := N
+        Else If PropName = 'Symbol_LineWidth' Then Pin.Symbol_LineWidth := N
+        Else If PropName = 'HiddenNetName' Then Pin.HiddenNetName := Value
+        Else If PropName = 'DefinedFunctions' Then
+        Begin
+            Pin.ClearDefinedFunctions;
+            Wanted := '';
+            Rest := Value;
+            While Rest <> '' Do
+            Begin
+                SemiPos := Pos(';', Rest);
+                If SemiPos = 0 Then Begin Item := Rest; Rest := ''; End
+                Else Begin Item := Copy(Rest, 1, SemiPos - 1); Rest := Copy(Rest, SemiPos + 1, Length(Rest)); End;
+                If Trim(Item) <> '' Then
+                Begin
+                    Pin.AddDefinedFunction(Trim(Item));
+                    If Wanted <> '' Then Wanted := Wanted + ';';
+                    Wanted := Wanted + Trim(Item);
+                End;
+            End;
+        End
+        Else If PropName = 'Name_PositionMode' Then Pin.Name_PositionMode := N
+        Else If PropName = 'Name_CustomPosition_Margin' Then Pin.Name_CustomPosition_Margin := N
+        Else If PropName = 'Name_CustomPosition_RotationAnchor' Then Pin.Name_CustomPosition_RotationAnchor := N
+        Else If PropName = 'Name_CustomPosition_RotationRelative' Then Pin.Name_CustomPosition_RotationRelative := N
+        Else If PropName = 'Designator_PositionMode' Then Pin.Designator_PositionMode := N
+        Else If PropName = 'Designator_CustomPosition_Margin' Then Pin.Designator_CustomPosition_Margin := N
+        Else If PropName = 'Designator_CustomPosition_RotationAnchor' Then Pin.Designator_CustomPosition_RotationAnchor := N
+        Else If PropName = 'Designator_CustomPosition_RotationRelative' Then Pin.Designator_CustomPosition_RotationRelative := N
+        Else If PropName = 'DefaultValue' Then Pin.DefaultValue := Value
+        Else If PropName = 'FormalType' Then Pin.FormalType := N;
+    End
+    Else If Obj.ObjectId = eParameter Then
+    Begin
+        Par := Obj;
+        If PropName = 'ReadOnlyState' Then Par.ReadOnlyState := N
+        Else If PropName = 'ParamType' Then Par.ParamType := N
+        Else If PropName = 'AllowLibrarySynchronize' Then Par.AllowLibrarySynchronize := B
+        Else If PropName = 'AllowDatabaseSynchronize' Then Par.AllowDatabaseSynchronize := B;
+    End
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        Port := Obj;
+        If PropName = 'AutoSize' Then Port.AutoSize := B
+        Else If PropName = 'OverrideDisplayString' Then Port.OverrideDisplayString := Value
+        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N;
+    End
+    Else
+    Begin
+        Comp := Obj;
+        If PropName = 'ShowHiddenPins' Then Comp.ShowHiddenPins := B
+        Else If PropName = 'ShowHiddenFields' Then Comp.ShowHiddenFields := B
+        Else If PropName = 'PinsMoveable' Then Comp.PinsMoveable := B
+        Else If PropName = 'PartIdLocked' Then Comp.PartIdLocked := B
+        Else If PropName = 'DisplayFieldNames' Then Comp.DisplayFieldNames := B
+        Else If PropName = 'OverideColors' Then Comp.OverideColors := B
+        Else If PropName = 'PinColor' Then Comp.PinColor := N
+        Else If PropName = 'LibraryPath' Then Comp.LibraryPath := Value
+        Else If PropName = 'AliasAsText' Then Comp.AliasAsText := Value;
+    End;
+    If IsInt Then Result := SchGetExtra(Obj, PropName) = IntToStr(N)
+    Else If IsBool Then Result := SchGetExtra(Obj, PropName) = BoolToJsonStr(B)
+    Else If PropName = 'DefinedFunctions' Then Result := SchGetExtra(Obj, PropName) = Wanted
+    Else Result := SchGetExtra(Obj, PropName) = Value;
 End;
 
 { Preflight only the known unsupported property/type pairs. Preserve the
@@ -473,7 +824,11 @@ Begin
                 Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
                 Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj)))
                 Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
-                    And (Obj.ObjectId <> eSchComponent)) Then
+                    And (Obj.ObjectId <> eSchComponent))
+                Or (((PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin')
+                    Or (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin'))
+                    And (Obj.ObjectId <> ePin))
+                Or ((SchExtraOwner(PropName) > 0) And (Not SchExtraFits(Obj, PropName))) Then
             Begin
                 Result := PropName;
                 Exit;
@@ -684,6 +1039,43 @@ Begin
     Except
         RecordCastError('SetSheetSymbolText:' + PropName);
         Result := False;
+    End;
+End;
+
+{ eLine is an ISch_Line, two ends (Location and Corner), not a polyline:  }
+{ asking it for GetState_VerticesCount raised an undeclared identifier no }
+{ Try catches (AD 26.11). The polyline property names are answered here   }
+{ from the two ends: VerticesCount, Vertices ('x,y;x,y'), Vertex1.X,      }
+{ Vertex.2.Y, VertexLast.X and so on.                                     }
+Function SchLineEndProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    Segment : ISch_Line;
+    Name, Which, Coord : String;
+    StartEnd, FarEnd, Chosen : TLocation;
+    Known : Boolean;
+Begin
+    Result := '';
+    Segment := Obj;
+    StartEnd := Segment.Location;
+    FarEnd := Segment.Corner;
+    Name := StringReplace(UpperCase(Trim(PropName)), 'VERTEX.', 'VERTEX', MkSet(rfReplaceAll));
+    If Name = 'VERTICESCOUNT' Then
+        Result := '2'
+    Else If Name = 'VERTICES' Then
+        Result := FloatToJsonStr(CoordToMilsF(StartEnd.X)) + ','
+            + FloatToJsonStr(CoordToMilsF(StartEnd.Y)) + ';'
+            + FloatToJsonStr(CoordToMilsF(FarEnd.X)) + ','
+            + FloatToJsonStr(CoordToMilsF(FarEnd.Y))
+    Else If Copy(Name, 1, 6) = 'VERTEX' Then
+    Begin
+        Coord := Copy(Name, Length(Name) - 1, 2);
+        Which := Copy(Name, 7, Length(Name) - 8);
+        Known := True;
+        If Which = '1' Then Chosen := StartEnd
+        Else If (Which = '2') Or (Which = 'LAST') Then Chosen := FarEnd
+        Else Known := False;
+        If Known And (Coord = '.X') Then Result := FloatToJsonStr(CoordToMilsF(Chosen.X));
+        If Known And (Coord = '.Y') Then Result := FloatToJsonStr(CoordToMilsF(Chosen.Y));
     End;
 End;
 
@@ -1106,7 +1498,6 @@ Begin
     Found := False;
     If PropName = 'AliasAsText'                     Then Result := Obj.AliasAsText
     Else If PropName = 'AliasCount'                 Then Result := IntToStr(Obj.AliasCount)
-    Else If PropName = 'CompilationMasked'          Then Result := BoolToJsonStr(Obj.CompilationMasked)
     Else If PropName = 'ConfigurationParameters'    Then Result := Obj.ConfigurationParameters
     Else If PropName = 'ConfiguratorName'           Then Result := Obj.ConfiguratorName
     Else If PropName = 'DescriptionString'          Then Result := Obj.GetState_DescriptionString
@@ -1150,6 +1541,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    SwapPin : ISch_Pin;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -1157,7 +1549,8 @@ Begin
     Result := '';
     Try
         // Identity
-        If PropName = 'ObjectId'    Then Result := IntToStr(Obj.ObjectId)
+        If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName)
+        Else If PropName = 'ObjectId'    Then Result := IntToStr(Obj.ObjectId)
 
         // Coordinates (returned in mils). Corner is declared only on
         // ISch_Rectangle and ISch_Line (ISch_RoundRectangle inherits from
@@ -1405,6 +1798,22 @@ Begin
           only the reader changes, and it now agrees with lib_get_pin_list.
           Reported GH #11, 2026-09-22. }
         Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
+        { Pin swapping groups (GetState_SwapId*), read through a              }
+        { pin-typed local: the declared type decides the dispatch.            }
+        Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
+                (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
+        Begin
+            If Obj.ObjectId = ePin Then
+            Begin
+                SwapPin := Obj;
+                If PropName = 'SwapIdPart' Then Result := SwapPin.GetState_SwapIdPart
+                Else If PropName = 'SwapIdPin' Then Result := SwapPin.GetState_SwapIdPin
+                Else If PropName = 'SwapIdPair' Then Result := SwapPin.GetState_SwapIdPair
+                Else Result := SwapPin.GetState_SwapIdPartPin;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'Color'       Then Result := IntToStr(Obj.Color)
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
         Else If PropName = 'TextColor' Then
@@ -1510,7 +1919,10 @@ Begin
         Else If PropName = 'BoundingRectangle.X2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.X2))
         Else If PropName = 'BoundingRectangle.Y2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.Y2))
 
-        // Polyline vertex access. eWire / eBus / eLine are ISch_Polyline
+        // A line has two ends, not vertices (see SchLineEndProperty).
+        Else If (Obj.ObjectId = eLine) And (Pos('VERT', UpperCase(PropName)) = 1) Then
+            Result := SchLineEndProperty(Obj, PropName)
+        // Polyline vertex access. eWire / eBus / ePolyline are ISch_Polyline
         // children with GetState_Vertex(i : Integer) : TLocation. Audit
         // code reads the first two vertices to test wire-vs-component
         // segment intersection; higher indices are theoretically valid
@@ -1591,6 +2003,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    SwapPin : ISch_Pin;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -1612,6 +2025,10 @@ Begin
     Matched := True;
     WroteOK := True;
     Try
+        If SchExtraOwner(PropName) > 0 Then
+        Begin
+            WroteOK := SchSetExtra(Obj, PropName, Value);
+        End
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
         // the TLocation record via the GetState_Location reader; writing
         // directly to `.X` / `.Y` on that copy is silently discarded. Read
@@ -1624,7 +2041,7 @@ Begin
           netlist silently disagrees with the drawing. MoveToXY relocates the
           component together with all its children, which is what a caller
           asking to move a part always means. }
-        If PropName = 'Location.X' Then
+        Else If PropName = 'Location.X' Then
         Begin
             Loc := Obj.Location;
             Loc.X := MilsToCoordF(StrToFloatDef(Value, 0));
@@ -1913,6 +2330,15 @@ Begin
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
         Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
+        Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
+                (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
+        Begin
+            SwapPin := Obj;
+            If PropName = 'SwapIdPart' Then SwapPin.SetState_SwapIdPart(Value)
+            Else If PropName = 'SwapIdPin' Then SwapPin.SetState_SwapIdPin(Value)
+            Else If PropName = 'SwapIdPair' Then SwapPin.SetState_SwapIdPair(Value)
+            Else SwapPin.SetState_SwapIdPartPin(Value);
+        End
         Else If PropName = 'Color'       Then Obj.Color := StrToIntDef(Value, 0)
         Else If PropName = 'AreaColor'   Then Obj.AreaColor := StrToIntDef(Value, 0)
         Else If PropName = 'TextColor' Then
@@ -2540,6 +2966,78 @@ Begin
     End;
 End;
 
+{ A pin told apart from the other copies of it: designator, part, display }
+{ mode and place. Two pins share one only where two parts overlap exactly. }
+Function SchPinKey(Pin : ISch_Pin) : String;
+Var
+    Des : String;
+    PartNo, ModeNo, PX, PY : Integer;
+Begin
+    Des := '';
+    PartNo := 0;
+    ModeNo := 0;
+    PX := 0;
+    PY := 0;
+    Try Des := Pin.Designator; Except End;
+    Try PartNo := Pin.OwnerPartId; Except End;
+    Try ModeNo := Pin.OwnerPartDisplayMode; Except End;
+    Try PX := Pin.Location.X; Except End;
+    Try PY := Pin.Location.Y; Except End;
+    Result := Des + '|' + IntToStr(PartNo) + '|' + IntToStr(ModeNo) + '|'
+        + IntToStr(PX) + '|' + IntToStr(PY);
+End;
+
+{ The pins of one placed part that it does not show, as SchPinKey keys.   }
+{ Every part of a multi-part symbol holds all the symbol's pins (the      }
+{ others' hidden at its own place) and every display mode's pins; a pin   }
+{ shows only on its own part, in the mode the part is drawn in. Keys, not }
+{ object addresses: a list of addresses once stopped the bridge with a    }
+{ Dispatch-to-Boolean conversion (AD 25.8).                               }
+Procedure AddUnshownPins(Comp : ISch_Component; Unshown : TStringList);
+Var
+    Walk : ISch_Iterator;
+    Pin : ISch_Pin;
+    DrawnMode, OwnMode : Integer;
+Begin
+    DrawnMode := 0;
+    Try DrawnMode := Comp.DisplayMode; Except DrawnMode := 0; End;
+    Walk := Comp.SchIterator_Create;
+    Try
+        Walk.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := Walk.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            OwnMode := DrawnMode;
+            Try OwnMode := Pin.OwnerPartDisplayMode; Except OwnMode := DrawnMode; End;
+            If (OwnMode <> DrawnMode) Or (Not PinShownOn(Comp, Pin)) Then
+                Unshown.Add(SchPinKey(Pin));
+            Pin := Walk.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Walk);
+    End;
+End;
+
+{ The SchPinKey of every pin on the sheet that no placed part shows. }
+Procedure CollectHiddenPinKeys(SchDoc : ISch_Document; Hidden : TStringList);
+Var
+    Parts : ISch_Iterator;
+    Comp : ISch_Component;
+Begin
+    Parts := SchDoc.SchIterator_Create;
+    Try
+        Parts.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := Parts.FirstSchObject;
+        While Comp <> Nil Do
+        Begin
+            AddUnshownPins(Comp, Hidden);
+            Comp := Parts.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Parts);
+    End;
+End;
+
 Function ProcessSchDocObjects(SchDoc : ISch_Document; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
     Mode : String; DocPath : String;
@@ -2555,6 +3053,9 @@ Var
     ObjJson, SymbolRef : String;
     First : Boolean;
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
+    UnshownPins : TStringList;
+    PinObj : ISch_Pin;
+    OnlyShown, Counted : Boolean;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -2819,12 +3320,29 @@ Begin
         Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
 
+    { Only the pins a part shows. A pin query on a sheet answered every    }
+    { copy a multi-part or multi-mode symbol carries, and a modify wrote    }
+    { them all. A filter that names OwnerPartId or OwnerPartDisplayMode is  }
+    { asking about the copies, and gets them.                               }
+    OnlyShown := False;
+    If (ObjTypeInt = ePin) And (Not IsLibDoc) And (Not ParamsOfSymbol) Then
+        If Pos('OwnerPart', FilterStr) = 0 Then OnlyShown := True;
+    UnshownPins := TStringList.Create;
+    If OnlyShown Then CollectHiddenPinKeys(SchDoc, UnshownPins);
+
     Obj := Iterator.FirstSchObject;
     While Obj <> Nil Do
     Begin
         If (Limit > 0) And (TotalMatched >= Limit) Then Break;
 
-        If MatchesFilter(Obj, FilterStr) Then
+        Counted := True;
+        If OnlyShown Then
+        Begin
+            PinObj := Obj;
+            Counted := UnshownPins.IndexOf(SchPinKey(PinObj)) < 0;
+        End;
+
+        If Counted And MatchesFilter(Obj, FilterStr) Then
         Begin
             If Mode = 'query' Then
             Begin
@@ -2867,6 +3385,7 @@ Begin
         LibComp.SchIterator_Destroy(Iterator)
     Else
         SchDoc.SchIterator_Destroy(Iterator);
+    UnshownPins.Free;
 
     If Mode = 'modify' Then
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
@@ -3007,12 +3526,15 @@ Begin
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    { The document is marked modified here, never saved: "saved" said true }
+    { on every write, even one that matched nothing, while the file on     }
+    { disk did not change (measured on AD 26.11). It now says what         }
+    { happened: modified when something was written, saved false.          }
     Saved := False;
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -3027,6 +3549,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -3070,12 +3593,15 @@ Begin
         FilterStr, PropsStr, SetStr, Mode, DocPath, TotalMatched, Limit);
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
+    { The document is marked modified here, never saved: "saved" said true }
+    { on every write, even one that matched nothing, while the file on     }
+    { disk did not change (measured on AD 26.11). It now says what         }
+    { happened: modified when something was written, saved false.          }
     Saved := False;
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -3090,6 +3616,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -3816,16 +4343,18 @@ End;
 {..............................................................................}
 
 { ISch_Document has NO ClearSelection method (raises "Undeclared identifier:
-  ClearSelection"). Use the Sch:DeSelectAll process -- iterating objects and
-  setting .Selection := False faults on sub-objects (parameters, pin labels)
-  that don't expose Selection, and that "Undeclared identifier" modal bypasses
-  Try/Except. The process is what Edit|Deselect All runs (see Application.pas). }
+  ClearSelection"), and iterating objects to set .Selection := False faults on
+  sub-objects (parameters, pin labels) that don't expose Selection, in a modal
+  Try/Except cannot catch. So a process does it. MEASURED on AD 26.11.1.5:
+  Sch:DeSelectAll left all 123 selected parts selected; Sch:DeSelect with
+  Action=All cleared them (the same on AD 25.8). }
 Procedure SchDeselectAllObjects(SchDoc : ISch_Document);
 Begin
     If SchDoc = Nil Then Exit;
     Try
         ResetParameters;
-        RunProcess('Sch:DeSelectAll');
+        AddStringParameter('Action', 'All');
+        RunProcess('Sch:DeSelect');
     Except End;
 End;
 
@@ -3892,10 +4421,16 @@ Begin
 
     If ZoomProcess <> '' Then
     Begin
-        If (Action <> 'fit') And (Action <> 'selection') And (Action <> 'board') Then
+        If Pos('|' + Action + '|', '|fit|selection|board|document|') = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS', 'action is fit, board, '
+                + 'document or selection, not "' + Action + '"');
+            Exit;
+        End;
+        If (ZoomProcess <> 'Sch:Zoom') And (Action = 'document') Then
         Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
-                'action must be "fit", "board" or "selection", got "' + Action + '"');
+                'document zooms to a whole schematic sheet; on a board use board or fit');
             Exit;
         End;
         ResetParameters;
@@ -3907,6 +4442,9 @@ Begin
             AddStringParameter('Action', 'Document');
             AddStringParameter('Target', 'Board');
         End
+        { document = View > Fit Document, the sheet with its frame; fit is }
+        { Fit All Objects, which may leave the frame out.                  }
+        Else If Action = 'document' Then AddStringParameter('Action', 'Document')
         Else If (Action = 'fit') Or (Action = 'board') Then AddStringParameter('Action', 'All')
         Else AddStringParameter('Action', 'Selected');
         RunProcess(ZoomProcess);
@@ -4359,7 +4897,7 @@ Begin
     { already owns the script engine; PreProcess + a debugger break     }
     { (or an undeclared-identifier modal on .Selection) deadlocks       }
     { Altium. Selection-only paint is not an undoable edit. Clear via   }
-    { Sch:DeSelectAll, then set Selection=True on matches only -- never }
+    { SchDeselectAllObjects, then Selection=True on matches only, never }
     { Selection=False inside the iterator (that path raises a modal     }
     { that bypasses Try/Except on sub-objects).                         }
     If SchDoc <> Nil Then
@@ -4813,26 +5351,26 @@ End;
 
 Function Gen_MeasureDistance(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2 : Integer;
-    DX, DY : Integer;
+    X1, Y1, X2, Y2 : Double;
+    DX, DY : Double;
     Distance : Double;
 Begin
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
 
     DX := X2 - X1;
     DY := Y2 - Y1;
     Distance := Sqrt(DX * DX + DY * DY);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"x1":' + IntToStr(X1) +
-        ',"y1":' + IntToStr(Y1) +
-        ',"x2":' + IntToStr(X2) +
-        ',"y2":' + IntToStr(Y2) +
-        ',"dx":' + IntToStr(DX) +
-        ',"dy":' + IntToStr(DY) +
+        '{"x1":' + FloatToJsonStr(X1) +
+        ',"y1":' + FloatToJsonStr(Y1) +
+        ',"x2":' + FloatToJsonStr(X2) +
+        ',"y2":' + FloatToJsonStr(Y2) +
+        ',"dx":' + FloatToJsonStr(DX) +
+        ',"dy":' + FloatToJsonStr(DY) +
         ',"distance_mils":' + FloatToJsonStr(Distance) +
         ',"distance_mm":' + FloatToJsonStr(Distance * 0.0254) + '}');
 End;
@@ -5838,7 +6376,7 @@ End;
 
 Function Gen_PlaceSheetSymbol(Params : String; RequestId : String) : String;
 Var
-    TmpI : Integer;
+    TmpI : Double;
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     Sym : ISch_SheetSymbol;
@@ -5876,9 +6414,11 @@ Begin
     End;
 
     { ISch_SheetSymbol has no Corner property (unlike ISch_Rectangle) -- using
-      it raises "Undeclared identifier: Corner". Size is set via XSize/YSize
-      from the bottom-left Location (Altium SDK: SetState_XSize/YSize). }
-    Sym.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
+      it raises "Undeclared identifier: Corner". Size is set via XSize/YSize.
+      Location is the TOP-left corner and the body extends right and down
+      from it; placed at (x1, y1) the symbol ended up one full height under
+      the box that was asked for. }
+    Sym.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y2));
     Sym.XSize := MilsToCoordF(X2 - X1);
     Sym.YSize := MilsToCoordF(Y2 - Y1);
     If NameStr = '' Then NameStr := ChangeFileExt(FileNameStr, '');
@@ -5930,10 +6470,12 @@ Var
     Sym : ISch_SheetSymbol;
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
-    WantSide, GotSide, GotX, GotY : Integer;
+    WantSide, GotSide : Integer;
+    GotX, GotY, EdgeX, EdgeY : Double;
     GotDist : Double;
     DistFromTop : Double;
     Found, Placed : Boolean;
+    FontPick, FontRead : Integer;
 Begin
     SheetNameStr := ExtractJsonValue(Params, 'sheet_name');
     EntryName := ExtractJsonValue(Params, 'entry_name');
@@ -5992,6 +6534,7 @@ Begin
         Exit;
     End;
 
+    FontPick := NewObjectFontId(SchDoc, eSheetEntry, Params);
     Entry := SchServer.SchObjectFactory(eSheetEntry, eCreate_Default);
     If Entry = Nil Then
     Begin
@@ -6039,6 +6582,26 @@ Begin
 
     Try Entry.Side := WantSide; Except End;
     Try Entry.DistanceFromTop := MilsToCoordF(DistFromTop); Except End;
+    If FontPick > 0 Then Try Entry.TextFontID := FontPick; Except End;
+    { Added this way the entry keeps a Location off the body until the  }
+    { sheet is reloaded, and a wire drawn meanwhile goes to that point. }
+    { So its point on the edge is worked out here: the symbol's Location }
+    { is its top-left corner, the body runs right and down.              }
+    EdgeX := CoordToMilsF(Sym.Location.X);
+    EdgeY := CoordToMilsF(Sym.Location.Y);
+    If WantSide = eLeftSide Then EdgeY := EdgeY - DistFromTop;
+    If WantSide = eRightSide Then
+    Begin
+        EdgeX := EdgeX + CoordToMilsF(Sym.XSize);
+        EdgeY := EdgeY - DistFromTop;
+    End;
+    If WantSide = eTopSide Then EdgeX := EdgeX + DistFromTop;
+    If WantSide = eBottomSide Then
+    Begin
+        EdgeX := EdgeX + DistFromTop;
+        EdgeY := EdgeY - CoordToMilsF(Sym.YSize);
+    End;
+    Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except End;
 
     SchRegisterObject(Sym, Entry);
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
@@ -6054,11 +6617,14 @@ Begin
     GotX := 0;
     GotY := 0;
     Try
-        GotX := CoordToMils(Entry.Location.X);
-        GotY := CoordToMils(Entry.Location.Y);
+        GotX := CoordToMilsF(Entry.Location.X);
+        GotY := CoordToMilsF(Entry.Location.Y);
     Except End;
 
-    Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001);
+    FontRead := 0;
+    Try FontRead := Entry.TextFontID; Except End;
+    Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001)
+        And (Abs(GotX - EdgeX) < 0.01) And (Abs(GotY - EdgeY) < 0.01);
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
       the rest of Altium is concerned. SmartCompile skips its recompile
@@ -6078,9 +6644,10 @@ Begin
             JsonStr('requested_side', SideStr) + ',' +
             JsonFloat('requested_distance_from_top', DistFromTop) + ',' +
             JsonInt('actual_side', GotSide) + ',' +
+            JsonInt('font_id', FontRead) + ',' +
             JsonFloat('actual_distance_from_top', GotDist) + ',' +
-            JsonInt('x', GotX) + ',' +
-            JsonInt('y', GotY) + ',' +
+            JsonFloat('x', GotX) + ',' +
+            JsonFloat('y', GotY) + ',' +
             JsonStr('note', 'x and y are read back from the placed entry. '
                 + 'If positioned_as_asked is false the entry exists but sits '
                 + 'where Altium put it; obj_modify on eSheetEntry can set '
@@ -6234,6 +6801,105 @@ Begin
         + ',"frame_y":' + FloatToJsonStr(CoordToMilsF(SchDoc.SheetSizeY)); Except End;
     Result := BuildSuccessResponse(RequestId, Data + '}');
 End;
+
+{..............................................................................}
+{ SheetOptionsJson - the active sheet's zone, margin and border settings.      }
+{..............................................................................}
+Function SheetOptionsJson(SchDoc : ISch_Document) : String;
+Var
+    ZX, ZY, CZX, CZY, Border : Integer;
+    Margin, CMargin : Double;
+    RefZones, Graphics : Boolean;
+Begin
+    ZX := -1; ZY := -1; CZX := -1; CZY := -1; Border := -1;
+    Margin := -1; CMargin := -1; RefZones := False; Graphics := False;
+    Try ZX := SchDoc.GetState_SheetZonesX; Except End;
+    Try ZY := SchDoc.GetState_SheetZonesY; Except End;
+    Try CZX := SchDoc.GetState_CustomXZones; Except End;
+    Try CZY := SchDoc.GetState_CustomYZones; Except End;
+    Try Border := SchDoc.DocumentBorderStyle; Except End;
+    Try Margin := CoordToMilsF(SchDoc.GetState_SheetMarginWidth); Except End;
+    Try CMargin := CoordToMilsF(SchDoc.GetState_CustomMarginWidth); Except End;
+    Try RefZones := SchDoc.GetState_ReferenceZonesOn; Except End;
+    Try Graphics := SchDoc.GetState_ShowTemplateGraphics; Except End;
+    Result := JsonObj(
+        JsonInt('zones_x', ZX) + ',' + JsonInt('zones_y', ZY) + ','
+        + JsonInt('custom_zones_x', CZX) + ',' + JsonInt('custom_zones_y', CZY) + ','
+        + JsonFloat('margin_width_mils', Margin) + ','
+        + JsonFloat('custom_margin_width_mils', CMargin) + ','
+        + JsonInt('border_style', Border) + ','
+        + JsonBool('reference_zones', RefZones) + ','
+        + JsonBool('show_template_graphics', Graphics));
+End;
+
+{..............................................................................}
+{ Gen_SheetOptions - read, and optionally change, the active sheet's zones,   }
+{ margin, border style and template graphics: the SetState_ / GetState_ pairs }
+{ on ISch_Document. Empty parameters are left alone;                          }
+{ the answer is read back after the writes.                                    }
+{ Params: zones_x, zones_y, custom_zones_x, custom_zones_y, margin_width,     }
+{ custom_margin_width (mils), border_style, reference_zones,                   }
+{ show_template_graphics ('true' / 'false').                                   }
+{..............................................................................}
+Function Gen_SheetOptions(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    ZX, ZY, CZX, CZY, Margin, CMargin, Border, RefZones, Graphics : String;
+    Wrote : Boolean;
+Begin
+    ZX := ExtractJsonValue(Params, 'zones_x');
+    ZY := ExtractJsonValue(Params, 'zones_y');
+    CZX := ExtractJsonValue(Params, 'custom_zones_x');
+    CZY := ExtractJsonValue(Params, 'custom_zones_y');
+    Margin := ExtractJsonValue(Params, 'margin_width');
+    CMargin := ExtractJsonValue(Params, 'custom_margin_width');
+    Border := ExtractJsonValue(Params, 'border_style');
+    RefZones := LowerCase(ExtractJsonValue(Params, 'reference_zones'));
+    Graphics := LowerCase(ExtractJsonValue(Params, 'show_template_graphics'));
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
+        Exit;
+    End;
+    If ((ZX <> '') And (StrToIntDef(ZX, -1) < 1)) Or ((ZY <> '') And (StrToIntDef(ZY, -1) < 1))
+        Or ((CZX <> '') And (StrToIntDef(CZX, -1) < 1)) Or ((CZY <> '') And (StrToIntDef(CZY, -1) < 1))
+        Or ((Border <> '') And (StrToIntDef(Border, -1) < 0))
+        Or ((Margin <> '') And (StrToFloatDef(Margin, -1) < 0))
+        Or ((CMargin <> '') And (StrToFloatDef(CMargin, -1) < 0)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_VALUE',
+            'zones are whole numbers from 1; margins are mils from 0; border_style from 0');
+        Exit;
+    End;
+    Wrote := (ZX <> '') Or (ZY <> '') Or (CZX <> '') Or (CZY <> '') Or (Margin <> '')
+        Or (CMargin <> '') Or (Border <> '') Or (RefZones <> '') Or (Graphics <> '');
+    If Wrote Then
+    Begin
+        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        Try
+            If ZX <> '' Then SchDoc.SetState_SheetZonesX(StrToIntDef(ZX, 4));
+            If ZY <> '' Then SchDoc.SetState_SheetZonesY(StrToIntDef(ZY, 4));
+            If CZX <> '' Then SchDoc.SetState_CustomXZones(StrToIntDef(CZX, 6));
+            If CZY <> '' Then SchDoc.SetState_CustomYZones(StrToIntDef(CZY, 4));
+            If Margin <> '' Then SchDoc.SetState_SheetMarginWidth(MilsToCoordF(StrToFloatDef(Margin, 0)));
+            If CMargin <> '' Then SchDoc.SetState_CustomMarginWidth(MilsToCoordF(StrToFloatDef(CMargin, 0)));
+            If Border <> '' Then SchDoc.SetState_DocumentBorderStyle(StrToIntDef(Border, 0));
+            If RefZones <> '' Then SchDoc.SetState_ReferenceZonesOn(RefZones = 'true');
+            If Graphics <> '' Then SchDoc.SetState_ShowTemplateGraphics(Graphics = 'true');
+        Finally
+            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        End;
+        SchDoc.UpdateDocumentProperties;
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonBool('changed', Wrote) + ','
+        + JsonRaw('options', SheetOptionsJson(SchDoc))));
+End;
+
 
 {..............................................................................}
 { Place a schematic component instance from a library onto the active sheet.  }
@@ -6616,7 +7282,8 @@ Var
     Param : ISch_BasicContainer;
     JsonItems, ChildJson, PName, PValue, DirName : String;
     First, FirstChild : Boolean;
-    Count, X, Y : Integer;
+    Count : Integer;
+    X, Y : Double;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -6641,8 +7308,8 @@ Begin
             DirName := '';
             X := 0; Y := 0;
             Try DirName := ParamSet.Name; Except End;
-            Try X := CoordToMils(ParamSet.Location.X); Except End;
-            Try Y := CoordToMils(ParamSet.Location.Y); Except End;
+            Try X := CoordToMilsF(ParamSet.Location.X); Except End;
+            Try Y := CoordToMilsF(ParamSet.Location.Y); Except End;
 
             ChildJson := '';
             FirstChild := True;
@@ -6666,7 +7333,7 @@ Begin
             Except End;
 
             JsonItems := JsonItems + '{"name":"' + EscapeJsonString(DirName) + '",'
-                + '"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+                + '"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
                 + '"parameters":[' + ChildJson + ']}';
             Inc(Count);
             ParamSet := OuterIter.NextSchObject;
@@ -6966,19 +7633,19 @@ Var
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
     CompLoc : TLocation;
-    WantX, WantY : Integer;
+    WantX, WantY : Double;
     Narrow, Hit : Boolean;
 Begin
     Result := Nil;
     If SchDoc = Nil Then Exit;
 
-    Narrow := (LocX <> '') And (LocY <> '') And IsIntStr(LocX) And IsIntStr(LocY);
+    Narrow := (LocX <> '') And (LocY <> '') And IsFloatStr(LocX) And IsFloatStr(LocY);
     WantX := 0;
     WantY := 0;
     If Narrow Then
     Begin
-        WantX := StrToIntDef(LocX, 0);
-        WantY := StrToIntDef(LocY, 0);
+        WantX := StrToFloatDef(LocX, 0);
+        WantY := StrToFloatDef(LocY, 0);
     End;
 
     Iterator := SchDoc.SchIterator_Create;
@@ -6996,8 +7663,8 @@ Begin
                     { Read through a materialized local. This engine does not }
                     { accept a record field reached straight off a property.  }
                     CompLoc := Comp.Location;
-                    Hit := (CoordToMils(CompLoc.X) = WantX)
-                       And (CoordToMils(CompLoc.Y) = WantY);
+                    Hit := (Abs(CoordToMilsF(CompLoc.X) - WantX) < 0.0001)
+                       And (Abs(CoordToMilsF(CompLoc.Y) - WantY) < 0.0001);
                 End;
                 If Hit Then Result := Comp;
             End;
@@ -7067,7 +7734,7 @@ Begin
         + ' on this sheet, which is normal for a multi-part device. Pass '
         + 'location_x and location_y to choose one. The candidates, with '
         + 'their locations and current part ids, are in the details.',
-        '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+        JsonObj(JsonRaw('candidates', SchComponentCandidates(SchDoc, Designator))));
 End;
 
 Function Gen_GetSchComponentPins(Params : String; RequestId : String) : String;
@@ -7081,9 +7748,10 @@ Var
     Data, PinList : String;
     First : Boolean;
     PinNum, PinName : String;
-    PinX, PinY : Integer;
-    PinOrient, PinLenMils : Integer;
-    CompX, CompY : Integer;
+    PinX, PinY, PinLenMils : Double;
+    PinXC, PinYC, PinLenC : TCoord;
+    PinOrient : Integer;
+    CompX, CompY : Double;
     CompLoc : TLocation;
     SymbolCount, OwnerPart : Integer;
 Begin
@@ -7155,8 +7823,8 @@ Begin
                 { slice; Pin.Location already reflects the placed orientation }
                 { because Altium updates it after RotateAroundXY / mirror.)   }
                 CompLoc := Comp.Location;
-                CompX := CoordToMils(CompLoc.X);
-                CompY := CoordToMils(CompLoc.Y);
+                CompX := CoordToMilsF(CompLoc.X);
+                CompY := CoordToMilsF(CompLoc.Y);
 
                 PinIter := Comp.SchIterator_Create;
                 Try
@@ -7168,14 +7836,14 @@ Begin
                         Begin
                         PinNum := '';
                         PinName := '';
-                        PinX := 0;
-                        PinY := 0;
+                        PinXC := 0;
+                        PinYC := 0;
                         PinOrient := 0;
-                        PinLenMils := 0;
+                        PinLenC := 0;
                         Try PinNum := Pin.Designator; Except End;
                         Try PinName := Pin.Name; Except End;
-                        Try PinX := CoordToMils(Pin.Location.X); Except End;
-                        Try PinY := CoordToMils(Pin.Location.Y); Except End;
+                        Try PinXC := Pin.Location.X; Except End;
+                        Try PinYC := Pin.Location.Y; Except End;
                         { Pin.Orientation is the TRotationBy90 enum:           }
                         { 0=right (eRotate0),   1=up (eRotate90),               }
                         { 2=left (eRotate180),  3=down (eRotate270).            }
@@ -7184,17 +7852,20 @@ Begin
                         { from Pin.Location must extend along this vector by   }
                         { Pin.PinLength to reach the electrical hot end.       }
                         Try PinOrient := Pin.Orientation; Except End;
-                        Try PinLenMils := CoordToMils(Pin.PinLength); Except End;
+                        Try PinLenC := Pin.PinLength; Except End;
+                        PinX := CoordToMilsF(PinXC);
+                        PinY := CoordToMilsF(PinYC);
+                        PinLenMils := CoordToMilsF(PinLenC);
 
                         If Not First Then PinList := PinList + ',';
                         First := False;
                         PinList := PinList +
                             '{"pin_number":"' + EscapeJsonString(PinNum) +
                             '","pin_name":"' + EscapeJsonString(PinName) +
-                            '","x_mils":' + IntToStr(PinX) +
-                            ',"y_mils":' + IntToStr(PinY) +
+                            '","x_mils":' + FloatToJsonStr(PinX) +
+                            ',"y_mils":' + FloatToJsonStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            ',"pin_length_mils":' + FloatToJsonStr(PinLenMils) +
                             { x_mils and y_mils are Pin.Location, which is the
                               BODY-SIDE ROOT. These are the point a wire has
                               to sit on. Handed over rather than left to the
@@ -7202,12 +7873,12 @@ Begin
                               direction gets reversed and the result is silent
                               geometry that does not connect. }
                             ',"connection_x_mils":'
-                                + IntToStr(PinEndX(PinX, PinOrient, PinLenMils)) +
+                                + FloatToJsonStr(CoordToMilsF(PinEndX(PinXC, PinOrient, PinLenC))) +
                             ',"connection_y_mils":'
-                                + IntToStr(PinEndY(PinY, PinOrient, PinLenMils)) +
+                                + FloatToJsonStr(CoordToMilsF(PinEndY(PinYC, PinOrient, PinLenC))) +
                             ',"owner_part_id":' + IntToStr(OwnerPart) +
-                            ',"owner_x":' + IntToStr(CompX) +
-                            ',"owner_y":' + IntToStr(CompY) + '}';
+                            ',"owner_x":' + FloatToJsonStr(CompX) +
+                            ',"owner_y":' + FloatToJsonStr(CompY) + '}';
                         End;
 
                         Pin := PinIter.NextSchObject;
@@ -7243,11 +7914,14 @@ End;
 Function Gen_PlacePort(Params : String; RequestId : String) : String;
 Var
     Name, StyleStr, IOTypeStr : String;
-    X, Y : Double;
+    X, Y, WantWidth : Double;
     SchDoc : ISch_Document;
     SchPort : ISch_Port;
     SheetPath : String;
     SepPos : Integer;
+    FontPick, FontRead : Integer;
+    WidthRead : Double;
+    AutoRead : Boolean;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
@@ -7264,6 +7938,7 @@ Begin
         SheetPath := Copy(Name, SepPos + 2, Length(Name));
         Name := Copy(Name, 1, SepPos - 1);
     End;
+    WantWidth := StrToFloatDef(ExtractJsonValue(Params, 'width'), 0);
 
     If Name = '' Then
     Begin
@@ -7284,6 +7959,7 @@ Begin
         Exit;
     End;
 
+    FontPick := NewObjectFontId(SchDoc, ePort, Params);
     SchPort := SchServer.SchObjectFactory(ePort, eCreate_Default);
     If SchPort = Nil Then
     Begin
@@ -7306,6 +7982,17 @@ Begin
     Else If IOTypeStr = 'bidirectional' Then SchPort.IOType := ePortBidirectional
     Else SchPort.IOType := ePortUnspecified;
 
+    If FontPick > 0 Then Try SchPort.FontId := FontPick; Except End;
+    { AutoSize refits a port to its text at every redraw, which undoes a }
+    { width; it is turned off for the width to stay.                     }
+    If WantWidth > 0 Then
+    Begin
+        Try
+            SchPort.AutoSize := False;
+            SchPort.Width := MilsToCoordF(WantWidth);
+        Except End;
+    End;
+
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(SchPort);
     SchRegisterObject(SchDoc, SchPort);
@@ -7320,9 +8007,17 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    FontRead := 0;
+    WidthRead := 0;
+    AutoRead := True;
+    Try FontRead := SchPort.FontId; Except End;
+    Try WidthRead := CoordToMilsF(SchPort.Width); Except End;
+    Try AutoRead := SchPort.AutoSize; Except End;
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) +
-        '","x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + '}');
+        '","x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
+        + JsonInt('font_id', FontRead) + ',' + JsonFloat('width', WidthRead) + ','
+        + JsonBool('auto_size', AutoRead) + '}');
 End;
 
 {..............................................................................}
@@ -7339,6 +8034,7 @@ Var
     PowerObj : ISch_PowerObject;
     Loc : TLocation;
     SrvDoc : IServerDocument;
+    FontPick, FontRead : Integer;
 Begin
     Text := ExtractJsonValue(Params, 'text');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -7384,6 +8080,7 @@ Begin
         End;
     End;
 
+    FontPick := NewObjectFontId(SchDoc, ePowerObject, Params);
     PowerObj := SchServer.SchObjectFactory(ePowerObject, eCreate_Default);
     If PowerObj = Nil Then
     Begin
@@ -7418,6 +8115,7 @@ Begin
             OrientationVal := 1;
     End;
     Try PowerObj.Orientation := OrientationVal; Except End;
+    If FontPick > 0 Then Try PowerObj.FontId := FontPick; Except End;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(PowerObj);
@@ -7430,9 +8128,12 @@ Begin
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
     Except End;
 
+    FontRead := 0;
+    Try FontRead := PowerObj.FontId; Except End;
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"text":"' + EscapeJsonString(Text) +
-        '","x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + '}');
+        '","x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
+        + JsonInt('font_id', FontRead) + '}');
 End;
 
 {..............................................................................}
@@ -8240,16 +8941,404 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No active schematic or PCB document');
 End;
 
+{ SCHEMATIC EDITOR PREFERENCES (Preferences > Schematic), Altium's own, kept  }
+{ for every sheet. 'b' a switch, 'i' a whole number of 0 or more, 't' text,   }
+{ '' not one of these.                                                        }
+Function SchOptionKind(Name : String) : String;
+Begin
+    Result := '';
+    If (Name = 'SnapToHotSpot') Or (Name = 'MaintainOrthogonal') Or
+       (Name = 'ComponentsCutWires') Or (Name = 'OptimizePolylines') Or
+       (Name = 'SingleSlashNegation') Or (Name = 'ConvertSpecialStrings') Or
+       (Name = 'MarkManualParameters') Or (Name = 'ShowPinDirection') Or
+       (Name = 'AutoZoom') Or (Name = 'ClickClearsSelection') Or
+       (Name = 'DoubleClickRunsInspector') Or (Name = 'ExpandComponentDesignators') Or
+       (Name = 'ExpandNetLabelsText') Or (Name = 'ExpandPortsName') Or
+       (Name = 'ExpandSheetNumber') Or (Name = 'ExpandDocumentNumber') Or
+       (Name = 'WatermarkReadOnlySheet') Or (Name = 'AlwaysDrag') Or
+       (Name = 'DisplayPrinterFonts') Or (Name = 'StringIncRemoveLeadingZero') Or
+       (Name = 'CtrlDbleClickGoesDown') Or (Name = 'ConfirmSelectionMemoryClear') Or
+       (Name = 'AllowDeviceSheetEditing') Or (Name = 'WatermarkDeviceSheet') Then Result := 'b'
+    Else If (Name = 'HotSpotGridDistance') Or (Name = 'UndoRedoStackSize') Or
+       (Name = 'PinNameMargin') Or (Name = 'PinNumberMargin') Or
+       (Name = 'MultiPartNamingMethod') Or (Name = 'CutterGridSizeMultiple') Or
+       (Name = 'CutterFixedLength') Or (Name = 'PhysicalViewDimLevel') Then Result := 'i'
+    Else If (Name = 'StringIncA') Or (Name = 'StringIncB') Or
+       (Name = 'DefaultPowerGndName') Or (Name = 'DefaultSignalGndName') Or
+       (Name = 'DefaultEarthName') Or (Name = 'DefaultTemplateFileName') Then Result := 't';
+End;
+
+{ The value as JSON text. }
+Function SchOptionGet(Prefs : ISch_Preferences; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'SnapToHotSpot' Then Result := BoolToJsonStr(Prefs.SnapToHotSpot)
+    Else If Name = 'MaintainOrthogonal' Then Result := BoolToJsonStr(Prefs.MaintainOrthogonal)
+    Else If Name = 'ComponentsCutWires' Then Result := BoolToJsonStr(Prefs.ComponentsCutWires)
+    Else If Name = 'OptimizePolylines' Then Result := BoolToJsonStr(Prefs.OptimizePolylines)
+    Else If Name = 'SingleSlashNegation' Then Result := BoolToJsonStr(Prefs.SingleSlashNegation)
+    Else If Name = 'ConvertSpecialStrings' Then Result := BoolToJsonStr(Prefs.ConvertSpecialStrings)
+    Else If Name = 'MarkManualParameters' Then Result := BoolToJsonStr(Prefs.MarkManualParameters)
+    Else If Name = 'ShowPinDirection' Then Result := BoolToJsonStr(Prefs.ShowPinDirection)
+    Else If Name = 'AutoZoom' Then Result := BoolToJsonStr(Prefs.AutoZoom)
+    Else If Name = 'ClickClearsSelection' Then Result := BoolToJsonStr(Prefs.ClickClearsSelection)
+    Else If Name = 'DoubleClickRunsInspector' Then Result := BoolToJsonStr(Prefs.DoubleClickRunsInspector)
+    Else If Name = 'ExpandComponentDesignators' Then Result := BoolToJsonStr(Prefs.ExpandComponentDesignators)
+    Else If Name = 'ExpandNetLabelsText' Then Result := BoolToJsonStr(Prefs.ExpandNetLabelsText)
+    Else If Name = 'ExpandPortsName' Then Result := BoolToJsonStr(Prefs.ExpandPortsName)
+    Else If Name = 'ExpandSheetNumber' Then Result := BoolToJsonStr(Prefs.ExpandSheetNumber)
+    Else If Name = 'ExpandDocumentNumber' Then Result := BoolToJsonStr(Prefs.ExpandDocumentNumber)
+    Else If Name = 'WatermarkReadOnlySheet' Then Result := BoolToJsonStr(Prefs.WatermarkReadOnlySheet)
+    Else If Name = 'AlwaysDrag' Then Result := BoolToJsonStr(Prefs.AlwaysDrag)
+    Else If Name = 'DisplayPrinterFonts' Then Result := BoolToJsonStr(Prefs.DisplayPrinterFonts)
+    Else If Name = 'StringIncRemoveLeadingZero' Then Result := BoolToJsonStr(Prefs.StringIncRemoveLeadingZero)
+    Else If Name = 'CtrlDbleClickGoesDown' Then Result := BoolToJsonStr(Prefs.CtrlDbleClickGoesDown)
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Result := BoolToJsonStr(Prefs.ConfirmSelectionMemoryClear)
+    Else If Name = 'AllowDeviceSheetEditing' Then Result := BoolToJsonStr(Prefs.AllowDeviceSheetEditing)
+    Else If Name = 'WatermarkDeviceSheet' Then Result := BoolToJsonStr(Prefs.WatermarkDeviceSheet)
+    Else If Name = 'CutterGridSizeMultiple' Then Result := IntToStr(Prefs.CutterGridSizeMultiple)
+    Else If Name = 'CutterFixedLength' Then Result := IntToStr(Prefs.CutterFixedLength)
+    Else If Name = 'PhysicalViewDimLevel' Then Result := IntToStr(Prefs.PhysicalViewDimLevel)
+    Else If Name = 'HotSpotGridDistance' Then Result := IntToStr(Prefs.HotSpotGridDistance)
+    Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Prefs.UndoRedoStackSize)
+    Else If Name = 'PinNameMargin' Then Result := IntToStr(Prefs.PinNameMargin)
+    Else If Name = 'PinNumberMargin' Then Result := IntToStr(Prefs.PinNumberMargin)
+    Else If Name = 'MultiPartNamingMethod' Then Result := IntToStr(Prefs.MultiPartNamingMethod)
+    Else If Name = 'StringIncA' Then Result := '"' + EscapeJsonString(Prefs.StringIncA) + '"'
+    Else If Name = 'StringIncB' Then Result := '"' + EscapeJsonString(Prefs.StringIncB) + '"'
+    Else If Name = 'DefaultPowerGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultPowerGndName) + '"'
+    Else If Name = 'DefaultSignalGndName' Then Result := '"' + EscapeJsonString(Prefs.DefaultSignalGndName) + '"'
+    Else If Name = 'DefaultEarthName' Then Result := '"' + EscapeJsonString(Prefs.DefaultEarthName) + '"'
+    Else If Name = 'DefaultTemplateFileName' Then Result := '"' + EscapeJsonString(Prefs.DefaultTemplateFileName) + '"';
+End;
+
+{ Write one; False when the value is not of the option's kind. }
+Function SchOptionSet(Prefs : ISch_Preferences; Name : String; Value : String) : Boolean;
+Var
+    Kind : String;
+    B : Boolean;
+    N : Integer;
+Begin
+    Result := False;
+    Kind := SchOptionKind(Name);
+    B := False;
+    N := 0;
+    If Kind = 'b' Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If Kind = 'i' Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
+    End
+    Else If Kind <> 't' Then Exit;
+    If Name = 'SnapToHotSpot' Then Prefs.SnapToHotSpot := B
+    Else If Name = 'MaintainOrthogonal' Then Prefs.MaintainOrthogonal := B
+    Else If Name = 'ComponentsCutWires' Then Prefs.ComponentsCutWires := B
+    Else If Name = 'OptimizePolylines' Then Prefs.OptimizePolylines := B
+    Else If Name = 'SingleSlashNegation' Then Prefs.SingleSlashNegation := B
+    Else If Name = 'ConvertSpecialStrings' Then Prefs.ConvertSpecialStrings := B
+    Else If Name = 'MarkManualParameters' Then Prefs.MarkManualParameters := B
+    Else If Name = 'ShowPinDirection' Then Prefs.ShowPinDirection := B
+    Else If Name = 'AutoZoom' Then Prefs.AutoZoom := B
+    Else If Name = 'ClickClearsSelection' Then Prefs.ClickClearsSelection := B
+    Else If Name = 'DoubleClickRunsInspector' Then Prefs.DoubleClickRunsInspector := B
+    Else If Name = 'ExpandComponentDesignators' Then Prefs.ExpandComponentDesignators := B
+    Else If Name = 'ExpandNetLabelsText' Then Prefs.ExpandNetLabelsText := B
+    Else If Name = 'ExpandPortsName' Then Prefs.ExpandPortsName := B
+    Else If Name = 'ExpandSheetNumber' Then Prefs.ExpandSheetNumber := B
+    Else If Name = 'ExpandDocumentNumber' Then Prefs.ExpandDocumentNumber := B
+    Else If Name = 'WatermarkReadOnlySheet' Then Prefs.WatermarkReadOnlySheet := B
+    Else If Name = 'AlwaysDrag' Then Prefs.AlwaysDrag := B
+    Else If Name = 'DisplayPrinterFonts' Then Prefs.DisplayPrinterFonts := B
+    Else If Name = 'StringIncRemoveLeadingZero' Then Prefs.StringIncRemoveLeadingZero := B
+    Else If Name = 'CtrlDbleClickGoesDown' Then Prefs.CtrlDbleClickGoesDown := B
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Prefs.ConfirmSelectionMemoryClear := B
+    Else If Name = 'AllowDeviceSheetEditing' Then Prefs.AllowDeviceSheetEditing := B
+    Else If Name = 'WatermarkDeviceSheet' Then Prefs.WatermarkDeviceSheet := B
+    Else If Name = 'CutterGridSizeMultiple' Then Prefs.CutterGridSizeMultiple := N
+    Else If Name = 'CutterFixedLength' Then Prefs.CutterFixedLength := N
+    Else If Name = 'PhysicalViewDimLevel' Then Prefs.PhysicalViewDimLevel := N
+    Else If Name = 'HotSpotGridDistance' Then Prefs.HotSpotGridDistance := N
+    Else If Name = 'UndoRedoStackSize' Then Prefs.UndoRedoStackSize := N
+    Else If Name = 'PinNameMargin' Then Prefs.PinNameMargin := N
+    Else If Name = 'PinNumberMargin' Then Prefs.PinNumberMargin := N
+    Else If Name = 'MultiPartNamingMethod' Then Prefs.MultiPartNamingMethod := N
+    Else If Name = 'StringIncA' Then Prefs.StringIncA := Value
+    Else If Name = 'StringIncB' Then Prefs.StringIncB := Value
+    Else If Name = 'DefaultPowerGndName' Then Prefs.DefaultPowerGndName := Value
+    Else If Name = 'DefaultSignalGndName' Then Prefs.DefaultSignalGndName := Value
+    Else If Name = 'DefaultEarthName' Then Prefs.DefaultEarthName := Value
+    Else If Name = 'DefaultTemplateFileName' Then Prefs.DefaultTemplateFileName := Value;
+    Result := True;
+End;
+
+{..............................................................................}
+{ Gen_SchEditorOptions - read, or set, schematic editor preferences by name.   }
+{ Params: names (comma-separated, to read), set ('Name=Value|Name=Value').    }
+{ Every option set is read back: one that reads otherwise is in not_applied, }
+{ a value of the wrong kind in refused, a name not offered in unknown.       }
+{..............................................................................}
+Function Gen_SchEditorOptions(Params : String; RequestId : String) : String;
+Var
+    Prefs : ISch_Preferences;
+    Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got, Wanted : String;
+    CommaPos, PipePos, EqPos : Integer;
+    Changed : Boolean;
+Begin
+    Names := ExtractJsonValue(Params, 'names');
+    SetStr := ExtractJsonValue(Params, 'set');
+    Prefs := Nil;
+    Try Prefs := SchServer.Preferences; Except Prefs := Nil; End;
+    If Prefs = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PREFERENCES', 'Could not reach the schematic editor preferences');
+        Exit;
+    End;
+    Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
+    Changed := False;
+    While SetStr <> '' Do
+    Begin
+        PipePos := Pos('|', SetStr);
+        If PipePos = 0 Then Begin Item := SetStr; SetStr := ''; End
+        Else Begin Item := Copy(SetStr, 1, PipePos - 1); SetStr := Copy(SetStr, PipePos + 1, Length(SetStr)); End;
+        EqPos := Pos('=', Item);
+        If EqPos = 0 Then Continue;
+        Name := Trim(Copy(Item, 1, EqPos - 1));
+        Value := Copy(Item, EqPos + 1, Length(Item));
+        If SchOptionKind(Name) = '' Then
+        Begin
+            If Unknown <> '' Then Unknown := Unknown + ',';
+            Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        If SchOptionKind(Name) <> 't' Then Value := Trim(Value);
+        If Not SchOptionSet(Prefs, Name, Value) Then
+        Begin
+            If Refused <> '' Then Refused := Refused + ',';
+            Refused := Refused + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        Changed := True;
+        Got := SchOptionGet(Prefs, Name);
+        If SchOptionKind(Name) = 't' Then Wanted := '"' + EscapeJsonString(Value) + '"'
+        Else Wanted := LowerCase(Value);
+        If Got <> Wanted Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Name + '"';
+        End;
+        If Pos(',' + Name + ',', ',' + Names + ',') = 0 Then
+        Begin
+            If Names <> '' Then Names := Names + ',';
+            Names := Names + Name;
+        End;
+    End;
+    While Names <> '' Do
+    Begin
+        CommaPos := Pos(',', Names);
+        If CommaPos = 0 Then Begin Name := Names; Names := ''; End
+        Else Begin Name := Copy(Names, 1, CommaPos - 1); Names := Copy(Names, CommaPos + 1, Length(Names)); End;
+        Name := Trim(Name);
+        If Name = '' Then Continue;
+        If SchOptionKind(Name) = '' Then
+        Begin
+            If Pos('"' + Name + '"', Unknown) = 0 Then
+            Begin
+                If Unknown <> '' Then Unknown := Unknown + ',';
+                Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            End;
+            Continue;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + Name + '":' + SchOptionGet(Prefs, Name);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('options', '{' + Items + '}') + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
+        + JsonRaw('refused', '[' + Refused + ']') + ','
+        + JsonRaw('unknown', '[' + Unknown + ']')));
+End;
+
+{..............................................................................}
+{ Gen_OptimizeWires - Altium's own wire tidy on the active sheet: wires that  }
+{ continue one another are joined and overlaps trimmed                        }
+{ (ISch_Sheet.OptimizeUseOfPolylines). Connectivity is unchanged; the wire   }
+{ count and the vertex count are reported before and after.                  }
+{..............................................................................}
+Procedure CountSheetWires(SchDoc : ISch_Document; Var Wires : Integer; Var Vertices : Integer);
+Var
+    Iter : ISch_Iterator;
+    Wire : ISch_GraphicalObject;
+    N : Integer;
+Begin
+    Wires := 0;
+    Vertices := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eWire));
+        Wire := Iter.FirstSchObject;
+        While Wire <> Nil Do
+        Begin
+            Inc(Wires);
+            N := 0;
+            Try N := Wire.GetState_VerticesCount; Except N := 0; End;
+            Vertices := Vertices + N;
+            Wire := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function Gen_OptimizeWires(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Sheet : ISch_Sheet;
+    WiresBefore, VertsBefore, WiresAfter, VertsAfter : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    CountSheetWires(SchDoc, WiresBefore, VertsBefore);
+    Sheet := SchDoc;
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        Sheet.OptimizeUseOfPolylines;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    End;
+    SchDoc.GraphicallyInvalidate;
+    CountSheetWires(SchDoc, WiresAfter, VertsAfter);
+    If (WiresAfter <> WiresBefore) Or (VertsAfter <> VertsBefore) Then
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonInt('wires_before', WiresBefore) + ','
+        + JsonInt('wires_after', WiresAfter) + ','
+        + JsonInt('vertices_before', VertsBefore) + ','
+        + JsonInt('vertices_after', VertsAfter)));
+End;
+
+{..............................................................................}
+{ Gen_ReferenceZones - the border zone ('B3') each part, net label, port,     }
+{ power port, sheet symbol and off-sheet connector sits in on the active    }
+{ sheet, the way a printed drawing is read. The zone is Altium's own answer }
+{ (ISch_Document.ObjectReferenceZone); a sheet without zones answers ''.    }
+{ Params: kinds (comma-separated: component, net_label, port, power_port,  }
+{ sheet_symbol, cross_sheet; empty = all).                                 }
+{..............................................................................}
+Function Gen_ReferenceZones(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Lbl : ISch_NetLabel;
+    Port : ISch_Port;
+    Pwr : ISch_PowerObject;
+    Sym : ISch_SheetSymbol;
+    Kinds, Kind, Text, Zone, Items : String;
+    Oid, Count : Integer;
+Begin
+    Kinds := LowerCase(ExtractJsonValue(Params, 'kinds'));
+    If Kinds = '' Then Kinds := 'component,net_label,port,power_port,sheet_symbol,cross_sheet';
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    Items := '';
+    Count := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent, eNetLabel, ePort, ePowerObject,
+            eSheetSymbol, eCrossSheetConnector));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Oid := Obj.ObjectId;
+            Kind := '';
+            Text := '';
+            If Oid = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Kind := 'component';
+                Try Text := Comp.Designator.Text; Except End;
+            End
+            Else If Oid = eNetLabel Then
+            Begin
+                Lbl := Obj;
+                Kind := 'net_label';
+                Text := Lbl.Text;
+            End
+            Else If Oid = ePort Then
+            Begin
+                Port := Obj;
+                Kind := 'port';
+                Text := Port.Name;
+            End
+            Else If Oid = ePowerObject Then
+            Begin
+                Pwr := Obj;
+                Kind := 'power_port';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eCrossSheetConnector Then
+            Begin
+                Pwr := Obj;
+                Kind := 'cross_sheet';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eSheetSymbol Then
+            Begin
+                Sym := Obj;
+                Kind := 'sheet_symbol';
+                Try Text := Sym.SheetName.Text; Except End;
+            End;
+            If (Kind <> '') And (Pos(',' + Kind + ',', ',' + Kinds + ',') > 0) Then
+            Begin
+                Zone := '';
+                Try Zone := SchDoc.ObjectReferenceZone(Obj); Except Zone := ''; End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('kind', Kind) + ','
+                    + JsonStr('text', Text) + ','
+                    + JsonStr('zone', Zone) + ','
+                    + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Obj.Location.X))) + ','
+                    + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Obj.Location.Y))));
+                Inc(Count);
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonInt('count', Count) + ','
+        + JsonRaw('objects', '[' + Items + ']')));
+End;
+
 {..............................................................................}
 { Set snap grid and visible grid size for the active schematic                }
-{ Params: snap_grid, visible_grid (in mils)                                   }
+{ Params: snap_grid, visible_grid, hotspot_grid (in mils), snap_grid_on,      }
+{ visible_grid_on, hotspot_grid_on. The hotspot grid is the electrical grid: }
+{ how far a wire end is pulled onto a pin or wire.                           }
 {..............................................................................}
 
 Function Gen_SetGrid(Params : String; RequestId : String) : String;
 Var
-    SnapGrid, VisibleGrid : Double;
-    SnapOnStr, VisibleOnStr : String;
-    SetSnapOn, SetVisibleOn : Boolean;
+    SnapGrid, VisibleGrid, HotGrid : Double;
+    SnapOnStr, VisibleOnStr, HotOnStr : String;
+    SetSnapOn, SetVisibleOn, SetHotOn : Boolean;
     SchDoc : ISch_Document;
 Begin
     SnapGrid := StrToFloatDef(ExtractJsonValue(Params, 'snap_grid'), 0);
@@ -8258,6 +9347,9 @@ Begin
     VisibleOnStr := LowerCase(ExtractJsonValue(Params, 'visible_grid_on'));
     SetSnapOn := (SnapOnStr = 'true') Or (SnapOnStr = 'false');
     SetVisibleOn := (VisibleOnStr = 'true') Or (VisibleOnStr = 'false');
+    HotGrid := StrToFloatDef(ExtractJsonValue(Params, 'hotspot_grid'), 0);
+    HotOnStr := LowerCase(ExtractJsonValue(Params, 'hotspot_grid_on'));
+    SetHotOn := (HotOnStr = 'true') Or (HotOnStr = 'false');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -8266,9 +9358,10 @@ Begin
         Exit;
     End;
 
-    If (SnapGrid <= 0) And (VisibleGrid <= 0) And (Not SetSnapOn) And (Not SetVisibleOn) Then
+    If (SnapGrid <= 0) And (VisibleGrid <= 0) And (HotGrid <= 0) And (Not SetSnapOn)
+        And (Not SetVisibleOn) And (Not SetHotOn) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'Give snap_grid or visible_grid (mils) and/or snap_grid_on or visible_grid_on (true/false)');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'Give snap_grid, visible_grid or hotspot_grid (mils) and/or snap_grid_on, visible_grid_on or hotspot_grid_on (true/false)');
         Exit;
     End;
 
@@ -8288,6 +9381,10 @@ Begin
     Begin
         Try SchDoc.VisibleGridOn := (VisibleOnStr = 'true'); Except End;
     End;
+    If HotGrid > 0 Then
+        SchDoc.HotspotGridSize := MilsToCoordF(HotGrid);
+    If SetHotOn Then
+        SchDoc.HotspotGridOn := (HotOnStr = 'true');
 
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
@@ -8302,7 +9399,9 @@ Begin
         ',"snap_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.SnapGridSize)) +
         ',"visible_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.VisibleGridSize)) +
         ',"snap_grid_on":' + SnapOnStr +
-        ',"visible_grid_on":' + VisibleOnStr + '}');
+        ',"visible_grid_on":' + VisibleOnStr +
+        ',"hotspot_grid":' + FloatToJsonStr(CoordToMilsF(SchDoc.HotspotGridSize)) +
+        ',"hotspot_grid_on":' + BoolToJsonStr(SchDoc.HotspotGridOn) + '}');
 End;
 
 {..............................................................................}
@@ -9083,7 +10182,7 @@ Begin
     Begin
         Result := BuildErrorResponseDetailed(RequestId, 'NOT_FOUND',
             'No symbol designated ' + Designator + ' at that location.',
-            '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+            JsonObj(JsonRaw('candidates', SchComponentCandidates(SchDoc, Designator))));
         Exit;
     End;
 
@@ -9218,7 +10317,7 @@ Begin
             + ' symbols designated ' + Designator + '. Altium mints '
             + 'UniqueIds itself and kept its own on the rest, so those '
             + 'sub-parts still belong to separate packages.',
-            '"symbols":' + Details);
+            JsonObj(JsonRaw('symbols', Details)));
         Exit;
     End;
 
@@ -9388,16 +10487,42 @@ Begin
 End;
 
 {..............................................................................}
-{ Gen_PlaceProbe - Place an ISch_Probe marker for SPICE / simulation            }
-{ measurement nodes. Probe sits at a wire and names the node to measure.       }
-{ Params: x, y, net_name, probe_method (all_nets | probed_nets_only, default    }
-{         probed_nets_only)                                                    }
+{ AddProbeParam - Add one named parameter to a probe, offset from its spot.     }
+{..............................................................................}
+
+Procedure AddProbeParam(Probe : ISch_GraphicalObject; PName, PText : String;
+    Hidden : Boolean; DX, DY : Double);
+Var
+    Param : ISch_Parameter;
+Begin
+    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+    If Param = Nil Then Exit;
+    Param.Name := PName;
+    Param.Text := PText;
+    Try Param.IsHidden := Hidden; Except End;
+    Try Param.Location := Point(Probe.Location.X + MilsToCoordF(DX),
+        Probe.Location.Y + MilsToCoordF(DY)); Except End;
+    Probe.AddSchObject(Param);
+    SchRegisterObject(Probe, Param);
+End;
+
+{..............................................................................}
+{ Gen_PlaceProbe - Place a simulation voltage probe on a wire.                  }
+{ Params: x, y, name (shown instead of the net name), net_name and            }
+{         probe_method (echoed back).                                         }
+{                                                                              }
+{ MEASURED on AD 26.11: Altium's own voltage probe (Sch:PlaceProbe with       }
+{ ProbeType=SimulationProbe|MeasurementType=Voltage) is a probe carrying the  }
+{ parameters SimulationProbe=V (shown), ProbeVoltage=True (hidden),           }
+{ ProbeName, ProbeCustomName (hidden) and ProbeValueDisplay. A bare probe got  }
+{ only ProbeValueDisplay, and the simulator, which finds probes by their      }
+{ SimulationProbe parameter, passed it over.                                  }
 {..............................................................................}
 
 Function Gen_PlaceProbe(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
-    NetName, MethodStr : String;
+    NetName, MethodStr, CustomName : String;
     SchDoc : ISch_Document;
     Probe : ISch_GraphicalObject;
 Begin
@@ -9405,6 +10530,7 @@ Begin
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     NetName := ExtractJsonValue(Params, 'net_name');
     MethodStr := LowerCase(ExtractJsonValue(Params, 'probe_method'));
+    CustomName := ExtractJsonValue(Params, 'name');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -9425,11 +10551,13 @@ Begin
     { ISch_Probe exposes essentially nothing settable from DelphiScript:
       ``Text``, ``NetName`` and ``ProbeMethod`` all raise "Undeclared
       identifier" at compile (Try/Except cannot catch). The probe
-      auto-picks up the net of the wire it lands on, and the default
-      probe method ("probed nets only") is what we want anyway.
-      ``net_name`` and ``probe_method`` from the request are accepted
-      for forward compatibility but currently echoed back in the
-      response without being applied. }
+      picks up the net of the wire it lands on. ``net_name`` and
+      ``probe_method`` are echoed back without being applied. What makes
+      it a simulation probe is its parameters, set as Altium sets them. }
+    AddProbeParam(Probe, 'SimulationProbe', 'V', False, 100, 100);
+    AddProbeParam(Probe, 'ProbeVoltage', 'True', True, 0, 200);
+    AddProbeParam(Probe, 'ProbeName', '', False, 0, 100);
+    AddProbeParam(Probe, 'ProbeCustomName', CustomName, True, 0, 100);
 
     SchDoc.RegisterSchObjectInContainer(Probe);
     SchRegisterObject(SchDoc, Probe);
@@ -9446,7 +10574,118 @@ Begin
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y)
-        + ',"net_name":"' + EscapeJsonString(NetName) + '"}');
+        + ',"net_name":"' + EscapeJsonString(NetName) + '",'
+        + '"name":"' + EscapeJsonString(CustomName) + '","measures":"voltage"}');
+End;
+
+{..............................................................................}
+{ ProbeJson - One probe: where it is and every parameter it carries.          }
+{..............................................................................}
+
+Function ProbeJson(Probe : ISch_GraphicalObject; SheetPath : String) : String;
+Var
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+    ParamsJson, Kind : String;
+    First : Boolean;
+Begin
+    ParamsJson := '';
+    Kind := '';
+    First := True;
+    Iter := Probe.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If Not First Then ParamsJson := ParamsJson + ',';
+            First := False;
+            ParamsJson := ParamsJson + '"' + EscapeJsonString(Param.Name) + '":"'
+                + EscapeJsonString(Param.Text) + '"';
+            If SameText(Param.Name, 'SimulationProbe') Then Kind := Param.Text;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Probe.SchIterator_Destroy(Iter);
+    End;
+    Result := '{"sheet":"' + EscapeJsonString(SheetPath) + '",'
+        + '"x":' + FloatToJsonStr(CoordToMilsF(Probe.Location.X)) + ','
+        + '"y":' + FloatToJsonStr(CoordToMilsF(Probe.Location.Y)) + ','
+        + JsonBool('simulation', Kind <> '') + ','
+        + '"kind":"' + EscapeJsonString(Kind) + '",'
+        + '"parameters":{' + ParamsJson + '}}';
+End;
+
+{..............................................................................}
+{ Gen_GetProbes - Every probe on the focused project's sheets.                 }
+{ Params: none.                                                               }
+{                                                                              }
+{ Each probe with its location and parameters: SimulationProbe (V, I, P, VD+  }
+{ or VD-) marks one the simulator uses, ProbeName is the node Altium resolved }
+{ ("Empty Probe" off a wire), ProbeCustomName the name shown instead, and     }
+{ ProbeValueDisplay the value shown on the sheet. A sheet that is not open is }
+{ listed in not_loaded rather than read.                                      }
+{..............................................................................}
+
+Function Gen_GetProbes(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Probe : ISch_GraphicalObject;
+    I, Count : Integer;
+    Items, NotLoaded, SheetPath : String;
+Begin
+    Project := Nil;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'No focused project. Activate one of the project''s schematic sheets first.');
+        Exit;
+    End;
+
+    Items := '';
+    NotLoaded := '';
+    Count := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(I);
+        If Doc = Nil Then Continue;
+        If Doc.DM_DocumentKind <> 'SCH' Then Continue;
+        SheetPath := Doc.DM_FullPath;
+        { Counted, so the reply also says how many sheets were not read. }
+        SchDoc := ProjectSheet(SheetPath);
+        If SchDoc = Nil Then
+        Begin
+            If NotLoaded <> '' Then NotLoaded := NotLoaded + ',';
+            NotLoaded := NotLoaded + '"' + EscapeJsonString(SheetPath) + '"';
+            Continue;
+        End;
+        Iter := SchDoc.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eProbe));
+            Probe := Iter.FirstSchObject;
+            While Probe <> Nil Do
+            Begin
+                If Count > 0 Then Items := Items + ',';
+                Items := Items + ProbeJson(Probe, SheetPath);
+                Inc(Count);
+                Probe := Iter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(Iter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '",'
+        + '"count":' + IntToStr(Count) + ','
+        + '"probes":[' + Items + '],'
+        + '"not_loaded":[' + NotLoaded + ']}');
 End;
 
 {..............................................................................}
@@ -9604,6 +10843,36 @@ End;
 
 { Set (or create) a component parameter. Returns True if created, False if     }
 { modified. Caller is responsible for PreProcess/PostProcess on the document. }
+{ Set the part's own parameter of that name; False when it has none.    }
+{ Nothing is created.                                                    }
+Function SetOwnCompParamText(Comp : ISch_Component; ParamName, ParamValue : String) : Boolean;
+Var
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+Begin
+    Result := False;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If UpperCase(Param.Name) = UpperCase(ParamName) Then
+            Begin
+                SchBeginModify(Param);
+                Try Param.Text := ParamValue; Except End;
+                SchEndModify(Param);
+                Result := True;
+                Break;
+            End;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+End;
+
 Function SetCompParamText(Comp : ISch_Component; ParamName, ParamValue : String) : Boolean;
 Var
     Iter : ISch_Iterator;
@@ -9615,6 +10884,9 @@ Begin
     Iter := Comp.SchIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        { The part's own parameters: a model's (Value of a SPICE model, say) }
+        { sit below the first level and must not take a part's value.       }
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
         Param := Iter.FirstSchObject;
         While Param <> Nil Do
         Begin
@@ -9642,6 +10914,11 @@ Begin
         Begin
             NewParam.Name := ParamName;
             NewParam.Text := ParamValue;
+            { A new parameter came out shown and at the sheet origin, so    }
+            { stamping many parts piled their texts there. Hidden, at the   }
+            { part's own place.                                              }
+            Try NewParam.IsHidden := True; Except End;
+            Try NewParam.Location := Comp.Location; Except End;
             Comp.AddSchObject(NewParam);
             SchRegisterObject(Comp, NewParam);
             Result := True;
@@ -10037,10 +11314,22 @@ Begin
             If Val = '' Then Continue;  { skip empty values }
             If Key = 'Value' Then
             Begin
-                { Convention: Value -> Comment.Text, NOT a Parameter. }
+                { Convention: Value -> Comment.Text, NOT a new parameter.  }
+                { A symbol that shows its own Value parameter kept showing }
+                { the library's placeholder, so that one is written too.   }
                 SchBeginModify(TargetComp.Comment);
                 Try TargetComp.Comment.Text := Val; Except End;
                 SchEndModify(TargetComp.Comment);
+                SetOwnCompParamText(TargetComp, 'Value', Val);
+                Inc(Applied);
+            End
+            Else If (Key = 'ComponentDescription') Or (Key = 'Description') Then
+            Begin
+                { The part's description. As a parameter it was dropped }
+                { when the sheet was reloaded.                          }
+                SchBeginModify(TargetComp);
+                Try TargetComp.ComponentDescription := Val; Except End;
+                SchEndModify(TargetComp);
                 Inc(Applied);
             End
             Else If Key = 'Footprint' Then
@@ -10651,9 +11940,10 @@ End;
 {..............................................................................}
 { Gen_RunSimulation - Run the focused project's mixed-signal simulation and    }
 { report the results document it produced.                                   }
-{ Params: analysis (optional label, echoed back). The analyses come from the  }
-{         project's simulation setup; a project without one runs Altium's    }
-{         default, an operating point.                                       }
+{ Params: analysis (optional label, echoed back), sheet (the schematic whose  }
+{         settings to run; empty uses the sheet in front). The analyses come }
+{         from the project's simulation setup; a project without one runs    }
+{         Altium's default, an operating point.                              }
 {                                                                              }
 { MEASURED on AD 26.10.1.6: Sim:RunMixedSim, sent here before, is not a       }
 { process on this build. It ran nothing, wrote nothing, raised no message,   }
@@ -10661,6 +11951,15 @@ End;
 { is WorkspaceManager:GenerateReport with ObjectKind=Simulator, Index=1 and  }
 { Action=Run: the first simulator output of the project. A run opens its     }
 { results as a .sdf document and focuses it, so that is the proof it ran.    }
+{                                                                              }
+{ MEASURED on AD 26.11: that run did operating point, DC sweep, transient and }
+{ AC whatever the setup's on/off switches said. The Simulation Dashboard's   }
+{ run adds Kind=AdvSimNetlist and SimulationDashboardConfig=Document=<sheet>, }
+{ and with it only the analyses switched on ran (DC sweep alone, on the same }
+{ setup). Altium reads that selection at the first run after the project     }
+{ opens and keeps it until the project is reopened. So a run for a sheet    }
+{ uses the dashboard's form, and the first simulator output is used only    }
+{ when no sheet is given or in front.                                       }
 {..............................................................................}
 
 Function Gen_RunSimulation(Params : String; RequestId : String) : String;
@@ -10668,10 +11967,11 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     ServerDoc : IServerDocument;
-    AnalysisStr, Before, After, SavedStr : String;
+    AnalysisStr, Before, After, SavedStr, Sheet, RunMode : String;
     OldAge, NewAge : Integer;
 Begin
     AnalysisStr := ExtractJsonValue(Params, 'analysis');
+    Sheet := ExtractJsonValue(Params, 'sheet');
 
     Project := Nil;
     Workspace := GetWorkspace;
@@ -10685,10 +11985,26 @@ Begin
     SmartCompile(Project);
 
     Before := CurrentFocusedDocPath(0);
+    If (Sheet = '') And SameText(ExtractFileExt(Before), '.SchDoc') Then Sheet := Before;
     ResetParameters;
     AddStringParameter('ObjectKind', 'Simulator');
-    AddStringParameter('Index', '1');
-    AddStringParameter('Action', 'Run');
+    If Sheet <> '' Then
+    Begin
+        RunMode := 'sheet';
+        AddStringParameter('Kind', 'AdvSimNetlist');
+        AddStringParameter('DoEditProperties', 'False');
+        AddStringParameter('DoReportStatus', 'False');
+        AddStringParameter('Action', 'Run');
+        AddStringParameter('DefaultCaption', 'True');
+        AddStringParameter('ReturnGeneratedDocuments', 'False');
+        AddStringParameter('SimulationDashboardConfig', 'Document=' + Sheet);
+    End
+    Else
+    Begin
+        RunMode := 'project';
+        AddStringParameter('Index', '1');
+        AddStringParameter('Action', 'Run');
+    End;
     RunProcess('WorkspaceManager:GenerateReport');
     After := CurrentFocusedDocPath(0);
 
@@ -10728,6 +12044,7 @@ Begin
         '{"success":true,"ran":true,"analysis":"' + EscapeJsonString(AnalysisStr) + '",'
         + '"results_document":"' + EscapeJsonString(After) + '",'
         + '"results_saved":' + SavedStr + ','
+        + '"run_mode":"' + RunMode + '","sheet":"' + EscapeJsonString(Sheet) + '",'
         + '"note":"The analyses come from the project''s simulation setup."}');
 End;
 
@@ -10867,12 +12184,8 @@ Begin
     End
     Else
     Begin
-        If Not ServerDoc.SupportsReload Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'RELOAD_UNSUPPORTED',
-                'Altium does not reload this document: ' + FilePath);
-            Exit;
-        End;
+        { AD 26.11 reports SupportsReload False for a settings file, yet }
+        { the document loads its file again when asked.                 }
         Try Done := ServerDoc.DoFileLoad; Except Done := False; End;
         { Without this Altium still holds the old file date and asks to }
         { reload a second time.                                         }
@@ -11340,12 +12653,12 @@ End;
 { designator when one is given. Shared by the file and managed placements.    }
 {..............................................................................}
 Procedure PutLoadedComponent(SchDoc : ISch_Document; Comp : ISch_Component;
-    X : Integer; Y : Integer; Rotation : Integer; Desig : String);
+    X : Double; Y : Double; Rotation : Integer; Desig : String);
 Var
     Orientation : Integer;
 Begin
     Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     Orientation := 0;
     If Rotation = 90 Then Orientation := 1
     Else If Rotation = 180 Then Orientation := 2
@@ -11368,14 +12681,97 @@ End;
 { the assignment is accepted and silently does not take.                      }
 {..............................................................................}
 
+{ Make a part just loaded from a library look like those already on the  }
+{ sheet (measured on AD 26.11.1.5). Its link: SourceLibraryName read "*",  }
+{ and Altium then refuses to change its Design Item ID in Properties; the  }
+{ writes are those Gen_RelinkComponents makes for a SchLib or IntLib part. }
+{ The parameters its models bring, which arrive shown at the sheet origin, }
+{ are hidden; the part's own parameters are left as they are. And the      }
+{ designator takes the sheet's designator font when there is one. Answers  }
+{ JSON fields saying what it found and changed.                            }
+Function TidyLoadedComponent(Part : ISch_Component; LibFileName, LibRef : String;
+    SheetDesFont : Integer) : String;
+Var
+    Walk : ISch_Iterator;
+    Param : ISch_Parameter;
+    OwnNames, Name, Link : String;
+    NowHidden, OldFont : Integer;
+Begin
+    NowHidden := 0;
+    OldFont := 0;
+    Link := '';
+    SchBeginModify(Part);
+    Try
+        If LibFileName <> '' Then
+        Begin
+            Try Part.UseDBTableName := False; Except End;
+            Try Part.DatabaseTableName := ''; Except End;
+            Try Part.UseLibraryName := True; Except End;
+            Try Part.SourceLibraryName := LibFileName; Except End;
+            Try Part.LibReference := LibRef; Except End;
+            Try Part.DesignItemId := LibRef; Except End;
+        End;
+        Try Link := Part.SourceLibraryName; Except Link := ''; End;
+
+        { The part's own parameter names, as '|NAME|NAME|'. }
+        OwnNames := '|';
+        Walk := Part.SchIterator_Create;
+        Try
+            Walk.AddFilter_ObjectSet(MkSet(eParameter));
+            Walk.SetState_IterationDepth(eIterateFirstLevel);
+            Param := Walk.FirstSchObject;
+            While Param <> Nil Do
+            Begin
+                Try OwnNames := OwnNames + UpperCase(Param.Name) + '|'; Except End;
+                Param := Walk.NextSchObject;
+            End;
+        Finally
+            Part.SchIterator_Destroy(Walk);
+        End;
+        { Every other parameter under the part came with a model. }
+        Walk := Part.SchIterator_Create;
+        Try
+            Walk.AddFilter_ObjectSet(MkSet(eParameter));
+            Param := Walk.FirstSchObject;
+            While Param <> Nil Do
+            Begin
+                Name := '';
+                Try Name := UpperCase(Param.Name); Except Name := ''; End;
+                If (Pos('|' + Name + '|', OwnNames) = 0) And (Not Param.IsHidden) Then
+                Begin
+                    Param.IsHidden := True;
+                    Inc(NowHidden);
+                End;
+                Param := Walk.NextSchObject;
+            End;
+        Finally
+            Part.SchIterator_Destroy(Walk);
+        End;
+
+        If SheetDesFont > 0 Then
+        Begin
+            Try OldFont := Part.Designator.FontId; Except OldFont := 0; End;
+            If OldFont <> SheetDesFont Then
+                Try Part.Designator.FontId := SheetDesFont; Except End;
+        End;
+    Finally
+        SchEndModify(Part);
+    End;
+    Result := JsonStr('source_library', Link) + ',' + JsonInt('model_params_hidden', NowHidden);
+    If (SheetDesFont > 0) And (OldFont <> SheetDesFont) Then
+        Result := Result + ',' + JsonInt('designator_font_id', SheetDesFont);
+End;
+
 Function Gen_PlaceSchComponentsFromLibrary(Params : String; RequestId : String) : String;
 Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
     OpCount, Placed, Failed, Rotation, PartId, PartAfter : Integer;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
     ResolvedLib, LibReason, FpBefore, FpAfter, FpIssues : String;
-    FpChosen, FpChoice : Integer;
-    X, Y : Integer;
+    FpChosen, FpChoice, SheetDesFont : Integer;
+    LibFileName, MatchedRows : String;
+    MatchSheet : Boolean;
+    X, Y : Double;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
 Begin
@@ -11400,6 +12796,11 @@ Begin
     FailedRefdes := '';
     FpIssues := '';
     FpChosen := 0;
+    MatchedRows := '';
+    { Taken before the new parts exist, so they do not count towards it. }
+    MatchSheet := Not SameText(ExtractJsonValue(Params, 'tidy'), 'false');
+    SheetDesFont := 0;
+    If MatchSheet Then SheetDesFont := SheetFontFor(SchDoc, eDesignator);
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
@@ -11412,8 +12813,8 @@ Begin
             LibRef := GetBatchField(Op, 'lib_reference');
             Desig := GetBatchField(Op, 'designator');
             Footprint := GetBatchField(Op, 'footprint');
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
             { Part 1 when not given: a symbol is placed as its first part   }
             { unless asked otherwise, and the part is written either way.  }
@@ -11459,6 +12860,9 @@ Begin
             { and which stops the polling loop until a human clicks it. A    }
             { placed component reports its library AS an .IntLib, so callers }
             { copying source_library off the sheet hit this every time.      }
+            { The link names the library the caller named (an IntLib stays  }
+            { an IntLib), not the SchLib it was loaded through.             }
+            LibFileName := ExtractFileName(LibPath);
             If LibPath <> '' Then
             Begin
                 ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
@@ -11562,6 +12966,9 @@ Begin
                             + EscapeJsonString(FpBefore) + '"}';
                 End;
             End;
+            If MatchSheet Then
+                MatchedRows := MatchedRows + ',' + JsonObj(JsonStr('designator', Desig) + ','
+                    + TidyLoadedComponent(Comp, LibFileName, LibRef, SheetDesFont));
             Inc(Placed);
         End;
     Finally
@@ -11575,6 +12982,9 @@ Begin
         + ',"footprints_chosen":' + IntToStr(FpChosen);
     If FpIssues <> '' Then
         ResponseBody := ResponseBody + ',"footprint_issues":[' + FpIssues + ']';
+    If MatchedRows <> '' Then
+        ResponseBody := ResponseBody + ',' + JsonRaw('tidied', '['
+            + Copy(MatchedRows, 2, Length(MatchedRows)) + ']');
     If FailedRefdes <> '' Then
         ResponseBody := ResponseBody + ',"failed_refdes":"'
             + EscapeJsonString(FailedRefdes) + '"';
@@ -11683,8 +13093,8 @@ Begin
             Else
             Begin
                 PutLoadedComponent(SchDoc, Comp,
-                    StrToIntDef(GetBatchField(Op, 'x'), 0),
-                    StrToIntDef(GetBatchField(Op, 'y'), 0),
+                    StrToFloatDef(GetBatchField(Op, 'x'), 0),
+                    StrToFloatDef(GetBatchField(Op, 'y'), 0),
                     StrToIntDef(GetBatchField(Op, 'rotation'), 0), Desig);
                 Inc(Placed);
                 IsPlaced := True;
@@ -11851,6 +13261,7 @@ Var
     SchDoc : ISch_Document;
     PowerObj : ISch_PowerObject;
     Loc : TLocation;
+    FontPick : Integer;
 Begin
     PortsStr := ExtractJsonValue(Params, 'ports');
     If PortsStr = '' Then
@@ -11867,6 +13278,7 @@ Begin
         Exit;
     End;
 
+    FontPick := NewObjectFontId(SchDoc, ePowerObject, Params);
     Placed := 0;
     Failed := 0;
     OpCount := 0;
@@ -11923,6 +13335,7 @@ Begin
                     OrientationVal := 1;
             End;
             Try PowerObj.Orientation := OrientationVal; Except End;
+            If FontPick > 0 Then Try PowerObj.FontId := FontPick; Except End;
 
             SchDoc.RegisterSchObjectInContainer(PowerObj);
             SchRegisterObject(SchDoc, PowerObj);
@@ -11968,7 +13381,8 @@ Var
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PinX, PinY, PinOrient, PinLenMils, PartId, Owner : Integer;
+    PinOrient, PartId, Owner : Integer;
+    PinX, PinY, PinLenMils : Double;
     First : Boolean;
     DataBlob : String;
 Begin
@@ -12021,10 +13435,10 @@ Begin
                         PinLenMils := 0;
                         Try PinNum := Pin.Designator; Except End;
                         Try PinName := Pin.Name; Except End;
-                        Try PinX := CoordToMils(Pin.Location.X); Except End;
-                        Try PinY := CoordToMils(Pin.Location.Y); Except End;
+                        Try PinX := CoordToMilsF(Pin.Location.X); Except End;
+                        Try PinY := CoordToMilsF(Pin.Location.Y); Except End;
                         Try PinOrient := Pin.Orientation; Except End;
-                        Try PinLenMils := CoordToMils(Pin.PinLength); Except End;
+                        Try PinLenMils := CoordToMilsF(Pin.PinLength); Except End;
 
                         If Not First Then PinList := PinList + ',';
                         First := False;
@@ -12032,10 +13446,10 @@ Begin
                             '{"refdes":"' + EscapeJsonString(RefDes) +
                             '","pin_number":"' + EscapeJsonString(PinNum) +
                             '","pin_name":"' + EscapeJsonString(PinName) +
-                            '","x_mils":' + IntToStr(PinX) +
-                            ',"y_mils":' + IntToStr(PinY) +
+                            '","x_mils":' + FloatToJsonStr(PinX) +
+                            ',"y_mils":' + FloatToJsonStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            ',"pin_length_mils":' + FloatToJsonStr(PinLenMils) +
                             ',"part_id":' + IntToStr(PartId) + '}';
                         End;
 
@@ -12164,6 +13578,14 @@ Begin
                                         SchBeginModify(Comp.Comment);
                                         Try Comp.Comment.Text := Val; Except End;
                                         SchEndModify(Comp.Comment);
+                                        SetOwnCompParamText(Comp, 'Value', Val);
+                                    End
+                                    Else If (Key = 'ComponentDescription') Or
+                                        (Key = 'Description') Then
+                                    Begin
+                                        SchBeginModify(Comp);
+                                        Try Comp.ComponentDescription := Val; Except End;
+                                        SchEndModify(Comp);
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin
@@ -14009,6 +15431,7 @@ Var
     SchDoc : ISch_Document;
     TF : ISch_TextFrame;
     TextStr, AlignStr : String;
+    FontPick, FontRead : Integer;
 Begin
     X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
@@ -14016,6 +15439,13 @@ Begin
     Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     TextStr := ExtractJsonValue(Params, 'text');
     AlignStr := LowerCase(ExtractJsonValue(Params, 'align'));
+    { A line break arrives as a newline or as a typed backslash-n, and the  }
+    { second was stored and printed as the two characters. Altium's own    }
+    { break in a text frame is CR LF; every spelling becomes that.          }
+    TextStr := StringReplace(TextStr, '\' + 'n', #10, MkSet(rfReplaceAll));
+    TextStr := StringReplace(TextStr, #13 + #10, #10, MkSet(rfReplaceAll));
+    TextStr := StringReplace(TextStr, #13, #10, MkSet(rfReplaceAll));
+    TextStr := StringReplace(TextStr, #10, #13 + #10, MkSet(rfReplaceAll));
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
 
@@ -14026,6 +15456,7 @@ Begin
         Exit;
     End;
 
+    FontPick := NewObjectFontId(SchDoc, eTextFrame, Params);
     TF := SchServer.SchObjectFactory(eTextFrame, eCreate_Default);
     If TF = Nil Then
     Begin
@@ -14046,6 +15477,7 @@ Begin
     Begin Try TF.Alignment := eRightAlign; Except End; End
     Else
     Begin Try TF.Alignment := eLeftAlign; Except End; End;
+    If FontPick > 0 Then Try TF.FontId := FontPick; Except End;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
@@ -14061,9 +15493,12 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    FontRead := 0;
+    Try FontRead := TF.FontId; Except End;
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
-        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
+        + JsonInt('font_id', FontRead) + '}');
 End;
 
 {..............................................................................}
@@ -14554,11 +15989,13 @@ Var
     SchDoc : ISch_Document;
     PinsStr, RecStr, Remaining, Token : String;
     Desig, PinNum, Lbl : String;
-    PipePos, CommaPos, FieldIdx, StubLen, Stubbed, Failed : Integer;
+    PipePos, CommaPos, FieldIdx, Stubbed, Failed : Integer;
+    StubLen : Double;
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PX, PY, EX, EY, Orient : Integer;
+    PX, PY, EX, EY : Double;
+    Orient : Integer;
     Found : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
@@ -14578,7 +16015,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pins parameter required');
         Exit;
     End;
-    StubLen := StrToIntDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
+    StubLen := StrToFloatDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
 
     Stubbed := 0;
     Failed := 0;
@@ -14629,8 +16066,8 @@ Begin
                             Begin
                                 If (Pin.Designator = PinNum) And PinShownOn(Comp, Pin) Then
                                 Begin
-                                    Try PX := CoordToMils(Pin.Location.X); Except End;
-                                    Try PY := CoordToMils(Pin.Location.Y); Except End;
+                                    Try PX := CoordToMilsF(Pin.Location.X); Except End;
+                                    Try PY := CoordToMilsF(Pin.Location.Y); Except End;
                                     Try Orient := Pin.Orientation; Except End;
                                     Found := True;
                                 End;
@@ -14657,11 +16094,11 @@ Begin
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then
             Begin
-                Wire.Location := Point(MilsToCoord(PX), MilsToCoord(PY));
+                Wire.Location := Point(MilsToCoordF(PX), MilsToCoordF(PY));
                 Wire.InsertVertex := 1;
-                Wire.SetState_Vertex(1, Point(MilsToCoord(PX), MilsToCoord(PY)));
+                Wire.SetState_Vertex(1, Point(MilsToCoordF(PX), MilsToCoordF(PY)));
                 Wire.InsertVertex := 2;
-                Wire.SetState_Vertex(2, Point(MilsToCoord(EX), MilsToCoord(EY)));
+                Wire.SetState_Vertex(2, Point(MilsToCoordF(EX), MilsToCoordF(EY)));
                 SchDoc.RegisterSchObjectInContainer(Wire);
                 SchRegisterObject(SchDoc, Wire);
             End;
@@ -14671,7 +16108,7 @@ Begin
             If NetLabel <> Nil Then
             Begin
                 NetLabel.Text := Lbl;
-                NetLabel.Location := Point(MilsToCoord(EX), MilsToCoord(EY));
+                NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except End;
@@ -15381,6 +16818,7 @@ Begin
         'place_sheet_entry': Result := Gen_PlaceSheetEntry(Params, RequestId);
         'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
+        'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'set_sch_component_parameters': Result := Gen_SetSchComponentParameters(Params, RequestId);
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
@@ -15400,6 +16838,9 @@ Begin
         'get_sheet_frame': Result := Gen_GetSheetFrame(Params, RequestId);
         'shift_sheet':     Result := Gen_ShiftSheet(Params, RequestId);
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
+        'sch_editor_options': Result := Gen_SchEditorOptions(Params, RequestId);
+        'optimize_wires':   Result := Gen_OptimizeWires(Params, RequestId);
+        'reference_zones':  Result := Gen_ReferenceZones(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);
@@ -15415,6 +16856,7 @@ Begin
         'set_component_unique_id':    Result := Gen_SetComponentUniqueId(Params, RequestId);
         'replicate_sch_component':    Result := Gen_ReplicateSchComponent(Params, RequestId);
         'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
+        'get_probes':                 Result := Gen_GetProbes(Params, RequestId);
         'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
         'get_simulation_readiness':   Result := Gen_GetSimulationReadiness(Params, RequestId);
         'attach_spice_primitive':     Result := Gen_AttachSpicePrimitive(Params, RequestId);

@@ -198,8 +198,12 @@ def test_every_step_that_writes_a_property_is_ranked():
 #
 # Step 30 (footprint validation) only reads a footprint's primitives; the
 # properties it reads are listed in the step with where each is already read.
+#
+# Step 58 (phase gates, SDK coverage, LTspice, policies, Altium 365) is
+# Python only: it reads Altium through commands other steps rank and
+# writes no property.
 _STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21", "24",
-                             "30"}
+                             "30", "58"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

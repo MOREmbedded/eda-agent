@@ -402,7 +402,8 @@ def build(template: dict, pins: dict[str, list[PinEnd]], *,
                 orient = item.get("orientation")
                 entry["style"] = style
                 entry["orientation"] = int(orient) if orient is not None else (
-                    3 if style in GROUND_STYLES else 1)
+                    3 if (style in GROUND_STYLES
+                          or "GND" in str(entry.get("net", "")).upper()) else 1)
                 d.ports.append(entry)
             else:
                 entry["orientation"] = int(item.get("orientation", 0))

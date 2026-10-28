@@ -52,6 +52,7 @@ def test_the_target_is_shown_again_and_a_temporary_holder_removed():
 
 def test_the_holder_is_another_footprint_or_a_temporary_one():
     body = _body("FootprintToHoldFocus")
-    assert "Footprint.I_ObjectAddress <> Target.I_ObjectAddress" in body
+    # By name: the footprint's I_ObjectAddress faulted (issue #135).
+    assert "Footprint.Name <> Target.Name" in body
     assert "PcbLib.RegisterComponent(Result)" in body
     assert "TempMade := True" in body

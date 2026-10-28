@@ -448,7 +448,10 @@ def register_sch_template_tools(mcp):
             stamped.add(ref)
             fields = dict(plan_stamps.get(ref, {}))
             if str(p.get("value", "")).strip():
-                fields["Comment"] = str(p["value"])
+                # Value writes the Comment and the part's own Value
+                # parameter: Comment alone left a shown Value at the
+                # library's placeholder.
+                fields["Value"] = str(p["value"])
             if fields:
                 stamps.append(";".join([f"designator={payload_safe(ref)}"] + [
                     f"{k}={payload_safe(v)}" for k, v in fields.items()]))

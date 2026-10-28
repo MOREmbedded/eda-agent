@@ -11,6 +11,7 @@ user tool calls.
 
 import itertools
 import json
+import locale
 import logging
 import os
 import re
@@ -99,6 +100,23 @@ _DIALOG_PROBE_EVERY = 3.0
 #: time: the Pascal loop processes a single request anyway, and
 #: serialising here keeps the trace readable.
 _executor = ThreadPoolExecutor(max_workers=1)
+
+
+def _read_response_json(path: Path) -> Any:
+    """A reply file as JSON: UTF-8 (a byte-order mark dropped), else the
+    Windows codepage. Older Altium builds (AD 25) can
+    write the reply in the system codepage; a whole UTF-8 file always
+    decodes as UTF-8, so the fallback only reads what UTF-8 cannot."""
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        codepage = locale.getencoding()
+        if codepage.lower().replace("-", "") in ("utf8", "utf8sig"):
+            raise
+        text = raw.decode(codepage)
+    return json.loads(text)
+
 
 def _trace_log(workspace_dir: Path, msg: str) -> None:
     """Append a line to workspace/bridge_trace.log. Never raises."""
@@ -1008,10 +1026,7 @@ class AltiumBridge:
 
             if ready:
                 try:
-                    # utf-8-sig drops a byte-order mark at the start,
-                    # which json.load would otherwise reject.
-                    with open(response_path, "r", encoding="utf-8-sig") as f:
-                        data = json.load(f)
+                    data = _read_response_json(response_path)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
                     parse_errors += 1
                     if parse_errors <= 3 or parse_errors % 50 == 0:

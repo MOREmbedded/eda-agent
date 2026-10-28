@@ -46,6 +46,8 @@ from .live import register_live_tools
 from .engineering import register_engineering_tools
 from .profile import register_profile_tools
 from .footprint import register_footprint_tools
+from .conventions import register_convention_tools
+from .altium365 import register_altium365_tools
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -104,6 +106,9 @@ OFFLINE_DESIGN_TOOLS = (
     "design_list_stackups",
     "design_load_fab_profile",
     "design_next_action",
+    "design_phase_answer",
+    "design_phase_gate",
+    "design_phase_standing",
     "design_plan_hierarchy",
     "design_review_file",
     "design_session_log",
@@ -111,6 +116,7 @@ OFFLINE_DESIGN_TOOLS = (
     "design_session_resume",
     "design_session_start",
     "design_session_status",
+    "design_simulate_deck",
     "design_solve_netlist_file",
     "design_suggest_diff_pair_traces",
     "design_suggest_partition",
@@ -198,6 +204,8 @@ def register_all_tools(mcp):
     register_audit_tools(mcp)
     register_route_tools(mcp)
     register_sch_template_tools(mcp)
+    register_convention_tools(mcp)
+    register_altium365_tools(mcp)
 
 
 def register_backend(
@@ -349,6 +357,8 @@ __all__ = [
     "register_parts_tools",
     "register_live_tools",
     "register_footprint_tools",
+    "register_convention_tools",
+    "register_altium365_tools",
     "register_project_tools",
     "register_library_tools",
     "register_generic_tools",
