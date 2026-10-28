@@ -190,7 +190,11 @@ RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     # Var block failed Altium's compile with "Error in
                     # declaration block". Delphi reads index as a property
                     # directive.
-                    "Index"}
+                    "Index",
+                    # Measured 2026-10-28 on AD 26.11: a local declared
+                    # `Cu, Reference : IPCB_ElectricalLayer;` stopped the
+                    # compile with "Unknown identifier: Reference".
+                    "Reference"}
 _RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",

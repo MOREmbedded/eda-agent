@@ -111,7 +111,9 @@ def _call(monkeypatch, bridge, **kw):
 
 
 def test_a_database_row_fills_the_symbol_and_footprint(monkeypatch):
-    bridge = _Bridge(row={"found": True, "symbol_ref": "RES",
+    # As the handler answers: one row, the whole table read.
+    bridge = _Bridge(row={"found": True, "match_count": 1, "scan_capped": False,
+                          "symbol_ref": "RES",
                           "symbol_library": "Passives.SchLib",
                           "footprints": [{"ref": "0603",
                                           "library": "Passives.PcbLib"}]})

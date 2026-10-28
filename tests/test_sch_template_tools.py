@@ -98,7 +98,8 @@ def test_a_clean_template_is_drawn_in_order(tools):
         "generic.set_sch_components_parameters")]
     assert order == sorted(order)
     stamps = dict(bridge.calls)["generic.set_sch_components_parameters"]["stamps"]
-    assert "designator=R1;Comment=10k" in stamps
+    # Value writes the Comment and the part's own Value parameter.
+    assert "designator=R1;Value=10k" in stamps
     ports = dict(bridge.calls)["generic.place_power_ports"]["ports"]
     assert "text=GND" in ports and "style=gnd_power;orientation=3" in ports
     assert "style=bar;orientation=1" in ports
@@ -181,7 +182,7 @@ def test_the_plan_fills_the_parts_and_stamps_its_part_data(tools):
     stamps = dict(bridge.calls)["generic.set_sch_components_parameters"]["stamps"]
     r1 = next(s for s in stamps.split("~~") if s.startswith("designator=R1;"))
     for field in ("Manufacturer=Yageo", "Manufacturer Part Number=RC0603FR-0710KL",
-                  "Footprint=R0603", "Value=10k", "Comment=10k"):
+                  "Footprint=R0603", "Value=10k"):
         assert field in r1
     # R3 is on the plan's sheet and not drawn: said, not refused.
     assert any("R3" in n["where"] for n in out["plan_notes"])

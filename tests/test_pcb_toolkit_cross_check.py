@@ -250,8 +250,9 @@ def test_no_console_window_flashes_on_windows(monkeypatch):
     loop."""
     seen = _stub(monkeypatch, {"spacing_mm": 0.6})
     cross_check("ipc2221_spacing", {"voltage": 48, "environment": "B2"})
+    # noconsole.no_window() is the one helper for this now; it hides the
+    # window with CREATE_NO_WINDOW rather than a STARTUPINFO record.
     assert seen["kwargs"].get("creationflags")
-    assert seen["kwargs"].get("startupinfo") is not None
 
 
 # ---- the mapping table itself -------------------------------------------

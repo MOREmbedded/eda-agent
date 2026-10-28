@@ -1183,6 +1183,26 @@ def main() -> int:
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
+    # altium365-login -- sign in to Nexar once for the Altium 365 tools
+    subparsers.add_parser(
+        "altium365-login",
+        help=("Sign in to Nexar in the browser for the altium365_ tools "
+              "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
+              "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
+    )
+
+    # sdk-reach -- how much of Altium's SDK the property tools reach
+    sdk_p = subparsers.add_parser(
+        "sdk-reach",
+        help=("Count the properties Altium's SDK declares on each object type "
+              "and the share obj_query/obj_modify reach. Reads the SDK index in "
+              "reference/altium_sdk (or EDA_AGENT_SDK_INDEX)."),
+    )
+    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
+                       help="List up to N properties not reached, per type.")
+    sdk_p.add_argument("--json", action="store_true",
+                       help="Every type with every name not reached, as JSON.")
+
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
         "stop-dashboard",
@@ -1379,8 +1399,9 @@ def main() -> int:
                 # On Windows, SIGTERM isn't honoured for native procs;
                 # use TerminateProcess via taskkill for reliability.
                 import subprocess as _sp
+                from .noconsole import no_window
                 _sp.run(["taskkill", "/PID", str(pid), "/F"],
-                        capture_output=True, check=False)
+                        capture_output=True, check=False, **no_window())
             else:
                 _os.kill(pid, _sig.SIGTERM)
             print(f"stopped dashboard pid {pid}")
@@ -1390,6 +1411,30 @@ def main() -> int:
         except Exception as e:
             print(f"could not stop dashboard pid {pid}: {e}")
             return 1
+    if args.command == "altium365-login":
+        import webbrowser
+        from .altium365 import Altium365Error, browser_login, read_environment
+        try:
+            print(browser_login(read_environment(), webbrowser.open))
+            return 0
+        except Altium365Error as exc:
+            print(f"Not signed in: {exc}")
+            return 1
+    if args.command == "sdk-reach":
+        import json
+        from .diag import sdk_reach
+        path = sdk_reach.index_path()
+        if not path.is_file():
+            print(f"No SDK index at {path}. It is made from an Altium install "
+                  "(reference/altium_sdk/dump_sdk.ps1); set EDA_AGENT_SDK_INDEX "
+                  "to point at one.")
+            return 1
+        rows = sdk_reach.measure(sdk_reach.SdkIndex(path))
+        if args.json:
+            print(json.dumps(sdk_reach.as_dict(rows), indent=2))
+        else:
+            print(sdk_reach.report(rows, args.detail))
+        return 0
     if args.command == "review":
         return _run_review(args)
     if args.command == "bom":

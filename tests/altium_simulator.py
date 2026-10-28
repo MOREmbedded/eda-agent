@@ -903,6 +903,14 @@ class AltiumSimulator:
         elif action == "open":
             return _build_success_response(rid, '{"success":true}')
 
+        elif action == "get_open_projects":
+            items = ['{"project_name":"' + _escape_json_string(p.project_name) + '"'
+                     ',"project_path":"' + _escape_json_string(p.project_path) + '"}'
+                     for p in self.projects]
+            return _build_success_response(
+                rid, '{"projects":[' + ",".join(items) + '],"count":'
+                + str(len(items)) + '}')
+
         elif action == "save":
             project = self._get_project(params)
             if project is None:
@@ -1041,6 +1049,12 @@ class AltiumSimulator:
                 count += 1
             data = '{"components":[' + ",".join(items) + '],"count":' + str(count) + '}'
             return _build_success_response(rid, data)
+
+        elif action == "get_variants":
+            # A simulated project has no variants.
+            if self._get_project(params) is None:
+                return _build_error_response(rid, "NO_PROJECT", "No project found")
+            return _build_success_response(rid, '{"variants":[],"count":0}')
 
         elif action == "get_component_info":
             designator = params.get("designator", "")

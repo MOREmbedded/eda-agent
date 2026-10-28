@@ -47,6 +47,33 @@ _SESSION_REMINDER = {
     "datasheet_rules": DATASHEET_RULES,
 }
 
+# The reminder is about 750 tokens. app_ping and app_attach carry it on
+# their first call in this server and then on every Nth call between
+# them, so a long session still sees it now and then without paying for
+# it on every health check. EDA_AGENT_REMINDER_EVERY sets N; 1 sends it
+# every time.
+_REMINDER_EVERY_ENV = "EDA_AGENT_REMINDER_EVERY"
+_REMINDER_EVERY_DEFAULT = 10
+_reminder_calls = 0
+
+
+def _reminder_every() -> int:
+    raw = (os.environ.get(_REMINDER_EVERY_ENV) or "").strip()
+    try:
+        every = int(raw) if raw else _REMINDER_EVERY_DEFAULT
+    except ValueError:
+        every = _REMINDER_EVERY_DEFAULT
+    return max(every, 1)
+
+
+def _with_session_reminder(reply: dict[str, Any]) -> dict[str, Any]:
+    """Add ``_system_reminder`` to ``reply`` when this call is due one."""
+    global _reminder_calls
+    _reminder_calls += 1
+    if (_reminder_calls - 1) % _reminder_every() == 0:
+        reply["_system_reminder"] = _SESSION_REMINDER
+    return reply
+
 
 def _get_ui_inspector():
     """Build a Win32 inspector for the live Altium PID (lazy for tests/Linux)."""
@@ -277,7 +304,7 @@ def register_meta_tools(mcp):
         Filters (all optional, AND-combined):
             category: core, application, project, library, generic,
                 schematic, pcb, audit, design, engineering, simulation, routing, meta,
-                parts, profile (and kicad on the KiCad backend; the EasyEDA tools
+                parts, profile, altium365 (and kicad on the KiCad backend; the EasyEDA tools
                 file under the same subject headings as Altium's, so
                 "pcb" means the same thing on either). "core" holds the
                 EDA-agnostic main flow (review_design, get_board_info,
@@ -621,21 +648,19 @@ def register_application_tools(mcp):
         try:
             bridge.attach()
             script_loaded = bridge.ping()
-            return {
+            return _with_session_reminder({
                 "attached": True,
                 "script_loaded": script_loaded,
                 "message": "Connected to Altium Designer, script is responding"
                 if script_loaded
                 else "Altium is running but script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
         except AltiumNotRunningError as e:
-            return {
+            return _with_session_reminder({
                 "attached": False,
                 "script_loaded": False,
                 "message": str(e),
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
 
     @mcp.tool()
     async def app_save_all() -> dict[str, Any]:
@@ -753,10 +778,15 @@ def register_application_tools(mcp):
             discard_changes: close it even when it reads modified, and
                 LOSE the unsaved edits: the modified flag is cleared first
                 so no save prompt appears. For scratch copies and documents
-                Altium changed by merely opening them, never for work.
+                Altium changed by merely opening them, never for work. A
+                schematic an open project lists may keep the edit in the
+                project after its tab closes: ``discarded`` is then false
+                and ``project_may_hold_edit`` true; proj_close with
+                save=False drops it.
 
         Returns:
-            ``{"closed": bool, "discarded": bool, "file_path": ...}``; an
+            ``{"closed": bool, "discarded": bool, "project_may_hold_edit":
+            bool, "file_path": ...}``; an
             error when the path is not open, or when the document reads
             modified and ``discard_changes`` is not set.
         """
@@ -766,9 +796,24 @@ def register_application_tools(mcp):
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
+    async def _other_open_projects(besides: str) -> list[str]:
+        """Projects open in Altium other than ``besides``; empty when the
+        list cannot be read, since it only informs the reply."""
+        import os
+        try:
+            reply = await get_bridge().send_command_async("project.get_open_projects", {})
+        except Exception:  # noqa: BLE001
+            return []
+        rows = reply.get("projects", []) if isinstance(reply, dict) else []
+        kinds = (".prjpcb", ".prjscr", ".libpkg", ".prjmbd")
+        return [path for path in (str(r.get("project_path", "")) for r in rows)
+                if path.lower().endswith(kinds)
+                and os.path.normcase(path) != os.path.normcase(besides)]
+
     @mcp.tool()
-    async def app_checkpoint(label: str = "", save_first: bool = True) -> dict[str, Any]:
-        """Snapshot the focused project so the session is revertible.
+    async def app_checkpoint(label: str = "", save_first: bool = True,
+                             project_path: str = "") -> dict[str, Any]:
+        """Snapshot a project so the session can be rolled back.
 
         Copies the project's design files into a content-addressed store under
         the workspace (unchanged files are deduplicated, so repeat checkpoints
@@ -780,20 +825,32 @@ def register_application_tools(mcp):
             label: optional human note ("before routing pass").
             save_first: flush dirty Altium docs to disk before snapshotting
                 so the checkpoint reflects in-editor changes (default True).
+            project_path: the .PrjPcb to snapshot. Left empty, the focused
+                project is taken; with several open that may not be the one
+                you are editing, so the reply names it and lists the rest.
 
         Returns:
-            The checkpoint manifest summary (id, created, file_count, ...).
+            The checkpoint manifest summary (id, created, file_count, ...),
+            ``project`` (the one snapshotted) and ``other_open_projects``.
             With ``save_first``, also ``saved``: True when the flush
             worked, False with ``save_error`` and a ``note`` when it did
             not. A checkpoint is still taken either way, but one taken
             after a failed save holds the on-disk state only, which is
             missing precisely the in-editor work you were protecting.
         """
+        import os
         saved: Optional[bool] = None
         save_error = ""
-        project_dir, project_file, err = await _resolve_project_dir()
-        if err:
-            return err
+        if not project_path:
+            project_dir, project_file, err = await _resolve_project_dir()
+            if err:
+                return err
+        elif os.path.isfile(project_path):
+            project_dir, project_file = os.path.split(project_path)
+        else:
+            return {"error": f"no project file at {project_path}", "checkpoint": None}
+        snapshot_of = os.path.join(project_dir or "", project_file or "")
+        others = await _other_open_projects(snapshot_of)
         if save_first:
             # THE PROJECT BEING CHECKPOINTED, not the workspace. save_all
             # wrote every open document, other projects' included, to
@@ -801,7 +858,9 @@ def register_application_tools(mcp):
             # Both this and the path lookup above take the focused project.
             try:
                 await get_bridge().send_command_async(
-                    "project.save", {}, timeout=60.0
+                    "project.save",
+                    {"project_path": project_path} if project_path else {},
+                    timeout=60.0,
                 )
                 saved = True
             except Exception as exc:  # noqa: BLE001 - reported, not raised
@@ -815,7 +874,8 @@ def register_application_tools(mcp):
         from pathlib import Path
         store = _checkpoint_store()
         info = store.create(Path(project_dir), project_file=project_file or "", label=label)
-        result: dict[str, Any] = {"checkpoint": info.summary()}
+        result: dict[str, Any] = {"checkpoint": info.summary(), "project": snapshot_of,
+                                  "other_open_projects": others}
         if save_first:
             result["saved"] = saved
             if not saved:
@@ -1090,7 +1150,7 @@ def register_application_tools(mcp):
             match = False
             msg = f"{msg} {stamp_warnings[0]}"
 
-        return {
+        return _with_session_reminder({
             "success": True,
             "mcp_server_version": _mcp_server_version,
             "altium_script_version": altium_ver,
@@ -1108,8 +1168,7 @@ def register_application_tools(mcp):
             "other_servers": servers,
             "warnings": warnings,
             "message": msg,
-            "_system_reminder": _SESSION_REMINDER,
-        }
+        })
 
     @mcp.tool()
     async def app_get_report() -> dict[str, Any]:
@@ -1241,6 +1300,12 @@ def register_application_tools(mcp):
             Dictionary with kind, file_path, saved, focused,
             added_to_project and member_of (project paths).
         """
+        # A missing folder made Altium raise a modal save error that holds
+        # the bridge until someone answers it; refused here first.
+        folder = os.path.dirname(file_path)
+        if os.path.isabs(file_path) and folder and not os.path.isdir(folder):
+            return {"success": False, "error": "NOT_SAVED",
+                    "reason": f"the folder does not exist: {folder}"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "kind": kind,
@@ -1506,6 +1571,32 @@ def register_application_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_preferences")
         return result
+
+    @mcp.tool()
+    async def app_autosave(
+        enabled: Optional[bool] = None,
+        interval_minutes: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, Altium's auto-save: whether it saves backup
+        copies of open documents, and how often.
+
+        Call with nothing to read. Both values are read back.
+
+        Args:
+            enabled: Auto-save on (True) or off (False).
+            interval_minutes: Minutes between saves, 1 or more.
+
+        Returns:
+            ``enabled``, ``interval_minutes`` and ``changed``.
+        """
+        params: dict[str, Any] = {}
+        if enabled is not None:
+            params["enabled"] = "true" if enabled else "false"
+        if interval_minutes is not None:
+            if interval_minutes < 1:
+                return {"ok": False, "reason": "interval_minutes is 1 or more"}
+            params["interval"] = str(interval_minutes)
+        return await get_bridge().send_command_async("application.autosave", params)
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:
