@@ -13,10 +13,12 @@ import pytest
 from eda_agent.diag.perf import (
     build_report,
     correlate,
+    format_report,
     parse_activity_log,
     parse_bridge_trace,
     percentile,
     report_from_workspace,
+    request_key,
 )
 
 TRACE = """\
@@ -85,8 +87,10 @@ def test_session_markers_are_not_counted_as_calls():
 
 # ---------------------------------------------------------------- correlation
 
-def test_the_short_and_long_ids_are_joined_on_the_prefix():
-    """bridge_trace writes 8 characters, activity.log carries 32."""
+def test_a_log_from_before_session_tags_still_joins_on_the_prefix():
+    """Ids were a bare uuid then: bridge_trace wrote the leading 8
+    characters, activity.log carried all 32, and those 8 did name one
+    call. Widening the id must not cost anyone their old logs."""
     calls = {c.request_id: c for c in
              correlate(parse_bridge_trace(TRACE), parse_activity_log(ACTIVITY))}
     assert calls["5d765674"].handler_ms == 16
@@ -178,3 +182,185 @@ def test_a_malformed_line_does_not_derail_the_parse(tmp_path):
     (tmp_path / "bridge_trace.log").write_text(
         "this is not a log line\n" + TRACE, encoding="utf-8")
     assert report_from_workspace(tmp_path)["calls"] == 3
+
+
+# ------------------------------------------------- the session collapse
+#
+# Ids are <session tag>-<sequence>-<random> and the tag is fixed for the
+# life of a server process, so every id in a session opens with the same
+# 8 characters. bridge_trace logged exactly those 8 and the join keyed on
+# them, so a session's calls landed on one entry and only the last
+# survived. Two sessions, three calls each, in the shapes the live logs
+# on this machine hold.
+
+SESSIONS_TRACE = """\
+1793176203.785 SEND cmd=application.ping id=a3c05b5f-00000001
+1793176203.828 POLL_START id=a3c05b5f-00000001 timeout=3.0s interval=0.01s
+1793176203.853 POLL_SEEN id=a3c05b5f-00000001 after=25ms polls=5
+1793176203.859 POLL_MATCH id=a3c05b5f-00000001 elapsed=31ms polls=5 parse_errs=0 extensions=0
+1793176203.880 SEND cmd=application.get_open_documents id=a3c05b5f-00000002
+1793176203.881 POLL_START id=a3c05b5f-00000002 timeout=15.0s interval=0.01s
+1793176205.225 POLL_MATCH id=a3c05b5f-00000002 elapsed=1344ms polls=129 parse_errs=0 extensions=0
+1793176209.100 SEND cmd=application.save_all id=a3c05b5f-00000003
+1793176212.140 POLL_MATCH id=a3c05b5f-00000003 elapsed=3040ms polls=300 parse_errs=0 extensions=0
+1793176300.010 SEND cmd=application.ping id=00597274-00000001
+1793176300.052 POLL_MATCH id=00597274-00000001 elapsed=42ms polls=4 parse_errs=0 extensions=0
+1793176301.000 SEND cmd=pcb.get_board_info id=00597274-00000002
+1793176301.610 POLL_MATCH id=00597274-00000002 elapsed=610ms polls=60 parse_errs=0 extensions=0
+1793176302.000 SEND cmd=sch.get_components id=00597274-00000003
+1793176304.500 POLL_TIMEOUT id=00597274-00000003 elapsed=2500ms polls=250 parse_errs=0 extensions=0 first_seen_ms=-1
+"""
+
+SESSIONS_ACTIVITY = """\
+2026-10-28 09:29:32.761,0,_session_start,version=2026.10.27.7,protocol=2
+2026-10-28 09:29:32.776,0,_tick_first,interval=10
+2026-10-28 09:30:03.853,16,application.ping,OK,361,{"protocol_version":2,"id":"a3c05b5f-00000001-435402a91e3b","success":true,"data":{"pong":true}}
+2026-10-28 09:30:05.212,1297,application.get_open_documents,OK,156905,{"protocol_version":2,"id":"a3c05b5f-00000002-bac877d73bc7","success":true,"data":[{"file_name":"CMP-00000268-1.CmpLib"}]}
+2026-10-28 09:30:12.140,2990,application.save_all,OK,517,{"protocol_version":2,"id":"a3c05b5f-00000003-7d2b4e1c9a05","success":true}
+2026-10-28 09:31:00.052,9,application.ping,OK,361,{"protocol_version":2,"id":"00597274-00000001-f26a650ce2ed","success":true}
+2026-10-28 09:31:01.610,580,pcb.get_board_info,OK,2104,{"protocol_version":2,"id":"00597274-00000002-96d1642e82e4","success":true}
+2026-10-28 09:31:40.100,0,_sdk_probe,IPCB_Board,0,
+2026-10-28 09:31:41.200,0,_purge_requests,count=3,0,
+2026-10-28 09:40:17.718,0,_session_end,requests=6,quitting=no
+"""
+
+#: One of those sessions as a log written before the id was widened
+#: holds it: the tag alone, repeated on every line.
+LEGACY_TRACE = """\
+1793176203.785 SEND cmd=application.ping id=a3c05b5f
+1793176203.859 POLL_MATCH id=a3c05b5f elapsed=31ms polls=5 parse_errs=0 extensions=0
+1793176203.880 SEND cmd=application.get_open_documents id=a3c05b5f
+1793176205.225 POLL_MATCH id=a3c05b5f elapsed=1344ms polls=129 parse_errs=0 extensions=0
+1793176209.100 SEND cmd=application.save_all id=a3c05b5f
+1793176212.140 POLL_MATCH id=a3c05b5f elapsed=3040ms polls=300 parse_errs=0 extensions=0
+"""
+
+
+def test_ids_that_share_a_session_tag_are_one_call_each():
+    """The defect in one line: six requests across two sessions, whose
+    ids share 8 leading characters in threes. Keying on those 8 gave
+    two calls and lost four."""
+    calls = parse_bridge_trace(SESSIONS_TRACE)
+    assert len(calls) == 6
+    assert calls["a3c05b5f-00000002"].command == "application.get_open_documents"
+    assert calls["a3c05b5f-00000002"].round_trip_ms == 1344
+
+
+def test_a_handler_time_lands_on_its_own_call_not_the_sessions_last():
+    """The join has to match a call to the row Altium wrote for IT. On
+    the session tag alone every call of a session took whichever row
+    came last, so a 16 ms ping reported the save_all handler."""
+    calls = {c.request_id: c for c in
+             correlate(parse_bridge_trace(SESSIONS_TRACE),
+                       parse_activity_log(SESSIONS_ACTIVITY))}
+    assert calls["a3c05b5f-00000001"].handler_ms == 16
+    assert calls["a3c05b5f-00000002"].handler_ms == 1297
+    assert calls["a3c05b5f-00000003"].handler_ms == 2990
+    assert calls["a3c05b5f-00000001"].overhead_ms == 31 - 16
+
+
+def test_every_call_of_a_session_is_counted_not_only_the_last():
+    report = build_report(correlate(parse_bridge_trace(SESSIONS_TRACE),
+                                    parse_activity_log(SESSIONS_ACTIVITY)))
+    assert report["calls"] == 6
+    assert report["requests"] == 6
+    assert report["unresolved"] == 0
+    assert report["correlated"] == 5, "sch.get_components timed out, never ran"
+
+
+def test_an_activity_id_carrying_dashes_is_recovered():
+    """The id gained dashes while the payload search still demanded
+    hex, so it matched 8 characters, wanted a quote and met a dash.
+    Two rows in 461 yielded an id on the real log, and every other
+    handler time was dropped without a word."""
+    rows = parse_activity_log(SESSIONS_ACTIVITY)
+    assert "a3c05b5f-00000002-bac877d73bc7" in rows
+    assert rows["a3c05b5f-00000002-bac877d73bc7"]["handler_ms"] == 1297
+
+
+def test_pascals_own_markers_are_not_mistaken_for_calls():
+    """_sdk_probe, _purge_requests and _tick_first are bookkeeping rows
+    Pascal writes with no id, 161 of 410 rows on the real log. Only
+    _session_start and _session_end were known here."""
+    rows = parse_activity_log(SESSIONS_ACTIVITY)
+    assert len(rows) == 5
+    assert not any(data["command"].startswith("_") for data in rows.values())
+
+
+# ------------------------------------------------------------ old logs
+
+def test_a_log_written_before_the_id_was_widened_still_reads():
+    """People have these on disk. Three requests share one logged id,
+    so one entry is all that can survive, but the command must not fail
+    and the parse must not invent anything."""
+    calls = parse_bridge_trace(LEGACY_TRACE)
+    assert len(calls) == 1
+    assert calls["a3c05b5f"].requests == 3
+
+
+def test_the_report_says_how_many_requests_it_could_not_tell_apart():
+    """The silent half of the defect: 1244 trace lines came back as 129
+    calls with nothing saying two thirds had gone."""
+    report = build_report(correlate(parse_bridge_trace(LEGACY_TRACE), {}),
+                          trace_lines=6)
+    assert report["trace_lines"] == 6
+    assert report["requests"] == 3
+    assert report["calls"] == 1
+    assert report["unresolved"] == 2
+    assert "2 request(s) could not be told apart" in format_report(report)
+
+
+def test_a_session_tag_is_never_joined_to_a_full_id():
+    """A legacy trace line names a session whose handler times are all
+    still in activity.log. Attaching one of them would be a guess
+    dressed as a measurement."""
+    calls = correlate(parse_bridge_trace(LEGACY_TRACE),
+                      parse_activity_log(SESSIONS_ACTIVITY))
+    assert [c.handler_ms for c in calls] == [None]
+
+
+def test_old_and_new_lines_in_one_file_both_read():
+    """A log does not start again when the server is upgraded: the file
+    on disk holds the old shape and then the new one."""
+    calls = parse_bridge_trace(LEGACY_TRACE + SESSIONS_TRACE)
+    assert len(calls) == 7, "one collapsed legacy entry, six real calls"
+    assert calls["a3c05b5f"].requests == 3
+    assert calls["a3c05b5f-00000001"].requests == 1
+
+
+# ----------------------------------------------------------- the key
+
+def test_the_bridge_and_the_report_shorten_an_id_the_same_way():
+    """The join holds only while the writer and the reader agree on
+    what names a call. They are two functions in two modules, so this
+    is where they are held together."""
+    from eda_agent.bridge.altium_bridge import trace_id
+
+    for request_id in ("a3c05b5f-00000001-435402a91e3b",
+                       "00597274-00000123-f26a650ce2ed",
+                       "5d765674e207407ea8657a6d742a01b7",
+                       "500aec90",
+                       ""):
+        assert trace_id(request_id) == request_key(request_id)
+
+
+def test_a_key_keeps_the_sequence_that_tells_two_calls_apart():
+    assert request_key("a3c05b5f-00000001-435402a91e3b") == "a3c05b5f-00000001"
+    assert request_key("a3c05b5f-00000002-bac877d73bc7") == "a3c05b5f-00000002"
+
+
+def test_a_uuid_without_a_tag_keeps_its_leading_eight():
+    """The shape of an id from before session tags."""
+    assert request_key("5d765674e207407ea8657a6d742a01b7") == "5d765674"
+
+
+# ------------------------------------------------------- the workspace
+
+def test_the_workspace_report_counts_the_lines_it_read(tmp_path):
+    (tmp_path / "bridge_trace.log").write_text(SESSIONS_TRACE, encoding="utf-8")
+    (tmp_path / "activity.log").write_text(SESSIONS_ACTIVITY, encoding="utf-8")
+    report = report_from_workspace(tmp_path)
+    assert report["trace_lines"] == 15
+    assert report["calls"] == 6 and report["unresolved"] == 0
+    assert report["activity_rows"] == 5
+    assert report["correlated"] == 5

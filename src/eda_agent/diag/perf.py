@@ -23,9 +23,23 @@ So this module joins them on the request id and reports both halves
 side by side. It parses text and computes percentiles; it talks to
 nothing.
 
-The ids differ in width by design: bridge_trace writes the first 8
-characters, activity.log carries the full 32 in its payload, so the
-join is a prefix match.
+The two logs write the id differently, and the join has to respect
+that. A request id is ``<session tag>-<sequence>-<random>``, and the
+tag is one value for the whole server process. bridge_trace used to
+write its first 8 characters, which name the SESSION, not the call,
+so every line a session wrote carried the same id. The join then
+collapsed a session into a single entry and the report presented the
+survivors as the whole story: on a real workspace 1244 trace lines
+became 129 calls, each holding only its session's last request.
+
+So bridge_trace now writes ``<tag>-<sequence>``, which is unique
+within a session; activity.log still carries the full id in its
+payload; and ``request_key`` reduces either form to the same key.
+Ids predating session tags were a bare hex uuid whose first 8
+characters already named one call, so logs from then still join as
+they always did. Lines carrying a session tag alone cannot be split
+after the fact, and the report counts them rather than dropping them
+out of sight.
 """
 
 from __future__ import annotations
@@ -36,23 +50,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-#: ``1791917156.118 SEND cmd=application.ping id=500aec90``
-_SEND = re.compile(r"^(?P<ts>\d+\.\d+)\s+SEND\s+cmd=(?P<cmd>\S+)\s+id=(?P<id>[0-9a-f]+)")
+#: ``1793176203.785 SEND cmd=application.ping id=a3c05b5f-00000001``
+_SEND = re.compile(r"^(?P<ts>\d+\.\d+)\s+SEND\s+cmd=(?P<cmd>\S+)\s+id=(?P<id>[0-9a-f][0-9a-f-]*)")
 
 #: POLL_MATCH and POLL_TIMEOUT share a shape; the outcome is the verb.
 _OUTCOME = re.compile(
-    r"^(?P<ts>\d+\.\d+)\s+POLL_(?P<kind>MATCH|TIMEOUT)\s+id=(?P<id>[0-9a-f]+)\s+"
+    r"^(?P<ts>\d+\.\d+)\s+POLL_(?P<kind>MATCH|TIMEOUT)\s+id=(?P<id>[0-9a-f][0-9a-f-]*)\s+"
     r"elapsed=(?P<elapsed>\d+)ms\s+polls=(?P<polls>\d+)\s+"
     r"parse_errs=(?P<parse_errs>\d+)\s+extensions=(?P<extensions>\d+)")
 
-#: ``POLL_DIALOG id=fd965e2f after=3.0s summary=...``
+#: ``POLL_DIALOG id=fd965e2f-00000004 after=3.0s summary=...``
 _DIALOG = re.compile(
-    r"^(?P<ts>\d+\.\d+)\s+POLL_DIALOG\s+id=(?P<id>[0-9a-f]+)\s+after=\S+\s+summary=(?P<summary>.*)$")
+    r"^(?P<ts>\d+\.\d+)\s+POLL_DIALOG\s+id=(?P<id>[0-9a-f][0-9a-f-]*)\s+after=\S+\s+summary=(?P<summary>.*)$")
 
 #: ``2026-10-15 00:00:16.751,1109,application.set_active_document,OK,517,{...}``
 _ACTIVITY = re.compile(
     r"^(?P<stamp>\d{4}-\d{2}-\d{2} [\d:.]+),(?P<ms>\d+),(?P<cmd>[^,]*),"
     r"(?P<tag>[^,]*),(?P<bytes>\d*),?(?P<payload>.*)$")
+
+
+def request_key(request_id: str) -> str:
+    """The part of a request id that names one call.
+
+    The mirror of ``trace_id`` in bridge/altium_bridge.py, which
+    decides what reaches bridge_trace.log: ``<tag>-<sequence>`` for an
+    id that carries a session tag, the leading 8 characters for a bare
+    uuid from before tags existed. It lives here rather than being
+    imported so this module stays a parser of text that loads nothing
+    from the bridge; a test holds the two spellings together.
+    """
+    tag, dash, rest = request_id.partition("-")
+    if not dash:
+        return request_id[:8]
+    return f"{tag}-{rest.partition('-')[0]}"
 
 
 @dataclass
@@ -70,6 +100,11 @@ class Call:
     timed_out: bool = False
     response_bytes: int | None = None
     blocked_by_dialog: str = ""
+    #: SEND lines that landed on this id. 1 for an id that names one
+    #: call; more means a log written while the trace recorded only the
+    #: session tag, where several requests are indistinguishable. The
+    #: report reads this back so they are counted, not quietly lost.
+    requests: int = 0
 
     @property
     def overhead_ms(self) -> int | None:
@@ -125,7 +160,14 @@ def _summary(values: list[int]) -> dict[str, Any]:
 
 
 def parse_bridge_trace(text: str) -> dict[str, Call]:
-    """Round trips as the caller experienced them, keyed by short id."""
+    """Round trips as the caller experienced them, keyed by logged id.
+
+    One entry per id, and ``Call.requests`` says how many SEND lines
+    claimed that id. Above one the log predates the widened id: those
+    requests overwrite each other here and only the last survives,
+    which is why the count is kept rather than inferred from the
+    entries that are left.
+    """
     calls: dict[str, Call] = {}
 
     def call_for(request_id: str) -> Call:
@@ -137,6 +179,7 @@ def parse_bridge_trace(text: str) -> dict[str, Call]:
             call = call_for(match["id"])
             call.command = match["cmd"]
             call.sent_at = float(match["ts"])
+            call.requests += 1
             continue
         match = _OUTCOME.match(line)
         if match:
@@ -156,18 +199,24 @@ def parse_bridge_trace(text: str) -> dict[str, Call]:
 def parse_activity_log(text: str) -> dict[str, dict[str, Any]]:
     """Handler times from Altium, keyed by the full request id.
 
-    Session markers (``_session_start`` / ``_session_end``) carry no id
-    and are skipped rather than counted as calls.
+    Pascal writes its own markers to this log (``_session_start``,
+    ``_session_end``, ``_sdk_probe``, ``_purge_requests``,
+    ``_pcb_geometry``, ``_tick_first``). They are bookkeeping, not
+    requests: every one is named with a leading underscore, so the
+    whole family is skipped rather than only the two that were known
+    when this was written. On a real workspace they were 161 of 410
+    rows, and letting them through made the id-less rows look like
+    calls whose handler time had gone missing.
     """
     out: dict[str, dict[str, Any]] = {}
     for line in text.splitlines():
         match = _ACTIVITY.match(line.strip())
-        if not match or match["cmd"].startswith("_session"):
+        if not match or match["cmd"].startswith("_"):
             continue
         payload = match["payload"]
         request_id = ""
         if payload:
-            found = re.search(r'"id"\s*:\s*"([0-9a-f]+)"', payload)
+            found = re.search(r'"id"\s*:\s*"([0-9a-f][0-9a-f-]*)"', payload)
             if found:
                 request_id = found.group(1)
         if not request_id:
@@ -187,12 +236,16 @@ def correlate(trace: dict[str, Call],
               activity: dict[str, dict[str, Any]]) -> list[Call]:
     """Attach each handler time to its round trip.
 
-    bridge_trace holds the first 8 characters of the id and activity.log
-    the full 32, so the index is built on the prefix.
+    activity.log carries the full id, bridge_trace the part of it that
+    names one call, so the index is built by reducing the full id the
+    same way. A trace id that is a bare session tag matches nothing
+    here, and that is deliberate: any handler time it picked up would
+    belong to whichever call of that session happened to be logged
+    last, which is how the report came to report fiction.
     """
-    by_prefix = {full[:8]: data for full, data in activity.items()}
-    for short, call in trace.items():
-        data = by_prefix.get(short[:8])
+    by_key = {request_key(full): data for full, data in activity.items()}
+    for logged, call in trace.items():
+        data = by_key.get(logged)
         if not data:
             continue
         call.handler_ms = data["handler_ms"]
@@ -202,7 +255,15 @@ def correlate(trace: dict[str, Call],
     return sorted(trace.values(), key=lambda c: c.sent_at or 0.0)
 
 
-def build_report(calls: list[Call]) -> dict[str, Any]:
+def build_report(calls: list[Call], trace_lines: int = 0,
+                 activity_rows: int = 0) -> dict[str, Any]:
+    """Statistics over the calls, with the tallies that bound them.
+
+    ``trace_lines`` and ``activity_rows`` are what the two files held;
+    ``calls`` and ``correlated`` are what could be resolved from them.
+    Reporting only the second pair is how an under-count passes for an
+    answer, so both go into the report and both get printed.
+    """
     stats: dict[str, CommandStats] = {}
     for call in calls:
         name = call.command or "(unknown)"
@@ -220,7 +281,14 @@ def build_report(calls: list[Call]) -> dict[str, Any]:
 
     ranked = sorted(stats.values(), key=lambda s: sum(s.round_trip), reverse=True)
     correlated = [c for c in calls if c.overhead_ms is not None]
+    # A call parsed from POLL lines alone never saw its SEND, so it
+    # counts as the one request it plainly is.
+    requests = sum(max(c.requests, 1) for c in calls)
     return {
+        "trace_lines": trace_lines,
+        "requests": requests,
+        "unresolved": requests - len(calls),
+        "activity_rows": activity_rows,
         "calls": len(calls),
         "correlated": len(correlated),
         "timeouts": sum(1 for c in calls if c.timed_out),
@@ -244,19 +312,22 @@ def report_from_workspace(workspace: Path) -> dict[str, Any]:
 
     A missing log is not an error: bridge_trace alone still gives round
     trips, and activity.log alone still gives handler times. The report
-    says how many calls it could correlate so a half-answer is never
-    mistaken for a whole one.
+    says how much of each file it could resolve so a half-answer is
+    never mistaken for a whole one.
     """
     workspace = Path(workspace)
     trace_path = workspace / "bridge_trace.log"
     activity_path = workspace / "activity.log"
-    trace = parse_bridge_trace(
-        trace_path.read_text(encoding="utf-8", errors="replace")
-        if trace_path.exists() else "")
+    trace_text = (trace_path.read_text(encoding="utf-8", errors="replace")
+                  if trace_path.exists() else "")
     activity = parse_activity_log(
         activity_path.read_text(encoding="utf-8", errors="replace")
         if activity_path.exists() else "")
-    report = build_report(correlate(trace, activity))
+    trace = parse_bridge_trace(trace_text)
+    report = build_report(
+        correlate(trace, activity),
+        trace_lines=sum(1 for line in trace_text.splitlines() if line.strip()),
+        activity_rows=len(activity))
     report["sources"] = {
         "bridge_trace": str(trace_path) if trace_path.exists() else None,
         "activity_log": str(activity_path) if activity_path.exists() else None,
@@ -277,9 +348,21 @@ def format_report(report: dict[str, Any], limit: int = 15) -> str:
     lines.append("")
 
     totals = report["totals"]
-    lines.append(f"  {report['calls']} call(s), {report['correlated']} correlated "
-                 f"with a handler time, {report['timeouts']} timed out, "
-                 f"{report['extended']} needed a deadline extension")
+    lines.append(f"  {report['trace_lines']} trace line(s) read, "
+                 f"{report['requests']} request(s) sent, "
+                 f"{report['calls']} call(s) resolved")
+    if report["unresolved"]:
+        lines.append(f"  {report['unresolved']} request(s) could not be told "
+                     "apart: those trace lines name")
+        lines.append("  the session rather than the call, and no later reading "
+                     "can split")
+        lines.append("  them. The figures below cover the calls that were "
+                     "resolved.")
+    lines.append(f"  {report['correlated']} call(s) carry a handler time "
+                 f"({report['activity_rows']} activity.log row(s) held a "
+                 "usable id)")
+    lines.append(f"  {report['timeouts']} timed out, {report['extended']} "
+                 "needed a deadline extension")
     lines.append("")
     lines.append(f"  {'':10s} {'p50':>8s} {'p95':>8s} {'max':>8s}")
     for label, key in (("round trip", "round_trip_ms"), ("in Altium", "handler_ms"),

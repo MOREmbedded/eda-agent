@@ -338,6 +338,29 @@ def _short_id() -> str:
     return f"{_SESSION_TAG}-{seq:08d}-{uuid.uuid4().hex[:12]}"
 
 
+def trace_id(request_id: str) -> str:
+    """The part of a request id that names ONE call, for log lines.
+
+    An id is ``<session tag>-<sequence>-<random>`` and the tag is one
+    value for the life of the server process, so its first 8 characters
+    name the SESSION, not the call. Logging those made every line a
+    session wrote carry the same id, and ``eda-agent perf`` duly
+    collapsed a whole session's calls into a single row. Tag plus
+    sequence is unique per session and still short enough to scan.
+
+    Ids from before session tags were a bare hex uuid with no dash,
+    whose first 8 characters already named one call, so those are left
+    as they were and old logs read as they always did.
+
+    diag/perf.py reduces the full id in activity.log the same way to
+    join the two logs, and a test holds the two rules together.
+    """
+    tag, dash, rest = request_id.partition("-")
+    if not dash:
+        return request_id[:8]
+    return f"{tag}-{rest.partition('-')[0]}"
+
+
 @dataclass
 class CommandRequest:
     """A command request to be sent to Altium."""
@@ -878,7 +901,7 @@ class AltiumBridge:
 
         _trace_log(
             workspace_dir,
-            f"POLL_START id={request_id[:8]} timeout={timeout}s "
+            f"POLL_START id={trace_id(request_id)} timeout={timeout}s "
             f"interval={poll_interval}s",
         )
 
@@ -939,7 +962,7 @@ class AltiumBridge:
                     waited = now - start
                     _trace_log(
                         workspace_dir,
-                        f"POLL_DIALOG id={request_id[:8]} "
+                        f"POLL_DIALOG id={trace_id(request_id)} "
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
@@ -972,7 +995,7 @@ class AltiumBridge:
                 first_appearance = time.monotonic() - start
                 _trace_log(
                     workspace_dir,
-                    f"POLL_SEEN id={request_id[:8]} "
+                    f"POLL_SEEN id={trace_id(request_id)} "
                     f"after={first_appearance*1000:.0f}ms polls={poll_count}",
                 )
 
@@ -994,7 +1017,7 @@ class AltiumBridge:
                     if parse_errors <= 3 or parse_errors % 50 == 0:
                         _trace_log(
                             workspace_dir,
-                            f"POLL_PARSE_ERR id={request_id[:8]} "
+                            f"POLL_PARSE_ERR id={trace_id(request_id)} "
                             f"err={type(e).__name__} count={parse_errors}",
                         )
                     # A handful of parse errors is normal while Pascal is
@@ -1010,7 +1033,7 @@ class AltiumBridge:
                         self._note_fault(
                             workspace_dir, recovery_guidance(CORRUPT_RESPONSE))
                         raise AltiumCommandError(
-                            f"Response file for request {request_id[:8]} was "
+                            f"Response file for request {trace_id(request_id)} was "
                             f"present but unparseable after {parse_errors} "
                             f"attempts -- Altium likely crashed mid-write. "
                             f"The corrupt file was removed; retry the call. "
@@ -1029,7 +1052,7 @@ class AltiumBridge:
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
-                        f"POLL_MATCH id={request_id[:8]} elapsed={elapsed:.0f}ms "
+                        f"POLL_MATCH id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
                         f"polls={poll_count} parse_errs={parse_errors} "
                         f"extensions={extensions}",
                     )
@@ -1042,7 +1065,7 @@ class AltiumBridge:
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
-                        f"POLL_EXTEND id={request_id[:8]} "
+                        f"POLL_EXTEND id={trace_id(request_id)} "
                         f"extensions={extensions}/{ext_cap} "
                         f"elapsed={elapsed:.0f}ms",
                     )
@@ -1063,7 +1086,7 @@ class AltiumBridge:
                     queue_extensions += 1
                     _trace_log(
                         workspace_dir,
-                        f"POLL_QUEUED id={request_id[:8]} "
+                        f"POLL_QUEUED id={trace_id(request_id)} "
                         f"waits={queue_extensions}/{_MAX_QUEUE_EXTENSIONS}"
                         + (" restart" if restarting else ""),
                     )
@@ -1092,7 +1115,7 @@ class AltiumBridge:
         elapsed = (time.monotonic() - start) * 1000
         _trace_log(
             workspace_dir,
-            f"POLL_TIMEOUT id={request_id[:8]} elapsed={elapsed:.0f}ms "
+            f"POLL_TIMEOUT id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
             f"polls={poll_count} parse_errs={parse_errors} "
             f"extensions={extensions} "
             f"first_seen_ms={first_appearance*1000 if first_appearance else -1}",
@@ -1231,7 +1254,7 @@ class AltiumBridge:
         exc.message = f"{exc.message}{note}"
         exc.args = (exc.message,)
         _trace_log(workspace_dir,
-                   f"WITHDRAW id={request.id[:8]} cmd={request.command} "
+                   f"WITHDRAW id={trace_id(request.id)} cmd={request.command} "
                    f"withdrawn={withdrawn}")
 
     def _with_outdated_note(self, command: str, data: Any) -> Any:
@@ -1280,7 +1303,7 @@ class AltiumBridge:
                         or ("none", time.time()))
             _trace_log(
                 self.config.workspace_dir,
-                f"FRAME_SHOWN id={request_id[:8]} cmd={command} "
+                f"FRAME_SHOWN id={trace_id(request_id)} cmd={command} "
                 f"hwnd={','.join(hex(h) for h in shown)} last_cmd={last} "
                 f"last_cmd_age={time.time() - at:.0f}s")
             logger.warning("Altium's main window was hidden; shown again "
@@ -1296,9 +1319,9 @@ class AltiumBridge:
             session_doc="" if _unpinned(command, params) else self._session_doc)
         workspace_dir = self.config.workspace_dir
 
-        _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
+        _trace_log(workspace_dir, f"SEND cmd={command} id={trace_id(request.id)}")
         self._publish_request(request)
-        logger.info("Sent command: %s (id=%s)", command, request.id[:8])
+        logger.info("Sent command: %s (id=%s)", command, trace_id(request.id))
 
         response_path = self._response_path(request.id)
         try:
@@ -1385,7 +1408,7 @@ class AltiumBridge:
 
         _trace_log(
             workspace_dir,
-            f"POLL_START id={request_id[:8]} timeout={timeout}s "
+            f"POLL_START id={trace_id(request_id)} timeout={timeout}s "
             f"interval={poll_interval}s",
         )
         while True:
@@ -1398,7 +1421,7 @@ class AltiumBridge:
                     waited = now - start
                     _trace_log(
                         workspace_dir,
-                        f"POLL_DIALOG id={request_id[:8]} "
+                        f"POLL_DIALOG id={trace_id(request_id)} "
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
@@ -1415,7 +1438,7 @@ class AltiumBridge:
                     first_appearance = time.monotonic() - start
                     _trace_log(
                         workspace_dir,
-                        f"POLL_SEEN id={request_id[:8]} "
+                        f"POLL_SEEN id={trace_id(request_id)} "
                         f"after={first_appearance * 1000:.0f}ms "
                         f"polls={poll_count}",
                     )
@@ -1432,7 +1455,7 @@ class AltiumBridge:
                         self._note_fault(
                             workspace_dir, recovery_guidance(CORRUPT_RESPONSE))
                         raise AltiumCommandError(
-                            f"Response file for request {request_id[:8]} was "
+                            f"Response file for request {trace_id(request_id)} was "
                             f"present but unparseable after {parse_errors} "
                             f"attempts -- Altium likely crashed mid-write. "
                             f"The corrupt file was removed; retry the call. "
@@ -1449,7 +1472,7 @@ class AltiumBridge:
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
-                        f"POLL_MATCH id={request_id[:8]} "
+                        f"POLL_MATCH id={trace_id(request_id)} "
                         f"elapsed={elapsed:.0f}ms polls={poll_count} "
                         f"parse_errs={parse_errors} extensions={extensions}",
                     )
@@ -1468,7 +1491,7 @@ class AltiumBridge:
         elapsed = (time.monotonic() - start) * 1000
         _trace_log(
             workspace_dir,
-            f"POLL_TIMEOUT id={request_id[:8]} elapsed={elapsed:.0f}ms "
+            f"POLL_TIMEOUT id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
             f"polls={poll_count} parse_errs={parse_errors} "
             f"extensions={extensions}",
         )
