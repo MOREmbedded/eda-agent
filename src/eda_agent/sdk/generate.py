@@ -289,7 +289,7 @@ def render_block(model: SdkModel,
     """
     body = render_probe(
         model, "ISch_Component", "ISch_Component",
-        function_name="ProbeSchComponentProperty",
+        function_name="GetSchComponentGenerated",
         already=handled_heads("GetSchProperty"), table=table,
         allow_getter=allow_getter).pascal
     return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"

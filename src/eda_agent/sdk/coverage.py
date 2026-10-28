@@ -91,11 +91,53 @@ def chain_body(source: str, function_name: str) -> str:
     return block
 
 
+#: A chain delegates the generated accessors rather than carrying a
+#: second copy of them, so the names it answers are not all written in
+#: its own body. The callee is named for the job, ending in Generated.
+_DELEGATE = re.compile(r"\b(\w+Generated)\(")
+
+#: The ObjectId test that guards a branch. The last one before a
+#: delegation call is the type that delegation is reachable for.
+_GUARD = re.compile(r"ObjectId = (e\w+)")
+
+
 def handled_names(function_name: str) -> set[str]:
-    """Every property name a chain tests for, as written in the Pascal."""
+    """Every property name a chain carries in its own body.
+
+    Not what it ANSWERS: a chain may delegate to a generated routine,
+    and those names are reported separately by delegated_names, because
+    they are reachable only for the object type the delegation is
+    guarded on.
+    """
     path, _ = CHAINS[function_name]
     body = chain_body(_read(path), function_name)
     return set(re.findall(r"PropName = '([^']+)'", body))
+
+
+def delegated_names(function_name: str) -> dict:
+    """Names a chain answers through a generated routine, by object type.
+
+    The branch reads `If Obj.ObjectId = eSchComponent Then ... Result :=
+    GetSchComponentGenerated(...)`, so the names behind it are reachable
+    for that constant and no other. Returning a flat set instead would
+    credit every schematic type with properties only a component has.
+    """
+    path, _ = CHAINS[function_name]
+    source = _read(path)
+    body = chain_body(source, function_name)
+    out: dict = {}
+    for match in _DELEGATE.finditer(body):
+        # The nearest ObjectId test before the call is its guard.
+        guards = _GUARD.findall(body[:match.start()])
+        if not guards:
+            continue
+        try:
+            delegated = chain_body(source, match.group(1))
+        except ValueError:
+            continue
+        names = set(re.findall(r"PropName = '([^']+)'", delegated))
+        out.setdefault(guards[-1], set()).update(names)
+    return out
 
 
 def handled_heads(function_name: str) -> set[str]:
@@ -105,6 +147,12 @@ def handled_heads(function_name: str) -> set[str]:
     SDK does declare; the head segment is that member.
     """
     return {n.split(".", 1)[0] for n in handled_names(function_name)}
+
+
+def delegated_heads(function_name: str) -> dict:
+    """delegated_names reduced to the SDK member each name reaches."""
+    return {constant: {n.split(".", 1)[0] for n in names}
+            for constant, names in delegated_names(function_name).items()}
 
 
 def supported_sch_types() -> dict[str, str]:
@@ -214,8 +262,13 @@ class Report:
 
 def _coverage_for(model: SdkModel, type_name: str, constant: str,
                   domain: str, read_heads: set[str],
-                  write_heads: set[str]) -> TypeCoverage:
+                  write_heads: set[str],
+                  read_delegated: dict | None = None) -> TypeCoverage:
     iface_name = interface_for(constant, domain)
+    # Reachable for THIS constant only, because that is what the branch
+    # guarding the delegation tests. A flat union would credit a pin
+    # with properties only a component can answer.
+    read_heads = read_heads | (read_delegated or {}).get(constant, set())
     iface: Interface | None = model.get(iface_name)
     declared = model.effective_properties(iface_name) if iface else {}
     return TypeCoverage(
@@ -234,6 +287,7 @@ def build_report(model: SdkModel | None = None) -> Report:
     model = model or load_sdk()
 
     sch_read = handled_heads("GetSchProperty")
+    sch_read_delegated = delegated_heads("GetSchProperty")
     sch_write = handled_heads("SetSchProperty")
     pcb_read = handled_heads("GetPCBProperty")
     pcb_write = handled_heads("SetPCBProperty")
@@ -248,7 +302,8 @@ def build_report(model: SdkModel | None = None) -> Report:
             continue
         seen.add(("SCH", constant))
         types.append(_coverage_for(model, name, constant, "SCH",
-                                   sch_read, sch_write))
+                                   sch_read, sch_write,
+                                   sch_read_delegated))
 
     for name, constant in sorted(supported_pcb_types().items()):
         if ("PCB", constant) in seen:

@@ -74,14 +74,21 @@ eda-agent sdk-coverage --detail 8   # with missing property names
 eda-agent sdk-coverage --json       # every missing name, for diffing
 ```
 
-Measured on AD 26.11.1.5, script `2026.10.26.4`:
+Measured on AD 26.11.1.5, script `2026.10.27.7`:
 
 ```
-655 of 2207 declared properties reachable (29.7%)
+685 of 2207 declared properties reachable (31.0%)
 
-Schematic: 401 of 1040 (38.6%) across 32 object types
+Schematic: 431 of 1040 (41.4%) across 32 object types
 Board:     221 of 1024 (21.6%) across 12 object types
 ```
+
+The schematic figure moved by exactly the thirty `ISch_Component`
+properties folded in, each one read off a live component first. It
+briefly read 46.5%, because the delegated names were credited to all
+32 schematic types rather than to the one its guard allows. A pin
+cannot answer `DescriptionString`, and a report that says it can is
+worse than no report.
 
 Per object type, the widest gaps:
 
@@ -92,7 +99,7 @@ Per object type, the widest gaps:
 | `poly` | `IPCB_Polygon` | 28 | 105 |
 | `dimension` | `IPCB_Dimension` | 15 | 101 |
 | `pad` | `IPCB_Pad` | 26 | 101 |
-| `component` | `ISch_Component` | 27 | 68 |
+| `component` | `ISch_Component` | 57 | 68 |
 | `pin` | `ISch_Pin` | 16 | 63 |
 
 ## How the measurement is made
@@ -245,6 +252,35 @@ alone.
 spelling. The test that compares the block against its generator reads
 the same constant, so the two cannot drift. It is `True` because
 `ISch_Component` then probes 30 of 30 live, up from 26 of 30.
+
+### Folded in, not copied
+
+A property proven by the probe is still unreachable to a caller until
+`GetSchProperty` answers it. It delegates rather than growing a second
+copy:
+
+```pascal
+Else If Obj.ObjectId = eSchComponent Then
+Begin
+    Comp := Obj;
+    Result := GetSchComponentGenerated(Comp, PropName, Have);
+    If Not Have Then Result := '';
+End;
+```
+
+Everything hand written above it still wins, and a name neither side
+carries returns an empty string as before.
+
+The generated routine sits **ahead of** `GetSchProperty` in the
+concatenation. DelphiScript has no forward declarations, so a call into
+a routine defined later is an access violation when the line runs, not
+a compile error. `lint.py` checks that ordering across files, which is
+the backstop for moving the region.
+
+Coverage follows the delegation but credits it to the constant its
+guard names, through `delegated_heads()`. Reported live through
+`generic.query_objects` on 2026-10-27: seven folded properties came
+back on a real component alongside three that already worked.
 
 ### The probe, now a confirmation
 
