@@ -41,6 +41,12 @@ INSTALL_OFFERS = {
         "note": "KiCad ships ngspice only as a DLL for its own GUI; the "
                 "batch simulator is a separate install.",
     },
+    "ltspice": {
+        "source": "https://www.analog.com/en/resources/design-tools-and-calculators/"
+                  "ltspice-simulator.html",
+        "note": "free from Analog Devices; ngspice stays the first choice when "
+                "both are installed",
+    },
     "openems": {
         "source": "https://github.com/thliebig/openEMS-Project/releases",
         "note": "Windows builds are a zip from the release page; the Python "
@@ -62,6 +68,24 @@ def find_ngspice() -> Optional[str]:
     return None
 
 
+def find_ltspice() -> Optional[str]:
+    """LTspice 24 (Analog Devices) or XVII (Linear), per-user or system
+    install, or the file EDA_AGENT_LTSPICE_EXE names."""
+    import os
+    named = os.environ.get("EDA_AGENT_LTSPICE_EXE", "")
+    if named and Path(named).is_file():
+        return named
+    for name in ("LTspice", "XVIIx64"):
+        found = shutil.which(name)
+        if found:
+            return found
+    local = os.environ.get("LOCALAPPDATA", "")
+    places = [Path(local) / "Programs" / "ADI" / "LTspice" / "LTspice.exe"] if local else []
+    places += [Path(r"C:\Program Files\ADI\LTspice\LTspice.exe"),
+               Path(r"C:\Program Files\LTC\LTspiceXVII\XVIIx64.exe")]
+    return next((str(p) for p in places if p.is_file()), None)
+
+
 def ngspice_version(path: str) -> str:
     try:
         out = subprocess.run([path, "-v"], capture_output=True, text=True,
@@ -75,6 +99,7 @@ def ngspice_version(path: str) -> str:
 def simulator_backends() -> dict:
     """Which simulators are here, with versions, and offers for the rest."""
     ng = find_ngspice()
+    lt = find_ltspice()
     kicad_dll = sorted(glob.glob(r"C:/Program Files/KiCad/*/bin/ngspice.dll"))
     ems_exe = shutil.which("openEMS")
     ems_py = all(importlib.util.find_spec(m) is not None
@@ -83,6 +108,9 @@ def simulator_backends() -> dict:
         "ngspice": {"available": bool(ng), "path": ng or "",
                     "version": ngspice_version(ng) if ng else "",
                     "kicad_library_only": kicad_dll if not ng else []},
+        # Runs a deck when asked for, or when ngspice is not installed
+        # (design_simulate_deck); ngspice comes first when both are here.
+        "ltspice": {"available": bool(lt), "path": lt or ""},
         "openems": {"available": bool(ems_exe or ems_py),
                     "path": ems_exe or "", "python_bindings": ems_py},
     }

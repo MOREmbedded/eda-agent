@@ -7,6 +7,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 """
 
 import json
+import math
 import re
 from typing import Any, Optional, Union
 
@@ -927,13 +928,21 @@ def register_pcb_tools(mcp):
         Returns:
             Dictionary with "net_classes" (each with name, super_class and,
             when members are read, "nets", "member_count" and
-            "probe_errors"), "count" and "members_read". A class with
+            "probe_errors"), "count" (built-in superclasses included),
+            "user_class_count" (without them) and "members_read". A class with
             probe_errors above 0 may have more nets than listed.
         """
         bridge = get_bridge()
         params = {} if members else {"members": False}
-        return await bridge.send_command_async(
+        reply = await bridge.send_command_async(
             "pcb.get_net_classes", params, timeout=90.0)
+        # Altium's built-in superclasses (All Nets) count in ``count``;
+        # the classes someone made are counted apart.
+        if isinstance(reply, dict) and isinstance(reply.get("net_classes"), list):
+            reply["user_class_count"] = sum(
+                1 for c in reply["net_classes"]
+                if isinstance(c, dict) and not c.get("super_class"))
+        return reply
 
     @mcp.tool()
     async def pcb_create_net_class(
@@ -1286,8 +1295,9 @@ def register_pcb_tools(mcp):
 
         Returns:
             ``count_before``, ``count_after``, ``created`` (the new
-            xSignals, as pcb_get_xsignals lists them) and
-            ``class_assigned``.
+            xSignals, as pcb_get_xsignals lists them),
+            ``class_assigned`` (every new xSignal read back as a member of
+            the class) and ``not_in_class`` (the ones that were not).
         """
         items = [p.strip() for p in (pins or []) if p and p.strip()]
         if len(items) < 2:
@@ -2203,6 +2213,147 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.physical_stack", params)
 
     @mcp.tool()
+    async def pcb_make_layer_stack(
+        layers: list[dict[str, Any]],
+        dry_run: bool = True,
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Make the board's layer stack match a wanted one, copper and
+        dielectrics, top to bottom.
+
+        Edits go through Altium's physical stack (each dielectric a layer of
+        its own); the older per-copper writes read back fine and saved a
+        broken stack on AD 25.8. First the copper: outer layers renamed,
+        inner ones kept where the wanted stack has the same kind in the same
+        order (a plane keeps what is poured on it), the rest dropped (refused
+        when objects lie on them), new ones added top down as plain copper.
+        Then each gap's dielectrics are trimmed to the wanted count and set.
+        No script call makes a dielectric, so a gap that has fewer than
+        wanted is refused: plan one per gap.
+
+        The board must be saved first. Any failure closes it unsaved and
+        opens it again, which restores it. Save after a run that matches.
+        Altium's Layer Stack Manager keeps its own copy: on AD 25.8 it showed
+        old values for kept layers; on AD 26.11 it showed the new stack after
+        a save and reopen.
+
+        Args:
+            layers: Top to bottom: ``{"kind": "copper", "name",
+                "thickness_mils", "plane": false}`` or ``{"kind":
+                "dielectric", "thickness_mils", "type": "core" | "prepreg",
+                "constant", "loss_tangent", "material", "name"}``.
+            dry_run: Only plan (the default).
+            board_path: The .PcbDoc; it is brought to the front.
+
+        Returns:
+            ``wanted``, ``copper_edits`` (and ``dielectric_edits`` once run),
+            ``mismatches`` (empty when the board reads as wanted), ``done``,
+            and ``restored`` after a failure.
+        """
+        from ..design.layer_stack_plan import (StackError, copper_round,
+                                               dielectric_round, mismatches,
+                                               read_wanted)
+        try:
+            wanted = read_wanted(layers)
+        except StackError as exc:
+            return {"ok": False, "reason": str(exc)}
+        bridge = get_bridge()
+        if board_path:
+            front = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": board_path})
+            if isinstance(front, dict) and front.get("success") is False:
+                return {"ok": False, "reason": f"{board_path} could not be brought to the front",
+                        "reply": front}
+        doc = await bridge.send_command_async("application.get_active_document", {}) or {}
+        board = str(doc.get("file_path", "")) if isinstance(doc, dict) else ""
+        if not board.lower().endswith(".pcbdoc"):
+            return {"ok": False, "reason": "no board is in front; give board_path"}
+        on_board = {"board_path": board}
+
+        async def rows() -> list[dict[str, Any]]:
+            reply = await bridge.send_command_async("pcb.physical_stack", {})
+            return (reply or {}).get("layers", []) if isinstance(reply, dict) else []
+
+        async def copper() -> list[dict[str, Any]]:
+            reply = await bridge.send_command_async("pcb.copper_layers", on_board)
+            return (reply or {}).get("layers", []) if isinstance(reply, dict) else []
+
+        try:
+            first = copper_round(await rows(), wanted, await copper())
+        except StackError as exc:
+            return {"ok": False, "reason": str(exc)}
+        result: dict[str, Any] = {"board": board, "dry_run": dry_run,
+                                  "wanted": [w.describe() for w in wanted],
+                                  "copper_edits": first}
+        if dry_run:
+            return result
+        if doc.get("modified"):
+            return {**result, "ok": False,
+                    "reason": "save the board first; a failed run is undone by reopening it"}
+
+        async def apply(edit: dict[str, Any]) -> Optional[Any]:
+            """None when the edit held, else what Altium answered."""
+            if edit["do"] == "drop":
+                reply = await bridge.send_command_async(
+                    "pcb.drop_stack_layer", {**on_board, "layer": edit["layer"]})
+                return None if isinstance(reply, dict) and reply.get("still_there") is False \
+                    else reply
+            if edit["do"] == "rename":
+                ask = {**on_board, "layer": edit["layer"], "rename_to": edit["to"]}
+                if "thickness_mils" in edit:
+                    ask["thickness_mils"] = repr(float(edit["thickness_mils"]))
+                reply = await bridge.send_command_async("pcb.tune_copper_layer", ask)
+                return None if isinstance(reply, dict) and reply.get("missed") == [] else reply
+            if edit["do"] == "add":
+                names_before = {c["name"] for c in await copper()}
+                await bridge.send_command_async(
+                    "pcb.add_layer", {"layer": edit["slot"], "below": edit["under"]})
+                added = [c["name"] for c in await copper() if c["name"] not in names_before]
+                if len(added) != 1:
+                    return {"added": added}
+                reply = await bridge.send_command_async("pcb.tune_copper_layer", {
+                    **on_board, "layer": added[0], "rename_to": edit["name"],
+                    "thickness_mils": repr(float(edit["thickness_mils"])), "plain": "true"})
+                return None if isinstance(reply, dict) and reply.get("missed") == [] else reply
+            ask = {"layer": edit["layer"], "rename_to": edit["to"]}
+            for key in ("type", "material"):
+                if key in edit:
+                    ask[key] = str(edit[key])
+            for key in ("thickness_mils", "constant", "loss_tangent"):
+                if key in edit:
+                    ask[key] = repr(float(edit[key]))
+            reply = await bridge.send_command_async("pcb.set_dielectric", ask)
+            return None if isinstance(reply, dict) and not reply.get("not_applied") else reply
+
+        trouble: Optional[dict[str, Any]] = None
+        for edit in first:
+            answer = await apply(edit)
+            if answer is not None:
+                trouble = {"edit": edit, "reply": answer}
+                break
+        if trouble is None:
+            try:
+                result["dielectric_edits"] = dielectric_round(await rows(), wanted)
+            except StackError as exc:
+                trouble = {"edit": "dielectrics", "reply": str(exc)}
+        for edit in result.get("dielectric_edits", []) if trouble is None else []:
+            answer = await apply(edit)
+            if answer is not None:
+                trouble = {"edit": edit, "reply": answer}
+                break
+        result["mismatches"] = None if trouble else mismatches(await rows(), wanted)
+        result["failed"] = trouble
+        result["done"] = trouble is None and not result["mismatches"]
+        if not result["done"]:
+            await bridge.send_command_async(
+                "application.close_document", {"file_path": board, "discard": "true"})
+            await bridge.send_command_async("generic.run_process", {
+                "process": "WorkspaceManager:OpenObject",
+                "params": f"ObjectKind=Document|FileName={board}"})
+            result["restored"] = True
+        return result
+
+    @mcp.tool()
     async def pcb_set_dielectric(
         layer: str,
         dielectric_type: Optional[int] = None,
@@ -2211,6 +2362,7 @@ def register_pcb_tools(mcp):
         loss_tangent: Optional[float] = None,
         thickness_mils: Optional[float] = None,
         stiffener: Optional[bool] = None,
+        rename_to: Optional[str] = None,
     ) -> dict[str, Any]:
         """Set a dielectric or solder mask (coverlay) layer of the stack:
         its type (Altium's number), material, dielectric constant (Dk),
@@ -2219,6 +2371,7 @@ def register_pcb_tools(mcp):
 
         Args:
             layer: The layer's name as pcb_physical_stack lists it.
+            rename_to: Its new name.
         """
         if not layer.strip():
             return {"ok": False, "reason": "layer is required"}
@@ -2238,6 +2391,10 @@ def register_pcb_tools(mcp):
                 params[key] = repr(float(value))
         if stiffener is not None:
             params["stiffener"] = "true" if stiffener else "false"
+        if rename_to is not None:
+            if not rename_to.strip():
+                return {"ok": False, "reason": "rename_to is empty"}
+            params["rename_to"] = rename_to.strip()
         if len(params) == 1:
             return {"ok": False, "reason": "nothing to set"}
         return await get_bridge().send_command_async("pcb.set_dielectric", params)
@@ -2713,12 +2870,32 @@ def register_pcb_tools(mcp):
             y_mils, layer, and ``primitive1`` / ``primitive2`` {detail,
             type, net, layer, x_mils, y_mils} (primitive2 empty for
             single-object rules). ``reason`` when not confirmed.
+            From the report Altium wrote: ``report_counts`` (warnings,
+            rule_violations, waived_violations, kept apart),
+            ``report_rules`` (every rule checked and its count; a rule
+            not listed was not checked), ``report_rules_add_up`` and
+            ``report_stopped_at_limit`` with ``report_violation_limit``
+            (Altium stopped early, so the run is not complete).
         """
+        from ..export.drc_report import read_drc_report
+
         bridge = get_bridge()
         if allow_modal:
             return await bridge.send_command_async(
                 "pcb.run_drc", {"allow_modal": "true"})
-        return await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
+        result = await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
+        if (isinstance(result, dict) and result.get("drc_confirmed") is True
+                and isinstance(result.get("report_path"), str)):
+            report = read_drc_report(result["report_path"])
+            if report:
+                result["report_counts"] = report["counts"]
+                if report["rules"] is not None:
+                    result["report_rules"] = report["rules"]
+                    result["report_rules_add_up"] = report["rules_add_up"]
+                result["report_stopped_at_limit"] = report["stopped_at_limit"]
+                if report["stopped_at_limit"]:
+                    result["report_violation_limit"] = report["violation_limit"]
+        return result
 
     @mcp.tool()
     async def pcb_get_components() -> dict[str, Any]:
@@ -2732,7 +2909,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "components" array (each with designator, x, y,
-            rotation, layer, footprint) and "count", plus
+            rotation, layer, footprint, bbox, and bbox_no_name_comment: the
+            box without the part's designator and comment) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
@@ -3078,13 +3256,13 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_panelize(
         child_path: str,
-        board_width_mils: int,
-        board_height_mils: int,
+        board_width_mils: float,
+        board_height_mils: float,
         rows: int = 2,
         cols: int = 2,
-        col_gap_mils: int = 100,
-        row_gap_mils: int = 100,
-        border_mils: int = 200,
+        col_gap_mils: float = 100,
+        row_gap_mils: float = 100,
+        border_mils: float = 200,
         tooling_holes: bool = True,
         fiducials: bool = True,
     ) -> dict[str, Any]:
@@ -3153,7 +3331,7 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.audit_pad_center_connected", {})
 
     @mcp.tool()
-    async def pcb_auto_size_board_outline(margin_mils: int = 100) -> dict[str, Any]:
+    async def pcb_auto_size_board_outline(margin_mils: float = 100) -> dict[str, Any]:
         """Fit the board outline around the embedded-board array(s) plus a margin.
 
         Use after `pcb_panelize` (or any embedded-board layout) to size the
@@ -3288,12 +3466,97 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_resize_designators(
+        designators: Optional[list[str]] = None,
+        top_layer: str = "",
+        bottom_layer: str = "",
+        smallest_mm: float = 0.1,
+        largest_mm: float = 1.0,
+        stroke_share: float = 0.25,
+        stroke_cap_mm: float = 0.254,
+        dry_run: bool = True,
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Resize, turn and centre designators to fit their parts, for an
+        assembly drawing.
+
+        Follows Altium's AdjustDesignators.pas example script: a stroke
+        font centred on the part, along its longer side, the characters
+        sharing that side but no taller than the part is wide, kept between
+        ``smallest_mm`` and ``largest_mm``; the stroke is ``stroke_share`` of
+        the height, at most ``stroke_cap_mm``. Bottom parts read mirrored;
+        upright parts turn 90 degrees on the top and 270 on the bottom. The
+        outline is the part without its designator and comment. Run it
+        again after parts move.
+
+        Args:
+            designators: Only these parts; empty for every part.
+            top_layer, bottom_layer: Layers to move the texts to, usually two
+                mechanical layers of an assembly drawing ("Mechanical10",
+                "Mechanical11"). Empty leaves each text on its layer.
+            smallest_mm, largest_mm, stroke_share, stroke_cap_mm: The bounds.
+            dry_run: True (default) only plans; False writes and reads back.
+            board_path: The .PcbDoc; defaults to the focused board.
+
+        Returns:
+            ``plan`` per part (height, stroke, angle, mirrored, ``move_to``;
+            ``limited_by_width`` and ``natural_mm`` where they apply),
+            ``turned``, ``limited_by_width``; once written also ``held``,
+            ``refused``, ``missing`` and ``wrong`` (part and what read back
+            differently).
+        """
+        from ..design.designator_sizing import (DesignatorLimits, batch_op,
+                                                shortfalls, size_designator)
+
+        limits = DesignatorLimits(smallest_mm=smallest_mm, largest_mm=largest_mm,
+                                  stroke_share=stroke_share, stroke_cap_mm=stroke_cap_mm,
+                                  top_layer=top_layer.strip(),
+                                  bottom_layer=bottom_layer.strip())
+        if limits.problems():
+            return {"ok": False, "reason": "; ".join(limits.problems())}
+        names = [d.strip() for d in designators or [] if d.strip()]
+        if any(c in d for d in names for c in ("|", ";", "=", "~~")):
+            return {"ok": False, "reason": "a designator holds | ; = or ~~"}
+        on_board = {"board_path": board_path} if board_path else {}
+        bridge = get_bridge()
+        read = await bridge.send_command_async(
+            "pcb.part_outlines", {**on_board, "designators": "|".join(names)}, timeout=300.0)
+        if not isinstance(read, dict) or "parts" not in read:
+            return read
+        parts = {p["designator"]: p for p in read["parts"]}
+        plans = [size_designator(p, limits) for p in parts.values()]
+        out: dict[str, Any] = {
+            "board": read.get("board"), "dry_run": dry_run, "parts": len(plans),
+            "turned": [p["designator"] for p in plans if p["angle"]],
+            "limited_by_width": [p["designator"] for p in plans if p.get("limited_by_width")],
+            "plan": plans}
+        if dry_run or not plans:
+            return out
+        wrote = await bridge.send_command_async(
+            "pcb.set_designator_texts",
+            {**on_board, "ops": "~~".join(batch_op(p) for p in plans)}, timeout=600.0)
+        if not isinstance(wrote, dict) or "parts" not in wrote:
+            return {**out, "write": wrote}
+        planned = {p["designator"]: p for p in plans}
+        wrong = []
+        for row in wrote["parts"]:
+            name = row.get("designator")
+            issues = [] if row.get("held") else ["Altium did not keep the write"]
+            if name in planned:
+                issues += shortfalls(planned[name], parts[name], row.get("label") or {})
+            if issues:
+                wrong.append({"designator": name, "issues": issues})
+        out.update(held=wrote.get("held"), refused=wrote.get("refused"),
+                   missing=wrote.get("missing"), wrong=wrong)
+        return out
+
+    @mcp.tool()
     async def pcb_trim_extend_track(
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
-        tolerance_mils: int = 5,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        tolerance_mils: float = 5,
     ) -> dict[str, Any]:
         """Trim or extend one track endpoint along the track's own slope.
 
@@ -3327,7 +3590,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_cleanup_tracks(
         mode: str = "slivers",
-        min_length_mils: int = 1,
+        min_length_mils: float = 1,
     ) -> dict[str, Any]:
         """Tidy stray track geometry: delete slivers and/or merge collinear runs.
 
@@ -3435,10 +3698,10 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_thieving_pads(
         layer: str = "TopLayer",
-        pad_size_mils: int = 20,
-        pitch_mils: int = 50,
-        clearance_mils: int = 15,
-        margin_mils: int = 100,
+        pad_size_mils: float = 20,
+        pitch_mils: float = 50,
+        clearance_mils: float = 15,
+        margin_mils: float = 100,
     ) -> dict[str, Any]:
         """Fill bare copper area with a grid of isolated thieving pads.
 
@@ -3476,8 +3739,8 @@ def register_pcb_tools(mcp):
     async def pcb_move_tracks_to_layer(
         net_name: str,
         target_layer: str,
-        via_size_mils: int = 50,
-        via_hole_mils: int = 28,
+        via_size_mils: float = 50,
+        via_hole_mils: float = 28,
     ) -> dict[str, Any]:
         """Move all tracks of a net to one layer, adding vias where needed.
 
@@ -3512,7 +3775,7 @@ def register_pcb_tools(mcp):
     async def pcb_bevel_polygon_corners(
         index: int = 0,
         net_name: str = "",
-        bevel_mils: int = 25,
+        bevel_mils: float = 25,
     ) -> dict[str, Any]:
         """Chamfer the corners of a copper polygon pour.
 
@@ -4318,8 +4581,8 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_copy_tracks_radial(
-        center_x: int,
-        center_y: int,
+        center_x: float,
+        center_y: float,
         count: int,
         angle_step: Optional[float] = None,
     ) -> dict[str, Any]:
@@ -4444,6 +4707,212 @@ def register_pcb_tools(mcp):
             if created_folder:
                 result["created_folder"] = created_folder
         return result
+
+    @mcp.tool()
+    async def pcb_make_library(
+        out_path: str = "",
+        add_to_project: bool = False,
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Make a PCB library of every footprint on a board, and save it.
+
+        Altium's Design > Make PCB Library, which runs with no dialog.
+        Altium names the library after the board, with a digit added
+        when that name is taken, and leaves an empty file of that name
+        until it is saved; with ``out_path`` the library is saved there
+        instead and that empty file is removed. The saved library is then
+        closed: until Altium reopens it, its footprints read in the
+        board's frame, pads over a metre from their origin
+        (measured on AD 26.11), so a library tool opens the saved file
+        fresh.
+
+        Args:
+            out_path: Full path of the .PcbLib to write. Empty keeps
+                Altium's name beside the board. An existing file is
+                refused.
+            add_to_project: Add the library to the board's project.
+            board_path: The .PcbDoc. Defaults to the focused board.
+
+        Returns:
+            ``library`` (where it was saved), ``saved``, ``bytes``,
+            ``footprint_count``, ``footprints``, ``made_as`` (Altium's
+            name for it), ``added_to_project`` and ``closed``.
+        """
+        import os
+        params: dict[str, Any] = {
+            "add_to_project": "true" if add_to_project else "false"}
+        if out_path:
+            if not os.path.isabs(out_path) or not out_path.lower().endswith(".pcblib"):
+                return {"ok": False, "reason": "out_path is a full path to a .PcbLib"}
+            if os.path.exists(out_path):
+                return {"ok": False, "reason": f"{out_path} exists; pick another name"}
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            params["out_path"] = out_path
+        if board_path:
+            params["board_path"] = board_path
+        reply = await get_bridge().send_command_async(
+            "pcb.make_library", params, timeout=300.0)
+        if not isinstance(reply, dict) or "library" not in reply:
+            return reply
+        lib = reply["library"]
+        reply["bytes"] = os.path.getsize(lib) if os.path.isfile(lib) else 0
+        if reply.get("saved"):
+            closed = await get_bridge().send_command_async(
+                "application.close_document", {"file_path": lib}, timeout=60.0)
+            reply["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
+        made = reply.get("made_as") or ""
+        # The empty file Altium leaves under its own name (measured on AD
+        # 26.11) goes once the library is saved elsewhere.
+        if (made and os.path.normcase(made) != os.path.normcase(lib)
+                and os.path.isfile(made) and os.path.getsize(made) == 0):
+            try:
+                os.remove(made)
+                reply["removed_empty_file"] = made
+            except OSError:
+                pass
+        return reply
+
+    @mcp.tool()
+    async def pcb_get_pad_via_library(
+        board_path: str = "",
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """The pad and via templates a board holds, or a .PvLib holds.
+
+        A board keeps its own pad/via library of the templates its pads
+        and vias use. With ``library_path`` the .PvLib file is opened and
+        read instead. Either way the installed pad/via libraries are
+        listed too. Changes nothing.
+
+        Args:
+            board_path: The .PcbDoc. Defaults to the focused board.
+            library_path: A .PvLib to read instead of a board.
+
+        Returns:
+            ``board_templates`` (or ``templates`` for a .PvLib)
+            [{name, description, id, used_by}] and
+            ``installed_libraries`` [{name, path, templates}].
+        """
+        params: dict[str, Any] = {}
+        if library_path:
+            if not library_path.lower().endswith(".pvlib"):
+                return {"ok": False, "reason": "library_path is a .PvLib"}
+            params["library_path"] = library_path
+        elif board_path:
+            params["board_path"] = board_path
+        return await get_bridge().send_command_async(
+            "pcb.get_pad_via_library", params, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_add_pad_via_template(
+        component: str = "",
+        pad: str = "",
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Make a pad or via template in the board's own pad/via library.
+
+        From a pad (``component`` and ``pad``) or a via (``x``, ``y`` in
+        mil from the board origin). Altium names the template from the
+        object's shape and sizes, as "r55_60r14". The object itself is
+        not linked to the template. Save the board to keep it.
+
+        Args:
+            component: Designator of the part that has the pad.
+            pad: The pad's name on that part.
+            x: A via's x, mil.
+            y: A via's y, mil.
+            board_path: The .PcbDoc. Defaults to the focused board.
+
+        Returns:
+            ``templates_before``, ``templates_after`` and
+            ``board_templates`` read back.
+        """
+        params: dict[str, Any] = {}
+        if component or pad:
+            if not (component and pad):
+                return {"ok": False, "reason": "give both component and pad"}
+            if x is not None or y is not None:
+                return {"ok": False, "reason": "give a pad or a via position, not both"}
+            params.update(component=component, pad=pad)
+        else:
+            if x is None or y is None:
+                return {"ok": False, "reason": "give component and pad, or x and y of a via"}
+            params.update(x=repr(float(x)), y=repr(float(y)))
+        if board_path:
+            params["board_path"] = board_path
+        return await get_bridge().send_command_async(
+            "pcb.add_pad_via_template", params, timeout=120.0)
+
+    @mcp.tool()
+    async def pcb_make_pad_via_library(
+        out_path: str,
+        install: bool = False,
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Write a board's pad and via templates to a new .PvLib file.
+
+        A new pad/via library is made, each template of the board's own
+        library is copied into it, and it is saved; Altium puts one
+        default template in every new pad/via library, so that one is
+        there too. The saved library is closed, and ``install`` then adds
+        it to the installed pad/via libraries, read back from that list.
+
+        Args:
+            out_path: Full path of the .PvLib to write; an existing file
+                is refused.
+            install: Install the new library.
+            board_path: The .PcbDoc. Defaults to the focused board.
+
+        Returns:
+            ``board_templates``, ``copied``, ``saved``, ``closed``,
+            ``installed`` and ``templates`` (the new library's, read back).
+        """
+        import os
+        if not out_path or not os.path.isabs(out_path) or not out_path.lower().endswith(".pvlib"):
+            return {"ok": False, "reason": "out_path is a full path to a .PvLib"}
+        if os.path.exists(out_path):
+            return {"ok": False, "reason": f"{out_path} exists; pick another name"}
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        params: dict[str, Any] = {"out_path": out_path}
+        if board_path:
+            params["board_path"] = board_path
+        bridge = get_bridge()
+        reply = await bridge.send_command_async(
+            "pcb.make_pad_via_library", params, timeout=300.0)
+        if not isinstance(reply, dict) or "saved" not in reply:
+            return reply
+        reply["installed"] = False
+        if reply.get("saved"):
+            # Closed first: installing the library Altium has just made
+            # leaves the installed list without it, while the same file
+            # installs once closed or reopened (measured on AD 26.11).
+            closed = await bridge.send_command_async(
+                "application.close_document", {"file_path": out_path}, timeout=60.0)
+            reply["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
+        if install and reply.get("saved"):
+            # An install sent at once does not show in the installed list;
+            # the same install a couple of seconds later does (measured on
+            # AD 26.11), so it is repeated until the list has the file.
+            import asyncio
+            listing_params = ({"board_path": reply["board"]}
+                              if reply.get("board") else {})
+            for attempt in range(6):
+                if attempt:
+                    await asyncio.sleep(1.0)
+                await bridge.send_command_async(
+                    "library.install_library", {"library_path": out_path},
+                    timeout=120.0)
+                listing = await bridge.send_command_async(
+                    "pcb.get_pad_via_library", listing_params, timeout=120.0)
+                paths = [os.path.normcase(lib.get("path", ""))
+                         for lib in (listing.get("installed_libraries") or [])
+                         ] if isinstance(listing, dict) else []
+                if os.path.normcase(out_path) in paths:
+                    reply["installed"] = True
+                    break
+        return reply
 
     @mcp.tool()
     async def pcb_apply_geometry_map(
@@ -4624,7 +5093,7 @@ def register_pcb_tools(mcp):
         clearance_mils: float = 10,
         dry_run: bool = True,
         within_board: bool = True,
-        edge_clearance_mils: int = 30,
+        edge_clearance_mils: float = 30,
         avoid_parts: bool = True,
     ) -> dict[str, Any]:
         """Place a grid of stitching vias on a named net.
@@ -5205,6 +5674,7 @@ def register_pcb_tools(mcp):
         copper_oz: float = 1.0,
         layer: str = "external",
         length_mils: float = 0.0,
+        delta_t_c: float = 10.0,
     ) -> dict[str, Any]:
         """IPC-2221 current-carrying capacity for a PCB track.
 
@@ -5218,16 +5688,21 @@ def register_pcb_tools(mcp):
             copper_oz: Copper weight in oz/ft² (1 oz = 1.378 mil).
             layer: ``"external"`` (default) or ``"internal"``.
             length_mils: If > 0, also return resistance and voltage drop.
+            delta_t_c: The temperature rise asked about, in C (10 by
+                default). The 1, 5, 10, 20 and 30 C table is returned too.
 
         Returns:
             ``width_mils``, ``copper_oz``, ``thickness_mils``, ``layer``,
-            ``current_amps`` (keys ``1c`` ... ``30c``), and with a length
+            ``delta_t_c`` with ``current_a`` for it, ``current_amps``
+            (keys ``1c`` ... ``30c``), and with a length
             ``resistance_mohm`` and ``voltage_drop_mv``.
         """
         if width_mils <= 0:
             return {"ok": False, "reason": "width_mils must be > 0"}
         if copper_oz <= 0:
             return {"ok": False, "reason": "copper_oz must be > 0"}
+        if not 0 < delta_t_c < math.inf:
+            return {"ok": False, "reason": "delta_t_c must be a positive number"}
         layer_norm = layer.strip().lower()
         if layer_norm not in ("external", "internal"):
             return {"ok": False,
@@ -5249,6 +5724,8 @@ def register_pcb_tools(mcp):
             "copper_oz": copper_oz,
             "thickness_mils": round(thickness_mils, 3),
             "layer": layer_norm,
+            "delta_t_c": delta_t_c,
+            "current_a": round(k * hw_c * delta_t_c ** b, 3),
             "current_amps": current,
         }
         if length_mils > 0:
@@ -6598,7 +7075,7 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_keepout_board_outline(width_mils: int = 20) -> dict[str, Any]:
+    async def pcb_keepout_board_outline(width_mils: float = 20) -> dict[str, Any]:
         """Draw the board outline on the Keep-Out layer.
 
         Every outline edge, arcs included, becomes a keep-out track or arc
@@ -6615,17 +7092,17 @@ def register_pcb_tools(mcp):
         Returns:
             ``edges``, ``added``, ``already_there`` and ``width_mils``.
         """
-        if width_mils <= 0:
-            return {"success": False, "error": "width_mils must be positive"}
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.keepout_board_outline", {"width": str(int(width_mils))})
+        # Sent through _mils, so 12.5 mil stays 12.5 rather than 12.
+        if type(width_mils) not in (int, float) or not 0 < width_mils < math.inf:
+            return {"success": False, "error": "width_mils must be a number above 0"}
+        return await get_bridge().send_command_async(
+            "pcb.keepout_board_outline", {"width": _mils(width_mils)})
 
     @mcp.tool()
     async def pcb_place_polygon_board(
         net: str,
         layer: str = "TopLayer",
-        edge_clearance_mils: int = 10,
+        edge_clearance_mils: float = 10,
         pour_over: bool = True,
         remove_dead: bool = True,
         pour: bool = True,
@@ -6659,12 +7136,16 @@ def register_pcb_tools(mcp):
             ``repour_mode``) and ``keepout`` (what the keep-out outline
             added).
         """
+        if type(edge_clearance_mils) not in (int, float) \
+                or not 0 <= edge_clearance_mils < math.inf:
+            return {"success": False,
+                    "error": "edge_clearance_mils must be a number, 0 or more"}
         bridge = get_bridge()
         keepout: Any = None
         if edge_clearance_mils > 0:
+            # The keep-out track is centred on the edge, so twice as wide.
             keepout = await bridge.send_command_async(
-                "pcb.keepout_board_outline",
-                {"width": str(int(2 * edge_clearance_mils))})
+                "pcb.keepout_board_outline", {"width": _mils(edge_clearance_mils * 2)})
             if isinstance(keepout, dict) and keepout.get("success") is False:
                 return {"success": False, "error": "the keep-out outline failed",
                         "keepout": keepout}
@@ -6865,12 +7346,12 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_arc(
-        x_center: int,
-        y_center: int,
-        radius: int,
+        x_center: float,
+        y_center: float,
+        radius: float,
         start_angle: float = 0,
         end_angle: float = 360,
-        width: int = 10,
+        width: float = 10,
         layer: str = "TopLayer",
         keepout: Optional[bool] = None,
     ) -> dict[str, Any]:
@@ -6913,8 +7394,8 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_text(
         text: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         layer: str = "TopOverlay",
         height: float = 60,
         rotation: float = 0,
@@ -6954,10 +7435,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_fill(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: str = "TopLayer",
         net_name: str = "",
     ) -> dict[str, Any]:
@@ -7472,8 +7953,9 @@ def register_pcb_tools(mcp):
 
         Covers signal, plane, mechanical, mask, paste, silk, keepout and
         multilayer. Each entry gives the internal ``layer`` id, the user's
-        ``name`` for it, whether it is ``visible``, and its colour both as
-        Altium's raw integer and as ``color_hex``.
+        ``name`` for it, whether it is ``visible``, ``in_stack``
+        (a mid layer the stack does not use still reads as displayed), and
+        its colour both as Altium's raw integer and as ``color_hex``.
 
         Read this before recolouring: Altium stores a colour as a Windows
         TColor, which is byte-reversed against the #RRGGBB people write,
@@ -7631,7 +8113,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_set_track_width(
         net_name: str,
-        width_mils: int,
+        width_mils: float,
     ) -> dict[str, Any]:
         """Modify track width for all tracks on a specific net.
 
@@ -7705,6 +8187,31 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_polygons", {})
         return result
+
+    @mcp.tool()
+    async def pcb_get_pour_outline(index: int, name: str = "") -> dict[str, Any]:
+        """The outline one pour fills (not the copper it poured), arcs included,
+        as Altium holds it.
+
+        Args:
+            index: The pour's ``index`` from pcb_get_polygons.
+            name: Its ``name`` there. Positions shift as pours are added or
+                removed, so a pour at ``index`` with another name is refused
+                (POUR_CHANGED).
+
+        Returns:
+            ``index``, ``name``, ``net``, ``layer``, ``corners``, ``outline``
+            (each ``at`` [x, y], and ``arc`` with ``centre``, ``radius``,
+            ``from_deg``, ``to_deg`` where the edge is an arc), the
+            ``closing_vertex`` and ``closes_on_first`` (a closing vertex off
+            the first spikes the poured shape).
+        """
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return {"ok": False, "reason": "index counts from 0"}
+        ask = {"index": str(index)}
+        if name.strip():
+            ask["name"] = name.strip()
+        return await get_bridge().send_command_async("pcb.pour_outline", ask)
 
     @mcp.tool()
     async def pcb_modify_polygon(
@@ -7890,10 +8397,10 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_create_room(
         name: str,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         components: str = "",
     ) -> dict[str, Any]:
         """Create a room for component grouping on the active PCB.
@@ -8012,10 +8519,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_region(
-        x1: int = 0,
-        y1: int = 0,
-        x2: int = 0,
-        y2: int = 0,
+        x1: float = 0,
+        y1: float = 0,
+        x2: float = 0,
+        y2: float = 0,
         layer: str = "TopLayer",
         net: str = "",
         points: Optional[list[Any]] = None,
@@ -8095,10 +8602,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_dimension(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: str = "TopOverlay",
         orientation: str = "",
     ) -> dict[str, Any]:
@@ -8215,7 +8722,7 @@ def register_pcb_tools(mcp):
         Args:
             placements: List of placement dicts, each with:
                 footprint (required), library_path (required, .PcbLib),
-                x, y (mils), designator, lib_reference, comment,
+                x, y (mils, decimals kept), designator, lib_reference, comment,
                 rotation, layer, unique_id, and pad_nets
                 (``{pad_name: net_name}``); omit unique_id/pad_nets for
                 geometry-only, include them for a synced placement.
@@ -8236,8 +8743,8 @@ def register_pcb_tools(mcp):
                 v = str(p.get(key, "") or "").strip()
                 if v:
                     fields.append(f"{key}=={v}")
-            fields.append(f"x=={int(p.get('x', 0))}")
-            fields.append(f"y=={int(p.get('y', 0))}")
+            fields.append(f"x=={_mils(p.get('x', 0))}")
+            fields.append(f"y=={_mils(p.get('y', 0))}")
             if p.get("rotation") is not None:
                 fields.append(f"rotation=={p.get('rotation')}")
             pn = p.get("pad_nets")
@@ -8302,9 +8809,9 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_radial_dimension(
-        center_x: int,
-        center_y: int,
-        radius: int,
+        center_x: float,
+        center_y: float,
+        radius: float,
         layer: str = "TopOverlay",
     ) -> dict[str, Any]:
         """Place a radial dimension around a center point with a given radius.
@@ -8446,8 +8953,8 @@ def register_pcb_tools(mcp):
         width_max_impedance: float | None = None,
         width_preferred_impedance: float | None = None,
         check_connected_copper: bool | None = None,
-        min_hole_size_mils: int | None = None,
-        max_hole_size_mils: int | None = None,
+        min_hole_size_mils: float | None = None,
+        max_hole_size_mils: float | None = None,
         min_via_size_mils: float | None = None,
         max_via_size_mils: float | None = None,
         preferred_via_size_mils: float | None = None,
@@ -8625,6 +9132,11 @@ def register_pcb_tools(mcp):
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                     return {"ok": False, "reason": f"testpoint {key} is a length of 0 or more"}
                 params["testpoint_" + key] = repr(float(value))
+        # Nothing to change: answered here, so the board is not marked
+        # edited by a call that wrote nothing.
+        if set(params) <= {"name"}:
+            return {"ok": False, "reason": "give at least one rule property to change",
+                    "properties_updated": 0}
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -8634,12 +9146,12 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_embedded_board(
         child_path: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         rows: int = 1,
         cols: int = 1,
-        row_spacing_mils: int = 0,
-        col_spacing_mils: int = 0,
+        row_spacing_mils: float = 0,
+        col_spacing_mils: float = 0,
         mirror: bool = False,
         layer: str = "TopLayer",
     ) -> dict[str, Any]:

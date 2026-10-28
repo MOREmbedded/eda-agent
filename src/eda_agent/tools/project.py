@@ -2676,8 +2676,9 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Show what gives each compiled net its name, and where.
 
-        For each net: its net labels, power ports, ports, sheet entries
-        and off-sheet connectors with sheet and location, whether the
+        For each net: its net labels, power ports, ports, sheet entries,
+        off-sheet connectors and ``directives`` (the ones the compiled net
+        carries) with sheet and location, whether the
         compiler made the name up (``auto_generated``),
         ``local_scope`` (False when a power port gives the net a global
         name; a net joined across sheets by ports still reads True), its
@@ -2845,6 +2846,58 @@ def register_project_tools(mcp):
             reply["saved"] = bool(isinstance(saved, dict) and saved.get("saved"))
             after = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
             reply["written"] = after is not None and after != before
+        return reply
+
+    @mcp.tool()
+    async def proj_make_integrated_library(
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Make an integrated library of every part the project places.
+
+        Altium's Design > Make Integrated Library, which runs with no
+        dialog: the symbols and footprints of the placed parts are
+        compiled into "<project>.IntLib" in the project folder,
+        replacing one already there. One document of the project must
+        be open (proj_load_sheets).
+
+        Args:
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Returns:
+            ``intlib``, ``built`` (a new file is there, read from its
+            time), ``bytes`` and the ``focused_document`` it ran from.
+        """
+        import os
+        import asyncio
+        params: dict[str, Any] = {}
+        if project_path:
+            params["project_path"] = project_path
+        bridge = get_bridge()
+        path = project_path
+        if not path:
+            focused = await bridge.send_command_async("project.get_project_path")
+            path = focused.get("project_path") if isinstance(focused, dict) else None
+        if not path:
+            return {"ok": False, "reason": "no project is focused; pass project_path"}
+        intlib = os.path.splitext(path)[0] + ".IntLib"
+        before = os.path.getmtime(intlib) if os.path.isfile(intlib) else None
+        reply = await bridge.send_command_async(
+            "project.make_integrated_library", params, timeout=600.0)
+        if not isinstance(reply, dict) or "project" not in reply:
+            return reply
+        intlib = os.path.splitext(reply["project"])[0] + ".IntLib"
+        # The compile can finish writing a moment after the call returns.
+        for _ in range(20):
+            after = os.path.getmtime(intlib) if os.path.isfile(intlib) else None
+            if after is not None and (before is None or after > before):
+                break
+            await asyncio.sleep(0.5)
+        built = after is not None and (before is None or after > before)
+        reply.update(intlib=intlib, built=built,
+                     bytes=os.path.getsize(intlib) if os.path.isfile(intlib) else 0)
+        if not built:
+            reply["reason"] = ("no new IntLib after the run; read Altium's "
+                               "Messages panel for compile errors")
         return reply
 
     @mcp.tool()

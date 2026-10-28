@@ -2062,10 +2062,9 @@ Begin
 End;
 
 { Helper: compare two component entries by the requested annotation order.
-  Returns -1 if A should come before B, +1 if after, 0 if equal.
-  Each "entry" is encoded as a flat string "X|Y|DocIdx|CompIdx" where X and Y
-  are integer mils (padded to a consistent width to allow lexical sort-safe
-  decoding). We pass them as separate integer params to keep it simple. }
+  Returns -1 if A should come before B, +1 if after, 0 if equal. X and Y
+  are Altium's own coordinates: whole mils put parts a fraction of a mil
+  apart on one sort key. }
 Function CompareAnnotationOrder(Order : String;
     AX, AY, ADocIdx : Integer;
     BX, BY, BDocIdx : Integer) : Integer;
@@ -2132,8 +2131,8 @@ Var
       pointers is unreliable). }
     CompList   : TInterfaceList;
     Prefixes   : TStringList;
-    XCoords    : TStringList;  { X in mils as integer-string }
-    YCoords    : TStringList;  { Y in mils as integer-string }
+    XCoords    : TStringList;  { X, Altium's coordinate, as integer-string }
+    YCoords    : TStringList;  { Y, Altium's coordinate, as integer-string }
     DocIndices : TStringList;
 
     { Set of modified docs, PreProcess/PostProcess/Invalidate are scoped to these only }
@@ -2254,8 +2253,8 @@ Begin
                         Begin
                             CompList.Add(Comp);
                             Prefixes.Add(ExtractDesignatorPrefix(Comp.Designator.Text));
-                            XCoords.Add(IntToStr(CoordToMils(Comp.Location.X)));
-                            YCoords.Add(IntToStr(CoordToMils(Comp.Location.Y)));
+                            XCoords.Add(IntToStr(Comp.Location.X));
+                            YCoords.Add(IntToStr(Comp.Location.Y));
                             DocIndices.Add(IntToStr(I));
                         End;
                     Except
@@ -4568,24 +4567,19 @@ Begin
 End;
 
 { Member names of a compiled object class: nets by name, parts by designator. }
+{ DM_Members answers the member's NAME (Altium's SDK declares a string), not }
+{ an object: read as one, every member came back empty.                    }
 Function ClassMembersJson(Cls : IObjectClass) : String;
 Var
     I : Integer;
-    Member : IDMObject;
     Name : String;
 Begin
     Result := '';
     For I := 0 To Cls.DM_MemberCount - 1 Do
     Begin
-        Member := Nil;
-        Try Member := Cls.DM_Members(I); Except End;
-        If Member = Nil Then Continue;
         Name := '';
-        Try Name := Member.DM_NetName; Except Name := ''; End;
-        If Name = '' Then
-        Begin
-            Try Name := Member.DM_PhysicalDesignator; Except Name := ''; End;
-        End;
+        Try Name := Cls.DM_Members(I); Except Name := ''; End;
+        If Name = '' Then Continue;
         If Result <> '' Then Result := Result + ',';
         Result := Result + '"' + EscapeJsonString(Name) + '"';
     End;
@@ -4602,14 +4596,14 @@ End;
 {..............................................................................}
 Function Proj_GetDeclaredDesignObjects(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath : String;
+    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath, Leg, Ending : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
     Cls : IObjectClass;
     Pair : IDifferentialPair;
     Room : IRoom;
-    D, I, Sheets : Integer;
+    D, I, J, Sheets : Integer;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Workspace := GetWorkspace;
@@ -4649,8 +4643,17 @@ Begin
             Pair := Doc.DM_DifferentialPairs(I);
             If Pair = Nil Then Continue;
             PosNet := ''; NegNet := '';
-            Try PosNet := Pair.DM_PositiveNet.DM_NetName; Except End;
-            Try NegNet := Pair.DM_NegativeNet.DM_NetName; Except End;
+            { Reading DM_PositiveNet.DM_NetName raised an undeclared identifier }
+            { on AD 26.11. The pair is an object class listing its two nets by }
+            { name, and Altium pairs schematic nets by their _P and _N ends.   }
+            For J := 0 To Pair.DM_MemberCount - 1 Do
+            Begin
+                Leg := '';
+                Try Leg := Pair.DM_Members(J); Except Leg := ''; End;
+                Ending := UpperCase(Copy(Leg, Length(Leg) - 1, 2));
+                If Ending = '_P' Then PosNet := Leg;
+                If Ending = '_N' Then NegNet := Leg;
+            End;
             If Pairs <> '' Then Pairs := Pairs + ',';
             Pairs := Pairs + JsonObj(JsonStr('name', Pair.DM_Name) + ','
                 + JsonStr('sheet', DocPath) + ','
@@ -4729,11 +4732,12 @@ End;
 Function NetContentsJson(Net : INet; WithPins : Boolean) : String;
 Var
     Item : INetItem;
-    Labels, Powers, Ports, Entries, Cross, Pins, Text : String;
-    I, PinCount : Integer;
+    Labels, Powers, Ports, Entries, Cross, Directives, Pins, Text : String;
+    I, PinCount, Left : Integer;
     AutoGen : Boolean;
 Begin
     Labels := ''; Powers := ''; Ports := ''; Entries := ''; Cross := ''; Pins := '';
+    Directives := '';
     For I := 0 To Net.DM_NetLabelCount - 1 Do
     Begin
         Item := Nil; Text := '';
@@ -4779,6 +4783,20 @@ Begin
         If Cross <> '' Then Cross := Cross + ',';
         Cross := Cross + NetNamingItemJson(Item, Text);
     End;
+    { Directives as the compiled net holds them: which net a directive    }
+    { belongs to is the compiler's answer, not a guess from where it is  }
+    { drawn among the wires.                                              }
+    Left := 0;
+    Try Left := Net.DM_DirectiveCount; Except Left := 0; End;
+    While Left > 0 Do
+    Begin
+        Dec(Left);
+        Item := Nil;
+        Try Item := Net.DM_Directives(Left); Except Item := Nil; End;
+        If Item <> Nil Then
+            Directives := NetNamingItemJson(Item, '') + ',' + Directives;
+    End;
+    If Directives <> '' Then Directives := Copy(Directives, 1, Length(Directives) - 1);
     PinCount := 0;
     Try PinCount := Net.DM_PinCount; Except End;
     If WithPins Then
@@ -4804,7 +4822,8 @@ Begin
         + JsonRaw('power_objects', '[' + Powers + ']') + ','
         + JsonRaw('ports', '[' + Ports + ']') + ','
         + JsonRaw('sheet_entries', '[' + Entries + ']') + ','
-        + JsonRaw('off_sheet_connectors', '[' + Cross + ']'));
+        + JsonRaw('off_sheet_connectors', '[' + Cross + ']') + ','
+        + JsonRaw('directives', '[' + Directives + ']'));
     If WithPins Then
         Result := Copy(Result, 1, Length(Result) - 1) + ',' + JsonRaw('pins', '[' + Pins + ']') + '}';
 End;
@@ -5186,6 +5205,63 @@ Begin
         + JsonStr('out_path', OutPath) + ','
         + JsonBool('add_to_project', AddIt) + ','
         + JsonBool('in_project', Project.DM_IndexOfSourceDocument(OutPath) >= 0)));
+End;
+
+{..............................................................................}
+{ Proj_MakeIntegratedLibrary - Design > Make Integrated Library: an IntLib of  }
+{ every part the project places, symbols and footprints together             }
+{ (IntegratedLibrary:CreateLibraryFromProject). MEASURED on AD 26.11.1.5: no   }
+{ dialog; Altium writes <project>.IntLib in the project folder. The process   }
+{ acts on the focused project, so one of its open documents is focused first. }
+{ Params: project_path (optional).                                            }
+{..............................................................................}
+Function Proj_MakeIntegratedLibrary(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, DocPath : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    D : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    ServerDoc := Nil;
+    DocPath := '';
+    For D := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(D); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Try ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath); Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            DocPath := Doc.DM_FullPath;
+            Break;
+        End;
+    End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'No document of the project is open. Call proj_load_sheets first.');
+        Exit;
+    End;
+    Try ServerDoc.Focus; Except End;
+    If UpperCase(Workspace.DM_FocusedProject.DM_ProjectFullPath)
+        <> UpperCase(Project.DM_ProjectFullPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOCUSED',
+            'Could not focus the project through ' + DocPath + '; nothing was made.');
+        Exit;
+    End;
+    RunProcess('IntegratedLibrary:CreateLibraryFromProject');
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('project', Project.DM_ProjectFullPath) + ','
+        + JsonStr('focused_document', DocPath)));
 End;
 
 {..............................................................................}
@@ -5944,7 +6020,8 @@ Var
     Data : String;
     Ok : Boolean;
     FocusedDoc : IDocument;
-    FocusedKind : String;
+    FocusedProject : IProject;
+    FocusedKind, FocusedPath : String;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
 
@@ -5994,11 +6071,30 @@ Begin
       variant. }
     ResolvePCBBoard(PcbPath);
     FocusedKind := '';
+    FocusedPath := '';
     Try
         FocusedDoc := Workspace.DM_FocusedDocument;
-        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
+        If FocusedDoc <> Nil Then
+        Begin
+            FocusedKind := FocusedDoc.DM_DocumentKind;
+            FocusedPath := FocusedDoc.DM_FullPath;
+        End;
     Except
         FocusedKind := '';
+    End;
+    { The compare runs on the FOCUSED project, so the board in focus has  }
+    { to be this one, in this project; another would be the one updated.  }
+    FocusedProject := Nil;
+    Try FocusedProject := Workspace.DM_FocusedProject; Except FocusedProject := Nil; End;
+    If FocusedKind = 'PCB' Then
+    Begin
+        If PathKey(FocusedPath) <> PathKey(PcbPath) Then
+            FocusedKind := 'PCB ' + FocusedPath
+        Else If FocusedProject = Nil Then
+            FocusedKind := 'PCB of another project'
+        Else If PathKey(FocusedProject.DM_ProjectFullPath)
+            <> PathKey(Project.DM_ProjectFullPath) Then
+            FocusedKind := 'PCB of another project';
     End;
     If FocusedKind <> 'PCB' Then
     Begin
@@ -6995,6 +7091,7 @@ Begin
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'project_setup':     Result := Proj_ProjectSetup(Params, RequestId);
         'make_schematic_library': Result := Proj_MakeSchematicLibrary(Params, RequestId);
+        'make_integrated_library': Result := Proj_MakeIntegratedLibrary(Params, RequestId);
         'get_declared_design_objects': Result := Proj_GetDeclaredDesignObjects(Params, RequestId);
         'delete_variant':    Result := Proj_DeleteVariant(Params, RequestId);
         'set_parameter_variation': Result := Proj_SetParameterVariation(Params, RequestId);

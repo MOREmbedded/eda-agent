@@ -255,7 +255,8 @@ def test_extra_properties_fit_only_their_owner():
     body = _body("PCBGeneric.pas", "PCBSetExtra")
     assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
             "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or\n"
-            "       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;") in body
+            "       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or\n"
+            "       (PropName = 'FontName') Then Exit;") in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")

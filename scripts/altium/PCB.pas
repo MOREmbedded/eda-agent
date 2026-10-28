@@ -2448,11 +2448,12 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Comp : IPCB_Component;
-    BBox : TCoordRect;
+    BBox, BodyBox : TCoordRect;
     JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator : String;
     First : Boolean;
     Count : Integer;
     HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
+    BodyJson : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -2497,6 +2498,16 @@ Begin
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
+        { The same box without the part's designator and comment, which can }
+        { sit far from it.                                                 }
+        BodyJson := '';
+        Try
+            BodyBox := Comp.BoundingRectangleNoNameComment;
+            BodyJson := ',"bbox_no_name_comment":{"x1":' + FloatToJsonStr(CoordToMilsF(BodyBox.X1))
+                + ',"y1":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y1))
+                + ',"x2":' + FloatToJsonStr(CoordToMilsF(BodyBox.X2))
+                + ',"y2":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y2)) + '}';
+        Except BodyJson := ''; End;
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
             + '"comment":"' + EscapeJsonString(CommentStr) + '",'
@@ -2509,7 +2520,8 @@ Begin
             + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
             + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
-            + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '}}';
+            + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '}'
+            + BodyJson + '}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
     End;
@@ -5287,6 +5299,215 @@ Begin
         + JsonBool('stiffener', DL.IsStiffener);
 End;
 
+{ Whether anything of the board lies on layer Id. Ids past the old layer   }
+{ sets (AD19 and later number layers above 255) cannot be searched, and a  }
+{ layer that cannot be searched counts as occupied, so nothing on it is lost. }
+Function LayerCarriesObjects(Board : IPCB_Board; Id : Integer) : Boolean;
+Var
+    Search : IPCB_BoardIterator;
+Begin
+    Result := (Id < 1) Or (Id > 255);
+    If Result Then Exit;
+    Search := Board.BoardIterator_Create;
+    Try
+        Search.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, ePadObject, eViaObject,
+            eFillObject, eRegionObject, eTextObject, ePolyObject));
+        Search.AddFilter_LayerSet(MkSet(Id));
+        Search.AddFilter_Method(eProcessAll);
+        Result := Search.FirstPCBObject <> Nil;
+    Finally
+        Board.BoardIterator_Destroy(Search);
+    End;
+End;
+
+{ Turn a copper layer into plain copper: additive off, and the resistivity  }
+{ of the top layer. Copper added through the older stack model came out as  }
+{ a printed-electronics layer on AD 25.8, and the board was then drawn thin }
+{ with no drilled holes. Answers whether the layer now reads plain.         }
+Function CopperToPlain(Stack : IPCB_MasterLayerStack; Layer : IPCB_LayerObject) : Boolean;
+Var
+    Cu, TopCopper : IPCB_ElectricalLayer;
+Begin
+    Cu := Layer;
+    TopCopper := Stack.First(eLayerClass_Electrical);
+    If Cu.IsAdditiveLayer Then Cu.IsAdditiveLayer := False;
+    If TopCopper <> Nil Then
+        If Cu.ElectricalResistivity <> TopCopper.ElectricalResistivity Then
+            Cu.ElectricalResistivity := TopCopper.ElectricalResistivity;
+    Result := Not Cu.IsAdditiveLayer;
+    If Result And (TopCopper <> Nil) Then
+        Result := Cu.ElectricalResistivity = TopCopper.ElectricalResistivity;
+End;
+
+{ The copper layer's fields the stack tools report. }
+Function CopperLayerJson(Board : IPCB_Board; Layer : IPCB_LayerObject) : String;
+Var
+    Cu : IPCB_ElectricalLayer;
+Begin
+    Cu := Layer;
+    Result := JsonObj(JsonStr('name', Layer.Name)
+        + ',' + JsonInt('id', Layer.LayerID)
+        + ',' + JsonBool('occupied', LayerCarriesObjects(Board, Layer.LayerID))
+        + ',' + JsonBool('additive', Cu.IsAdditiveLayer)
+        + ',' + JsonRaw('resistivity', FloatToJsonStr(Cu.ElectricalResistivity))
+        + ',' + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(Cu.CopperThickness))));
+End;
+
+{ The board a stack command acts on, or Nil with the refusal in Refusal. }
+Function StackBoard(Params, RequestId : String; Var Refusal : String) : IPCB_Board;
+Begin
+    Result := ResolvePCBBoard(ExtractJsonValue(Params, 'board_path'));
+    Refusal := '';
+    If Result = Nil Then
+        Refusal := BuildErrorResponse(RequestId, 'NO_PCB',
+            'No board open at that path, and none focused');
+End;
+
+{..............................................................................}
+{ PCB_CopperLayers - the copper of the physical stack (MasterLayerStack, the  }
+{ model where a dielectric is a layer of its own), top to bottom: name, id,  }
+{ whether anything lies on it, additive flag, resistivity, thickness.        }
+{ Params: board_path (optional).                                             }
+{..............................................................................}
+Function PCB_CopperLayers(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack;
+    Layer : IPCB_LayerObject;
+    Rows, Refusal : String;
+Begin
+    Board := StackBoard(Params, RequestId, Refusal);
+    If Board = Nil Then Begin Result := Refusal; Exit; End;
+    Stack := Board.MasterLayerStack;
+    Rows := '';
+    Layer := Stack.First(eLayerClass_Electrical);
+    While Layer <> Nil Do
+    Begin
+        If Rows <> '' Then Rows := Rows + ',';
+        Rows := Rows + CopperLayerJson(Board, Layer);
+        Layer := Stack.Next(eLayerClass_Electrical, Layer);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('board', Board.FileName)
+        + ',' + JsonRaw('layers', '[' + Rows + ']')));
+End;
+
+{..............................................................................}
+{ PCB_DropStackLayer - take one layer out of the physical stack. The top and  }
+{ bottom copper stay, and copper with anything on it is refused; afterwards  }
+{ the layer is looked for again. Params: board_path (optional), layer.       }
+{..............................................................................}
+Function PCB_DropStackLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack;
+    Layer, First, Last, Walk : IPCB_LayerObject;
+    Wanted, Refusal : String;
+Begin
+    Board := StackBoard(Params, RequestId, Refusal);
+    If Board = Nil Then Begin Result := Refusal; Exit; End;
+    Stack := Board.MasterLayerStack;
+    Wanted := ExtractJsonValue(Params, 'layer');
+    Layer := StackFindPhysical(Stack, Wanted);
+    If Layer = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LAYER',
+            'The stack has no layer ' + Wanted + ' (pcb_physical_stack lists them)');
+        Exit;
+    End;
+    If Pos('|' + Layer.Name + '|', StackClassNames(Stack, eLayerClass_Electrical)) > 0 Then
+    Begin
+        First := Stack.First(eLayerClass_Electrical);
+        Last := First;
+        Walk := First;
+        While Walk <> Nil Do
+        Begin
+            Last := Walk;
+            Walk := Stack.Next(eLayerClass_Electrical, Walk);
+        End;
+        If (Layer.Name = First.Name) Or (Layer.Name = Last.Name) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'OUTER_COPPER',
+                'The outer copper layers stay; rename them instead');
+            Exit;
+        End;
+        If LayerCarriesObjects(Board, Layer.LayerID) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'LAYER_OCCUPIED',
+                'Objects lie on ' + Layer.Name + ', so it stays');
+            Exit;
+        End;
+    End;
+    PCBServer.PreProcess;
+    Try
+        Stack.RemoveLayer(Layer);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('layer', Wanted)
+        + ',' + JsonBool('still_there', StackFindPhysical(Stack, Wanted) <> Nil)));
+End;
+
+{..............................................................................}
+{ PCB_TuneCopperLayer - change one copper layer of the physical stack: its    }
+{ name (rename_to), its thickness, and plain=true to make it plain copper.   }
+{ Every change is read back; the ones that did not hold are in 'missed'.     }
+{ Params: board_path (optional), layer, rename_to, thickness_mils, plain.    }
+{..............................................................................}
+Function PCB_TuneCopperLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack;
+    Layer : IPCB_LayerObject;
+    Cu : IPCB_ElectricalLayer;
+    Wanted, NewName, Thick, Missed, Refusal : String;
+    Mils : Double;
+Begin
+    Board := StackBoard(Params, RequestId, Refusal);
+    If Board = Nil Then Begin Result := Refusal; Exit; End;
+    Stack := Board.MasterLayerStack;
+    Wanted := ExtractJsonValue(Params, 'layer');
+    Layer := StackFindPhysical(Stack, Wanted);
+    If (Layer = Nil) Or
+       (Pos('|' + Wanted + '|', StackClassNames(Stack, eLayerClass_Electrical)) = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LAYER',
+            'The stack has no copper layer ' + Wanted);
+        Exit;
+    End;
+    Cu := Layer;
+    NewName := ExtractJsonValue(Params, 'rename_to');
+    Thick := ExtractJsonValue(Params, 'thickness_mils');
+    Missed := '';
+    PCBServer.PreProcess;
+    Try
+        If NewName <> '' Then
+        Begin
+            Layer.Name := NewName;
+            If Layer.Name <> NewName Then Missed := Missed + ',"rename_to"';
+        End;
+        If Thick <> '' Then
+        Begin
+            Mils := StrToFloatDef(Thick, 0);
+            Cu.CopperThickness := MilsToCoordF(Mils);
+            If Abs(CoordToMilsF(Cu.CopperThickness) - Mils) > 0.01 Then
+                Missed := Missed + ',"thickness_mils"';
+        End;
+        If LowerCase(ExtractJsonValue(Params, 'plain')) = 'true' Then
+            If Not CopperToPlain(Stack, Layer) Then Missed := Missed + ',"plain"';
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('layer', CopperLayerJson(Board, Layer))
+        + ',' + JsonRaw('missed', '[' + Copy(Missed, 2, Length(Missed)) + ']')));
+End;
+
 {..............................................................................}
 { PCB_PhysicalStack - every physical layer of the board's stack in order, top }
 { down: its kind, Z top and bottom and thickness, and for a dielectric or     }
@@ -5300,6 +5521,7 @@ Var
     MLS : IPCB_MasterLayerStack;
     L : IPCB_LayerObject;
     DL : IPCB_DielectricLayer;
+    EL : IPCB_ElectricalLayer;
     StyleStr, Copper, Dielectric, Mask, Overlay, Paste, Kind, Key, Items, Extra : String;
     ZTop, ZBot, MaxTop, MinBot, Order : Integer;
     Changed : Boolean;
@@ -5360,6 +5582,16 @@ Begin
             DL := L;
             Extra := ',' + StackDielectricJson(DL);
         End;
+        { Copper that reads additive is a printed-electronics layer: Altium  }
+        { draws such a board paper-thin with no drilled holes (seen on      }
+        { AD 25.8, after copper was inserted through the V7 stack).         }
+        If Kind = 'copper' Then
+        Begin
+            EL := L;
+            Extra := ',' + JsonInt('layer_id', L.LayerID)
+                + ',' + JsonRaw('resistivity', FloatToJsonStr(EL.ElectricalResistivity))
+                + ',' + JsonBool('additive', EL.IsAdditiveLayer);
+        End;
         If Items <> '' Then Items := Items + ',';
         Items := Items + JsonObj(JsonInt('order', Order) + ','
             + JsonStr('name', L.Name) + ','
@@ -5389,7 +5621,7 @@ Var
     MLS : IPCB_MasterLayerStack;
     L : IPCB_LayerObject;
     DL : IPCB_DielectricLayer;
-    LayerName, TypeS, MatS, ConstS, TanS, ThickS, StiffS, Key, Missed : String;
+    LayerName, TypeS, MatS, ConstS, TanS, ThickS, StiffS, Key, Missed, NewName : String;
 Begin
     LayerName := ExtractJsonValue(Params, 'layer');
     TypeS := ExtractJsonValue(Params, 'type');
@@ -5398,6 +5630,7 @@ Begin
     TanS := ExtractJsonValue(Params, 'loss_tangent');
     ThickS := ExtractJsonValue(Params, 'thickness_mils');
     StiffS := LowerCase(ExtractJsonValue(Params, 'stiffener'));
+    NewName := ExtractJsonValue(Params, 'rename_to');
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
@@ -5420,6 +5653,11 @@ Begin
     Missed := '';
     PCBServer.PreProcess;
     Try
+        If NewName <> '' Then
+        Begin
+            L.Name := NewName;
+            If L.Name <> NewName Then Missed := Missed + '"rename_to",';
+        End;
         If TypeS <> '' Then
         Begin
             DL.DielectricType := StrToInt(TypeS);
@@ -6733,7 +6971,7 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
     JsonItems, LyrNm, UserName : String;
-    First, Visible : Boolean;
+    First, Visible, Stacked : Boolean;
     Color, Count, Shown : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -6774,13 +7012,19 @@ Begin
 
             { The name the user gave the layer, which for a mechanical  }
             { layer is the only way to tell one from another.           }
+            { in_stack: an unused mid layer still reads as displayed, so  }
+            { visible does not tell whether the board has the layer.      }
             UserName := '';
+            Stacked := False;
             If LayerStack <> Nil Then
             Begin
                 LayerObj := Nil;
                 Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
                 If LayerObj <> Nil Then
+                Begin
                     Try UserName := LayerObj.Name; Except UserName := ''; End;
+                    Try Stacked := LayerObj.IsInLayerStack; Except Stacked := False; End;
+                End;
             End;
 
             If Not First Then JsonItems := JsonItems + ',';
@@ -6789,6 +7033,7 @@ Begin
                 + '{"layer":"' + EscapeJsonString(LyrNm) + '",'
                 + '"name":"' + EscapeJsonString(UserName) + '",'
                 + '"visible":' + BoolToJsonStr(Visible) + ','
+                + '"in_stack":' + BoolToJsonStr(Stacked) + ','
                 + '"color":' + IntToStr(Color) + ','
                 + '"color_hex":"' + ColorToHexRgb(Color) + '"}';
             Inc(Count);
@@ -10049,6 +10294,109 @@ Begin
         Except End;
     End;
     Result := Abs(Sum) / 2.0;
+End;
+
+{ The pour at position Wanted in board iteration order (pcb_get_polygons'  }
+{ order), or Nil; Count is how many pours were passed on the way.           }
+Function PourAtPosition(Board : IPCB_Board; Wanted : Integer; Var Count : Integer) : IPCB_Polygon;
+Var
+    Walk : IPCB_BoardIterator;
+Begin
+    Count := 0;
+    Walk := Board.BoardIterator_Create;
+    Try
+        Walk.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Walk.AddFilter_LayerSet(AllLayers);
+        Walk.AddFilter_Method(eProcessAll);
+        Result := Walk.FirstPCBObject;
+        While (Result <> Nil) And (Count < Wanted) Do
+        Begin
+            Result := Walk.NextPCBObject;
+            Inc(Count);
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Walk);
+    End;
+End;
+
+{ One outline corner: where it is and, for an arc, its centre, radius and   }
+{ start and end angles.                                                     }
+Function PourCornerJson(Seg : TPolySegment) : String;
+Var
+    Body : String;
+Begin
+    Body := JsonRaw('at', '[' + FloatToJsonStr(CoordToMilsF(Seg.vx)) + ','
+        + FloatToJsonStr(CoordToMilsF(Seg.vy)) + ']');
+    If Seg.Kind <> ePolySegmentLine Then
+        Body := Body + ',' + JsonRaw('arc', JsonObj(
+            JsonRaw('centre', '[' + FloatToJsonStr(CoordToMilsF(Seg.cx)) + ','
+                + FloatToJsonStr(CoordToMilsF(Seg.cy)) + ']')
+            + ',' + JsonRaw('radius', FloatToJsonStr(CoordToMilsF(Seg.Radius)))
+            + ',' + JsonRaw('from_deg', FloatToJsonStr(Seg.Angle1))
+            + ',' + JsonRaw('to_deg', FloatToJsonStr(Seg.Angle2))));
+    Result := JsonObj(Body);
+End;
+
+{..............................................................................}
+{ PCB_PourOutline - the outline one pour fills, as Altium holds it: each     }
+{ corner (arcs with centre, radius and angles) and whether the closing      }
+{ vertex at PointCount equals the first (a stale one spikes the pour).      }
+{ Params: index (pcb_get_polygons' order), name (optional; refused when the }
+{ pour at index has another, since positions shift as pours come and go).   }
+{..............................................................................}
+Function PCB_PourOutline(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pour : IPCB_Polygon;
+    First, Last : TPolySegment;
+    Wanted, Passed, I, Corners : Integer;
+    Expected, Net, OnLayer, Rows : String;
+Begin
+    Wanted := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    If Wanted < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'index counts from 0');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Pour := PourAtPosition(Board, Wanted, Passed);
+    If Pour = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'The board has ' + IntToStr(Passed) + ' pours, none at ' + IntToStr(Wanted));
+        Exit;
+    End;
+    Expected := Trim(ExtractJsonValue(Params, 'name'));
+    If (Expected <> '') And (UpperCase(Expected) <> UpperCase(Pour.Name)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POUR_CHANGED',
+            'Pour ' + IntToStr(Wanted) + ' is now ' + Pour.Name + ', not ' + Expected
+            + '; read pcb_get_polygons again');
+        Exit;
+    End;
+    Net := '';
+    Try If Pour.Net <> Nil Then Net := Pour.Net.Name; Except Net := ''; End;
+    OnLayer := 'Unknown';
+    Try OnLayer := GetLayerString(Pour.Layer); Except End;
+    Corners := Pour.PointCount;
+    Rows := '';
+    For I := 0 To Corners - 1 Do
+        Rows := Rows + ',' + PourCornerJson(Pour.Segments[I]);
+    First := Pour.Segments[0];
+    Last := Pour.Segments[Corners];
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonInt('index', Wanted)
+        + ',' + JsonStr('name', Pour.Name) + ',' + JsonStr('net', Net)
+        + ',' + JsonStr('layer', OnLayer) + ',' + JsonInt('corners', Corners)
+        + ',' + JsonRaw('outline', '[' + Copy(Rows, 2, Length(Rows)) + ']')
+        + ',' + JsonRaw('closing_vertex', '[' + FloatToJsonStr(CoordToMilsF(Last.vx)) + ','
+            + FloatToJsonStr(CoordToMilsF(Last.vy)) + ']')
+        + ',' + JsonBool('closes_on_first', (Corners > 0) And (Last.vx = First.vx)
+            And (Last.vy = First.vy))));
 End;
 
 {..............................................................................}
@@ -18923,6 +19271,66 @@ Begin
         JsonInt('count', Count) + ',' + JsonRaw('xsignals', '[' + Items + ']')));
 End;
 
+{ The board's xSignal class of that name, made when there is none and Make. }
+Function XSignalClassNamed(Board : IPCB_Board; ClassName : String; Make : Boolean) : IPCB_ObjectClass;
+Var
+    Iter : IPCB_BoardIterator;
+    Cls : IPCB_ObjectClass;
+Begin
+    Result := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.SetState_FilterAll;
+        Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+        Cls := Iter.FirstPCBObject;
+        While (Cls <> Nil) And (Result = Nil) Do
+        Begin
+            If (Cls.MemberKind = eClassMemberKind_Signal)
+                And (UpperCase(Cls.Name) = UpperCase(ClassName)) Then Result := Cls;
+            Cls := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If (Result <> Nil) Or (Not Make) Then Exit;
+    PCBServer.PreProcess;
+    Try
+        Result := PCBServer.PCBClassFactoryByClassMember(eClassMemberKind_Signal);
+        If Result <> Nil Then
+        Begin
+            Result.SuperClass := False;
+            Result.Name := ClassName;
+            Board.AddPCBObject(Result);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Result.I_ObjectAddress);
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+End;
+
+{ Whether the class lists that member name. A class has no member count  }
+{ here, so the names are read until one raises or Limit is reached.      }
+Function ClassListsMember(Cls : IPCB_ObjectClass; MemberName : String; Limit : Integer) : Boolean;
+Var
+    I : Integer;
+    Got : String;
+Begin
+    Result := False;
+    If Cls = Nil Then Exit;
+    For I := 0 To Limit - 1 Do
+    Begin
+        Got := '';
+        Try Got := Cls.MemberName[I]; Except Break; End;
+        If Got = '' Then Break;
+        If UpperCase(Got) = UpperCase(MemberName) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { PCB_CreateXSignals - create xSignals between pins (PinPairsManager.         }
 { CreateFromPins on the pads), and put them in an xSignal class when one is   }
@@ -18941,8 +19349,10 @@ Var
     Made : IInterface;
     PinStr, ClassName, Item, Desig, PadName, Missing, NewItems, BeforeNames : String;
     MissingPlain : String;
-    TabPos, DotPos, I, Before, After, Found : Integer;
+    TabPos, DotPos, I, Before, After, Found, Unlisted : Integer;
     Classed : Boolean;
+    SigClass : IPCB_ObjectClass;
+    Unclassed : String;
 Begin
     PinStr := ExtractJsonValue(Params, 'pins');
     ClassName := ExtractJsonValue(Params, 'class_name');
@@ -19026,6 +19436,14 @@ Begin
         End;
     End;
     After := Mgr.PinPairsCount;
+    { A class assignment that raised nothing is not a membership: the     }
+    { xSignals were found outside the class they named. Each new          }
+    { xSignal is looked for in the class, added as a member when missing, }
+    { and looked for again.                                                }
+    SigClass := Nil;
+    If ClassName <> '' Then SigClass := XSignalClassNamed(Board, ClassName, True);
+    Unlisted := 0;
+    Unclassed := '';
     NewItems := '';
     For I := 0 To After - 1 Do
     Begin
@@ -19033,9 +19451,28 @@ Begin
         Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
         If PP = Nil Then Continue;
         If Pos(#9 + PP.Name + #9, BeforeNames) > 0 Then Continue;
+        If ClassName <> '' Then
+        Begin
+            If (SigClass <> Nil) And Not ClassListsMember(SigClass, PP.Name, After + 64) Then
+            Begin
+                PCBServer.PreProcess;
+                Try
+                    Try SigClass.AddMember(PP.CastToPrimitive); Except End;
+                Finally
+                    PCBServer.PostProcess;
+                End;
+            End;
+            If (SigClass = Nil) Or Not ClassListsMember(SigClass, PP.Name, After + 64) Then
+            Begin
+                Inc(Unlisted);
+                If Unclassed <> '' Then Unclassed := Unclassed + ',';
+                Unclassed := Unclassed + '"' + EscapeJsonString(PP.Name) + '"';
+            End;
+        End;
         If NewItems <> '' Then NewItems := NewItems + ',';
         NewItems := NewItems + XSignalJson(Mgr, PP, I);
     End;
+    If ClassName <> '' Then Classed := (SigClass <> Nil) And (Unlisted = 0) And (After > Before);
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonInt('count_before', Before) + ','
@@ -19043,6 +19480,7 @@ Begin
         + JsonBool('returned_pairs', Made <> Nil) + ','
         + JsonStr('class_name', ClassName) + ','
         + JsonBool('class_assigned', Classed) + ','
+        + JsonRaw('not_in_class', '[' + Unclassed + ']') + ','
         + JsonRaw('created', '[' + NewItems + ']')));
 End;
 
@@ -22770,6 +23208,660 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_MakeLibrary - make a PCB library of every footprint on a board, as      }
+{ Design > Make PCB Library does (PCB:BuildPCBLibrary), and save it.          }
+{ MEASURED on AD 26.11.1.5: no dialog; the process opens an unsaved library   }
+{ named after the board (a digit added when the name is taken) and leaves an  }
+{ empty file of that name on disk until the library is saved.                 }
+{ Params: board_path (optional), out_path (optional, default the name Altium  }
+{ chose), add_to_project (to the board's project).                            }
+{..............................................................................}
+Function PCB_MakeLibrary(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, BoardPath, OutPath, MadePath, SavePath, Names, FpName : String;
+    BoardDoc, LibDoc : IServerDocument;
+    Doc : IDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Fp : IPCB_LibComponent;
+    Count : Integer;
+    AddIt, Saved, Added, ProjSaved : Boolean;
+Begin
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    AddIt := LowerCase(ExtractJsonValue(Params, 'add_to_project')) = 'true';
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    BoardPath := Board.FileName;
+    If OutPath <> '' Then
+    Begin
+        LibDoc := Nil;
+        Try LibDoc := Client.GetDocumentByPath(OutPath); Except LibDoc := Nil; End;
+        If LibDoc <> Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TARGET_OPEN',
+                OutPath + ' is open in Altium. Close it or pick another out_path.');
+            Exit;
+        End;
+        If FileExists(OutPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TARGET_EXISTS',
+                OutPath + ' exists. Pick another out_path; nothing was made.');
+            Exit;
+        End;
+    End;
+    BoardDoc := Nil;
+    Try BoardDoc := Client.GetDocumentByPath(BoardPath); Except BoardDoc := Nil; End;
+    If BoardDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            'The board ' + BoardPath + ' has no open document');
+        Exit;
+    End;
+    Try BoardDoc.Focus; Except End;
+    ResetParameters;
+    AddStringParameter('AddLibraryToProject', 'False');
+    RunProcess('PCB:BuildPCBLibrary');
+
+    MadePath := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Try MadePath := Doc.DM_FullPath; Except End;
+    End;
+    If (UpperCase(ExtractFileExt(MadePath)) <> '.PCBLIB')
+        Or (UpperCase(MadePath) = UpperCase(BoardPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_MADE',
+            'Make PCB Library opened no library (focused: ' + MadePath + ')');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    Count := 0;
+    Names := '';
+    If PcbLib <> Nil Then
+    Begin
+        Iter := PcbLib.LibraryIterator_Create;
+        Try
+            Fp := Iter.FirstPCBObject;
+            While Fp <> Nil Do
+            Begin
+                FpName := '';
+                Try FpName := Fp.Name; Except End;
+                If Count > 0 Then Names := Names + ',';
+                Names := Names + '"' + EscapeJsonString(FpName) + '"';
+                Inc(Count);
+                Fp := Iter.NextPCBObject;
+            End;
+        Finally
+            PcbLib.LibraryIterator_Destroy(Iter);
+        End;
+    End;
+
+    SavePath := MadePath;
+    If OutPath <> '' Then SavePath := OutPath;
+    Saved := False;
+    LibDoc := Nil;
+    Try LibDoc := Client.GetDocumentByPath(MadePath); Except LibDoc := Nil; End;
+    If LibDoc <> Nil Then
+    Begin
+        Try LibDoc.SetFileName(SavePath); Except End;
+        Try
+            LibDoc.SetModified(True);
+            LibDoc.DoFileSave('');
+        Except End;
+        Saved := FileExists(SavePath);
+    End;
+
+    Added := False;
+    ProjSaved := False;
+    If AddIt And Saved Then
+    Begin
+        Project := ProjectHoldingDoc(BoardPath);
+        If Project <> Nil Then
+        Begin
+            Try
+                Project.DM_AddSourceDocument(SavePath);
+                Added := True;
+            Except Added := False; End;
+            If Added Then ProjSaved := SaveProjectFile(Project);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', BoardPath) + ','
+        + JsonStr('made_as', MadePath) + ','
+        + JsonStr('library', SavePath) + ','
+        + JsonBool('saved', Saved) + ','
+        + JsonInt('footprint_count', Count) + ','
+        + JsonRaw('footprints', '[' + Names + ']') + ','
+        + JsonBool('added_to_project', Added) + ','
+        + JsonBool('project_saved', ProjSaved)));
+End;
+
+{ The templates of a pad/via library, as a JSON array.                      }
+Function PadViaTemplatesJson(PvLib : IPCB_PadViaLibrary) : String;
+Var
+    T : IPCB_PadViaTemplate;
+    I, N : Integer;
+    Name, Descr, TemplateIdStr : String;
+    LinkCount : Integer;
+Begin
+    Result := '';
+    If PvLib = Nil Then Exit;
+    N := 0;
+    Try N := PvLib.GetState_Count; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        T := Nil;
+        Try T := PvLib.GetState_Template(I); Except T := Nil; End;
+        If T = Nil Then Continue;
+        Name := ''; Descr := ''; TemplateIdStr := ''; LinkCount := 0;
+        Try Name := T.GetState_TemplateName; Except End;
+        Try Descr := T.GetState_TemplateDescription; Except End;
+        Try TemplateIdStr := T.GetFullTemplateID; Except End;
+        Try LinkCount := T.GetState_PrimLinkCount; Except End;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '{"name":"' + EscapeJsonString(Name) + '","description":"'
+            + EscapeJsonString(Descr) + '","id":"' + EscapeJsonString(TemplateIdStr)
+            + '","used_by":' + IntToStr(LinkCount) + '}';
+    End;
+End;
+
+{ The installed pad/via libraries and their templates, as a JSON array.    }
+Function InstalledPadViaLibrariesJson(Dummy : Integer) : String;
+Var
+    Mgr : IPCB_PadViaLibraryManager;
+    PvLib : IPCB_PadViaLibrary;
+    I, N : Integer;
+    Name, Path : String;
+Begin
+    Result := '';
+    Mgr := Nil;
+    Try Mgr := PCBServer.GetState_PadViaLibraryManager; Except Mgr := Nil; End;
+    If Mgr = Nil Then Exit;
+    N := 0;
+    Try N := Mgr.GetInstalledLibraryCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        PvLib := Nil;
+        Try PvLib := Mgr.GetInstalledLibrary(I); Except PvLib := Nil; End;
+        If PvLib = Nil Then Continue;
+        Name := ''; Path := '';
+        Try Name := PvLib.GetState_LibraryName; Except End;
+        Try Path := PvLib.GetState_LibraryPath; Except End;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '{"name":"' + EscapeJsonString(Name) + '","path":"'
+            + EscapeJsonString(Path) + '","templates":[' + PadViaTemplatesJson(PvLib) + ']}';
+    End;
+End;
+
+{..............................................................................}
+{ PCB_GetPadViaLibrary - the pad and via templates a board holds in its own   }
+{ library, and the installed pad/via libraries (.PvLib) with theirs.          }
+{ Params: board_path (optional).                                             }
+{..............................................................................}
+Function PCB_GetPadViaLibrary(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, LibPath : String;
+    PvLib : IPCB_PadViaLibrary;
+    ServerDoc : IServerDocument;
+    PvDoc : IPCB_PadViaLibraryDocument;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(LibPath); Except ServerDoc := Nil; End;
+        PvLib := Nil;
+        If ServerDoc <> Nil Then
+            Try
+                PvDoc := ServerDoc;
+                PvLib := PvDoc.GetState_PadViaLibrary;
+            Except PvLib := Nil; End;
+        If PvLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PADVIA_LIBRARY',
+                'No pad/via library opened at ' + LibPath);
+            Exit;
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library', LibPath) + ','
+            + JsonRaw('templates', '[' + PadViaTemplatesJson(PvLib) + ']') + ','
+            + JsonRaw('installed_libraries', '[' + InstalledPadViaLibrariesJson(0) + ']')));
+        Exit;
+    End;
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    PvLib := Nil;
+    Try PvLib := Board.GetState_PadViaLibrary; Except PvLib := Nil; End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', Board.FileName) + ','
+        + JsonRaw('board_templates', '[' + PadViaTemplatesJson(PvLib) + ']') + ','
+        + JsonRaw('installed_libraries', '[' + InstalledPadViaLibrariesJson(0) + ']')));
+End;
+
+{..............................................................................}
+{ PCB_AddPadViaTemplate - make a template in the board's pad/via library from  }
+{ a via (at x, y) or a pad (component designator and pad name) on the board.  }
+{ Altium names the template from the object's sizes.                          }
+{ Params: board_path (optional), x and y (mil, a via), or component and pad.  }
+{..............................................................................}
+Function PCB_AddPadViaTemplate(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, CompDes, PadName, XStr, YStr, Got : String;
+    PvLib : IPCB_PadViaLibrary;
+    Iter : IPCB_BoardIterator;
+    GrpIter : IPCB_GroupIterator;
+    Obj, Found : IPCB_Primitive;
+    Comp : IPCB_Component;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    TX, TY, Tol : Integer;
+    Before, After, Matches : Integer;
+Begin
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    PvLib := Nil;
+    Try PvLib := Board.GetState_PadViaLibrary; Except PvLib := Nil; End;
+    If PvLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PADVIA_LIBRARY',
+            'The board gave no pad/via library');
+        Exit;
+    End;
+    CompDes := ExtractJsonValue(Params, 'component');
+    PadName := ExtractJsonValue(Params, 'pad');
+    XStr := ExtractJsonValue(Params, 'x');
+    YStr := ExtractJsonValue(Params, 'y');
+    Found := Nil;
+    Matches := 0;
+    Got := '';
+    If CompDes <> '' Then
+    Begin
+        Comp := FindPCBComponentByDesignator(Board, CompDes);
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component ' + CompDes);
+            Exit;
+        End;
+        GrpIter := Comp.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Obj := GrpIter.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                Pad := Obj;
+                If (Pad.Name = PadName) And (Found = Nil) Then Found := Obj;
+                Obj := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Comp.GroupIterator_Destroy(GrpIter);
+        End;
+        Got := 'pad ' + CompDes + '.' + PadName;
+        If Found <> Nil Then Matches := 1;
+    End
+    Else
+    Begin
+        If (XStr = '') Or (YStr = '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'Give x and y of a via, or component and pad');
+            Exit;
+        End;
+        TX := Board.XOrigin + MilsToCoordF(StrToFloatDef(XStr, 0));
+        TY := Board.YOrigin + MilsToCoordF(StrToFloatDef(YStr, 0));
+        Tol := MilsToCoord(1);
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                Via := Obj;
+                If (Abs(Via.X - TX) <= Tol) And (Abs(Via.Y - TY) <= Tol) Then
+                Begin
+                    Inc(Matches);
+                    Found := Obj;
+                End;
+                Obj := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        Got := 'via at ' + XStr + ', ' + YStr;
+    End;
+    If Found = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No ' + Got + ' on the board');
+        Exit;
+    End;
+    If Matches > 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS',
+            IntToStr(Matches) + ' vias sit there; nothing was added');
+        Exit;
+    End;
+    Before := 0;
+    Try Before := PvLib.GetState_Count; Except End;
+    PCBServer.PreProcess;
+    Try
+        PvLib.AddTemplateByPrimitive(Found);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := 0;
+    Try After := PvLib.GetState_Count; Except End;
+    If After > Before Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', Board.FileName) + ','
+        + JsonStr('from', Got) + ','
+        + JsonInt('templates_before', Before) + ','
+        + JsonInt('templates_after', After) + ','
+        + JsonRaw('board_templates', '[' + PadViaTemplatesJson(PvLib) + ']')));
+End;
+
+{..............................................................................}
+{ PCB_MakePadViaLibrary - write the templates in a board's own pad/via        }
+{ library to a new pad/via library file (.PvLib): a new PvLib document, each  }
+{ template copied into it, then saved.                                        }
+{ Params: board_path (optional), out_path (required).                       }
+{..............................................................................}
+Function PCB_MakePadViaLibrary(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, OutPath : String;
+    BoardLib, DestLib : IPCB_PadViaLibrary;
+    T : IPCB_PadViaTemplate;
+    ServerDoc : IServerDocument;
+    PvDoc : IPCB_PadViaLibraryDocument;
+    I, N, Copied, Before : Integer;
+    Saved : Boolean;
+Begin
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    If OutPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'out_path is required');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(OutPath); Except ServerDoc := Nil; End;
+    If (ServerDoc <> Nil) Or FileExists(OutPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_EXISTS',
+            OutPath + ' exists or is open. Pick another out_path; nothing was made.');
+        Exit;
+    End;
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    BoardLib := Nil;
+    Try BoardLib := Board.GetState_PadViaLibrary; Except BoardLib := Nil; End;
+    N := 0;
+    If BoardLib <> Nil Then Try N := BoardLib.GetState_Count; Except N := 0; End;
+    If N = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_TEMPLATES',
+            'The board holds no pad or via templates; add one with pcb_add_pad_via_template');
+        Exit;
+    End;
+    ServerDoc := Client.OpenNewDocument('PVLIB', OutPath, ExtractFileName(OutPath), False);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Altium made no PvLib document');
+        Exit;
+    End;
+    DestLib := Nil;
+    Try
+        PvDoc := ServerDoc;
+        DestLib := PvDoc.GetState_PadViaLibrary;
+    Except DestLib := Nil; End;
+    If DestLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PADVIA_LIBRARY',
+            'The new PvLib document gave no library to add to');
+        Exit;
+    End;
+    { MEASURED on AD 26.11.1.5: AddExternalTemplate copies a template into  }
+    { another library and the copy is saved; AddTemplate with a template     }
+    { adds nothing. A new PvLib starts with one default template of its own. }
+    Before := 0;
+    Try Before := DestLib.GetState_Count; Except End;
+    For I := 0 To N - 1 Do
+    Begin
+        T := Nil;
+        Try T := BoardLib.GetState_Template(I); Except T := Nil; End;
+        If T <> Nil Then Try DestLib.AddExternalTemplate(T); Except End;
+    End;
+    Copied := 0;
+    Try Copied := DestLib.GetState_Count - Before; Except Copied := 0; End;
+    Saved := False;
+    Try ServerDoc.SetFileName(OutPath); Except End;
+    Try
+        ServerDoc.SetModified(True);
+        ServerDoc.DoFileSave('');
+    Except End;
+    Saved := FileExists(OutPath);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', Board.FileName) + ','
+        + JsonStr('library', OutPath) + ','
+        + JsonInt('board_templates', N) + ','
+        + JsonInt('copied', Copied) + ','
+        + JsonBool('saved', Saved) + ','
+        + JsonRaw('templates', '[' + PadViaTemplatesJson(DestLib) + ']')));
+End;
+
+{ A part's designator as the resize tool reads it: layer, height, stroke,  }
+{ angle, mirrored, stroke font, visible, and the middle of its box.         }
+Function DesignatorLabelJson(Board : IPCB_Board; Comp : IPCB_Component) : String;
+Var
+    DesText : IPCB_Text;
+    Box : TCoordRect;
+Begin
+    DesText := Nil;
+    Try DesText := Comp.Name; Except DesText := Nil; End;
+    If DesText = Nil Then
+    Begin
+        Result := JsonRaw('label', 'null');
+        Exit;
+    End;
+    Box := DesText.BoundingRectangle;
+    Result := JsonRaw('label', JsonObj(JsonStr('layer', GetLayerString(DesText.Layer))
+        + ',' + JsonRaw('height_mils', FloatToJsonStr(CoordToMilsF(DesText.Size)))
+        + ',' + JsonRaw('stroke_mils', FloatToJsonStr(CoordToMilsF(DesText.Width)))
+        + ',' + JsonRaw('angle', FloatToJsonStr(DesText.Rotation))
+        + ',' + JsonBool('mirrored', DesText.MirrorFlag)
+        + ',' + JsonBool('stroke_font', Not DesText.UseTTFonts)
+        + ',' + JsonBool('visible', Comp.NameOn)
+        + ',' + JsonRaw('middle_mils', '['
+            + FloatToJsonStr(CoordToMilsF((Box.Left + Box.Right) Div 2 - Board.XOrigin)) + ','
+            + FloatToJsonStr(CoordToMilsF((Box.Bottom + Box.Top) Div 2 - Board.YOrigin)) + ']')));
+End;
+
+{..............................................................................}
+{ PCB_PartOutlines - each part's box without its designator and comment      }
+{ texts, which side it sits on, and its designator (DesignatorLabelJson).    }
+{ Params: board_path (optional), designators ('|' separated, empty for all). }
+{..............................................................................}
+Function PCB_PartOutlines(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, Only, Name, Rows : String;
+    Walk : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Box : TCoordRect;
+Begin
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    Only := ExtractJsonValue(Params, 'designators');
+    Rows := '';
+    Walk := Board.BoardIterator_Create;
+    Try
+        Walk.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Walk.AddFilter_LayerSet(AllLayers);
+        Walk.AddFilter_Method(eProcessAll);
+        Comp := Walk.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            Name := '';
+            Try Name := Comp.Name.Text; Except Name := ''; End;
+            If (Only = '') Or (Pos('|' + Name + '|', '|' + Only + '|') > 0) Then
+            Begin
+                Box := Comp.BoundingRectangleNoNameComment;
+                Rows := Rows + ',' + JsonObj(JsonStr('designator', Name)
+                    + ',' + JsonBool('bottom', Comp.Layer = eBottomLayer)
+                    + ',' + JsonRaw('box_mils', '['
+                        + FloatToJsonStr(CoordToMilsF(Box.Left - Board.XOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box.Bottom - Board.YOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box.Right - Board.XOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box.Top - Board.YOrigin)) + ']')
+                    + ',' + DesignatorLabelJson(Board, Comp));
+            End;
+            Comp := Walk.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Walk);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('board', Board.FileName)
+        + ',' + JsonRaw('parts', '[' + Copy(Rows, 2, Length(Rows)) + ']')));
+End;
+
+{ Restyle one designator: shown, stroke font, height and stroke in mils,    }
+{ angle, mirror and, when LayerId is a layer, that layer; then centred on   }
+{ its part. True when the text reads back as asked.                        }
+Function RestyleDesignator(Comp : IPCB_Component; LayerId : Integer;
+    HeightMils, StrokeMils, Angle : Double; Mirrored : Boolean) : Boolean;
+Var
+    DesText : IPCB_Text;
+    Written : Boolean;
+Begin
+    Result := False;
+    DesText := Comp.Name;
+    If DesText = Nil Then Exit;
+    Written := True;
+    Try
+        Comp.BeginModify;
+        Comp.NameOn := True;
+        DesText.BeginModify;
+        DesText.UseTTFonts := False;
+        If LayerId <> eNoLayer Then DesText.Layer := LayerId;
+        DesText.Size := MilsToCoordF(HeightMils);
+        DesText.Width := MilsToCoordF(StrokeMils);
+        DesText.Rotation := Angle;
+        DesText.MirrorFlag := Mirrored;
+        DesText.EndModify;
+        Comp.ChangeNameAutoposition(eAutoPos_CenterCenter);
+        Comp.EndModify;
+    Except
+        Written := False;
+    End;
+    If Not Written Then Exit;
+    Result := Comp.NameOn And (DesText.MirrorFlag = Mirrored)
+        And (Abs(CoordToMilsF(DesText.Size) - HeightMils) < 0.01)
+        And (Abs(CoordToMilsF(DesText.Width) - StrokeMils) < 0.01)
+        And ((LayerId = eNoLayer) Or (DesText.Layer = LayerId));
+End;
+
+{..............................................................................}
+{ PCB_SetDesignatorTexts - restyle designators, one batch op per part:       }
+{ 'designator=..;height=<mil>;stroke=<mil>;angle=..;mirror=true|false;       }
+{ layer=..' (layer optional), ops separated by '~~'. Online DRC is off for  }
+{ the run. Each part is read back after its write.                          }
+{ Params: board_path (optional), ops.                                        }
+{..............................................................................}
+Function PCB_SetDesignatorTexts(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Why, Ops, Op, Name, OnLayer, Rows, Missing : String;
+    Comp : IPCB_Component;
+    LayerId, Held, Refused : Integer;
+    Height, Stroke : Double;
+    Ok, DrcWasOn : Boolean;
+Begin
+    Board := GeoMapBoard(Params, Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    Ops := ExtractJsonValue(Params, 'ops');
+    Rows := '';
+    Missing := '';
+    Held := 0;
+    Refused := 0;
+    DrcWasOn := False;
+    Try DrcWasOn := PCBServer.SystemOptions.DoOnlineDRC; Except End;
+    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    PCBServer.PreProcess;
+    Try
+        Op := NextBatchOp(Ops);
+        While Op <> '' Do
+        Begin
+            Name := GetBatchField(Op, 'designator');
+            Comp := FindPCBComponentByDesignator(Board, Name);
+            If Comp = Nil Then
+                Missing := Missing + ',"' + EscapeJsonString(Name) + '"'
+            Else
+            Begin
+                OnLayer := GetBatchField(Op, 'layer');
+                LayerId := eNoLayer;
+                If OnLayer <> '' Then LayerId := ResolveLayerId(Board, OnLayer);
+                Height := StrToFloatDef(GetBatchField(Op, 'height'), 0);
+                Stroke := StrToFloatDef(GetBatchField(Op, 'stroke'), 0);
+                Ok := (Height > 0) And (Stroke > 0) And ((OnLayer = '') Or (LayerId <> eNoLayer));
+                If Ok Then
+                    Ok := RestyleDesignator(Comp, LayerId, Height, Stroke,
+                        StrToFloatDef(GetBatchField(Op, 'angle'), 0),
+                        LowerCase(GetBatchField(Op, 'mirror')) = 'true');
+                If Ok Then Inc(Held) Else Inc(Refused);
+                Rows := Rows + ',' + JsonObj(JsonStr('designator', Name)
+                    + ',' + JsonBool('held', Ok) + ',' + DesignatorLabelJson(Board, Comp));
+            End;
+            Op := NextBatchOp(Ops);
+        End;
+    Finally
+        PCBServer.PostProcess;
+        Try PCBServer.SystemOptions.DoOnlineDRC := DrcWasOn; Except End;
+    End;
+    Try Board.GraphicallyInvalidate; Except End;
+    If Held > 0 Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('board', Board.FileName)
+        + ',' + JsonInt('held', Held) + ',' + JsonInt('refused', Refused)
+        + ',' + JsonRaw('missing', '[' + Copy(Missing, 2, Length(Missing)) + ']')
+        + ',' + JsonRaw('parts', '[' + Copy(Rows, 2, Length(Rows)) + ']')));
+End;
+
+{..............................................................................}
 { PCB_DumpFreePrimitives - Write every free primitive of the open board to a   }
 { tab-separated file, in board iterator order, for pcb_apply_geometry_map.     }
 {                                                                              }
@@ -24086,6 +25178,12 @@ Begin
         'copy_tracks_radial':      Result := PCB_CopyTracksRadial(Params, RequestId);
         'scale':                   Result := PCB_Scale(Params, RequestId);
         'save_copy_as':            Result := PCB_SaveCopyAs(Params, RequestId);
+        'make_library':            Result := PCB_MakeLibrary(Params, RequestId);
+        'get_pad_via_library':     Result := PCB_GetPadViaLibrary(Params, RequestId);
+        'add_pad_via_template':    Result := PCB_AddPadViaTemplate(Params, RequestId);
+        'make_pad_via_library':    Result := PCB_MakePadViaLibrary(Params, RequestId);
+        'part_outlines':           Result := PCB_PartOutlines(Params, RequestId);
+        'set_designator_texts':    Result := PCB_SetDesignatorTexts(Params, RequestId);
         'polygon_repour_mode':     Result := PCB_PolygonRepourMode(Params, RequestId);
         'dump_free_primitives':    Result := PCB_DumpFreePrimitives(Params, RequestId);
         'apply_free_primitives':   Result := PCB_ApplyFreePrimitives(Params, RequestId);
@@ -24129,6 +25227,9 @@ Begin
         'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
         'gloss':                   Result := PCB_Gloss(Params, RequestId);
         'physical_stack':          Result := PCB_PhysicalStack(Params, RequestId);
+        'copper_layers':           Result := PCB_CopperLayers(Params, RequestId);
+        'drop_stack_layer':        Result := PCB_DropStackLayer(Params, RequestId);
+        'tune_copper_layer':       Result := PCB_TuneCopperLayer(Params, RequestId);
         'set_dielectric':          Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':       Result := PCB_ImpedanceProfile(Params, RequestId);
         'impedance_profile_layer': Result := PCB_ImpedanceProfileLayer(Params, RequestId);
@@ -24170,6 +25271,7 @@ Begin
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
+        'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

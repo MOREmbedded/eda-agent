@@ -243,6 +243,28 @@ source.
 The providers, their credentials and their access policies are in
 [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md).
 
+## Altium 365, company policies, simulators
+
+**Altium 365.** The `altium365_` tools read workspaces, projects and the
+managed library, and can publish, release and change parameters (only with
+`confirm=True`). Two routes: the workspace's own API, with
+`EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
+`EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
+`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+`EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
+lists. Nothing Altium 365 returns is written to disk.
+`altium365_check_setup` says which route is set up.
+
+**Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
+`naming.json` (a `template` and `pattern` per footprint, symbol and
+component) for `lib_check_naming` and `lib_make_name`, and rules files in
+`rules/*.json` for `design_check_company_rules`. With none set, nothing is
+imposed.
+
+**Simulators.** `design_simulate_deck` runs a deck in ngspice when it is
+installed, or in LTspice when you ask for it or it is the only one
+installed. `design_simulators` lists what is installed.
+
 ## Example use cases
 
 ### Full-project design review
@@ -492,6 +514,8 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
 | `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
 | `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
+| `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
+| `eda-agent sdk-reach [--detail N] [--json]` | How many of the properties Altium's SDK declares on each object type `obj_query` and `obj_modify` reach (needs the SDK index in `reference/altium_sdk`) |
 | `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
 | `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, a read-only command round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
 

@@ -1911,6 +1911,51 @@ def register_design_tools(mcp) -> None:
         return await asyncio.to_thread(simulator_backends)
 
     @mcp.tool()
+    async def design_simulate_deck(
+        deck: str,
+        engine: str = "auto",
+        waves: Optional[list[str]] = None,
+        points: int = 0,
+        timeout_s: float = 120,
+    ) -> dict[str, Any]:
+        """Simulate a SPICE deck in ngspice or LTspice on this machine and
+        return its .meas values, errors and waveforms.
+
+        ``engine`` "auto" uses ngspice when it is installed and LTspice
+        when only LTspice is; name "ltspice" or "ngspice" to choose. Both
+        return the same shape. Altium's own simulator runs a deck through
+        sim_run_deck instead.
+
+        The deck is screened first: .ferret is refused, and .include/.lib
+        may only name a bare file or one in the workspace or
+        EDA_AGENT_SPICE_MODEL_DIRS. An IC needs its manufacturer's model
+        (SPICE_MODEL_RULES); this simulates whatever it is given. LTspice
+        refuses a .control block, which is ngspice's.
+
+        Args:
+            deck: The SPICE text, with an analysis (.tran, .ac, .dc, .op)
+                and any .meas lines.
+            engine: "auto", "ngspice" or "ltspice".
+            waves: Traces to report (e.g. ["V(out)"]); empty reports all.
+            points: Also return this many samples of each trace in
+                ``waves`` (AC traces in dB and degrees).
+            timeout_s: Stop the simulator after this many seconds.
+
+        Returns:
+            ``engine`` and ``why``, ``measures`` ({name: value}),
+            ``errors``, ``warnings``, ``plots`` (per analysis, each trace's
+            min, max, first and last), ``run_folder`` and ``log_tail``;
+            ``install_offers`` when no simulator is installed.
+        """
+        import asyncio
+
+        from ..config import get_config
+        from ..sim.deck_runner import simulate
+
+        return await asyncio.to_thread(simulate, deck, get_config().workspace_dir, engine,
+                                       timeout_s, waves, max(0, int(points)))
+
+    @mcp.tool()
     async def design_simulate_loops(
         plan_json: Union[str, dict],
         models: Optional[dict[str, dict]] = None,
@@ -2110,8 +2155,8 @@ def register_design_tools(mcp) -> None:
             return out
         out.update(ok=True, path=str(target), deck=text)
         if dialect.lower() == "ltspice":
-            out["note"] = ("open it in LTspice (File > Open, then Run); "
-                           "eda-agent itself simulates with ngspice")
+            out["note"] = ("open it in LTspice (File > Open, then Run), or run it "
+                           "here with design_simulate_deck(engine='ltspice')")
         return out
 
     @mcp.tool()
@@ -2790,3 +2835,126 @@ def register_design_tools(mcp) -> None:
                 + "."
             ),
         }
+
+    # --- stages to production: feasibility, prototype, EVT, DVT, PVT -------
+
+    def _ledger(product: str):
+        from ..config import get_config
+        from ..design.phase_gates import Ledger, ledger_name
+        return Ledger(get_config().workspace_dir / "phase_gates" / ledger_name(product))
+
+    def _line_json(line, with_reason: bool) -> dict[str, Any]:
+        check = line.check
+        out: dict[str, Any] = {"key": check.key, "asks": check.asks,
+                               "outcome": line.outcome, "required": check.required,
+                               "done_when": check.done_when,
+                               "answered_by": "tools" if check.tools else "people"}
+        if check.tools:
+            out["tools"] = list(check.tools)
+        if with_reason:
+            out["why_now"] = check.reason
+        if line.answer is not None:
+            a = line.answer
+            out["answer"] = {"outcome": a.outcome, "source": a.source, "detail": a.detail,
+                             "revision": a.revision,
+                             "when": a.when.isoformat(timespec="seconds")}
+        if line.ignored_because:
+            out["ignored_because"] = line.ignored_because
+        return out
+
+    @mcp.tool()
+    async def design_phase_gate(stage: str, revision: str = "", product: str = "default",
+                                with_reasons: bool = True) -> dict[str, Any]:
+        """The checks that close one stage on the way to production, and how
+        the product stands against them.
+
+        The stages in order: feasibility, prototype, evt, dvt, pvt. Each check
+        says what it asks, why at this stage, what counts as done, which tools
+        here answer it, and its outcome from the answers recorded so far. It
+        runs nothing: call ``tools_to_run``, then record each result with
+        design_phase_answer. ``for_people`` are the holding checks no tool
+        can answer.
+
+        Args:
+            stage: feasibility, prototype, evt, dvt or pvt (also "design
+                validation" and similar).
+            revision: The board revision in question; answers given for
+                another revision stop counting, and the check says so.
+            product: Whose ledger, when there are several products.
+            with_reasons: Include each check's ``why_now``.
+
+        Returns:
+            ``cleared``, ``tally``, ``checks``, ``holding``, ``tools_to_run``
+            and ``for_people``.
+        """
+        from ..design.phase_gates import TITLES, review, stage_from
+        try:
+            name = stage_from(stage)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        result = review(name, _ledger(product).answers(), revision)
+        return {"stage": name, "title": TITLES[name], "product": product,
+                "revision": revision, "cleared": result.cleared, "tally": result.tally(),
+                "checks": [_line_json(line, with_reasons) for line in result.lines],
+                "holding": [line.check.key for line in result.holding()],
+                "tools_to_run": result.tools_to_run(),
+                "for_people": result.for_people()}
+
+    @mcp.tool()
+    async def design_phase_answer(key: str, outcome: str, detail: str = "",
+                                  source: str = "", revision: str = "",
+                                  product: str = "default") -> dict[str, Any]:
+        """Record the answer to one stage check in the product's ledger.
+
+        The ledger is only appended to: a new answer replaces the old one in
+        reviews and both stay on file. A waiver needs a ``detail``; months
+        later an unexplained waiver cannot be told from a skipped check.
+
+        Args:
+            key: The check's key from design_phase_gate, e.g. "prototype:drc".
+            outcome: met, unmet, waived or open.
+            detail: The evidence: a count, a measurement, a document.
+            source: The tool that answered, or the person who confirmed it.
+            revision: The board revision it applies to.
+            product: Whose ledger.
+
+        Returns:
+            The check's stage reviewed again: ``stage_cleared``, ``tally``
+            and ``holding``.
+        """
+        from ..design.phase_gates import CHECKS, review
+        ledger = _ledger(product)
+        try:
+            ledger.add(key, outcome, source=source, detail=detail, revision=revision)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        stage = CHECKS[key].stage
+        result = review(stage, ledger.answers(), revision)
+        return {"ok": True, "key": key, "outcome": outcome, "stage": stage,
+                "stage_cleared": result.cleared, "tally": result.tally(),
+                "holding": [line.check.key for line in result.holding()]}
+
+    @mcp.tool()
+    async def design_phase_standing(revision: str = "",
+                                    product: str = "default") -> dict[str, Any]:
+        """Which stage the product is in, and what that stage still needs.
+
+        A product is in the FIRST stage that does not clear, however much
+        work exists beyond it: a board whose feasibility checks never closed
+        is in feasibility.
+
+        Returns:
+            ``stage``, ``title``, ``in_production`` (every stage cleared),
+            that stage's ``holding`` and ``tools_to_run``, and ``stages``
+            (each one's ``cleared``, ``tally`` and ``holding``).
+        """
+        from ..design.phase_gates import DONE, TITLES, standing
+        stage, reviews = standing(_ledger(product).answers(), revision)
+        current = next((r for r in reviews if r.stage == stage), None)
+        return {"product": product, "revision": revision, "stage": stage,
+                "title": TITLES[stage], "in_production": stage == DONE,
+                "holding": [line.check.key for line in current.holding()] if current else [],
+                "tools_to_run": current.tools_to_run() if current else [],
+                "stages": [{"stage": r.stage, "cleared": r.cleared, "tally": r.tally(),
+                            "holding": [line.check.key for line in r.holding()]}
+                           for r in reviews]}

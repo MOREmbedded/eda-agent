@@ -43,6 +43,7 @@ PLACEMENT_KEYS = frozenset({
     "rotation",
     "designator",
     "footprint",
+    "part_id",
 })
 
 
@@ -332,6 +333,13 @@ _SCH_EDITOR_OPTIONS = {
 #: The schematic options given in mils (Altium keeps 10000 to the mil).
 _SCH_MARGINS = ("pin_name_margin", "pin_number_margin", "cutter_fixed_length")
 
+#: Measured on AD 26.11: on a port both read
+#: back at once, then the saved and reopened sheet had OverrideDisplayString
+#: empty and HarnessColor at its default; AutoSize kept.
+_PORT_FIELDS_DO_NOT_SAVE = (
+    "OverrideDisplayString and HarnessColor read back on the port now, but do "
+    "not survive saving and reopening the sheet (AD 26.11). AutoSize does.")
+
 
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
@@ -594,7 +602,9 @@ def register_generic_tools(mcp):
                 and AllowDatabaseSynchronize, and report NameIsReadOnly,
                 ValueIsReadOnly, IsRule, IsSystemParameter and
                 IsConfigurable; ports take AutoSize,
-                OverrideDisplayString and HarnessColor. Symbol pins
+                OverrideDisplayString and HarnessColor (the last two read
+                back but do not survive save and reopen on AD 26.11; the
+                reply notes it). Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),
@@ -635,6 +645,9 @@ def register_generic_tools(mcp):
         hint = BulkHintTracker.record_and_hint("obj_modify")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
+        if (isinstance(result, dict) and object_type == "ePort"
+                and re.search(r"(^|\|)\s*(OverrideDisplayString|HarnessColor)\s*=", set)):
+            result["note"] = _PORT_FIELDS_DO_NOT_SAVE
         return result
 
     @mcp.tool()
@@ -858,8 +871,10 @@ def register_generic_tools(mcp):
         library; the focused tab decides which editor zooms.
 
         Args:
-            action: "fit" (zoom to show all), "board" (the board alone,
-                not parts parked beside it; a schematic fits as "fit"),
+            action: "fit" (Fit All Objects, which can cut a sheet's frame
+                off), "document" (a schematic's Fit Document: the whole
+                sheet with its frame), "board" (the board alone, not
+                parts parked beside it; a schematic fits as "fit"),
                 "selection" (zoom to selected objects) or "point" (zoom
                 to x, y)
             x, y: the point for "point", in mils (a footprint's frame in
@@ -922,6 +937,204 @@ def register_generic_tools(mcp):
         return await bridge.send_command_async(
             "generic.mirror_component", params
         )
+
+    @mcp.tool()
+    async def sch_rename_designators(
+        project_path: str,
+        changes: list[dict[str, str]],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Rename designators across a whole project, swaps included, refusing
+        any collision before the first write.
+
+        Each rename names a part by its current ``designator`` (with
+        ``sheet``, a file name or full path, when copies of a sheet share
+        it) or by the ``unique_id`` of any of its parts (obj_query
+        ``UniqueId``), and gives ``to``. A part is its sub-parts on one
+        sheet with one designator and library reference, so a multi-part
+        part is renamed whole. Every sheet is loaded and every part read
+        first: a name the batch hands out that another part keeps, a part
+        named twice, or one not found refuses the whole batch with nothing
+        written. The parts then go through unique temporary names before
+        their final ones, so R1 to R2 and R2 to R1 works, and the project
+        is read back after each step. Nothing is saved (app_save_all).
+        To renumber a whole design, proj_annotate stays the tool.
+
+        Args:
+            project_path: The .PrjPcb, a full path.
+            changes: ``[{"designator": "R1", "to": "R2"}, ...]``, with
+                ``sheet`` when needed, or ``unique_id`` in place of
+                ``designator``.
+            dry_run: Check and plan only.
+
+        Returns:
+            ``ok``, ``changes`` (``sheet``, ``from``, ``to``, ``parts``),
+            ``sheets``, ``components``, ``duplicates_left`` (designators
+            parts the batch does not touch still share, as on copied sheets
+            not annotated yet); when written, ``verified`` and per step
+            ``temporary`` and ``final`` with what was read back. A step
+            that did not read back as planned stops with ``stage`` and
+            ``now`` (each changed part's designators as the project holds
+            them), so nothing is left unreported.
+        """
+        import ntpath
+        import os
+        import secrets
+
+        if not os.path.isabs(project_path) or not project_path.lower().endswith(
+                (".prjpcb", ".prjpcbm")):
+            return {"ok": False, "reason": "project_path is the full path of a .PrjPcb"}
+        def field(change: Any, key: str) -> str:
+            return str(change.get(key) or "").strip() if isinstance(change, dict) else ""
+
+        asked = [(field(c, "unique_id"), field(c, "designator"), field(c, "sheet"),
+                  field(c, "to")) for c in (changes if isinstance(changes, list) else [])]
+        if not asked:
+            return {"ok": False, "reason": "changes is a list of {designator or "
+                    "unique_id, to}"}
+        for n, (uid, des, _sheet, to) in enumerate(asked):
+            if not to or bool(uid) == bool(des):
+                return {"ok": False, "reason": f"changes[{n}] needs ``to`` and exactly one "
+                        "of designator or unique_id"}
+            if set(des + to) & set("|;~=\r\n"):
+                return {"ok": False, "reason": f"changes[{n}] holds | ; ~ = or a line "
+                        "break, which the batch format cannot carry"}
+
+        bridge = get_bridge()
+        loaded = await bridge.send_command_async(
+            "project.load_project_sheets", {"project_path": project_path}, timeout=300.0)
+        total = loaded.get("total_sheets") if isinstance(loaded, dict) else None
+        if not isinstance(total, int) or total < 1 or (loaded.get("failed") or []):
+            return {"ok": False, "reason": "not every sheet of the project loaded",
+                    "load": loaded}
+
+        Key = tuple[str, str, str]
+
+        async def read() -> dict[Key, dict[str, Any]]:
+            """(sheet, designator, library reference), folded -> the part."""
+            reply = await bridge.send_command_async("generic.query_objects", {
+                "scope": "project:" + project_path, "object_type": "eSchComponent",
+                "filter": "", "properties": "UniqueId,Designator,LibReference,CurrentPartID"},
+                timeout=300.0)
+            rows = reply.get("objects") if isinstance(reply, dict) else None
+            if not isinstance(rows, list) or reply.get("sheets_processed") != total:
+                raise RuntimeError("the parts of every sheet could not be read: "
+                                   + str(reply)[:300])
+            parts: dict[Key, dict[str, Any]] = {}
+            for row in rows:
+                doc = str(row.get("_doc") or "")
+                name = str(row.get("Designator") or "").strip()
+                lib = str(row.get("LibReference") or "")
+                part = parts.setdefault((doc.upper(), name.upper(), lib.upper()), {
+                    "doc": doc, "name": name, "lib": lib, "uids": [], "part_ids": []})
+                part["uids"].append(str(row.get("UniqueId") or "").upper())
+                part["part_ids"].append(str(row.get("CurrentPartID") or ""))
+            return parts
+
+        try:
+            parts = await read()
+        except RuntimeError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+        def sheet_of(key: Key) -> str:
+            return ntpath.basename(parts[key]["doc"])
+
+        wanted: dict[Key, str] = {}
+        for uid, des, sheet, to in asked:
+            if uid:
+                found = [k for k, p in parts.items() if uid.upper() in p["uids"]]
+                label = f"UniqueId {uid}"
+            else:
+                found = [k for k, p in parts.items() if p["name"].upper() == des.upper()
+                         and (not sheet or sheet.upper() in (p["doc"].upper(),
+                                                             sheet_of(k).upper()))]
+                label = des + (f" on {sheet}" if sheet else "")
+            if len(found) != 1:
+                return {"ok": False, "reason": (f"{label} names {len(found)} parts; "
+                        "add its sheet") if found else f"no part is {label}",
+                        "sheets": sorted(sheet_of(k) for k in found)}
+            key = found[0]
+            ids = parts[key]["part_ids"]
+            if len(set(ids)) != len(ids):
+                return {"ok": False, "reason": f"{label} is more than one part on "
+                        f"{sheet_of(key)} (part {', '.join(ids)}): annotate first"}
+            if key in wanted:
+                return {"ok": False, "reason": f"{label} is renamed twice"}
+            wanted[key] = to
+
+        final = {k: wanted.get(k, p["name"]) for k, p in parts.items()}
+        owners_after: dict[str, list[Key]] = {}
+        for key, name in final.items():
+            owners_after.setdefault(name.upper(), []).append(key)
+        # A name the batch hands out must end on one part. Duplicates it does
+        # not touch (copied sheets not yet annotated) are reported, not refused.
+        for key, to in wanted.items():
+            holders = owners_after[to.upper()]
+            if len(holders) > 1:
+                return {"ok": False, "reason": f"{to} would name {len(holders)} parts",
+                        "designator": to,
+                        "on": sorted(f"{parts[k]['name']} on {sheet_of(k)}" for k in holders)}
+        duplicates = sorted(n for n, keys in owners_after.items() if len(keys) > 1)
+
+        changed = [k for k, to in wanted.items() if to != parts[k]["name"]]
+        plan = {"ok": True, "dry_run": dry_run, "sheets": total,
+                "components": len(parts), "duplicates_left": duplicates,
+                "changes": [{"sheet": sheet_of(k), "from": parts[k]["name"],
+                             "to": wanted[k], "parts": len(parts[k]["uids"])}
+                            for k in changed]}
+        if dry_run or not changed:
+            return plan
+
+        taken = set(owners_after) | {p["name"].upper() for p in parts.values()}
+        temporary: dict[Key, str] = {}
+        for key in changed:
+            name = "TMP" + secrets.token_hex(4).upper()
+            while name.upper() in taken:
+                name = "TMP" + secrets.token_hex(4).upper()
+            taken.add(name.upper())
+            temporary[key] = name
+
+        async def step(old: dict[Key, str], new: dict[Key, str]) -> dict[str, Any]:
+            """Rename each changed part from old to new, then read back."""
+            ops = "~~".join(
+                f"scope=doc:{parts[k]['doc']};object_type=eSchComponent;"
+                f"filter=Designator={old[k]}|LibReference={parts[k]['lib']};set=Designator={new[k]}"
+                for k in changed)
+            reply: Any = None
+            try:
+                reply = await bridge.send_command_async(
+                    "generic.batch_modify", {"operations": ops}, timeout=300.0)
+            except Exception as exc:  # the write may have landed; the read says
+                reply = {"error": str(exc)}
+            after = await read()
+            now: dict[str, list[str]] = {}
+            good = True
+            for key, p in parts.items():
+                want = new[key] if key in new else p["name"]
+                got = after.get((key[0], want.upper(), key[2]))
+                if got is None or sorted(got["uids"]) != sorted(p["uids"]):
+                    good = False
+                if key in new:
+                    now[f"{p['name']} on {sheet_of(key)}"] = sorted(
+                        q["name"] for q in after.values() if set(q["uids"]) & set(p["uids"]))
+            return {"verified": good and len(after) == len(parts), "now": now,
+                    "reply": reply}
+
+        original = {k: parts[k]["name"] for k in changed}
+        try:
+            first = await step(original, temporary)
+            if not first["verified"]:
+                return {**plan, "ok": False, "stage": "temporary", "temporary": first}
+            second = await step(temporary, {k: wanted[k] for k in changed})
+        except RuntimeError as exc:
+            return {**plan, "ok": False, "stage": "read back", "reason": str(exc),
+                    "temporary_names": {f"{parts[k]['name']} on {sheet_of(k)}": t
+                                        for k, t in temporary.items()}}
+        out = {**plan, "ok": second["verified"], "verified": second["verified"],
+               "temporary": first, "final": second, "saved": False}
+        if not second["verified"]:
+            out["stage"] = "final"
+        return out
 
     @mcp.tool()
     async def obj_batch_modify(
@@ -1095,7 +1308,10 @@ def register_generic_tools(mcp):
             stamps: One dict per component: ``designator`` plus any
                 parameter key/values, e.g. ``{"designator": "R1",
                 "Value": "10k", "MPN": "..."}``. A parameter the part
-                lacks is created.
+                lacks is created, hidden, at the part. ``Value`` writes
+                the part's Comment and also a Value parameter the part
+                already has; ``Description`` writes the part's own
+                description (as a parameter Altium dropped it on reload).
             sheet_path: Optional SchDoc path; default the focused one.
 
         Returns:
@@ -1415,10 +1631,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_rectangle(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         solid: bool = False,
         line_width: int = 1,
     ) -> dict[str, Any]:
@@ -1448,10 +1664,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_line(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         line_width: int = 1,
     ) -> dict[str, Any]:
         """Place a decorative line on the active schematic.
@@ -1482,10 +1698,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_note(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         text: str,
     ) -> dict[str, Any]:
         """Place a text-box note on the active schematic.
@@ -1516,10 +1732,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_sheet_symbol(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         sheet_file_name: str,
         sheet_name: str = "",
     ) -> dict[str, Any]:
@@ -1561,7 +1777,8 @@ def register_generic_tools(mcp):
         entry_name: str,
         io_type: str = "unspecified",
         side: str = "left",
-        distance_from_top: int = 100,
+        distance_from_top: float = 100,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a sheet entry port on an existing sheet symbol.
 
@@ -1575,9 +1792,12 @@ def register_generic_tools(mcp):
             io_type: "input" | "output" | "bidirectional" | "unspecified"
             side: "left" | "right" | "top" | "bottom"
             distance_from_top: Position along the chosen side in mils
+            font_id: The entry's font. 0 takes the font the sheet's
+                entries already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming sheet entry placement
+            Dictionary confirming sheet entry placement, with the
+            ``font_id`` read back.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -1587,17 +1807,18 @@ def register_generic_tools(mcp):
                 "entry_name": entry_name,
                 "io_type": io_type,
                 "side": side,
-                "distance_from_top": str(distance_from_top),
+                "distance_from_top": _mils(distance_from_top),
+                "font_id": str(int(font_id)),
             },
         )
         return result
 
     @mcp.tool()
     async def sch_place_bus_entry(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Place a bus entry (45 degree stub) connecting a wire to a bus.
 
@@ -1812,10 +2033,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_bus(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Place a bus segment between two XY coordinates on the active schematic.
 
@@ -1843,8 +2064,8 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def sch_place_net_label(
         text: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         orientation: int = 0,
     ) -> dict[str, Any]:
         """Place a net label at coordinates on the active schematic.
@@ -1876,10 +2097,12 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def sch_place_port(
         name: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         style: str = "right",
         io_type: str = "bidirectional",
+        width: float = 0,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a port on the active schematic for inter-sheet connectivity.
 
@@ -1889,30 +2112,102 @@ def register_generic_tools(mcp):
             y: Y coordinate in mils
             style: Arrow style, "none", "left", "right", "left_right"
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
+            width: Port length in mils. Auto-size is turned off so it
+                holds; 0 leaves the port sizing itself to its name.
+            font_id: The port's font. 0 takes the font the sheet's ports
+                already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming placement
+            ``font_id``, ``width`` and ``auto_size`` read back.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_port",
             {
                 "name": name,
-                "x": str(x),
-                "y": str(y),
+                "x": _mils(x),
+                "y": _mils(y),
                 "style": style,
                 "io_type": io_type,
+                "width": _mils(width),
+                "font_id": str(int(font_id)),
             },
         )
         return result
 
     @mcp.tool()
+    async def sch_tidy_port_references(
+        sheet_path: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Move each port's cross-reference off its wire, to the free end.
+
+        Altium prints a port's "Sheet[zone]" reference (Port Cross
+        References on) past the end it takes as free, and keeps that end
+        when the port moves without its wire, so references of a moved
+        block can lie on their wires; compiling does not fix them. The
+        wired end comes from Altium's ConnectedEnd, or from the wires and
+        pin ends at each end when that reads none or both. Each reference
+        goes 20 mil past the free end, its text running away from the port.
+        Vertical ports are listed under ``skipped``. The sheet is not saved.
+
+        Args:
+            sheet_path: The .SchDoc.
+            dry_run: True (default) only lists what would move.
+
+        Returns:
+            ``to_move`` (port, which end is wired and how that was decided,
+            x and justification now and new), ``already_right``,
+            ``skipped`` (with why), ``orphan_references``; once written
+            ``moved`` and ``not_moved``.
+        """
+        from ..design.port_reference_side import place_references
+
+        bridge = get_bridge()
+        scope = scope_to_wire(f"doc:{sheet_path}")
+
+        async def query(kind: str, fields: str, where: str = "") -> list:
+            reply = await bridge.send_command_async("generic.query_objects", {
+                "scope": scope, "object_type": kind, "filter": where,
+                "properties": fields})
+            return (reply.get("objects") or []) if isinstance(reply, dict) else []
+
+        ports = await query("ePort", "Name,Location.X,Location.Y,Width,Style,ConnectedEnd")
+        references = await query(
+            "eParameter", "Name,Text,Location.X,Location.Y,Justification", "Name=CrossRef")
+        result = place_references(
+            ports, await query("eWire", "Vertices"), references,
+            await query("ePin", "ConnectionX,ConnectionY"))
+        result.update(sheet_path=sheet_path, dry_run=dry_run,
+                      ports=len(ports), references=len(references))
+        if not references:
+            result["note"] = ("The sheet has no CrossRef parameters: Port Cross "
+                              "References is off, or the project was not compiled "
+                              "after turning it on.")
+        if dry_run:
+            return result
+        moved, not_moved = [], []
+        for entry in result["to_move"]:
+            reply = await bridge.send_command_async("generic.modify_objects", {
+                "scope": scope, "object_type": "eParameter",
+                "filter": "|".join(["Name=CrossRef", f"Location.X={_mils(entry['x'])}",
+                                    f"Location.Y={_mils(entry['y'])}"]),
+                "set": "|".join([f"Location.X={_mils(entry['new_x'])}",
+                                 f"Justification={entry['new_justification']}"])})
+            matched = reply.get("matched", 0) if isinstance(reply, dict) else 0
+            (moved if matched == 1 else not_moved).append(
+                {"port": entry["port"], "reply": reply})
+        result.update(moved=moved, not_moved=not_moved)
+        return result
+
+    @mcp.tool()
     async def sch_place_power_port(
         text: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         style: str = "circle",
         orientation: int = -1,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a power port symbol (VCC, GND, etc.) on the active schematic.
 
@@ -1933,9 +2228,11 @@ def register_generic_tools(mcp):
                 point: 0=right, 1=up, 2=left, 3=down. Leave at -1 to let
                 the bridge decide by style: the three ground glyphs point
                 down, the supply glyphs (circle, arrow, bar, wave) point up.
+            font_id: The net name's font. 0 takes the font the sheet's
+                power ports already use, else its net labels' font.
 
         Returns:
-            Dictionary confirming placement
+            The placement, with the ``font_id`` the power port got.
         """
         style = (style or "circle").strip().lower()
         if style not in POWER_PORT_STYLES:
@@ -1949,10 +2246,11 @@ def register_generic_tools(mcp):
             "generic.place_power_port",
             {
                 "text": text,
-                "x": str(x),
-                "y": str(y),
+                "x": _mils(x),
+                "y": _mils(y),
                 "style": style,
                 "orientation": str(int(orientation)),
+                "font_id": str(int(font_id)),
             },
         )
         return result
@@ -2040,8 +2338,8 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_no_erc(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
     ) -> dict[str, Any]:
         """Place a No-ERC marker at coordinates to suppress the ERC violations
         there.
@@ -2071,8 +2369,8 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_junction(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
     ) -> dict[str, Any]:
         """Place a MANUAL junction at coordinates on the active schematic.
 
@@ -2389,8 +2687,8 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_add_directive(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         param_name: str,
         param_value: str,
     ) -> dict[str, Any]:
@@ -2449,10 +2747,10 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def sch_place_image(
         image_path: str,
-        x: int,
-        y: int,
-        width: int = 500,
-        height: int = 500,
+        x: float,
+        y: float,
+        width: float = 500,
+        height: float = 500,
     ) -> dict[str, Any]:
         """Place an image/logo on the active schematic.
 
@@ -2556,8 +2854,10 @@ def register_generic_tools(mcp):
         ``proj_replace_component`` swaps the symbol itself.
 
         Checked FIRST, so nothing changes on a bad target: a SchLib/IntLib
-        given by full path must contain ``lib_ref``; a DbLib row must
-        exist, and its own symbol and footprint fill ``lib_ref`` and
+        given by full path must contain ``lib_ref``; the DbLib key must
+        pick out one row, with the whole table read (else
+        ``DBLIB_KEY_NOT_UNIQUE``), and that row's symbol and footprint
+        fill ``lib_ref`` and
         ``footprint`` when they are not given. Every part is read back:
         ``parts`` has each one's link ``before`` and ``after``, and a
         field that did not take is named in ``not_applied``.
@@ -2608,6 +2908,16 @@ def register_generic_tools(mcp):
                                    f"{dblib_table!r} in {library_path}; "
                                    f"nothing was changed"),
                         "lookup": row}
+            # The part would link to whichever row Altium found first: with
+            # the key on several rows, or the table not read to its end,
+            # that row is not known.
+            rows_found, read_all = row.get("match_count"), row.get("scan_capped") is not True
+            if rows_found != 1 or not read_all:
+                why = (f"{rows_found} rows have it" if read_all
+                       else "the lookup stopped before the end of the table")
+                return {"success": False, "error": "DBLIB_KEY_NOT_UNIQUE",
+                        "reason": f"{dblib_key!r} in {dblib_table!r}: {why}; nothing "
+                                  "was changed", "lookup": row}
             lib_ref = lib_ref or str(row.get("symbol_ref") or "")
             prints = row.get("footprints") or []
             if not footprint and prints:
@@ -2747,10 +3057,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_harness_connector(
-        x: int,
-        y: int,
-        width: int = 500,
-        height: int = 800,
+        x: float,
+        y: float,
+        width: float = 500,
+        height: float = 800,
         harness_type: str = "",
     ) -> dict[str, Any]:
         """Place a harness connector on the active schematic sheet.
@@ -2780,8 +3090,8 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_cross_sheet_connector(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         net: str = "",
         side: str = "",
     ) -> dict[str, Any]:
@@ -2811,45 +3121,50 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_text_frame(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         text: str,
         align: str = "left",
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. Use ``\\n`` in ``text`` for explicit line breaks.
+        text. A newline, or a typed ``\\n``, becomes Altium's own line
+        break.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
-            text: Frame contents (use \\n for line breaks).
+            text: Frame contents.
             align: Horizontal alignment "left", "center", or "right".
+            font_id: The frame's font. 0 takes the font the sheet's text
+                frames already use, else its net labels' font.
 
         Returns:
-            Dict confirming placement and the frame corners.
+            The placement: the frame's corners and the ``font_id`` it got.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
             "generic.place_text_frame",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
                 "text": text,
                 "align": align,
+                "font_id": str(int(font_id)),
             },
         )
 
     @mcp.tool()
     async def sch_generate_toc(
-        x1: int = 200,
-        y1: int = 200,
-        x2: int = 2400,
-        y2: int = 1800,
+        x1: float = 200,
+        y1: float = 200,
+        x2: float = 2400,
+        y2: float = 1800,
         title: str = "Table of Contents",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -3117,8 +3432,8 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_probe(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         net_name: str = "",
         probe_method: str = "probed_nets_only",
         name: str = "",
@@ -3381,6 +3696,7 @@ def register_generic_tools(mcp):
         placements: list[dict[str, Any]],
         document_path: Optional[str] = None,
         allow_manual_layout: bool = False,
+        tidy: bool = True,
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
 
@@ -3393,12 +3709,18 @@ def register_generic_tools(mcp):
         Args:
             placements: [{lib_reference (required), x, y (mils),
                 library_path (empty: an open library), designator,
-                rotation (0/90/180/270), footprint}]. ``footprint`` names
-                one of the symbol's own PCB models (case aside), which
-                becomes its current model.
+                rotation (0/90/180/270), footprint, part_id}]. With
+                ``footprint`` naming one of the symbol's PCB models (any
+                case), that model becomes current; ``part_id`` picks which
+                part of a multi-part symbol goes down.
             document_path: .SchDoc to focus and place onto.
             allow_manual_layout: True places your own coordinates onto an
                 empty sheet anyway; say why.
+            tidy: Make each placed part match the sheet: its library
+                link (a loaded part says "*", and Altium then will not
+                change its Design Item ID), the parameters its models
+                bring hidden, and the sheet's designator font. Listed
+                per part in ``tidied``.
 
         Returns:
             Dict with placed, failed, total counts and footprints_chosen;
@@ -3428,6 +3750,9 @@ def register_generic_tools(mcp):
                 fields.append(f"designator={p['designator']}")
             if p.get("footprint"):
                 fields.append(f"footprint={payload_safe(p['footprint'])}")
+            part_no = p.get("part_id")
+            if part_no is not None:
+                fields.append("part_id=" + str(int(part_no)))
             op_strs.append(";".join(fields))
 
         if not op_strs:
@@ -3440,10 +3765,9 @@ def register_generic_tools(mcp):
             refusal = await _focus_sheet(bridge, document_path)
         if refusal is not None:
             return refusal
+        batch = {"placements": "~~".join(op_strs), "tidy": str(bool(tidy)).lower()}
         return await bridge.send_command_async(
-            "generic.place_sch_components_from_library",
-            {"placements": "~~".join(op_strs)},
-        )
+            "generic.place_sch_components_from_library", batch)
 
     @mcp.tool()
     async def sch_place_vault_components(

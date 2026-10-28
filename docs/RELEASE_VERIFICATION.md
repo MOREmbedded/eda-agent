@@ -1,4 +1,4 @@
-# Release verification: 2026.10.28.53
+# Release verification: 2026.10.28.56
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -205,6 +205,23 @@ works elsewhere cannot be an undeclared identifier:
 | 54, current variant | `DM_SetCurrentProjectVariant` on the project | no, nowhere | low, ran live and set back to the base design |
 | 54, alternate link | `DM_SetLibIdentifierKind`, `DM_SetLibraryIdentifier`, `DM_SetSourceLibraryName`, `DM_SetSymbolReference`, `DM_SetDesignItemID`, `DM_SetFootprint`, `DM_SetIsSameFootprint` on an alternate's library link | no, nowhere | low, ran live, saved and reopened |
 | 54, variant parameters | `DM_AddParameter` on a variant | no, nowhere | low, copies a variant's own parameters; the scratch variants had none |
+| 55, PCB library from a board | `SetFileName`, `DoFileSave` on the library Altium's Make PCB Library opens | yes, `PCB_SaveCopyAs` | low, writes a new .PcbLib only; ran live on a scratch copy |
+| 55, integrated library from a project | `Focus` on a project document before Make Integrated Library | yes, `Application.pas` | low, writes <project>.IntLib only; ran live |
+| 55, PCB library check | `PrimPrimDistance` between a footprint's copper, `CurrentComponent` set per footprint and put back | yes, `Audit.pas` | none, reads only; ran live with a short, a loose track, a doubled track, a bottom-only footprint and an offset origin |
+| 55, pin timing | `PinPackageLength`, `PropagationDelay` on a symbol pin | no, nowhere | low, the symbol only; ran live, saved and reopened |
+| 55, supplier links | `RemoveSchObject`, `AddSchObject` of numbered parameters on a symbol | yes, `Lib_BatchSetParams` | low, the symbol's link parameters only; ran live, saved and reopened |
+| 55, pad/via templates | `AddTemplateByPrimitive`, `AddExternalTemplate` on a pad/via library | no, nowhere | low, the board's own template list and new .PvLib files; ran live and reopened |
+| 55, pad/via install | `InstallLibrary` on the pad/via library manager | yes, `Lib_InstallLibrary` | low, installed and uninstalled live |
+| 56, port width | `AutoSize` on a port, cleared before its width is set | no, nowhere | low, one port; ran live, 600 mil read back |
+| 56, sheet fonts | `TextFontID` on new ports, power ports, text frames and sheet entries | no, nowhere | low, ran live on a scratch sheet |
+| 56, loaded part link | `SourceLibraryName`, `LibraryIdentifier` on a part placed from a library | yes, `Library.pas` | low, ran live: `*` became the IntLib's name |
+| 57, model rotation | `SetState` on a footprint body's model before it is bound | yes, `Lib_Set3DBody` | low, ran live on a scratch library and restored |
+| 57, body position | `MoveByXY` on a footprint body | yes, `PCB.pas` | low, ran live on a scratch library and moved back |
+| 57, xSignal class | `AddMember` on an xSignal class | no, nowhere | low, ran live on a scratch board, unsaved |
+| 57, part parameters | `SetState_IterationDepth` on a part's parameter iterator | yes, `Project.pas` | low, narrows a write to the part's own parameters |
+| 57, layer display | `IsInLayerStack` on a layer | no, nowhere | none, read only; ran live |
+| 57, class members | `DM_Members` on a compiled object class | no, nowhere | none, read only |
+| 57, net directives | `DM_Directives` on a compiled net | no, nowhere | none, read only; ran live |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -380,7 +397,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.28.53`, `version_match` =
+Expect `altium_script_version` = `2026.10.28.56`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -3169,6 +3186,192 @@ library link and the variant's own parameters.
 Run live on AD 26.11.1.5 with that change's script on a scratch copy of
 Altium's Simulation Quick Start example, saved and reopened there. All
 passed as described.
+
+## 55. Libraries made from a design, the PCB library check, pad/via libraries, supplier links, pin timing, the library report
+
+`pcb_make_library` makes a PCB library of a board's footprints;
+`proj_make_integrated_library` makes an IntLib of a project's parts;
+`lib_check_pcblib` runs the checks of Altium's Component Rule Check on a
+PCB library; `pcb_get_pad_via_library`, `pcb_add_pad_via_template` and
+`pcb_make_pad_via_library` read a board's pad and via templates, add one
+and write them to a .PvLib, and `lib_install_library` /
+`lib_uninstall_library` take a .PvLib; `lib_set_supplier_links` and
+`lib_get_supplier_links` write and read a symbol's manufacturer and
+supplier links; `lib_set_pin_timing` sets pin package length and delay,
+and `lib_get_pin_list` reads them; `lib_library_report` writes an HTML
+report of a library.
+
+1. **PCB library from a board.** All 11 footprints of the board, saved
+   under the name asked for and added to the project when asked. Altium
+   leaves an empty file under its own name, which is removed. Until it is
+   reopened, the new library reads its pads over a metre from their
+   origin, so it is closed after saving; reopened, pads read at
+   +/-0.48 mm and the check below gives the same answer as on the
+   original library.
+2. **Integrated library.** No dialog; `<project>.IntLib` rewritten beside
+   the project (445 KB), read from its file time.
+3. **PCB library check.** On the scratch library: two pads named MP, two
+   named S1, and two unnamed holes on the USB-C footprint. A track joining
+   the two pads of an 0402 was reported as shorted copper, a loose track
+   as unconnected copper, and that track drawn twice as a duplicate
+   primitive; a footprint with pads on the bottom layer only, 500 mil
+   from its origin, as mirrored and offset.
+4. **Pad/via library.** Templates made from pads C1.1 and U1.1 (named by
+   Altium r55_60r14 and r120_60r15) were written to a new .PvLib with
+   Altium's default template, read back after a reopen, installed (an
+   install sent at once is not listed; repeated a second or two later it
+   is) and uninstalled. `AddTemplate` with a template added nothing;
+   `AddExternalTemplate` copies.
+5. **Supplier links.** Two links written as "Manufacturer 1",
+   "Manufacturer Part Number 1", "Supplier 1", "Supplier Part Number 1"
+   and link 2, replaced by one link (6 removed, 4 written), unchanged
+   after save and reopen.
+6. **Pin timing.** Pin 1 at 120.5 mil and 35 ps, pin 2 at 12.25 ps, an
+   unknown pin named in `not_found`; unchanged after save and reopen.
+   `ISch_Pin.PinPropagationDelay` is undeclared to the script engine and
+   halted the loop; the member is `PropagationDelay`.
+7. **Library report.** 15 symbols and 11 footprints written to HTML, none
+   unread.
+
+Not checked: whether Altium shows the delay written as 35 ps (the value
+is written as seconds and read back the same way), and whether Altium's Supplier Links panel lists the links.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch copy of
+the RoundLED project, saved and reopened there. All passed as described.
+
+---
+
+## 56. Schematic placement fixes, port cross-references, designators sized to parts, layer stacks
+
+New ports, power ports, text
+frames and sheet entries take the sheet's font; `sch_place_port` takes a
+width and fractional coordinates; a text frame's line breaks become
+Altium's; `sch_place_components` matches a part placed from a library to
+the sheet (`tidy`); `sch_tidy_port_references` moves port cross-references
+to the port's free end; `pcb_resize_designators` sizes designators to
+their parts, on a mechanical layer if asked; `pcb_make_layer_stack` makes
+the board's stack match a wanted one through `copper_layers`,
+`drop_stack_layer` and `tune_copper_layer`.
+
+1. **Placement.** On a scratch sheet: a port 600 mil wide with AutoSize
+   off, read back; the new objects carry the sheet's font id; a text
+   frame with a typed `\n` shows two lines; the hidden-pin filter gives 4
+   pins for a part whose copies read 8; deselect-all leaves nothing
+   selected (the old process left 123).
+2. **Placed part tidy.** A part placed from RoundLED.IntLib reads that
+   library as its source, not `*`.
+3. **Designators.** 146 parts planned, 5 written on Mechanical10 and 11,
+   read back; a second run plans the same.
+4. **Layer stack.** A 5-copper stack made as planned, unchanged after save
+   and reopen, and shown so in the Layer Stack Manager.
+
+Not checked live: `sch_tidy_port_references` moving a reference (the
+scratch project had cross-references off).
+
+Run live on AD 26.11.1.5 on scratch copies. Run again with script
+2026.10.28.56 after the commands were rewritten: on StackTest.PcbDoc the
+5-copper stack went to a 4-copper one (an empty layer dropped, a
+dielectric trimmed, every layer renamed) and back (a signal layer added
+between two planes, which kept both), each read back with no mismatch
+and unchanged after save and reopen; on RoundLED 146 parts planned, 5
+designators written and held, the same plan on a second run; on a new
+sheet a 600 mil port held its width, a typed `\n` became a line break, a
+part placed from RoundLED.IntLib read that library as its source, and 4
+pins were listed for it.
+
+---
+
+## 57. Fixes across the tools, a pour's outline, project-wide designator renames, DbLib batches, body positions
+
+`pcb_get_pour_outline` reads one pour's outline, arcs included;
+`sch_rename_designators` renames designators across a project, swaps
+included; `sch_place_dblib_rows` places many DbLib rows in one call;
+`lib_set_3d_body` takes `center_x` / `center_y`. Fixes:
+`lib_link_3d_model` applies its rotation; a sheet symbol sits on the box
+asked for and its entries on its edge; a schematic line's ends read as
+vertices; `pcb_create_xsignals` reads the class membership back;
+`pcb_get_layer_display` says which layers the stack uses;
+`app_close_document` counts the bridge's own edit record and says when
+the project may still hold a discarded edit; `app_create_document`
+refuses a missing folder; class members and pair nets read as names;
+lengths and coordinates take fractions of a mil.
+
+1. **Pour outline.** Pour 0 of the scratch board: 12 vertices, 6 arcs
+   with centre and radius, closed. A wrong name and an index past the end
+   are refused.
+2. **Designator renames.** On the Live1023 scratch project U9 (two parts,
+   each with its own UniqueId) and U7 swapped through temporary names and
+   read back, then swapped back. U5, a three-part part, to U6, which
+   another part keeps, was refused before any write.
+3. **3D bodies.** CAPC1608X90N linked at 0 degrees reads 1.6 x 0.8 mm,
+   at 90 degrees 0.8 x 1.6 mm. A body moved to (10, -5.5) mil reads
+   there, and back at (0, 0).
+4. **Sheet symbols.** A symbol asked for at (1000,1000)-(2000,2500) has
+   that box; an entry 300 mil from the top on the left edge sits at
+   (1000, 2200), one 500 mil down the right edge at (2000, 2000).
+5. **Closing a document.** A schematic edited and closed with discard came
+   back with its edits on reopen while the project stayed open: the reply
+   says `discarded` false and `project_may_hold_edit` true.
+6. **Ports.** OverrideDisplayString and HarnessColor read back at once
+   but were gone after save and project reopen; AutoSize kept. `obj_modify`
+   says so in a note.
+7. **Errors.** An ambiguous designator's candidates arrive as parsed
+   details. A new document in a missing folder raised Altium's save error
+   modal; it is now refused before Altium makes the document.
+
+Not checked live: `sch_place_dblib_rows` (no DbLib was installed),
+the ECO focus check (it raises Altium's ECO dialog), declared class
+members (the test directive did not join a net).
+
+Run live on AD 26.11.1.5 on scratch copies.
+Run again with script 2026.10.28.56 after the commands were rewritten:
+the RoundLED GND pour read 12 corners and 6 arcs, closed, with a wrong
+name and a bad index refused; a line read 2 vertices, both ends and
+`VertexLast`; the sheet symbol and its two entries sat where item 4
+above says; a discarded close of a project sheet said
+`project_may_hold_edit`; a document in a missing folder was refused by
+the script; `sch_place_dblib_rows` refused a missing .DbLib and a .txt
+row by row; an alias another symbol has, and one asked twice, were
+refused with nothing changed; 107 nets read with their directives.
+
+---
+
+## 58. Stages to production, SDK reach, LTspice runs, company conventions, Altium 365
+
+No Pascal changed.
+`design_phase_gate`, `design_phase_answer` and `design_phase_standing`
+hold a product to feasibility, prototype, EVT, DVT and PVT;
+`eda-agent sdk-reach` counts the properties Altium's SDK declares that
+the generic tools reach; `design_simulate_deck` runs a deck in ngspice or
+LTspice; `footprint_read_ipc_name`, `lib_verify_ipc_names`,
+`lib_check_naming`, `lib_make_name`, `lib_read_pin_table`,
+`design_check_company_rules`, `design_read_rules_export` and
+`design_compare_plans` cover company conventions; the `altium365_` tools
+read and write Altium 365.
+
+1. **Stages.** Every tool a check names exists here (a test fails if one
+   does not). A product with feasibility answered for revision A is in
+   prototype, and back in feasibility when asked about revision B.
+2. **SDK reach.** 802 of 2,221 declared properties reached (36.1 %)
+   across 46 object types: 464 of 1,040 on the schematic, 338 of 1,181 on
+   the board.
+3. **Simulators.** One RC deck in ngspice-47 and LTspice 24.0.12:
+   both 4.96629 V at 5 ms and a 2.1972 ms rise (RC ln 9). A deck calling
+   an unknown subcircuit fails in both with the engine's error. A deck
+   including a file outside the workspace, or using .ferret, is refused
+   before it runs. LTspice writes a failed run's log as UTF-16 with no
+   byte-order mark.
+4. **IPC names.** On the scratch RoundLED.PcbLib, 7 footprints agree with
+   their IPC names and 5 are not IPC names.
+5. **Company rules.** A trial rules file on the scratch RoundLED project
+   read the BOM, parameters, nets and board rules: the 6 mil clearance
+   rule passed a 4 mil minimum, 26 single-pin nets were flagged, the note
+   came back as text.
+
+Not checked live: Altium 365 (needs a workspace token or a Nexar app),
+and the naming policy on a real company policy.
+
+Run on AD 26.11.1.5 on scratch copies.
 
 ---
 

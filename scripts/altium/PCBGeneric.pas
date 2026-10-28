@@ -45,6 +45,7 @@ End;
 { punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
 { (its "flip on layer" option, not its side) are read only. A text's       }
 { BorderSpaceType is Altium's number for how its inverted border is sized. }
+{ A text's FontName (its TrueType font) is read only here.                  }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -65,7 +66,8 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Then Result := 3
+            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Or
+            (PropName = 'FontName') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -204,7 +206,8 @@ Begin
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
         Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
-        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType);
+        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType)
+        Else If PropName = 'FontName' Then Result := Txt.FontName;
     End
     Else If Oid = eDimensionObject Then
     Begin
@@ -303,7 +306,8 @@ Begin
     Result := -1;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
-       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;
+       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or
+       (PropName = 'FontName') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -2292,7 +2296,7 @@ Begin
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
-        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, '
+        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, FontName, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
