@@ -943,6 +943,46 @@ def main() -> int:
                        help="Read a reflected SDK from PATH instead of "
                             "reference/altium_sdk.json.")
 
+    # sdk-probe -- what sdk-coverage cannot know. The assembly says a
+    # property is declared; only the running engine says whether it is
+    # reachable, and finding out costs a fault that stops the loop, so
+    # this is a deliberate command and never part of a tool call.
+    probe_p = subparsers.add_parser(
+        "sdk-probe",
+        help="Ask the running Altium which declared properties it exposes.",
+    )
+    probe_p.add_argument("--designator", default="", metavar="REF",
+                         help="Component to read (default: the first on the "
+                              "active sheet).")
+    probe_p.add_argument("--properties", default="", metavar="A,B,C",
+                         help="Probe only these names. Default: every "
+                              "candidate the generator plans for.")
+    probe_p.add_argument("--doc-path", default="", metavar="PATH",
+                         help="Schematic to read instead of the active one.")
+    probe_p.add_argument("--json", action="store_true", dest="json_out",
+                         help="Emit machine-readable JSON instead of a table.")
+    probe_p.add_argument("--sdk-json", default=None, metavar="PATH",
+                         help="Read a reflected SDK from PATH instead of "
+                              "reference/altium_sdk.json.")
+
+    # sdk-symbols -- the offline half of sdk-probe. ScriptingSystem.dll
+    # carries the engine's registered names, and a name it does not carry
+    # halts the debugger when a script touches it, so this is what the
+    # generator checks before emitting a line.
+    sym_p = subparsers.add_parser(
+        "sdk-symbols",
+        help="Report what the scripting engine will resolve, offline.",
+    )
+    sym_p.add_argument("--refresh", action="store_true",
+                       help="Re-extract the table from the local install.")
+    sym_p.add_argument("--name", default="", metavar="NAME",
+                       help="Explain how one member can be reached.")
+    sym_p.add_argument("--json", action="store_true", dest="json_out",
+                       help="Emit machine-readable JSON instead of the table.")
+    sym_p.add_argument("--sdk-json", default=None, metavar="PATH",
+                       help="Read a reflected SDK from PATH instead of "
+                            "reference/altium_sdk.json.")
+
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
@@ -1405,6 +1445,16 @@ def main() -> int:
         return cli.cmd_sdk_coverage(as_json=args.json_out,
                                     detail=args.detail,
                                     sdk_json=args.sdk_json)
+    if args.command == "sdk-probe":
+        return cli.cmd_sdk_probe(designator=args.designator,
+                                 properties=args.properties,
+                                 doc_path=args.doc_path,
+                                 as_json=args.json_out,
+                                 sdk_json=args.sdk_json)
+    if args.command == "sdk-symbols":
+        return cli.cmd_sdk_symbols(refresh=args.refresh, name=args.name,
+                                   as_json=args.json_out,
+                                   sdk_json=args.sdk_json)
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":
