@@ -185,6 +185,28 @@ registered, 990 across all backends. `SCRIPT_VERSION` is `2026.10.26.4`.
 
 ### Fixed
 
+- **`app_capability_probe` and `app_get_report` now ask Altium rather
+  than the process table.** Both carried the shape the doctor entry
+  below describes. `app_capability_probe(probe_live=True)` set
+  `bridge_response` to None whenever the scan said Altium was absent, so
+  every live feature read as missing while the bridge was answering.
+  `app_get_report` gated the ping, the script version, the version match
+  and the round-trip timing on that same scan, which is the worse of the
+  two: that tool exists to say what is wrong with the plumbing, and on a
+  machine whose process table cannot name a running Altium it reported
+  the application down, with no version and no round trip.
+
+  Both now ping first and keep the scan as a reported observation. The
+  first attempt keeps the process gate, because where Altium really is
+  absent it turns an IPC timeout into an immediate answer; only when
+  that returns nothing does the ungated retry go out. `altium_running`
+  is true when the scan saw Altium OR the bridge answered, and a new
+  `process_scan_saw_altium` key carries what the scan alone said, so a
+  caller can still see the two disagree. Checked against a live Altium
+  with the scan forced to report nothing: script version, version match
+  and a 38 ms round trip all came back where the old code returned
+  None.
+
 - **`eda-agent doctor` no longer reports a running Altium as absent.**
   The check printed `[FAIL] altium process running, no process named
   x2.exe found` with `fix: Start Altium Designer.` while Altium
