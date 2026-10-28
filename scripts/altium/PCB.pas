@@ -3429,13 +3429,14 @@ Begin
         Exit;
     End;
 
-    { Find the variant by name. }
+    { By name or description: the description is what Altium saves. }
     Variant := Nil;
     NVar := Project.DM_ProjectVariantCount;
     For VarIdx := 0 To NVar - 1 Do
     Begin
         V0 := Project.DM_ProjectVariants(VarIdx);
-        If (V0 <> Nil) And (V0.DM_Name = VariantName) Then
+        If (V0 <> Nil) And ((UpperCase(V0.DM_Name) = UpperCase(VariantName))
+            Or (UpperCase(V0.DM_Description) = UpperCase(VariantName))) Then
         Begin
             Variant := V0;
             Break;

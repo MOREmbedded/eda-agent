@@ -3112,6 +3112,146 @@ Begin
 End;
 
 {..............................................................................}
+{ VariantLabel - the name Altium saves and shows for a variant: its          }
+{ description. DM_Name lives only in memory and reads 'Variant' once the     }
+{ project is reopened.                                                         }
+{..............................................................................}
+Function VariantLabel(V : IProjectVariant) : String;
+Var
+    Lbl : String;
+Begin
+    Lbl := '';
+    If V <> Nil Then
+    Begin
+        Lbl := V.DM_Description;
+        If Lbl = '' Then Lbl := V.DM_Name;
+    End;
+    Result := Lbl;
+End;
+
+{..............................................................................}
+{ FindVariantNamed - a project variant by its name or its description,        }
+{ ignoring case. Nil when there is none.                                       }
+{..............................................................................}
+Function FindVariantNamed(Project : IProject; Wanted : String) : IProjectVariant;
+Var
+    I : Integer;
+    V : IProjectVariant;
+Begin
+    Result := Nil;
+    For I := 0 To Project.DM_ProjectVariantCount - 1 Do
+    Begin
+        V := Project.DM_ProjectVariants(I);
+        If V = Nil Then Continue;
+        If (UpperCase(V.DM_Name) = UpperCase(Wanted))
+            Or (UpperCase(V.DM_Description) = UpperCase(Wanted)) Then
+        Begin
+            Result := V;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ VariantNameTaken - True when a variant other than Skip already has Name as  }
+{ its name or its description, ignoring case.                                  }
+{..............................................................................}
+Function VariantNameTaken(Project : IProject; Name : String; Skip : IProjectVariant) : Boolean;
+Var
+    I : Integer;
+    V : IProjectVariant;
+Begin
+    Result := False;
+    For I := 0 To Project.DM_ProjectVariantCount - 1 Do
+    Begin
+        V := Project.DM_ProjectVariants(I);
+        If V = Nil Then Continue;
+        If (Skip <> Nil) And (V.DM_UniqueId = Skip.DM_UniqueId) Then Continue;
+        If (UpperCase(V.DM_Name) = UpperCase(Name))
+            Or (UpperCase(V.DM_Description) = UpperCase(Name)) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ AltLinkJson - the library link of a variation's alternate part, as a JSON   }
+{ object: what a BOM needs to name the part that is fitted instead.           }
+{ An empty object when the variation has no link.                              }
+{..............................................................................}
+Function AltLinkJson(CompVar : IComponentVariation) : String;
+Var
+    Link : IComponentLibraryLink;
+    Body : String;
+Begin
+    Link := Nil;
+    Try Link := CompVar.DM_AlternateLibraryLink; Except Link := Nil; End;
+    If Link = Nil Then
+    Begin
+        Body := '{}';
+        Result := Body;
+        Exit;
+    End;
+    Body := '';
+    Try
+        Body := JsonStr('design_item_id', Link.DM_DesignItemID) + ','
+            + JsonStr('symbol_reference', Link.DM_SymbolReference) + ','
+            + JsonStr('footprint', Link.DM_Footprint) + ','
+            + JsonBool('same_footprint', Link.DM_IsSameFootprint) + ','
+            + JsonStr('library', Link.DM_SourceLibraryName) + ','
+            + JsonStr('library_identifier', Link.DM_LibraryIdentifier) + ','
+            + JsonInt('library_identifier_kind', Link.DM_LibIdentifierKind) + ','
+            + JsonBool('use_library_name', Link.DM_UseLibraryName) + ','
+            + JsonBool('use_db_table_name', Link.DM_UseDBTableName) + ','
+            + JsonStr('db_table_name', Link.DM_DatabaseTableName) + ','
+            + JsonStr('vault_guid', Link.DM_VaultGUID) + ','
+            + JsonStr('item_guid', Link.DM_ItemGUID) + ','
+            + JsonStr('revision_guid', Link.DM_RevisionGUID);
+    Except
+    End;
+    Body := '{' + Body + '}';
+    Result := Body;
+End;
+
+{..............................................................................}
+{ CopyAltLink - copy the alternate part's library link from one variation to  }
+{ another, field by field. Returns False when either side has no link.        }
+{..............................................................................}
+Function CopyAltLink(Src, Dst : IComponentVariation) : Boolean;
+Var
+    S, D : IComponentLibraryLink;
+Begin
+    Result := False;
+    S := Nil;
+    D := Nil;
+    Try S := Src.DM_AlternateLibraryLink; Except S := Nil; End;
+    Try D := Dst.DM_AlternateLibraryLink; Except D := Nil; End;
+    If (S = Nil) Or (D = Nil) Then Exit;
+    Try
+        D.DM_SetLibIdentifierKind(S.DM_LibIdentifierKind);
+        D.DM_SetLibraryIdentifier(S.DM_LibraryIdentifier);
+        D.DM_SetSymbolReference(S.DM_SymbolReference);
+        D.DM_SetDesignItemID(S.DM_DesignItemID);
+        D.DM_SetUseLibraryName(S.DM_UseLibraryName);
+        D.DM_SetSourceLibraryName(S.DM_SourceLibraryName);
+        D.DM_SetUseDBTableName(S.DM_UseDBTableName);
+        D.DM_SetDatabaseTableName(S.DM_DatabaseTableName);
+        D.DM_SetVaultGUID(S.DM_VaultGUID);
+        D.DM_SetItemGUID(S.DM_ItemGUID);
+        D.DM_SetRevisionGUID(S.DM_RevisionGUID);
+        D.DM_SetFootprint(S.DM_Footprint);
+        D.DM_SetIsSameFootprint(S.DM_IsSameFootprint);
+        Result := (D.DM_DesignItemID = S.DM_DesignItemID)
+            And (D.DM_SymbolReference = S.DM_SymbolReference)
+            And (D.DM_Footprint = S.DM_Footprint);
+    Except
+        Result := False;
+    End;
+End;
+
+{..............................................................................}
 { List all project variants                                                    }
 { Params: project_path (optional)                                             }
 {..............................................................................}
@@ -3124,6 +3264,7 @@ Var
     Variant : IProjectVariant;
     CompVar : IComponentVariation;
     ParamVar : IParameterVariation;
+    VParam : IParameter;
     I, J, K : Integer;
     Data, VarInfo, CompInfo, ParamInfo : String;
     First, FirstComp, FirstParam : Boolean;
@@ -3150,10 +3291,27 @@ Begin
         If Not First Then Data := Data + ',';
         First := False;
 
-        VarInfo := '{"name":"' + EscapeJsonString(Variant.DM_Name) + '"';
+        VarInfo := '{"name":"' + EscapeJsonString(VariantLabel(Variant)) + '"';
         VarInfo := VarInfo + ',"description":"' + EscapeJsonString(Variant.DM_Description) + '"';
 
         { Component variations }
+        { The variant's own parameters (Variant Management's parameter     }
+        { list), which a copy carries over.                                 }
+        VarInfo := VarInfo + ',"parameters":[';
+        Try
+            For K := 0 To Variant.DM_ParameterCount - 1 Do
+            Begin
+                VParam := Variant.DM_Parameters(K);
+                If VParam = Nil Then Continue;
+                If Copy(VarInfo, Length(VarInfo), 1) <> '[' Then VarInfo := VarInfo + ',';
+                VarInfo := VarInfo + JsonObj(
+                    JsonStr('name', VParam.DM_Name) + ','
+                    + JsonStr('value', VParam.DM_Value));
+            End;
+        Except
+        End;
+        VarInfo := VarInfo + ']';
+
         VarInfo := VarInfo + ',"variations":[';
         FirstComp := True;
         For J := 0 To Variant.DM_VariationCount - 1 Do
@@ -3177,6 +3335,9 @@ Begin
             CompInfo := '{"designator":"' + EscapeJsonString(CompVar.DM_PhysicalDesignator) + '"';
             CompInfo := CompInfo + ',"kind":"' + KindStr + '"';
             CompInfo := CompInfo + ',"alternate_part":"' + EscapeJsonString(CompVar.DM_AlternatePart) + '"';
+            CompInfo := CompInfo + ',' + JsonStr('unique_id', CompVar.DM_UniqueId);
+            If CompVar.DM_VariationKind = 2 Then
+                CompInfo := CompInfo + ',' + JsonRaw('alternate_link', AltLinkJson(CompVar));
 
             { Parameter variations within this component }
             CompInfo := CompInfo + ',"parameters":[';
@@ -3262,7 +3423,7 @@ Begin
         Variant := Project.DM_ProjectVariants(V);
         If V > 0 Then VariantsJson := VariantsJson + ',';
         If Variant <> Nil Then
-            VariantsJson := VariantsJson + '"' + EscapeJsonString(Variant.DM_Name) + '"'
+            VariantsJson := VariantsJson + '"' + EscapeJsonString(VariantLabel(Variant)) + '"'
         Else
             VariantsJson := VariantsJson + '""';
     End;
@@ -3345,7 +3506,7 @@ Begin
     Try
         Variant := Project.DM_CurrentProjectVariant;
         If Variant <> Nil Then
-            Result := BuildSuccessResponse(RequestId, '{"name":"' + EscapeJsonString(Variant.DM_Name) + '","description":"' + EscapeJsonString(Variant.DM_Description) + '"}')
+            Result := BuildSuccessResponse(RequestId, '{"name":"' + EscapeJsonString(VariantLabel(Variant)) + '","description":"' + EscapeJsonString(Variant.DM_Description) + '"}')
         Else
             Result := BuildSuccessResponse(RequestId, '{"name":"[No Variations]","description":"Base design, no variant active"}');
     Except
@@ -3354,18 +3515,31 @@ Begin
 End;
 
 {..............................................................................}
-{ Switch active variant by name                                                }
+{ CurrentVariantIs - True when the project's current variant is V, compared  }
+{ by unique id; V Nil means the base design.                                   }
+{..............................................................................}
+Function CurrentVariantIs(Project : IProject; V : IProjectVariant) : Boolean;
+Var
+    Current : IProjectVariant;
+Begin
+    Result := False;
+    Current := Nil;
+    Try Current := Project.DM_CurrentProjectVariant; Except Exit; End;
+    If V = Nil Then Result := Current = Nil
+    Else If Current <> Nil Then Result := Current.DM_UniqueId = V.DM_UniqueId;
+End;
+
+{..............................................................................}
+{ Switch active variant by name or description                                 }
 { Params: variant_name, project_path (optional)                               }
 {..............................................................................}
 
 Function Proj_SetActiveVariant(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, VariantName, ActualName : String;
+    ProjectPath, VariantName, ActualName, Route : String;
     Workspace : IWorkspace;
     Project : IProject;
     Variant, Current : IProjectVariant;
-    I : Integer;
-    Found : Boolean;
 Begin
     VariantName := ExtractJsonValue(Params, 'variant_name');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
@@ -3383,52 +3557,50 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    { Verify variant exists }
-    Found := False;
-    For I := 0 To Project.DM_ProjectVariantCount - 1 Do
+    { By name or description; [No Variations] is the base design. }
+    Variant := Nil;
+    If UpperCase(VariantName) <> '[NO VARIATIONS]' Then
     Begin
-        Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        Variant := FindVariantNamed(Project, VariantName);
+        If Variant = Nil Then
         Begin
-            Found := True;
-            Break;
+            Result := BuildErrorResponse(RequestId, 'VARIANT_NOT_FOUND', 'Variant not found: ' + VariantName);
+            Exit;
         End;
     End;
 
-    If Not Found Then
+    { IProject.DM_SetCurrentProjectVariant first; the VariantManagement   }
+    { process stays for a build where it does nothing.                    }
+    Route := 'api';
+    Try Project.DM_SetCurrentProjectVariant(Variant); Except End;
+    If Not CurrentVariantIs(Project, Variant) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'VARIANT_NOT_FOUND', 'Variant not found: ' + VariantName);
-        Exit;
+        Route := 'process';
+        ResetParameters;
+        AddStringParameter('Action', 'SetCurrentVariant');
+        AddStringParameter('VariantName', VariantLabel(Variant));
+        RunProcess('WorkspaceManager:VariantManagement');
     End;
 
-    { Use RunProcess to switch variant via project options }
-    ResetParameters;
-    AddStringParameter('Action', 'SetCurrentVariant');
-    AddStringParameter('VariantName', VariantName);
-    RunProcess('WorkspaceManager:VariantManagement');
-
-    { READ BACK WHICH VARIANT IS CURRENT. The check above proves the name  }
-    { exists, which is not the same as the switch having happened, and     }
-    { this used to report success on the strength of that. The same        }
-    { VariantManagement process is documented here as unreliable for       }
-    { AddVariant, so taking its word on SetCurrentVariant was never safe.  }
-    ActualName := '';
+    { READ BACK WHICH VARIANT IS CURRENT, by its unique id: the name a    }
+    { variant was found by is not proof that the switch happened.         }
+    ActualName := '[No Variations]';
     Try
         Current := Project.DM_CurrentProjectVariant;
-        If Current <> Nil Then ActualName := Current.DM_Name;
+        If Current <> Nil Then ActualName := VariantLabel(Current);
     Except End;
 
-    If ActualName = VariantName Then
+    If CurrentVariantIs(Project, Variant) Then
         Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"variant_name":"' + EscapeJsonString(VariantName)
-            + '","verified":true}')
+            '{"success":true,"variant_name":"' + EscapeJsonString(ActualName)
+            + '","verified":true,"route":"' + Route + '"}')
     Else
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
                 JsonBool('success', False) + ',' +
                 JsonStr('variant_name', VariantName) + ',' +
                 JsonStr('current_variant', ActualName) + ',' +
-                JsonStr('reason', 'the switch was dispatched but the project '
+                JsonStr('reason', 'the switch was made but the project '
                     + 'still reports a different current variant. Set it in '
                     + 'the Variant Management dialog.')
             ));
@@ -3437,12 +3609,8 @@ End;
 {..............................................................................}
 { Proj_DeleteVariant - remove one project variant by name.                     }
 {                                                                              }
-{ DM_RemoveProjectVariant(Index) is the ONE documented write in the whole      }
-{ variant API. Everything else on IProject, IProjectVariant and                }
-{ IComponentVariation reads: counts, indexed accessors and DM_VariationKind.   }
-{ There is no documented way to add a variant, or to add or remove an          }
-{ individual component variation entry, which is why this covers deleting a    }
-{ whole variant and nothing finer.                                             }
+{ IProject.DM_RemoveProjectVariant(Index). Single entries are removed by     }
+{ Proj_SetComponentVariation; Proj_CopyVariant keeps a copy first.            }
 {                                                                              }
 { Addressed BY NAME rather than by index, because an index is only valid       }
 { against the listing that produced it: removing a variant renumbers the       }
@@ -3452,10 +3620,10 @@ End;
 
 Function Proj_DeleteVariant(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, VariantName : String;
+    ProjectPath, VariantName, WantedId : String;
     Workspace : IWorkspace;
     Project : IProject;
-    Variant : IProjectVariant;
+    Variant, Wanted : IProjectVariant;
     I, Target, PreCount, PostCount, Entries : Integer;
     StillPresent : Boolean;
 Begin
@@ -3487,18 +3655,21 @@ Begin
     PreCount := 0;
     Try PreCount := Project.DM_ProjectVariantCount; Except End;
 
+    { By name or description, then by unique id: after a reopen every     }
+    { variant's DM_Name reads 'Variant' and only the description tells    }
+    { them apart.                                                          }
     Target := -1;
     Entries := -1;
+    Wanted := FindVariantNamed(Project, VariantName);
+    WantedId := '';
+    If Wanted <> Nil Then WantedId := Wanted.DM_UniqueId;
     For I := 0 To PreCount - 1 Do
     Begin
         Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        If (Variant <> Nil) And (Wanted <> Nil) And (Variant.DM_UniqueId = WantedId) Then
         Begin
             Target := I;
-            { Reported so the caller learns what the deletion cost. A      }
-            { variant carrying fifty component variations and an empty one }
-            { are the same single call, and only one of them is cheap to   }
-            { recreate: there is no scripted way to put the entries back.  }
+            { Reported so the caller learns what the deletion cost.        }
             Try Entries := Variant.DM_VariationCount; Except End;
             Break;
         End;
@@ -3531,7 +3702,7 @@ Begin
     For I := 0 To PostCount - 1 Do
     Begin
         Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        If (Variant <> Nil) And (Variant.DM_UniqueId = WantedId) Then
         Begin
             StillPresent := True;
             Break;
@@ -3674,6 +3845,8 @@ End;
 Function Proj_SetComponentVariation(Params : String; RequestId : String) : String;
 Var
     ProjectPath, VarWanted, Desig, KindStr, AltPart, UniqueId, Before, After : String;
+    AltLib, AltRef, AltFp, LinkJson : String;
+    Link : IComponentLibraryLink;
     Workspace : IWorkspace;
     Project : IProject;
     Variant, V : IProjectVariant;
@@ -3687,6 +3860,10 @@ Begin
     Desig := ExtractJsonValue(Params, 'designator');
     KindStr := LowerCase(ExtractJsonValue(Params, 'kind'));
     AltPart := ExtractJsonValue(Params, 'alternate_part');
+    AltLib := ExtractJsonValue(Params, 'alternate_library');
+    AltRef := ExtractJsonValue(Params, 'alternate_lib_ref');
+    AltFp := ExtractJsonValue(Params, 'alternate_footprint');
+    If AltRef = '' Then AltRef := AltPart;
     If (VarWanted = '') Or (Desig = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'variant and designator are required');
@@ -3784,16 +3961,41 @@ Begin
         End;
         CompVar.DM_SetVariationKind(Kind);
         If AltPart <> '' Then CompVar.DM_SetAlternatePart(AltPart);
+        { The alternate's library link. Without one Altium saves the entry
+          as an alternate but loads it back as fitted. Kind 2 is a library
+          named with its extension, as an IntLib or SchLib is. }
+        If (Kind = 2) And (AltLib <> '') Then
+        Begin
+            Link := Nil;
+            Try Link := CompVar.DM_AlternateLibraryLink; Except Link := Nil; End;
+            If Link <> Nil Then
+            Begin
+                Link.DM_SetLibIdentifierKind(2);
+                Link.DM_SetLibraryIdentifier(AltLib);
+                Link.DM_SetSourceLibraryName(AltLib);
+                Link.DM_SetUseLibraryName(True);
+                Link.DM_SetSymbolReference(AltRef);
+                Link.DM_SetDesignItemID(AltRef);
+                If AltFp <> '' Then
+                Begin
+                    Link.DM_SetFootprint(AltFp);
+                    Link.DM_SetIsSameFootprint(False);
+                End
+                Else Link.DM_SetIsSameFootprint(True);
+            End;
+        End;
     End;
 
     CompVar := Nil;
     Try CompVar := Variant.DM_FindComponentVariationByUniqueId(UniqueId); Except End;
     After := 'none';
     AltPart := '';
+    LinkJson := '{}';
     If CompVar <> Nil Then
     Begin
         After := VariationKindWord(CompVar.DM_VariationKind);
         Try AltPart := CompVar.DM_AlternatePart; Except End;
+        If CompVar.DM_VariationKind = 2 Then LinkJson := AltLinkJson(CompVar);
     End;
     MarkDocDirtyByPath(Project.DM_ProjectFullPath);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -3803,8 +4005,520 @@ Begin
         + JsonStr('before', Before) + ','
         + JsonStr('after', After) + ','
         + JsonStr('alternate_part', AltPart) + ','
+        + JsonRaw('alternate_link', LinkJson) + ','
         + JsonBool('applied', ((Kind = -1) And (After = 'none'))
             Or ((Kind >= 0) And (After = VariationKindWord(Kind))))));
+End;
+
+{..............................................................................}
+{ FlatComponentNamed - the compiled project's part with this physical         }
+{ designator, ignoring case. Nil when there is none.                           }
+{..............................................................................}
+Function FlatComponentNamed(Project : IProject; Desig : String) : IComponent;
+Var
+    FlatDoc : IDocument;
+    Comp : IComponent;
+    I : Integer;
+Begin
+    Result := Nil;
+    FlatDoc := Nil;
+    Try FlatDoc := Project.DM_DocumentFlattened; Except End;
+    If FlatDoc = Nil Then Exit;
+    For I := 0 To FlatDoc.DM_ComponentCount - 1 Do
+    Begin
+        Comp := Nil;
+        Try Comp := FlatDoc.DM_Components(I); Except End;
+        If Comp = Nil Then Continue;
+        If UpperCase(Comp.DM_PhysicalDesignator) = UpperCase(Desig) Then
+        Begin
+            Result := Comp;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ SplitTildes - split a '~~'-separated list into Items, dropping empties.     }
+{..............................................................................}
+Procedure SplitTildes(Text : String; Items : TStringList);
+Var
+    Remaining, Item : String;
+    SepPos : Integer;
+Begin
+    Remaining := Text;
+    While Length(Remaining) > 0 Do
+    Begin
+        SepPos := Pos('~~', Remaining);
+        If SepPos = 0 Then
+        Begin
+            Item := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Item := Copy(Remaining, 1, SepPos - 1);
+            Remaining := Copy(Remaining, SepPos + 2, Length(Remaining));
+        End;
+        If Item <> '' Then Items.Add(Item);
+    End;
+End;
+
+{..............................................................................}
+{ ParamVariationIndex - index of the parameter variation named Name in       }
+{ CompVar, ignoring case; -1 when there is none.                               }
+{..............................................................................}
+Function ParamVariationIndex(CompVar : IComponentVariation; Name : String) : Integer;
+Var
+    K : Integer;
+    PV : IParameterVariation;
+Begin
+    Result := -1;
+    For K := 0 To CompVar.DM_VariationCount - 1 Do
+    Begin
+        PV := CompVar.DM_Variations(K);
+        If PV = Nil Then Continue;
+        If UpperCase(PV.DM_ParameterName) = UpperCase(Name) Then
+        Begin
+            Result := K;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ ParamVariationsJson - a variation's parameter variations as a JSON array.  }
+{..............................................................................}
+Function ParamVariationsJson(CompVar : IComponentVariation) : String;
+Var
+    K : Integer;
+    PV : IParameterVariation;
+    Body : String;
+Begin
+    Body := '';
+    If CompVar <> Nil Then
+        For K := 0 To CompVar.DM_VariationCount - 1 Do
+        Begin
+            PV := CompVar.DM_Variations(K);
+            If PV = Nil Then Continue;
+            If Body <> '' Then Body := Body + ',';
+            Body := Body + JsonObj(JsonStr('name', PV.DM_ParameterName) + ','
+                + JsonStr('value', PV.DM_VariedValue));
+        End;
+    Body := '[' + Body + ']';
+    Result := Body;
+End;
+
+{..............................................................................}
+{ FindVariationFor - Comp's entry in Variant: by unique id, then by          }
+{ physical designator, since the variant matrix found the unique id lookup  }
+{ missing on a board whose flattened ids do not match the entries.           }
+{..............................................................................}
+Function FindVariationFor(Variant : IProjectVariant; Comp : IComponent) : IComponentVariation;
+Var
+    I : Integer;
+    CV : IComponentVariation;
+Begin
+    Result := Nil;
+    CV := Nil;
+    Try CV := Variant.DM_FindComponentVariationByUniqueId(Comp.DM_UniqueId); Except CV := Nil; End;
+    If CV <> Nil Then
+    Begin
+        Result := CV;
+        Exit;
+    End;
+    For I := 0 To Variant.DM_VariationCount - 1 Do
+    Begin
+        CV := Variant.DM_Variations(I);
+        If CV = Nil Then Continue;
+        If UpperCase(CV.DM_PhysicalDesignator) = UpperCase(Comp.DM_PhysicalDesignator) Then
+        Begin
+            Result := CV;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
+{ Proj_SetParameterVariation - set or clear parameter values one part takes  }
+{ in a project variant (Variant Management's varied parameter values):        }
+{ IComponentVariation.DM_AddParameterVariation, DM_FindParameterVariation,    }
+{ DM_RemoveParameterVariation and IParameterVariation.DM_SetParameterName /   }
+{ DM_SetVariedValue. A part with no entry in the variant gets a fitted one    }
+{ to hold the values. A not-fitted part is refused: nothing of it is built.  }
+{ Every value is read back.                                                   }
+{ Params: variant (name or description), designator, set ('Name=Value'       }
+{ items joined by '~~'), clear (names joined by '~~'), project_path.          }
+{..............................................................................}
+Function Proj_SetParameterVariation(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, VarWanted, Desig, SetStr, ClearStr, Item, PName, PValue : String;
+    Unknown, Missed, Response : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Variant : IProjectVariant;
+    Comp : IComponent;
+    CompVar : IComponentVariation;
+    PV : IParameterVariation;
+    Param : IParameter;
+    SetItems, ClearItems, Known : TStringList;
+    I, K, EqPos : Integer;
+    Created, Applied, Same : Boolean;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    VarWanted := ExtractJsonValue(Params, 'variant');
+    Desig := ExtractJsonValue(Params, 'designator');
+    SetStr := ExtractJsonValue(Params, 'set');
+    ClearStr := ExtractJsonValue(Params, 'clear');
+    If (VarWanted = '') Or (Desig = '') Or ((SetStr = '') And (ClearStr = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'variant, designator and a value to set or clear are required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+
+    Variant := FindVariantNamed(Project, VarWanted);
+    If Variant = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_VARIANT', 'No variant named ' + VarWanted);
+        Exit;
+    End;
+    Comp := FlatComponentNamed(Project, Desig);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No part ' + Desig + ' in the compiled project');
+        Exit;
+    End;
+
+    CompVar := FindVariationFor(Variant, Comp);
+    If (CompVar <> Nil) And (CompVar.DM_VariationKind = 1) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FITTED',
+            Desig + ' is not fitted in ' + VarWanted + '; set it fitted or alternate first');
+        Exit;
+    End;
+
+    SetItems := TStringList.Create;
+    ClearItems := TStringList.Create;
+    Known := TStringList.Create;
+    Try
+        SplitTildes(SetStr, SetItems);
+        SplitTildes(ClearStr, ClearItems);
+
+        { Names the part carries. A name it does not carry is still        }
+        { written, but it is named in the reply so a typo does not pass     }
+        { for a change.                                                     }
+        Try
+            For I := 0 To Comp.DM_ParameterCount - 1 Do
+            Begin
+                Param := Comp.DM_Parameters(I);
+                If Param <> Nil Then Known.Add(UpperCase(Param.DM_Name));
+            End;
+        Except
+        End;
+        Known.Add('COMMENT');
+
+        Created := False;
+        If (CompVar = Nil) And (SetItems.Count > 0) Then
+        Begin
+            CompVar := Variant.DM_AddComponentVariation;
+            CompVar.DM_SetUniqueId(Comp.DM_UniqueId);
+            CompVar.DM_SetPhysicalDesignator(Comp.DM_PhysicalDesignator);
+            CompVar.DM_SetVariationKind(0);
+            Created := True;
+        End;
+
+        Unknown := '';
+        If CompVar <> Nil Then
+        Begin
+            For I := 0 To SetItems.Count - 1 Do
+            Begin
+                Item := SetItems[I];
+                EqPos := Pos('=', Item);
+                If EqPos < 2 Then Continue;
+                PName := Copy(Item, 1, EqPos - 1);
+                PValue := Copy(Item, EqPos + 1, Length(Item));
+                If Known.IndexOf(UpperCase(PName)) < 0 Then
+                Begin
+                    If Unknown <> '' Then Unknown := Unknown + ',';
+                    Unknown := Unknown + '"' + EscapeJsonString(PName) + '"';
+                End;
+                K := ParamVariationIndex(CompVar, PName);
+                If K >= 0 Then PV := CompVar.DM_Variations(K)
+                Else
+                Begin
+                    PV := CompVar.DM_AddParameterVariation;
+                    PV.DM_SetParameterName(PName);
+                End;
+                PV.DM_SetVariedValue(PValue);
+            End;
+            For I := 0 To ClearItems.Count - 1 Do
+            Begin
+                K := ParamVariationIndex(CompVar, ClearItems[I]);
+                If K >= 0 Then CompVar.DM_RemoveParameterVariation(K);
+            End;
+        End;
+
+        { Read back through a fresh lookup, not the object just written. }
+        CompVar := FindVariationFor(Variant, Comp);
+        Missed := '';
+        For I := 0 To SetItems.Count - 1 Do
+        Begin
+            Item := SetItems[I];
+            EqPos := Pos('=', Item);
+            If EqPos < 2 Then Continue;
+            PName := Copy(Item, 1, EqPos - 1);
+            PValue := Copy(Item, EqPos + 1, Length(Item));
+            Same := False;
+            If CompVar <> Nil Then
+            Begin
+                K := ParamVariationIndex(CompVar, PName);
+                If K >= 0 Then Same := CompVar.DM_Variations(K).DM_VariedValue = PValue;
+            End;
+            If Not Same Then
+            Begin
+                If Missed <> '' Then Missed := Missed + ',';
+                Missed := Missed + '"' + EscapeJsonString(PName) + '"';
+            End;
+        End;
+        For I := 0 To ClearItems.Count - 1 Do
+        Begin
+            K := -1;
+            If CompVar <> Nil Then K := ParamVariationIndex(CompVar, ClearItems[I]);
+            If K >= 0 Then
+            Begin
+                If Missed <> '' Then Missed := Missed + ',';
+                Missed := Missed + '"' + EscapeJsonString(ClearItems[I]) + '"';
+            End;
+        End;
+    Finally
+        SetItems.Free;
+        ClearItems.Free;
+        Known.Free;
+    End;
+
+    Applied := Missed = '';
+    MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('variant', VariantLabel(Variant)) + ','
+        + JsonStr('designator', Comp.DM_PhysicalDesignator) + ','
+        + JsonStr('unique_id', Comp.DM_UniqueId) + ','
+        + JsonBool('entry_created', Created) + ','
+        + JsonRaw('parameters', ParamVariationsJson(CompVar)) + ','
+        + JsonRaw('not_on_part', '[' + Unknown + ']') + ','
+        + JsonRaw('not_applied', '[' + Missed + ']') + ','
+        + JsonBool('applied', Applied)));
+    Result := Response;
+End;
+
+{..............................................................................}
+{ Proj_RenameVariant - rename a variant. Altium saves only the description   }
+{ and shows it as the name, so both DM_SetDescription and DM_SetName take    }
+{ the new name, read back. A name another variant already has is refused.  }
+{ Params: variant (name or description), new_name, project_path.             }
+{..............................................................................}
+Function Proj_RenameVariant(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, VarWanted, NewName, OldName, Response : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Variant : IProjectVariant;
+    WasActive, Applied : Boolean;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    VarWanted := ExtractJsonValue(Params, 'variant');
+    NewName := ExtractJsonValue(Params, 'new_name');
+    If (VarWanted = '') Or (NewName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'variant and new_name are required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+
+    Variant := FindVariantNamed(Project, VarWanted);
+    If Variant = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_VARIANT', 'No variant named ' + VarWanted);
+        Exit;
+    End;
+    If VariantNameTaken(Project, NewName, Variant) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NAME_TAKEN',
+            'Another variant is already named ' + NewName);
+        Exit;
+    End;
+
+    WasActive := CurrentVariantIs(Project, Variant);
+    OldName := VariantLabel(Variant);
+    Variant.DM_SetDescription(NewName);
+    Variant.DM_SetName(NewName);
+
+    Applied := Variant.DM_Description = NewName;
+    MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('name_before', OldName) + ','
+        + JsonStr('name', VariantLabel(Variant)) + ','
+        + JsonBool('was_active', WasActive) + ','
+        + JsonBool('applied', Applied)));
+    Result := Response;
+End;
+
+{..............................................................................}
+{ Proj_CopyVariant - a new variant holding a copy of another's entries:       }
+{ every part's kind, alternate part and its library link, its parameter       }
+{ values, and the variant's own parameters. Each entry is compared with its  }
+{ source afterwards. The name goes in the description, which is what       }
+{ Altium saves and shows.                                                      }
+{ Params: source (name or description), name, project_path.                   }
+{..............................................................................}
+Function Proj_CopyVariant(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, SrcWanted, NewName, Missed, Response : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Src, Dst : IProjectVariant;
+    S, D : IComponentVariation;
+    SP, DP : IParameterVariation;
+    VParam : IParameter;
+    I, J, K, PreCount, PostCount, Entries, Values, LinkMisses : Integer;
+    Same : Boolean;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    SrcWanted := ExtractJsonValue(Params, 'source');
+    NewName := ExtractJsonValue(Params, 'name');
+    If (SrcWanted = '') Or (NewName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'source and name are required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+
+    Src := FindVariantNamed(Project, SrcWanted);
+    If Src = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_VARIANT', 'No variant named ' + SrcWanted);
+        Exit;
+    End;
+    If VariantNameTaken(Project, NewName, Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NAME_TAKEN',
+            'A variant is already named ' + NewName);
+        Exit;
+    End;
+
+    PreCount := Project.DM_ProjectVariantCount;
+    Dst := Nil;
+    Try Dst := Project.DM_AddProjectVariant; Except Dst := Nil; End;
+    PostCount := Project.DM_ProjectVariantCount;
+    If (Dst = Nil) Or (PostCount <= PreCount) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_UNCONFIRMED',
+            'The new variant could not be added (count ' + IntToStr(PreCount)
+            + ' -> ' + IntToStr(PostCount) + ')');
+        Exit;
+    End;
+    Dst.DM_SetName(NewName);
+    Dst.DM_SetDescription(NewName);
+
+    Try
+        For I := 0 To Src.DM_ParameterCount - 1 Do
+        Begin
+            VParam := Src.DM_Parameters(I);
+            If VParam <> Nil Then Dst.DM_AddParameter(VParam.DM_Name, VParam.DM_Value);
+        End;
+    Except
+    End;
+
+    Entries := 0;
+    Values := 0;
+    LinkMisses := 0;
+    For I := 0 To Src.DM_VariationCount - 1 Do
+    Begin
+        S := Src.DM_Variations(I);
+        If S = Nil Then Continue;
+        D := Dst.DM_AddComponentVariation;
+        D.DM_SetUniqueId(S.DM_UniqueId);
+        D.DM_SetPhysicalDesignator(S.DM_PhysicalDesignator);
+        D.DM_SetVariationKind(S.DM_VariationKind);
+        If S.DM_VariationKind = 2 Then
+        Begin
+            If S.DM_AlternatePart <> '' Then D.DM_SetAlternatePart(S.DM_AlternatePart);
+            If Not CopyAltLink(S, D) Then LinkMisses := LinkMisses + 1;
+        End;
+        { Found or added: Altium keeps the alternate part's name as a      }
+        { varied Comment, which DM_SetAlternatePart has just written.       }
+        For K := 0 To S.DM_VariationCount - 1 Do
+        Begin
+            SP := S.DM_Variations(K);
+            If SP = Nil Then Continue;
+            J := ParamVariationIndex(D, SP.DM_ParameterName);
+            If J >= 0 Then DP := D.DM_Variations(J)
+            Else
+            Begin
+                DP := D.DM_AddParameterVariation;
+                DP.DM_SetParameterName(SP.DM_ParameterName);
+            End;
+            DP.DM_SetVariedValue(SP.DM_VariedValue);
+            Values := Values + 1;
+        End;
+        Entries := Entries + 1;
+    End;
+
+    { Compare every source entry with the copy found by its unique id. }
+    Missed := '';
+    For I := 0 To Src.DM_VariationCount - 1 Do
+    Begin
+        S := Src.DM_Variations(I);
+        If S = Nil Then Continue;
+        D := Nil;
+        Try D := Dst.DM_FindComponentVariationByUniqueId(S.DM_UniqueId); Except End;
+        Same := D <> Nil;
+        If Same Then
+            Same := (D.DM_VariationKind = S.DM_VariationKind)
+                And (D.DM_AlternatePart = S.DM_AlternatePart)
+                And (D.DM_VariationCount = S.DM_VariationCount);
+        If Same Then
+            For K := 0 To S.DM_VariationCount - 1 Do
+            Begin
+                SP := S.DM_Variations(K);
+                If SP = Nil Then Continue;
+                If ParamVariationIndex(D, SP.DM_ParameterName) < 0 Then Same := False
+                Else If D.DM_Variations(ParamVariationIndex(D, SP.DM_ParameterName)).DM_VariedValue
+                    <> SP.DM_VariedValue Then Same := False;
+            End;
+        If Not Same Then
+        Begin
+            If Missed <> '' Then Missed := Missed + ',';
+            Missed := Missed + '"' + EscapeJsonString(S.DM_PhysicalDesignator) + '"';
+        End;
+    End;
+
+    MarkDocDirtyByPath(Project.DM_ProjectFullPath);
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('source', VariantLabel(Src)) + ','
+        + JsonStr('name', VariantLabel(Dst)) + ','
+        + JsonInt('entries_copied', Entries) + ','
+        + JsonInt('parameter_values_copied', Values) + ','
+        + JsonInt('variant_parameters', Dst.DM_ParameterCount) + ','
+        + JsonInt('alternate_links_not_copied', LinkMisses) + ','
+        + JsonRaw('differs', '[' + Missed + ']') + ','
+        + JsonBool('applied', (Missed = '') And (Dst.DM_VariationCount = Src.DM_VariationCount))));
+    Result := Response;
 End;
 
 {..............................................................................}
@@ -6283,6 +6997,9 @@ Begin
         'make_schematic_library': Result := Proj_MakeSchematicLibrary(Params, RequestId);
         'get_declared_design_objects': Result := Proj_GetDeclaredDesignObjects(Params, RequestId);
         'delete_variant':    Result := Proj_DeleteVariant(Params, RequestId);
+        'set_parameter_variation': Result := Proj_SetParameterVariation(Params, RequestId);
+        'rename_variant':    Result := Proj_RenameVariant(Params, RequestId);
+        'copy_variant':      Result := Proj_CopyVariant(Params, RequestId);
         'get_open_projects': Result := Proj_GetOpenProjects(RequestId);
         'save_all':          Result := Proj_SaveAll(RequestId);
         'get_messages':      Result := Proj_GetMessages(Params, RequestId);

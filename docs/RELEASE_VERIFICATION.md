@@ -1,4 +1,4 @@
-# Release verification: 2026.10.27.49
+# Release verification: 2026.10.28.53
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -200,6 +200,11 @@ works elsewhere cannot be an undeclared identifier:
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
 | 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live |
 | 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live |
+| 54, variant values | `DM_AddParameterVariation`, `DM_SetParameterName`, `DM_SetVariedValue`, `DM_RemoveParameterVariation` on a part's variant entry | no, nowhere | low, the .PrjPcb only; ran live, saved and reopened on a scratch copy |
+| 54, variant names | `DM_SetName`, `DM_SetDescription` on an existing variant | yes, `Proj_CreateVariant` on a new one | low, ran live, saved and reopened |
+| 54, current variant | `DM_SetCurrentProjectVariant` on the project | no, nowhere | low, ran live and set back to the base design |
+| 54, alternate link | `DM_SetLibIdentifierKind`, `DM_SetLibraryIdentifier`, `DM_SetSourceLibraryName`, `DM_SetSymbolReference`, `DM_SetDesignItemID`, `DM_SetFootprint`, `DM_SetIsSameFootprint` on an alternate's library link | no, nowhere | low, ran live, saved and reopened |
+| 54, variant parameters | `DM_AddParameter` on a variant | no, nowhere | low, copies a variant's own parameters; the scratch variants had none |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -375,7 +380,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.27.49`, `version_match` =
+Expect `altium_script_version` = `2026.10.28.53`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -3122,6 +3127,48 @@ cannot.
 Run live on AD 26.11.1.5 with that change's script on a scratch copy of
 Altium's Simulation Quick Start example; every document closed without
 saving. All passed as described.
+
+---
+
+## 54. Variant values, renaming and copying a variant, the BOM a variant builds
+
+`proj_set_parameter_variation` sets or clears the parameter values one part
+takes in a variant; `proj_rename_variant` renames a variant;
+`proj_copy_variant` starts a variant from another; `proj_get_bom` takes
+`variant` and gives the BOM that variant builds;
+`proj_set_component_variation` takes the alternate's library, symbol and
+footprint. Variants are found by name or description and reported by
+description, `proj_set_active_variant` sets the current variant directly,
+and `proj_list_variants` gives each entry's unique id, an alternate's
+library link and the variant's own parameters.
+
+1. **Values.** On R1 in variant Lite, Value 4k7 and Comment 4k7 were
+   written and read back, a name the part does not carry (Bogus) was
+   written and named in `not_on_part`, then cleared. A not-fitted part
+   (R6) was refused. Altium keeps an alternate's name as its varied
+   Comment: setting Q6's alternate added Comment 2N2222, and R1's varied
+   Comment reads back as its alternate part.
+2. **Names.** The project file keeps only a variant's description; after a
+   reopen every variant's name read `Variant`. Variants are now found by
+   name or description and reported by description. Renamed (also the
+   active one), copied and deleted by description; a name in use was
+   refused for both rename and copy.
+3. **Current variant.** `proj_set_active_variant` had failed (the process
+   left the base design current); set directly it switched to the
+   variant and back to `[No Variations]`, read back by unique id.
+4. **Copy.** A copy of Lite held its three entries and three values
+   (Comment not doubled), and removing an entry from the copy left Lite
+   unchanged.
+5. **Alternates.** An alternate with no library link was saved as one but
+   loaded back as fitted. With `alternate_library` set to Miscellaneous
+   Devices.IntLib, Q6's alternate 2N3906 came back as an alternate with its
+   library, and so did its copy.
+6. **BOM.** For a variant: 55 of 56 parts (R6 not fitted), R1 with comment
+   4k7, Q6 as 2N3906, before and after the project was saved and reopened.
+
+Run live on AD 26.11.1.5 with that change's script on a scratch copy of
+Altium's Simulation Quick Start example, saved and reopened there. All
+passed as described.
 
 ---
 

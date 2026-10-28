@@ -1037,6 +1037,12 @@ class AltiumSimulator:
             data = '{"components":[' + ",".join(items) + '],"count":' + str(count) + '}'
             return _build_success_response(rid, data)
 
+        elif action == "get_variants":
+            # A simulated project has no variants.
+            if self._get_project(params) is None:
+                return _build_error_response(rid, "NO_PROJECT", "No project found")
+            return _build_success_response(rid, '{"variants":[],"count":0}')
+
         elif action == "get_component_info":
             designator = params.get("designator", "")
             if not designator:

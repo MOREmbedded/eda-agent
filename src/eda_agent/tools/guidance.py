@@ -647,6 +647,26 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "reads it back; save the project afterwards."),
     },
     {
+        "task": "Varied values and the BOM of a variant",
+        "keywords": ("varied", "variation"),
+        "when": (("variant", "value"), ("variant", "parameter"),
+                 ("rename", "variant"), ("copy", "variant"),
+                 ("duplicate", "variant"), ("variant", "bom"),
+                 ("bom", "variant")),
+        "document_kind": "project",
+        "backends": ("altium",),
+        "use": ["proj_set_parameter_variation", "proj_rename_variant",
+                "proj_copy_variant", "proj_get_bom", "proj_list_variants",
+                "proj_save"],
+        "avoid": [],
+        "note": (
+            "proj_set_parameter_variation sets or clears the values one part "
+            "takes in a variant (e.g. Value 4k7 instead of 10k). "
+            "proj_get_bom with variant= drops that variant's not-fitted "
+            "parts and applies its alternates and values. proj_copy_variant "
+            "starts a variant from another; save the project afterwards."),
+    },
+    {
         "task": "Set up drill pairs, backdrills and drill drawings",
         "keywords": ("drill", "pair", "backdrill", "back-drill", "drawing",
                      "guide", "blind", "buried"),

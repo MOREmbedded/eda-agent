@@ -8,6 +8,7 @@ from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
+from ..export.variant_bom import apply_variant, find_variant
 
 
 def _rows(result: Any, key: str) -> list:
@@ -813,6 +814,7 @@ def register_project_tools(mcp):
     async def proj_get_bom(
         project_path: Optional[str] = None,
         limit: int = 1000,
+        variant: Optional[str] = None,
     ) -> dict[str, Any]:
         """Export a full BOM from the compiled project.
 
@@ -826,21 +828,51 @@ def register_project_tools(mcp):
         Returns every component with designator, comment/value, footprint,
         library reference, and all pin-net connections.
 
+        With ``variant``, the BOM is the one that variant builds: its
+        not-fitted parts leave ``components`` (listed in ``not_fitted``),
+        an alternate part takes the alternate's library reference and
+        footprint (``alternate`` holds its library link), and varied
+        parameter values replace the base ones (``varied_parameters``;
+        a varied Comment becomes ``comment``). An alternate keeps the base
+        comment unless the variant varies it.
+
         Args:
             project_path: Optional project path. If None, uses active project.
             limit: Max components to return (default 1000).
+            variant: A variant's name or description. Leave empty for the
+                base design.
 
         Returns:
             Dictionary with "components" array and "count", "limit",
             "limit_hit" (true when the list stopped at ``limit`` with
             components left over), "skipped_nil", plus
-            `_datasheet_guidance` + `_datasheet_parts`.
+            `_datasheet_guidance` + `_datasheet_parts`. With ``variant``
+            also ``variant``, ``not_fitted``, ``alternates``, ``varied``
+            and ``entries_not_in_bom``; each component carries
+            ``variation`` (none, fitted or alternate).
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
         if project_path:
             params["project_path"] = project_path
         result = await bridge.send_command_async("project.get_bom", params)
+        if variant and variant.strip() and isinstance(result, dict) \
+                and isinstance(result.get("components"), list):
+            vparams: dict[str, Any] = {}
+            if project_path:
+                vparams["project_path"] = project_path
+            listing = await bridge.send_command_async(
+                "project.get_variants", vparams, timeout=120.0)
+            variants = (listing or {}).get("variants") \
+                if isinstance(listing, dict) else None
+            if not isinstance(variants, list):
+                return {"ok": False, "reason": "the project's variants could "
+                        "not be read", "variants_reply": listing}
+            chosen = find_variant(variants, variant)
+            if chosen is None:
+                return {"ok": False, "reason": f"no variant named {variant!r}",
+                        "variants": [v.get("name") for v in variants]}
+            result = {**result, **apply_variant(result["components"], chosen)}
         return tag_response(result, bom=result, context="proj_get_bom")
 
     @mcp.tool()
@@ -2141,8 +2173,13 @@ def register_project_tools(mcp):
 
         Returns:
             Dictionary with "variants" array and "count". Each variant has
-            name, description, and variations array (designator, kind,
-            alternate_part, parameters).
+            name, description, its own ``parameters``, and variations
+            array (designator, unique_id, kind, alternate_part (Altium
+            reads it from the varied Comment, so a fitted part with a
+            varied Comment shows one too),
+            ``alternate_link`` for an alternate: the alternate's library,
+            symbol reference and footprint, and ``parameters``, the varied
+            parameter values).
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -2178,14 +2215,17 @@ def register_project_tools(mcp):
         variant_name: str,
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Switch the active project variant.
+        """Switch the active project variant, or back to the base design.
 
         Args:
-            variant_name: Name of the variant to activate
+            variant_name: The variant's name or description, or
+                "[No Variations]" for the base design.
             project_path: Optional project path. If None, uses active project.
 
         Returns:
-            Dictionary confirming the switch
+            ``success``, ``variant_name`` (the variant now current) and
+            ``verified``, read back from the project; ``success`` false
+            with ``current_variant`` and a ``reason`` otherwise.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"variant_name": variant_name}
@@ -2363,6 +2403,11 @@ def register_project_tools(mcp):
         and `proj_set_component_variation` to mark parts not fitted or
         give them an alternate part.
 
+        Altium saves only the description and shows it as the variant's
+        name; leave ``description`` empty and it takes ``name``. A name
+        that differs from the description lasts until the project is
+        reopened.
+
         Args:
             name: Name for the new variant
             description: Optional description
@@ -2389,27 +2434,41 @@ def register_project_tools(mcp):
         kind: str,
         alternate_part: str = "",
         project_path: Optional[str] = None,
+        alternate_library: str = "",
+        alternate_lib_ref: str = "",
+        alternate_footprint: str = "",
     ) -> dict[str, Any]:
         """Set one part's entry in a project variant: fitted, not fitted,
         an alternate part, or no entry at all.
 
         Adds the variation when the part has none in that variant, changes
-        it when it has one, and with ``kind="remove"`` deletes it, so the
-        part follows the base design again. The part is found by its
+        it when it has one, and with ``kind="remove"`` deletes it, varied
+        parameter values included, so the part follows the base design
+        again. Parameter values: ``proj_set_parameter_variation``. The part is found by its
         designator in the compiled project; the entry is read back.
 
         Args:
             variant: The variant's name or description.
             designator: The part, e.g. "R12".
             kind: "fitted", "not_fitted", "alternate" or "remove".
-            alternate_part: For ``alternate``: the alternate part's name.
+            alternate_part: For ``alternate``: the alternate part's name,
+                which Altium keeps as the part's varied Comment.
             project_path: The .PrjPcb. Defaults to the focused project.
+            alternate_library: For ``alternate``: the library the
+                alternate comes from, e.g. "Miscellaneous Devices.IntLib".
+                Without it Altium saves the entry but loads it back as
+                fitted when the project is reopened.
+            alternate_lib_ref: The alternate's symbol in that library;
+                defaults to ``alternate_part``.
+            alternate_footprint: The alternate's footprint when it differs
+                from the base part's.
 
         Save the project (proj_save) to keep the change.
 
         Returns:
             ``before`` and ``after`` (the entry's kind, or "none"),
-            ``alternate_part``, ``unique_id`` and ``applied``.
+            ``alternate_part``, ``alternate_link``, ``unique_id`` and
+            ``applied``.
         """
         kind = kind.strip().lower()
         if kind not in ("fitted", "not_fitted", "alternate", "remove"):
@@ -2423,10 +2482,142 @@ def register_project_tools(mcp):
                                   "designator": designator.strip(), "kind": kind}
         if alternate_part.strip():
             params["alternate_part"] = alternate_part.strip()
+        for key, value in (("alternate_library", alternate_library),
+                           ("alternate_lib_ref", alternate_lib_ref),
+                           ("alternate_footprint", alternate_footprint)):
+            if value.strip():
+                if kind != "alternate":
+                    return {"ok": False, "reason": f"{key} is for kind alternate"}
+                params[key] = value.strip()
         if project_path:
             params["project_path"] = project_path
         return await get_bridge().send_command_async(
             "project.set_component_variation", params, timeout=120.0)
+
+    @mcp.tool()
+    async def proj_set_parameter_variation(
+        variant: str,
+        designator: str,
+        parameters: dict[str, Optional[str]],
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Set or clear the parameter values one part takes in a variant,
+        e.g. R5's Value 4k7 in variant "Lite" while the base design has 10k.
+
+        A value of None clears that parameter's variation, so the part
+        takes the base value again. A part with no entry in the variant
+        gets a fitted one to hold the values; a not-fitted part is
+        refused. Every value is read back. ``proj_get_bom`` with
+        ``variant`` applies them. Altium keeps an alternate part's name
+        as its varied Comment, so changing Comment on an alternate
+        renames the alternate.
+
+        Args:
+            variant: The variant's name or description.
+            designator: The part, e.g. "R5".
+            parameters: Parameter name to value, e.g. {"Value": "4k7",
+                "Comment": "4k7"}; None clears it.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Save the project (proj_save) to keep the change.
+
+        Returns:
+            ``parameters`` (the part's varied values afterwards),
+            ``entry_created``, ``not_on_part`` (names the part does not
+            carry, written anyway), ``not_applied`` and ``applied``.
+        """
+        if not variant.strip() or not designator.strip():
+            return {"ok": False, "reason": "variant and designator are required"}
+        if not parameters:
+            return {"ok": False, "reason": "parameters is empty"}
+        sets: list[str] = []
+        clears: list[str] = []
+        for name, value in parameters.items():
+            name = str(name).strip()
+            if not name or "=" in name or "~~" in name:
+                return {"ok": False, "reason": f"bad parameter name {name!r}"}
+            if value is None:
+                clears.append(name)
+            elif "~~" in str(value):
+                return {"ok": False, "reason": f"the value of {name} contains '~~'"}
+            else:
+                sets.append(f"{name}={value}")
+        params: dict[str, Any] = {"variant": variant.strip(),
+                                  "designator": designator.strip()}
+        if sets:
+            params["set"] = "~~".join(sets)
+        if clears:
+            params["clear"] = "~~".join(clears)
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.set_parameter_variation", params, timeout=120.0)
+
+    @mcp.tool()
+    async def proj_rename_variant(
+        variant: str,
+        new_name: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rename a project variant.
+
+        Altium saves a variant's description and shows it as the name, so
+        the new name is written there (and to the in-memory name). A name
+        another variant already has is refused. The name is read back.
+
+        Args:
+            variant: The variant's current name or description.
+            new_name: Its new name.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Save the project (proj_save) to keep the change.
+
+        Returns:
+            ``name_before``, ``name``, ``was_active`` and ``applied``.
+        """
+        if not variant.strip() or not new_name.strip():
+            return {"ok": False, "reason": "variant and new_name are required"}
+        params: dict[str, Any] = {"variant": variant.strip(),
+                                  "new_name": new_name.strip()}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.rename_variant", params, timeout=60.0)
+
+    @mcp.tool()
+    async def proj_copy_variant(
+        source: str,
+        name: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Start a new variant from an existing variant's entries.
+
+        Carries over every entry (fitted, not fitted, alternate with its
+        library link), every varied parameter value and the variant's own
+        parameters, then compares each entry with its source. Also the way
+        to keep a copy before ``proj_delete_variant``.
+
+        Args:
+            source: The variant to copy, by name or description.
+            name: The new variant's name (saved as its description, which
+                Altium shows as the name); one already in use is refused.
+            project_path: The .PrjPcb. Defaults to the focused project.
+
+        Save the project (proj_save) to keep the change.
+
+        Returns:
+            ``entries_copied``, ``parameter_values_copied``,
+            ``variant_parameters``, ``alternate_links_not_copied``,
+            ``differs`` (designators whose copy does not match) and
+            ``applied``.
+        """
+        if not source.strip() or not name.strip():
+            return {"ok": False, "reason": "source and name are required"}
+        params: dict[str, Any] = {"source": source.strip(), "name": name.strip()}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.copy_variant", params, timeout=120.0)
 
     @mcp.tool()
     async def proj_net_color(
@@ -2688,8 +2879,7 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Delete a project variant, with every component variation in it.
 
-        NOT REVERSIBLE FROM HERE: no script can add variation entries
-        back, so each one has to be redone by hand in Variant Management.
+        NOT REVERSIBLE: run ``proj_copy_variant`` first to keep a copy.
         Read the variant with ``proj_list_variants`` first if you did not
         create it; ``entries_removed`` reports how many went. Addressed
         by name, since deleting one renumbers the rest.

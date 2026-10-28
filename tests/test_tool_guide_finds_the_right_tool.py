@@ -149,6 +149,11 @@ HELD_OUT = [
     ("drop an opamp from an intlib onto the sheet",
      {"sch_place_components", "sch_draw_template"}),
     ("clone a schlib component with a new name", {"lib_copy_component"}),
+    ("copy a project variant", {"proj_copy_variant"}),
+    ("rename a variant", {"proj_rename_variant"}),
+    ("give R5 a different value in one variant",
+     {"proj_set_parameter_variation"}),
+    ("the bom of one variant", {"proj_get_bom"}),
 ]
 
 #: The held-out floor. Raised only when the held-out score rises by itself.
