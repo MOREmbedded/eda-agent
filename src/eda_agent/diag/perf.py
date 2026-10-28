@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,34 @@ def parse_activity_log(text: str) -> dict[str, dict[str, Any]]:
                            "tag": match["tag"],
                            "response_bytes": response_bytes}
     return out
+
+
+#: Every activity.log line opens with Altium's local wall clock, whether
+#: it is a handler call or a session marker.
+_STAMP = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}),")
+
+
+def last_activity_at(text: str) -> datetime | None:
+    """When the newest parseable activity.log line was written.
+
+    Pascal appends a line per handler call plus the session markers, so
+    the newest stamp is the last moment Altium is known to have been
+    alive. Written in Altium's LOCAL time, so the value is comparable
+    with ``datetime.now()`` and with nothing else.
+
+    Scanned from the end, taking the first stamp that parses: lines are
+    appended in order, and a half-written final line then costs a step
+    rather than the answer.
+    """
+    for line in reversed(text.splitlines()):
+        match = _STAMP.match(line.strip())
+        if not match:
+            continue
+        try:
+            return datetime.strptime(match["stamp"], "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            continue
+    return None
 
 
 def correlate(trace: dict[str, Call],

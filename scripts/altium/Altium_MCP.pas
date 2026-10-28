@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.4';
+    SCRIPT_VERSION = '2026.10.27.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -13972,6 +13972,7 @@ Var
     SlotLen : Double;
     PlatedStr, PasteStr, MaskStr : String;
     Slots, Unplated, Expanded, PropFailed : Integer;
+    PasteExpMils, SolderExpMils : Double;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -58567,6 +58568,7 @@ End;
 Function Gen_CreateObject(Params : String; RequestId : String) : String;
 Var
     ObjTypeStr, PropsStr, Container, UnsupportedProp : String;
+    DiagJson : String;
     ObjTypeInt : Integer;
     SchDoc : ISch_Document;
     SchLib : ISch_Lib;
@@ -59189,6 +59191,7 @@ Var
     TotalMatched, OpCount, OpSkipped, OpMatched : Integer;
     ResultJson, ResultsJson : String;
     UseTilde, IsPcb : Boolean;
+    Keyed : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -61930,6 +61933,7 @@ Var
     SrvDoc : IServerDocument;
     InfFont : Integer;
     StyleFound : Boolean;
+    SepPos : Integer;
 Begin
     Text := ExtractJsonValue(Params, 'text');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -62353,6 +62357,8 @@ Var
     X, Y : Double;
     SchDoc : ISch_Document;
     SchPort : ISch_Port;
+    SheetPath : String;
+    SepPos : Integer;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
@@ -66188,12 +66194,15 @@ Function Gen_BatchDelete(Params : String; RequestId : String) : String;
 Var
     Operations, Remaining : String;
     OpCount, OpsRun, OpsPartial, OpMatched, TotalMatched : Integer;
+    OpFailed : Integer;
     Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
     OpResult, Note, ResultsJson : String;
     ObjTypeInt : Integer;
     IsPCB, PCBTouched, ConnRebuilt : Boolean;
     PCBBoard : IPCB_Board;
     FailuresJson, UnresolvedJson : String;
+    FailCode : String;
+    OpResp : String;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -68537,13 +68546,15 @@ Begin
     EL := BR.X1; EB := BR.Y1; ER := BR.X2; ET := BR.Y2;
     OutlineExtents(Board.BoardOutline, EL, EB, ER, ET);
 
-    TracksJson := '['; NumTracks := 0;
-    ArcsJson := '[';   NumArcs := 0;
-    PadsJson := '[';   NumPads := 0;
-    ViasJson := '[';   NumVias := 0;
-    TextsJson := '[';  NumTexts := 0;
-    RegionsJson := '['; NumRegions := 0;
-    CompsJson := '[';   NumComps := 0;
+    { Counters only. Each array is assembled from its Parts list after }
+    { the walk, so seeding the strings here would be dead.              }
+    NumTracks := 0;
+    NumArcs := 0;
+    NumPads := 0;
+    NumVias := 0;
+    NumTexts := 0;
+    NumRegions := 0;
+    NumComps := 0;
 
     { Appending to a megabyte-scale DelphiScript String for every object is }
     { quadratic. Collect small fragments and join each array only once.   }
@@ -68577,8 +68588,8 @@ Begin
                 Track := Obj;
                 NetName := '';
                 Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                If NumTracks > 0 Then TracksJson := TracksJson + ',';
-                TracksJson := TracksJson +
+                If NumTracks > 0 Then TracksParts.Add(',');
+                TracksParts.Add(
                     '{"x1":' + FloatToJsonStr(CoordToMilsF(Track.X1)) +
                     ',"y1":' + FloatToJsonStr(CoordToMilsF(Track.Y1)) +
                     ',"x2":' + FloatToJsonStr(CoordToMilsF(Track.X2)) +
@@ -68593,8 +68604,8 @@ Begin
                 Arc := Obj;
                 NetName := '';
                 Try If Arc.Net <> Nil Then NetName := Arc.Net.Name; Except End;
-                If NumArcs > 0 Then ArcsJson := ArcsJson + ',';
-                ArcsJson := ArcsJson +
+                If NumArcs > 0 Then ArcsParts.Add(',');
+                ArcsParts.Add(
                     '{"cx":' + FloatToJsonStr(CoordToMilsF(Arc.XCenter)) +
                     ',"cy":' + FloatToJsonStr(CoordToMilsF(Arc.YCenter)) +
                     ',"r":' + FloatToJsonStr(CoordToMilsF(Arc.Radius)) +
@@ -68636,8 +68647,8 @@ Begin
                 Try
                     If Pad.Component <> Nil Then TextStr := Pad.Component.Name.Text;
                 Except End;
-                If NumPads > 0 Then PadsJson := PadsJson + ',';
-                PadsJson := PadsJson +
+                If NumPads > 0 Then PadsParts.Add(',');
+                PadsParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Pad.X)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Pad.Y)) +
                     ',"x_size":' + FloatToJsonStr(CoordToMilsF(Pad.TopXSize)) +
@@ -68659,8 +68670,8 @@ Begin
                 Via := Obj;
                 NetName := '';
                 Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-                If NumVias > 0 Then ViasJson := ViasJson + ',';
-                ViasJson := ViasJson +
+                If NumVias > 0 Then ViasParts.Add(',');
+                ViasParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Via.X)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Via.Y)) +
                     ',"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) +
@@ -68695,8 +68706,8 @@ Begin
                     Obj := Iter.NextPCBObject;
                     Continue;
                 End;
-                If NumTexts > 0 Then TextsJson := TextsJson + ',';
-                TextsJson := TextsJson +
+                If NumTexts > 0 Then TextsParts.Add(',');
+                TextsParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Text.XLocation)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Text.YLocation)) +
                     ',"text":"' + EscapeJsonString(TextStr) + '"' +
@@ -68727,10 +68738,10 @@ Begin
                     RegionPoints := TStringList.Create;
                     For K := 1 To PtCount Do
                     Begin
-                        If K > 1 Then RegionsJson := RegionsJson + ',';
-                        RegionsJson := RegionsJson + '['
+                        If K > 1 Then RegionPoints.Add(',');
+                        RegionPoints.Add('['
                             + FloatToJsonStr(CoordToMilsF(Contour.X[K])) + ','
-                            + FloatToJsonStr(CoordToMilsF(Contour.Y[K])) + ']';
+                            + FloatToJsonStr(CoordToMilsF(Contour.Y[K])) + ']');
                     End;
                     If NumRegions > 0 Then RegionsParts.Add(',');
                     RegionsParts.Add(

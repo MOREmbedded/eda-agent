@@ -118,9 +118,23 @@ def test_the_release_procedure_names_the_current_script_version():
     # script 2026.10.25.2" is evidence of what was actually run that day;
     # rewriting it to today's version would make the log lie, and nobody
     # mistakes a dated result for the version app_ping should report now.
-    # Every other mention must agree with the current one.
-    procedure = "\n".join(ln for ln in text.splitlines()
-                          if "Live result" not in ln and "Run live on" not in ln)
+    #
+    # A `## <version> - what was fixed` section is exempt for the same
+    # reason: it is release history, and the version in its heading is the
+    # release the fix landed in, not an instruction to the reader. The
+    # guard is on the PROCEDURE -- the numbered steps that tell someone
+    # what app_ping should report -- so those are still checked in full.
+    procedure_lines = []
+    in_history = False
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            in_history = bool(re.match(r"^## 20\d\d\.\d\d\.\d\d\.\d+\b", ln))
+        if in_history:
+            continue
+        if "Live result" in ln or "Run live on" in ln:
+            continue
+        procedure_lines.append(ln)
+    procedure = "\n".join(procedure_lines)
     others = {v for v in re.findall(r"\b20\d\d\.\d\d\.\d\d\.\d+\b", procedure)
               if v != version}
     assert not others, (

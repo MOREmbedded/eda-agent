@@ -1059,6 +1059,7 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_local_shadows_enum(rel, raw_lines))
     # Comment-brace check uses raw text (it tracks comment depth itself).
     findings.extend(_scan_comment_brace(rel, text))
+    findings.extend(_scan_bracket_balance(rel, text))
 
     return findings
 
@@ -1146,6 +1147,12 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
                 warns += 1
 
     for f in _scan_call_order_across_files(targets):
+        by_file.setdefault(f.file, []).append(f)
+        errors += 1
+
+    # Cross-file: build.py concatenates the units, so a global declared in
+    # one is in scope in all of them and this cannot be judged per file.
+    for f in _scan_undeclared_assignment(targets):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 
@@ -1254,28 +1261,59 @@ def _blank_block_comments(lines: list[str]) -> list:
 
     Line structure and column positions are preserved so a finding still
     points at the right place.
+
+    STRING LITERALS ARE SKIPPED, AND BRACES DO NOT NEST. Both matter, and
+    both were wrong here:
+
+      `'{"matched":' + IntToStr(N)`
+
+    is a JSON fragment, not the start of a comment. Treating it as one
+    opened a comment at the first such literal; nesting then meant the
+    real comment's `}` lowered the depth to 1 instead of closing it, so
+    everything after stayed blanked. In Generic.pas that silently hid 124
+    of 174 routines from every rule that reads these lines. Pascal brace
+    comments do not nest -- `{ a { b }` ends at the first `}` -- so the
+    state here is a flag, not a counter.
     """
-    out, depth = [], 0
+    out, in_comment = [], False
     for line in lines:
         buf = []
-        i = 0
-        while i < len(line):
+        i, n = 0, len(line)
+        while i < n:
             ch = line[i]
-            if depth == 0 and ch == "{":
-                depth += 1
+            if in_comment:
+                if ch == "}":
+                    in_comment = False
                 buf.append(" ")
-            elif depth > 0:
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
+                i += 1
+            elif ch == "{":
+                in_comment = True
                 buf.append(" ")
-            elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
-                buf.append(" " * (len(line) - i))
+                i += 1
+            elif ch == "'":
+                # Copied through verbatim: the per-line stripper blanks
+                # string bodies afterwards, and what matters here is only
+                # that a brace inside one cannot open a comment. '' is an
+                # escaped quote, not the end of the string.
+                buf.append(ch)
+                i += 1
+                while i < n:
+                    if line[i] == "'":
+                        if line[i + 1:i + 2] == "'":
+                            buf.append("''")
+                            i += 2
+                            continue
+                        buf.append("'")
+                        i += 1
+                        break
+                    buf.append(line[i])
+                    i += 1
+            elif ch == "/" and line[i + 1:i + 2] == "/":
+                buf.append(" " * (n - i))
                 break
             else:
                 buf.append(ch)
-            i += 1
+                i += 1
         out.append("".join(buf))
     return out
 
@@ -1352,7 +1390,12 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
             if name.isidentifier():
                 names.add(name.lower())
 
+    # BUFFERED TO THE ';', not read a line at a time. One declaration can
+    # wrap:  `A, B, C,` / `    D, E : TStringList;`  -- and the first of
+    # those lines carries no ':', so a per-line reader drops it and calls
+    # A, B and C undeclared wherever they are used.
     in_vars = False
+    buf = ""
     for k in range(start, begin):
         line = strip_comments_and_strings(lines[k])
         if _VAR_OR_CONST_HEADER.match(line):
@@ -1360,13 +1403,16 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
             # `Var dx, dy, tt : Double;` puts the declarations on the
             # SAME line as the keyword. Skipping the whole line lost them
             # and reported every use of dx as undeclared.
-            rest = re.sub(r"^\s*(?:Var|Const)\b", "", line,
-                          flags=re.IGNORECASE)
-            if ":" in rest:
-                take(rest)
+            buf = re.sub(r"^\s*(?:Var|Const)\b", "", line,
+                         flags=re.IGNORECASE)
+        elif in_vars:
+            buf += " " + line
+        else:
             continue
-        if in_vars and ":" in line:
-            take(line)
+        while ";" in buf:
+            stmt, buf = buf.split(";", 1)
+            if ":" in stmt:
+                take(stmt)
     return names
 
 
@@ -1487,6 +1533,178 @@ def _scan_undeclared_local(path: str, lines: list[str]) -> list[Finding]:
                     memory="altium_wrong_api_identifier_family.md",
                 ))
                 break
+    return findings
+
+
+#: Brackets that do not balance inside one routine.
+#:
+#: Altium reports this as a bare "; expected" pointing at the line where
+#: the extra ')' sits, with no hint that a missing opener is the cause.
+#:
+#: MEASURED: a refactor moving seven JSON arrays from string concatenation
+#: onto TStringList.Add() was applied to two of them and half-applied to
+#: five. Each of those five kept `XxxJson := XxxJson +` and gained the
+#: Add call's trailing `)`, so the unit would not compile. The five are
+#: indistinguishable from one another, so Altium surfaces one per reload.
+def _scan_bracket_balance(path: str, text: str) -> list[Finding]:
+    """Parentheses and brackets that do not close within one routine."""
+    findings: list[Finding] = []
+    clean = _blank_comments_and_strings(text)
+    raw_lines = text.split("\n")
+    lines = clean.split("\n")
+
+    head = re.compile(r"^(?:Function|Procedure)\s+(\w+)", re.IGNORECASE)
+    heads = {k: head.match(l).group(1)
+             for k, l in enumerate(lines) if head.match(l)}
+
+    depth, routine, opened_at = 0, "?", 0
+    for k, line in enumerate(lines):
+        if k in heads:
+            if depth > 0:
+                # An opener with no closer: report where it was opened,
+                # since that is the line to look at, not the next header.
+                findings.append(Finding(
+                    file=path, line=opened_at + 1, col=1,
+                    rule="unbalanced-bracket", severity="error",
+                    snippet=raw_lines[opened_at].rstrip()
+                    + "   [%s ends %d bracket(s) open]" % (routine, depth),
+                    memory="altium_delphiscript_parse_traps.md",
+                ))
+            depth, routine = 0, heads[k]
+        for col, ch in enumerate(line):
+            if ch in "([":
+                if depth == 0:
+                    opened_at = k
+                depth += 1
+            elif ch in ")]":
+                depth -= 1
+                if depth < 0:
+                    findings.append(Finding(
+                        file=path, line=k + 1, col=col + 1,
+                        rule="unbalanced-bracket", severity="error",
+                        snippet=raw_lines[k].rstrip()
+                        + "   [closes a bracket that was never opened]",
+                        memory="altium_delphiscript_parse_traps.md",
+                    ))
+                    depth = 0
+                    break
+    return findings
+
+
+def _file_level_names(lines: list[str]) -> set:
+    """Names declared outside any routine, plus every routine name.
+
+    A unit's Var/Const blocks sit BETWEEN routines, after one routine's
+    terminating column-0 `End;` and before the next header, so looking
+    only at the top of the file finds none of them. The caller unions
+    these across every unit because build.py concatenates them into one
+    namespace: a global declared in Main.pas is in scope in Generic.pas.
+    """
+    names = set()
+    head = re.compile(r"^(?:Function|Procedure)\s+(\w+)", re.IGNORECASE)
+    heads = [k for k, l in enumerate(lines)
+             if head.match(strip_comments_and_strings(l))]
+    for k in heads:
+        names.add(head.match(
+            strip_comments_and_strings(lines[k])).group(1).lower())
+
+    def harvest(lo: int, hi: int) -> None:
+        # Buffered to the ';' for the same reason as _declared_names: a
+        # declaration that wraps has no ':' on its first line.
+        in_vars = False
+        buf = ""
+        for k in range(lo, hi):
+            line = strip_comments_and_strings(lines[k])
+            if _VAR_OR_CONST_HEADER.match(line):
+                in_vars = True
+                buf = re.sub(r"^\s*(?:Var|Const)\b", "", line,
+                             flags=re.IGNORECASE)
+            elif re.match(r"^\s*(?:Function|Procedure|Begin)\b", line,
+                          re.IGNORECASE):
+                in_vars, buf = False, ""
+                continue
+            elif in_vars:
+                buf += " " + line
+            else:
+                continue
+            while ";" in buf:
+                stmt, buf = buf.split(";", 1)
+                lhs = stmt.split(":")[0]
+                if "=" in lhs:
+                    lhs = lhs.split("=")[0]
+                for name in lhs.split(","):
+                    name = name.strip().lstrip("&")
+                    if name.isidentifier():
+                        names.add(name.lower())
+
+    harvest(0, heads[0] if heads else len(lines))
+    for n, start in enumerate(heads):
+        stop = heads[n + 1] if n + 1 < len(heads) else len(lines)
+        ends = [k for k in range(start, stop)
+                if re.match(r"^End;", strip_comments_and_strings(lines[k]))]
+        if ends:
+            harvest(ends[-1] + 1, stop)
+    return names
+
+
+#: An identifier ASSIGNED by a routine that no enclosing scope declares.
+#:
+#: Altium refuses to compile the unit -- "Variable <X> not defined" --
+#: one name per reload, each costing a close / reopen / run cycle.
+#:
+#: This is sharper than the undeclared-local rule above, which only
+#: considers a name the same file declares in two OTHER routines and so
+#: stays silent on a name used in just one place. An ASSIGNMENT TARGET
+#: needs no such hedge: `X := ...` and `Inc(X)` require a real variable,
+#: so a target that no scope declares is a bug with no second reading.
+#: Reading an undeclared name is the other rule's job.
+#:
+#: MEASURED: a merge brought in the uses of ten locals without their
+#: declarations, across two units. The existing rule matched none of them.
+def _scan_undeclared_assignment(targets: list) -> list:
+    """Assignment targets that no enclosing scope declares."""
+    findings: list[Finding] = []
+    loaded = []
+    shared = set()
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            lines = _blank_block_comments(f.read().split("\n"))
+        try:
+            rel = os.path.relpath(path, SCRIPT_DIR)
+        except ValueError:
+            rel = os.path.abspath(path)
+        loaded.append((rel, lines))
+        shared |= _file_level_names(lines)
+
+    assign = re.compile(r"^\s*([A-Za-z_]\w*)\s*:=")
+    incdec = re.compile(r"\b(?:Inc|Dec)\s*\(\s*([A-Za-z_]\w*)", re.IGNORECASE)
+
+    for rel, lines in loaded:
+        for routine, start, begin, stop in _routine_spans(lines):
+            known = (shared | _BUILTIN_NAMES
+                     | _declared_names(lines, start, begin))
+            seen = set()
+            for k in range(begin, stop):
+                line = strip_comments_and_strings(lines[k])
+                for pattern in (assign, incdec):
+                    for m in pattern.finditer(line):
+                        name = m.group(1)
+                        low = name.lower()
+                        if low in known or low in seen:
+                            continue
+                        # `A.B := x` writes a property, not a local.
+                        if m.start(1) > 0 and line[m.start(1) - 1] == ".":
+                            continue
+                        seen.add(low)
+                        findings.append(Finding(
+                            file=rel, line=k + 1, col=m.start(1) + 1,
+                            rule="undeclared-assignment", severity="error",
+                            snippet=lines[k].rstrip()
+                            + "   [%s never declares %s]" % (routine, name),
+                            memory="altium_wrong_api_identifier_family.md",
+                        ))
     return findings
 
 
