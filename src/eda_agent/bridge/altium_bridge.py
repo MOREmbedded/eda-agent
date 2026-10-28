@@ -1541,9 +1541,27 @@ class AltiumBridge:
         except (AltiumTimeoutError, AltiumCommandError, Exception):
             return False
 
-    def ping_with_version(self) -> Optional[dict[str, Any]]:
+    def ping_with_version(
+        self, require_process: bool = True
+    ) -> Optional[dict[str, Any]]:
+        """Round-trip a ping. The response dict, or None on any failure.
+
+        With ``require_process`` False the ping skips the process-table
+        gate and asks the application directly. Only the doctor passes
+        it: "the process table cannot see a running Altium" is one of
+        the faults it exists to report, and a gate that refuses on that
+        same table's word would make the report agree with the fault
+        instead of catching it. Everywhere else the gate stays, because
+        it turns a certain IPC timeout into an immediate answer.
+        """
         try:
-            result = self.send_command("application.ping", timeout=3.0)
+            if require_process:
+                result = self.send_command("application.ping", timeout=3.0)
+            else:
+                # _execute_command publishes through _publish_request,
+                # which prepares the workspace itself. No keepalive: one
+                # diagnostic round trip should not leave a thread behind.
+                result = self._execute_command("application.ping", {}, 3.0)
         except (AltiumTimeoutError, AltiumCommandError, Exception):
             return None
         if isinstance(result, dict):

@@ -185,6 +185,38 @@ registered, 990 across all backends. `SCRIPT_VERSION` is `2026.10.26.4`.
 
 ### Fixed
 
+- **`eda-agent doctor` no longer reports a running Altium as absent.**
+  The check printed `[FAIL] altium process running, no process named
+  x2.exe found` with `fix: Start Altium Designer.` while Altium
+  Designer 26.11.1.5 was on screen and answering bridge commands, and
+  a FAIL there returned from `run_doctor_checks` before the bridge was
+  ever pinged. So the weakest signal in the file set the exit code and
+  silenced every better one, including the round trip that would have
+  contradicted it.
+
+  The doctor ran its own `psutil.process_iter` loop over one hardcoded
+  name, while the bridge gates every command on `AltiumProcessManager`,
+  which tries a Toolhelp snapshot first. On the reported machine those
+  two disagreed: the bridge found Altium, and the doctor, `tasklist`,
+  `Get-Process x2` and a scan over window titles all came back empty,
+  so the executable was not merely renamed. The loop also looked only
+  for `X2.exe`, never `DXP.exe`.
+
+  The doctor now asks the same scan the command gate uses, and that
+  scan no longer gates anything. A bridge round trip, or an
+  `activity.log` entry under five minutes old, outranks it. With
+  either, the check is a minor WARN that says the process table cannot
+  see a running Altium and names the usual reasons - elevation, a
+  different session or integrity level, restricted enumeration -
+  instead of prescribing a fix for a state that is not the fault.
+  `Start Altium Designer.` survives only where the scan finds nothing
+  and nothing answers.
+
+  `ping_with_version(require_process=False)` makes this reachable:
+  without it the bridge's own gate reads the same process table the
+  doctor cannot trust, refuses the ping before any IPC, and the run
+  reports a healthy Altium as unresponsive. Only the doctor passes it.
+
 - `pcb_place_components` documents that **`layer` sets the layer
   without mirroring**. A part placed with `layer="BottomLayer"` comes
   out with its pads on bottom copper in TOP-SIDE geometry, so its two
