@@ -38,6 +38,7 @@ import re
 import sys
 import threading
 import time
+
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,10 @@ from eda_agent.atomicfile import replace_with_retry
 from flask import Flask, Response, jsonify, send_from_directory, stream_with_context
 
 from eda_agent.config import get_config
+# One rule for what names a call, shared with the perf report rather
+# than spelled a second time here. perf.py parses text and imports
+# nothing from the package, so this costs the dashboard nothing.
+from eda_agent.diag.perf import request_key
 
 logger = logging.getLogger("eda_agent.web.dashboard")
 
@@ -240,7 +245,13 @@ _ERR_RE = re.compile(
     r'"message"\s*:\s*"(?P<msg>(?:[^"\\]|\\.)*)"'
 )
 
-_ID_RE = re.compile(r'"id"\s*:\s*"(?P<id>[0-9a-f]{8,32})"')
+#: The envelope id, which Pascal writes at the head of every payload.
+#: Hex only until now, so it stopped at the first dash of
+#: ``<tag>-<sequence>-<random>``, never met its closing quote and
+#: matched nothing at all: every row logged since request ids gained a
+#: session tag arrived here with no id, and the drawer had nothing to
+#: say but "no request id captured".
+_ID_RE = re.compile(r'"id"\s*:\s*"(?P<id>[0-9a-f][0-9a-f-]*)"')
 
 
 @dataclass
@@ -250,7 +261,8 @@ class LogEntry:
     command: str
     tag: str               # OK | WARN | SLOW | ERR  | EXCEPTION | EMPTY
     response_bytes: int
-    request_id: str        # extracted from payload's "id" or "" if not found
+    request_id: str        # payload's "id", cut down to what names one
+                           # call, or "" if the payload held none
     error_code: str        # extracted from payload's error.code, "" if none
     error_msg: str         # extracted from payload's error.message, "" if none
     payload_prefix: str    # full prefix as it appeared on the line
@@ -332,7 +344,7 @@ def _parse_line(line: str) -> Optional[LogEntry | SessionEvent]:
         command=cmd,
         tag=m["tag"].strip(),
         response_bytes=int(m["bytes"]),
-        request_id=(id_m.group("id")[:8] if id_m else ""),
+        request_id=(request_key(id_m.group("id")) if id_m else ""),
         error_code=(err_m.group("code") if err_m else ""),
         error_msg=(err_m.group("msg") if err_m else ""),
         payload_prefix=payload[:200],
@@ -1845,11 +1857,18 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         ``Copy(ResponseContent, 1, 200)``). For richer inspection we also
         peek at bridge_trace.log around the request_id to confirm the
         full IPC story (POLL_SEEN / POLL_MATCH / extensions / timing).
+
+        ``rid`` is the id this dashboard handed out with the entry,
+        which is the token bridge_trace.log writes, so both the lookup
+        and the peek land on one call. Cutting it to 8 characters
+        first, as this did, left the session tag: the lookup then
+        matched nothing, and the peek would have shown a whole
+        session's lines under one call's heading.
         """
         entry = None
         with tailer._lock:
             for e in tailer.entries:
-                if e.request_id == rid[:8]:
+                if e.request_id == rid:
                     entry = e
                     break
         if entry is None:
@@ -1859,10 +1878,9 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         try:
             trace_path = workspace_dir / "bridge_trace.log"
             if trace_path.exists():
-                short = rid[:8]
                 with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        if short in line:
+                        if rid in line:
                             trace_lines.append(line.rstrip())
                             if len(trace_lines) >= 40:
                                 break
