@@ -122,7 +122,7 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
     from eda_agent.cli import (get_bundled_scripts_path,
                                get_default_scripts_dest,
                                get_registered_scripts_dirs)
-    from eda_agent.diag.health import _script_version
+    from eda_agent.diag.health import _pas_differences, _script_version
 
     root = _repo_root()
     state: dict[str, Any] = {
@@ -176,6 +176,17 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
         else None
     state["deployed_version"] = _script_version(deployed) \
         if deployed.exists() else None
+    # Whether the two copies hold the same CODE, which the version
+    # does not say: it is bumped by hand, so the case that strands an
+    # old script inside Altium is exactly the one where an edit did
+    # not bump it. health.py has compared by content since it was
+    # written, for that reason, while the deploy decision read the
+    # version alone: `update` then reported "matches this tree" off
+    # two identical strings and copied nothing.
+    from_scripts = Path(state.get("source_scripts") or bundled.parent)
+    state["scripts_differ"] = (
+        _pas_differences(from_scripts, deployed.parent)
+        if deployed.exists() else [])
 
     from eda_agent import __version__
     state["package_version"] = __version__
@@ -477,6 +488,17 @@ def plan(state: dict[str, Any], *, pull: bool = False,
                if source_dir and state.get("source_ok")
                else state.get("bundled_version"))
     deployed = state.get("deployed_version")
+    # Named once: the version-mismatch branch and the
+    # same-version-different-code branch point at the same fix, and
+    # install-scripts always copies from THIS tree, so advising it
+    # after --from would deploy the wrong files and look like the
+    # update had failed.
+    from_folder = bool(source_dir and state.get("source_ok"))
+    where = (f"{state['source_dir']}'s" if from_folder
+             else "this tree's")
+    script_fix = (f'Re-run without --check: `python -m eda_agent update '
+                  f'--from "{state["source_dir"]}"`.' if from_folder else
+                  "Run `python -m eda_agent install-scripts --force`.")
     if source_dir and state.get("source_ok") and not bundled:
         steps.append(Step(
             "altium scripts", "unknown",
@@ -507,25 +529,28 @@ def plan(state: dict[str, Any], *, pull: bool = False,
         steps.append(Step(
             "altium scripts", "done",
             f"redeployed to {bundled}"))
+    elif deployed == bundled and state.get("scripts_differ"):
+        # Both copies claim the same build and hold different code: what
+        # a forgotten version bump looks like from outside. Altium goes
+        # on running the old file, and a version check cannot say so.
+        differing = state["scripts_differ"]
+        shown = ", ".join(differing[:3])
+        if len(differing) > 3:
+            shown += f" and {len(differing) - 3} more"
+        steps.append(Step(
+            "altium scripts", "action",
+            f"deployed {deployed} carries different code from {where} "
+            f"copy ({shown})",
+            action=script_fix))
     elif deployed == bundled:
         steps.append(Step(
             "altium scripts", "current",
             f"deployed {deployed} matches this tree"))
     else:
-        # Name the right source, and suggest the command that copies
-        # from it. install-scripts always copies from THIS tree, so
-        # advising it after --from would deploy the wrong files and
-        # look like the update had failed.
-        from_folder = bool(source_dir and state.get("source_ok"))
-        where = (f"{state['source_dir']}'s" if from_folder
-                 else "this tree's")
-        fix = (f'Re-run without --check: `python -m eda_agent update '
-               f'--from "{state["source_dir"]}"`.' if from_folder else
-               "Run `python -m eda_agent install-scripts --force`.")
         steps.append(Step(
             "altium scripts", "action",
             f"deployed {deployed} differs from {where} {bundled}",
-            action=fix))
+            action=script_fix))
 
     # --- which folder Altium reads ------------------------------------
     # Everything above compared against deployed_scripts. That is only
@@ -659,8 +684,12 @@ def run_update(*, pull: bool = False, fetch: bool = False,
     want_version = (state.get("source_script_version")
                     if source_dir and state.get("source_ok")
                     else state.get("bundled_version"))
+    # Either half is reason enough to copy: a bumped version with the
+    # same code is harmless, a changed file under an unchanged
+    # version is the stale deploy that costs a session to diagnose.
     needs_deploy = (want_version
-                    and state.get("deployed_version") != want_version)
+                    and (state.get("deployed_version") != want_version
+                         or bool(state.get("scripts_differ"))))
     if (needs_deploy or force_scripts) and not check_only:
         import contextlib
         import io

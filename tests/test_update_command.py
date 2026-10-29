@@ -555,3 +555,108 @@ def test_checking_another_remote_does_not_import_its_tags():
     assert "--no-tags" in source, (
         f"the named-remote fetch does not pass --no-tags, so it will "
         f"import that remote's release tags:\n  {fetch_line.strip()}")
+
+
+# ---- a script edited without a version bump ----------------------------
+#
+# SCRIPT_VERSION is bumped by hand, so the deploy that strands an old
+# file inside Altium is exactly the one where an edit did not bump it.
+# Both copies then claim the same build and hold different code, and
+# update's deploy ran off the version alone: it reported "matches this
+# tree" and copied nothing, while doctor, which compares content, went
+# on warning that the deploy was stale. One of them had to be wrong.
+
+
+def test_an_edited_script_with_the_same_version_is_not_current():
+    """The quiet stale deploy: equal versions, different code."""
+    step = _by_name(plan(_state(scripts_differ=["StatusForm.pas"])))["altium scripts"]
+    assert step.status == "action"
+    assert step.needs_human
+
+
+def test_the_step_names_the_files_that_differ():
+    """"Something is stale" sends you reading every file; naming them
+    is the difference between a fix and a hunt."""
+    step = _by_name(plan(_state(
+        scripts_differ=["StatusForm.pas", "Altium_MCP.pas"])))["altium scripts"]
+    assert "StatusForm.pas" in step.message and "Altium_MCP.pas" in step.message
+
+
+def test_a_long_list_of_differing_files_is_summarised():
+    step = _by_name(plan(_state(
+        scripts_differ=["a.pas", "b.pas", "c.pas", "d.pas", "e.pas"])))["altium scripts"]
+    assert "and 2 more" in step.message
+
+
+def test_the_fix_offered_is_the_one_that_copies_the_files():
+    step = _by_name(plan(_state(scripts_differ=["StatusForm.pas"])))["altium scripts"]
+    assert "install-scripts --force" in step.action
+
+
+def test_after_from_the_fix_is_not_install_scripts():
+    """install-scripts copies from THIS tree, so advising it after
+    --from deploys the wrong files and looks like a failed update."""
+    step = _by_name(plan(
+        _state(scripts_differ=["StatusForm.pas"],
+               source_dir="/other", source_ok=True,
+               source_script_version="2026.10.18.1"),
+        source_dir="/other"))["altium scripts"]
+    assert "install-scripts" not in step.action
+    assert "--from" in step.action
+
+
+def test_identical_files_with_equal_versions_are_still_current():
+    """The guard on the other side: this must not start reporting work
+    to do on a machine that is up to date."""
+    step = _by_name(plan(_state(scripts_differ=[])))["altium scripts"]
+    assert step.status == "current"
+    assert not step.needs_human
+
+
+def test_a_redeploy_just_made_is_reported_as_done_not_as_drift():
+    """run_update re-reads the state after copying, so by then the
+    files match; before that the step must not claim drift either."""
+    step = _by_name(plan(_state(scripts_differ=[]),
+                         scripts_deployed=True))["altium scripts"]
+    assert step.status == "done"
+
+
+def test_gather_sees_an_edit_that_never_bumped_the_version(tmp_path, monkeypatch):
+    """End to end of the read: two copies both claiming 2026.10.28.56,
+    one of them edited. No comparison of version strings can tell them
+    apart, which is why this is read from the files."""
+    bundled, deployed = tmp_path / "bundled", tmp_path / "deployed"
+    for folder in (bundled, deployed):
+        folder.mkdir()
+        (folder / "Main.pas").write_text(
+            "    SCRIPT_VERSION = '2026.10.28.56';\n", encoding="utf-8")
+    (bundled / "StatusForm.pas").write_text(
+        "Begin IdShort := Copy(RequestId, 1, 17); End;\n", encoding="utf-8")
+    (deployed / "StatusForm.pas").write_text(
+        "Begin IdShort := Copy(RequestId, 1, 8); End;\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "_repo_root", lambda: None)
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: bundled)
+    monkeypatch.setattr(cli, "get_default_scripts_dest", lambda: deployed)
+    monkeypatch.setattr(cli, "get_registered_scripts_dirs", lambda: [])
+
+    state = mod.gather_state()
+    assert state["bundled_version"] == state["deployed_version"]
+    assert state["scripts_differ"] == ["StatusForm.pas"]
+
+
+def test_gather_reports_no_drift_when_the_copies_agree(tmp_path, monkeypatch):
+    bundled, deployed = tmp_path / "bundled", tmp_path / "deployed"
+    for folder in (bundled, deployed):
+        folder.mkdir()
+        (folder / "Main.pas").write_text(
+            "    SCRIPT_VERSION = '2026.10.28.56';\n", encoding="utf-8")
+        (folder / "StatusForm.pas").write_text(
+            "Begin IdShort := Copy(RequestId, 1, 17); End;\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "_repo_root", lambda: None)
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: bundled)
+    monkeypatch.setattr(cli, "get_default_scripts_dest", lambda: deployed)
+    monkeypatch.setattr(cli, "get_registered_scripts_dirs", lambda: [])
+
+    assert mod.gather_state()["scripts_differ"] == []
