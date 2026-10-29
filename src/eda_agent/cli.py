@@ -368,6 +368,56 @@ def _restart(command: list, frames_pid: int) -> int:
             pass
 
 
+def _apply_scripts_only(*, check_only: bool, assume_yes: bool,
+                        relaunch: bool) -> int:
+    """Deploy the Altium scripts when only THEY are behind.
+
+    A current clone does not mean a current install. What Altium loads
+    is a separate copy, and the clone arrives at new code by routes
+    other than a pull -- a merge, a branch switch, a local commit --
+    each of which leaves nothing to pull and the deployed copy stale.
+    Gating the whole apply on "is the clone behind" meant `update
+    --yes` printed "eda-agent is up to date" and copied nothing, while
+    the report half of the same verb said the deploy was stale. Worst
+    of all in the obvious order: pull, then --yes, and the scripts were
+    never copied at all, because the pull had just made the clone
+    current.
+    """
+    from .diag.update import gather_state
+
+    differing = gather_state().get("scripts_differ") or []
+    if not differing:
+        print("eda-agent is up to date.")
+        return 0
+    shown = ", ".join(differing[:4])
+    if len(differing) > 4:
+        shown += f" and {len(differing) - 4} more"
+    print(f"eda-agent is up to date, but Altium's copy of the scripts is "
+          f"not: {shown}.")
+    if check_only:
+        return 0
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print("Re-run with --yes to deploy them.", file=sys.stderr)
+            return 1
+        try:
+            reply = input("Deploy them now? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Not deployed.")
+            return 1
+    if cmd_install_scripts(dest=None, force=True) != 0:
+        print("Deploying the scripts failed.", file=sys.stderr)
+        return 1
+    print(f"Deployed the scripts to {get_default_scripts_dest()}.")
+    # Altium compiles the script project when the loop starts, so a copy
+    # it never reloads changes nothing a caller can see.
+    if relaunch and sys.platform == "win32":
+        cmd_relaunch(restart=True)
+    return 0
+
+
 def cmd_update_apply(check_only: bool = False, assume_yes: bool = False,
                      relaunch: bool = True) -> int:
     """Show what a newer eda-agent brings, and install it once agreed.
@@ -385,8 +435,11 @@ def cmd_update_apply(check_only: bool = False, assume_yes: bool = False,
         print(info.get("how") or info.get("error") or "Could not check for an update.")
         return 1
     if not info.get("update_available"):
-        print("eda-agent is up to date.")
-        return 0
+        # Not "nothing to do": the scripts are their own copy, and this
+        # is the branch the obvious order lands in.
+        return _apply_scripts_only(check_only=check_only,
+                                   assume_yes=assume_yes,
+                                   relaunch=relaunch)
     print(f"{info['behind']} new commit(s) on {updates.REMOTE}/{updates.BRANCH}:")
     for title in info.get("new_commits", []):
         print(f"  - {title}")

@@ -206,3 +206,110 @@ def test_the_cli_shows_and_asks(clones, capsys, monkeypatch):
     assert (user / "README.md").exists() is False
     assert cli.cmd_update_apply(assume_yes=True) == 0
     assert (user / "README.md").read_text() == "hi"
+
+
+# ---- a current clone with stale scripts --------------------------------
+#
+# The apply half opened by asking whether the CLONE was behind, and
+# returned "eda-agent is up to date" when it was not. The scripts Altium
+# loads are a separate copy, so that answered the wrong question: the
+# clone reaches new code by a merge, a branch switch or a local commit
+# as well as by a pull, and every one of those leaves nothing to pull
+# and the deployed copy stale. The obvious order was the worst case --
+# `git pull`, then `update --yes` -- because the pull had just made the
+# clone current, so the scripts were never copied at all.
+
+
+def _no_update_available(monkeypatch, differing):
+    from eda_agent.diag import update as diag_update
+
+    monkeypatch.setattr(updates, "check",
+                        lambda force=True: {"update_available": False})
+    monkeypatch.setattr(diag_update, "gather_state",
+                        lambda **kw: {"scripts_differ": list(differing)})
+
+
+def test_a_current_clone_with_stale_scripts_still_deploys(monkeypatch, capsys):
+    done = []
+    _no_update_available(monkeypatch, ["StatusForm.pas", "Altium_MCP.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: done.append(force) or 0)
+    monkeypatch.setattr(cli, "cmd_relaunch", lambda **kw: 0)
+
+    assert cli.cmd_update_apply(assume_yes=True) == 0
+    assert done == [True], "the scripts were not copied"
+    assert "StatusForm.pas" in capsys.readouterr().out
+
+
+def test_nothing_stale_anywhere_copies_nothing(monkeypatch, capsys):
+    """The guard on the other side: this must not start redeploying on
+    every run of a machine that is up to date."""
+    done = []
+    _no_update_available(monkeypatch, [])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: done.append(force) or 0)
+
+    assert cli.cmd_update_apply(assume_yes=True) == 0
+    assert done == []
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_check_only_names_the_stale_scripts_without_copying(monkeypatch, capsys):
+    done = []
+    _no_update_available(monkeypatch, ["StatusForm.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: done.append(force) or 0)
+
+    assert cli.cmd_update_apply(check_only=True) == 0
+    assert done == []
+    assert "StatusForm.pas" in capsys.readouterr().out
+
+
+def test_without_yes_and_without_a_terminal_it_refuses_rather_than_copies(
+        monkeypatch, capsys):
+    """Copying under a running Altium is a real action, so it needs the
+    same consent the package update needs."""
+    done = []
+    _no_update_available(monkeypatch, ["StatusForm.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: done.append(force) or 0)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    assert cli.cmd_update_apply() == 1
+    assert done == []
+
+
+def test_a_failed_copy_is_reported_rather_than_called_a_deploy(
+        monkeypatch, capsys):
+    _no_update_available(monkeypatch, ["StatusForm.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: 1)
+    monkeypatch.setattr(cli, "cmd_relaunch", lambda **kw: 0)
+
+    assert cli.cmd_update_apply(assume_yes=True) == 1
+
+
+def test_the_loop_is_restarted_so_altium_compiles_what_was_copied(monkeypatch):
+    """A copy Altium never reloads changes nothing a caller can see."""
+    done = []
+    _no_update_available(monkeypatch, ["StatusForm.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: 0)
+    monkeypatch.setattr(cli, "cmd_relaunch",
+                        lambda **kw: done.append(kw) or 0)
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+
+    assert cli.cmd_update_apply(assume_yes=True) == 0
+    assert done and done[0].get("restart") is True
+
+
+def test_no_relaunch_leaves_the_running_loop_alone(monkeypatch):
+    done = []
+    _no_update_available(monkeypatch, ["StatusForm.pas"])
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda dest=None, force=False: 0)
+    monkeypatch.setattr(cli, "cmd_relaunch", lambda **kw: done.append(kw) or 0)
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+
+    assert cli.cmd_update_apply(assume_yes=True, relaunch=False) == 0
+    assert done == []
