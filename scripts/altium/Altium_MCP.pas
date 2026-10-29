@@ -86089,8 +86089,8 @@ End;
 
 { Visible severity tag for a log row. ERR has the loudest visual weight.   }
 { Public entry point called from Dispatcher.ProcessSingleRequest after every }
-{ command. RequestId is the 32-char hex; we show first 8 in the log so the   }
-{ user can grep bridge_trace.log for the exact call.                         }
+{ command. The row shows the part of RequestId that names ONE call, which is }
+{ what bridge_trace.log writes, so grepping that log for it finds the call.  }
 Procedure AppendLogLine(Command : String; DurationMs : Cardinal; IsError : Boolean;
                         RequestId : String; ErrorDetail : String);
 Var
@@ -86103,7 +86103,16 @@ Begin
     { raw duration/error rather than by string-searching a tag prefix.        }
     If OnlySlowFlag And (Not IsError) And (DurationMs < 100) Then Exit;
 
-    IdShort := Copy(RequestId, 1, 8);
+    { An id is <tag>-<sequence>-<random>, and the tag is one value for a  }
+    { whole session, so the leading 8 characters named the SESSION: every }
+    { row of a session carried the same id, and grepping bridge_trace.log }
+    { for it returned every call the session had made. Tag plus sequence  }
+    { is 17 characters and names one call. An id from before session tags }
+    { has no dash, and its leading 8 did name one call, so it is kept.    }
+    If Copy(RequestId, 9, 1) = '-' Then
+        IdShort := Copy(RequestId, 1, 17)
+    Else
+        IdShort := Copy(RequestId, 1, 8);
     If IdShort = '' Then IdShort := '--------';
 
     Line := PadLeft(IntToStr(DurationMs), 5) + ' ms  '
