@@ -214,9 +214,8 @@ _ENGINE_PARAGRAPHS = {
 _UI_AUTOMATION_ALTIUM = (
     "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
     "press buttons, pick menus and type into Altium's dialogs\n"
-    "(app_click_menu, app_run_ui_command, app_press_dialog_button,\n"
-    "app_drive_dialogs, app_set_dialog_control, app_canvas and the rest)\n"
-    "come second to an API tool. When an API tool seems to fail or be\n"
+    "(app_menu, app_ui, app_press_dialog_button, app_drive_dialogs and\n"
+    "the rest) come second to an API tool. When an API tool seems to fail or be\n"
     "missing, the cause has usually been a wrong argument or a tool that\n"
     "was not found, and driving a dialog instead has ended with Altium\n"
     "crashed, so first {reach} with what you are trying to do. When there\n"
@@ -264,6 +263,19 @@ def build_server_instructions(
     ui = _UI_AUTOMATION_PARAGRAPHS.get(
         (backend or DEFAULT_BACKEND).strip().lower(), _UI_AUTOMATION_ALTIUM)
     ui = ui.replace("{reach}", reach)
+    altium = (backend or DEFAULT_BACKEND).strip().lower() in ("altium", "both")
+    items = (
+        "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
+        "arguments, one dict per item, with arguments given beside it\n"
+        "applying to all. Twenty arcs, ten pin renames or a column of net\n"
+        + ("labels are one call and one undo step in Altium, not twenty.\n"
+           "The reply gives each item's result in order and says which\n"
+           "failed; items run before a failure stay applied.\n"
+           if altium else
+           "labels are one call, not twenty. The reply lists each item's\n"
+           "result in order.\n")
+        + "A single call works as it always has.\n"
+        "\n")
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -282,7 +294,7 @@ def build_server_instructions(
         "category.\n"
         "\n"
         + ui
-        + engine +
+        + engine + items +
         "Coordinates are in mils throughout, on every backend.\n"
         "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
@@ -848,8 +860,6 @@ def main() -> int:
         help="Fast offline preconditions (workspace, pointer file, scripts)",
     )
 
-    subparsers.add_parser("a365-login", help="Authorize Nexar and store the token for Altium 365 read tools")
-    subparsers.add_parser("a365-logout", help="Remove the stored Nexar token")
 
     # doctor -- full preflight, talks to Altium
     doctor_p = subparsers.add_parser(
@@ -986,7 +996,7 @@ def main() -> int:
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
-    # scripts-path/install-scripts and a365-login/a365-logout -- this
+    # scripts-path/install-scripts and altium365-login/altium365-logout -- this
     # codebase has no nested-subcommand precedent to follow instead.
     profile_init_p = subparsers.add_parser(
         "profile-init",
@@ -1191,6 +1201,12 @@ def main() -> int:
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
 
+    # altium365-logout -- forget the saved Nexar login
+    subparsers.add_parser(
+        "altium365-logout",
+        help="Delete the saved Nexar login, so the next altium365_ call signs in again.",
+    )
+
     # sdk-reach -- how much of Altium's SDK the property tools reach
     sdk_p = subparsers.add_parser(
         "sdk-reach",
@@ -1336,6 +1352,13 @@ def main() -> int:
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
 
+    if (args.command is None or args.command == "serve") \
+            and os.environ.get("EDA_AGENT_RELOAD") == "1":
+        # Development: a proxy runs the server as a child and restarts it
+        # when the source changes, so the client never reconnects.
+        from .devproxy import main as reload_main
+        return reload_main(sys.argv[1:])
+
     if args.command is None or args.command == "serve":
         # Honour the flag whether it was given at the top level
         # (`eda-agent --no-dashboard`) or on the serve subcommand
@@ -1350,24 +1373,6 @@ def main() -> int:
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
         return cli.cmd_install_scripts(dest=args.dest, force=args.force)
-    if args.command in ("a365-login", "a365-logout"):
-        from .engineering.a365 import TokenStore, interactive_login
-        from .tools.engineering import a365_config
-        try:
-            if args.command == "a365-login":
-                cfg = a365_config()
-                store = TokenStore(cfg.token_store)
-                store.save(interactive_login(
-                    cfg, os.environ.get("EDA_AGENT_NEXAR_CLIENT_SECRET")))
-                print("Altium 365 token stored for the current Windows user")
-            else:
-                store = TokenStore(Path.home() / "EDA Agent" / "a365_token.bin")
-                store.clear()
-                print("Altium 365 token removed")
-            return 0
-        except Exception as exc:
-            print(f"Altium 365 authorization failed: {exc}", file=sys.stderr)
-            return 1
     if args.command == "easyeda-extension":
         return cli.cmd_easyeda_extension(args.action, out=args.out)
     if args.command == "relaunch":
@@ -1420,6 +1425,17 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
+    if args.command == "altium365-logout":
+        # The login is saved encrypted for this Windows user; removing the
+        # file is the whole of signing out, since nothing else holds it.
+        from .altium365 import read_environment
+        saved = read_environment().saved_login
+        if saved.exists():
+            saved.unlink()
+            print(f"Removed the saved Nexar login ({saved})")
+        else:
+            print(f"No saved Nexar login at {saved}")
+        return 0
     if args.command == "sdk-reach":
         import json
         from .diag import sdk_reach

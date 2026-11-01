@@ -28,7 +28,7 @@ unit suite starts, stops, focuses, or edits a real Altium instance.
    then execute one reversible property change with a deliberately failing
    validation. Verify checkpoint restore and document reload.
 5. **Library:** in a disposable SchLib, generate a two-part component with
-   `lib_create_multipart_symbol`; inspect both parts and shared power pins.
+   `lib_create_symbol_in_parts` (with `shared_pins` for supply pins); inspect both parts and shared power pins.
 6. **PCB planning:** call `pcb_plan_bga_fanout` and `pcb_plan_return_vias` with
    defaults. Review geometry before repeating with `apply=true, confirm=true`.
    Run clearance, unrouted, return-path, and differential-pair audits afterward.

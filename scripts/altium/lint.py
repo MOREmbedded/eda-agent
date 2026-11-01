@@ -1132,6 +1132,41 @@ def _scan_call_order_across_files(targets: list) -> list:
     return findings
 
 
+def _scan_duplicate_definitions(targets: list) -> list:
+    """A routine defined twice in the concatenation.
+
+    The script compiles with both, and every call goes to the later one.
+    A new Proj_GenerateOutput added beside the old one took over its
+    command that way: the old export answered with the new routine's
+    reply and nothing reported an error.
+    """
+    first: dict = {}
+    findings = []
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().split("\n")
+        rel = os.path.basename(path)
+        for i, raw in enumerate(lines, 1):
+            m = _DEF_RE.match(strip_comments_and_strings(raw))
+            if not m:
+                continue
+            key = m.group(1).lower()
+            if key in first:
+                where, at = first[key]
+                findings.append(Finding(
+                    file=rel, line=i, col=1,
+                    rule="duplicate-definition",
+                    severity="error",
+                    snippet=raw.rstrip() + f"   [also defined at {where}:{at}]",
+                    memory="bridge_same_command_name_two_handlers.md",
+                ))
+            else:
+                first[key] = (rel, i)
+    return findings
+
+
 def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int:
     """Lint every Pascal file. Returns the count of error-level findings."""
     targets = list(files) if files else [
@@ -1150,7 +1185,8 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
             else:
                 warns += 1
 
-    for f in _scan_call_order_across_files(targets):
+    for f in (_scan_call_order_across_files(targets)
+              + _scan_duplicate_definitions(targets)):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 

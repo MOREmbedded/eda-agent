@@ -26,82 +26,53 @@ has validated the wrong thing, thoroughly.
 ## The tools
 
 ```
-design_npi_gate     what this gate asks, and where it stands
-design_npi_record   answer one criterion, with evidence
-design_npi_status   which gate the programme is actually at
+design_phase_gate      what one stage asks, and where each check stands
+design_phase_answer    record the outcome of one check, with its source
+design_phase_standing  which stage the product is actually in
 ```
 
-### `design_npi_gate(phase, revision="", programme="default")`
+### `design_phase_gate(stage, revision="", product="default", with_reasons=True)`
 
-Returns every criterion of that gate with its current verdict, the
-tools that answer the automatic ones, and the criteria that need a
-person.
+Every check of one stage with its outcome so far. `stage` takes the ways
+people write it: `"EVT"`, `"design validation"`, `"proto"`. Each check
+carries `asks`, `done_when`, `answered_by` (`tools` or `people`) and, for
+the former, the `tools` that answer it, written the way they are called
+(a folded tool appears as its family call). `with_reasons=False` drops
+`why_now` once you have read it.
 
-It does **not** run the checks. That keeps three things true: it works
-with Altium closed, it never hides which evidence is fresh, and a
-client can see what it is about to spend thirty seconds on before it
-does. The driving loop is the client's, the same way
-`design_next_action` works.
+### `design_phase_answer(key, outcome, detail="", source="", revision="", product="default")`
 
-```
-design_npi_gate(phase="EVT", revision="A.2")
--> passed: false
-   blockers: [evt.prototype_holds, evt.impedance, evt.diffpairs, ...]
-   next_tools: [pcb_get_net_classes, design_synthesize_rules,
-                pcb_get_impedance_profiles, ...]
-   awaiting_attestation: [evt.test_results, evt.issue_list]
-```
+Records one outcome: `met`, `unmet`, `waived` or `open`. `key` is the
+check's key, such as `evt:return-paths`. Name in `source` what the outcome
+rests on: a tool's result, a report, a person.
 
-`next_tools` is for the blocking automatic checks only.
-`awaiting_attestation` is deliberately separate: those need a human,
-and telling a client to keep calling tools at them is how a loop spins.
+### `design_phase_standing(revision="", product="default")`
 
-### `design_npi_record(criterion_id, verdict, note, by, revision)`
-
-`verdict` is `pass`, `fail`, `waived` or `pending`. `note` should carry
-the evidence itself - the number measured, the violation count, the
-document reference - not just a restatement of the verdict.
-
-```
-design_npi_record(
-    criterion_id="proto.drc", verdict="pass", by="pcb_run_drc",
-    note="0 violations, 0 unrouted connections", revision="A.2")
-```
-
-The log is append-only. Recording again supersedes without erasing, so
-a waiver granted in March is still visible beside the one that replaced
-it.
-
-### `design_npi_status(revision="", programme="default")`
-
-The current phase is **the first gate that does not pass**, not the one
-anybody says the programme is in. A board whose feasibility gate never
-closed is at feasibility however much layout has been done, and saying
-so is the only useful thing this tool can do.
+The stage the product is in and what that stage still needs: the first
+stage that does not clear.
 
 ## Three rules that make the gate hard to pass by accident
 
-**Evidence expires.** Each criterion carries a `stale_after_days`;
-past it, a recorded pass reverts to pending. A DRC run from four months
-ago is not a check on this board. Facts about the programme rather than
-the board - a captured requirement, say - never expire.
+**An answer expires.** A check carries `good_for_days`; past it, a
+recorded answer stops counting and the review says why. A DRC run from
+four months ago is not a check on this board. The one fact about the
+product rather than the board, a closed specification, never expires.
 
-**Evidence belongs to a revision.** Pass `revision` and anything
-recorded against a different one stops counting, and the reply says
-which revision it came from. Silently reverting a recorded pass to
-pending is what makes a gate untrustworthy.
+**An answer belongs to a revision.** Pass `revision`, and anything
+recorded against a different one stops counting, with the reply naming
+the revision it came from rather than quietly reverting it.
 
 **A waiver needs a reason.** Waiving is a legitimate decision and it
-passes the gate. What it cannot be is a quiet skip, so a waiver with no
-note is refused: six months later an unexplained waiver and a forgotten
-check look identical.
+clears the check. What it cannot be is a quiet skip, so a waiver with no
+`detail` is refused: six months later an unexplained waiver and a
+forgotten check look identical.
 
-## What the criteria are
+## What the checks are
 
-42 criteria across the five gates, 29 of them answerable by tools this
+42 checks across the five stages, 29 of them answered by tools this
 server already has:
 
-| Gate | Criteria | Automatic |
+| Stage | Checks | Answered by tools |
 | --- | ---: | ---: |
 | Feasibility | 8 | 4 |
 | Prototype | 8 | 6 |
@@ -109,31 +80,28 @@ server already has:
 | DVT | 9 | 6 |
 | PVT | 8 | 6 |
 
-Each one records what it asks, what passing looks like, and **why it
-belongs to that gate rather than a later one** - which is the whole
-argument for the phase order. Call `design_npi_gate` to read them, or
-`include_rationale=false` once you have.
+Each one records what it asks, what counts as done, and **why it belongs
+to that stage rather than a later one**, which is the whole argument for
+the order. Pilot yield, EMC pre-scan results, enclosure sign-off and a
+bring-up plan are not things a server can know, and those checks say so.
 
-The split between automatic and manual is roughly half and half, and
-pretending otherwise would be the one failure mode that makes a gate
-worse than no gate. Pilot yield, EMC pre-scan results, enclosure
-sign-off and a bring-up plan are not things a server can know.
+A check that names a tool names one that exists: a test resolves every
+reference against the registered tools, folded family members included.
 
-A criterion that names a tool names one that exists: a test asserts
-every reference against the live tool registry. The first draft named
-nineteen plausible, consistently spelled, entirely invented tools.
+## Several products
 
-## Running several programmes
-
-`programme` keys the evidence log, so two boards in flight at once do
-not share one. Logs live at `<workspace>/npi/<programme>.jsonl`, one
-JSON object per line, in the same arrangement the design session
-journal uses.
+`product` keys the ledger, so two boards in flight do not share one.
+Ledgers live at `<workspace>/phase_gates/<product>.jsonl`, one JSON
+object per line.
 
 ## Extending it
 
-The criteria are data in `src/eda_agent/design/npi.py`. Adding one is a
-`Criterion(...)` entry with an id, a rationale, a pass condition, and
-either the tools that answer it or `kind=MANUAL`. The tests enforce
-that an automatic criterion names tools, a manual one does not, every
-id is unique and names its phase, and every tool reference resolves.
+The checks are data in `src/eda_agent/design/phase_gates.py`. Adding one
+is a `Check(...)` entry with a key that names its stage, the question it
+asks, why it is asked now, what counts as done, how long an answer stays
+good, and the tools that answer it if any.
+
+This fork had its own implementation of the same gates (`design_npi_*`,
+`src/eda_agent/design/npi.py`) until 2026-11-01. Upstream's was the same
+42 checks split the same way, rewritten, with expiry per check; it is
+kept because it is the one being developed. See CHANGELOG.

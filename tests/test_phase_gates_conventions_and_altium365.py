@@ -39,7 +39,9 @@ def tools():
 
 def test_every_tool_a_check_names_exists_here(tools):
     named = {t for check in phase_gates.CHECKS.values() for t in check.tools}
-    unknown = sorted(t for t in named if tools.get(t) is None)
+    # A member of a family tool counts; the reply names the family tool.
+    unknown = sorted(t for t in named
+                     if tools.get(t) is None and t not in tools.hidden)
     assert not unknown, f"checks name tools this server does not have: {unknown}"
     assert {c.stage for c in phase_gates.CHECKS.values()} == set(phase_gates.STAGES)
 

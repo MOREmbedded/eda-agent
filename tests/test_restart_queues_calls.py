@@ -186,7 +186,9 @@ def test_a_loop_that_is_not_running_does_not_leave_a_stop_file(tmp_path, monkeyp
 
 def test_every_call_is_traced_before_it_waits_for_the_worker():
     import inspect
-    src = inspect.getsource(ab.AltiumBridge.send_command_async)
+    # send_command_async hands a lone call to send_command_direct, which
+    # holds the wait; a bulk call gathers first (bridge/bulk.py).
+    src = inspect.getsource(ab.AltiumBridge.send_command_direct)
     call = src.index('f"CALL cmd={command}')
     assert call < src.index("run_in_executor")
 
@@ -268,3 +270,124 @@ def test_a_plain_relaunch_refuses_behind_a_dialog(tmp_path, monkeypatch, capsys)
     assert cli.cmd_relaunch(str(project), force=True) == 1
     assert not launched
     assert "Unsaved Changes" in capsys.readouterr().err
+
+
+def test_a_crashed_handler_is_stopped_first_and_its_progress_file_ignored(
+        tmp_path, monkeypatch, capsys):
+    """A handler that crashed leaves the script parked at a breakpoint and
+    its progress file on disk. Read as a command still running, that file
+    held the restart for the whole long wait before Run > Stop was sent."""
+    from eda_agent.config import configure
+    from eda_agent.ui import windows, dialog_report
+    import eda_agent.diag.doctor as doctor
+    import subprocess
+
+    configure(workspace_dir=tmp_path)
+    (tmp_path / "progress_dead.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli, "RESTART_IDLE_STOP_WAIT_S", 0.3)
+    monkeypatch.setattr(cli, "RESTART_STOP_WAIT_S", 30.0)
+    monkeypatch.setattr(windows, "available", lambda: True)
+    monkeypatch.setattr(dialog_report, "report", lambda pid: {"dialog_count": 0})
+    monkeypatch.setattr(windows, "visible_main_frames", lambda pid: [])
+    order = []
+
+    class _P:
+        def wait(self, timeout=None):
+            return 0
+
+    def popen(command, **kw):
+        order.append("stop" if "-REditScript:Stop" in command else "launch")
+        return _P()
+
+    pings = iter([None] + [{"pong": True, "script_version": "v"}] * 5)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(doctor, "_ping_altium", lambda: next(pings))
+    started = time.monotonic()
+    assert cli._restart(["X2.EXE", "-R..."], 4242) == 0
+    assert order == ["stop", "launch"]
+    assert time.monotonic() - started < 10, "waited out the dead handler's progress file"
+
+
+def _restart_rig(tmp_path, monkeypatch, screens, pings):
+    from eda_agent.config import configure
+    from eda_agent.bridge import script_crash
+    from eda_agent.ui import windows, dialog_report
+    import eda_agent.diag.doctor as doctor
+    import subprocess
+
+    configure(workspace_dir=tmp_path)
+    monkeypatch.setattr(cli, "RESTART_IDLE_STOP_WAIT_S", 0.3)
+    monkeypatch.setattr(cli, "RESTART_DIALOG_GIVE_UP_S", 0.5)
+    monkeypatch.setattr(windows, "available", lambda: True)
+    monkeypatch.setattr(windows, "visible_main_frames", lambda pid: [])
+    monkeypatch.setattr(dialog_report, "report", lambda pid: screens())
+    pressed = []
+    monkeypatch.setattr(script_crash, "_press_ok", lambda hwnd: pressed.append(hwnd) or "")
+
+    class _P:
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kw: _P())
+    monkeypatch.setattr(doctor, "_ping_altium", pings)
+    return pressed
+
+
+_ERROR_BOX = {"title": "Error", "kind": "error", "hwnd": 77, "message": [],
+              "ocr_text": ["Another script executing now"],
+              "buttons": [{"caption": "OK", "enabled": True}]}
+
+
+@pytestmark_win
+def test_an_error_box_in_the_way_of_the_new_loop_is_pressed_at_once(
+        tmp_path, monkeypatch, capsys):
+    """MEASURED 2026-10-30: the restart sat 80 s behind a box until a
+    person closed it."""
+    state = {"box": False, "pings": 0}
+
+    def screens():
+        if state["box"]:
+            return {"blocked": True, "dialog_count": 1, "dialogs": [dict(_ERROR_BOX)],
+                    "summary": "Error"}
+        return {"dialog_count": 0}
+
+    def pings():
+        state["pings"] += 1
+        if state["pings"] == 2:
+            state["box"] = True             # appears while the loop starts
+        if pressed:
+            state["box"] = False
+            return {"pong": True, "script_version": "v"}
+        return None
+
+    pressed = _restart_rig(tmp_path, monkeypatch, screens, pings)
+    started = time.monotonic()
+    assert cli._restart(["X2.EXE", "-R..."], 4242) == 0
+    assert pressed == [77]
+    assert time.monotonic() - started < 10
+    assert "Another script executing now" in capsys.readouterr().out
+
+
+@pytestmark_win
+def test_another_dialog_in_the_way_is_named_within_seconds(tmp_path, monkeypatch, capsys):
+    state = {"pings": 0}
+
+    def screens():
+        if state["pings"] >= 2:
+            return {"blocked": True, "dialog_count": 1, "summary": "Unsaved Changes",
+                    "dialogs": [{"title": "Unsaved Changes", "kind": "confirm",
+                                 "hwnd": 5, "buttons": [{"caption": "Save"},
+                                                        {"caption": "Discard"}]}]}
+        return {"dialog_count": 0}
+
+    def pings():
+        state["pings"] += 1
+        return None
+
+    pressed = _restart_rig(tmp_path, monkeypatch, screens, pings)
+    started = time.monotonic()
+    assert cli._restart(["X2.EXE", "-R..."], 4242) == 1
+    assert pressed == []
+    assert time.monotonic() - started < cli.RESTART_PING_WAIT_S / 2
+    assert "Unsaved Changes" in capsys.readouterr().err
+    assert not (tmp_path / ab.MAINTENANCE_FILE).exists()

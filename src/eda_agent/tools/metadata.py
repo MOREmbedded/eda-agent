@@ -133,19 +133,18 @@ _SIMULATOR_TOOLS = frozenset({
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
     "pcb_get_unrouted_nets", "pcb_get_vias", "pcb_move_components",
-    "pcb_place_diff_pair_vias",
-    "pcb_place_tracks", "pcb_place_via", "pcb_plan_bga_fanout",
-    "pcb_plan_return_vias", "pcb_rebuild_connectivity",
-    "pcb_route_diff_pair", "pcb_run_drc", "proj_add_document",
-    "proj_annotate", "proj_close", "proj_compile", "proj_create",
-    "proj_cross_probe", "proj_export_bom_html", "proj_export_netlist",
-    "proj_export_pdf", "proj_get_board_info", "proj_get_bom",
-    "proj_get_component_info", "proj_get_focused", "proj_get_nets",
-    "proj_get_parameters", "proj_get_stats", "proj_list_documents",
-    "proj_list_open", "proj_list_variants", "proj_open",
-    "proj_remove_document", "proj_run_output", "proj_save",
+    "pcb_place_diff_pair_vias", "pcb_place_tracks", "pcb_place_via",
+    "pcb_plan_bga_fanout", "pcb_plan_return_vias",
+    "pcb_rebuild_connectivity", "pcb_route_diff_pair", "pcb_run_drc",
+    "proj_add_document", "proj_annotate", "proj_close", "proj_compile",
+    "proj_create", "proj_cross_probe", "proj_export_bom_html",
+    "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
+    "proj_get_bom", "proj_get_component_info", "proj_get_focused",
+    "proj_get_nets", "proj_get_parameters", "proj_get_stats",
+    "proj_list_documents", "proj_list_open", "proj_list_variants",
+    "proj_open", "proj_remove_document", "proj_run_output", "proj_save",
     "proj_set_parameter", "proj_visual_cross_probe",
-    "sch_tidy_port_references"
+    "sch_place_comment", "sch_tidy_port_references"
 })
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
@@ -170,10 +169,7 @@ _OFFLINE_TOOLS = frozenset({
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
-    "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
-    "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
-    "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
-    "eng_a365_doctor", "eng_ltspice_run", "eng_ltspice_trace",
+    "eng_compare_live_ipc_footprint", "eng_ltspice_run", "eng_ltspice_trace",
     # Reads the live schematic (readiness + connectivity) before it can
     # emit anything, unlike the rest of the eng_ltspice_* family, which
     # parses text it was handed.
@@ -375,6 +371,8 @@ _CATEGORY_BY_NAME = {
     # Updates eda-agent itself, on every backend: about the tool surface,
     # like tool_catalog, rather than about any one EDA tool.
     "server_update": "meta",
+    # The family tool for the audits; its members keep the audit_ prefix.
+    "audit": "audit",
 }
 
 
@@ -598,8 +596,33 @@ def interaction_of(name: str, category: str | None = None) -> str:
     return SILENT
 
 
+def _fold_metadata(name: str) -> "dict[str, str] | None":
+    """A family tool takes its members' category and their most demanding
+    maturity and interaction, since any kind may be the one called."""
+    from .folds import FOLDS, built_members
+
+    if name not in FOLDS:
+        return None
+    members = list(built_members(name).values()) or list(FOLDS[name].members.values())
+    if not members:
+        return None
+    records = [tool_metadata(m) for m in members]
+    maturity_rank = {OFFLINE: 0, SIMULATOR: 1, LIVE_ONLY: 2}
+    interaction_rank = {READONLY: 0, SILENT: 1, PARTIAL: 2, MODAL: 3}
+    return {
+        "name": name,
+        "category": records[0]["category"],
+        "maturity": max((r["maturity"] for r in records), key=maturity_rank.get),
+        "interaction": max((r["interaction"] for r in records),
+                           key=interaction_rank.get),
+    }
+
+
 def tool_metadata(name: str) -> dict[str, str]:
     """Full metadata record for one tool name."""
+    folded = _fold_metadata(name)
+    if folded:
+        return folded
     category = category_of(name)
     return {
         "name": name,

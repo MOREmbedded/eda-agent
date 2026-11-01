@@ -317,10 +317,13 @@ class StageReview:
         return counts
 
     def tools_to_run(self) -> list[str]:
-        """Tools answering the checks that hold the stage, first use first."""
+        """Tools answering the checks that hold the stage, first use first,
+        each named by the advertised tool that runs it."""
+        from ..tools.folds import call_form
+
         seen: dict[str, None] = {}
         for line in self.holding():
-            seen.update(dict.fromkeys(line.check.tools))
+            seen.update(dict.fromkeys(call_form(t) for t in line.check.tools))
         return list(seen)
 
     def for_people(self) -> list[str]:

@@ -212,6 +212,9 @@ async def _change_simcfg(bridge, project_path: str, changes: dict) -> dict[str, 
         cfg = read_simcfg(simcfg) if Path(simcfg).exists() else new_simcfg()
         created = not Path(simcfg).exists()
 
+    from ..saving import refused, saving_off
+    if saving_off():
+        return refused(f"Changing the simulation settings writes {simcfg}.")
     try:
         write_simcfg(apply(cfg, changes), simcfg)
     except OSError as exc:

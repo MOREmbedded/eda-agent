@@ -26,10 +26,7 @@ def _tools():
         "eng_parse_ipc_footprint_name", "eng_validate_library",
         "eng_write_library_validation_report", "eng_eco_preview",
         "eng_validate_library_live", "eng_eco_preview_live",
-        "eng_a365_workspace_infos", "eng_a365_library_components_params",
-        "eng_a365_entity", "eng_a365_publish_model", "eng_a365_release_component",
-        "eng_a365_update_parameters",
-    )}
+        )}
 
 
 def test_ipc_result_can_be_audited_and_compared():
@@ -91,22 +88,6 @@ def test_live_geometry_uses_millimetres_to_micrometres():
          "w_mm": 0.65, "h_mm": 1.5}]})
     assert geometry["pads"][0] == {
         "name": "1", "x": -2540, "y": 1270, "w": 650, "h": 1500}
-
-
-def test_a365_requires_configuration_and_rejects_mutations(monkeypatch):
-    from eda_agent.engineering.a365 import assert_read_only
-    from eda_agent.engineering.errors import PermissionDenied
-
-    monkeypatch.delenv("EDA_AGENT_NEXAR_CLIENT_ID", raising=False)
-    registry = ToolRegistry()
-    register_engineering_tools(registry)
-    assert not registry.get("eng_a365_workspaces").fn()["ok"]
-    try:
-        assert_read_only("mutation { desReleaseComponent(input: {}) { id } }")
-    except PermissionDenied:
-        pass
-    else:
-        raise AssertionError("Nexar mutation reached a read-only query path")
 
 
 def test_pin_table_to_symbol_and_datasheet_footprint():

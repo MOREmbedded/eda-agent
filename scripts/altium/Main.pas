@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.56';
+    SCRIPT_VERSION = '2026.11.01.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -44,6 +44,7 @@ Const
     SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
+    SAVING_FILE = 'saving.json';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -115,6 +116,12 @@ Var
       flush app_save_all relies on. See SaveOneDocByDocRef. }
     SaveScope : String;
     CleanLeftAlone : Integer;
+    { The dashboard's Saving switch. False (saving allowed) unless the     }
+    { switch was turned off; kept in SAVING_FILE so it outlasts a restart. }
+    { SavesHeld and HeldFiles count what the current command did not write. }
+    SavingOff : Boolean;
+    SavesHeld : Integer;
+    HeldFiles : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
@@ -128,6 +135,29 @@ Var
     BoardFallbackPath : String;
     BoardFallbackFrom : String;
     BoardMissWhy : String;
+
+    { How many board edits are open, and how many of them were opened by  }
+    { a bulk call. Only the outermost PcbBeginEdit and PcbEndEdit reach   }
+    { Altium, so a bulk call is one edit however many items it runs. See  }
+    { PcbBeginEdit and RunBulk.                                           }
+    PcbEditDepth : Integer;
+
+    { The schematic and SchLib edits that are open, as '|' then one entry  }
+    { per edit, 'R' (it called Altium) or 'N' (nested inside one that did) }
+    { followed by the document path and '|'. While SchBulkHold is set, the }
+    { last edit a bulk item closes stays open as SchHeldDoc, so the next   }
+    { item on the same document joins it. See SchBeginEdit.               }
+    SchEditOpen : String;
+    SchBulkHold : Boolean;
+    SchHeld : Boolean;
+    SchHeldDoc : ISch_Document;
+    SchHeldPath : String;
+
+    { The symbol a lib_component scope names, and its part (0 = none     }
+    { asked for), for the walk that follows. Set by ApplyLibComponentScope }
+    { on every call, cleared per request by ProcessOne.                    }
+    LibScopeName : String;
+    LibScopePart : Integer;
 
     { Time slots between Claude sessions sharing this Altium. SlotSession  }
     { is the session tag whose slot is running, SlotStartTick when it      }
@@ -505,6 +535,159 @@ Begin
     Result := (Ext = '.SCHLIB') Or (Ext = '.PCBLIB');
 End;
 
+{..............................................................................}
+{ Open and close a board edit. Only the outermost pair calls Altium's         }
+{ PreProcess and PostProcess, so a bulk call that wraps its items in one pair }
+{ makes every item's own pair part of the same edit. A single call works as   }
+{ before: its pair is the outermost.                                          }
+{..............................................................................}
+
+Procedure PcbBeginEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth <= 0 Then
+    Begin
+        PcbEditDepth := 0;
+        PCBServer.PreProcess;
+    End;
+    PcbEditDepth := PcbEditDepth + 1;
+End;
+
+Procedure PcbEndEdit(Dummy : Integer);
+Begin
+    If PcbEditDepth > 0 Then PcbEditDepth := PcbEditDepth - 1;
+    If PcbEditDepth = 0 Then PCBServer.PostProcess;
+End;
+
+{..............................................................................}
+{ Open and close a schematic or SchLib edit. The schematic server takes the   }
+{ document, so the open edits are kept per document path: an edit on a        }
+{ document that already has one open is nested and does not reach Altium,    }
+{ one on another document does. During a bulk call the last edit an item      }
+{ closes is held open, and the next item on the same document joins it, so    }
+{ the whole call is one undo step per document. RunBulk closes what is held.  }
+{..............................................................................}
+
+Function SchDocPath(Doc : ISch_Document) : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    Try Result := Doc.DocumentName; Except End;
+End;
+
+Procedure SchReleaseHeld(Dummy : Integer);
+Begin
+    If Not SchHeld Then Exit;
+    SchHeld := False;
+    Try SchServer.ProcessControl.PostProcess(SchHeldDoc, 'Edit'); Except End;
+    SchHeldDoc := Nil;
+    SchHeldPath := '';
+End;
+
+{ Removes the last open edit on Path and returns its kind, 'R' or 'N', or '' }
+{ when none is open on it.                                                   }
+Function SchPopEdit(Path : String) : String;
+Var
+    Rest, Entry, Kept : String;
+    P, N, Last : Integer;
+Begin
+    Result := '';
+    { First the position of the last entry on Path, then the list without it. }
+    Last := 0;
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If Copy(Entry, 2, Length(Entry)) = Path Then Last := N;
+    End;
+    If Last = 0 Then Exit;
+    Kept := '';
+    N := 0;
+    Rest := Copy(SchEditOpen, 2, Length(SchEditOpen));
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        N := N + 1;
+        If N = Last Then
+            Result := Copy(Entry, 1, 1)
+        Else
+            Kept := Kept + Entry + '|';
+    End;
+    SchEditOpen := '|' + Kept;
+End;
+
+Procedure SchBeginEdit(Doc : ISch_Document; Name : String);
+Var
+    Path : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0)
+        Or (SchHeld And (SchHeldPath = Path)) Then
+    Begin
+        SchEditOpen := SchEditOpen + 'N' + Path + '|';
+        Exit;
+    End;
+    { Another document: what a previous bulk item held is finished. }
+    If SchHeld And (SchEditOpen = '|') Then SchReleaseHeld(0);
+    SchServer.ProcessControl.PreProcess(Doc, Name);
+    SchEditOpen := SchEditOpen + 'R' + Path + '|';
+End;
+
+Procedure SchEndEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If Kind = 'N' Then Exit;
+    If (Kind = 'R') And SchBulkHold And (SchEditOpen = '|') Then
+    Begin
+        If SchHeld And (SchHeldPath <> Path) Then SchReleaseHeld(0);
+        SchHeld := True;
+        SchHeldDoc := Doc;
+        SchHeldPath := Path;
+        Exit;
+    End;
+    { One more close than opens on the held document ends the held edit. }
+    If (Kind = '') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
+End;
+
+{ SchEndEdit for a handler that reads back what Altium does AT the commit   }
+{ (a UniqueId reminted at PostProcess): the edit reaches Altium now, even   }
+{ when a bulk call would have held it. Nested in the same handler's own     }
+{ edit on the document, it closes as SchEndEdit would.                      }
+Procedure SchCommitEdit(Doc : ISch_Document; Name : String);
+Var
+    Path, Kind : String;
+Begin
+    Path := SchDocPath(Doc);
+    If SchEditOpen = '' Then SchEditOpen := '|';
+    Kind := SchPopEdit(Path);
+    If (Pos('|R' + Path + '|', SchEditOpen) > 0)
+        Or (Pos('|N' + Path + '|', SchEditOpen) > 0) Then Exit;
+    If (Kind <> 'R') And SchHeld And (SchHeldPath = Path) Then
+    Begin
+        SchReleaseHeld(0);
+        Exit;
+    End;
+    SchServer.ProcessControl.PostProcess(Doc, Name);
+End;
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -837,6 +1020,25 @@ Begin
         Why := 'The only open board, ' + OnePath + ', could not be opened.';
 End;
 
+{ SaveHeldBack - True when the dashboard's Saving switch is off, in which   }
+{ case the caller must not write Path. Every save the bridge makes asks    }
+{ this first. Each one held back is counted for the reply, so a command    }
+{ that edited something says its edit is still only in Altium.             }
+Function SaveHeldBack(Path : String) : Boolean;
+Var
+    Name : String;
+Begin
+    Result := SavingOff;
+    If Not Result Then Exit;
+    SavesHeld := SavesHeld + 1;
+    Name := ExtractFileName(Path);
+    If (Name <> '') And (Pos('|' + Name + '|', '|' + HeldFiles + '|') = 0) Then
+    Begin
+        If HeldFiles <> '' Then HeldFiles := HeldFiles + '|';
+        HeldFiles := HeldFiles + Name;
+    End;
+End;
+
 { Save every modified IServerDocument the workspace knows about, both     }
 { project-attached docs and free-floating docs (libraries opened           }
 { standalone, scratch docs). Free docs live inside the synthetic           }
@@ -886,6 +1088,15 @@ Begin
             End;
         End;
 
+        { Saving switched off: nothing is written, and only a document with }
+        { something to write is reported as held back.                      }
+        If SavingOff Then
+        Begin
+            If ServerDoc.Modified Or DocWasEdited(Path) Then
+                If SaveHeldBack(Path) Then Exit;
+            Exit;
+        End;
+
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
         { Altium builds, so checking it can leave docs unsaved. DoFileSave    }
@@ -920,6 +1131,7 @@ Begin
     Path := '';
     Try Path := Project.DM_ProjectFullPath; Except End;
     If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    If SaveHeldBack(Path) Then Exit;
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
@@ -944,7 +1156,10 @@ Begin
     Try
         ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
-            Try ProjectServerDoc.DoFileSave(''); Except End;
+            If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
+            Begin
+                Try ProjectServerDoc.DoFileSave(''); Except End;
+            End;
     Except End;
 End;
 
@@ -1946,6 +2161,36 @@ Begin
         WorkspaceDir := ResolveDefaultWorkspaceDir(0);
     If Not DirectoryExists(WorkspaceDir) Then
         ForceDirectories(WorkspaceDir);
+End;
+
+{ The command refused because saving is switched off. What says why the  }
+{ command cannot run without writing a file.                            }
+Function SavingOffError(RequestId : String; What : String) : String;
+Begin
+    Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+        What + ' Saving is switched off on the bridge dashboard, so nothing '
+        + 'was written. Turn the Saving switch back on there to save.');
+End;
+
+{ The Saving switch outlasts a restart of the bridge and of Altium: it is  }
+{ read from SAVING_FILE in the workspace when the pump starts. No file, or }
+{ one that does not say off, means saving is allowed.                     }
+Procedure LoadSavingSwitch(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    SavingOff := False;
+    If Not FileExists(WorkspaceDir + SAVING_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + SAVING_FILE);
+    SavingOff := LowerCase(ExtractJsonValue(Content, 'saving')) = 'off';
+End;
+
+Procedure StoreSavingSwitch(Dummy : Integer);
+Begin
+    If SavingOff Then
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"off"}')
+    Else
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"on"}');
 End;
 
 {..............................................................................}

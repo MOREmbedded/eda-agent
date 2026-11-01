@@ -837,13 +837,24 @@ Begin
     End;
 End;
 
+{ The types whose interface declares Orientation, by Altium's SDK: a type   }
+{ outside this list has none, and reading or writing it halts the script   }
+{ ("Undeclared identifier: Orientation", which no Try catches). It was a   }
+{ list of the types WITHOUT it, ports and sheet entries, and a sheet symbol }
+{ rotated through obj_modify took the bridge down. A port carries its      }
+{ direction in Style, a sheet entry in Side.                               }
 Function SchObjectHasOrientation(Obj : ISch_GraphicalObject) : Boolean;
+Var
+    Id : Integer;
 Begin
-    Result := True;
+    Result := False;
     If Obj = Nil Then Exit;
-    { A Port carries its direction in Style, and a sheet entry in Side. }
-    If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry) Then
-        Result := False;
+    Id := Obj.ObjectId;
+    Result := (Id = eSchComponent) Or (Id = eNetLabel) Or (Id = ePowerObject)
+        Or (Id = eCrossSheetConnector) Or (Id = ePin) Or (Id = eParameter)
+        Or (Id = eDesignator) Or (Id = eLabel) Or (Id = eNoERC)
+        Or (Id = eParameterSet) Or (Id = eProbe) Or (Id = eSheetName)
+        Or (Id = eSheetFileName);
 End;
 
 Function GetSchComponentSubText(Obj : ISch_GraphicalObject; PropName : String) : String;
@@ -877,23 +888,70 @@ Begin
     End;
 End;
 
-{ IsHidden and position of a placed component's Designator or Comment label. }
-{ Field is 'IsHidden', 'Location.X' or 'Location.Y'; positions are in mils.   }
-{ Returns '' for anything that is not a component.                           }
-Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
+{ The text label an owner carries: a placed part's Designator or Comment, a  }
+{ sheet symbol's name ('Designator', its SheetName) or file name            }
+{ ('Filename', its SheetFileName). Nil for any other pairing.               }
+Function SchLabelOf(Obj : ISch_GraphicalObject; Which : String) : ISch_GraphicalObject;
 Var
     C : ISch_Component;
+    SS : ISch_SheetSymbol;
+Begin
+    Result := Nil;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId = eSchComponent Then
+    Begin
+        C := Obj;
+        If Which = 'Designator' Then Result := C.Designator;
+        If Which = 'Comment' Then Result := C.Comment;
+    End;
+    If Obj.ObjectId = eSheetSymbol Then
+    Begin
+        SS := Obj;
+        If Which = 'Designator' Then Result := SS.SheetName;
+        If Which = 'Filename' Then Result := SS.SheetFileName;
+    End;
+End;
+
+{ A label property name split: 'Designator.Location.X' is the Designator's }
+{ Location.X. SheetName. and SheetFileName. are a sheet symbol's spellings  }
+{ of Designator. and Filename.. '' when PropName is not one.               }
+Function SchLabelPropWhich(PropName : String) : String;
+Var
+    Prefix, Field : String;
+    P : Integer;
+Begin
+    Result := '';
+    P := Pos('.', PropName);
+    If P = 0 Then Exit;
+    Prefix := Copy(PropName, 1, P - 1);
+    Field := Copy(PropName, P + 1, 99);
+    If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
+        And (Field <> 'Autoposition') Then Exit;
+    If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
+    If Prefix = 'Comment' Then Result := 'Comment';
+    If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
+End;
+
+Function SchLabelPropField(PropName : String) : String;
+Begin
+    Result := Copy(PropName, Pos('.', PropName) + 1, 99);
+End;
+
+{ IsHidden, position and Autoposition of a label (see SchLabelOf). Field is }
+{ 'IsHidden', 'Location.X', 'Location.Y' or 'Autoposition'; positions are  }
+{ in mils. Returns '' when the object carries no such label.              }
+Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
+Var
     Lbl : ISch_GraphicalObject;
 Begin
     Result := '';
-    If Obj.ObjectId <> eSchComponent Then Exit;
     Try
-        C := Obj;
-        If Which = 'Designator' Then Lbl := C.Designator Else Lbl := C.Comment;
+        Lbl := SchLabelOf(Obj, Which);
         If Lbl = Nil Then Exit;
-        If Field = 'IsHidden' Then Result := BoolToJsonStr(Lbl.IsHidden)
-        Else If Field = 'Location.X' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.X))
-        Else If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
+        If Field = 'IsHidden' Then Result := BoolToJsonStr(Lbl.IsHidden);
+        If Field = 'Location.X' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.X));
+        If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
+        If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -902,26 +960,27 @@ End;
 
 { The write side. Moving a label turns its auto-position off, or Altium puts }
 { it back; the same reason lib_set_label_formats does it in a library.       }
+{ Autoposition=true hands it back to Altium and puts it where Altium would  }
+{ (SchAutopositionLabels).                                                  }
 Function SetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field, Value : String) : Boolean;
 Var
-    C : ISch_Component;
     Lbl : ISch_GraphicalObject;
     Loc : TLocation;
+    Flag : Boolean;
 Begin
     Result := False;
-    If Obj.ObjectId <> eSchComponent Then Exit;
     Try
-        C := Obj;
-        If Which = 'Designator' Then Lbl := C.Designator Else Lbl := C.Comment;
+        Lbl := SchLabelOf(Obj, Which);
         If Lbl = Nil Then Exit;
+        Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
-        If Field = 'IsHidden' Then
-            Lbl.IsHidden := (UpperCase(Value) = 'TRUE') Or (Value = '1')
-        Else
+        If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
+        If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
+        If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
-            If Field = 'Location.X' Then Loc.X := MilsToCoordF(StrToFloatDef(Value, 0))
-            Else Loc.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+            If Field = 'Location.X' Then Loc.X := MilsToCoordF(StrToFloatDef(Value, 0));
+            If Field = 'Location.Y' Then Loc.Y := MilsToCoordF(StrToFloatDef(Value, 0));
             Lbl.Location := Loc;
             Try Lbl.Autoposition := False; Except End;
         End;
@@ -930,6 +989,165 @@ Begin
     Except
         RecordCastError('SetSchComponentLabelProp:' + Which + '.' + Field);
     End;
+End;
+
+{ Where a label is and whether Altium positions it, as JSON. }
+Function SchLabelJson(Lbl : ISch_GraphicalObject) : String;
+Var
+    Auto : String;
+Begin
+    Result := 'null';
+    If Lbl = Nil Then Exit;
+    Auto := 'null';
+    Try Auto := BoolToJsonStr(Lbl.Autoposition); Except End;
+    Result := '{"x":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.X))
+        + ',"y":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.Y))
+        + ',"autoposition":' + Auto + '}';
+End;
+
+{ Hand a part's Designator and Comment, or a sheet symbol's name and file    }
+{ name, back to Altium's auto-position, and make Altium position them.       }
+{                                                                            }
+{ A label placed by script keeps the place it was created at until Altium    }
+{ repositions it, which an editor does on a rotation and not on a move: the  }
+{ names of scripted sheet symbols sat at the sheet origin, the bottom-left   }
+{ corner, and a person fixed a part's by rotating it and rotating it back.   }
+{ Method names the trigger: 'rotate' (90 and back, about the owner's own     }
+{ location), 'move' (one grid step and back), 'modify' (only the modify      }
+{ bracket). Each inside SCHM_BeginModify / SCHM_EndModify.                  }
+{                                                                            }
+{ MEASURED 2026-10-30 (AD 26.11.1.5, script sheet symbols at (3000,4000) and }
+{ a 1600 x 400 one with a right-side entry): the names sat at (0,100) and   }
+{ (0,0) with Autoposition already True. 'modify' and 'move' left them there  }
+{ (MoveByXY does not even carry a sheet symbol's labels); 'rotate' put the   }
+{ name 100 mil above the top-left corner and the file name on it, and left  }
+{ the size and the entry as they were.                                       }
+{                                                                            }
+{ Force turns every label's Autoposition on first, for a caller asking to    }
+{ have them positioned. A placement passes False: a label the library        }
+{ positioned by hand keeps its place, since the rotation and its reverse     }
+{ bring it back where it was.                                                }
+Procedure SchAutopositionLabels(Obj : ISch_GraphicalObject; Method : String;
+    Force : Boolean);
+Var
+    Lbl : ISch_GraphicalObject;
+    Center : TLocation;
+Begin
+    If Obj = Nil Then Exit;
+    If Force Then
+    Begin
+        Lbl := SchLabelOf(Obj, 'Designator');
+        If Lbl <> Nil Then
+        Begin
+            Try Lbl.Autoposition := True; Except End;
+        End;
+        Lbl := SchLabelOf(Obj, 'Comment');
+        If Lbl <> Nil Then
+        Begin
+            Try Lbl.Autoposition := True; Except End;
+        End;
+        Lbl := SchLabelOf(Obj, 'Filename');
+        If Lbl <> Nil Then
+        Begin
+            Try Lbl.Autoposition := True; Except End;
+        End;
+    End;
+    SchBeginModify(Obj);
+    If Method = 'rotate' Then
+    Begin
+        Center := Obj.Location;
+        Obj.RotateBy90(Center, eRotate90);
+        Obj.RotateBy90(Center, eRotate270);
+    End;
+    If Method = 'move' Then
+    Begin
+        Obj.MoveByXY(MilsToCoordF(100), 0);
+        Obj.MoveByXY(-MilsToCoordF(100), 0);
+    End;
+    SchEndModify(Obj);
+    Try Obj.GraphicallyInvalidate; Except End;
+End;
+
+{ sch_autoposition_labels: the parts and sheet symbols on the active sheet,  }
+{ or those named (designators and sheet names, '|'-separated), get their     }
+{ labels positioned by Altium. The reply gives every label before and after, }
+{ so the caller sees what moved.                                             }
+Function Gen_AutopositionLabels(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Found : TInterfaceList;
+    Names, Method, Name, Kind, Items, Before : String;
+    I, Count : Integer;
+Begin
+    Names := ExtractJsonValue(Params, 'names');
+    Method := LowerCase(ExtractJsonValue(Params, 'method'));
+    If Method = '' Then Method := 'rotate';
+    If (Method <> 'rotate') And (Method <> 'move') And (Method <> 'modify') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMETER',
+            'method is rotate, move or modify');
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { Collected first: nothing moves while the iterator is alive. The list }
+    { is left to the script host; freeing one that holds Altium objects    }
+    { faults (see memory of the copper-modify crash).                      }
+    Found := TInterfaceList.Create;
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent, eSheetSymbol));
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Name := '';
+            Try Name := SchLabelOf(Obj, 'Designator').Text; Except End;
+            If (Names = '') Or (Pos('|' + UpperCase(Name) + '|',
+                '|' + UpperCase(Names) + '|') > 0) Then
+                Found.Add(Obj);
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+
+    Items := '';
+    Count := Found.Count;
+    SchBeginEdit(SchDoc, '');
+    Try
+        For I := 0 To Count - 1 Do
+        Begin
+            Obj := Found.Items[I];
+            Name := '';
+            Try Name := SchLabelOf(Obj, 'Designator').Text; Except End;
+            If Obj.ObjectId = eSheetSymbol Then Kind := 'sheet_symbol' Else Kind := 'part';
+            Before := '{"designator":' + SchLabelJson(SchLabelOf(Obj, 'Designator'))
+                + ',"comment":' + SchLabelJson(SchLabelOf(Obj, 'Comment'))
+                + ',"file_name":' + SchLabelJson(SchLabelOf(Obj, 'Filename')) + '}';
+            SchAutopositionLabels(Obj, Method, True);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"name":"' + EscapeJsonString(Name) + '","kind":"' + Kind
+                + '","location":{"x":' + FloatToJsonStr(CoordToMilsF(Obj.Location.X))
+                + ',"y":' + FloatToJsonStr(CoordToMilsF(Obj.Location.Y)) + '}'
+                + ',"before":' + Before
+                + ',"after":{"designator":' + SchLabelJson(SchLabelOf(Obj, 'Designator'))
+                + ',"comment":' + SchLabelJson(SchLabelOf(Obj, 'Comment'))
+                + ',"file_name":' + SchLabelJson(SchLabelOf(Obj, 'Filename')) + '}}';
+        End;
+    Finally
+        SchEndEdit(SchDoc, 'Edit');
+    End;
+    SchDoc.GraphicallyInvalidate;
+    If Count > 0 Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, '{"method":"' + Method + '","count":'
+        + IntToStr(Count) + ',"items":[' + Items + ']}');
 End;
 
 { Read the Designator and SheetFileName text labels carried by a sheet symbol. }
@@ -1722,7 +1940,8 @@ Begin
         // text on its sub-object Designator.Text, ISch_SheetSymbol carries it on
         // SheetName.Text. Filename / SheetFileName are sheet-symbol only and read the
         // SheetFileName.Text label that links the symbol to its child sheet.
-        Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
+        Else If (PropName = 'Designator') Or (PropName = 'Designator.Text')
+             Or (PropName = 'SheetName') Or (PropName = 'SheetName.Text') Then
         Begin
             If Obj.ObjectId = ePin Then
                 // A pin's Designator IS its pin number (ISch_Pin.Designator);
@@ -1736,16 +1955,13 @@ Begin
                 Result := GetSchComponentSubText(Obj, 'Designator');
         End
         Else If (PropName = 'Filename') Or (PropName = 'FileName')
-             Or (PropName = 'SheetFileName') Then
+             Or (PropName = 'SheetFileName') Or (PropName = 'SheetFileName.Text') Then
             Result := GetSheetSymbolText(Obj, 'Filename')
         Else If PropName = 'Comment'         Then Result := GetSchComponentSubText(Obj, 'Comment')
         Else If PropName = 'Comment.Text'    Then Result := GetSchComponentSubText(Obj, 'Comment')
-        Else If (PropName = 'Designator.IsHidden') Or (PropName = 'Designator.Location.X')
-             Or (PropName = 'Designator.Location.Y') Then
-            Result := GetSchComponentLabelProp(Obj, 'Designator', Copy(PropName, 12, 99))
-        Else If (PropName = 'Comment.IsHidden') Or (PropName = 'Comment.Location.X')
-             Or (PropName = 'Comment.Location.Y') Then
-            Result := GetSchComponentLabelProp(Obj, 'Comment', Copy(PropName, 9, 99))
+        Else If SchLabelPropWhich(PropName) <> '' Then
+            Result := GetSchComponentLabelProp(Obj, SchLabelPropWhich(PropName),
+                SchLabelPropField(PropName))
 
         // Integer properties (returned as string)
         Else If PropName = 'Orientation' Then
@@ -2234,7 +2450,8 @@ Begin
         // A sheet symbol carries its designator on SheetName rather than on the
         // component Designator sub-object, so it is dispatched by ObjectId the
         // same way GetSchProperty dispatches the read.
-        Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
+        Else If (PropName = 'Designator') Or (PropName = 'Designator.Text')
+             Or (PropName = 'SheetName') Or (PropName = 'SheetName.Text') Then
         Begin
             { A pin's Designator IS its pin number, as GetSchProperty reads it.  }
             { Routed through the component-text helper it was a no-op that      }
@@ -2252,18 +2469,15 @@ Begin
         // way. Re-points the symbol at a sheet; it does not rename one, see
         // SetSheetSymbolText.
         Else If (PropName = 'Filename') Or (PropName = 'FileName')
-             Or (PropName = 'SheetFileName') Then
+             Or (PropName = 'SheetFileName') Or (PropName = 'SheetFileName.Text') Then
             WroteOK := SetSheetSymbolText(Obj, 'Filename', Value)
         Else If (PropName = 'Comment') Or (PropName = 'Comment.Text') Then
             SetSchComponentSubText(Obj, 'Comment', Value)
         { A placed part's designator must be visible on the schematic even
           when the library template hid it; these were unknown names. }
-        Else If (PropName = 'Designator.IsHidden') Or (PropName = 'Designator.Location.X')
-             Or (PropName = 'Designator.Location.Y') Then
-            WroteOK := SetSchComponentLabelProp(Obj, 'Designator', Copy(PropName, 12, 99), Value)
-        Else If (PropName = 'Comment.IsHidden') Or (PropName = 'Comment.Location.X')
-             Or (PropName = 'Comment.Location.Y') Then
-            WroteOK := SetSchComponentLabelProp(Obj, 'Comment', Copy(PropName, 9, 99), Value)
+        Else If SchLabelPropWhich(PropName) <> '' Then
+            WroteOK := SetSchComponentLabelProp(Obj, SchLabelPropWhich(PropName),
+                SchLabelPropField(PropName), Value)
 
         // Integer properties
         Else If PropName = 'Orientation' Then
@@ -3055,7 +3269,10 @@ Var
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
     UnshownPins : TStringList;
     PinObj : ISch_Pin;
-    OnlyShown, Counted : Boolean;
+    OnlyShown, Counted, OwnWalk : Boolean;
+    ScopeComp : ISch_Component;
+    WantPart, ObjPart, ObjMode, CompMode : Integer;
+    ObjRef : String;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -3071,7 +3288,7 @@ Begin
         If LibComp = Nil Then Exit;
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
-            SchServer.ProcessControl.PreProcess(SchLib, '');
+            SchBeginEdit(SchLib, '');
 
         If Mode = 'delete' Then
         Begin
@@ -3151,7 +3368,7 @@ Begin
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
         Begin
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
             MarkLibDirty(SchLib);
         End;
         Exit;
@@ -3160,7 +3377,7 @@ Begin
     // Delete mode: one-at-a-time to avoid iterator invalidation.
     If Mode = 'delete' Then
     Begin
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
 
         { Parameters are owned by their component (or by the document for   }
         { sheet-level params), NOT reachable/removable through the plain    }
@@ -3168,7 +3385,7 @@ Begin
         If ObjTypeInt = eParameter Then
         Begin
             DeleteParametersAnyOwner(SchDoc, FilterStr, TotalMatched);
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
             Exit;
         End;
@@ -3273,14 +3490,14 @@ Begin
             Inc(TotalMatched);
             Dec(MaxIter);
         End;
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
         Exit;
     End;
 
     // Modify mode: wrap in PreProcess/PostProcess for undo support.
     If Mode = 'modify' Then
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
 
     { A SYMBOL'S PARAMETERS AND ITS DESIGNATOR ARE OWNED BY THE SYMBOL. The
       library's own iterator does not reach them, so a parameter query or
@@ -3289,24 +3506,54 @@ Begin
       (issue #107). Walk the symbol on screen instead, which a
       lib_component scope has made current; the last symbol created is only
       the fallback, as in DeleteParametersAnyOwner. }
+    IsLibDoc := False;
+    Try IsLibDoc := (SchDoc.ObjectId = eSchLib); Except End;
+    { THE SYMBOL A lib_component SCOPE NAMES. The scope used to make the     }
+    { symbol current and walk the library's sheet, which showed none of its  }
+    { hidden pins (a hidden power pin could not be given its HiddenNetName), }
+    { and for eSchComponent walked every symbol: ShowHiddenPins=true on one  }
+    { named symbol matched all 25 in the library (2026-10-30). The symbol is }
+    { the one SelectLibComponentPart fetched through the library and kept,   }
+    { checked by name. Calling LookupLibComponent from this unit instead     }
+    { left the whole unit undeclared in Altium (HandleGenericCommand), with  }
+    { no compile error shown: measured, 2026.10.30.6.                       }
+    ScopeComp := Nil;
+    If IsLibDoc And (LibScopeName <> '') Then
+    Begin
+        ObjRef := '';
+        Try ObjRef := LastCreatedLibComponent.LibReference; Except End;
+        If ObjRef = LibScopeName Then ScopeComp := LastCreatedLibComponent;
+    End;
     ParamsOfSymbol := False;
     LibComp := Nil;
     If (ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator) Then
     Begin
-        Try ParamsOfSymbol := (SchDoc.ObjectId = eSchLib); Except End;
+        ParamsOfSymbol := IsLibDoc;
         If ParamsOfSymbol Then
         Begin
-            Try LibComp := SchDoc.CurrentSchComponent; Except End;
+            LibComp := ScopeComp;
+            If LibComp = Nil Then
+            Begin
+                Try LibComp := SchDoc.CurrentSchComponent; Except End;
+            End;
             If LibComp = Nil Then LibComp := LastCreatedLibComponent;
             If LibComp = Nil Then ParamsOfSymbol := False;
         End;
     End;
+    { The symbol's own primitives: every pin, hidden or not, of the part   }
+    { asked for and those shared by all parts (part 0).                     }
+    OwnWalk := (Not ParamsOfSymbol) And (ScopeComp <> Nil)
+        And (ObjTypeInt <> eSchComponent);
+    If OwnWalk Then
+    Begin
+        LibComp := ScopeComp;
+        WantPart := LibScopePart;
+        If WantPart < 1 Then WantPart := 1;
+    End;
     SymbolRef := '';
-    If ParamsOfSymbol Then
+    If ParamsOfSymbol Or OwnWalk Then
         Try SymbolRef := LibComp.LibReference; Except SymbolRef := ''; End;
-    IsLibDoc := False;
-    Try IsLibDoc := (SchDoc.ObjectId = eSchLib); Except End;
-    If ParamsOfSymbol Then
+    If ParamsOfSymbol Or OwnWalk Then
         Iterator := LibComp.SchIterator_Create
     { The symbols of a SchLib are not on its sheet iterator, so a component
       query walked nothing (issue #87). The library's own iterator reaches
@@ -3340,6 +3587,25 @@ Begin
         Begin
             PinObj := Obj;
             Counted := UnshownPins.IndexOf(SchPinKey(PinObj)) < 0;
+        End;
+        { The part the scope asked for (or part 1) and its display mode, as }
+        { the library sheet showed them; part 0 belongs to every part.      }
+        If OwnWalk And (Pos('OwnerPart', FilterStr) = 0) Then
+        Begin
+            ObjPart := 0;
+            Try ObjPart := Obj.OwnerPartId; Except End;
+            If (ObjPart <> 0) And (ObjPart <> WantPart) Then Counted := False;
+            ObjMode := 0;
+            CompMode := 0;
+            Try ObjMode := Obj.OwnerPartDisplayMode; Except End;
+            Try CompMode := LibComp.DisplayMode; Except End;
+            If ObjMode <> CompMode Then Counted := False;
+        End;
+        If (ScopeComp <> Nil) And (ObjTypeInt = eSchComponent) Then
+        Begin
+            ObjRef := '';
+            Try ObjRef := Obj.LibReference; Except End;
+            If ObjRef <> LibScopeName Then Counted := False;
         End;
 
         If Counted And MatchesFilter(Obj, FilterStr) Then
@@ -3381,14 +3647,14 @@ Begin
         Obj := Iterator.NextSchObject;
     End;
 
-    If ParamsOfSymbol Then
+    If ParamsOfSymbol Or OwnWalk Then
         LibComp.SchIterator_Destroy(Iterator)
     Else
         SchDoc.SchIterator_Destroy(Iterator);
     UnshownPins.Free;
 
     If Mode = 'modify' Then
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
 End;
 
 {..............................................................................}
@@ -3693,6 +3959,9 @@ Var
     CompName, PartStr : String;
 Begin
     Result := True;
+    { Cleared first: a batch applies one op's scope after another's. }
+    LibScopeName := '';
+    LibScopePart := 0;
     If ScopeType <> 'lib_component' Then Exit;
 
     { Optional '@N' suffix selects part N of a multi-part symbol. A SchLib  }
@@ -3727,7 +3996,11 @@ Begin
     If SelectLibComponentPart(CompName, PartId) = Nil Then
         Result := False
     Else
+    Begin
         ScopeType := 'active_doc';
+        LibScopeName := CompName;
+        LibScopePart := PartId;
+    End;
 End;
 
 {..............................................................................}
@@ -4044,17 +4317,18 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No library component is selected');
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchLib, '');
-        { Establish a visible default owner first; explicit OwnerPartId /  }
-        { OwnerPartDisplayMode properties supplied by the caller override }
-        { it, including OwnerPartId=0 for shared multipart primitives.     }
+        SchBeginEdit(SchLib, '');
+        { A primitive with no OwnerPartId / OwnerPartDisplayMode joins the     }
+        { component but the library editor cannot display it (Altium's own     }
+        { createcomp_in_lib reference). The caller's properties were applied   }
+        { above, before the container was known, so set the default owner and  }
+        { apply them again: an explicit OwnerPartId, including 0 for a         }
+        { primitive shared by every part, still wins over the default.        }
         SetOwnerPart(NewObj, Component);
-        ResetPropertyDiag;
         ApplySetProperties(NewObj, PropsStr);
-        DiagJson := RenderPropertyDiagJson;
         Component.AddSchObject(NewObj);
         SchRegisterObject(Component, NewObj);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, '');
         MarkLibDirty(SchLib);
     End
     Else
@@ -4067,13 +4341,10 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
             Exit;
         End;
-        ResetPropertyDiag;
-        ApplySetProperties(NewObj, PropsStr);
-        DiagJson := RenderPropertyDiagJson;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(NewObj);
         SchRegisterObject(SchDoc, NewObj);
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -4869,9 +5140,9 @@ Begin
             Exit;
         End;
 
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try Net.IsHighlighted := True; Except End;
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Try Board.GraphicallyInvalidate; Except End;
 
         Result := BuildSuccessResponse(RequestId,
@@ -4975,7 +5246,7 @@ Begin
             Iterator.AddFilter_LayerSet(AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
             Net := Iterator.FirstPCBObject;
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             While Net <> Nil Do
             Begin
                 Try
@@ -4987,7 +5258,7 @@ Begin
                 Except End;
                 Net := Iterator.NextPCBObject;
             End;
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         Finally
             Board.BoardIterator_Destroy(Iterator);
         End;
@@ -5000,7 +5271,7 @@ Begin
     If SchDoc <> Nil Then
     Begin
         { Deselect all connective primitives on the active sheet.          }
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             SchIter := SchDoc.SchIterator_Create;
             Try
@@ -5022,7 +5293,7 @@ Begin
                 SchDoc.SchIterator_Destroy(SchIter);
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
         End;
         Try SchDoc.GraphicallyInvalidate; Except End;
         Result := BuildSuccessResponse(RequestId,
@@ -5731,7 +6002,7 @@ Begin
     Skipped := 0;
     SkippedIds := '';
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchBeginModify(Found);
 
     PIter := Found.SchIterator_Create;
@@ -5937,7 +6208,7 @@ Begin
     Try Found.SetState_IsMirrored(WantMirror); Except End;
 
     SchEndModify(Found);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
 
     Try Found.GraphicallyInvalidate; Except End;
     Try SchDoc.GraphicallyInvalidate; Except End;
@@ -6105,10 +6376,10 @@ Begin
       Altium's wire colour scheme applies. }
     Wire.LineWidth := eSmall;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Wire);
     SchRegisterObject(SchDoc, Wire);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6162,10 +6433,10 @@ Begin
     Bus.InsertVertex := 2;
     Bus.SetState_Vertex(2, Point(MilsToCoordF(X2), MilsToCoordF(Y2)));
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Bus);
     SchRegisterObject(SchDoc, Bus);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6229,10 +6500,10 @@ Begin
         Else Rect.LineWidth := eLarge;
     Except End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Rect);
     SchRegisterObject(SchDoc, Rect);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6289,10 +6560,10 @@ Begin
         Else Line.LineWidth := eLarge;
     Except End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Line);
     SchRegisterObject(SchDoc, Line);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6348,10 +6619,10 @@ Begin
     Note.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
     Try Note.Text := TextStr; Except End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Note);
     SchRegisterObject(SchDoc, Note);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6423,7 +6694,7 @@ Begin
     Sym.YSize := MilsToCoordF(Y2 - Y1);
     If NameStr = '' Then NameStr := ChangeFileExt(FileNameStr, '');
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Sym);
     SchRegisterObject(SchDoc, Sym);
 
@@ -6436,8 +6707,11 @@ Begin
     If FNObj <> Nil Then FNObj.SetState_Text(FileNameStr);
     NMObj := Nil; Try NMObj := Sym.GetState_SchSheetName; Except End;
     If NMObj <> Nil Then NMObj.SetState_Text(NameStr);
+    { The name and file name were left at the sheet origin, the bottom-left }
+    { corner, since Location set by property does not carry them.           }
+    SchAutopositionLabels(Sym, 'rotate', False);
 
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6577,7 +6851,7 @@ Begin
       Same shape as AddSchComponent overriding LibReference: the add is
       what decides, so anything set before it has to be set again after.
       Re-asserted below, then read back. }
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Sym.AddAndPositionSchObject(Entry);
 
     Try Entry.Side := WantSide; Except End;
@@ -6604,7 +6878,7 @@ Begin
     Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except End;
 
     SchRegisterObject(Sym, Entry);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { READ BACK. placed:true and an echo of the requested side was the
@@ -6689,10 +6963,10 @@ Begin
     Entry.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Entry.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Entry);
     SchRegisterObject(SchDoc, Entry);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -6738,7 +7012,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         If OrientStr = 'landscape' Then
             Try SchDoc.WorkspaceOrientation := eLandscape; Except End
@@ -6785,7 +7059,7 @@ Begin
         { A named style is ignored while the custom flag is on. }
         If StyleStr <> 'CUSTOM' Then SchDoc.UseCustomSheet := False;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
     { Without it SheetSizeX/Y still read the previous size (measured on AD
       26.11); ExtractTemplate.pas calls it after the same writes. }
@@ -6876,7 +7150,7 @@ Begin
         Or (CMargin <> '') Or (Border <> '') Or (RefZones <> '') Or (Graphics <> '');
     If Wrote Then
     Begin
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             If ZX <> '' Then SchDoc.SetState_SheetZonesX(StrToIntDef(ZX, 4));
             If ZY <> '' Then SchDoc.SetState_SheetZonesY(StrToIntDef(ZY, 4));
@@ -6888,7 +7162,7 @@ Begin
             If RefZones <> '' Then SchDoc.SetState_ReferenceZonesOn(RefZones = 'true');
             If Graphics <> '' Then SchDoc.SetState_ShowTemplateGraphics(Graphics = 'true');
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
         End;
         SchDoc.UpdateDocumentProperties;
         SchDoc.GraphicallyInvalidate;
@@ -7145,7 +7419,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
 
     Try SchDoc.AddSchObject(Comp); Except End;
     Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
@@ -7170,7 +7444,8 @@ Begin
     { in a dedicated handler.                                                }
 
     SchRegisterObject(SchDoc, Comp);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchAutopositionLabels(Comp, 'rotate', False);
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { Explicitly flag the IServerDocument dirty so save_all flushes it.    }
@@ -7246,10 +7521,10 @@ Begin
         SchRegisterObject(ParamSet, Param);
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(ParamSet);
     SchRegisterObject(SchDoc, ParamSet);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -7383,10 +7658,10 @@ Begin
     Mask.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Mask.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Mask);
     SchRegisterObject(SchDoc, Mask);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -7556,10 +7831,10 @@ Begin
     End;
     NetLabel.Color := NET_LABEL_COLOR;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NetLabel);
     SchRegisterObject(SchDoc, NetLabel);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     Try
@@ -7993,10 +8268,10 @@ Begin
         Except End;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(SchPort);
     SchRegisterObject(SchDoc, SchPort);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -8117,10 +8392,10 @@ Begin
     Try PowerObj.Orientation := OrientationVal; Except End;
     If FontPick > 0 Then Try PowerObj.FontId := FontPick; Except End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(PowerObj);
     SchRegisterObject(SchDoc, PowerObj);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     Try
@@ -8231,7 +8506,7 @@ Begin
 
     // Select matching objects
     MatchCount := 0;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
 
     Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
@@ -8247,7 +8522,7 @@ Begin
         Obj := Iterator.NextSchObject;
     End;
     SchDoc.SchIterator_Destroy(Iterator);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
 
     // Copy selected to clipboard
     If MatchCount > 0 Then
@@ -8461,10 +8736,10 @@ Begin
     ApplyNoErcDefaults(NoERC);
     NoERC.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NoERC);
     SchRegisterObject(SchDoc, NoERC);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -8511,10 +8786,10 @@ Begin
 
     Junction.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Junction);
     SchRegisterObject(SchDoc, Junction);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -8561,7 +8836,7 @@ Begin
     OpCount := 0;
     Remaining := JuncStr;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -8584,7 +8859,7 @@ Begin
             Inc(Placed);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -8790,7 +9065,7 @@ Begin
     Failed := 0;
     If (Dx <> 0) Or (Dy <> 0) Then
     Begin
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             Iter := SchDoc.SchIterator_Create;
             Try
@@ -8816,7 +9091,7 @@ Begin
                 SchDoc.SchIterator_Destroy(Iter);
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, '');
+            SchEndEdit(SchDoc, '');
         End;
     End;
     Result := BuildSuccessResponse(RequestId, '{"dx":' + FloatToJsonStr(Dx)
@@ -9209,11 +9484,11 @@ Begin
     End;
     CountSheetWires(SchDoc, WiresBefore, VertsBefore);
     Sheet := SchDoc;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Sheet.OptimizeUseOfPolylines;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
     SchDoc.GraphicallyInvalidate;
     CountSheetWires(SchDoc, WiresAfter, VertsAfter);
@@ -9365,7 +9640,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
 
     If SnapGrid > 0 Then
         SchDoc.SnapGridSize := MilsToCoordF(SnapGrid);
@@ -9386,7 +9661,7 @@ Begin
     If SetHotOn Then
         SchDoc.HotspotGridOn := (HotOnStr = 'true');
 
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     SnapOnStr := 'null';
@@ -9449,9 +9724,9 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try SchDoc.SetState_Unit(Target); Except End;
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Set schematic unit');
+    SchEndEdit(SchDoc, 'Set schematic unit');
     SchDoc.GraphicallyInvalidate;
 
     If SchDoc.UnitSystem = eMetric Then SystemStr := 'metric'
@@ -9507,10 +9782,10 @@ Begin
     Except
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Img);
     SchRegisterObject(SchDoc, Img);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -9696,7 +9971,7 @@ Begin
     OldMap := SchPinMap(OldComp);
     OldParams := SchParamNames(OldComp);
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Try SchDoc.AddSchObject(NewComp); Except End;
         SchRegisterObject(SchDoc, NewComp);
@@ -9772,7 +10047,8 @@ Begin
             Try NewComp.UniqueId := OldId; Except End;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        { Committed now, even inside a bulk call, for the check below. }
+        SchCommitEdit(SchDoc, 'Edit');
     End;
     { AGAIN AFTER THE COMMIT. Measured: the stamp inside the transaction    }
     { held on one swap and was reminted at PostProcess on another (the new  }
@@ -9885,7 +10161,7 @@ Begin
             End;
             If Comp.Designator.Text = Designator Then
             Begin
-                SchServer.ProcessControl.PreProcess(SchDoc, '');
+                SchBeginEdit(SchDoc, '');
                 Comp.LibReference := NewLibRef;
                 { DesignItemId must follow the new library reference or
                   the part keeps re-matching against the OLD library item
@@ -9895,7 +10171,7 @@ Begin
                 Try Comp.DesignItemId := NewLibRef; Except End;
                 If NewLibrary <> '' Then
                     Comp.SourceLibraryName := NewLibrary;
-                SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+                SchEndEdit(SchDoc, 'Edit');
                 Found := True;
                 Break;
             End;
@@ -10038,7 +10314,7 @@ Begin
       (using it raises "Undeclared identifier: Corner", and the local must be
       typed as the derived interface, not ISch_GraphicalObject). Size via
       XSize/YSize from the bottom-left Location, like ISch_SheetSymbol. }
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Harness.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     Harness.XSize := MilsToCoordF(W);
     Harness.YSize := MilsToCoordF(H);
@@ -10047,7 +10323,7 @@ Begin
 
     SchDoc.RegisterSchObjectInContainer(Harness);
     SchRegisterObject(SchDoc, Harness);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -10096,7 +10372,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try Conn.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     If NetName <> '' Then
         Try Conn.Text := NetName; Except End;
@@ -10107,7 +10383,7 @@ Begin
 
     SchDoc.RegisterSchObjectInContainer(Conn);
     SchRegisterObject(SchDoc, Conn);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -10186,9 +10462,9 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, 'Set part id');
+    SchBeginEdit(SchDoc, 'Set part id');
     SetSchPartId(Comp, PartId);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Set part id');
+    SchEndEdit(SchDoc, 'Set part id');
     SchDoc.GraphicallyInvalidate;
 
     { Read back. A part id past PartCount is accepted by the assignment and }
@@ -10277,11 +10553,11 @@ Begin
             If Comp.Designator.Text = Designator Then
             Begin
                 Total := Total + 1;
-                SchServer.ProcessControl.PreProcess(SchDoc, 'Set UniqueId');
+                SchBeginEdit(SchDoc, 'Set UniqueId');
                 Try Comp.SetState_UniqueId(UniqueIdStr); Except End;
                 Try Comp.UniqueId := UniqueIdStr; Except End;
                 Try AfterId := Comp.UniqueId; Except AfterId := ''; End;
-                SchServer.ProcessControl.PostProcess(SchDoc, 'Set UniqueId');
+                SchEndEdit(SchDoc, 'Set UniqueId');
 
                 If AfterId = UniqueIdStr Then
                     Written := Written + 1
@@ -10413,12 +10689,12 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, 'Replicate component');
+    SchBeginEdit(SchDoc, 'Replicate component');
     NewObj := Nil;
     Try NewObj := Comp.Replicate; Except NewObj := Nil; End;
     If NewObj = Nil Then
     Begin
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+        SchEndEdit(SchDoc, 'Replicate component');
         Result := BuildErrorResponse(RequestId, 'REPLICATE_FAILED',
             'ISch_Component.Replicate returned nil for ' + Designator);
         Exit;
@@ -10456,7 +10732,7 @@ Begin
         Try NewComp.UniqueId := MasterId; Except End;
     End;
     Try CopyId := NewComp.UniqueId; Except CopyId := ''; End;
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+    SchEndEdit(SchDoc, 'Replicate component');
     SchDoc.GraphicallyInvalidate;
 
     If CopyId = MasterId Then Shared := 'true' Else Shared := 'false';
@@ -10546,7 +10822,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try Probe.Location := Point(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     { ISch_Probe exposes essentially nothing settable from DelphiScript:
       ``Text``, ``NetName`` and ``ProbeMethod`` all raise "Undeclared
@@ -10561,7 +10837,7 @@ Begin
 
     SchDoc.RegisterSchObjectInContainer(Probe);
     SchRegisterObject(SchDoc, Probe);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -10753,9 +11029,9 @@ Begin
                   "file" is its Location; EntityName is a label (use the file
                   name); FileKind is the model kind. (Altium SDK.) }
                 EntityName := ExtractFileName(FilePath);
-                SchServer.ProcessControl.PreProcess(SchDoc, 'Add datafile link');
+                SchBeginEdit(SchDoc, 'Add datafile link');
                 Try Impl.AddDataFileLink(EntityName, FilePath, KindStr); Except End;
-                SchServer.ProcessControl.PostProcess(SchDoc, 'Add datafile link');
+                SchEndEdit(SchDoc, 'Add datafile link');
                 Found := True;
             End;
         End;
@@ -11236,7 +11512,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Applied := 0;
     Created := 0;
     FpJson := '';
@@ -11393,7 +11669,7 @@ Begin
             End;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -11787,7 +12063,7 @@ Begin
 
 
     Found := False;
-    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitive');
+    SchBeginEdit(SchDoc, 'Attach SPICE primitive');
     Try
         Iter := SchDoc.SchIterator_Create;
         Try
@@ -11813,7 +12089,7 @@ Begin
             SchDoc.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE primitive');
+        SchEndEdit(SchDoc, 'Attach SPICE primitive');
     End;
     SchDoc.GraphicallyInvalidate;
 
@@ -11884,7 +12160,7 @@ Begin
 
 
     Found := False;
-    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE model');
+    SchBeginEdit(SchDoc, 'Attach SPICE model');
     Try
         Iter := SchDoc.SchIterator_Create;
         Try
@@ -11916,7 +12192,7 @@ Begin
             SchDoc.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE model');
+        SchEndEdit(SchDoc, 'Attach SPICE model');
     End;
     SchDoc.GraphicallyInvalidate;
 
@@ -12024,7 +12300,7 @@ Begin
     OldAge := -1;
     Try If FileExists(After) Then OldAge := FileAge(After); Except End;
     ServerDoc := Client.GetDocumentByPath(After);
-    If ServerDoc <> Nil Then
+    If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
         Try ServerDoc.SetFileName(After); Except End;
         Try
@@ -12110,7 +12386,7 @@ Begin
     OldAge := -1;
     Try If FileExists(After) Then OldAge := FileAge(After); Except End;
     ServerDoc := Client.GetDocumentByPath(After);
-    If ServerDoc <> Nil Then
+    If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
         Try ServerDoc.SetFileName(After); Except End;
         Try
@@ -12243,7 +12519,7 @@ Begin
     FirstFailure := True;
 
     If ActiveDoc <> Nil Then
-        SchServer.ProcessControl.PreProcess(ActiveDoc, '');
+        SchBeginEdit(ActiveDoc, '');
     Try
         While True Do
         Begin
@@ -12359,7 +12635,7 @@ Begin
     Finally
         If ActiveDoc <> Nil Then
         Begin
-            SchServer.ProcessControl.PostProcess(ActiveDoc, '');
+            SchEndEdit(ActiveDoc, '');
             ActiveDoc.GraphicallyInvalidate;
         End;
     End;
@@ -12594,7 +12870,7 @@ Begin
     OpCount := 0;
     Remaining := WireStr;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -12630,7 +12906,7 @@ Begin
             Inc(Placed);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -12669,6 +12945,9 @@ Begin
         Try Comp.Designator.Text := Desig; Except End;
     End;
     SchRegisterObject(SchDoc, Comp);
+    { Its designator and comment where Altium puts them for this rotation, }
+    { not where the library left them (see SchAutopositionLabels).         }
+    SchAutopositionLabels(Comp, 'rotate', False);
 End;
 
 {..............................................................................}
@@ -12802,7 +13081,7 @@ Begin
     SheetDesFont := 0;
     If MatchSheet Then SheetDesFont := SheetFontFor(SchDoc, eDesignator);
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -12972,7 +13251,7 @@ Begin
             Inc(Placed);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -13051,7 +13330,7 @@ Begin
     AnyRaised := False;
     ItemsJson := '';
     Remaining := PlaceStr;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -13119,7 +13398,7 @@ Begin
                 + ',"reason":"' + Reason + '"}';
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -13183,7 +13462,7 @@ Begin
     { Sheet convention once per batch, applied to every label below. }
     StyleFound := InferNetLabelStyle(SchDoc, InfFont);
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -13231,7 +13510,7 @@ Begin
             Inc(Placed);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -13284,7 +13563,7 @@ Begin
     OpCount := 0;
     Remaining := PortsStr;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -13342,7 +13621,7 @@ Begin
             Inc(Placed);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -13539,7 +13818,7 @@ Begin
         FpApplied := 0;
         FpMissed := '';
 
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             Iter := SchDoc.SchIterator_Create;
             Try
@@ -13616,7 +13895,7 @@ Begin
                 SchDoc.SchIterator_Destroy(Iter);
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
         End;
 
@@ -13703,7 +13982,7 @@ Begin
         End;
 
         Updated := 0;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             Iter := SchDoc.SchIterator_Create;
             Try
@@ -13754,7 +14033,7 @@ Begin
                 SchDoc.SchIterator_Destroy(Iter);
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
         End;
         Failed := OpCount - Updated;
@@ -13814,7 +14093,7 @@ Begin
     FailuresJson := '';
     FirstFailure := True;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitives');
+    SchBeginEdit(SchDoc, 'Attach SPICE primitives');
     Try
         While True Do
         Begin
@@ -13888,7 +14167,7 @@ Begin
             End;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Attach SPICE primitives');
+        SchEndEdit(SchDoc, 'Attach SPICE primitives');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -15207,7 +15486,7 @@ Begin
     End;
 
     Count := 0;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Iter := SchDoc.SchIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -15250,7 +15529,7 @@ Begin
             SchDoc.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
     SchDoc.GraphicallyInvalidate;
 
@@ -15348,11 +15627,11 @@ Begin
                 'No symbol is open in the SchLib editor. Open one and retry.');
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             Count := TogglePinsOnComponent(LibComp, SetName, NameVal, SetDesig, DesigVal);
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
         End;
         SchDoc.GraphicallyInvalidate;
         If Count = 0 Then
@@ -15365,7 +15644,7 @@ Begin
             '{"success":true,"pins_modified":' + IntToStr(Count) + '}');
         Exit;
     End;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Iter := SchDoc.SchIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -15404,7 +15683,7 @@ Begin
             SchDoc.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
     SchDoc.GraphicallyInvalidate;
 
@@ -15479,10 +15758,10 @@ Begin
     Begin Try TF.Alignment := eLeftAlign; Except End; End;
     If FontPick > 0 Then Try TF.FontId := FontPick; Except End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
     SchRegisterObject(SchDoc, TF);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -15554,7 +15833,7 @@ Begin
         ClearedSrc := 0;
         Synced := 0;
 
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         Try
             Iterator := SchDoc.SchIterator_Create;
             Try
@@ -15600,7 +15879,7 @@ Begin
                 SchDoc.SchIterator_Destroy(Iterator);
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+            SchEndEdit(SchDoc, 'Edit');
             SchDoc.GraphicallyInvalidate;
         End;
     Finally
@@ -15828,7 +16107,7 @@ Begin
     Failed := 0;
     Try
         DesigList.CommaText := DesigCsv;
-        If Not DryRun Then SchServer.ProcessControl.PreProcess(SchDoc, '');
+        If Not DryRun Then SchBeginEdit(SchDoc, '');
         Try
             Iterator := SchDoc.SchIterator_Create;
             Try
@@ -15943,7 +16222,7 @@ Begin
         Finally
             If Not DryRun Then
             Begin
-                SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+                SchEndEdit(SchDoc, 'Edit');
                 SchDoc.GraphicallyInvalidate;
             End;
         End;
@@ -16021,7 +16300,7 @@ Begin
     Failed := 0;
     { Sheet convention once, applied to every stub label below. }
     StyleFound := InferNetLabelStyle(SchDoc, InfFont);
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Remaining := PinsStr;
         While Length(Remaining) > 0 Do
@@ -16121,7 +16400,7 @@ Begin
             Stubbed := Stubbed + 1;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
     End;
 
@@ -16186,7 +16465,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         If ModeStr = 'bom' Then
         Begin
@@ -16199,7 +16478,7 @@ Begin
             KindStr := 'NetTie_NoBOM';
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
     Try SchDoc.GraphicallyInvalidate; Except End;
 
@@ -16824,6 +17103,7 @@ Begin
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
         'get_component_models': Result := Gen_GetComponentModels(Params, RequestId);
         'place_net_label':  Result := Gen_PlaceNetLabel(Params, RequestId);
+        'autoposition_labels': Result := Gen_AutopositionLabels(Params, RequestId);
         'stub_pins':        Result := Gen_StubPins(Params, RequestId);
         'set_net_tie':      Result := Gen_SetNetTie(Params, RequestId);
         'place_port':       Result := Gen_PlacePort(Params, RequestId);

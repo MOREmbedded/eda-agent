@@ -188,51 +188,22 @@ again.
 
 ## Altium 365
 
-Set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally
-`EDA_AGENT_NEXAR_CLIENT_SECRET`. To restrict workspace queries, set
-`EDA_AGENT_A365_WORKSPACES` to comma-separated workspace URLs. Run
-`eda-agent a365-login` interactively once; the token is stored for the
-current Windows user using DPAPI. `eda-agent a365-logout` removes it.
-The MCP tools expose workspace, project and library reads plus read-only
-GraphQL queries. `eng_a365_workspace_infos` adds each workspace's id and
-description; `eng_a365_library_components_params` lists library components
-together with their parameters in one call; `eng_a365_entity` reads any
-`des*ById` entity by introspecting the live schema for its scalar fields, for
-entity kinds with no dedicated reader.
+Altium 365 is reached through the `altium365_` tools
+(`src/eda_agent/altium365.py`), by either route: straight to a workspace with
+`EDA_AGENT_ALTIUM365_DOMAIN` and `EDA_AGENT_ALTIUM365_TOKEN`, or through Nexar
+with `EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+`eda-agent altium365-logout` forgets the saved login.
+`EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it lists.
 
-### Write tools
+Any reading GraphQL query may be run; one containing `mutation` or
+`subscription` is refused. Changes go only through the fixed write tools
+(`altium365_publish_library_file`, `altium365_release_component`,
+`altium365_set_component_parameters`), each of which needs `confirm=True`.
 
-Three write operations, each refusing unless `confirm=True` (eda-agent's
-existing style for an irreversible action, e.g. `easyeda_clear_routing`) -
-there is no separate owner-approval job queue here, since that whole
-governance layer was deliberately left out of this integration:
-
-- `eng_a365_publish_model(kind, workspace_url, folder_id, name, file_path, confirm=False)` -
-  upload a symbol or footprint file (via Nexar's File Service) and link it
-  into a library folder. `name` is checked against the owner naming policy
-  (`engineering/naming.py`) before publishing.
-- `eng_a365_release_component(input_obj, confirm=False)` - release a
-  component revision (`desReleaseComponent`). `input_obj` is passed through
-  as-is - the mutation's input is documented inline by Nexar rather than a
-  named type, so it is built the same way the client already builds it
-  (`a365.py`'s `release_mutation`/`gql_literal`), not guessed at here.
-- `eng_a365_update_parameters(component_id, parameters, release_note, replace_existing=False, confirm_replace="", confirm=False)` -
-  add or change a component's parameters (new revision). `replace_existing=True`
-  deletes ALL existing parameters first and additionally requires
-  `confirm_replace` set to the exact string `"REPLACE ALL PARAMETERS"` -
-  ported verbatim from Altium Booster 3.2's own guard for this operation
-  (`service.py`), not a new phrase invented for this port. Every call
-  verifies the write by reading the new component revision back and
-  confirming each requested parameter actually matches, rather than
-  trusting the mutation's own success response (the project's eco_verify
-  discipline: a write that reports success is not the same as a write that
-  happened).
-
-None of these three is wired into a doctor-style pre-flight beyond
-`eng_a365_doctor`'s existing schema check; verify the exact mutation shapes
-against a real Nexar account before relying on them (unverified against a
-live account while porting this - no Nexar credential was available to test
-against).
+Until 2026-11-01 this fork also had its own client and fifteen `eng_a365_*`
+tools. They covered the same ground under other names and gave way to
+upstream's, which is maintained; only the logout was carried across, because
+upstream had none. See CHANGELOG.
 
 The original DelphiScript bridge is not installed here. Its Altium operations
 are marked as requiring AD26 validation, while `eda-agent` already has a

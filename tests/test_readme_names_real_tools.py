@@ -92,7 +92,9 @@ def _registered_tools() -> set[str]:
                         fn(_Mcp(), **flags)
                     except Exception:  # noqa: BLE001 - a backend may decline
                         pass
-    return captured
+    # The family tools are made at registration from their members.
+    from eda_agent.tools.folds import FOLDS
+    return captured | set(FOLDS)
 
 
 #: A catalog section, the same anchor test_readme_tool_counts.py uses.

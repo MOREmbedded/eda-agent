@@ -970,7 +970,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_rename_designators"],
-        "avoid": ["obj_batch_modify"],
+        "avoid": ["obj_modify"],
         "note": ("Collisions are refused before any write; parts go through "
                  "temporary names, so a swap works. proj_annotate renumbers a "
                  "whole design."),
@@ -1882,6 +1882,27 @@ def guidance_for(task: str = "", document_kind: str = "",
     }
 
 
+def with_reach(result: dict[str, Any], reach_of) -> dict[str, Any]:
+    """Add ``reach``: how to call each named tool that is a member of a
+    family tool or a single-item tool, neither of which is advertised."""
+    if not result.get("ok"):
+        return result
+    named: set[str] = set()
+    for group in ("recipes", "derived"):
+        for entry in result.get(group) or []:
+            for key in ("use", "avoid"):
+                for item in entry.get(key) or []:
+                    named.add(item.get("tool", "") if isinstance(item, dict)
+                              else str(item))
+    for dead in result.get("not_possible") or []:
+        for item in dead.get("do_instead") or []:
+            named.add(str(item))
+    reach = {n: reach_of(n) for n in sorted(named) if n and reach_of(n)}
+    if reach:
+        result = dict(result, reach=reach)
+    return result
+
+
 def register_guidance_tools(mcp):
     """Register the guidance tool. Backend-agnostic, like the meta pair."""
 
@@ -1921,10 +1942,15 @@ def register_guidance_tools(mcp):
         # The docstrings are read from the live registry rather than a
         # copy, so a tool renamed or re-described is reflected the moment
         # it is, with nothing to update here.
+        from .folds import reach_of
+
         docs: dict[str, str] = {}
         try:
-            for spec in await mcp.list_tools():
+            specs = list(await mcp.list_tools())
+            specs += list((getattr(mcp, "hidden", {}) or {}).values())
+            for spec in specs:
                 docs[spec.name] = getattr(spec, "description", "") or ""
         except Exception:            # noqa: BLE001
             docs = {}
-        return guidance_for(task, document_kind, backend, docs)
+        result = guidance_for(task, document_kind, backend, docs)
+        return with_reach(result, reach_of)

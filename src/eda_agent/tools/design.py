@@ -2789,7 +2789,8 @@ def register_design_tools(mcp) -> None:
                                "done_when": check.done_when,
                                "answered_by": "tools" if check.tools else "people"}
         if check.tools:
-            out["tools"] = list(check.tools)
+            from .folds import call_form
+            out["tools"] = list(dict.fromkeys(call_form(n) for n in check.tools))
         if with_reason:
             out["why_now"] = check.reason
         if line.answer is not None:

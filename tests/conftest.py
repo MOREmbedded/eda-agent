@@ -292,6 +292,17 @@ def _restore_global_config():
                                 else type(before)(**snapshot))
         from eda_agent.bridge.altium_bridge import reset_bridge
         reset_bridge()
+def _fresh_bulk_hint_counts():
+    """Start each test with no calls counted toward the repeat nudge.
+
+    Every tool that takes ``items`` counts its single calls process-wide
+    and adds ``_hint_bulk`` to a reply once one repeats; a test calling a
+    tool the test before it called would otherwise see a reply it did not
+    cause.
+    """
+    from eda_agent.tools.bulk_hints import BulkHintTracker
+    BulkHintTracker.reset()
+    yield
 
 
 @pytest.fixture(autouse=True)

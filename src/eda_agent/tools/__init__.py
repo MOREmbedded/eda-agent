@@ -40,7 +40,6 @@ from .eda import register_eda_tools
 from .calc import register_calc_tools, register_pcb_calc_tools
 from .stackup import register_stackup_tools
 from .plan import register_plan_tools
-from .npi import register_npi_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
 from .engineering import register_engineering_tools
@@ -48,6 +47,7 @@ from .profile import register_profile_tools
 from .footprint import register_footprint_tools
 from .conventions import register_convention_tools
 from .altium365 import register_altium365_tools
+from .requests import register_request_prompts
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -226,8 +226,13 @@ def register_backend(
     if toolset not in TOOLSETS:
         toolset = DEFAULT_TOOLSET
     if toolset == "minimal":
-        return _register_minimal(mcp, backend)
-    return _register_full(mcp, backend)
+        name = _register_minimal(mcp, backend)
+    else:
+        name = _register_full(mcp, backend)
+    # The canned requests go on the real server under either toolset: a
+    # minimal server hides tools, not the prompts a user picks from.
+    register_request_prompts(mcp, name)
+    return name
 
 
 def _register_minimal(mcp, backend: str) -> str:
@@ -251,7 +256,17 @@ def _register_minimal(mcp, backend: str) -> str:
     return name
 
 
-def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
+def _register_full(server, backend: str = DEFAULT_BACKEND) -> str:
+    # Families of tools that differ by a mode register as one tool each;
+    # see folds.py. The members stay reachable through tool_invoke.
+    from .folds import FoldingServer
+    mcp = FoldingServer(server)
+    backend = _register_surface(mcp, backend)
+    mcp.finish()
+    return backend
+
+
+def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     backend = (backend or DEFAULT_BACKEND).strip().lower()
     if backend not in BACKENDS:
         backend = DEFAULT_BACKEND
@@ -301,7 +316,6 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # criteria name Altium tools where Altium can answer them, which a
     # KiCad user reads as "no tool here, attest it" rather than as a
     # broken reference.
-    register_npi_tools(mcp)
 
     # The EDA-agnostic main-flow tools (review_design, get_board_info,
     # list_components, list_nets) work on whichever backend is active, so they
@@ -340,7 +354,6 @@ __all__ = [
     "register_pcb_calc_tools",
     "register_stackup_tools",
     "register_plan_tools",
-    "register_npi_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",
     "register_offline_review_tools",
@@ -359,6 +372,7 @@ __all__ = [
     "register_footprint_tools",
     "register_convention_tools",
     "register_altium365_tools",
+    "register_request_prompts",
     "register_project_tools",
     "register_library_tools",
     "register_generic_tools",

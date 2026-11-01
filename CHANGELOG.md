@@ -14,6 +14,56 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Changed
+
+- **Multipart symbols: one tool, upstream's, with this fork's shared pins.**
+  `lib_create_multipart_symbol` (this fork) and `lib_create_symbol_in_parts`
+  (upstream) both made a multi-part symbol in one call, and neither did all
+  of it. Upstream's is the base: it checks each step took, refuses a
+  designator used on two parts, and draws every body before any pin, where
+  this fork's drew the bodies last and so covered the pin names. What it
+  lacked was this fork's `shared_pins`, pins on owner part 0 that Altium
+  shows on every part, normally supply pins; it takes them now. A shared
+  designator also used on a part, or given twice, is refused before
+  anything reaches Altium. Checked end to end: the Pascal takes any explicit
+  pin owner, 0 included (a body or an arc treats 0 as unset), and
+  `_pins_payload` sends a 0 because it tests for None.
+
+- **Phase gates: upstream's kept, this fork's NPI gates removed.** This
+  fork's `design/npi.py` (`design_npi_gate`, `_record`, `_status`) and
+  upstream's `design/phase_gates.py` (`design_phase_gate`, `_answer`,
+  `_standing`) are the same 42 checks over the same five stages, split
+  8/8/9/9/8 with 29 answered by tools in both. Seven of this fork's read as
+  unmatched by wording; each is in upstream's set under another phrasing
+  (`lead-times`, `stack-up`, `fits-enclosure`, `probe-points`,
+  `return-paths`, `tests-traced`, `environment`). Upstream's adds an expiry
+  per check and keeps the same three rules: answers expire, belong to a
+  revision, and a waiver needs a reason. Its own test already resolves
+  every tool a check names, folded members included, which was the guard
+  this fork's test existed for. No ledger existed under
+  `<workspace>/npi/`, so nothing recorded is lost.
+  Carried across: the documentation. Upstream had none, so
+  `docs/NPI_PHASE_GATES.md` now describes upstream's tools, keeping this
+  fork's table of what failing each gate costs.
+
+- **Altium 365: upstream's client kept, this fork's removed.** Both forks
+  built the same thing: this fork's `engineering/a365.py` with fifteen
+  `eng_a365_*` tools, upstream's `altium365.py` with thirteen `altium365_*`
+  tools. They map almost one to one (this fork split two reads in two where
+  upstream takes a flag), both reach a workspace directly or through Nexar,
+  both send the upload's token as a bearer header to the workspace and as a
+  `token` header to Nexar, and both refuse a `mutation` on the read path.
+  Upstream's is kept because it is the one being developed:
+  `sch_place_comment` was built on it on 2026-10-31, and keeping this fork's
+  would have meant re-porting every such change. Nothing on the development
+  machine depended on this fork's: no `EDA_AGENT_A365_*` variable was set
+  and no saved login existed.
+  Carried across: a logout. Upstream can sign in to Nexar but had no way to
+  forget the login short of deleting the file by hand; `eda-agent
+  altium365-logout` now does that. The environment variables to set are
+  upstream's: `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN`,
+  `EDA_AGENT_NEXAR_APP_ID` and `EDA_AGENT_ALTIUM365_WORKSPACES`.
+
 ### Added
 
 - **Altium 365 can be reached directly, not only through Nexar.** Altium
