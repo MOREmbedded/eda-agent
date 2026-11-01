@@ -441,6 +441,8 @@ Begin
     { Resolve to an absolute path or give up honestly.                       }
     LibPath := ResolveLoadedDocPath(LibPath);
     If LibPath = '' Then Exit;
+    { Saving switched off: the reopen below would drop what is not saved. }
+    If SaveHeldBack(LibPath) Then Exit;
 
     { Flush this document only. }
     Try
@@ -594,7 +596,7 @@ Begin
         Component.Designator.Text := DesignatorPrefix + '?';
         Component.ComponentDescription := Description;
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         SchLib.AddSchComponent(Component);
         { AddSchComponent overrides LibReference with an auto-generated      }
         { 'Component_<N>' on the second and later additions to the same     }
@@ -602,7 +604,7 @@ Begin
         { only for the first symbol. Re-assign here so the caller's chosen  }
         { name is what survives to disk (and what ResolveLibRef will see).  }
         Component.LibReference := Name;
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
 
         // Broadcast as a new component (source=nil, dest=c_BroadCast). This
         // is the pattern in Altium's createcomp_in_lib.pas, different from
@@ -1227,10 +1229,10 @@ Begin
         { pin there. One vocabulary, stated once, in Utils.pas.         }
         Pin.Electrical := StrToPinElectrical(ElecType);
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         SetOwnerPart(Pin, Component);
         ViaLib := AddLibSymbolPrim(SchLib, Component, Pin);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
         Try SchLib.GraphicallyInvalidate; Except End;
@@ -1356,10 +1358,10 @@ Begin
         If (SolidStr = 'true') Or (SolidStr = 'false') Then
             Try Rect.IsSolid := (SolidStr = 'true'); Except End;
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         SetOwnerPartFrom(Rect, Component, ExtractJsonValue(Params, 'owner_part_id'));
         ViaLib := AddLibSymbolPrim(SchLib, Component, Rect);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
         Try SchLib.GraphicallyInvalidate; Except End;
@@ -1425,10 +1427,10 @@ Begin
         If ColorStr <> '' Then
             Try Line.Color := StrToIntDef(ColorStr, 0); Except End;
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         SetOwnerPart(Line, Component);
         ViaLib := AddLibSymbolPrim(SchLib, Component, Line);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
         Try SchLib.GraphicallyInvalidate; Except End;
@@ -1666,7 +1668,8 @@ Begin
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
         Exit;
     End;
-    PCBServer.PreProcess;
+
+    PcbBeginEdit(0);
 
     Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
     If Pad <> Nil Then
@@ -1713,7 +1716,7 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pad');
 
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
@@ -1893,7 +1896,7 @@ Begin
     MadeManual := False;
     MidUnverified := False;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
         { 1. Drill. }
@@ -2045,7 +2048,7 @@ Begin
         End;
         PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 
@@ -2380,13 +2383,13 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Via := AddLibVia(PcbLib, Footprint, X, Y, Size, HoleSize, UnitsStr);
     If Via <> Nil Then
         Result := BuildSuccessResponse(RequestId, '{"success":true,"kind":"via"}')
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create via');
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
@@ -2451,7 +2454,7 @@ Begin
     BadSize := 0;
     BadNumber := 0;
     Remaining := ViasStr;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -2483,7 +2486,7 @@ Begin
             If Via = Nil Then Inc(Failed) Else Inc(Added);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Added > 0 Then MarkDocDirtyByPath(PcbLib.Board.FileName);
 
@@ -2569,7 +2572,7 @@ Begin
     BadLayers := '';
     Remaining := PadsStr;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -2713,7 +2716,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -2777,7 +2780,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
 
     Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
     If Track <> Nil Then
@@ -2809,7 +2812,7 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create track');
 
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
@@ -2862,7 +2865,7 @@ Begin
     BadLayers := '';
     Remaining := TracksStr;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -2919,7 +2922,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -3294,7 +3297,7 @@ Begin
     BadLayers := '';
     Remaining := RegionsStr;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -3406,7 +3409,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -3491,7 +3494,7 @@ Begin
     BadLayers := '';
     Remaining := FillsStr;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -3546,7 +3549,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -3619,7 +3622,7 @@ Begin
     BadLayers := '';
     Items := '';
     Remaining := BodiesStr;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While True Do
         Begin
@@ -3668,7 +3671,7 @@ Begin
                 + JsonStr('layer', LayerDisplayName(Layer)) + ',' + Applied + '}';
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Added > 0 Then MarkDocDirtyByPath(PcbLib.Board.FileName);
 
@@ -3840,7 +3843,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
 
     Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
     If Arc <> Nil Then
@@ -3873,7 +3876,7 @@ Begin
     Else
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc');
 
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
@@ -4011,7 +4014,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Text := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
         If Text = Nil Then
@@ -4043,7 +4046,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(Board.FileName);
 
@@ -4919,7 +4922,7 @@ Begin
     Created := False;
     ChangedJson := '';
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If Desig = Nil Then
         Begin
@@ -5008,7 +5011,7 @@ Begin
                 c_Broadcast, PCBM_EndModify, c_NoEventData);
         Except End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { Trim the trailing comma. }
@@ -5115,7 +5118,7 @@ Begin
     Total := 0;
     NamesJson := '';
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := PcbLib.LibraryIterator_Create;
         Try
@@ -5200,7 +5203,7 @@ Begin
             PcbLib.LibraryIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.ViewManager_FullUpdate; Except End;
@@ -5333,7 +5336,7 @@ Begin
     End;
     Try
 
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Iter := PcbLib.LibraryIterator_Create;
             Try
@@ -5519,7 +5522,7 @@ Begin
                 PcbLib.LibraryIterator_Destroy(Iter);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
 
         { Edit lines naming a footprint this library does not contain. }
@@ -5879,7 +5882,7 @@ Begin
       so on AD26 both SetOwnerPart (writing OwnerPartId) and AddSchObject raise a
       modal "Undeclared identifier" that Try/Except cannot catch and WEDGE the
       bridge. }
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
 
     { replace=true (default): drop existing footprint (PCBLIB) implementations   }
     { first so re-linking replaces instead of appending a duplicate (the append  }
@@ -5925,7 +5928,7 @@ Begin
         Try Impl.AddDataFileLink(FootprintName, '', 'PCBLib'); Except End;
     End;
 
-    SchServer.ProcessControl.PostProcess(SchLib, 'Link footprint');
+    SchEndEdit(SchLib, 'Link footprint');
     MarkLibDirty(SchLib);
 
     If Impl <> Nil Then
@@ -6033,7 +6036,7 @@ Begin
     FpName := '';
     Try FpName := Footprint.Name; Except End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension, eCreate_Default);
         If Body = Nil Then
@@ -6130,7 +6133,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -7172,7 +7175,7 @@ Begin
     LineNum := 0;
 
     // Begin modification block for undo support
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         AssignFile(F, BatchPath);
         Reset(F);
@@ -7308,7 +7311,7 @@ Begin
         End;
     Finally
         // End modification block - commit changes
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     MarkLibDirty(SchLib);
@@ -7390,7 +7393,7 @@ Begin
     Errors := '';
 
     // Begin modification block
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         AssignFile(F, BatchPath);
         Reset(F);
@@ -7471,7 +7474,7 @@ Begin
         End;
     Finally
         // End modification block - commit changes
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     SchLib.GraphicallyInvalidate;
@@ -7629,10 +7632,10 @@ Begin
         If ColorStr <> '' Then
             Try Arc.Color := StrToIntDef(ColorStr, 0); Except End;
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         SetOwnerPartFrom(Arc, Component, ExtractJsonValue(Params, 'owner_part_id'));
         ViaLib := AddLibSymbolPrim(SchLib, Component, Arc);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
         Try SchLib.GraphicallyInvalidate; Except End;
@@ -7766,10 +7769,10 @@ Begin
                     MilsToCoordF(StrToFloatDef(XValues[I-1], 0)),
                     MilsToCoordF(StrToFloatDef(YValues[I-1], 0)));
 
-            SchServer.ProcessControl.PreProcess(SchLib, '');
+            SchBeginEdit(SchLib, '');
             SetOwnerPartFrom(Polygon, Component, OwnerStr);
             ViaLib := AddLibSymbolPrim(SchLib, Component, Polygon);
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
 
             MarkLibDirty(SchLib);
             Try SchLib.GraphicallyInvalidate; Except End;
@@ -7820,11 +7823,11 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     SchBeginModify(Component);
     Component.ComponentDescription := Description;
     SchEndModify(Component);
-    SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+    SchEndEdit(SchLib, 'Edit');
 
     MarkLibDirty(SchLib);
     Result := BuildSuccessResponse(RequestId,
@@ -8123,13 +8126,13 @@ Begin
                 + DestLibPath + ' (pass overwrite=true to replace)');
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(DestLib, '');
+        SchBeginEdit(DestLib, '');
         DestLib.RemoveSchComponent(Existing);
-        SchServer.ProcessControl.PostProcess(DestLib, 'Edit');
+        SchEndEdit(DestLib, 'Edit');
         Overwrote := True;
     End;
 
-    SchServer.ProcessControl.PreProcess(DestLib, '');
+    SchBeginEdit(DestLib, '');
     DestLib.AddSchComponent(NewComp);
     { RE-ASSERT THE NAME. AddSchComponent overrides LibReference with an   }
     { auto-generated Component_<N> on the second and later additions to a  }
@@ -8138,7 +8141,7 @@ Begin
     { the same reason; the copy path did not, so the clone landed under an }
     { auto name and every later lookup of new_name missed it.              }
     NewComp.LibReference := NewName;
-    SchServer.ProcessControl.PostProcess(DestLib, 'Edit');
+    SchEndEdit(DestLib, 'Edit');
 
     { REGISTER THE NEW COMPONENT, or it does not reach disk. Lib_CreateSymbol
       broadcasts this and persists; this path did not and did not, which is
@@ -8282,7 +8285,7 @@ Begin
     OpCount := 0;
     Remaining := PinsStr;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         While True Do
         Begin
@@ -8366,7 +8369,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     MarkLibDirty(SchLib);
@@ -8438,7 +8441,7 @@ Begin
     OpCount := 0;
     Remaining := TextsStr;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         While True Do
         Begin
@@ -8509,7 +8512,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     MarkLibDirty(SchLib);
@@ -8563,7 +8566,7 @@ Begin
     OpCount := 0;
     Remaining := LinesStr;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         While True Do
         Begin
@@ -8603,7 +8606,7 @@ Begin
             Inc(Added);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     MarkLibDirty(SchLib);
@@ -9140,7 +9143,7 @@ Begin
     MissingTarget := 0;
     Failed := 0;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         If CompName <> '' Then
         Begin
@@ -9215,7 +9218,7 @@ Begin
             End;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
 
     If Modified > 0 Then MarkLibDirty(SchLib);
@@ -9459,7 +9462,7 @@ Begin
         End;
 
         Total := 0;
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         Try
             If CompName <> '' Then
             Begin
@@ -9533,7 +9536,7 @@ Begin
                 End;
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
         End;
 
         AnyModified := False;
@@ -9977,7 +9980,7 @@ Begin
     End;
 
     Processed := 0;
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         Iter := Component.SchIterator_Create;
         Try
@@ -9995,7 +9998,7 @@ Begin
             Component.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, '');
+        SchEndEdit(SchLib, '');
     End;
 
     Result := BuildSuccessResponse(RequestId,
@@ -10108,7 +10111,7 @@ Begin
     Changed := '';
     First := True;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         Iter := Component.SchIterator_Create;
         Try
@@ -10132,7 +10135,7 @@ Begin
             Component.SchIterator_Destroy(Iter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, '');
+        SchEndEdit(SchLib, '');
     End;
 
     MarkLibDirty(SchLib);
@@ -10892,9 +10895,9 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     SchLib.RemoveSchComponent(Component);
-    SchServer.ProcessControl.PostProcess(SchLib, 'Delete component');
+    SchEndEdit(SchLib, 'Delete component');
     MarkLibDirty(SchLib);
 
     RespJson :=
@@ -10989,7 +10992,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         SchLib.RemoveSchComponent(Component);
         Component.LibReference := NewName;
@@ -11001,7 +11004,7 @@ Begin
         { for. Lib_CreateSymbol carries the same re-assertion.            }
         Component.LibReference := NewName;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Rename component');
+        SchEndEdit(SchLib, 'Rename component');
     End;
     SchLib.GraphicallyInvalidate;
     LastCreatedLibComponent := Component;
@@ -11117,10 +11120,10 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try PcbLib.RemoveComponent(Target); Except End;
     Try PcbLib.DeRegisterComponent(Target); Except End;
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     MarkDocDirtyByPath(PcbLib.Board.FileName);
 
     { SAY THAT THE WRITE IS DEFERRED. The footprint is gone from the
@@ -11181,7 +11184,7 @@ Begin
     Removed := 0;
     Guard := 1000;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     While Guard > 0 Do
     Begin
         Matches := 0;
@@ -11210,7 +11213,7 @@ Begin
         Inc(Removed);
         Dec(Guard);
     End;
-    SchServer.ProcessControl.PostProcess(SchLib, 'Remove model');
+    SchEndEdit(SchLib, 'Remove model');
     MarkLibDirty(SchLib);
 
     RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
@@ -11300,9 +11303,9 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try Target.Name := NewName; Except End;
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try PcbLib.RefreshView; Except End;
     MarkDocDirtyByPath(PcbLib.Board.FileName);
@@ -11405,7 +11408,7 @@ Begin
         End;
         If OldName = '*' Then
         Begin
-            SchServer.ProcessControl.PreProcess(SchDoc, 'Replace footprint model');
+            SchBeginEdit(SchDoc, 'Replace footprint model');
             Guard := 1000;
             While Guard > 0 Do
             Begin
@@ -11437,7 +11440,7 @@ Begin
                 Try Target.IsCurrent := True; Except End;
                 Try Target.AddDataFileLink(NewName, '', 'PCBLib'); Except End;
             End;
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Replace footprint model');
+            SchEndEdit(SchDoc, 'Replace footprint model');
             Try SchDoc.GraphicallyInvalidate; Except End;
             MarkDocDirtyByPath(LibPath);
             Result := BuildSuccessResponse(RequestId, '{"success":true,"component":"'
@@ -11466,7 +11469,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model name');
+        SchBeginEdit(SchDoc, 'Set model name');
         SchBeginModify(Target);
         Try Target.ModelName := NewName; Except End;
         LinkCount := 0;
@@ -11478,7 +11481,7 @@ Begin
             If Link <> Nil Then Try Link.EntityName := NewName; Except End;
         End;
         SchEndModify(Target);
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
+        SchEndEdit(SchDoc, 'Set model name');
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
@@ -11533,9 +11536,9 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try Target.ModelName := NewName; Except End;
-    SchServer.ProcessControl.PostProcess(SchLib, 'Set model name');
+    SchEndEdit(SchLib, 'Set model name');
     MarkLibDirty(SchLib);
 
     RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
@@ -11606,7 +11609,7 @@ Begin
         SourcesCleared := 0;
         LinksRepaired := 0;
         SourcesSet := 0;
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
 
         For C := 0 To CompNames.Count - 1 Do
         Begin
@@ -11769,7 +11772,7 @@ Begin
             End;
         End;
 
-        SchServer.ProcessControl.PostProcess(SchLib, 'Normalize implementations');
+        SchEndEdit(SchLib, 'Normalize implementations');
         MarkLibDirty(SchLib);
     Finally
         CompNames.Free;
@@ -11846,7 +11849,7 @@ Begin
         End;
 
         Updated := 0;
-        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model source');
+        SchBeginEdit(SchDoc, 'Set model source');
         ImplIter := Component.SchIterator_Create;
         Try
             ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
@@ -11878,7 +11881,7 @@ Begin
         Finally
             Component.SchIterator_Destroy(ImplIter);
         End;
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model source');
+        SchEndEdit(SchDoc, 'Set model source');
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
@@ -11902,7 +11905,7 @@ Begin
     End;
 
     Updated := 0;
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     ImplIter := Component.SchIterator_Create;
     Try
         ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
@@ -11936,7 +11939,7 @@ Begin
     Finally
         Component.SchIterator_Destroy(ImplIter);
     End;
-    SchServer.ProcessControl.PostProcess(SchLib, 'Set model source');
+    SchEndEdit(SchLib, 'Set model source');
     MarkLibDirty(SchLib);
 
     RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
@@ -12181,7 +12184,7 @@ Begin
         If NewComp = Nil Then Begin Inc(Failed); Continue; End;
         NewComp.LibReference := Name;
 
-        SchServer.ProcessControl.PreProcess(DestLib, '');
+        SchBeginEdit(DestLib, '');
         If Existing <> Nil Then Try DestLib.RemoveSchComponent(Existing); Except End;
         DestLib.AddSchComponent(NewComp);
         { REGISTER IT IN THE DESTINATION, or the move does not reach disk.
@@ -12194,13 +12197,13 @@ Begin
                 Nil, Nil, SCHM_PrimitiveRegistration,
                 NewComp.I_ObjectAddress);
         Except End;
-        SchServer.ProcessControl.PostProcess(DestLib, 'Move component');
+        SchEndEdit(DestLib, 'Move component');
 
         If DeleteFromSource Then
         Begin
-            SchServer.ProcessControl.PreProcess(SourceLib, '');
+            SchBeginEdit(SourceLib, '');
             Try SourceLib.RemoveSchComponent(SourceComp); Except End;
-            SchServer.ProcessControl.PostProcess(SourceLib, 'Move component');
+            SchEndEdit(SourceLib, 'Move component');
         End;
 
         Inc(Moved);
@@ -12340,7 +12343,7 @@ Begin
     Moved := 0;
     Skipped := 0;
     Failed := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Remaining := NamesStr;
     While True Do
     Begin
@@ -12381,7 +12384,7 @@ Begin
 
         Inc(Moved);
     End;
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
 
     Try DestLib.Board.ViewManager_FullUpdate; Except End;
     Try DestLib.RefreshView; Except End;
@@ -12486,7 +12489,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     If Existing <> Nil Then
     Begin
         Try DestLib.RemoveComponent(Existing); Except End;
@@ -12495,7 +12498,7 @@ Begin
     NewFP := DestLib.CreateNewComponent;
     If NewFP = Nil Then
     Begin
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Result := BuildErrorResponse(RequestId, 'COPY_FAILED', 'CreateNewComponent returned Nil');
         Exit;
     End;
@@ -12503,7 +12506,7 @@ Begin
     Aligned := AlignCopiedFootprint(Footprint, NewFP);
     Try NewFP.Name := NewName; Except End;
     DestLib.RegisterComponent(NewFP);
-    PCBServer.PostProcess;
+    PcbEndEdit(0);
 
     Try DestLib.Board.ViewManager_FullUpdate; Except End;
     Try DestLib.RefreshView; Except End;
@@ -13079,7 +13082,7 @@ Begin
     Notes := '';
     PadsJson := '';
     SeenPads := TStringList.Create;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         GrpIter := Target.GroupIterator_Create;
         Try
@@ -13362,7 +13365,7 @@ Begin
             Target.GroupIterator_Destroy(GrpIter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Try SeenPads.Free; Except End;
     End;
 
@@ -14349,7 +14352,7 @@ Begin
         ClearedTgt := 0;
         Synced := 0;
 
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         Try
             For C := 0 To AllNames.Count - 1 Do
             Begin
@@ -14389,7 +14392,7 @@ Begin
                 End;
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
         End;
 
         SchLib.GraphicallyInvalidate;
@@ -14660,7 +14663,7 @@ Begin
     Changed := 0;
     FailedCount := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Trim(OpsStr) <> '' Do
         Begin
@@ -15132,7 +15135,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { NOTHING PARSED IS A FAILURE, not a successful run over no work.    }
@@ -15526,7 +15529,7 @@ Begin
     { and reading its I_ObjectAddress faulted with an access violation no  }
     { Try catches (measured on AD 26.11, issue #135). Altium's own library }
     { scripts remove primitives within PreProcess / PostProcess alone.     }
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { Bounded, so a RemovePCBObject that silently refuses cannot spin  }
         { here forever re-finding the same primitive.                       }
@@ -15593,7 +15596,7 @@ Begin
             If Not Found Then Break;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         If WasCurrent Then
         Begin
             PcbLib.SetState_CurrentComponent(Target);
@@ -15872,7 +15875,7 @@ Begin
     Mismatch := '';
     Seen := #9;
 
-    If Not DryRun Then PCBServer.PreProcess;
+    If Not DryRun Then PcbBeginEdit(0);
     Try
         { Tracks: by their end points. }
         GrpIter := Footprint.GroupIterator_Create;
@@ -16135,7 +16138,7 @@ Begin
             Footprint.GroupIterator_Destroy(GrpIter);
         End;
     Finally
-        If Not DryRun Then PCBServer.PostProcess;
+        If Not DryRun Then PcbEndEdit(0);
     End;
 
     { show: make the footprint the library's current one, so it can be     }
@@ -16270,7 +16273,7 @@ Begin
     Found := '';
     Items := '';
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := PcbLib.LibraryIterator_Create;
         Try
@@ -16339,7 +16342,7 @@ Begin
             PcbLib.LibraryIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     If Moved > 0 Then
@@ -16636,7 +16639,7 @@ Begin
     Nth := 0;
     Changed := 0;
     Seen := #9;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         GrpIter := Footprint.GroupIterator_Create;
         Try
@@ -16729,7 +16732,7 @@ Begin
             Footprint.GroupIterator_Destroy(GrpIter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     If (WantIndex > 0) And (WantIndex > Nth) Then
@@ -16833,7 +16836,7 @@ Begin
     PinsBefore := SymbolPinCount(Comp);
     Stopped := '';
 
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         If WantParts > 0 Then
         Begin
@@ -16876,7 +16879,7 @@ Begin
             Comp.DisplayMode := 0;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
     End;
     PinsAfter := SymbolPinCount(Comp);
     Try SchLib.GraphicallyInvalidate; Except End;
@@ -17012,7 +17015,7 @@ Begin
     Changed := (AddStr <> '') Or (RemoveStr <> '');
     If Changed Then
     Begin
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         Try
             While RemoveStr <> '' Do
             Begin
@@ -17029,7 +17032,7 @@ Begin
                 If Trim(Item) <> '' Then Comp.Alias_Add(Trim(Item));
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
         End;
         MarkDocDirtyByPath(LibPath);
     End;
@@ -17532,7 +17535,7 @@ Begin
     Changed := 0;
     Try
         SplitTildes(Spec, Items);
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         Try
             For I := 0 To Items.Count - 1 Do
             Begin
@@ -17568,7 +17571,7 @@ Begin
                 End;
             End;
         Finally
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
         End;
     Finally
         Items.Free;
@@ -17715,7 +17718,7 @@ Begin
     Written := 0;
     Victims := TInterfaceList.Create;
     Items := TStringList.Create;
-    SchServer.ProcessControl.PreProcess(SchLib, '');
+    SchBeginEdit(SchLib, '');
     Try
         Iter := Comp.SchIterator_Create;
         Try
@@ -17750,7 +17753,7 @@ Begin
             If SupPn <> '' Then Begin AddLibSymbolParameter(Comp, 'Supplier Part Number ' + N, SupPn); Inc(Written); End;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
         Items.Free;
     End;
     If (Removed > 0) Or (Written > 0) Then MarkLibDirty(SchLib);
@@ -18278,7 +18281,7 @@ Begin
     Drawn := 0;
     TotalCleared := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Names <> '' Do
         Begin
@@ -18417,7 +18420,7 @@ Begin
                 + JsonFloat('height_mm', CoordToMM(BT - BB)));
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         If SavedName <> '' Then
         Begin
             SavedCurrent := FootprintByName(PcbLib, SavedName);
@@ -20541,7 +20544,7 @@ Begin
         Exit;
     End;
 
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try SchDoc.AddSchObject(Comp); Except End;
     Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
     OrientationVal := 0;
@@ -20563,7 +20566,7 @@ Begin
         Try Comp.CurrentPartID := PartId; Except End;
     End;
     SchRegisterObject(SchDoc, Comp);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     MarkDocDirtyByPath(SchDoc.DocumentName);
 
     { Read back what Altium built. DatabaseTableName is empty on a part     }

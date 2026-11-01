@@ -217,7 +217,7 @@ def test_altium_is_told_api_first_then_the_interface_without_asking():
     assert "drive the interface yourself" in text
     assert "never ask the user to click" in " ".join(text.split())
     assert "ask the user before driving" not in text
-    assert "app_click_menu" in text, (
+    assert "app_menu" in text, (
         "name the tools, or an agent does not recognise the ones meant")
 
 
@@ -225,7 +225,7 @@ def test_altium_is_told_api_first_then_the_interface_without_asking():
 def test_backends_without_ui_tools_are_not_told_about_them(backend):
     """KiCad and EasyEDA register no app_ interface tools."""
     text = build_server_instructions("full", backend)
-    assert "app_click_menu" not in text
+    assert "app_menu" not in text
     assert "API FIRST" not in text
 
 

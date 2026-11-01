@@ -98,9 +98,16 @@ def registered_tools() -> set[str]:
     from mcp.server.fastmcp import FastMCP
     from eda_agent.tools import register_backend
 
+    from eda_agent.tools.folds import FOLDED_BATCH, FOLDS, HIDDEN, built_members
+
     mcp = FastMCP("test")
     register_backend(mcp, "altium")
-    return {t.name for t in asyncio.run(mcp.list_tools())}
+    advertised = {t.name for t in asyncio.run(mcp.list_tools())}
+    # A family member, a hidden single tool and a folded batch tool are
+    # no longer advertised but stay callable by name, so a criterion that
+    # names one still names a real tool.
+    folded = {m for f in FOLDS for m in built_members(f).values()}
+    return advertised | folded | set(HIDDEN) | set(FOLDED_BATCH)
 
 
 def test_every_tool_a_criterion_names_actually_exists(registered_tools):

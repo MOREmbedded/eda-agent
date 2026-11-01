@@ -48,7 +48,10 @@ def _surface(backend: str, toolset: str = "full") -> set[str]:
     try:
         registry = ToolRegistry()
         register_backend(registry, backend, toolset)
-        return {t.name for t in asyncio.run(registry.list_tools())}
+        # Members of a family tool count: tool_guide's reply says how to
+        # reach each one (its ``reach``).
+        return ({t.name for t in asyncio.run(registry.list_tools())}
+                | set(getattr(registry, "hidden", {}) or {}))
     finally:
         set_active_backend(previous or "")
 

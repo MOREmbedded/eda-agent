@@ -264,13 +264,23 @@ def _pad(p: dict) -> Pad:
         copper.append(PadCopper(layer=layer, shape=shape, w=_m(w), h=_m(h),
                                 corner_pct=float(cr or 0), offset_x=_m(ox),
                                 offset_y=_m(oy)))
-    return Pad(comp=p.get("comp", ""), name=p.get("name", ""),
+    return _mask(p, Pad(comp=p.get("comp", ""), name=p.get("name", ""),
                x=_m(p["x"]), y=_m(p["y"]), rotation=float(p.get("rotation", 0.0)),
                net=p.get("net", ""), copper=copper, hole=_m(p.get("hole", 0)),
                hole_type=p.get("hole_type", "round"),
                hole_width=_m(p.get("hole_width", 0)),
                hole_rotation=float(p.get("hole_rotation", 0.0)),
-               plated=bool(p.get("plated", True)))
+               plated=bool(p.get("plated", True))))
+
+
+def _mask(o: dict, obj):
+    """The solder mask the reply gives a pad or via; see LmMaskJson."""
+    tent = o.get("tent") or [False, False]
+    obj.tent_top, obj.tent_bottom = bool(tent[0]), bool(tent[1])
+    obj.mask_from_hole = bool(o.get("from_hole"))
+    if o.get("mask"):
+        obj.mask_manual = [_m(o["mask"][0]), _m(o["mask"][1])]
+    return obj
 
 
 def _copper(items: list[dict], board: LayoutBoard) -> None:
@@ -297,8 +307,8 @@ def _copper(items: list[dict], board: LayoutBoard) -> None:
             # Only the layers that differ: a removed pad falls to the hole.
             sizes = {lay: _m(d) for lay, d in o.get("sizes") or []
                      if abs(_m(d) - diameter) > 1e-6}
-            board.vias.append(Via(_m(v[0]), _m(v[1]), diameter, _m(v[3]),
-                                  o.get("low", ""), o.get("high", ""), net, sizes, comp))
+            board.vias.append(_mask(o, Via(_m(v[0]), _m(v[1]), diameter, _m(v[3]),
+                                  o.get("low", ""), o.get("high", ""), net, sizes, comp)))
         elif k == "region":
             outline = [_pt(v) for v in o.get("pts") or []]
             if len(outline) < 3:
@@ -580,7 +590,8 @@ def read_board(send: Send, page: int = PAGE,
     board.meta["origin"] = [_m(v) for v in head.get("origin") or [0, 0]]
     board.meta["mech_layers"] = head.get("mech_layers") or []
 
-    board.pads = [_pad(p) for p in _paged(send, "pads", "pads", page)]
+    raw_pads = _paged(send, "pads", "pads", page)
+    board.pads = [_pad(p) for p in raw_pads]
     by_comp: dict[str, list[Pad]] = {}
     for p in board.pads:
         if p.comp:
@@ -589,7 +600,13 @@ def read_board(send: Send, page: int = PAGE,
     comps = send(COMMAND, {"section": "components"})
     board.components = _components(comps, _courtyard_layers(head), by_comp)
 
-    _copper(_paged(send, "copper", "copper", page), board)
+    raw_copper = _paged(send, "copper", "copper", page)
+    _copper(raw_copper, board)
+    # A script older than the mask read sends no tenting: the sliver check
+    # then says it did not run rather than take every via as open. Pads or
+    # vias, whichever the board has: a board of vias alone read as unread.
+    board.meta["mask_read"] = (any("tent" in p for p in raw_pads)
+                               or any("tent" in o for o in raw_copper if o.get("k") == "via"))
     _pour_nets(board)
     repair_pour_nets(board)
     clean_cutouts(board)

@@ -11,10 +11,11 @@ DRC's verdict on the routed board. Nothing is applied here.
 from __future__ import annotations
 
 import time
+from collections import Counter
 from typing import Any
 
 from ..bench import copy_board
-from ..drc import run_drc
+from ..drc import verdict
 from ..model import LayoutBoard
 from .router import route_adaptive
 from .stages import finish_report
@@ -40,10 +41,13 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     out = r.apply()
     new_tracks = out.tracks[len(board.tracks):]
     new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
-    drc = run_drc(out)
+    mask_note = _mask_like_board(board, out.vias[len(board.vias):])
+    v = verdict(out)
+    drc = v["report"]
     stages = finish_report(r, out)
     pub = live.publish_safe(out, f"Routed: {len(drc.unrouted)} nets still open, "
-                      f"{len(drc.violations)} clearance violations.", "route")
+                      f"{len(drc.violations)} clearance violations, "
+                      f"{v['counts']['mask_sliver']} mask slivers.", "route")
     rep = r.report
     wanted = set(nets) if nets else None
     unrouted = {n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
@@ -55,7 +59,12 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
             "completion": round(drc.completion, 4),
             "missing_connections": drc.missing_connections,
             "unrouted_nets": len(unrouted),
-            "violations": len(drc.violations),
+            # pass, fail or incomplete: see drc.verdict. Zero violations
+            # with a rule left unevaluated is incomplete, not a pass.
+            "drc_status": v["status"],
+            "violations": len(v["violations"]),
+            "mask_slivers": v["counts"]["mask_sliver"],
+            "unevaluated_rules": len(v["unevaluated_rules"]),
             "tracks": len(new_tracks),
             "vias": len(new_vias),
             "routing_layers": list(r.grid.layers),
@@ -80,13 +89,15 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "fanout": stages["fanout"],
         "pin_lanes": stages["pin_lanes"],
         "fallback": stages["fallback"],
-        "violations": [v.as_dict() for v in drc.violations[:50]],
+        "violations": [x.as_dict() for x in v["violations"][:50]],
+        "unevaluated_rules": v["unevaluated_rules"],
+        "not_checked": v["not_checked"],
         "tracks": [{"x1": t.x1, "y1": t.y1, "x2": t.x2, "y2": t.y2, "width": t.width,
                     "layer": t.layer, "net_name": t.net} for t in new_tracks],
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": _notes(r) + _stage_notes(stages),
+        "notes": _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
     }
 
 
@@ -103,6 +114,32 @@ def _stage_notes(stages: dict) -> list[str]:
         notes.append(f"{len(stages['unreached'])} pads could not be reached; unreached gives "
                      "each one's place and the nets in its way.")
     return notes
+
+
+def _mask_like_board(board: LayoutBoard, new) -> list[str]:
+    """Give the router's vias the solder mask most of the board's vias have.
+
+    A via placed later takes its tenting and expansion from Altium, not
+    from the router, so the sliver check judges new vias like the board's
+    own. With no vias to go by they stay open, which can only find more
+    slivers, never fewer.
+    """
+    old = [x for x in board.vias if not x.comp]
+    if not new or not board.meta.get("mask_read"):
+        return []
+    if not old:
+        return ["New vias were judged with open solder mask on both sides: the board "
+                "has no vias of its own to say whether vias are tented."]
+    tt, tb, fh, manual = Counter(
+        (x.tent_top, x.tent_bottom, x.mask_from_hole, tuple(x.mask_manual or ()))
+        for x in old).most_common(1)[0][0]
+    for x in new:
+        x.tent_top, x.tent_bottom, x.mask_from_hole = tt, tb, fh
+        x.mask_manual = list(manual) or None
+    sides = {(True, True): "tented on both sides", (False, False): "open on both sides",
+             (True, False): "tented on top only", (False, True): "tented on the bottom only"}
+    return [f"New vias were judged {sides[(tt, tb)]}, like most of the board's vias; check "
+            "the mask of the placed vias if Altium's via defaults differ."]
 
 
 def _unique_vias(existing, new) -> list:

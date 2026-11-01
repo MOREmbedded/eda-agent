@@ -333,12 +333,20 @@ def register_meta_tools(mcp):
 
         _SCHEMA_CAP = 40
 
-        tools = await mcp.list_tools()
+        from .folds import reach_of
+
+        tools = list(await mcp.list_tools())
+        # Members of a family tool and single-item tools are not
+        # advertised; they are listed with how to reach them.
+        tools += list((getattr(mcp, "hidden", {}) or {}).values())
         q = query.lower().strip()
         out = []
         cat_counts: dict[str, int] = {}
         for t in tools:
             md = tool_metadata(t.name)
+            reach = reach_of(t.name)
+            if reach:
+                md = dict(md, reach=reach)
             if category and md["category"] != category:
                 continue
             if maturity and md["maturity"] != maturity:
@@ -403,7 +411,7 @@ def register_meta_tools(mcp):
         import json as _json
 
         tools = await mcp.list_tools()
-        known = {t.name for t in tools}
+        known = {t.name for t in tools} | set(getattr(mcp, "hidden", {}) or {})
         if name not in known:
             return {"error": f"unknown tool: {name}"}
         # Prevent self-recursion; tool_catalog is fine to invoke.
@@ -417,10 +425,16 @@ def register_meta_tools(mcp):
         content = result[0] if isinstance(result, tuple) else result
         if isinstance(content, list) and content and hasattr(content[0], "text"):
             try:
-                return {"tool": name, "result": _json.loads(content[0].text)}
+                out = {"tool": name, "result": _json.loads(content[0].text)}
             except (ValueError, TypeError):
-                return {"tool": name, "result": content[0].text}
-        return {"tool": name, "result": content}
+                out = {"tool": name, "result": content[0].text}
+        else:
+            out = {"tool": name, "result": content}
+        from .folds import FOLDED_BATCH
+        if name in FOLDED_BATCH:
+            out["note"] = (f"{name} is now {FOLDED_BATCH[name]}(items=[...]), "
+                           "which runs the same handler")
+        return out
 
 
 async def _run_declared_menu(bridge, menu_path: str) -> dict:
@@ -912,6 +926,9 @@ def register_application_tools(mcp):
         Returns:
             {restored, removed, missing_blobs}.
         """
+        from ..saving import refused, saving_off
+        if saving_off():
+            return refused("A restore overwrites the project's files.")
         project_dir, _project_file, err = await _resolve_project_dir()
         if err:
             return err
@@ -1050,7 +1067,8 @@ def register_application_tools(mcp):
         if isinstance(reply, dict) and reply.get("stopped") is True:
             out = {"attached": False, "stopped": True,
                    "message": "Detached from Altium Designer and stopped MCP server"}
-            for key in ("edited_saved", "clean_left_alone"):
+            for key in ("edited_saved", "clean_left_alone",
+                        "saving_off", "not_saved", "saving_note"):
                 if key in reply:
                     out[key] = reply[key]
             return out
@@ -1081,9 +1099,11 @@ def register_application_tools(mcp):
             Altium loaded scripts from elsewhere), ``loop_workspace_dir``
             (the folder the answering loop takes requests from) and
             ``server_workspace_dir`` (this server's), ``unit_stamps``,
-            ``stale_units``, ``unstamped_units``, ``other_servers`` (other
-            eda-agent servers on this workspace) and ``warnings``.
+            ``stale_units``, ``unstamped_units``, ``saving_allowed`` (False
+            while the dashboard's Saving switch is off), ``other_servers``
+            (other eda-agent servers on this workspace) and ``warnings``.
         """
+        from ..saving import saving_off
         bridge = get_bridge()
         script_path = _bundled_script_path()
         servers, duplicate = _other_servers()
@@ -1164,6 +1184,8 @@ def register_application_tools(mcp):
             # reports it. Empty from a script older than 2026.10.21.
             "loop_workspace_dir": result.get("workspace_dir") or "",
             "server_workspace_dir": _server_workspace_dir(),
+            # The dashboard's Saving switch: False means every save is refused.
+            "saving_allowed": not saving_off(),
             **stamp_fields,
             "other_servers": servers,
             "warnings": warnings,

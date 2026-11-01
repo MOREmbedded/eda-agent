@@ -208,6 +208,19 @@ def text_of(hwnd: int) -> list:
     return out
 
 
+def element_info(hwnd: int, name: str,
+                 control_type: Optional[str] = None) -> Optional[dict]:
+    """One element's description by name or automation id, or None.
+
+    For a caller that waits for an element to appear or go, such as a
+    popup drawn inside the main window rather than as a dialog of its own.
+    """
+    if not _AVAILABLE:
+        return None
+    hit = _find(hwnd, name, control_type)
+    return hit[1] if hit else None
+
+
 def _find(hwnd: int, name: str, control_type: Optional[str] = None):
     """One element by name, ignoring case, accelerators and curly quotes."""
     def flat(text):

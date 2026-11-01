@@ -161,6 +161,8 @@ Var
     Doc : IDocument;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    View : IServerDocumentView;
+    ServerDoc : IServerDocument;
     Data, FileName : String;
 Begin
     Data := '';
@@ -180,9 +182,29 @@ Begin
 
     // DM_FocusedDocument is UI-focus-dependent and returns Nil when no
     // editor window holds focus (e.g. right after a programmatic
-    // create/place). Fall back to the SCH then PCB server module's
-    // current document, which track the last-shown sheet/board
-    // independent of workspace focus.
+    // create/place). The editor's current view names the document on
+    // screen, a free library included; the SCH and PCB servers' current
+    // documents come last, as they can name a sheet shown earlier.
+    If Data = '' Then
+    Begin
+        ServerDoc := Nil;
+        Try
+            View := Client.CurrentView;
+            If View <> Nil Then ServerDoc := View.OwnerDocument;
+        Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            FileName := '';
+            Try FileName := ServerDoc.FileName; Except End;
+            If FileName <> '' Then
+            Begin
+                Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
+                Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
+                Data := Data + ',"document_kind":"' + EscapeJsonString(ServerDoc.Kind) + '"';
+                Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            End;
+        End;
+    End;
     If Data = '' Then
     Begin
         SchDoc := Nil;
@@ -486,6 +508,17 @@ Begin
     End;
     If SaveBeforeClose Then
     Begin
+        { Saving switched off in the dashboard: skipping the save and then
+          reopening from disk would throw the unsaved changes away, so the
+          reload is refused instead, which leaves them where they are. }
+        If SaveHeldBack(FilePath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+                'Saving is switched off, so ' + FilePath + ' was not saved and '
+                + 'was not reloaded: reloading would discard its unsaved changes. '
+                + 'Turn Saving on, or reload with discard_changes to throw them away.');
+            Exit;
+        End;
         Try ServerDoc.DoFileSave(''); Except
             Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Could not save ' + FilePath);
             Exit;
@@ -1028,6 +1061,9 @@ Begin
 
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except End;
+    { Edits made through the API leave Modified False; the bridge's own   }
+    { record of them counts too, as it does when a document is closed.    }
+    If DocWasEdited(FilePath) Then WasModified := True;
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
     Try ServerDoc.SetModified(True); Except End;
@@ -1269,6 +1305,10 @@ Begin
             PCBServer.PostProcess;
             PcbOk := True;
         Except End;
+    { Raw calls on purpose, past the PcbEndEdit count, which now matches. }
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchHeld := False;
 
     { The schematic server keeps its own transaction, and a SchLib handler    }
     { can die the same way, so close that too. Its PostProcess takes the      }
