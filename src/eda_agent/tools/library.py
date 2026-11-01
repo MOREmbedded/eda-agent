@@ -1605,127 +1605,6 @@ def register_library_tools(mcp):
         }
 
     @mcp.tool()
-    async def lib_create_multipart_symbol(
-        name: str,
-        parts: list[dict[str, Any]],
-        shared_pins: Optional[list[dict[str, Any]]] = None,
-        designator_prefix: str = "U",
-        description: str = "",
-    ) -> dict[str, Any]:
-        """Create a complete multipart SchLib symbol in one MCP call.
-
-        Each part contains ``name``, ``left_pins`` and ``right_pins`` in
-        top-to-bottom order. Pins are assigned OwnerPartId 1..N. Optional
-        ``shared_pins`` are added with OwnerPartId 0 and therefore appear on
-        every part (normally supply pins). Every part receives its own body
-        rectangle and becomes independently visible in Altium.
-        """
-        from eda_agent.design.symbol_gen import generate_ic_symbol
-
-        if not parts:
-            return {
-                "ok": False,
-                "reason": "parts must contain at least one symbol part",
-            }
-        if len(parts) > 255:
-            return {
-                "ok": False,
-                "reason": "parts cannot contain more than 255 entries",
-            }
-
-        geometries = []
-        for part_id, part in enumerate(parts, 1):
-            left = list(part.get("left_pins", []))
-            right = list(part.get("right_pins", []))
-            if not left and not right:
-                return {"ok": False, "reason": f"part {part_id} has no pins"}
-            geometries.append(generate_ic_symbol(left, right))
-        for pin in shared_pins or []:
-            if not str(pin.get("designator", "")).strip():
-                return {
-                    "ok": False,
-                    "reason": "every shared pin requires a designator",
-                }
-
-        bridge = get_bridge()
-        created = await bridge.send_command_async(
-            "library.create_symbol",
-            {
-                "name": name,
-                "designator_prefix": designator_prefix,
-                "description": description,
-                "part_count": str(len(parts)),
-            },
-        )
-
-        pin_ops: list[str] = []
-        part_summary: list[dict[str, Any]] = []
-        for part_id, (part, geom) in enumerate(zip(parts, geometries), 1):
-            left = list(part.get("left_pins", []))
-            right = list(part.get("right_pins", []))
-            for pin in geom.pins:
-                pin_ops.append(";".join([
-                    f"designator={pin['designator']}",
-                    f"name={pin['name']}",
-                    f"x={pin['x']}", f"y={pin['y']}",
-                    f"length={pin['length']}",
-                    f"rotation={pin['rotation']}",
-                    f"electrical_type={pin.get('electrical_type', 'passive')}",
-                    "hidden=false", f"owner_part_id={part_id}",
-                ]))
-            part_summary.append({
-                "part_id": part_id,
-                "name": str(part.get("name", part_id)),
-                "pins": len(geom.pins),
-                "width_mils": geom.width_mils,
-                "height_mils": geom.height_mils,
-            })
-
-        for pin in shared_pins or []:
-            designator = str(pin.get("designator", "")).strip()
-            pin_ops.append(";".join([
-                f"designator={designator}",
-                f"name={str(pin.get('name', '')).strip()}",
-                f"x={_snap(round(pin.get('x', 0)))}",
-                f"y={_snap(round(pin.get('y', 0)))}",
-                f"length={_snap(round(pin.get('length', 200)))}",
-                f"rotation={round(pin.get('rotation', 0))}",
-                f"electrical_type={pin.get('electrical_type', 'power')}",
-                f"hidden={'true' if pin.get('hidden') else 'false'}",
-                "owner_part_id=0",
-            ]))
-
-        pins_result = await bridge.send_command_async(
-            "library.add_pins", {"pins": "~~".join(pin_ops)}
-        )
-        rectangles = []
-        for part_id, geom in enumerate(geometries, 1):
-            await bridge.send_command_async(
-                "library.set_active_part", {"part_id": part_id}
-            )
-            body = geom.body
-            rectangles.append(await bridge.send_command_async(
-                "library.add_symbol_rectangle",
-                {
-                    "x1": body["x1"], "y1": body["y1"],
-                    "x2": body["x2"], "y2": body["y2"],
-                    "fill_color": 8454143, "border_color": 0,
-                },
-            ))
-        await bridge.send_command_async(
-            "library.set_active_part", {"part_id": 1}
-        )
-        return {
-            "symbol": name,
-            "part_count": len(parts),
-            "shared_pin_count": len(shared_pins or []),
-            "parts": part_summary,
-            "create": created,
-            "pins_result": pins_result,
-            "rectangle_results": rectangles,
-        }
-
-    @mcp.tool()
     async def lib_create_symbol_in_parts(
         name: str,
         parts: list[dict[str, Any]],
@@ -1733,6 +1612,7 @@ def register_library_tools(mcp):
         description: str = "",
         pin_length: int = 200,
         pin_pitch: int = 100,
+        shared_pins: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Create a multi-part IC symbol, each part with its own body, in ONE call.
 
@@ -1740,8 +1620,8 @@ def register_library_tools(mcp):
         a relay as coil and contacts. Each part is laid out as
         lib_create_ic_symbol lays out one (pins left and right, origin at
         the top-left pin's wire end, 100-mil grid), gets its own body
-        rectangle and its own pins. Put supply pins on a part of their
-        own.
+        rectangle and its own pins. Supply pins go either on a part of
+        their own or in ``shared_pins``, which Altium shows on every part.
 
         Args:
             name: Component name in the active SchLib.
@@ -1752,9 +1632,15 @@ def register_library_tools(mcp):
             designator_prefix: e.g. "U".
             description: Component description.
             pin_length, pin_pitch: mils, multiples of 100.
+            shared_pins: Pins on every part (owner part 0), normally supply
+                pins: ``designator``, ``name``, ``x`` and ``y`` in mils, and
+                optionally ``length`` (default ``pin_length``), ``rotation``,
+                ``electrical_type`` (default "power") and ``hidden``. A
+                designator used on a part as well is refused.
 
         Returns:
-            ``symbol``, ``part_count``, ``parts`` (pins and body per part),
+            ``symbol``, ``part_count``, ``shared_pin_count``, ``parts``
+            (pins and body per part),
             and the Altium replies; ``ok`` false with ``stage`` when a step
             did not take.
         """
@@ -1780,7 +1666,24 @@ def register_library_tools(mcp):
                 if first != number:
                     return {"ok": False, "reason": f"pin {pin['designator']} is on "
                             f"parts {first} and {number}"}
-        grouped = _grouped_designators([p for g in geoms for p in g.pins])
+        # Owner part 0 puts a pin on every part. The Pascal takes any explicit
+        # owner_part_id for a pin, 0 included, where a body or an arc treats
+        # 0 as unset; and _pins_payload keeps a 0 because it tests for None.
+        shared: list[dict[str, Any]] = []
+        for spec in shared_pins or []:
+            designator = str(spec.get("designator", "")).strip() if isinstance(spec, dict) else ""
+            if not designator:
+                return {"ok": False, "reason": "every shared pin needs a designator"}
+            key = designator.upper()
+            if key in where:
+                owner = where[key]
+                return {"ok": False, "reason": f"pin {designator} is in shared_pins"
+                        + (f" and on part {owner}" if owner else " twice")}
+            where[key] = 0
+            shared.append({**spec, "designator": designator, "owner_part_id": 0,
+                           "length": spec.get("length", pin_length),
+                           "electrical_type": spec.get("electrical_type", "power")})
+        grouped = _grouped_designators([p for g in geoms for p in g.pins] + shared)
         if grouped:
             return {"ok": False, "reason": "one pin per designator; split these: "
                     + ", ".join(grouped)}
@@ -1797,11 +1700,12 @@ def register_library_tools(mcp):
             "fill_color": 8454143, "border_color": 0, "owner_part_id": str(number)})
             for number, geom in enumerate(geoms, 1)]
         placed = [{**pin, "owner_part_id": number}
-                  for number, geom in enumerate(geoms, 1) for pin in geom.pins]
+                  for number, geom in enumerate(geoms, 1) for pin in geom.pins] + shared
         pins_reply = await bridge.send_command_async(
             "library.add_pins", {"pins": _pins_payload(placed)[0]})
         done = isinstance(pins_reply, dict) and pins_reply.get("added") == len(placed)
         result = {"ok": done, "symbol": name, "part_count": len(parts),
+                  "shared_pin_count": len(shared),
                   "parts": [{"part": number, "pins": len(geom.pins), "body": geom.body,
                              "width_mils": geom.width_mils, "height_mils": geom.height_mils}
                             for number, geom in enumerate(geoms, 1)],

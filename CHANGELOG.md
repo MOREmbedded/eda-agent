@@ -16,6 +16,19 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Multipart symbols: one tool, upstream's, with this fork's shared pins.**
+  `lib_create_multipart_symbol` (this fork) and `lib_create_symbol_in_parts`
+  (upstream) both made a multi-part symbol in one call, and neither did all
+  of it. Upstream's is the base: it checks each step took, refuses a
+  designator used on two parts, and draws every body before any pin, where
+  this fork's drew the bodies last and so covered the pin names. What it
+  lacked was this fork's `shared_pins`, pins on owner part 0 that Altium
+  shows on every part, normally supply pins; it takes them now. A shared
+  designator also used on a part, or given twice, is refused before
+  anything reaches Altium. Checked end to end: the Pascal takes any explicit
+  pin owner, 0 included (a body or an arc treats 0 as unset), and
+  `_pins_payload` sends a 0 because it tests for None.
+
 - **Phase gates: upstream's kept, this fork's NPI gates removed.** This
   fork's `design/npi.py` (`design_npi_gate`, `_record`, `_status`) and
   upstream's `design/phase_gates.py` (`design_phase_gate`, `_answer`,
