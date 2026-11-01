@@ -860,8 +860,6 @@ def main() -> int:
         help="Fast offline preconditions (workspace, pointer file, scripts)",
     )
 
-    subparsers.add_parser("a365-login", help="Authorize Nexar and store the token for Altium 365 read tools")
-    subparsers.add_parser("a365-logout", help="Remove the stored Nexar token")
 
     # doctor -- full preflight, talks to Altium
     doctor_p = subparsers.add_parser(
@@ -998,7 +996,7 @@ def main() -> int:
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
-    # scripts-path/install-scripts and a365-login/a365-logout -- this
+    # scripts-path/install-scripts and altium365-login/altium365-logout -- this
     # codebase has no nested-subcommand precedent to follow instead.
     profile_init_p = subparsers.add_parser(
         "profile-init",
@@ -1203,6 +1201,12 @@ def main() -> int:
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
 
+    # altium365-logout -- forget the saved Nexar login
+    subparsers.add_parser(
+        "altium365-logout",
+        help="Delete the saved Nexar login, so the next altium365_ call signs in again.",
+    )
+
     # sdk-reach -- how much of Altium's SDK the property tools reach
     sdk_p = subparsers.add_parser(
         "sdk-reach",
@@ -1369,24 +1373,6 @@ def main() -> int:
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
         return cli.cmd_install_scripts(dest=args.dest, force=args.force)
-    if args.command in ("a365-login", "a365-logout"):
-        from .engineering.a365 import TokenStore, interactive_login
-        from .tools.engineering import a365_config
-        try:
-            if args.command == "a365-login":
-                cfg = a365_config()
-                store = TokenStore(cfg.token_store)
-                store.save(interactive_login(
-                    cfg, os.environ.get("EDA_AGENT_NEXAR_CLIENT_SECRET")))
-                print("Altium 365 token stored for the current Windows user")
-            else:
-                store = TokenStore(Path.home() / "EDA Agent" / "a365_token.bin")
-                store.clear()
-                print("Altium 365 token removed")
-            return 0
-        except Exception as exc:
-            print(f"Altium 365 authorization failed: {exc}", file=sys.stderr)
-            return 1
     if args.command == "easyeda-extension":
         return cli.cmd_easyeda_extension(args.action, out=args.out)
     if args.command == "relaunch":
@@ -1439,6 +1425,17 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
+    if args.command == "altium365-logout":
+        # The login is saved encrypted for this Windows user; removing the
+        # file is the whole of signing out, since nothing else holds it.
+        from .altium365 import read_environment
+        saved = read_environment().saved_login
+        if saved.exists():
+            saved.unlink()
+            print(f"Removed the saved Nexar login ({saved})")
+        else:
+            print(f"No saved Nexar login at {saved}")
+        return 0
     if args.command == "sdk-reach":
         import json
         from .diag import sdk_reach

@@ -169,10 +169,7 @@ _OFFLINE_TOOLS = frozenset({
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
-    "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
-    "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
-    "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
-    "eng_a365_doctor", "eng_ltspice_run", "eng_ltspice_trace",
+    "eng_compare_live_ipc_footprint", "eng_ltspice_run", "eng_ltspice_trace",
     # Reads the live schematic (readiness + connectivity) before it can
     # emit anything, unlike the rest of the eng_ltspice_* family, which
     # parses text it was handed.

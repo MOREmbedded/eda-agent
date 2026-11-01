@@ -485,14 +485,14 @@ PVT_CRITERIA: tuple[Criterion, ...] = (
              "lifecycle state",
        why="A board built from unreleased library items cannot be rebuilt "
            "identically, which is the entire point of this gate.",
-       kind=AUTOMATIC, tools=("eng_a365_library_components", "eng_a365_projects"),
+       kind=AUTOMATIC, tools=("altium365_list_components", "altium365_list_projects"),
        passes_when="every component resolves to a released item at an "
                    "approved state"),
     _c(id="pvt.documentation", phase=Phase.PVT,
        title="Full documentation set released under revision control",
        why="The build package is the deliverable. Anything outside "
            "revision control is not part of it.",
-       kind=AUTOMATIC, tools=("proj_run_outjob", "eng_a365_project"),
+       kind=AUTOMATIC, tools=("proj_run_outjob", "altium365_get_project"),
        passes_when="schematic, fab, assembly, BOM and test documents are "
                    "released at one revision"),
     _c(id="pvt.pilot_yield", phase=Phase.PVT,
