@@ -16,6 +16,23 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Phase gates: upstream's kept, this fork's NPI gates removed.** This
+  fork's `design/npi.py` (`design_npi_gate`, `_record`, `_status`) and
+  upstream's `design/phase_gates.py` (`design_phase_gate`, `_answer`,
+  `_standing`) are the same 42 checks over the same five stages, split
+  8/8/9/9/8 with 29 answered by tools in both. Seven of this fork's read as
+  unmatched by wording; each is in upstream's set under another phrasing
+  (`lead-times`, `stack-up`, `fits-enclosure`, `probe-points`,
+  `return-paths`, `tests-traced`, `environment`). Upstream's adds an expiry
+  per check and keeps the same three rules: answers expire, belong to a
+  revision, and a waiver needs a reason. Its own test already resolves
+  every tool a check names, folded members included, which was the guard
+  this fork's test existed for. No ledger existed under
+  `<workspace>/npi/`, so nothing recorded is lost.
+  Carried across: the documentation. Upstream had none, so
+  `docs/NPI_PHASE_GATES.md` now describes upstream's tools, keeping this
+  fork's table of what failing each gate costs.
+
 - **Altium 365: upstream's client kept, this fork's removed.** Both forks
   built the same thing: this fork's `engineering/a365.py` with fifteen
   `eng_a365_*` tools, upstream's `altium365.py` with thirteen `altium365_*`

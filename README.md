@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 682 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 679 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -72,7 +72,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **~682 tools on the default Altium backend** (768+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
+- **~679 tools on the default Altium backend** (765+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
 - **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and the whole list is one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
@@ -407,28 +407,27 @@ Feasibility, prototype, EVT, DVT and PVT as gates the server holds you
 to, rather than a slide nobody opens after kickoff.
 
 ```
-design_npi_gate     what this gate asks, and where it stands
-design_npi_record   answer one criterion, with evidence
-design_npi_status   which gate the programme is actually at
+design_phase_gate      what one stage asks, and where each check stands
+design_phase_answer    record the outcome of one check, with its source
+design_phase_standing  which stage the product is actually in
 ```
 
-42 criteria across the five gates, 29 of them answerable by tools this
-server already has - ERC and DRC results, footprint audits against the
+42 checks across the five stages, 29 of them answered by tools this
+server already has: ERC and DRC results, footprint audits against the
 datasheet, impedance profiles, diff-pair matching, fab-profile DFM,
-part lifecycle, fiducials. The rest need a person, and say so: pilot
-yield, EMC pre-scan and enclosure sign-off are not things a server can
-know. Each criterion records what passing looks like and **why it
-belongs to that gate rather than a later one**.
+part lifecycle, fiducials. The rest need a person, and say so
+(`answered_by: people`): pilot yield, EMC pre-scan and enclosure sign-off
+are not things a server can know. Each check records what counts as done
+and **why it belongs to that stage rather than a later one**.
 
-The gate reports; it does not run the checks. It hands back
-`next_tools` for the blocking automatic ones and
-`awaiting_attestation` for the rest, so the loop stays the client's and
-nothing happens that you did not ask for.
+The gate reports; it does not run the checks. Each check names the tools
+that answer it, the client runs them and writes the outcome back, so the
+loop stays the client's and nothing happens that you did not ask for.
 
-Three rules make it hard to pass by accident: evidence expires, evidence
-belongs to a design revision and stops counting against another one, and
-a waiver without a reason is refused. The current phase is the first
-gate that does not pass - a board whose feasibility gate never closed is
+Three rules make it hard to pass by accident: an answer expires, an
+answer belongs to a board revision and stops counting against another
+one, and a waiver without a reason is refused. The current stage is the
+first one that does not pass: a board whose feasibility never closed is
 at feasibility however much layout has been done.
 
 See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
