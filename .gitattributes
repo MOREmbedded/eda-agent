@@ -1,0 +1,15 @@
+# Every text file in this tree is LF, including on Windows checkouts.
+#
+# pcb.py and project.py were once committed CRLF while their merge base
+# and upstream were LF, which made each of them conflict whole-file on
+# every upstream merge. Pinning the ending here keeps a conflict
+# resolution written on Windows from doing it again.
+* text=auto eol=lf
+
+# Altium simulation data: a text header over a binary payload. Never
+# convert, never diff as text.
+*.sdf binary
+
+# Images.
+*.png binary
+*.jpg binary
