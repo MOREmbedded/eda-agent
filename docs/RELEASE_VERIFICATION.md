@@ -3470,7 +3470,9 @@ No Pascal changed.
 `design_phase_gate`, `design_phase_answer` and `design_phase_standing`
 hold a product to feasibility, prototype, EVT, DVT and PVT;
 `eda-agent sdk-reach` counts the properties Altium's SDK declares that
-the generic tools reach; `design_simulate_deck` runs a deck in ngspice or
+the generic tools reach (that command has since been merged into
+`eda-agent sdk-coverage`, which reads a reflected SDK rather than the
+index this run used); `design_simulate_deck` runs a deck in ngspice or
 LTspice; `footprint_read_ipc_name`, `lib_verify_ipc_names`,
 `lib_check_naming`, `lib_make_name`, `lib_read_pin_table`,
 `design_check_company_rules`, `design_read_rules_export` and
@@ -3482,7 +3484,9 @@ read and write Altium 365.
    prototype, and back in feasibility when asked about revision B.
 2. **SDK reach.** 802 of 2,221 declared properties reached (36.1 %)
    across 46 object types: 464 of 1,040 on the schematic, 338 of 1,181 on
-   the board.
+   the board. Measured with `sdk-reach` against its own SDK index; the
+   figure `sdk-coverage` reports is not comparable, because the two read
+   different dumps of the SDK.
 3. **Simulators.** One RC deck in ngspice-47 and LTspice 24.0.12:
    both 4.96629 V at 5 ms and a 2.1972 ms rise (RC ln 9). A deck calling
    an unknown subcircuit fails in both with the engine's error. A deck

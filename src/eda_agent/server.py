@@ -3,6 +3,7 @@
 """EDA Agent MCP Server - Main entry point + CLI subcommands."""
 
 import argparse
+import functools
 import logging
 import os
 import sys
@@ -702,25 +703,111 @@ def _run_netlist(args) -> int:
     return 1 if triggered else 0
 
 
-def main() -> int:
-    """CLI entry point.
+def command_groups() -> list[tuple[str, tuple[str, ...]]]:
+    """Section headings for `eda-agent --help`, in the order shown.
 
-    Subcommands:
-      serve             -- run the MCP server (default when no args given)
-      scripts-path      -- print the path to the bundled DelphiScript files
-      install-scripts   -- copy bundled scripts to a chosen directory
-      easyeda-extension -- locate or build the EasyEDA extension
-      relaunch          -- start the bridge script in the running Altium
-
-    IMPORTANT: when invoked with no arguments, this MUST start the MCP
-    server on stdio -- MCP-compatible clients rely on that behaviour.
+    argparse has no notion of grouping subcommands: every add_parser
+    lands in one flat list in call order, and at 43 commands that list
+    reads as one undifferentiated block. Only membership lives here --
+    the one-line help strings stay on the parsers that declare them, so
+    there is nothing to keep in sync but the names, and
+    test_cli_command_groups fails on a name that is in neither place.
     """
-    # Lazy import, but earlier than the dispatch below needs it: the
-    # calculator subcommands are GENERATED from cli.CALC_COMMANDS, so
-    # the table has to exist before the parser is built. Still cheap --
-    # cli pulls in os/shutil/sys/pathlib only, and everything heavier
-    # in it is imported inside the function that needs it, so the
-    # no-argument MCP stdio path is unaffected.
+    # Generated from the same table the parser generates them from, so
+    # adding a calculator does not also mean editing this list.
+    from . import cli
+
+    return [
+        ("Server and setup", (
+            "serve", "install-scripts", "scripts-path", "relaunch",
+            "update", "easyeda-extension",
+        )),
+        ("Diagnostics", (
+            "doctor", "health", "perf",
+        )),
+        ("Browser UIs", (
+            "dashboard", "stop-dashboard", "vote",
+        )),
+        ("Altium SDK reach", (
+            "sdk-coverage", "sdk-probe", "sdk-symbols",
+        )),
+        ("Owner profiles", (
+            "profile-init", "profile-list", "profile-show", "profile-use",
+            "profile-validate", "profile-new-project",
+        )),
+        ("Offline analysis (no running Altium)", (
+            "review", "bom", "netlist",
+        )),
+        ("Engineering calculators", (
+            "calc", *cli.CALC_COMMANDS, "calc-cross-check",
+        )),
+        ("Fab capabilities and materials", (
+            "stackup-vendors", "stackup-show", "stackup-profile",
+            "laminates",
+        )),
+        ("Altium 365", (
+            "altium365-login", "altium365-logout",
+        )),
+        ("Experimental", (
+            "eco-execute",
+        )),
+    ]
+
+
+class GroupedCommandHelp(argparse.HelpFormatter):
+    """Print the command list in sections instead of one flat run.
+
+    The only hook argparse gives is the pseudo-action list its
+    subparsers action carries, so this intercepts that one action and
+    lays its entries out under headings. Everything else -- options, the
+    usage line, each subcommand's own --help -- formats exactly as
+    argparse would.
+
+    A command in no group still prints, under "Other". Dropping it would
+    hide a command from the only listing anyone reads, and silently
+    hiding it is worse than listing it in the wrong place.
+    """
+
+    def __init__(self, prog, groups=(), **kwargs):
+        super().__init__(prog, **kwargs)
+        self._groups = list(groups)
+
+    def _format_action(self, action):
+        if not self._groups or not isinstance(
+                action, argparse._SubParsersAction):
+            return super()._format_action(action)
+        left = {entry.dest: entry for entry in action._get_subactions()}
+        sections = []
+        for title, names in self._groups:
+            listed = [left.pop(name) for name in names if name in left]
+            if listed:
+                sections.append((title, listed))
+        if left:
+            sections.append(("Other", list(left.values())))
+        out = []
+        for title, listed in sections:
+            out.append("%*s%s:\n" % (self._current_indent, "", title))
+            self._indent()
+            for entry in listed:
+                out.append(super()._format_action(entry))
+            self._dedent()
+            out.append("\n")
+        return "".join(out)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Every CLI command, in one place, so a test can enumerate them.
+
+    Split out of main() for exactly that: command_groups() names the
+    commands it lays out, and without a parser to ask, nothing could
+    check that the two still agree.
+    """
+    # Lazy import, but earlier than the parser needs it: the calculator
+    # subcommands are GENERATED from cli.CALC_COMMANDS, so the table has
+    # to exist before the parser is built. Still cheap -- cli pulls in
+    # os/shutil/sys/pathlib only, and everything heavier in it is
+    # imported inside the function that needs it, so the no-argument MCP
+    # stdio path is unaffected.
     from . import cli
 
     parser = argparse.ArgumentParser(
@@ -729,6 +816,10 @@ def main() -> int:
             "MCP server bridge for Altium Designer. "
             "Run with no arguments to start the MCP server on stdio."
         ),
+        # partial, because argparse builds the formatter itself and
+        # calls it with prog= only. The groups have to ride along.
+        formatter_class=functools.partial(
+            GroupedCommandHelp, groups=command_groups()),
     )
     # The bug-report template and CONTRIBUTING both ask reporters for
     # `eda-agent --version`. Without this the flag was an argparse error,
@@ -777,7 +868,11 @@ def main() -> int:
               "limit tool count or are slow to load hundreds of schemas. "
               "Equivalent to setting EDA_AGENT_TOOLSET."),
     )
-    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+    # title= puts the commands in their own section rather than under
+    # argparse's "positional arguments", which is what they are but not
+    # what anyone is scanning the help for.
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND",
+                                       title="commands")
 
     # serve -- default when no args given
     serve_p = subparsers.add_parser(
@@ -1207,18 +1302,6 @@ def main() -> int:
         help="Delete the saved Nexar login, so the next altium365_ call signs in again.",
     )
 
-    # sdk-reach -- how much of Altium's SDK the property tools reach
-    sdk_p = subparsers.add_parser(
-        "sdk-reach",
-        help=("Count the properties Altium's SDK declares on each object type "
-              "and the share obj_query/obj_modify reach. Reads the SDK index in "
-              "reference/altium_sdk (or EDA_AGENT_SDK_INDEX)."),
-    )
-    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
-                       help="List up to N properties not reached, per type.")
-    sdk_p.add_argument("--json", action="store_true",
-                       help="Every type with every name not reached, as JSON.")
-
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
         "stop-dashboard",
@@ -1311,15 +1394,36 @@ def main() -> int:
     # calc -- the offline engineering calculators, without an MCP client.
     calc_p = subparsers.add_parser(
         "calc",
-        help=("Run an engineering calculator: `eda-agent calc fusing-current "
-              "seconds=1 area_sq_mils=103`. `eda-agent calc` lists them; "
-              "`eda-agent calc NAME --help` shows a calculator's inputs."),
+        help=("Run an engineering calculator by name: `eda-agent calc "
+              "fusing-current width_mils=10`. Bare `eda-agent calc` "
+              "lists them with the inputs each one takes."),
     )
     calc_p.add_argument("name", nargs="?", help="Calculator name.")
     calc_p.add_argument("inputs", nargs="*", metavar="KEY=VALUE",
                         help="Inputs, named as the calculator's arguments.")
     calc_p.add_argument("--json", action="store_true", help="Emit JSON.")
 
+    return parser
+
+
+def main() -> int:
+    """CLI entry point.
+
+    Subcommands:
+      serve             -- run the MCP server (default when no args given)
+      scripts-path      -- print the path to the bundled DelphiScript files
+      install-scripts   -- copy bundled scripts to a chosen directory
+      easyeda-extension -- locate or build the EasyEDA extension
+      relaunch          -- start the bridge script in the running Altium
+
+    IMPORTANT: when invoked with no arguments, this MUST start the MCP
+    server on stdio -- MCP-compatible clients rely on that behaviour.
+    """
+    # build_parser() imports this too; the dispatch below needs it in
+    # its own scope. Both are the same cached module object.
+    from . import cli
+
+    parser = build_parser()
     args = parser.parse_args()
 
     # Resolve the active profile (see profile.py) before anything else runs,
@@ -1436,21 +1540,6 @@ def main() -> int:
         else:
             print(f"No saved Nexar login at {saved}")
         return 0
-    if args.command == "sdk-reach":
-        import json
-        from .diag import sdk_reach
-        path = sdk_reach.index_path()
-        if not path.is_file():
-            print(f"No SDK index at {path}. It is made from an Altium install "
-                  "(reference/altium_sdk/dump_sdk.ps1); set EDA_AGENT_SDK_INDEX "
-                  "to point at one.")
-            return 1
-        rows = sdk_reach.measure(sdk_reach.SdkIndex(path))
-        if args.json:
-            print(json.dumps(sdk_reach.as_dict(rows), indent=2))
-        else:
-            print(sdk_reach.report(rows, args.detail))
-        return 0
     if args.command == "review":
         return _run_review(args)
     if args.command == "bom":
@@ -1458,7 +1547,8 @@ def main() -> int:
     if args.command == "netlist":
         return _run_netlist(args)
     if args.command == "calc":
-        return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
+        return cli.cmd_calc_by_name(args.name, args.inputs,
+                                    as_json=args.json)
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":

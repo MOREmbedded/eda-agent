@@ -107,6 +107,36 @@ def test_a_name_the_engine_cannot_resolve_is_refused(model):
     assert "Count" in {s.name for s in skip}
 
 
+def test_a_member_measured_unreliable_is_refused_with_its_measurement(model):
+    """Resolving is not working, and the generator has to know both.
+
+    CompilationMasked resolves: sdk-symbols calls it plain, and a live
+    probe read it. It was still removed by hand, because a part's
+    compile mask reads back unset after it is written. Without this the
+    generator resurrects it on every regeneration, and the block test
+    starts contradicting the test that recorded the removal.
+    """
+    from eda_agent.sdk.generate import UNRELIABLE
+
+    assert "CompilationMasked" in UNRELIABLE
+    prop = Property(name="CompilationMasked", get="Boolean", set="Boolean")
+    reason = _reject(prop, "read")
+    assert reason == UNRELIABLE["CompilationMasked"]
+    assert "reads back unset" in reason
+
+
+def test_the_unreliable_list_agrees_with_the_shipped_pascal():
+    """Each exclusion must actually be absent, or it is just a comment."""
+    from eda_agent.sdk.generate import UNRELIABLE
+
+    text = GENERIC.read_text(encoding="utf-8")
+    start = text.index(BEGIN_MARKER)
+    end = text.index(END_MARKER, start)
+    block = text[start:end]
+    for name in UNRELIABLE:
+        assert f"PropName = '{name}'" not in block, name
+
+
 def test_a_getter_only_member_is_read_through_its_getter(model):
     """The spelling the engine does register for those 213 names.
 

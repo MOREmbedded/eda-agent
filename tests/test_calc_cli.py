@@ -228,3 +228,98 @@ def test_a_hyphenated_flag_reaches_an_underscored_parameter(monkeypatch,
                                       "--annular-ring-mils", "6"])
     assert server.main() == 0
     assert "pad_diameter_mils            24.0" in capsys.readouterr().out
+
+
+# ---- the flagless form -------------------------------------------------
+# `eda-agent calc NAME KEY=VALUE` is the other way in, and it had never
+# worked: the dispatch handed argparse's list of KEY=VALUE strings to
+# cmd_calc, which takes a dict, so the example in the command's own help
+# text died with an AttributeError. These cover the four spellings it
+# now resolves and each way the input can be wrong.
+
+def test_a_calculator_runs_from_its_verb(capsys):
+    assert cli.cmd_calc_by_name("calc-spacing",
+                                ["voltage=100", "environment=B1"]) == 0
+    assert "0.1" in capsys.readouterr().out
+
+
+def test_a_calculator_runs_from_the_verb_without_its_prefix(capsys):
+    assert cli.cmd_calc_by_name("spacing", ["voltage=100"]) == 0
+    assert "spacing_mm" in capsys.readouterr().out
+
+
+def test_a_calculator_runs_from_the_function_name(capsys):
+    """The spelling the help text advertised and the code rejected."""
+    assert cli.cmd_calc_by_name("fusing-current", ["width_mils=10"]) == 0
+    out = capsys.readouterr().out
+    assert "fusing_current_a" in out
+
+
+def test_an_underscored_function_name_resolves_too(capsys):
+    assert cli.cmd_calc_by_name("fusing_current", ["width_mils=10"]) == 0
+    assert "fusing_current_a" in capsys.readouterr().out
+
+
+def test_every_verb_is_reachable_by_all_four_spellings():
+    aliases = cli.calc_aliases()
+    for verb, (fn_name, _help, _params) in cli.CALC_COMMANDS.items():
+        for spelling in (verb, verb[len("calc-"):], fn_name,
+                         fn_name.replace("_", "-")):
+            assert aliases.get(spelling) == verb, (spelling, verb)
+
+
+def test_defaults_are_applied_for_inputs_not_given(capsys):
+    """argparse fills these for the calc-* verbs; nothing did here."""
+    assert cli.cmd_calc_by_name("fusing", ["width_mils=10"],
+                                as_json=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["time_s"] == 1.0
+    assert payload["ambient_c"] == 25.0
+
+
+def test_values_are_typed_not_passed_as_strings(capsys):
+    assert cli.cmd_calc_by_name("wire", ["awg=24"], as_json=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload["awg"], float)
+
+
+def test_a_bare_calc_lists_the_calculators(capsys):
+    assert cli.cmd_calc_by_name("", []) == 0
+    out = capsys.readouterr().out
+    for verb in cli.CALC_COMMANDS:
+        assert verb[len("calc-"):] in out, verb
+    assert "needs: voltage" in out
+
+
+def test_an_unknown_name_says_so_and_points_at_the_list(capsys):
+    assert cli.cmd_calc_by_name("nosuch", []) == 2
+    err = capsys.readouterr().err
+    assert "nosuch" in err and "eda-agent calc" in err
+
+
+def test_a_missing_required_input_names_it(capsys):
+    assert cli.cmd_calc_by_name("spacing", []) == 2
+    assert "needs voltage" in capsys.readouterr().err
+
+
+def test_an_unknown_input_lists_the_real_ones(capsys):
+    assert cli.cmd_calc_by_name("spacing", ["volts=100"]) == 2
+    err = capsys.readouterr().err
+    assert "volts" in err and "voltage" in err
+
+
+def test_an_input_of_the_wrong_type_says_which(capsys):
+    assert cli.cmd_calc_by_name("spacing", ["voltage=lots"]) == 2
+    err = capsys.readouterr().err
+    assert "voltage" in err and "float" in err
+
+
+def test_an_input_without_an_equals_sign_is_refused(capsys):
+    assert cli.cmd_calc_by_name("spacing", ["voltage"]) == 2
+    assert "KEY=VALUE" in capsys.readouterr().err
+
+
+def test_hyphenated_input_names_work_like_the_flags(capsys):
+    """`--width-mils` on the verb, so `width-mils=` here."""
+    assert cli.cmd_calc_by_name("fusing", ["width-mils=10"]) == 0
+    assert "fusing_current_a" in capsys.readouterr().out

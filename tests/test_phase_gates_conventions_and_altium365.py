@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Stages to production, how far obj_query reaches into Altium's SDK,
-simulating a deck in ngspice or LTspice, a company's conventions, and
-Altium 365.
+"""Stages to production, simulating a deck in ngspice or LTspice, a
+company's conventions, and Altium 365.
 
 All offline. The ngspice and LTspice runs were measured on this machine
 (both gave 4.96629 V and 2.1972 ms on one RC deck); here the simulator
@@ -108,38 +107,6 @@ def test_the_stage_tools_record_and_review(tools, tmp_path, monkeypatch):
     assert row["outcome"] == "met" and "feasibility:outline-agreed" in gate["for_people"]
     standing = asyncio.run(tools.get("design_phase_standing").fn(product="lamp"))
     assert standing["stage"] == "feasibility" and not standing["in_production"]
-
-
-# --- how far the property tools reach into the SDK ---------------------------------------
-
-def test_the_chains_and_type_words_are_read_from_the_pascal():
-    from eda_agent.diag import sdk_reach
-    tested = sdk_reach.names_tested("Generic.pas", "GetSchProperty")
-    assert {"Location", "OverrideDisplayString", "UniqueId"} <= tested
-    assert sdk_reach.type_words("SCH")["port"] == "ePort"
-    assert sdk_reach.type_words("PCB")["track"] == "eTrackObject"
-
-
-def test_interfaces_are_found_in_the_index_and_inherited_members_count(tmp_path):
-    from eda_agent.diag import sdk_reach
-    index = {"interfaces": {
-        "IPCB_Primitive": {"bases": [], "methods": [["GetState_Layer", "", "Int32"],
-                                                    ["SetState_Layer", "", "Void"]]},
-        "IPCB_Track": {"bases": ["IPCB_Primitive"], "methods": [
-            ["GetState_Width", "", "Int32"], ["GetState_Mystery", "", "Int32"]]},
-        "IPCB_Polygon": {"bases": [], "methods": []},
-        "ISch_Component": {"bases": [], "methods": []}}}
-    path = tmp_path / "index.json"
-    path.write_text(json.dumps(index), encoding="utf-8")
-    sdk = sdk_reach.SdkIndex(path)
-    assert sdk.interface_for("eTrackObject", "IPCB_") == "IPCB_Track"
-    assert sdk.interface_for("ePolyObject", "IPCB_") == "IPCB_Polygon"
-    assert sdk.interface_for("eSchComponent", "ISch_") == "ISch_Component"
-    assert sdk.interface_for("eNothing", "IPCB_") is None
-    reads, writes = sdk.properties("IPCB_Track")
-    assert reads == {"Layer", "Width", "Mystery"} and writes == {"Layer"}
-    row = next(r for r in sdk_reach.measure(sdk) if r.interface == "IPCB_Track")
-    assert "Mystery" not in row.reached and {"Width", "Layer"} <= row.reached
 
 
 # --- simulating a deck ------------------------------------------------------------------------

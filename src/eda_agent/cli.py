@@ -1495,6 +1495,93 @@ def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
     return 0
 
 
+def calc_aliases() -> dict:
+    """Every spelling of a calculator name that resolves to its verb.
+
+    The verb (`calc-fusing`), the verb without the prefix (`fusing`),
+    and the function it calls in either separator (`fusing_current`,
+    `fusing-current`). `eda-agent calc` advertised the last of those in
+    its own help text and did not accept it, so this accepts all four
+    rather than picking one and leaving the help wrong again.
+    """
+    out = {}
+    for verb, (fn_name, _help, _params) in CALC_COMMANDS.items():
+        for spelling in (verb, verb[len("calc-"):], fn_name,
+                         fn_name.replace("_", "-")):
+            out.setdefault(spelling, verb)
+    return out
+
+
+def list_calculators() -> int:
+    """Print the calculators and what each one needs. Always exit 0."""
+    print("Calculators (run one as `eda-agent calc NAME KEY=VALUE ...`):")
+    print()
+    for verb, (_fn, help_text, params) in CALC_COMMANDS.items():
+        print(f"  {verb[len('calc-'):]:<12} {help_text}")
+        required = [name for name, _t, default, _h in params
+                    if default is None]
+        optional = [f"{name}={default}" for name, _t, default, _h in params
+                    if default is not None]
+        if required:
+            print(f"               needs: {' '.join(required)}")
+        if optional:
+            print(f"               optional: {' '.join(optional)}")
+    print()
+    print("Each one is also a verb of its own: `eda-agent calc-fusing "
+          "--width-mils 10`.")
+    return 0
+
+
+def cmd_calc_by_name(name: str, inputs: list, *,
+                     as_json: bool = False) -> int:
+    """`eda-agent calc NAME KEY=VALUE ...`, the flagless form.
+
+    The generated `calc-*` verbs get their values from argparse, which
+    has already applied the types and the defaults. This form has a bare
+    list of KEY=VALUE strings instead, so it has to do both itself --
+    and until now it did neither: it handed the list straight to
+    cmd_calc, which expects a dict, and every invocation of the
+    documented example ended in an AttributeError.
+    """
+    if not name:
+        return list_calculators()
+
+    verb = calc_aliases().get(name)
+    if verb is None:
+        print(f"unknown calculator {name!r}", file=sys.stderr)
+        print("Run `eda-agent calc` for the list.", file=sys.stderr)
+        return 2
+
+    _fn, _help, params = CALC_COMMANDS[verb]
+    types = {pname: ptype for pname, ptype, _d, _h in params}
+    values = {pname: default for pname, _t, default, _h in params}
+
+    for item in inputs or []:
+        if "=" not in item:
+            print(f"expected KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, _, raw = item.partition("=")
+        key = key.strip().replace("-", "_")
+        if key not in types:
+            print(f"{verb} has no input {key!r}. It takes: "
+                  f"{', '.join(types)}", file=sys.stderr)
+            return 2
+        try:
+            values[key] = types[key](raw.strip())
+        except (TypeError, ValueError):
+            print(f"{key}={raw!r} is not a "
+                  f"{types[key].__name__}", file=sys.stderr)
+            return 2
+
+    missing = [pname for pname, _t, default, _h in params
+               if default is None and values.get(pname) is None]
+    if missing:
+        print(f"{verb} needs {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    return cmd_calc(verb, values, as_json=as_json)
+
+
 # --------------------------------------------------------------------------
 # Fab capabilities, stackups and laminates
 # --------------------------------------------------------------------------

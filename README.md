@@ -1104,33 +1104,70 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 
 ## CLI
 
+Grouped the same way `eda-agent --help` groups them, so the two
+listings can be read against each other.
+
+### Server and setup
+
 | Command | Purpose |
 |---|---|
 | `eda-agent` | Start the MCP server on stdio (what the MCP client calls) |
 | `eda-agent serve` | Explicit form of the above |
 | `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
-| `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
 | `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to every folder Altium loads them from, or to PATH |
+| `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
+| `eda-agent relaunch [--prjscr PATH] [--dry-run] [--force] [--restart]` | Ask the running Altium to start the polling loop from the installed script project. Leaves pending requests alone and does nothing if the bridge already answers |
 | `eda-agent update [--check] [--yes] [--no-relaunch]` | Show the new commits on the repository and, once you agree, update this clone, the Altium scripts and the polling loop |
-| `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
-| `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
-| `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
-| `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
-| `eda-agent altium365-logout` | Delete the saved Nexar login |
-| `eda-agent sdk-reach [--detail N] [--json]` | How many of the properties Altium's SDK declares on each object type `obj_query` and `obj_modify` reach (needs the SDK index in `reference/altium_sdk`) |
-| `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
+| `eda-agent easyeda-extension path` / `... build [--out DIR]` | Print where the EasyEDA Pro extension source lives, or build the `.eext` to import into EasyEDA Pro (`build` needs Node.js) |
+
+### Diagnostics
+
+| Command | Purpose |
+|---|---|
 | `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, `app_save_all` canary round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
-| `eda-agent eco-execute --confirm [--validate-only] [--allow-confirm-dialogs] [--wait-first N] [--budget N]` | **Experimental, unverified.** Watches for and auto-presses Altium's Engineering Change Order dialog (Validate Changes / Execute Changes / Close), via the existing `app_drive_dialogs` reactive driver. Off unless `--confirm`; does not trigger an ECO itself (trigger separately with `proj_sync_pcb` or Design > Update PCB Document while this runs). See [ECO update](docs/ENGINEERING_TOOLS.md#eco-update-experimental) |
+| `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
 | `eda-agent perf [--json] [--limit N]` | Where call time actually goes. Joins `bridge_trace.log` (the round trip the caller saw) with `activity.log` (the handler time inside Altium) on the request id, and reports both plus the difference, per command. See [Measuring performance](#measuring-performance) |
+
+### Browser UIs
+
+| Command | Purpose |
+|---|---|
+| `eda-agent dashboard [--host H] [--port N] [--debug]` | Launch the local web dashboard (http://127.0.0.1:8766) on its own, rather than in-process with the server |
+| `eda-agent stop-dashboard` | Stop a detached dashboard by the PID in `workspace/dashboard.pid`. Idempotent: no PID file means nothing to stop |
+| `eda-agent vote` | Launch the pairwise layout-preference vote UI in a browser |
+
+### Altium SDK reach
+
+| Command | Purpose |
+|---|---|
 | `eda-agent sdk-coverage [--json] [--detail N] [--sdk-json PATH]` | How much of Altium's own SDK the generic property layer reaches. Reflects `Altium.SDK.Interfaces.dll` from the local install into `reference/altium_sdk.json` (via `scripts/altium_sdk_reflect.ps1`), then measures the four Pascal property chains against it and names every property that is declared but unreachable. See [SDK coverage](docs/SDK_COVERAGE.md) |
 | `eda-agent sdk-probe [--designator REF] [--properties A,B,C] [--json]` | Which declared properties the running Altium actually exposes. The assembly says a property exists; only the engine says it is reachable, and an unexposed one faults where `Try/Except` cannot catch it. Probes read-only, one name at a time, logging each attempt before it is made so a dead loop names the property that killed it. Recover with `eda-agent relaunch`. See [SDK coverage](docs/SDK_COVERAGE.md) |
 | `eda-agent sdk-symbols [--refresh] [--name NAME] [--json]` | Which declared members DelphiScript can actually resolve, read offline from the scripting engine's own registered symbol table in `ScriptingSystem.dll`. A member registered only as `GetState_Name` does not resolve as a property: touching it raises `Undeclared identifier` and halts the script debugger, which no `Try/Except` catches. It is reachable through that getter instead, so the generator checks the table and picks the spelling that resolves. See [SDK coverage](docs/SDK_COVERAGE.md) |
+
+### Owner profiles
+
+| Command | Purpose |
+|---|---|
 | `eda-agent profile-init <name> [--here]` | Scaffold a new owner profile (naming/rules/fab/footprint conventions). `--here` makes it project-local (`.eda-agent/profile/`, meant to be committed); without it, a centrally-switchable `~/.eda-agent/profiles/<name>/`. See [docs/PROFILES.md](docs/PROFILES.md) |
 | `eda-agent profile-list` | List central profiles and which one is active |
-| `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-show [--json]` | Show the profile actually in effect for the current directory |
+| `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
+
+### Offline analysis (no running Altium)
+
+| Command | Purpose |
+|---|---|
+| `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
+| `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
+| `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
+
+### Engineering calculators
+
+| Command | Purpose |
+|---|---|
+| `eda-agent calc [NAME] [KEY=VALUE ...] [--json]` | The flagless form of the verbs below: `eda-agent calc fusing-current width_mils=10`. Takes the verb (`calc-fusing`), the verb without its prefix (`fusing`) or the underlying function (`fusing-current`). Bare `eda-agent calc` lists them with the inputs each takes |
 | `eda-agent calc-spacing --voltage V [--environment B2]` | Minimum conductor spacing for a voltage (IPC-2221) |
 | `eda-agent calc-fusing --width-mils W [--copper-oz 1] [--time-s 1]` | Current that melts a track in a given time (Onderdonk) |
 | `eda-agent calc-via --drill-mils D --length-mils L` | Via inductance, capacitance and barrel resistance |
@@ -1142,10 +1179,28 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
 | `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
 | `eda-agent calc-cross-check <calculator> [--arg NAME=VALUE]` | Compare a calculator against a locally built pcb-toolkit |
+
+### Fab capabilities and materials
+
+| Command | Purpose |
+|---|---|
 | `eda-agent stackup-vendors [--json]` | Bundled fab vendors, with source and age |
 | `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |
 | `eda-agent stackup-profile <vendor> [--fill NAME=MILS]` | Emit a fab profile JSON, or say what the vendor does not publish |
 | `eda-agent laminates [--json]` | Laminate properties, with both dielectric constants |
+
+### Altium 365
+
+| Command | Purpose |
+|---|---|
+| `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
+| `eda-agent altium365-logout` | Delete the saved Nexar login |
+
+### Experimental
+
+| Command | Purpose |
+|---|---|
+| `eda-agent eco-execute --confirm [--validate-only] [--allow-confirm-dialogs] [--wait-first N] [--budget N]` | **Experimental, unverified.** Watches for and auto-presses Altium's Engineering Change Order dialog (Validate Changes / Execute Changes / Close), via the existing `app_drive_dialogs` reactive driver. Off unless `--confirm`; does not trigger an ECO itself (trigger separately with `proj_sync_pcb` or Design > Update PCB Document while this runs). See [ECO update](docs/ENGINEERING_TOOLS.md#eco-update-experimental) |
 
 Every `calc-*` verb takes `--json` for the full reply and exits non-zero
 on a refusal, so a script can tell "this geometry is impossible" from

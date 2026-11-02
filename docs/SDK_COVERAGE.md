@@ -74,13 +74,13 @@ eda-agent sdk-coverage --detail 8   # with missing property names
 eda-agent sdk-coverage --json       # every missing name, for diffing
 ```
 
-Measured on AD 26.11.1.5, script `2026.10.27.7`:
+Measured on AD 26.11.1.5, script `2026.11.01.1`:
 
 ```
-685 of 2207 declared properties reachable (31.0%)
+804 of 2207 declared properties reachable (36.4%)
 
-Schematic: 431 of 1040 (41.4%) across 32 object types
-Board:     221 of 1024 (21.6%) across 12 object types
+Schematic: 471 of 1040 (45.3%) across 32 object types
+Board:     333 of 1167 (28.5%) across 14 object types
 ```
 
 The schematic figure moved by exactly the thirty `ISch_Component`
@@ -90,31 +90,53 @@ briefly read 46.5%, because the delegated names were credited to all
 cannot answer `DescriptionString`, and a report that says it can is
 worse than no report.
 
+It then moved again, by 116 properties, when the report started
+following every routine a chain calls rather than the generated
+accessors alone. Most of what a pin, a port, a parameter or a dimension
+answers is written one level down, and the earlier figure missed all of
+it. Each name still goes only to the types the Pascal guards it on: a
+branch testing `Obj.ObjectId`, or, for the extra-property families, the
+owner table (`SchExtraFits`, `ExtraPCBPropertyFits`) that says which
+type owns each name.
+
 Per object type, the widest gaps:
 
 | Object type | Interface | Reached | Declared |
 | --- | --- | ---: | ---: |
-| `text` | `IPCB_Text` | 18 | 110 |
-| `component` | `IPCB_Component` | 23 | 104 |
-| `poly` | `IPCB_Polygon` | 28 | 105 |
-| `dimension` | `IPCB_Dimension` | 15 | 101 |
-| `pad` | `IPCB_Pad` | 26 | 101 |
+| `text` | `IPCB_Text` | 40 | 110 |
+| `component` | `IPCB_Component` | 35 | 104 |
+| `dimension` | `IPCB_Dimension` | 32 | 101 |
+| `pad` | `IPCB_Pad` | 34 | 101 |
+| `poly` | `IPCB_Polygon` | 40 | 105 |
+
+The two the chains know best, for contrast:
+
+| Object type | Interface | Reached | Declared |
+| --- | --- | ---: | ---: |
 | `component` | `ISch_Component` | 57 | 68 |
-| `pin` | `ISch_Pin` | 16 | 63 |
+| `pin` | `ISch_Pin` | 44 | 63 |
 
 ## How the measurement is made
 
 1. Each of the four chains is parsed for every `PropName = '...'` it
    tests.
-2. Each supported object type is mapped to the interface the SDK
+2. Every routine a chain calls with `PropName` is parsed the same way,
+   because most of what a pin, a port, a parameter or a dimension
+   answers lives one level down. Those names are credited only to the
+   types the Pascal guards them on: the `Obj.ObjectId` test the branch
+   makes, or the owner table (`SchExtraFits`, `ExtraPCBPropertyFits`)
+   for the extra-property families. A routine called to decide whether
+   a branch is taken, or called with a literal name, is not counted
+   again: the branch that reaches it already carries the name.
+3. Each supported object type is mapped to the interface the SDK
    declares for it. Most are mechanical (`eRectangle` to
    `ISch_Rectangle`); the rest are in two small override tables in
    `src/eda_agent/sdk/coverage.py`, because Altium's own naming is not
    uniform.
-3. The SDK's inheritance is resolved transitively, so a component is
+4. The SDK's inheritance is resolved transitively, so a component is
    measured against everything `ISch_GraphicalObject` and
    `ISch_BasicContainer` give it too, not only its own 46 properties.
-4. The sets are compared per interface.
+5. The sets are compared per interface.
 
 ### Two things the number does not claim
 

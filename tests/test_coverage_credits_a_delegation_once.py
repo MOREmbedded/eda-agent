@@ -9,6 +9,13 @@ DescriptionString, which a pin cannot answer.
 
 The report is the number this project steers by, so an overstatement in
 it is worse than no report.
+
+The chains delegate in three shapes, and all three are measured here: a
+branch guarded on the object type, a family of extra properties whose
+owner table names the type each one belongs to, and a call no branch
+guards at all. Reading only the chain's own body missed 116 reachable
+properties; reading them all into one flat set, which is what upstream's
+sdk-reach did, is the overstatement these tests exist to prevent.
 """
 
 from __future__ import annotations
@@ -66,16 +73,127 @@ def test_a_type_the_guard_excludes_is_not_credited(pascal):
     assert "OnlyOnThing" not in cov.handled_heads("GetSchProperty")
 
 
-def test_the_real_chain_delegates_to_components_and_nothing_else():
+OWNER_PASCAL = """
+Function ThingExtraOwner(PropName : String) : Integer;
+Begin
+    Result := 0;
+    If (PropName = 'OnlyOnPin') Or (PropName = 'AlsoOnPin') Then Result := 1
+    Else If PropName = 'OnlyOnPort' Then Result := 2;
+End;
+
+Function ThingExtraFits(Obj : ISch_GraphicalObject; PropName : String) : Boolean;
+Var
+    Owner : Integer;
+Begin
+    Owner := ThingExtraOwner(PropName);
+    Result := ((Owner = 1) And (Obj.ObjectId = ePin))
+        Or ((Owner = 2) And (Obj.ObjectId = ePort));
+End;
+
+Function ThingGetExtra(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    Result := '';
+    If Not ThingExtraFits(Obj, PropName) Then Exit;
+    If PropName = 'OnlyOnPin' Then Result := Obj.OnlyOnPin
+    Else If PropName = 'AlsoOnPin' Then Result := Obj.AlsoOnPin
+    Else If PropName = 'OnlyOnPort' Then Result := Obj.OnlyOnPort;
+End;
+
+Function IsThingProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Gated') Or (PropName = 'AlsoGated');
+End;
+
+Function ReadThingProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    If PropName = 'Gated' Then Result := Obj.Gated
+    Else If PropName = 'AlsoGated' Then Result := Obj.AlsoGated
+    Else If PropName = 'Loose' Then Result := Obj.Loose;
+End;
+
+Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    Result := '';
+    If ThingExtraOwner(PropName) > 0 Then Result := ThingGetExtra(Obj, PropName)
+    Else If PropName = 'Shared' Then Result := Obj.Shared
+    Else If IsThingProp(PropName) Then
+    Begin
+        If Obj.ObjectId = ePin Then Result := ReadThingProp(Obj, PropName);
+    End
+    Else If PropName = 'Loose' Then Result := ReadThingProp(Obj, 'Loose');
+End;
+"""
+
+
+@pytest.fixture
+def owner_pascal(monkeypatch):
+    monkeypatch.setattr(cov, "_read", lambda _rel: OWNER_PASCAL)
+
+
+def test_an_extra_family_goes_to_the_types_its_owner_table_names(owner_pascal):
+    """The Pascal's own table is the only place that mapping exists.
+
+    Without it the whole family would have to be credited to every type,
+    which is how upstream's sdk-reach counted it.
+    """
+    delegated = cov.delegated_names("GetSchProperty")
+    assert delegated["ePin"] >= {"OnlyOnPin", "AlsoOnPin"}
+    assert delegated["ePort"] == {"OnlyOnPort"}
+    assert "OnlyOnPort" not in delegated["ePin"]
+
+
+def test_a_gate_in_the_condition_is_not_itself_a_source_of_names(owner_pascal):
+    """IsThingProp decides whether the branch is taken; it answers nothing.
+
+    Its names reach the caller through the routine the branch calls, and
+    only for the type that call is guarded on, so counting the gate as
+    well would credit every type with them.
+    """
+    delegated = cov.delegated_names("GetSchProperty")
+    assert {"Gated", "AlsoGated"} <= delegated["ePin"]
+    assert cov.ANY_TYPE not in delegated
+
+
+def test_a_call_passing_a_literal_name_does_not_drag_the_rest_in(owner_pascal):
+    """`ReadThingProp(Obj, 'Loose')` reaches Loose and nothing else.
+
+    The branch testing for Loose already carries it, and the routine's
+    other names are reachable only where the gated branch calls it.
+    """
+    assert "Loose" in cov.handled_names("GetSchProperty")
+    assert "Loose" not in cov.delegated_names("GetSchProperty").get("ePort", set())
+
+
+def test_the_real_chain_credits_each_delegation_to_its_own_type():
     """Against the shipped Pascal, not a fixture.
 
-    If a second delegation is added later under a different guard this
-    fails, which is the point: each one has to be credited to its own
-    type rather than folded into the first.
+    Five guards, because the chain answers a pin, a port, a parameter and
+    a No-ERC marker through routines of their own as well as a component.
+    A guard added later fails this, which is the point: each one has to
+    be credited to its own type rather than folded into the first.
     """
     delegated = cov.delegated_heads("GetSchProperty")
-    assert set(delegated) == {"eSchComponent"}
+    assert set(delegated) == {"eSchComponent", "ePin", "ePort",
+                              "eParameter", "eNoERC"}
     assert "DescriptionString" in delegated["eSchComponent"]
     # Read live through generic.query_objects on 2026-10-27, so this is
     # a measurement rather than a claim about what should work.
     assert "IdentifierString" in delegated["eSchComponent"]
+    # A pin cannot answer either of those.
+    assert not {"DescriptionString", "IdentifierString"} & delegated["ePin"]
+    # Symbol_Inner is owner 1 in SchExtraOwner, which SchExtraFits reads
+    # as ePin alone; HarnessColor is owner 4, which is ePort alone.
+    assert "Symbol_Inner" in delegated["ePin"]
+    assert "Symbol_Inner" not in delegated["ePort"]
+    assert "HarnessColor" in delegated["ePort"]
+
+
+def test_the_board_chain_splits_its_extra_family_the_same_way():
+    """ExtraPCBPropertyFits is the board's version of the same table."""
+    delegated = cov.delegated_heads("GetPCBProperty")
+    assert "BarCodeKind" in delegated["eTextObject"]
+    assert "BarCodeKind" not in delegated.get("ePadObject", set())
+    assert "IsCounterHole" in delegated["eViaObject"]
+    # PCBGetMask and its siblings sit in branches that name no type, so
+    # they are reachable for whatever object the chain is handed.
+    assert cov.ANY_TYPE in delegated
