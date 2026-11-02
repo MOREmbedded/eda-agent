@@ -74,13 +74,13 @@ eda-agent sdk-coverage --detail 8   # with missing property names
 eda-agent sdk-coverage --json       # every missing name, for diffing
 ```
 
-Measured on AD 26.11.1.5, script `2026.11.01.1`:
+Measured on AD 26.11.1.5, script `2026.11.02.2`:
 
 ```
-804 of 2207 declared properties reachable (36.4%)
+1626 of 2207 declared properties reachable (73.7%)
 
-Schematic: 471 of 1040 (45.3%) across 32 object types
-Board:     333 of 1167 (28.5%) across 14 object types
+Schematic: 781 of 1040 (75.1%) across 32 object types
+Board:     845 of 1167 (72.4%) across 14 object types
 ```
 
 The schematic figure moved by exactly the thirty `ISch_Component`
@@ -99,15 +99,49 @@ branch testing `Obj.ObjectId`, or, for the extra-property families, the
 owner table (`SchExtraFits`, `ExtraPCBPropertyFits`) that says which
 type owns each name.
 
+## The counting told us what to generate
+
+The obvious next step was a generated chain per object type: 32
+schematic ones, 14 board ones. Counting first said otherwise.
+
+Across the 32 schematic types, 442 read slots were unreachable, and
+they were only 56 distinct names. Ten names accounted for 310 of them,
+and every one of the ten is declared on `ISch_GraphicalObject`. On the
+board side the concentration was sharper: 717 slots, and 42 names
+declared on all 14 types.
+
+Both base interfaces are already the parameter type of the chain that
+would call them (`GetSchProperty(Obj : ISch_GraphicalObject)`,
+`GetPCBProperty(Obj : IPCB_Primitive)`), so one routine per side
+reaches those names for every object, with no cast and no `ObjectId`
+test. Forty-six per-type chains would have written the same lines over
+and over.
+
+Ten lines and thirty-seven lines. Schematic 45.3% to 75.1%, board
+28.5% to 72.4%.
+
+Coverage credits a base chain to every type, not to a constant,
+because no guard gates it. The component chain is still credited to
+`eSchComponent` alone, and is still tried first: it carries what only a
+component declares, and the base chain is the fallback behind it. The
+two overlap by the base's ten names on purpose, so either routine is
+correct on its own; a test asserts they spell every shared read
+identically.
+
+What is left is a long tail. On the schematic side, 132 slots over 46
+names, a third of which is `CompilationMasked`: declared on every
+type, resolving on every type, and excluded by measurement on all of
+them.
+
 Per object type, the widest gaps:
 
 | Object type | Interface | Reached | Declared |
 | --- | --- | ---: | ---: |
-| `text` | `IPCB_Text` | 40 | 110 |
-| `component` | `IPCB_Component` | 35 | 104 |
-| `dimension` | `IPCB_Dimension` | 32 | 101 |
-| `pad` | `IPCB_Pad` | 34 | 101 |
-| `poly` | `IPCB_Polygon` | 40 | 105 |
+| `text` | `IPCB_Text` | 77 | 110 |
+| `component` | `IPCB_Component` | 72 | 104 |
+| `dimension` | `IPCB_Dimension` | 69 | 101 |
+| `pad` | `IPCB_Pad` | 71 | 101 |
+| `poly` | `IPCB_Polygon` | 77 | 105 |
 
 The two the chains know best, for contrast:
 

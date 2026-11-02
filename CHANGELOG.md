@@ -16,6 +16,28 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Property coverage 36.4% to 73.7%, from counting before generating.**
+  The next step after the `ISch_Component` chain looked like a
+  generated chain per object type: 32 schematic, 14 board. Counting the
+  gap first said otherwise. Of the 442 unreachable schematic read
+  slots, ten names accounted for 310, and all ten are declared on
+  `ISch_GraphicalObject`. On the board side 42 names were declared on
+  all 14 types, of which 37 survive the type and symbol filters. Both
+  base interfaces are already the parameter type of the chain that
+  would call them, so one routine per side reaches those names for
+  every object with no cast and no `ObjectId` test, where 46 per-type
+  chains would have repeated the same lines. `GetSchGraphicalGenerated`
+  (10 lines, schematic 45.3% to 75.1%) and `GetPCBPrimitiveGenerated`
+  (37 lines, board 28.5% to 72.4%). A type's own chain is still tried
+  first and the base chain is the fallback behind it; the two overlap
+  deliberately, so either is correct alone, and a test asserts they
+  spell every shared read the same way. Coverage credits a base chain
+  to every type rather than to a constant, because no guard gates it.
+  UNVERIFIED against a live Altium: `docs/RELEASE_VERIFICATION.md`
+  names the reads that settle each half, least type-specific first.
+  `CompilationMasked` is declared on both bases and excluded from both,
+  by measurement rather than by type.
+
 - **SDK coverage: one command, this fork's, with upstream's reach.**
   `eda-agent sdk-reach` (upstream) and `eda-agent sdk-coverage` (this
   fork) both counted how many of the properties Altium's SDK declares
