@@ -463,3 +463,52 @@ def test_the_board_block_declares_the_flag_it_passes():
     start = text.index("Function GetPCBProperty(Obj : IPCB_Primitive;")
     head = text[start:text.index("Begin", start)]
     assert re.search(r"\bHave\s*:\s*Boolean\s*;", head), head
+
+
+def test_every_generated_board_read_is_recognised_by_the_gate():
+    """The reads are not reached directly, and that gate bit once.
+
+    Gen_QueryObjects refuses a property IsKnownPCBProperty does not
+    recognise, so a read added to GetPCBProperty without a matching
+    name is dead: measured on 2026-11-02, all 37 came back as "not a
+    PCB property" while the chain beneath could answer every one. Both
+    the test and the message list are generated from the same names
+    now; this asserts they are actually wired to the hand-written gate.
+    """
+    import re
+
+    text = PCB_GENERIC.read_text(encoding="utf-8")
+    start = text.index("Function GetPCBPrimitiveGenerated(")
+    end = text.index("End;", start)
+    reads = re.findall(r"PropName = '([^']+)'", text[start:end])
+    assert reads, "the generated board chain carries no reads"
+
+    guard = text[text.index("Function IsGeneratedPCBProperty("):]
+    guard = guard[:guard.index("End;")]
+    for name in reads:
+        assert f"(PropName = '{name}')" in guard, name
+
+    listing = text[text.index("Function GeneratedPCBPropertyList("):]
+    listing = listing[:listing.index("End;")]
+    for name in reads:
+        assert name in listing, name
+
+    # And the hand-written gate has to consult both, or generating them
+    # changes nothing.
+    assert "If IsGeneratedPCBProperty(PropName) Then" in text
+    assert "+ GeneratedPCBPropertyList(0);" in text
+
+
+def test_the_schematic_chain_needs_no_such_gate():
+    """Asymmetry worth stating, since it is why only one side broke.
+
+    Gen_QueryObjects validates PCB property names and not schematic
+    ones, so the schematic base chain was reachable the moment it was
+    written and the board one was not.
+    """
+    generic = GENERIC.read_text(encoding="utf-8")
+    # The caller validates board names and nothing else.
+    assert "UnknownPCBProperties(PropsStr)" in generic
+    assert "UnknownSchProperties" not in generic
+    assert "IsKnownSchProperty" not in generic
+    assert "IsKnownPCBProperty" in PCB_GENERIC.read_text(encoding="utf-8")

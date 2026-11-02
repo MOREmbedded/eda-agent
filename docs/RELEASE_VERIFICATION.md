@@ -1,4 +1,4 @@
-# Release verification: 2026.11.02.2
+# Release verification: 2026.11.02.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -6,7 +6,11 @@ same: each accepts identifiers the other rejects, and an undeclared one
 faults at runtime where `Try/Except` cannot catch it, halting the
 polling loop.
 
-## 2026.11.02.2 - the same finding on the board side
+## 2026.11.02.3 - the board half, and the gate that hid it
+
+**VERIFIED LIVE on 2026-11-02**, AD 26.11.1.5, script `2026.11.02.3`,
+against `modem-stm32-2trx-lr2021.PcbDoc` (read only; the focused
+document was restored afterwards).
 
 `GetPCBProperty` gains `GetPCBPrimitiveGenerated` and the same fallback
 branch. 717 read slots were unreachable across the 14 board object
@@ -22,44 +26,61 @@ concatenates PCBGeneric first, and DelphiScript has no forward
 declarations, so a routine `GetPCBProperty` calls must sit above it in
 the same file.
 
-**This one has less behind it than the schematic half.** There, the
-component chain had been reading two of the ten live since 2026-10-27.
-Here nothing has read a board property this way at all. The symbol
-table says all 37 resolve, and the table has never been wrong across
-65+ live data points, but it answers "is this name registered", not
-"does this object answer it".
+### The 37 reads were dead on arrival, and the comment above them said so
 
-**What to check live, in this order.** Probe before querying, because
-the probe logs each attempt before it makes it, so a halt names the
-property that caused it:
+`GetPCBProperty` is not reached directly. `Gen_QueryObjects` refuses a
+property name `IsKnownPCBProperty` does not recognise, which exists
+because returning an empty string for a misspelling reads as "the data
+is not there" and had been reported three times as the bridge failing
+at something it could do.
 
-```
-generic.query_objects on any .PcbDoc, object_type "track",
-properties ["Handle", "DescriptorString", "Moveable"]
-```
+That guard is a hand-written `Or`-chain, with `KnownPCBPropertyList`
+beside it for the refusal message. The comment above the list warns
+that a list lagging the reader tells a caller a property does not exist
+when it does, and names the pour flags as the last time it happened.
 
-Those three are the least type-specific of the 37. If they answer, work
-outward to the ones that read as pad or polygon state on an object that
-is neither:
+Adding 37 reads without adding 37 names did exactly that. Every one of
+them came back as `UNKNOWN_PROPERTY` while the chain beneath could
+answer all 37. Coverage still read 72.4%, because it measures the chain
+and the chain was right.
 
-```
-properties ["PadCacheRobotFlag", "PowerPlaneClearance", "ReliefEntries",
-            "PolygonOutline", "IsTenting"]
-```
+Fixed by generating the gate from the same list the reads come from:
+`IsGeneratedPCBProperty` and `GeneratedPCBPropertyList` are emitted
+inside the generated region, and the hand-written gate asks them first.
+A test asserts every generated read appears in both and that the gate
+actually consults them.
 
-A halt on any of those is the interesting result: it would be the first
-case of a registered name that does not answer off a declared
-interface, and it belongs in generate.py's UNRELIABLE with the
-measurement, not quietly dropped.
+### What the live sweep found
+
+All 37 read off a track with no fault. 35 returned a value:
+
+| Property | Value on a track |
+| --- | --- |
+| `DescriptorString` | `Track (19.433mm,18.75mm)(24.69mm,18.75mm) on Top Overlay` |
+| `DetailString` | `Track: ( Width:0.2mm Length:5.257mm)` |
+| `ObjectIDString` | `Track` |
+| `PowerPlaneClearance` | `59055` |
+| `ReliefAirGap` | `60630` |
+| `ReliefEntries` | `4` |
+| `UserRouted` | `true` |
+
+`PadCacheRobotFlag`, `PolygonOutline` and `IsTenting` all answered
+`false` on a track rather than faulting, which was the specific risk:
+pad and polygon state read off an object that is neither.
+
+`Handle` and `UniqueID` came back empty on a track and on a via, and
+non-empty on a pad (`ECSXDYKD\\NGUVIYFS`, `NGUVIYFS`), so the chain reads them and
+those objects have none.
+
+No name needed `UNRELIABLE`. The symbol table was right about all 37.
 
 ## 2026.11.02.1 - ten lines for thirty-one object types
 
-`GetSchProperty` gains a second generated chain, `GetSchGraphicalGenerated`,
-and a fallback branch that calls it.
+**VERIFIED LIVE on 2026-11-02**, AD 26.11.1.5, against
+`2rx-IF-connectors.SchDoc` (read only).
 
-**Not yet executed by Altium.** The reasoning below is offline
-measurement, and the section stays marked this way until a live read
-says otherwise.
+`GetSchProperty` gains a second generated chain,
+`GetSchGraphicalGenerated`, and a fallback branch that calls it.
 
 The arithmetic that produced it. Across the 32 schematic object types,
 442 declared read slots were unreachable. Only 56 distinct names
@@ -78,8 +99,7 @@ overall from 804/2207 (36.4%) to 1114/2207 (50.5%).
 Three of the ten resolve only through their getter
 (`Obj.GetState_DescriptionString`, `GetState_IdentifierString`,
 `GetState_WiringDiagramOriginUniqueId`); the symbol table picked that
-spelling, and the component chain has been reading two of them live
-since 2026-10-27.
+spelling.
 
 `CompilationMasked` is declared on the same interface and is **not**
 here. It resolves, `sdk-symbols` calls it plain, and a live probe read
@@ -87,23 +107,26 @@ it, but a part's compile mask reads back unset after it is written, so
 `generate.py` refuses it by name.
 
 A component is offered its own chain first and falls to the base one
-only for what that chain does not carry. The two overlap by these ten
-names on purpose: either routine has to be correct on its own, and a
-test asserts they spell every shared read identically.
+only for what that chain does not carry.
 
-**What to check live.** Read one of the ten off an object that is not a
-component, which is the path no measurement covers:
+### What the live sweep found
 
-```
-generic.query_objects on any .SchDoc, object_type "wire",
-properties ["Handle", "Dimmed", "ErrorString"]
-```
+All ten read off a **wire**, which is the non-component path no
+measurement covered. Six returned a value: `DescriptionString`
+(`Wire `, through its getter), `Dimmed`, `Disabled` and `DisplayError`
+(`false`), `EnableDraw` (`true`), and `Handle` (`XXYAQXCX\\MINGTNUX`).
+`ErrorString`, `IdentifierString`, `LiveHighlightValue` and
+`WiringDiagramOriginUniqueId` returned empty, which a wire with no
+error and no identifier plausibly is.
 
-A value back means the base chain resolved on a non-component. A halted
-debugger means one of the ten does not resolve off that type despite
-being declared on the base, which would be the first counterexample to
-the symbol table and should be recorded here before anything else is
-generated.
+Note for anyone repeating this: on the schematic side an empty string
+is not evidence either way. A control read of `NoSuchPropertyAtAll`
+also returns empty with nothing in `unknown`, `failed` or `unreadable`,
+so the reply cannot distinguish "read as empty" from "no branch carries
+it". A non-empty value is the proof, and `Dimmed` returning `false`
+counts, because an uncarried name gives an empty string rather than a
+boolean. The board side does not have this problem, since its gate
+refuses an unknown name outright.
 
 ## 2026.10.27.2 - a half-applied refactor, and the linter that could not see it
 
@@ -598,7 +621,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.02.2`, `version_match` =
+Expect `altium_script_version` = `2026.11.02.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.

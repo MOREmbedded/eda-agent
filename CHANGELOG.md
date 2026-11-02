@@ -33,10 +33,29 @@ maturity classification for every tool.
   deliberately, so either is correct alone, and a test asserts they
   spell every shared read the same way. Coverage credits a base chain
   to every type rather than to a constant, because no guard gates it.
-  UNVERIFIED against a live Altium: `docs/RELEASE_VERIFICATION.md`
-  names the reads that settle each half, least type-specific first.
   `CompilationMasked` is declared on both bases and excluded from both,
-  by measurement rather than by type.
+  by measurement rather than by type. Verified live on 2026-11-02
+  against AD 26.11.1.5: all ten schematic reads off a wire and all 37
+  board reads off a track, no fault, 41 of the 47 returning a value and
+  the rest empty on objects that plausibly have none.
+
+### Fixed
+
+- **37 board property reads that the gate refused before they ran.**
+  `GetPCBProperty` is not reached directly: `Gen_QueryObjects` refuses
+  a name `IsKnownPCBProperty` does not recognise, because returning an
+  empty string for a misspelling reads as "the data is not there" and
+  had been reported three times as the bridge failing at something it
+  could do. That guard is hand written, as is `KnownPCBPropertyList`
+  beside it, and the comment above the list warns in as many words that
+  a list lagging the reader tells a caller a property does not exist
+  when it does. The generated reads were added without the names, so
+  every one answered `UNKNOWN_PROPERTY` while the chain beneath could
+  read all 37, and coverage reported 72.4% because it measures the
+  chain and the chain was right. The gate is now generated from the
+  same list the reads come from (`IsGeneratedPCBProperty`,
+  `GeneratedPCBPropertyList`), so it cannot lag again. The schematic
+  side has no such gate, which is why only one half was affected.
 
 - **SDK coverage: one command, this fork's, with upstream's reach.**
   `eda-agent sdk-reach` (upstream) and `eda-agent sdk-coverage` (this

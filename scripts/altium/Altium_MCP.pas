@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.02.2';
+    SCRIPT_VERSION = '2026.11.02.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -36315,6 +36315,67 @@ Begin
     { whole measurement: the line proves the member resolved.       }
     Found := True;
 End;
+
+Function IsGeneratedPCBProperty(PropName : String) : Boolean;
+Begin
+    Result :=
+        (PropName = 'AllowGlobalEdit') Or
+        (PropName = 'DRCError') Or
+        (PropName = 'DescriptorString') Or
+        (PropName = 'DetailString') Or
+        (PropName = 'DrawAsPreview') Or
+        (PropName = 'EnableDraw') Or
+        (PropName = 'Enabled') Or
+        (PropName = 'Enabled_Direct') Or
+        (PropName = 'Enabled_vComponent') Or
+        (PropName = 'Enabled_vCoordinate') Or
+        (PropName = 'Enabled_vDimension') Or
+        (PropName = 'Enabled_vNet') Or
+        (PropName = 'Enabled_vPolygon') Or
+        (PropName = 'Handle') Or
+        (PropName = 'InBoard') Or
+        (PropName = 'InCoordinate') Or
+        (PropName = 'InDimension') Or
+        (PropName = 'InNet') Or
+        (PropName = 'IsElectricalPrim') Or
+        (PropName = 'IsPreRoute') Or
+        (PropName = 'IsTenting') Or
+        (PropName = 'MiscFlag1') Or
+        (PropName = 'MiscFlag2') Or
+        (PropName = 'MiscFlag3') Or
+        (PropName = 'Moveable') Or
+        (PropName = 'ObjectIDString') Or
+        (PropName = 'PadCacheRobotFlag') Or
+        (PropName = 'PasteMaskExpansion') Or
+        (PropName = 'PolygonOutline') Or
+        (PropName = 'PowerPlaneClearance') Or
+        (PropName = 'PowerPlaneReliefExpansion') Or
+        (PropName = 'ReliefAirGap') Or
+        (PropName = 'ReliefConductorWidth') Or
+        (PropName = 'ReliefEntries') Or
+        (PropName = 'UniqueID') Or
+        (PropName = 'Used') Or
+        (PropName = 'UserRouted');
+End;
+
+{ The same names as text, for the refusal message. HIDDEN FROM THE
+  RUN SCRIPT DIALOG BY ITS ARGUMENT, like its hand-written
+  neighbour: Altium lists parameterless routines there and this
+  is not one of the four a user wants. Dummy is never read. }
+Function GeneratedPCBPropertyList(Dummy : Integer) : String;
+Begin
+    Result := 'AllowGlobalEdit, DRCError, DescriptorString, DetailString, '
+        + 'DrawAsPreview, EnableDraw, Enabled, Enabled_Direct, '
+        + 'Enabled_vComponent, Enabled_vCoordinate, '
+        + 'Enabled_vDimension, Enabled_vNet, Enabled_vPolygon, Handle, '
+        + 'InBoard, InCoordinate, InDimension, InNet, '
+        + 'IsElectricalPrim, IsPreRoute, IsTenting, MiscFlag1, '
+        + 'MiscFlag2, MiscFlag3, Moveable, ObjectIDString, '
+        + 'PadCacheRobotFlag, PasteMaskExpansion, PolygonOutline, '
+        + 'PowerPlaneClearance, PowerPlaneReliefExpansion, '
+        + 'ReliefAirGap, ReliefConductorWidth, ReliefEntries, '
+        + 'UniqueID, Used, UserRouted';
+End;
 { END GENERATED - SDK property probe. }
 
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
@@ -37490,6 +37551,18 @@ Begin
     { Kind, RegionKind, the three pour options and the two body heights  }
     { were answered by the getter and refused here, so a query for them  }
     { was told they do not exist: the lag the list below warns about.    }
+    {                                                                    }
+    { The generated names are asked for first, from the routine the      }
+    { generator writes beside the reads themselves. 37 reads went into   }
+    { GetPCBProperty once without being added here, and every one was    }
+    { refused as "not a PCB property": the same lag, on a chain nobody   }
+    { had typed by hand. Generating the test from the same list the      }
+    { reads come from makes that impossible rather than merely noticed.  }
+    If IsGeneratedPCBProperty(PropName) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
     Result :=
         (PropName = 'SolderMaskBottomExpansion_mm') Or (PropName = 'UseSeparateMaskExpansions') Or (PropName = 'Address') Or (PropName = 'ComponentDesignator') Or (PropName = 'PadName') Or (PropName = 'X1_mm') Or (PropName = 'Y1_mm') Or (PropName = 'X2_mm') Or (PropName = 'Y2_mm') Or (PropName = 'Width_mm') Or (PropName = 'X_mm') Or (PropName = 'Y_mm') Or (PropName = 'TopXSize_mm') Or (PropName = 'TopYSize_mm') Or (PropName = 'HoleSize_mm') Or (PropName = 'SolderMaskExpansion_mm') Or (PropName = 'SolderMaskExpansionMode') Or
         (PropName = 'XCenter_mm') Or (PropName = 'YCenter_mm') Or (PropName = 'Radius_mm') Or (PropName = 'BoundsLeft_mm') Or (PropName = 'BoundsBottom_mm') Or (PropName = 'BoundsRight_mm') Or (PropName = 'BoundsTop_mm') Or (PropName = 'IsHidden') Or
@@ -37637,7 +37710,9 @@ Begin
         + 'TextureRotation, IsPreRoute, UserRouted, PasteMaskExpansionMode, '
         + 'SolderMaskExpansionMode, PasteMaskUsePercent, PasteMaskPercent, '
         + 'PasteMaskEnabled, DrillType, IsVirtualPin, FlippedOnLayer, '
-        + 'BorderSpaceType';
+        + 'BorderSpaceType, '
+        { The generated reads, from the generator rather than retyped. }
+        + GeneratedPCBPropertyList(0);
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

@@ -74,7 +74,7 @@ eda-agent sdk-coverage --detail 8   # with missing property names
 eda-agent sdk-coverage --json       # every missing name, for diffing
 ```
 
-Measured on AD 26.11.1.5, script `2026.11.02.2`:
+Measured on AD 26.11.1.5, script `2026.11.02.3`:
 
 ```
 1626 of 2207 declared properties reachable (73.7%)
@@ -118,7 +118,16 @@ test. Forty-six per-type chains would have written the same lines over
 and over.
 
 Ten lines and thirty-seven lines. Schematic 45.3% to 75.1%, board
-28.5% to 72.4%.
+28.5% to 72.4%. Read live on 2026-11-02: all ten off a wire, all 37
+off a track, no fault.
+
+The board half did not work when it was first written, and the reason
+is worth knowing before adding to that chain. `GetPCBProperty` is not
+reached directly; `Gen_QueryObjects` refuses any name
+`IsKnownPCBProperty` does not recognise, so a read with no matching
+name is dead code that coverage still counts, because coverage
+measures the chain. The gate is generated from the same list the reads
+come from now. The schematic side has no equivalent gate.
 
 Coverage credits a base chain to every type, not to a constant,
 because no guard gates it. The component chain is still credited to

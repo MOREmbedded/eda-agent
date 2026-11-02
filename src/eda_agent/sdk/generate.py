@@ -323,6 +323,69 @@ def render_block(model: SdkModel,
     return f"{BEGIN_MARKER}\n{shared}\n{component}{END_MARKER}\n"
 
 
+def render_name_guard(names: Iterable[str], *, predicate_name: str,
+                      list_name: str) -> str:
+    """The two routines that let the board gate recognise a generated name.
+
+    GetPCBProperty is not reached directly: Gen_QueryObjects refuses a
+    property name IsKnownPCBProperty does not recognise, deliberately,
+    because returning '' for a misspelling reads as "the data is not
+    there" and had three times been reported as the bridge failing to
+    do something it could.
+
+    That guard is a hand-written Or-chain and KnownPCBPropertyList is a
+    hand-written string beside it, and the comment above the list warns
+    in as many words that a list lagging the reader tells a caller a
+    property does not exist when it does. Adding 37 reads without
+    adding 37 names did exactly that. Generating both from the same
+    list the reads come from is what stops it happening again.
+    """
+    names = list(names)
+    guard = [
+        f"Function {predicate_name}(PropName : String) : Boolean;",
+        "Begin",
+    ]
+    if names:
+        tests = [f"(PropName = '{n}')" for n in names]
+        guard.append("    Result :=")
+        for n, test in enumerate(tests):
+            tail = ";" if n == len(tests) - 1 else " Or"
+            guard.append(f"        {test}{tail}")
+    else:
+        guard.append("    Result := False;")
+    guard.append("End;")
+
+    listing = [
+        "{ The same names as text, for the refusal message. HIDDEN FROM THE",
+        "  RUN SCRIPT DIALOG BY ITS ARGUMENT, like its hand-written",
+        "  neighbour: Altium lists parameterless routines there and this",
+        "  is not one of the four a user wants. Dummy is never read. }",
+        f"Function {list_name}(Dummy : Integer) : String;",
+        "Begin",
+    ]
+    if names:
+        chunks, line = [], ""
+        for n in names:
+            piece = n if not line else f"{line}, {n}"
+            if len(piece) > 58:
+                chunks.append(line)
+                line = n
+            else:
+                line = piece
+        if line:
+            chunks.append(line)
+        for n, chunk in enumerate(chunks):
+            head = "    Result := " if n == 0 else "        + "
+            sep = "" if n == len(chunks) - 1 else ", "
+            listing.append(f"{head}'{chunk}{sep}'")
+        listing[-1] += ";"
+    else:
+        listing.append("    Result := '';")
+    listing.append("End;")
+
+    return "\n".join(guard) + "\n\n" + "\n".join(listing) + "\n"
+
+
 def render_pcb_block(model: SdkModel,
                      table: SymbolTable | None = None,
                      allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
@@ -342,12 +405,16 @@ def render_pcb_block(model: SdkModel,
     board property this way, so docs/RELEASE_VERIFICATION.md names the
     read that settles it.
     """
-    body = render_probe(
+    probe = render_probe(
         model, "IPCB_Primitive", "IPCB_Primitive",
         function_name="GetPCBPrimitiveGenerated",
         already=handled_heads("GetPCBProperty"), table=table,
-        allow_getter=allow_getter).pascal
-    return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
+        allow_getter=allow_getter)
+    guard = render_name_guard(
+        probe.included, predicate_name="IsGeneratedPCBProperty",
+        list_name="GeneratedPCBPropertyList")
+    return (f"{BEGIN_MARKER}\n{probe.pascal}\n{guard}"
+            f"{END_MARKER}\n")
 
 
 def replace_block(source: str, block: str) -> str:
