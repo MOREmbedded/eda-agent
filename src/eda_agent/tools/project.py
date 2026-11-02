@@ -3719,15 +3719,15 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Push schematic changes to PCB (ECO): Design > Update PCB Document.
 
-        NOT SILENT: the ECO dialog BLOCKS the bridge until Execute Changes
-        is pressed. Prefer opening it without blocking and pressing it
-        yourself: app_menu(how="click", args={"menu_path": "Design|Import
-        Changes From <Project>.PrjPcb", "expect_dialog": "Engineering
-        Change Order"}), then app_press_dialog_button("Execute Changes",
-        allow_irreversible=True) and "Close". It focuses the PCB first so the update runs
-        schematic to board (refuses with WRONG_FOCUS if it cannot); check
-        the ECO lists the PcbDoc before executing. ``app_list_open_dialogs``
-        reads the dialog while the bridge is blocked.
+        NOT SILENT: the ECO dialog BLOCKS the bridge until Execute Changes
+        is pressed. Prefer opening it without blocking and pressing it
+        yourself: app_menu(how="click", args={"menu_path": "Design|Import
+        Changes From <Project>.PrjPcb", "expect_dialog": "Engineering
+        Change Order"}), then app_press_dialog_button("Execute Changes",
+        allow_irreversible=True) and "Close". It focuses the PCB first so the update runs
+        schematic to board (refuses with WRONG_FOCUS if it cannot); check
+        the ECO lists the PcbDoc before executing. ``app_list_open_dialogs``
+        reads the dialog while the bridge is blocked.
 
         The wait is bounded by ``wait_seconds``. Giving up does NOT cancel
         the ECO: Altium still sits on the dialog, and the changes are
@@ -3746,13 +3746,13 @@ def register_project_tools(mcp):
         Returns:
             success, pcb_path, before/after mapping counts,
             components_added_to_pcb, components_removed_from_pcb,
-            components_in_sync, and dialog_outcome_verified (always
-            false: which button was pressed is unknown). The counts see
-            components added or removed only. ``after_sync`` then reads the
-            board against the schematic: ``footprint_mismatch`` (the
-            board's footprint is not the schematic's), ``missing_on_board``
-            and ``diff_pairs_removed`` (pairs defined only on the board,
-            which a sync deletes).
+            components_in_sync, and dialog_outcome_verified (always
+            false: which button was pressed is unknown). The counts see
+            components added or removed only. ``after_sync`` then reads the
+            board against the schematic: ``footprint_mismatch`` (the
+            board's footprint is not the schematic's), ``missing_on_board``
+            and ``diff_pairs_removed`` (pairs defined only on the board,
+            which a sync deletes).
             With ``verify_pad_nets``, also ``pad_net_verification`` and
             its ``pads_unbound``: repair those with ``pcb_bind_pad_nets``.
             When the bounded wait expires: ``success:false`` with

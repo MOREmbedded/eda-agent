@@ -7070,10 +7070,10 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Size and optionally create controlled-impedance PCB rules.
 
-        Creates a Width rule and, for ``*_diff`` geometries, a Differential
-        Pairs Routing gap rule. Values come from the existing verified inverse
-        impedance calculator. Closed-form sizing is an initial engineering
-        value; fabrication-house field-solver values remain authoritative.
+        Creates a Width rule and, for ``*_diff`` geometries, a Differential
+        Pairs Routing gap rule. Values come from the existing verified inverse
+        impedance calculator. Closed-form sizing is an initial engineering
+        value; fabrication-house field-solver values remain authoritative.
         """
         from ..design.impedance_sizing import trace_width_for_impedance
 
@@ -8311,8 +8311,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "vias" array (each with x, y, size, hole_size,
-            net, low_layer, high_layer), "count" (every via that matches),
-            "returned" (on this page), "offset" and "more".
+            net, low_layer, high_layer), "count" (every via that matches),
+            "returned" (on this page), "offset" and "more".
         """
         if offset < 0 or limit < 0:
             return {"ok": False, "reason": "offset and limit are 0 or more"}
@@ -9720,12 +9720,12 @@ def register_pcb_tools(mcp):
         The unattended stand-in for the ECO (which always raises a modal):
         one Altium transaction for the whole list.
 
-        Per part: **geometry only** (no ``unique_id`` / ``pad_nets``)
-        leaves pads unconnected; **synced** (both) stamps the schematic
-        UniqueId so a later ECO matches the part, and sets each pad's net.
-        Read ``unique_id`` with ``obj_query`` (``eSchComponent``,
-        "Designator.Text,UniqueId") and ``pad_nets`` from
-        ``proj_get_connectivity_many``.
+        Per part: **geometry only** (no ``unique_id`` / ``pad_nets``)
+        leaves pads unconnected; **synced** (both) stamps the schematic
+        UniqueId so a later ECO matches the part, and sets each pad's net.
+        Read ``unique_id`` with ``obj_query`` (``eSchComponent``,
+        "Designator.Text,UniqueId") and ``pad_nets`` from
+        ``proj_get_connectivity_many``.
 
         In a hierarchical project the UniqueId a sync matches on is the
         sheet-qualified ``\\SHEET_UNIQUE_ID\\COMPONENT_UNIQUE_ID``; the short
