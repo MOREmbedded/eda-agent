@@ -70,7 +70,16 @@ def _arguments_for(fn) -> dict:
 
 @pytest.fixture
 def design_tools(monkeypatch):
-    """Every design tool, with the Altium bridge replaced by a tripwire."""
+    """Every design tool, with the Altium bridge replaced by a tripwire.
+
+    The NPI phase tools are off by default, so the gate is turned on to
+    reach them. Whether a tool touches the bridge is a property of the
+    tool and not of whether it happens to be advertised today, and a
+    measurement that silently skipped three of them would report a clean
+    sweep over a smaller set than the name of this file claims.
+    """
+    monkeypatch.setenv("EDA_AGENT_PHASES", "all")
+
     import eda_agent.bridge as bridge_mod
     import eda_agent.bridge.altium_bridge as altium_bridge
 

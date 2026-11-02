@@ -32,9 +32,25 @@ def tool_names() -> list[str]:
     # (register_eda_tools, register_meta_tools, register_parts_tools)
     # are layered on top of it, so the inner call builds a surface no
     # real server serves and makes their overrides look stale.
-    mcp = FastMCP("test")
-    register_backend(mcp, "altium")
-    tools = asyncio.run(mcp.list_tools())
+    #
+    # With every optional feature on, for the same reason in the other
+    # direction: metadata.py classifies a tool, and a tool an owner has
+    # not switched on still needs its category and its read/write
+    # marking. Enumerating the default surface would call those entries
+    # stale while they are exactly right.
+    import os
+
+    was = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        mcp = FastMCP("test")
+        register_backend(mcp, "altium")
+        tools = asyncio.run(mcp.list_tools())
+    finally:
+        if was is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = was
     return sorted(t.name for t in tools)
 
 

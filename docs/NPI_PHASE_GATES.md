@@ -3,6 +3,67 @@
 Feasibility, prototype, EVT, DVT, PVT - as a gate the server can hold
 you to, rather than a slide nobody opens after kickoff.
 
+## Switching it on
+
+**The gate is off out of the box.** Most boards are not run under a
+formal NPI process, and one that is not should not be carrying three
+tools and a stage vocabulary through every prompt to be told so.
+
+```bash
+eda-agent phases-enable evt dvt pvt
+```
+
+```
+eda-agent phases-show       which stages are in force, and what decided it
+eda-agent phases-enable     run the named stages, or all five if none named
+eda-agent phases-disable    stop running them
+```
+
+Enable the stages you actually run, not all five out of tidiness: a
+stage that is on and never answered holds the product at it forever,
+which is how a gate stops being read.
+
+The setting is one key in the [owner profile](PROFILES.md):
+
+```json
+{ "stages": ["evt", "dvt", "pvt"] }
+```
+
+in `<profile>/phase_gates.json`. It lives there because which gates a
+programme runs is a house rule - it follows the company, not the board
+in front of you - and because a project-local profile commits it with
+the project, so a team shares one answer.
+
+Two ways to overrule it for one run, both naming stages the same way:
+
+| | |
+| --- | --- |
+| `eda-agent --phases evt,dvt,pvt` | a flag, for trying one on |
+| `EDA_AGENT_PHASES=evt,dvt,pvt` | an environment variable, for an MCP client with an `env` block and no profile directory |
+
+`none` is a value, and it has to be: an empty variable means "the profile
+decides", so without the word there would be no way to turn the gate off
+over a profile that turned it on.
+
+**Off means not advertised.** The three tools below are not registered
+at all, rather than registered and refusing - a tool that exists only to
+say it is switched off still costs a call and a round trip to teach what
+its absence teaches for free, and reads to a model as a capability that
+is there. `tool_guide` withholds the recipe for the same reason.
+
+**The tool surface is chosen at startup**, as with `--backend` and
+`--toolset`, so changing the setting takes a restart.
+
+**Enabling some stages and not others is a weaker claim**, and the reply
+says so. `design_phase_standing` reviews only the stages in force and
+reports them in `stages_run`; `in_production` means every one of *those*
+cleared. A stage that is off is refused by `design_phase_gate` rather
+than answered, and an answer recorded against one is refused too -
+evidence nothing reviews is worse than no evidence.
+
+**Switching stages off never touches the ledger.** The answers stay on
+file and count again the moment the stages do.
+
 ## The model
 
 A PCBA programme passes through gates, and each gate asks a different
@@ -49,7 +110,9 @@ rests on: a tool's result, a report, a person.
 ### `design_phase_standing(revision="", product="default")`
 
 The stage the product is in and what that stage still needs: the first
-stage that does not clear.
+stage that does not clear. Only the stages in force are reviewed, and
+`stages_run` names them, so `in_production` can be read against what it
+actually rests on.
 
 ## Three rules that make the gate hard to pass by accident
 
@@ -100,6 +163,10 @@ The checks are data in `src/eda_agent/design/phase_gates.py`. Adding one
 is a `Check(...)` entry with a key that names its stage, the question it
 asks, why it is asked now, what counts as done, how long an answer stays
 good, and the tools that answer it if any.
+
+A check whose stage nobody runs is still worth adding: it costs nothing
+until someone enables that stage, and the argument for *why* it belongs
+to that stage is the part that is hard to reconstruct later.
 
 This fork had its own implementation of the same gates (`design_npi_*`,
 `src/eda_agent/design/npi.py`) until 2026-11-01. Upstream's was the same

@@ -77,11 +77,30 @@ def _collect() -> list[dict]:
     # question from what any one backend advertises, so the EasyEDA-native
     # tools are added on top. They share no names with the others, so
     # nothing is registered twice.
+    #
+    # The same argument covers the features that are off until an owner
+    # switches them on (the NPI phase gates): a reader looking a tool up
+    # here wants to know it exists and what it does, and leaving it out
+    # would make the reference depend on whose machine generated it.
+    # Put back afterwards. This module is imported by its own test, in a
+    # worker shared with the rest of the suite, and a leaked setting here
+    # would quietly switch a feature on for whatever ran next -- the same
+    # trap the active backend sprang once already.
+    import os
+
     from eda_agent.tools import register_easyeda_tools
 
-    mcp = FastMCP("gen")
-    register_backend(mcp, "both")
-    register_easyeda_tools(mcp)
+    was = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        mcp = FastMCP("gen")
+        register_backend(mcp, "both")
+        register_easyeda_tools(mcp)
+    finally:
+        if was is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = was
     from eda_agent.tools.folds import call_form
 
     tools = list(asyncio.run(mcp.list_tools()))

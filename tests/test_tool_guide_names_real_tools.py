@@ -24,6 +24,7 @@ from eda_agent.tools.guidance import (
     _RECIPES,
     DOCUMENT_KINDS,
     guidance_for,
+    switched_on,
 )
 
 _BACKENDS = ("altium", "kicad", "easyeda")
@@ -60,8 +61,17 @@ _SURFACES = {b: _surface(b) for b in _BACKENDS}
 
 
 def _entries():
-    """(label, backend, tool_name) for every tool the guide names."""
+    """(label, backend, tool_name) for every tool the guide names.
+
+    A recipe behind a setting that is off names tools the surface does
+    not carry, and the guide withholds it for exactly that reason, so
+    checking it here would fail the guide for being right. The recipes
+    that ARE withheld get their own check below, against a surface built
+    with their setting on.
+    """
     for r in _RECIPES:
+        if not switched_on(r):
+            continue
         for backend in r["backends"]:
             for name in r["use"]:
                 yield f"recipe {r['task']!r} use", backend, name
@@ -98,6 +108,49 @@ def test_every_named_tool_exists_on_that_backend(label, backend, name):
 def test_the_guide_names_at_least_one_tool():
     """Guards the parametrization above against collapsing to nothing."""
     assert len(set(_entries())) >= 10
+
+
+def test_a_withheld_recipe_names_tools_that_appear_when_it_is_switched_on():
+    """The half _entries() skips, measured with its setting turned on.
+
+    A recipe behind a setting is still a recipe, and a rename inside it
+    would otherwise go unnoticed for as long as the setting stayed off:
+    the skip above would hide it, and the first owner to switch the
+    feature on would get the broken guide. So every such recipe is
+    checked against a surface built with its feature enabled.
+    """
+    import os
+
+    withheld = [r for r in _RECIPES if r.get("needs")]
+    assert withheld, (
+        "no recipe declares a 'needs' any more; either the optional "
+        "features went away, in which case delete this test and the "
+        "switched_on filter with it, or a 'needs' key was lost and the "
+        "recipes behind it are now offered when their tools are absent")
+
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        surfaces = {b: _surface(b) for b in _BACKENDS}
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
+
+    for recipe in withheld:
+        assert switched_on(recipe) is False, (
+            f"recipe {recipe['task']!r} declares needs="
+            f"{recipe['needs']!r} and is on by default, so the test above "
+            f"already covers it and this one is measuring nothing")
+        for backend in recipe["backends"]:
+            for name in recipe["use"]:
+                assert name in surfaces[backend], (
+                    f"recipe {recipe['task']!r} names {name!r}, which the "
+                    f"{backend} backend does not register even with "
+                    f"{recipe['needs']!r} switched on. The tool was renamed "
+                    f"and the guide will send the first owner who enables "
+                    f"this feature nowhere")
 
 
 @pytest.mark.parametrize("recipe", _RECIPES, ids=lambda r: r["task"])

@@ -28,9 +28,27 @@ from eda_agent.tools.registry import ToolRegistry
 
 @pytest.fixture(scope="module")
 def tools():
+    """The Altium surface with the NPI gate switched ON.
+
+    It is off by default, so the three stage tools are not registered at
+    all. Everything below measures what they DO, which is a different
+    question from whether an owner has asked for them; the default, and
+    what each tool says when its stage is off, are measured in
+    test_phase_gates_switch.py.
+    """
+    import os
+
     from eda_agent.tools import register_backend
-    registry = ToolRegistry()
-    register_backend(registry, "altium")
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        registry = ToolRegistry()
+        register_backend(registry, "altium")
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
     return registry
 
 

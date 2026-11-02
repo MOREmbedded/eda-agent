@@ -125,6 +125,19 @@ OFFLINE_DESIGN_TOOLS = (
 )
 
 
+#: The NPI phase-gate tools, which a profile switches on and which are
+#: off by default (eda_agent.design.phase_gates, docs/NPI_PHASE_GATES.md).
+#:
+#: They are named in OFFLINE_DESIGN_TOOLS with the rest, because they are
+#: as bridge-free as the rest; this list is what lets the check below tell
+#: a tool that is switched off from one that has been renamed away.
+PHASE_GATE_TOOLS = (
+    "design_phase_answer",
+    "design_phase_gate",
+    "design_phase_standing",
+)
+
+
 def register_offline_design_tools(mcp) -> None:
     """Register the plan-building design tools that need no bridge.
 
@@ -133,13 +146,20 @@ def register_offline_design_tools(mcp) -> None:
     re-registered. That keeps the split in one list rather than
     scattering conditionals through a 2000-line module.
     """
+    from ..profile import get_phase_stages
     from .design import register_design_tools
     from .registry import ToolRegistry
 
     capture = ToolRegistry()
     register_design_tools(capture)
 
-    missing = [n for n in OFFLINE_DESIGN_TOOLS if capture.get(n) is None]
+    # A phase tool that is switched off was never defined, so it is not
+    # missing. One that is switched ON and absent has been renamed, which
+    # is exactly what this check exists to catch, so the exemption lasts
+    # only as long as the gate is off.
+    optional = () if get_phase_stages() else PHASE_GATE_TOOLS
+    missing = [n for n in OFFLINE_DESIGN_TOOLS
+               if capture.get(n) is None and n not in optional]
     if missing:
         # A renamed tool would otherwise drop silently off this backend.
         raise RuntimeError(
@@ -147,7 +167,9 @@ def register_offline_design_tools(mcp) -> None:
             f"{missing}")
 
     for name in OFFLINE_DESIGN_TOOLS:
-        mcp.tool()(capture.get(name).fn)
+        tool = capture.get(name)
+        if tool is not None:
+            mcp.tool()(tool.fn)
 
 
 #: Review tools that need no bridge. Measured the same way as

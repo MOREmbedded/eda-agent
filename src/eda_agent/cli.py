@@ -869,6 +869,12 @@ _PROFILE_EXAMPLE_DOCUMENT_SETTINGS = """{
 }
 """
 
+_PROFILE_EXAMPLE_PHASE_GATES = """{
+  "_comment": "Which NPI stages this owner runs, in docs/NPI_PHASE_GATES.md. An empty list is the default and leaves the three design_phase_* tools unadvertised. Scaffolded empty on purpose: turning a gate on is a decision, not a default.",
+  "stages": []
+}
+"""
+
 _PROFILE_EXAMPLE_FOOTPRINT_POLICY = """{
   "_comment": "Matches design.footprint_policy.py's explicit-policy keys. Omit a key to infer it from the library's own majority convention instead.",
   "courtyard": true,
@@ -888,6 +894,7 @@ def _profile_scaffold(directory, name: str) -> None:
     (directory / "footprint_defaults.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS, encoding="utf-8")
     (directory / "footprint_policy.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_POLICY, encoding="utf-8")
     (directory / "document_settings.json").write_text(_PROFILE_EXAMPLE_DOCUMENT_SETTINGS, encoding="utf-8")
+    (directory / "phase_gates.json").write_text(_PROFILE_EXAMPLE_PHASE_GATES, encoding="utf-8")
     (directory / "rules").mkdir(exist_ok=True)
     (directory / "fab_profiles").mkdir(exist_ok=True)
     (directory / "templates").mkdir(exist_ok=True)
@@ -981,6 +988,7 @@ def cmd_profile_show(*, as_json: bool) -> int:
     print(f"  footprint_defaults: {p.footprint_defaults or '(none)'}")
     print(f"  footprint_policy:   {p.footprint_policy or '(none)'}")
     print(f"  document_settings:  {p.document_settings or '(none)'}")
+    print(f"  phase_gates:        {p.phase_gates or '(none)'}")
     print(f"  rulesets:           {p.rulesets() or '(none)'}")
     print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
     print(f"  templates:          {p.template_names() or '(none)'}")
@@ -1028,6 +1036,7 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
     # will accept it rather than refuse at the point of use.
     errors += profile_mod.check_footprint_defaults(p.footprint_defaults)
     errors += profile_mod.check_document_settings(p.document_settings)
+    errors += profile_mod.check_phase_gates(p.phase_gates)
 
     if p.naming_path:
         try:
@@ -1082,6 +1091,133 @@ def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
     shutil.copytree(src, dst, dirs_exist_ok=True)
     print(f"Created project from template {template!r} at: {dst}")
     return 0
+
+
+# --------------------------------------------------------------------------
+# phases -- which NPI stages this owner runs. Off by default; the setting
+# lives in the profile because which gates a programme runs is a house
+# rule, not a property of the board in front of you.
+# --------------------------------------------------------------------------
+
+def _phases_profile_dir() -> "Optional[Path]":
+    """The profile these commands write to, or None with the reason printed.
+
+    There is deliberately no "create one for you": a profile is a whole
+    directory with its own resolution order, and scaffolding one silently
+    from a settings command would leave an owner with two.
+    """
+    from . import profile as profile_mod
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print("  Make one:  eda-agent profile-init <name>        (central)",
+              file=sys.stderr)
+        print("             eda-agent profile-init <name> --here (this project)",
+              file=sys.stderr)
+        print("  Or for one run, no profile needed:", file=sys.stderr)
+        print("             eda-agent --phases evt,dvt,pvt ...", file=sys.stderr)
+        print("             (or the EDA_AGENT_PHASES environment variable)",
+              file=sys.stderr)
+        return None
+    return directory
+
+
+def _write_phase_stages(stages: tuple) -> int:
+    """Record ``stages`` in the active profile's phase_gates.json.
+
+    Other keys in the file are preserved: the scaffold writes a
+    ``_comment`` into it, and a settings command that silently dropped an
+    owner's note would be the kind of small betrayal nobody reports.
+    """
+    import json as _json
+
+    from . import profile as profile_mod
+
+    directory = _phases_profile_dir()
+    if directory is None:
+        return 1
+    path = directory / "phase_gates.json"
+    data, error = profile_mod._read_json_lenient(path)
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        print("  Fix or delete that file first; overwriting it would throw "
+              "away whatever else is in it.", file=sys.stderr)
+        return 1
+    data["stages"] = list(stages)
+    path.write_text(_json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    print(f"Stages recorded in {path}")
+    _print_phase_stages(label="Now running")
+    return 0
+
+
+def _print_phase_stages(*, label: str = "Stages") -> None:
+    from . import profile as profile_mod
+    from .design.phase_gates import TITLES
+
+    found = profile_mod.describe_phase_stages()
+    stages = found["stages"]
+    where = {"environment": f"the {profile_mod.PHASE_STAGES_ENV} environment "
+                            f"variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets them)"}
+    print(f"{label}: {', '.join(stages) if stages else 'none'}  "
+          f"[from {where[found['source']]}]")
+    for stage in stages:
+        print(f"  {stage:<12} {TITLES[stage]}")
+    if not stages:
+        print("  The three design_phase_* tools are not advertised.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['raw']!r} -- {found['problem']}",
+              file=sys.stderr)
+
+
+def cmd_phases_show(*, as_json: bool = False) -> int:
+    """Which NPI stages are in force, and which setting decided it."""
+    from . import profile as profile_mod
+
+    if as_json:
+        import json as _json
+        print(_json.dumps(profile_mod.describe_phase_stages(), indent=2))
+        return 0
+    _print_phase_stages()
+    found = profile_mod.describe_phase_stages()
+    if found["source"] == "environment" and found["stages"]:
+        print(f"  ({profile_mod.PHASE_STAGES_ENV} overrules the profile. "
+              f"Unset it to go back to what the profile says.)")
+    return 1 if found["problem"] else 0
+
+
+def cmd_phases_enable(stages: "list[str]") -> int:
+    """Turn on the named stages, or all five when none are named."""
+    from .design.phase_gates import STAGES, parse_stages
+
+    try:
+        wanted = parse_stages(stages) if stages else STAGES
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not wanted:
+        print("ERROR: that names no stage. Use phases-disable to turn the "
+              "gate off.", file=sys.stderr)
+        return 2
+    code = _write_phase_stages(wanted)
+    if code == 0:
+        print("  Restart the server for it to advertise them: the tool "
+              "surface is chosen at startup.")
+    return code
+
+
+def cmd_phases_disable() -> int:
+    """Turn the gate off, keeping every answer already recorded."""
+    code = _write_phase_stages(())
+    if code == 0:
+        print("  Answers already recorded are untouched, and come back "
+              "with the stages.")
+        print("  Restart the server to drop the tools.")
+    return code
 
 
 # --------------------------------------------------------------------------

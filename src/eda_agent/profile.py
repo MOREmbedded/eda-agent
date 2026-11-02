@@ -23,6 +23,9 @@ Two file shapes are genuinely new here (nothing already reads them):
   - document_settings.json  -- {"schematic_units", "pcb_units",
                                "schematic_snap_grid_mil",
                                "schematic_visible_grid_mil"}
+  - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
+                               stages this owner runs. Absent means none,
+                               and the phase tools are not advertised.
   - templates/<name>/       -- plain files, copied as-is by
                                `eda-agent profile-new-project`
 
@@ -148,6 +151,7 @@ class ActiveProfile:
     footprint_defaults: dict = field(default_factory=dict)
     footprint_policy: dict = field(default_factory=dict)
     document_settings: dict = field(default_factory=dict)
+    phase_gates: dict = field(default_factory=dict)
     naming_path: Path | None = None
     company_goals_path: Path | None = None
     rules_dir: Path | None = None
@@ -172,6 +176,7 @@ class ActiveProfile:
             "footprint_defaults": self.footprint_defaults,
             "footprint_policy": self.footprint_policy,
             "document_settings": self.document_settings,
+            "phase_gates": self.phase_gates,
             "has_naming": self.naming_path is not None,
             "has_company_goals": self.company_goals_path is not None,
             "rulesets": self.rulesets(),
@@ -244,6 +249,7 @@ def load_profile(directory: Path) -> ActiveProfile:
     footprint_defaults = read("footprint_defaults.json")
     footprint_policy = read("footprint_policy.json")
     document_settings = read("document_settings.json")
+    phase_gates = read("phase_gates.json")
 
     naming_path = directory / "naming.json"
     company_goals_path = directory / "company_goals.json"
@@ -257,6 +263,7 @@ def load_profile(directory: Path) -> ActiveProfile:
         footprint_defaults=footprint_defaults,
         footprint_policy=footprint_policy,
         document_settings=document_settings,
+        phase_gates=phase_gates,
         naming_path=naming_path if naming_path.exists() else None,
         company_goals_path=company_goals_path if company_goals_path.exists() else None,
         rules_dir=rules_dir if rules_dir.is_dir() else None,
@@ -363,6 +370,90 @@ def check_document_settings(data: dict) -> list[str]:
                 f"document_settings.json: {key} must be a whole number of mils, "
                 f"got {value!r}")
     return problems
+
+
+_PHASE_GATE_KEYS = frozenset({"stages"})
+
+#: Overrules a profile's phase_gates.json, the way EDA_AGENT_BACKEND
+#: overrules the backend. Empty or unset means "the profile decides";
+#: "none" is how a shell turns the gate off over a profile that turned
+#: it on, which an empty value cannot say.
+PHASE_STAGES_ENV = "EDA_AGENT_PHASES"
+
+
+def check_phase_gates(data: dict) -> list[str]:
+    from .design.phase_gates import parse_stages
+
+    problems = _unknown_keys(data, _PHASE_GATE_KEYS, "phase_gates.json")
+    if "stages" in data:
+        try:
+            parse_stages(data["stages"])
+        except ValueError as exc:
+            problems.append(f"phase_gates.json: {exc}")
+    return problems
+
+
+def get_phase_stages(start: Path | None = None) -> tuple[str, ...]:
+    """The NPI stages in force: the environment, else the profile, else none.
+
+    Reads ONLY phase_gates.json rather than going through load_profile():
+    this runs while the tool surface is being built, and loading the whole
+    profile to reach one file would read four others for nothing.
+
+    A value that is not a list of stages degrades to the default rather
+    than raising, as every profile setting does -- a typo must not leave
+    the server without a tool surface -- and profile-validate is where the
+    same value is reported loudly.
+    """
+    from .design.phase_gates import DEFAULT_STAGES, parse_stages
+
+    raw: object = os.environ.get(PHASE_STAGES_ENV, "")
+    if not str(raw).strip():
+        directory = resolve_profile_dir(start)
+        if directory is None:
+            return DEFAULT_STAGES
+        data, _error = _read_json_lenient(directory / "phase_gates.json")
+        if "stages" not in data:
+            return DEFAULT_STAGES
+        raw = data["stages"]
+    try:
+        return parse_stages(raw)
+    except ValueError:
+        return DEFAULT_STAGES
+
+
+def describe_phase_stages(start: Path | None = None) -> dict:
+    """What get_phase_stages resolved, where it came from, and what it ignored.
+
+    get_phase_stages swallows a bad value so a typo cannot leave the server
+    without tools. Something has to say it out loud, or the typo is
+    invisible until someone wonders where their stages went; this is what
+    `eda-agent phases-show` prints.
+
+    Returns ``{"stages", "source", "raw", "problem", "path"}``. ``source``
+    is "environment", "profile" or "default"; ``problem`` is empty when the
+    value parsed.
+    """
+    from .design.phase_gates import DEFAULT_STAGES, parse_stages
+
+    raw: object = os.environ.get(PHASE_STAGES_ENV, "")
+    source = "environment"
+    path: Path | None = None
+    if not str(raw).strip():
+        directory = resolve_profile_dir(start)
+        path = directory / "phase_gates.json" if directory else None
+        data = {} if directory is None else _read_json_lenient(path)[0]
+        if "stages" not in data:
+            return {"stages": list(DEFAULT_STAGES), "source": "default",
+                    "raw": None, "problem": "", "path": str(path) if path else ""}
+        raw, source = data["stages"], "profile"
+    try:
+        stages = parse_stages(raw)
+    except ValueError as exc:
+        return {"stages": list(DEFAULT_STAGES), "source": source, "raw": raw,
+                "problem": str(exc), "path": str(path) if path else ""}
+    return {"stages": list(stages), "source": source, "raw": raw,
+            "problem": "", "path": str(path) if path else ""}
 
 
 def get_pad_corner_radius_pct(start: Path | None = None) -> int:

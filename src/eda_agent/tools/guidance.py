@@ -872,6 +872,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  ("ready", "production")),
         "document_kind": "any",
         "backends": ("altium", "easyeda"),
+        "needs": "phase_gates",
         "use": ["design_phase_standing", "design_phase_gate", "design_phase_answer"],
         "avoid": [],
         "note": ("A product is in the first stage that does not clear. Each "
@@ -1809,6 +1810,34 @@ def derived_recipes(task: str, docs: dict[str, str],
     return [r for _s, _n, r in out[:limit]]
 
 
+#: Recipes whose tools are only advertised when a setting switches them
+#: on, keyed by the ``needs`` they declare. The guide exists because
+#: capabilities were reported absent when they were present; sending a
+#: caller to a tool this server is not advertising is the same failure
+#: with more confidence behind it, so an off feature's recipe is withheld
+#: rather than offered with a caveat.
+def _phase_gates_on() -> bool:
+    from ..profile import get_phase_stages
+    return bool(get_phase_stages())
+
+
+_FEATURE_IS_ON = {"phase_gates": _phase_gates_on}
+
+
+def switched_on(entry) -> bool:
+    """Whether a recipe's feature is enabled, for one that declares a ``needs``.
+
+    An unrecognised ``needs`` counts as on: a recipe that named a feature
+    nobody wired up would otherwise vanish silently, which is the harder
+    failure to notice of the two.
+    """
+    needs = entry.get("needs")
+    if not needs:
+        return True
+    predicate = _FEATURE_IS_ON.get(needs)
+    return True if predicate is None else bool(predicate())
+
+
 def guidance_for(task: str = "", document_kind: str = "",
                  backend: str = "",
                  docs: Optional[dict[str, str]] = None) -> dict[str, Any]:
@@ -1826,7 +1855,7 @@ def guidance_for(task: str = "", document_kind: str = "",
 
     ranked = sorted(
         ((_score(r, task, document_kind), i, r)
-         for i, r in enumerate(_RECIPES) if on_backend(r)),
+         for i, r in enumerate(_RECIPES) if on_backend(r) and switched_on(r)),
         key=lambda t: (-t[0], t[1]))
     recipes = []
     for score, _i, r in ranked:

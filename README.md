@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 678 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 675 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -73,7 +73,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
-- **~678 tools on the default Altium backend** (764+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
+- **~675 tools on the default Altium backend** (761+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories. Three more, the [NPI phase gates](#npi-phase-gates), are off until you ask for them
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation. They reach **1626 of the 2207 properties Altium's own SDK declares (73.7%)** across 46 object types, measured against `Altium.SDK.Interfaces.dll` rather than estimated: `eda-agent sdk-coverage` prints the figure and names every property still out of reach. See [SDK coverage](docs/SDK_COVERAGE.md)
 - **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and the whole list is one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
@@ -407,11 +407,27 @@ says so plainly instead of failing obscurely.
 Feasibility, prototype, EVT, DVT and PVT as gates the server holds you
 to, rather than a slide nobody opens after kickoff.
 
+**Off until you ask for them.** Most boards are not run under a formal
+NPI process, and one that is not should not be carrying three tools and
+a stage vocabulary through every prompt to be told so. Turn on the
+stages you actually run:
+
+```bash
+eda-agent phases-enable evt dvt pvt
+```
+
 ```
 design_phase_gate      what one stage asks, and where each check stands
 design_phase_answer    record the outcome of one check, with its source
 design_phase_standing  which stage the product is actually in
 ```
+
+`phases-show` says which stages are in force and which setting decided
+it; `phases-disable` turns them off again and keeps every answer already
+recorded. The setting lives in the [owner profile](docs/PROFILES.md),
+because which gates a programme runs is a house rule rather than a
+property of the board in front of you, and `EDA_AGENT_PHASES` or
+`--phases` overrules it for one run.
 
 42 checks across the five stages, 29 of them answered by tools this
 server already has: ERC and DRC results, footprint audits against the
@@ -1173,6 +1189,9 @@ listings can be read against each other.
 | `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
+| `eda-agent phases-show [--json]` | Which [NPI stages](#npi-phase-gates) are in force, and which setting decided it |
+| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all five when none are named. Off by default |
+| `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
 
 ### Offline analysis (no running Altium)
 

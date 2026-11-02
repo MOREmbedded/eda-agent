@@ -2776,6 +2776,28 @@ def register_design_tools(mcp) -> None:
         }
 
     # --- stages to production: feasibility, prototype, EVT, DVT, PVT -------
+    #
+    # OFF unless a profile, EDA_AGENT_PHASES or --phases names the stages
+    # to run (docs/NPI_PHASE_GATES.md). Off means not advertised, rather
+    # than advertised and refusing: a tool that exists only to say it is
+    # switched off costs a call and a round trip to teach what its absence
+    # teaches for free.
+    #
+    # Read once, here, because registration is what it decides. Changing
+    # the setting takes a restart, the same as --backend and --toolset,
+    # and for the same reason: the surface is chosen before any call.
+    from ..profile import get_phase_stages
+    phase_stages = get_phase_stages()
+
+    def phase_tool(fn):
+        """Advertise fn only where the phase gate is switched on."""
+        return mcp.tool()(fn) if phase_stages else fn
+
+    def _stage_is_on(name: str) -> bool:
+        return name in phase_stages
+
+    def _stages_note() -> str:
+        return ", ".join(phase_stages) or "none"
 
     def _ledger(product: str):
         from ..config import get_config
@@ -2802,7 +2824,7 @@ def register_design_tools(mcp) -> None:
             out["ignored_because"] = line.ignored_because
         return out
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_gate(stage: str, revision: str = "", product: str = "default",
                                 with_reasons: bool = True) -> dict[str, Any]:
         """The checks that close one stage on the way to production, and how
@@ -2832,6 +2854,14 @@ def register_design_tools(mcp) -> None:
             name = stage_from(stage)
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
+        if not _stage_is_on(name):
+            # Answering it anyway would let a programme build up evidence
+            # for a stage its own profile says it does not run, which
+            # design_phase_standing would then ignore without saying so.
+            return {"ok": False, "reason": (
+                f"{name} is not one of the stages this profile runs "
+                f"({_stages_note()}). Add it with `eda-agent phases-enable "
+                f"{name}` if it belongs here.")}
         result = review(name, _ledger(product).answers(), revision)
         return {"stage": name, "title": TITLES[name], "product": product,
                 "revision": revision, "cleared": result.cleared, "tally": result.tally(),
@@ -2840,7 +2870,7 @@ def register_design_tools(mcp) -> None:
                 "tools_to_run": result.tools_to_run(),
                 "for_people": result.for_people()}
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_answer(key: str, outcome: str, detail: str = "",
                                   source: str = "", revision: str = "",
                                   product: str = "default") -> dict[str, Any]:
@@ -2863,6 +2893,12 @@ def register_design_tools(mcp) -> None:
             and ``holding``.
         """
         from ..design.phase_gates import CHECKS, review
+        wanted = CHECKS.get(key)
+        if wanted is not None and not _stage_is_on(wanted.stage):
+            return {"ok": False, "reason": (
+                f"{key} belongs to {wanted.stage}, which is not one of the "
+                f"stages this profile runs ({_stages_note()}). Recording it "
+                f"would leave evidence nothing reviews.")}
         ledger = _ledger(product)
         try:
             ledger.add(key, outcome, source=source, detail=detail, revision=revision)
@@ -2874,7 +2910,7 @@ def register_design_tools(mcp) -> None:
                 "stage_cleared": result.cleared, "tally": result.tally(),
                 "holding": [line.check.key for line in result.holding()]}
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_standing(revision: str = "",
                                     product: str = "default") -> dict[str, Any]:
         """Which stage the product is in, and what that stage still needs.
@@ -2883,16 +2919,23 @@ def register_design_tools(mcp) -> None:
         work exists beyond it: a board whose feasibility checks never closed
         is in feasibility.
 
+        Only the stages this profile runs are reviewed, and ``stages_run``
+        names them. ``in_production`` means every one of THOSE cleared, so
+        read it against ``stages_run`` rather than against all five.
+
         Returns:
-            ``stage``, ``title``, ``in_production`` (every stage cleared),
-            that stage's ``holding`` and ``tools_to_run``, and ``stages``
-            (each one's ``cleared``, ``tally`` and ``holding``).
+            ``stage``, ``title``, ``in_production`` (every stage run
+            cleared), ``stages_run``, that stage's ``holding`` and
+            ``tools_to_run``, and ``stages`` (each one's ``cleared``,
+            ``tally`` and ``holding``).
         """
         from ..design.phase_gates import DONE, TITLES, standing
-        stage, reviews = standing(_ledger(product).answers(), revision)
+        stage, reviews = standing(_ledger(product).answers(), revision,
+                                  stages=phase_stages)
         current = next((r for r in reviews if r.stage == stage), None)
         return {"product": product, "revision": revision, "stage": stage,
                 "title": TITLES[stage], "in_production": stage == DONE,
+                "stages_run": list(phase_stages),
                 "holding": [line.check.key for line in current.holding()] if current else [],
                 "tools_to_run": current.tools_to_run() if current else [],
                 "stages": [{"stage": r.stage, "cleared": r.cleared, "tally": r.tally(),

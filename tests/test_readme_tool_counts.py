@@ -257,27 +257,42 @@ def _tools_named_in_catalog_sections() -> dict[str, str]:
 
 
 def _registered_both() -> set[str]:
-    """Every tool any backend registers.
+    """Every tool any backend registers, with every optional feature on.
 
     "both" means Altium plus KiCad, and EasyEDA is a third backend that
     it does not include. Once the documentation set grew to cover all
     three, comparing against "both" alone reported every easyeda_* tool
     as undocumented, which said nothing about the tools and everything
     about the comparison set.
+
+    The optional features are enabled for the same reason. The question
+    this set answers is "does the README send a reader after a tool that
+    does not exist", and a tool an owner has not switched on exists; what
+    the README owes it is a line saying so, which is a different check
+    from this one.
     """
     import asyncio
+    import os
 
     from eda_agent.server import register_backend
     from eda_agent.tools import BACKENDS
     from eda_agent.tools.registry import ToolRegistry
 
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
     names: set[str] = set()
-    for backend in BACKENDS:
-        registry = ToolRegistry()
-        register_backend(registry, backend, "full")
-        names |= {t.name for t in asyncio.run(registry.list_tools())}
-        # Reached through a family tool or a bulk tool, and listed so.
-        names |= set(getattr(registry, "hidden", {}) or {})
+    try:
+        for backend in BACKENDS:
+            registry = ToolRegistry()
+            register_backend(registry, backend, "full")
+            names |= {t.name for t in asyncio.run(registry.list_tools())}
+            # Reached through a family tool or a bulk tool, and listed so.
+            names |= set(getattr(registry, "hidden", {}) or {})
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
     return names
 
 

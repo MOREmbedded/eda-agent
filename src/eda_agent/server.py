@@ -734,6 +734,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         ("Owner profiles", (
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
+            "phases-show", "phases-enable", "phases-disable",
         )),
         ("Offline analysis (no running Altium)", (
             "review", "bom", "netlist",
@@ -867,6 +868,18 @@ def build_parser() -> argparse.ArgumentParser:
               "other tool reachable through them, for MCP clients that "
               "limit tool count or are slow to load hundreds of schemas. "
               "Equivalent to setting EDA_AGENT_TOOLSET."),
+    )
+    parser.add_argument(
+        # For one run, without touching the profile. The profile is where
+        # this belongs when it is the owner's standing answer; this is for
+        # trying a gate on, and for a client that has an env block and no
+        # profile directory of its own.
+        "--phases", default=None, metavar="STAGES",
+        help=("Which NPI stages to run, comma-separated: feasibility, "
+              "prototype, evt, dvt, pvt, or 'all'. Default: none, which "
+              "leaves the three design_phase_* tools unadvertised. 'none' "
+              "turns the gate off over a profile that turned it on. "
+              "Equivalent to setting EDA_AGENT_PHASES."),
     )
     # title= puts the commands in their own section rather than under
     # argparse's "positional arguments", which is what they are but not
@@ -1140,6 +1153,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Copy into a non-empty destination. Files the template also "
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
+
+    # The NPI gate. Off by default, and recorded in the profile beside the
+    # owner's other house rules, because which stages a programme runs is
+    # one of those rather than a property of the board in front of you.
+    phases_show_p = subparsers.add_parser(
+        "phases-show",
+        help="Which NPI stages are in force (EVT, DVT, PVT and the rest), "
+             "and which setting decided it.",
+    )
+    phases_show_p.add_argument("--json", action="store_true", dest="json_out",
+                               help="Emit machine-readable JSON.")
+
+    phases_enable_p = subparsers.add_parser(
+        "phases-enable",
+        help="Run the named NPI stages, or all five when none are named. "
+             "Writes the active profile's phase_gates.json.",
+    )
+    phases_enable_p.add_argument(
+        "stages", nargs="*", metavar="STAGE",
+        help="feasibility, prototype, evt, dvt, pvt (also 'design "
+             "validation' and the other spellings). None means all five. "
+             "They always run in that order, whatever order you name them.")
+
+    subparsers.add_parser(
+        "phases-disable",
+        help="Stop running NPI stages. Answers already recorded are kept "
+             "and come back if the stages do.",
+    )
 
     # dashboard -- local web UI for the MCP bridge
     update_p = subparsers.add_parser(
@@ -1441,17 +1482,47 @@ def main() -> int:
     # an exec loop if the child somehow disagrees.
     # --toolset needs the same treatment for the same reason: the surface
     # is chosen at import, so changing it after parsing is too late.
+    # --phases likewise: whether the three phase tools exist is decided
+    # while design.py is registering, which has already happened here.
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
+    requested_phases = getattr(args, "phases", None)
     needs_backend = bool(requested) and requested != ACTIVE_BACKEND
     needs_toolset = (bool(requested_toolset)
                      and requested_toolset != ACTIVE_TOOLSET)
-    if ((needs_backend or needs_toolset)
+    needs_phases = False
+    if requested_phases is not None:
+        from .design.phase_gates import parse_stages as _parse_stages
+        try:
+            wanted = _parse_stages(requested_phases)
+        except ValueError as exc:
+            print(f"--phases: {exc}", file=sys.stderr)
+            return 2
+        # Compared parsed, not as typed: "evt,dvt" and "dvt evt" ask for
+        # the same thing and neither should reload over the other. Read
+        # before the variable is set, or it would be comparing the
+        # request against itself.
+        in_force = _profile.get_phase_stages()
+        # "none" has to survive as itself: an empty value means "the
+        # profile decides", which is the opposite of what was asked.
+        os.environ["EDA_AGENT_PHASES"] = requested_phases.strip() or "none"
+        # Only serving needs the reload. The tool surface is chosen at
+        # import, so the line above is too late for it; every other
+        # command reads the setting when it runs and is already correct.
+        #
+        # And re-execing for them would cost them their output: os.execv
+        # on Windows does not replace this process, it starts a detached
+        # one and exits, so `--phases evt phases-show` printed nothing at
+        # all and returned 0.
+        needs_phases = args.command in (None, "serve") and wanted != in_force
+    if ((needs_backend or needs_toolset or needs_phases)
             and not os.environ.get("_EDA_AGENT_BACKEND_REEXEC")):
         if needs_backend:
             os.environ["EDA_AGENT_BACKEND"] = requested
         if needs_toolset:
             os.environ["EDA_AGENT_TOOLSET"] = requested_toolset
+        # EDA_AGENT_PHASES is already set above, for the commands that
+        # need it without a reload.
         os.environ["_EDA_AGENT_BACKEND_REEXEC"] = "1"
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
@@ -1618,6 +1689,12 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
+    if args.command == "phases-show":
+        return cli.cmd_phases_show(as_json=args.json_out)
+    if args.command == "phases-enable":
+        return cli.cmd_phases_enable(args.stages)
+    if args.command == "phases-disable":
+        return cli.cmd_phases_disable()
 
     if args.command == "update":
         # --yes is the APPLY half (fast-forward, reinstall, copy scripts,

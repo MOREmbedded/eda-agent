@@ -252,3 +252,135 @@ def test_profile_show_lists_document_templates_apart_from_projects(tmp_path, cap
     templates_line = next(ln for ln in out.splitlines()
                           if ln.strip().startswith("templates:"))
     assert "A4_Titleblock" not in templates_line
+
+
+# --- phases-show / phases-enable / phases-disable --------------------------
+#
+# The NPI gate's setting lives in the profile, so its CLI lives here with
+# the rest of the profile glue rather than in its own file.
+
+def test_phases_are_off_in_a_fresh_profile(capsys):
+    """The scaffold writes the file and leaves it empty.
+
+    Writing the file matters: an owner editing their profile by hand
+    should find the setting rather than have to learn it exists. Leaving
+    it empty matters more -- scaffolding a gate switched on would turn a
+    default into a decision nobody made.
+    """
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    capsys.readouterr()
+
+    assert cli.cmd_phases_show(as_json=True) == 0
+    found = json.loads(capsys.readouterr().out)
+    assert found["stages"] == []
+    # "profile", not "default": the scaffold wrote an empty list, and
+    # saying so points the owner at the file to edit rather than at a
+    # default they would then go looking for.
+    assert found["source"] == "profile"
+    assert found["path"].endswith("phase_gates.json")
+
+    assert cli.cmd_profile_validate(name="acme", here=False) == 0
+
+
+def test_enable_records_the_stages_and_keeps_the_rest_of_the_file(tmp_path,
+                                                                  capsys):
+    """An owner's own note in the file must survive a settings command.
+
+    The scaffold writes a _comment into it, and a command that silently
+    dropped one is the kind of small betrayal nobody reports.
+    """
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    path = (tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+            / "phase_gates.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["_comment"] = "agreed at kickoff"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    capsys.readouterr()
+
+    assert cli.cmd_phases_enable(["dvt", "evt"]) == 0
+    written = json.loads(path.read_text(encoding="utf-8"))
+    # Recorded in stage order, not the order they were typed: running
+    # DVT before EVT is the mistake the gate exists to prevent.
+    assert written["stages"] == ["evt", "dvt"]
+    assert written["_comment"] == "agreed at kickoff"
+    assert profile_mod.get_phase_stages() == ("evt", "dvt")
+
+
+def test_enable_with_no_stages_means_all_five(capsys):
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    capsys.readouterr()
+
+    assert cli.cmd_phases_enable([]) == 0
+    from eda_agent.design.phase_gates import STAGES
+    assert profile_mod.get_phase_stages() == STAGES
+
+
+def test_disable_turns_them_off_without_touching_the_ledger(tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    cli.cmd_phases_enable(["pvt"])
+    capsys.readouterr()
+
+    assert cli.cmd_phases_disable() == 0
+    assert profile_mod.get_phase_stages() == ()
+    out = capsys.readouterr().out
+    assert "Answers already recorded are untouched" in out
+
+
+def test_a_stage_that_is_not_a_stage_is_refused_before_anything_is_written(
+        tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    path = (tmp_path / "home" / ".eda-agent" / "profiles" / "acme"
+            / "phase_gates.json")
+    before = path.read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    assert cli.cmd_phases_enable(["evt", "bananas"]) == 2
+    assert "bananas" in capsys.readouterr().err
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_with_no_profile_it_says_where_to_put_the_setting(capsys):
+    """Refusing is right; refusing without a way forward is not.
+
+    There is deliberately no "scaffold one for you": a profile is a whole
+    directory with its own resolution order, and making one from a
+    settings command would leave an owner with two.
+    """
+    assert cli.cmd_phases_enable(["evt"]) == 1
+    err = capsys.readouterr().err
+    assert "profile-init" in err and "EDA_AGENT_PHASES" in err
+
+
+def test_show_names_the_variable_when_it_is_the_one_deciding(monkeypatch,
+                                                             capsys):
+    """Which setting won is the whole question when two disagree."""
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    cli.cmd_phases_enable(["pvt"])
+    capsys.readouterr()
+
+    monkeypatch.setenv("EDA_AGENT_PHASES", "evt")
+    assert cli.cmd_phases_show(as_json=False) == 0
+    out = capsys.readouterr().out
+    assert "evt" in out and "EDA_AGENT_PHASES" in out
+    assert "pvt" not in out
+
+
+def test_show_reports_a_value_it_had_to_ignore(tmp_path, monkeypatch, capsys):
+    """get_phase_stages degrades silently so a typo cannot break startup.
+
+    This is the command that has to say it out loud, or the stages vanish
+    with nothing anywhere explaining why.
+    """
+    cli.cmd_profile_init("acme", here=False)
+    cli.cmd_profile_use("acme")
+    monkeypatch.setenv("EDA_AGENT_PHASES", "evt, bananas")
+    capsys.readouterr()
+
+    assert cli.cmd_phases_show(as_json=False) == 1
+    assert "bananas" in capsys.readouterr().err

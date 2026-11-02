@@ -16,6 +16,42 @@ maturity classification for every tool.
 
 ### Changed
 
+- **The NPI phase gates are off until an owner asks for them.** The five
+  stages and their 42 checks shipped switched on, so every install
+  advertised `design_phase_gate`, `design_phase_answer` and
+  `design_phase_standing` and carried a stage vocabulary through every
+  prompt, for a process most boards are not run under. They are now one
+  key in the owner profile (`phase_gates.json`, `{"stages": [...]}`),
+  with `eda-agent phases-show` / `phases-enable` / `phases-disable` to
+  set it, and `EDA_AGENT_PHASES` or `--phases` to overrule it for one
+  run. Off means **not advertised** rather than advertised and refusing:
+  a tool that exists only to say it is switched off costs a call and a
+  round trip to teach what its absence teaches for free, and `tool_guide`
+  withholds the recipe for the same reason.
+
+  Enabling a subset is a weaker claim than enabling all five, and the
+  reply says so: `design_phase_standing` reviews only the stages in
+  force and reports them in `stages_run`, so `in_production` can be read
+  against what it rests on. A stage that is off is refused rather than
+  answered, and so is an answer recorded against one - evidence nothing
+  reviews is worse than no evidence. Switching stages off never touches
+  the ledger; the answers count again the moment the stages do.
+
+  The default Altium surface is 675 tools rather than 678, and the
+  README now says so.
+
+### Fixed
+
+- **`--phases` on a subcommand would have printed nothing.** The
+  `--backend` and `--toolset` flags re-exec so the new tool surface is
+  registered at import, and `os.execv` on Windows does not replace the
+  process: it starts a detached one and exits, so the subcommand's
+  output goes nowhere and the shell sees exit 0. `--phases` re-execs
+  only for `serve`, which is the only command whose answer depends on
+  the surface; every other command reads the setting when it runs.
+  `--backend` and `--toolset` still carry this, and are left as they
+  are - MCP clients pass both by environment, which never re-execs.
+
 - **Property coverage 36.4% to 73.7%, from counting before generating.**
   The next step after the `ISch_Component` chain looked like a
   generated chain per object type: 32 schematic, 14 board. Counting the
