@@ -16,6 +16,28 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Merged upstream through 89abcf9 (26 commits).** New on the board:
+  `pcb_tidy_tracks` relays free tracks as the shortest clean 45/90 runs,
+  one pour's poured copper is readable, a generic filter matches
+  wildcard patterns and is walked only on the layer it names, and the
+  geometry map's dump narrows by layer, net, selection, name and area.
+  New in libraries: a symbol's Component Type is readable and settable
+  through `obj_modify`, PcbLib pads can be moved, renumbered and
+  deleted, and a footprint's text set. `sch_reload_document` closes and
+  reopens one sheet so its nets compile from what the sheet holds.
+  Update checking now reports on the next tool reply, says once when a
+  check fails, and tells a pip install how to upgrade.
+
+  Two conflicts were settled against this fork. `lib_create_symbol_in_parts`
+  takes upstream's `shared_pins` shape, an object of `left_pins` and
+  `right_pins` auto-placed on Part Zero, in place of this fork's flat
+  list of pins carrying their own x and y: **a call written against the
+  list form is now refused by shape**, with a message naming what to
+  send. Upstream grew its own `altium365-logout`, so the one this fork
+  carried across is dropped along with its duplicate test; `sdk-reach`
+  stays out, as this fork reads the SDK through `sdk-coverage`.
+  SCRIPT_VERSION is `2026.11.02.6`, which is neither fork's.
+
 - **The NPI phase gates are off until an owner asks for them.** The five
   stages and their 42 checks shipped switched on, so every install
   advertised `design_phase_gate`, `design_phase_answer` and
@@ -41,6 +63,22 @@ maturity classification for every tool.
   README now says so.
 
 ### Fixed
+
+- **Two files had been committed CRLF while the whole tree is LF**, in
+  the 0.8.0 merge, so git read every one of their 14,000 lines as
+  rewritten and each conflicted whole-file on every upstream merge.
+  Twenty-eight of those endings were doubled (`
+`), which Python
+  reads as two newlines, so four tool docstrings carried a blank line in
+  the middle of a sentence - and a tool's docstring is what the model is
+  served as its description. A `.gitattributes` now pins the tree to LF
+  so a conflict resolved on Windows cannot do it again.
+
+- **`pcb_tidy_tracks` threw at its caller** instead of reporting. It
+  caught `WrongBoard` from `read_live_board` but not the `ValueError`
+  that same function raises when no board is named, against this
+  project's rule that a tool refuses or reports and never hands an MCP
+  client a traceback. Found by the merge; present upstream.
 
 - **`--phases` on a subcommand would have printed nothing.** The
   `--backend` and `--toolset` flags re-exec so the new tool surface is

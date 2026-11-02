@@ -1612,7 +1612,7 @@ def register_library_tools(mcp):
         description: str = "",
         pin_length: int = 200,
         pin_pitch: int = 100,
-        shared_pins: Optional[list[dict[str, Any]]] = None,
+        shared_pins: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Create a multi-part IC symbol, each part with its own body, in ONE call.
 
@@ -1620,8 +1620,8 @@ def register_library_tools(mcp):
         a relay as coil and contacts. Each part is laid out as
         lib_create_ic_symbol lays out one (pins left and right, origin at
         the top-left pin's wire end, 100-mil grid), gets its own body
-        rectangle and its own pins. Supply pins go either on a part of
-        their own or in ``shared_pins``, which Altium shows on every part.
+        rectangle and its own pins. Put supply pins on a part of their
+        own, or in ``shared_pins``.
 
         Args:
             name: Component name in the active SchLib.
@@ -1632,58 +1632,76 @@ def register_library_tools(mcp):
             designator_prefix: e.g. "U".
             description: Component description.
             pin_length, pin_pitch: mils, multiples of 100.
-            shared_pins: Pins on every part (owner part 0), normally supply
-                pins: ``designator``, ``name``, ``x`` and ``y`` in mils, and
-                optionally ``length`` (default ``pin_length``), ``rotation``,
-                ``electrical_type`` (default "power") and ``hidden``. A
-                designator used on a part as well is refused.
+            shared_pins: ``{"left_pins": [...], "right_pins": [...]}`` on
+                Part Zero, which Altium draws on every part: the supply
+                pins of a quad op-amp. They sit below every part's own
+                pins, at the same place on each, and every body is made
+                as wide and tall as needed to hold them.
 
         Returns:
-            ``symbol``, ``part_count``, ``shared_pin_count``, ``parts``
-            (pins and body per part),
-            and the Altium replies; ``ok`` false with ``stage`` when a step
-            did not take.
+            ``symbol``, ``part_count``, ``parts`` (pins and body per part),
+            ``shared`` (Part Zero pins), and the Altium replies; ``ok``
+            false with ``stage`` when a step did not take.
         """
         from ..design.symbol_gen import generate_ic_symbol
 
         if not isinstance(parts, list) or len(parts) < 2:
             return {"ok": False, "reason": "give two parts or more; one part is "
                     "lib_create_ic_symbol"}
-        geoms = []
-        for number, spec in enumerate(parts, 1):
-            try:
-                if not isinstance(spec, dict):
-                    raise ValueError("not an object with left_pins and right_pins")
-                geoms.append(generate_ic_symbol(
-                    list(spec.get("left_pins") or []), list(spec.get("right_pins") or []),
-                    pin_length=pin_length, pin_pitch=pin_pitch))
-            except ValueError as exc:
-                return {"ok": False, "reason": f"part {number}: {exc}"}
+        if shared_pins is not None and not isinstance(shared_pins, dict):
+            return {"ok": False, "reason": "shared_pins is an object with "
+                    "left_pins and right_pins"}
+        shared_left = list((shared_pins or {}).get("left_pins") or [])
+        shared_right = list((shared_pins or {}).get("right_pins") or [])
+        shared_ids = [str(p.get("designator", "")).strip().upper()
+                      for p in (*shared_left, *shared_right) if isinstance(p, dict)]
+        twice = sorted({d for d in shared_ids if shared_ids.count(d) > 1})
+        if twice:
+            return {"ok": False, "reason": "shared pin given twice: " + ", ".join(twice)}
+
+        def lay_out(min_inner: Optional[int]) -> list:
+            # Shared rows go under the tallest part's pins on every part,
+            # so each Part Zero pin has one place whatever part is shown.
+            rows = max(max(len(s.get("left_pins") or []), len(s.get("right_pins") or []))
+                       for s in parts)
+            out = []
+            for number, spec in enumerate(parts, 1):
+                try:
+                    if not isinstance(spec, dict):
+                        raise ValueError("not an object with left_pins and right_pins")
+                    left = list(spec.get("left_pins") or [])
+                    right = list(spec.get("right_pins") or [])
+                    for pin in (*left, *right):
+                        if isinstance(pin, dict) and str(pin.get(
+                                "designator", "")).strip().upper() in shared_ids:
+                            raise ValueError(f"pin {pin['designator']} is also shared")
+                    if shared_ids:
+                        left += [None] * (rows - len(left)) + [None] + shared_left
+                        right += [None] * (rows - len(right)) + [None] + shared_right
+                    extra = {} if min_inner is None else {"min_inner_width": min_inner}
+                    out.append(generate_ic_symbol(left, right, pin_length=pin_length,
+                                                  pin_pitch=pin_pitch, **extra))
+                except ValueError as exc:
+                    return [f"part {number}: {exc}"]
+            return out
+
+        geoms = lay_out(None)
+        if geoms and isinstance(geoms[0], str):
+            return {"ok": False, "reason": geoms[0]}
+        if shared_ids:
+            # One width for every part, so a right-hand shared pin lines up too.
+            geoms = lay_out(max(g.width_mils - 2 * pin_length for g in geoms))
+        shared = [p for p in geoms[0].pins if p["designator"].upper() in shared_ids]
+        geom_pins = [[p for p in g.pins if p["designator"].upper() not in shared_ids]
+                     for g in geoms]
         where: dict[str, int] = {}
-        for number, geom in enumerate(geoms, 1):
-            for pin in geom.pins:
+        for number, pins in enumerate(geom_pins, 1):
+            for pin in pins:
                 first = where.setdefault(pin["designator"].upper(), number)
                 if first != number:
                     return {"ok": False, "reason": f"pin {pin['designator']} is on "
                             f"parts {first} and {number}"}
-        # Owner part 0 puts a pin on every part. The Pascal takes any explicit
-        # owner_part_id for a pin, 0 included, where a body or an arc treats
-        # 0 as unset; and _pins_payload keeps a 0 because it tests for None.
-        shared: list[dict[str, Any]] = []
-        for spec in shared_pins or []:
-            designator = str(spec.get("designator", "")).strip() if isinstance(spec, dict) else ""
-            if not designator:
-                return {"ok": False, "reason": "every shared pin needs a designator"}
-            key = designator.upper()
-            if key in where:
-                owner = where[key]
-                return {"ok": False, "reason": f"pin {designator} is in shared_pins"
-                        + (f" and on part {owner}" if owner else " twice")}
-            where[key] = 0
-            shared.append({**spec, "designator": designator, "owner_part_id": 0,
-                           "length": spec.get("length", pin_length),
-                           "electrical_type": spec.get("electrical_type", "power")})
-        grouped = _grouped_designators([p for g in geoms for p in g.pins] + shared)
+        grouped = _grouped_designators([p for g in geoms for p in g.pins])
         if grouped:
             return {"ok": False, "reason": "one pin per designator; split these: "
                     + ", ".join(grouped)}
@@ -1700,15 +1718,16 @@ def register_library_tools(mcp):
             "fill_color": 8454143, "border_color": 0, "owner_part_id": str(number)})
             for number, geom in enumerate(geoms, 1)]
         placed = [{**pin, "owner_part_id": number}
-                  for number, geom in enumerate(geoms, 1) for pin in geom.pins] + shared
+                  for number, pins in enumerate(geom_pins, 1) for pin in pins]
+        placed += [{**pin, "owner_part_id": 0} for pin in shared]
         pins_reply = await bridge.send_command_async(
             "library.add_pins", {"pins": _pins_payload(placed)[0]})
         done = isinstance(pins_reply, dict) and pins_reply.get("added") == len(placed)
         result = {"ok": done, "symbol": name, "part_count": len(parts),
-                  "shared_pin_count": len(shared),
-                  "parts": [{"part": number, "pins": len(geom.pins), "body": geom.body,
+                  "parts": [{"part": number, "pins": len(pins), "body": geom.body,
                              "width_mils": geom.width_mils, "height_mils": geom.height_mils}
-                            for number, geom in enumerate(geoms, 1)],
+                            for number, (geom, pins) in enumerate(zip(geoms, geom_pins), 1)],
+                  "shared": [p["designator"] for p in shared],
                   "create": created, "bodies": bodies, "pins_result": pins_reply}
         return result if done else {**result, "stage": "add_pins"}
 
@@ -6234,6 +6253,7 @@ def register_library_tools(mcp):
         include_pads: bool = False,
         confirm: bool = False,
         identifier: str = "",
+        pad_name: str = "",
     ) -> dict[str, Any]:
         """Delete primitives inside ONE footprint of a PCB library.
 
@@ -6259,6 +6279,9 @@ def register_library_tools(mcp):
                 object_type "body". Bodies built by a tool can be taken
                 away without the footprint's own STEP model, which sits
                 on the same layer.
+            pad_name: The pads with this designator (every one of them;
+                ``layer`` narrows to one side); implies object_type "pad"
+                and include_pads.
 
         Returns:
             ``library``, ``footprint``, ``matched``, ``removed``,
@@ -6269,12 +6292,16 @@ def register_library_tools(mcp):
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
-        if not object_type.strip() and not layer.strip() and not identifier.strip():
+        if not (object_type.strip() or layer.strip() or identifier.strip()
+                or pad_name.strip()):
             return {"ok": False, "reason": (
-                "give object_type, layer or identifier. Emptying a whole "
-                "footprint is not something to reach by leaving them off")}
+                "give object_type, layer, identifier or pad_name. Emptying a "
+                "whole footprint is not something to reach by leaving them off")}
         if identifier.strip() and object_type.strip() not in ("", "body"):
             return {"ok": False, "reason": "identifier picks 3D bodies; object_type is body"}
+        if pad_name.strip() and (object_type.strip() not in ("", "pad")
+                                 or identifier.strip()):
+            return {"ok": False, "reason": "pad_name picks pads; object_type is pad"}
 
         params: dict[str, Any] = {"footprint_name": footprint_name}
         if object_type.strip():
@@ -6289,6 +6316,8 @@ def register_library_tools(mcp):
             params["confirm"] = "true"
         if identifier.strip():
             params["identifier"] = identifier.strip()
+        if pad_name.strip():
+            params["pad_name"] = pad_name.strip()
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -7250,6 +7279,32 @@ def register_library_tools(mcp):
         )
 
     @mcp.tool()
+    async def lib_set_footprint_description(
+        footprint_name: str,
+        description: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Set the Description of a footprint in a PCB library (.PcbLib).
+
+        The footprint twin of lib_set_component_description. The text is
+        read back; ``success`` is false when Altium holds something else.
+        Marks the library modified; app_save_document writes it.
+
+        Args:
+            footprint_name: The footprint.
+            description: The new text; "" clears it.
+            library_path: Optional .PcbLib path; defaults to the focused one.
+
+        Returns:
+            ``success``, ``footprint``, ``was`` and ``description`` (as read
+            back).
+        """
+        return await get_bridge().send_command_async(
+            "library.set_footprint_description",
+            {"footprint_name": footprint_name, "description": description,
+             "library_path": library_path})
+
+    @mcp.tool()
     async def lib_probe_footprint(
         footprint_name: str,
         library_path: str = "",
@@ -7342,6 +7397,9 @@ def register_library_tools(mcp):
         mask_manual: Optional[bool] = None,
         mask_from_hole_edge: Optional[bool] = None,
         paste_top_enabled: Optional[bool] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        new_name: str = "",
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint: every pad named
         ``pad_name``, or with ``selected=True`` every pad selected in the
@@ -7394,6 +7452,9 @@ def register_library_tools(mcp):
                 (not its size). It holds only on a manual paste expansion,
                 so a rule-driven one is made manual first (``note``).
                 Before Altium Designer 25 the flag does not exist.
+            x, y: Move the pad, from the footprint origin. One pad only:
+                when several match, the first moves and the rest fail.
+            new_name: Renumber the pad (its designator).
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
@@ -7447,9 +7508,12 @@ def register_library_tools(mcp):
                            ("hole_size", hole_size), ("hole_width", hole_width),
                            ("paste_expansion", paste_expansion),
                            ("mask_expansion", mask_expansion),
-                           ("mask_bottom_expansion", mask_bottom_expansion)):
+                           ("mask_bottom_expansion", mask_bottom_expansion),
+                           ("x", x), ("y", y)):
             if value is not None:
                 params[key] = format_length(value)
+        if new_name.strip():
+            params["new_name"] = new_name.strip()
         for key, value in (("rotation", rotation),
                            ("hole_rotation", hole_rotation)):
             if value is not None:

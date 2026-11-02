@@ -332,15 +332,53 @@ def compact_text_blocks(blocks):
     return out
 
 
-class _CompactFastMCP(FastMCP):
-    """FastMCP whose tool results carry compact JSON text.
+def add_update_notice(result, news):
+    """Put ``news`` under ``update`` on a tool result: in the structured
+    copy and in the JSON text copy when the reply is an object, else as a
+    text block of its own. A reply that already says ``update`` is kept."""
+    import json
+    from mcp.types import TextContent
+    blocks, structured = (result if isinstance(result, tuple) else (result, None))
+    if not isinstance(blocks, list):
+        return result
+    if isinstance(structured, dict) and "update" not in structured:
+        structured = {**structured, "update": news}
+    out, placed = [], False
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if not placed and isinstance(text, str) and text[:1] == "{":
+            try:
+                body = json.loads(text)
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                body.setdefault("update", news)
+                block = block.model_copy(update={"text": json.dumps(body)})
+                placed = True
+        out.append(block)
+    if not placed:
+        out.append(TextContent(type="text", text=json.dumps({"update": news})))
+    return (out, structured) if isinstance(result, tuple) else out
 
-    structuredContent is left exactly as FastMCP builds it: Claude Code
-    reads that copy, and only the text copy carried the indentation.
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text, and the news of
+    a newer eda-agent on the first reply after it is found.
+
+    structuredContent is left as FastMCP builds it apart from that news:
+    Claude Code reads that copy, and only the text copy carried the
+    indentation.
     """
 
     async def call_tool(self, name, arguments):
         result = await super().call_tool(name, arguments)
+        try:
+            from . import updates
+            news = updates.notice_once()
+        except Exception:  # noqa: BLE001  news never breaks a tool
+            news = None
+        if news:
+            result = add_update_notice(result, news)
         if isinstance(result, tuple):
             return (compact_text_blocks(result[0]), result[1])
         if isinstance(result, list):
@@ -502,8 +540,9 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # at once are allowed. app_ping and app_get_status repeat the warning.
     from . import server_registry, updates
     server_registry.register(config.workspace_dir)
-    # Once a day at most, in the background: a newer eda-agent is then
-    # reported by app_ping and app_context, never installed unasked.
+    # Once a day at most, in the background, while the server runs: a newer
+    # eda-agent is then reported on the next tool reply and by app_ping and
+    # app_context, never installed unasked.
     updates.start_background_check()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
@@ -1336,11 +1375,9 @@ def build_parser() -> argparse.ArgumentParser:
               "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
-
-    # altium365-logout -- forget the saved Nexar login
     subparsers.add_parser(
         "altium365-logout",
-        help="Delete the saved Nexar login, so the next altium365_ call signs in again.",
+        help="Forget the saved Nexar login of altium365-login.",
     )
 
     # stop-dashboard -- terminate the dashboard process by PID file
@@ -1601,15 +1638,14 @@ def main() -> int:
             print(f"Not signed in: {exc}")
             return 1
     if args.command == "altium365-logout":
-        # The login is saved encrypted for this Windows user; removing the
-        # file is the whole of signing out, since nothing else holds it.
-        from .altium365 import read_environment
-        saved = read_environment().saved_login
-        if saved.exists():
-            saved.unlink()
-            print(f"Removed the saved Nexar login ({saved})")
-        else:
-            print(f"No saved Nexar login at {saved}")
+        from .altium365 import forget_login, read_environment
+        path = read_environment().saved_login
+        try:
+            gone = forget_login(path)
+        except OSError as exc:
+            print(f"Could not remove {path}: {exc}")
+            return 1
+        print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
         return 0
     if args.command == "review":
         return _run_review(args)

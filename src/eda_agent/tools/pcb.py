@@ -4927,6 +4927,12 @@ def register_pcb_tools(mcp):
         dry_run: bool = False,
         repour: bool = True,
         region_shape: str = "rebuild",
+        kinds: str = "",
+        layer: str = "",
+        nets: str = "",
+        selected: bool = False,
+        name: str = "",
+        bounds: str = "",
     ) -> dict[str, Any]:
         """Move and reshape thousands of free primitives in ONE pass, from a
         JSON map of each object's CURRENT geometry and its new one.
@@ -5001,6 +5007,25 @@ def register_pcb_tools(mcp):
                 Altium draws): "rebuild" (default) rewrites them from the
                 new outline; "clear" drops them; "keep" leaves the OLD
                 shape on screen.
+            kinds: Dump only these kinds, comma-separated (track, arc,
+                via, text, fill, region, polygon); empty is every kind.
+                A map that edits one layer's tracks need not have the
+                whole board dumped first.
+            layer: Dump only these layers, comma-separated (any layer
+                name, Mechanical17 and up included); empty is every layer.
+                The apply pass walks the same kinds and layers, so
+                entries outside them are unmatched, never applied
+                elsewhere.
+            nets: Dump only objects on these nets, comma-separated (an
+                object with no net is left out).
+            selected: Dump only selected objects.
+            name: Dump only polygons of this name (exact, or a prefix
+                ending in ``*``); other kinds are not affected.
+            bounds: Dump only objects whose box touches this area,
+                ``"x1,y1,x2,y2"`` in mils.
+            nets, selected, name and bounds only decide what is written
+            of the walk: the ordinals still count every walked object, so
+            the apply pass needs nothing for them.
 
         Returns:
             {"board", "dry_run", "match": {kind: {entries, matched,
@@ -5031,9 +5056,21 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         workspace = Path(bridge.config.workspace_dir)
         dump_path = workspace / "geometry_dump.tsv"
+        dump_params = {"out_path": str(dump_path), "board_path": board_path}
+        if kinds.strip():
+            dump_params["kinds"] = kinds.strip()
+        if layer.strip():
+            dump_params["layer"] = layer.strip()
+        if nets.strip():
+            dump_params["nets"] = nets.strip()
+        if selected:
+            dump_params["selected"] = "true"
+        if name.strip():
+            dump_params["name"] = name.strip()
+        if bounds.strip():
+            dump_params["bounds"] = bounds.strip()
         dumped = await bridge.send_command_async(
-            "pcb.dump_free_primitives",
-            {"out_path": str(dump_path), "board_path": board_path},
+            "pcb.dump_free_primitives", dump_params,
             timeout=_GEOMETRY_MAP_TIMEOUT)
         if not isinstance(dumped, dict) or "tracks" not in dumped:
             return dumped
@@ -5084,6 +5121,70 @@ def register_pcb_tools(mcp):
                 if isinstance(n, int) and 0 <= n < len(order):
                     item["entry"] = order[n]
         return result
+
+    @mcp.tool()
+    async def pcb_tidy_tracks(
+        board_path: str,
+        nets: Optional[list[str]] = None,
+        layers: Optional[list[str]] = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Lay the board's free tracks again as the shortest clean 45/90 runs.
+
+        Each run between fixed points (pads, vias, arcs, junctions, width
+        changes) becomes the shortest octilinear path that turns 90 degrees
+        or less, leaves and enters a surface pad from its centre along a pad
+        axis, crosses no other pad of its net, keeps every join it had, and
+        clears every other net, the board edge and keep-outs by the board's
+        rules. A run is changed only when it gets shorter, or as short with
+        fewer bends. Footprint tracks and arcs are left as they are. Altium's
+        own Gloss is pcb_gloss.
+
+        Args:
+            board_path: The .PcbDoc; refused if another board is focused.
+            nets: Only these nets (default every net).
+            layers: Only these copper layers (default every signal layer).
+            dry_run: Work out and match the changes without writing them.
+
+        Returns:
+            ``gloss`` (runs, relaid, length and bends before and after,
+            nets), ``removed`` and ``added`` track counts, and the
+            geometry-map reply (``match``, and ``apply`` when written).
+        """
+        import asyncio
+        import json
+
+        from ..config import get_config
+        from ..layout.read_altium import WrongBoard, read_live_board
+        from ..layout.route.gloss import gloss
+
+        try:
+            board = await asyncio.to_thread(read_live_board, board_path)
+        except (WrongBoard, ValueError) as exc:
+            # read_live_board requires a board_path and says so by raising.
+            # A tool reports that; it does not hand its caller a traceback.
+            return {"error": str(exc)}
+        before = list(board.tracks)
+        report = await asyncio.to_thread(gloss, board, None, nets, layers)
+        now = {id(t) for t in board.tracks}
+        was = {id(t) for t in before}
+        removed = [t for t in before if id(t) not in now]
+        added = [t for t in board.tracks if id(t) not in was]
+        out: dict[str, Any] = {"gloss": report.as_dict(), "removed": len(removed),
+                               "added": len(added)}
+        if not removed:
+            return {**out, "dry_run": dry_run}
+        geometry_map = {
+            "delete": [{"kind": "track", "layer": t.layer, "width": t.width,
+                        "key": [t.x1, t.y1, t.x2, t.y2]} for t in removed],
+            "create": [{"kind": "track", "layer": t.layer, "width": t.width,
+                        "geom": [t.x1, t.y1, t.x2, t.y2], "net": t.net} for t in added]}
+        map_path = get_config().workspace_dir / "tidy_tracks_map.json"
+        map_path.write_text(json.dumps(geometry_map), encoding="utf-8")
+        out["map"] = await pcb_apply_geometry_map(
+            map_path=str(map_path), board_path=board_path, kinds="track",
+            dry_run=dry_run, repour=False)
+        return out
 
     @mcp.tool()
     async def pcb_place_stitching_vias(
@@ -7923,24 +8024,58 @@ def register_pcb_tools(mcp):
         height: float = 60,
         rotation: float = 0,
         stroke: float = 0,
+        kind: str = "",
+        stroke_font: str = "",
+        font_name: str = "",
+        bold: bool | None = None,
+        italic: bool | None = None,
+        justification: str = "",
+        frame_width: float = 0,
+        frame_height: float = 0,
+        inverted: bool | None = None,
+        margin: float | None = None,
     ) -> dict[str, Any]:
         """Place a text string on the active PCB.
 
         Args:
             text: Text content to place
-            x: Text X position in mils
-            y: Text Y position in mils
+            x: Text X position in mils. With a justification, the point
+                the justification names (the centre for "center").
+            y: Text Y position in mils, as x.
             layer: PCB layer name (default "TopOverlay"). Common choices:
                 "TopOverlay", "BottomOverlay", "TopLayer", "BottomLayer",
                 "Mechanical1"-"Mechanical16"
             height: Text height in mils (default 60), decimals allowed
-            rotation: Rotation angle in degrees (default 0)
+            rotation: Rotation angle in degrees (default 0); a justified
+                text turns about its justification point.
             stroke: Stroke width in mils; 0 keeps Altium's default.
                 To resize existing designators use ``pcb_set_text_style``.
+            kind: "stroke" or "truetype"; empty keeps Altium's default.
+                font_name, bold, italic or inverted alone ask for truetype.
+            stroke_font: "default", "sans_serif" or "serif" (stroke only).
+            font_name: TrueType font name, e.g. "Arial".
+            bold: TrueType bold.
+            italic: TrueType italic.
+            justification: top_left, top_center, top_right, center_left,
+                center, center_right, bottom_left, bottom_center or
+                bottom_right. Makes the text multiline: Altium justifies a
+                text only inside its frame, a single-line text ignores it.
+            frame_width: Frame width in mils; 0 = as wide as the text's
+                longest line, measured on the placed text. A frame narrower
+                than a line wraps it at its spaces: Altium grows a frame
+                only to the longest word (plus margin).
+            frame_height: Frame height in mils; 0 = fitted to the text (all
+                its lines).
+            inverted: TrueType text cut out of a filled box (silkscreen
+                labels). On a justified text the filled box is the frame,
+                so frame_width / frame_height make the label larger.
+            margin: Inverted margin in mils, the minimum fill round the text.
 
         Returns:
-            Dictionary with placed text properties, height and stroke as
-            read back from the placed text
+            Dictionary with placed text properties as read back from the
+            placed text: height, stroke, kind, font_id, font_name, bold,
+            italic, multiline, justification, frame, inverted, margin,
+            location (the frame's corner) and bounds.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -7953,6 +8088,21 @@ def register_pcb_tools(mcp):
         }
         if stroke:
             params["stroke"] = str(stroke)
+        for name, value in (("kind", kind), ("stroke_font", stroke_font),
+                            ("font_name", font_name),
+                            ("justification", justification)):
+            if value:
+                params[name] = value
+        for name, flag in (("bold", bold), ("italic", italic),
+                           ("inverted", inverted)):
+            if flag is not None:
+                params[name] = "true" if flag else "false"
+        for name, mils in (("frame_width", frame_width),
+                           ("frame_height", frame_height)):
+            if mils:
+                params[name] = str(mils)
+        if margin is not None:
+            params["margin"] = str(margin)
         result = await bridge.send_command_async("pcb.place_text", params)
         return result
 
@@ -8920,6 +9070,32 @@ def register_pcb_tools(mcp):
         if name.strip():
             ask["name"] = name.strip()
         return await get_bridge().send_command_async("pcb.pour_outline", ask)
+
+    @mcp.tool()
+    async def pcb_get_pour_copper(index: int, name: str = "") -> dict[str, Any]:
+        """The copper one pour poured: every piece with its outline and holes.
+
+        Args:
+            index: The pour's ``index`` from pcb_get_polygons.
+            name: Its ``name`` there. Positions shift as pours are added or
+                removed, so a pour at ``index`` with another name is refused
+                (POUR_CHANGED). Names repeat on many boards, so the index
+                is what picks the pour.
+
+        Returns:
+            ``index``, ``name``, ``net``, ``layer``, ``pieces``, ``holes``,
+            ``vertices``, ``area_sqmils`` (copper less its holes) and
+            ``copper``: one entry per poured region with ``outlines`` and
+            ``holes`` (each a list of [x, y] in mils, arcs as Altium
+            flattened them) and its ``area_sqmils``. ``strokes`` counts the
+            tracks and arcs of a hatched pour, which pcb_get_copper reads.
+        """
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return {"ok": False, "reason": "index counts from 0"}
+        ask = {"index": str(index)}
+        if name.strip():
+            ask["name"] = name.strip()
+        return await get_bridge().send_command_async("pcb.pour_copper", ask)
 
     @mcp.tool()
     async def pcb_get_copper(

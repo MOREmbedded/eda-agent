@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from eda_agent.bridge import altium_bridge
-from eda_agent.tools import application, generic, library, pcb
+from eda_agent.tools import application, generic, library, pcb, project
 
 ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -455,6 +455,44 @@ def test_a_symbol_in_parts_gives_each_part_its_body_and_pins(monkeypatch):
     assert twice["ok"] is False and "parts 1 and 2" in twice["reason"] and not bridge.sent
 
 
+def test_shared_pins_go_on_part_zero_at_one_place_on_every_part(monkeypatch):
+    tools, bridge = _registered(library, "register_library_tools", monkeypatch,
+                                {"library.add_pins": {"added": 9}})
+    made = asyncio.run(tools["lib_create_symbol_in_parts"](name="OPA2", parts=[
+        {"left_pins": [{"designator": "3", "name": "+"}, {"designator": "2", "name": "-"}],
+         "right_pins": [{"designator": "1", "name": "OUT"}]},
+        {"left_pins": [{"designator": "5", "name": "+"}, {"designator": "6", "name": "-"},
+                       {"designator": "9", "name": "TRIM"}],
+         "right_pins": [{"designator": "7", "name": "OUTPUT_B"}]}],
+        shared_pins={"left_pins": [{"designator": "8", "name": "V+"}],
+                     "right_pins": [{"designator": "4", "name": "V-"}]}))
+    assert made["ok"] and made["shared"] == ["8", "4"]
+    sent = bridge.sent[-1][1]["pins"].replace(" ", "")
+    rows = [dict(f.split("=", 1) for f in row.split(";") if "=" in f)
+            for row in sent.split("~~") if row]
+    owner = {r["designator"]: r["owner_part_id"] for r in rows}
+    assert owner["8"] == owner["4"] == "0" and owner["1"] == "1" and owner["7"] == "2"
+    # each shared pin once, below the tallest part's pins, and every body
+    # the same width and tall enough to hold them
+    assert sum(r["designator"] == "8" for r in rows) == 1
+    v_minus = next(r for r in rows if r["designator"] == "4")
+    assert int(v_minus["y"]) < -200
+    bodies = [p for c, p in bridge.sent if c == "library.add_symbol_rectangle"]
+    assert len({(b["x1"], b["x2"]) for b in bodies}) == 1
+    assert all(int(b["y2"]) < int(v_minus["y"]) for b in bodies)
+    assert int(v_minus["x"]) == int(bodies[0]["x2"])
+    # a designator both shared and on a part, or shared twice, sends nothing
+    for parts_pin, shared in (("8", [{"designator": "8", "name": "V+"}]),
+                              ("1", [{"designator": "8", "name": "V+"},
+                                     {"designator": "8", "name": "V"}])):
+        tools, bridge = _registered(library, "register_library_tools", monkeypatch)
+        refused = asyncio.run(tools["lib_create_symbol_in_parts"](name="X", parts=[
+            {"left_pins": [{"designator": parts_pin, "name": "A"}]},
+            {"left_pins": [{"designator": "2", "name": "B"}]}],
+            shared_pins={"left_pins": shared}))
+        assert refused["ok"] is False and not bridge.sent
+
+
 def test_the_current_capacity_answers_the_rise_asked_about(monkeypatch):
     tools, _ = _registered(pcb, "register_pcb_tools", monkeypatch)
     capacity = tools["pcb_calc_track_current_capacity"]
@@ -484,3 +522,22 @@ def test_the_library_and_text_fixes_are_in_the_pascal():
         "Generic.pas")
     assert "(PropName = 'FontName')" in _unit("PCBGeneric.pas")
     assert "bbox_no_name_comment" in _routine("PCB.pas", "PCB_GetComponents")
+
+
+def test_a_netlist_drops_the_other_parts_question_marks_and_writes_its_own_line_ends(
+        monkeypatch, tmp_path):
+    rows = [{"component": "U1", "pin": "A1", "pin_name": "VDD", "net": "3V3"},
+            {"component": "U1", "pin": "A1", "pin_name": "VDD", "net": "?"},
+            {"component": "U1", "pin": "B2", "pin_name": "NC", "net": "?"},
+            {"component": "U1", "pin": "B2", "pin_name": "NC", "net": "?"},
+            {"component": "R1", "pin": "1", "pin_name": "1", "net": "3V3"}]
+    tools, _ = _registered(project, "register_project_tools", monkeypatch,
+                           {"project.get_nets": {"pins": rows}})
+    pads = asyncio.run(tools["proj_export_netlist"](output_path=str(tmp_path / "n.net")))
+    assert pads["no_net_rows_dropped"] == 1 and pads["node_count"] == 3
+    raw = (tmp_path / "n.net").read_bytes()
+    assert b"\r\r\n" not in raw and raw.count(b"\r\n") == raw.count(b"\n")
+    assert b"*SIGNAL* ?\r\nU1.B2\r\n" in raw and b"R1.1 U1.A1" in raw
+    asyncio.run(tools["proj_export_netlist"](output_path=str(tmp_path / "n.csv"),
+                                             net_format="tabular"))
+    assert b"\r" not in (tmp_path / "n.csv").read_bytes()

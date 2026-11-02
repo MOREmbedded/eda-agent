@@ -256,7 +256,10 @@ def test_extra_properties_fit_only_their_owner():
     assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
             "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or\n"
             "       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or\n"
-            "       (PropName = 'FontName') Then Exit;") in body
+            "       (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;") in body
+    # A text's TrueType font is writable; an empty name is refused.
+    assert "(PropName = 'FontName') Then Exit;" not in body
+    assert "If Trim(Value) = '' Then Exit;" in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
@@ -1317,8 +1320,11 @@ def test_footprint_bodies_go_by_identifier_prefix(monkeypatch):
     assert "Copy(Ident, 1, Length(Prefix)) = Prefix" in match
     assert "Prim.ObjectId <> eComponentBodyObject" in match
     delete = _body("Library.pas", "Lib_DeleteFootprintPrimitives")
-    assert delete.count("BodyIdentifierMatches(Prim, IdentStr)") == 1
-    assert "CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr)" in delete
+    assert delete.count("FootprintPrimPicked(Prim, IdentStr, PadName)") == 1
+    assert "If IdentStr <> '' Then Result := BodyIdentifierMatches(Prim, IdentStr);" in _body(
+        "Library.pas", "FootprintPrimPicked")
+    assert delete.count(
+        "CountFootprintMatches(Target, ObjFilter, WantLayer, IncludePads, IdentStr, PadName)") == 2
     # The footprint is fetched by name once the walk is over, and footprints
     # are compared and messaged without reading their I_ObjectAddress: both
     # faulted on AD 26.11.

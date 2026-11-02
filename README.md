@@ -189,9 +189,7 @@ The polling loop starts and your MCP client can drive Altium.
 
 ### Keeping it up to date
 
-Once a day at most, the server checks this repository for new commits in the background. When there are some, `app_ping` and `app_context` say so and list them, and the assistant asks you before installing anything. If you agree, `server_update(apply=True)` fast-forwards your clone, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python.
-
-`eda-agent update --check` only shows what is new. Set `EDA_AGENT_UPDATE_CHECK=0` to stop the daily check reaching the network.
+Once a day at most, for as long as it runs, the server checks this repository for new commits in the background. When there are some, the next tool reply says so and lists them, `app_ping` and `app_context` repeat it, and the assistant asks you before installing anything. A check that fails is reported once too. A copy installed with pip compares its version with the one here and says how to upgrade. If you agree, `server_update(apply=True)` fast-forwards your clone, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
 
 ```bash
 eda-agent update
@@ -764,7 +762,7 @@ managed library, and can publish, release and change parameters (only with
 `confirm=True`). Two routes: the workspace's own API, with
 `EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
 `EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
@@ -1159,7 +1157,7 @@ listings can be read against each other.
 
 | Command | Purpose |
 |---|---|
-| `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, `app_save_all` canary round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
+| `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, a read-only command round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
 | `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
 | `eda-agent perf [--json] [--limit N]` | Where call time actually goes. Joins `bridge_trace.log` (the round trip the caller saw) with `activity.log` (the handler time inside Altium) on the request id, and reports both plus the difference, per command. See [Measuring performance](#measuring-performance) |
 
@@ -1232,7 +1230,7 @@ listings can be read against each other.
 | Command | Purpose |
 |---|---|
 | `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
-| `eda-agent altium365-logout` | Delete the saved Nexar login |
+| `eda-agent altium365-logout` | Forget the saved Nexar login |
 
 ### Experimental
 

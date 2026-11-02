@@ -198,9 +198,9 @@ async def _refuse_manual_sheet_layout(
 
 
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
-# Name, operator, value. The operator is the first = ! < or > (names hold
+# Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
-_FILTER_COND = re.compile(r"([^=!<>]*)(!=|<=|>=|=|<|>)(.*)", re.S)
+_FILTER_COND = re.compile(r"([^=!<>~]*)(!=|!~|<=|>=|=|<|>|~)(.*)", re.S)
 
 
 def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
@@ -221,7 +221,8 @@ def filter_problem(filt: str) -> str:
     """The first condition of ``filt`` that is not Name<op>Value, or ''.
 
     A filter is conditions joined by ``|`` and nothing else, each Name=Value,
-    Name!=Value or a numeric Name<Value, >, <=, >=. The script used to skip
+    Name!=Value, a numeric Name<Value, >, <=, >=, or a wildcard Name~pattern /
+    Name!~pattern (* any run, ? one character, case ignored). The script used to skip
     a condition it could not parse, which emptied the filter: obj_delete
     given an Altium query expression removed every track on a board and
     reported success. The script now refuses such a filter too; this says
@@ -243,7 +244,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
                      "Name=Value conditions joined by |, each matched exactly "
-                     "(also Name!=Value, and Name<Value, >, <=, >= on numbers); Altium "
+                     "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
+                     "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
                      f"not understood.{hint} Nothing was sent.", **extra}
 
@@ -397,6 +399,10 @@ def register_generic_tools(mcp):
                 "FootprintPinMap" (the current footprint model's pin map,
                 "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
                 merges by schematic pin, so a map cannot be cleared).
+                "ComponentKind" is its Component Type, read and set by
+                name: standard, mechanical, graphical, net_tie_bom,
+                net_tie_no_bom, standard_no_bom or jumper; with scope
+                "lib_component:NAME" it sets a library symbol's.
                 "TextFontId" is a sheet or harness entry's label font. A
                 managed component also reads
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
@@ -434,7 +440,10 @@ def register_generic_tools(mcp):
                 "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
                 length matches as a number in mils ('.' or ',' decimal).
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
-                (a value that is not a number matches no < > <= >=).
+                (a value that is not a number matches no < > <= >=);
+                "Name~POUR_*" matches a wildcard pattern (* any run, ? one
+                character, case ignored), "Net!~VCC*" excludes by one. The
+                same grammar holds for obj_modify, obj_delete and obj_select.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -1041,6 +1050,68 @@ def register_generic_tools(mcp):
             "generic.measure_distance",
             {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
         )
+
+    @mcp.tool()
+    async def sch_reload_document(file_path: str, save: bool = True) -> dict[str, Any]:
+        """Save, close and reopen one schematic sheet, then recompile its
+        project, so nets and ERC are compiled from the sheet as it is.
+
+        A recompile alone can keep what the sheet no longer holds: a
+        deleted net label still naming its net, a changed sub-part still
+        compiled as the old one.
+
+        Args:
+            file_path: The open .SchDoc.
+            save: Write it first; ``saved`` is measured on disk. False
+                closes without writing, and a sheet Altium reads as
+                modified is refused untouched; an edit Altium did not flag
+                is lost.
+
+        Returns:
+            ``file_path``, ``saved``, ``closed``, ``reopened`` and
+            ``recompile`` (its compile ticks); ``ok`` false with ``stage``
+            and ``reason`` at the first step that did not take, the sheet
+            left open when it fails before the close.
+        """
+        import os
+        from ..bridge.exceptions import AltiumError
+
+        path = file_path.strip()
+        if not path.lower().endswith(".schdoc"):
+            return {"ok": False, "reason": "file_path is a .SchDoc"}
+        bridge = get_bridge()
+        out: dict[str, Any] = {"file_path": path, "saved": False}
+        if save:
+            saved = await bridge.send_command_async(
+                "application.save_document", {"file_path": path}, timeout=60.0)
+            if not (isinstance(saved, dict) and saved.get("saved")):
+                return {"ok": False, "stage": "save", **out,
+                        "reason": (saved or {}).get("reason", "the save did not reach "
+                                   "the file") if isinstance(saved, dict) else str(saved)}
+            out["saved"] = True
+        try:
+            closed = await bridge.send_command_async(
+                "application.close_document", {"file_path": path}, timeout=120.0)
+        except AltiumError as exc:
+            return {"ok": False, "stage": "close", **out, "reason": str(exc)}
+        out["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
+        if not out["closed"]:
+            return {"ok": False, "stage": "close", **out, "close": closed}
+        if not os.path.isfile(path):
+            return {"ok": False, "stage": "reopen", **out,
+                    "reason": "the sheet is not on disk to reopen"}
+        await bridge.send_command_async("application.run_process", {
+            "process_name": "WorkspaceManager:OpenObject",
+            "parameters": f"ObjectKind=Document|FileName={path}"})
+        try:
+            await bridge.send_command_async(
+                "application.set_active_document", {"file_path": path})
+        except AltiumError as exc:
+            return {"ok": False, "stage": "reopen", **out, "reason": str(exc)}
+        out["reopened"] = True
+        out["recompile"] = await bridge.send_command_async(
+            "project.force_recompile", {}, timeout=120.0)
+        return {"ok": True, **out}
 
     @mcp.tool()
     async def sch_place_comment(text: str, x: float, y: float,

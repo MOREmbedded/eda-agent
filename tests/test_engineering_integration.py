@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check the imported engineering calculations and MCP surface together."""
+import asyncio
+import functools
+import inspect
+
 from eda_agent.engineering import ipc7351
 from eda_agent.tools.engineering import _live_pads_to_um, register_engineering_tools
 from eda_agent.tools.registry import ToolRegistry
@@ -13,10 +17,25 @@ SOIC8 = {
 }
 
 
+def _call(fn):
+    """Call a registered tool the way a client does, and return its reply.
+
+    A registry entry is wrapped by ``bulk.with_items`` so every tool takes
+    ``items``, which makes even a synchronous tool a coroutine function.
+    These tests check what the wrapped tool returns, so they go through
+    the wrapper rather than around it.
+    """
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        return asyncio.run(result) if inspect.isawaitable(result) else result
+    return run
+
+
 def _tools():
     registry = ToolRegistry()
     register_engineering_tools(registry, altium=True)
-    return {name: registry.get(name).fn for name in (
+    return {name: _call(registry.get(name).fn) for name in (
         "eng_calculate_ipc", "eng_compare_ipc_footprint", "eng_audit_footprint",
         "eng_validate_ruleset", "eng_evaluate_rules", "eng_validate_design_intent",
         "eng_ltspice_check_netlist", "eng_ltspice_parse_log",
