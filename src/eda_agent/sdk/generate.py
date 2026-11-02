@@ -96,6 +96,18 @@ class Generated:
                 f"{len(self.skipped)} skipped")
 
 
+#: Members the engine resolves but which do not behave, with the
+#: measurement that showed it. Resolving is not the same as working, and
+#: without this the generator keeps resurrecting a name someone already
+#: removed by hand: the block test then fails against whichever other
+#: test recorded the removal, and the two sit there contradicting.
+UNRELIABLE = {
+    "CompilationMasked":
+        "measured on AD 26.11: a part's compile mask reads back unset "
+        "after it is written",
+}
+
+
 def member_spelling(name: str, table: SymbolTable | None = None,
                     allow_getter: bool = False) -> str:
     """How to write this member so the engine resolves it.
@@ -133,6 +145,8 @@ def _reject(prop: Property, kind: str,
     casts = READ_CAST if kind == "read" else WRITE_CAST
     if declared not in casts:
         return f"declared {declared}, which does not cross the String bridge"
+    if prop.name in UNRELIABLE:
+        return UNRELIABLE[prop.name]
     if table is not None:
         reach = table.reach(prop.name)
         if reach == GETTER and not (allow_getter and kind == "read"):
