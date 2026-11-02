@@ -16,18 +16,18 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Requirements](#requirements)
 - [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
-- [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
-- [Two version numbers](#two-version-numbers-and-why-they-differ) - the package is semver, the Altium script is dated
-- [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
+- [Checking the fab package](#checking-the-fab-package) - verify what you are about to send
+- [NPI phase gates](#npi-phase-gates) - the 42 questions, and which ones a tool can answer
+- [Measuring performance](#measuring-performance) - where call time actually goes
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
 - [Tool count (clients that cap it)](#tool-count-clients-that-cap-it)
-- [Checking the fab package](#checking-the-fab-package) - verify what you are about to send
-- [Measuring performance](#measuring-performance) - where call time actually goes
+- [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
+- [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
 - [Part sourcing](#part-sourcing)
+- [Altium 365, company policies, simulators](#altium-365-company-policies-simulators)
 - [Example use cases](#example-use-cases)
-- [Known limitations](#known-limitations)
-- [What the bundled data does not cover](#what-the-bundled-data-does-not-cover) - the figures nobody publishes, and why they are null - read this before trusting it with a real design
+- [Known limitations](#known-limitations) - including [What the bundled data does not cover](#what-the-bundled-data-does-not-cover), the figures nobody publishes and why they are null, and [Two version numbers](#two-version-numbers-and-why-they-differ)
 - [Timeout and server lifecycle](#timeout-and-server-lifecycle)
 - [Tool reference](#tool-reference) - and the other documents
 - [Architecture](#architecture)
@@ -38,6 +38,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 - [Disclaimer](#disclaimer)
+- [About](#about)
 
 </details>
 
@@ -73,7 +74,7 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 ## Features
 
 - **~678 tools on the default Altium backend** (764+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
-- **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
+- **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation. They reach **1626 of the 2207 properties Altium's own SDK declares (73.7%)** across 46 object types, measured against `Altium.SDK.Interfaces.dll` rather than estimated: `eda-agent sdk-coverage` prints the figure and names every property still out of reach. See [SDK coverage](docs/SDK_COVERAGE.md)
 - **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and the whole list is one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Typical wall-time savings: 10 to 100x on multi-item edits
 - **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
 - **Design-lint sweep**: `design_lint_report` runs 31 audit checks in one IPC pass and returns a structured violation list - schematic-side (component-parameter visibility per class, power-port orientation, floating ports, multi-output / no-driver nets, duplicate designators, off-grid components) and PCB-side (DNP variant components, tented-via ratio, near-miss track endpoints, signal vias without nearby return via, via antennas, removed pad shapes, components outside outline, pads too close to board edge, invalid polygon regions, optional DRC). Each check is also exposed as a standalone `audit_*` MCP tool; the dashboard's Status → Health subtab has a one-click Lint panel that calls `/api/lint` and groups results by Schematic / PCB
@@ -1055,14 +1056,32 @@ maps official Altium scripting examples and interfaces to those tools, records
 live AD-version verification and known gaps, and gives future agents the
 required extension trail.
 
+[`docs/SDK_COVERAGE.md`](docs/SDK_COVERAGE.md) is the other half of that
+question: how much of Altium's declared object model the generic property
+layer reaches, how the figure is arrived at, and why a property Altium
+declares is not necessarily one a script can touch.
+
 [`CHANGELOG.md`](CHANGELOG.md) records what each change added or fixed,
 and marks anything not yet watched working against a live Altium session
-or a real Nexar account. The deeper references are
-[`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) for the `eng_*`
-family, [`docs/PROFILES.md`](docs/PROFILES.md) for per-workspace house
-style, [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) for part
-providers, and [`docs/BACKENDS.md`](docs/BACKENDS.md) for the EDA
-backends.
+or a real Nexar account.
+[`docs/RELEASE_VERIFICATION.md`](docs/RELEASE_VERIFICATION.md) is where a
+release's Pascal is either recorded as read live or declared unverified,
+with the exact call that would settle it.
+
+The deeper references:
+
+| Document | What it covers |
+| --- | --- |
+| [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) | the `eng_*` family, and which parts are unverified against live Altium or Nexar |
+| [`docs/PROFILES.md`](docs/PROFILES.md) | per-workspace house style: naming, rules, fab profiles, templates |
+| [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) | the part providers, what each one answers, and what none of them do |
+| [`docs/BACKENDS.md`](docs/BACKENDS.md) | the Altium, KiCad and EasyEDA Pro backends |
+| [`docs/AUTONOMOUS_DESIGN.md`](docs/AUTONOMOUS_DESIGN.md) | driving a full spec-to-board run from any MCP client |
+| [`docs/AI_ALTIUM_FIELD_NOTES.md`](docs/AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating constraints |
+| [`docs/ALTIUM_AUTONOMY_RUNBOOK.md`](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | the by-hand runbook, deliberately outside the unit suite because it drives a real Altium |
+| [`docs/HARDWARE_CI.md`](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [`docs/TOOL_NAMING.md`](docs/TOOL_NAMING.md) | the `ns_verb_object` convention every tool name follows |
+| [`docs/ui-automation.md`](docs/ui-automation.md) | what the synthesised input can reach, and what contains it |
 
 At runtime `tool_catalog` serves the same data, filtered by category,
 maturity, interaction or substring, and `tool_invoke` calls anything it
