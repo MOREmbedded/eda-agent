@@ -223,3 +223,20 @@ def test_the_board_chain_splits_its_extra_family_the_same_way():
     # PCBGetMask and its siblings sit in branches that name no type, so
     # they are reachable for whatever object the chain is handed.
     assert cov.ANY_TYPE in delegated
+
+
+def test_the_board_base_chain_is_credited_to_every_board_type():
+    """GetPCBPrimitiveGenerated, the board half of the same move.
+
+    ANY_TYPE was already in this dict before the base chain existed,
+    from PCBGetMask and its siblings, so the assertion that matters is
+    that the new names joined it rather than landing under a constant.
+    """
+    delegated = cov.delegated_heads("GetPCBProperty")
+    shared = delegated[cov.ANY_TYPE]
+    assert "DescriptorString" in shared
+    assert "Moveable" in shared
+    assert "PowerPlaneClearance" in shared
+    # Not credited to a single object type, which is the undercount.
+    for constant in ("eTrackObject", "ePadObject", "eViaObject"):
+        assert "DescriptorString" not in delegated.get(constant, set())

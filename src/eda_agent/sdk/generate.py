@@ -323,6 +323,33 @@ def render_block(model: SdkModel,
     return f"{BEGIN_MARKER}\n{shared}\n{component}{END_MARKER}\n"
 
 
+def render_pcb_block(model: SdkModel,
+                     table: SymbolTable | None = None,
+                     allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
+    """The board side of the same finding, in PCBGeneric.pas.
+
+    717 read slots across 14 board object types were unreachable, and 42
+    names were declared on all 14 of them. IPCB_Primitive is already the
+    type GetPCBProperty takes, so the same one-routine move applies: 37
+    of those names survive the type and symbol filters, reaching 518
+    slots that would otherwise need 14 chains.
+
+    A separate region because the concatenation puts PCBGeneric.pas
+    before Generic.pas, and DelphiScript has no forward declarations: a
+    routine GetPCBProperty calls has to be in its own file, above it.
+
+    Not read live yet. Unlike the schematic base, nothing has probed a
+    board property this way, so docs/RELEASE_VERIFICATION.md names the
+    read that settles it.
+    """
+    body = render_probe(
+        model, "IPCB_Primitive", "IPCB_Primitive",
+        function_name="GetPCBPrimitiveGenerated",
+        already=handled_heads("GetPCBProperty"), table=table,
+        allow_getter=allow_getter).pascal
+    return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
+
+
 def replace_block(source: str, block: str) -> str:
     """Swap the generated region in a Pascal source for a fresh one."""
     start = source.index(BEGIN_MARKER)

@@ -20,8 +20,9 @@ import pytest
 from eda_agent.sdk.generate import (BEGIN_MARKER, BLOCK_ALLOW_GETTER,
                                     END_MARKER, Skipped,
                                     _reject, member_spelling, plan,
-                                    render_block, render_probe,
-                                    render_write, replace_block)
+                                    render_block, render_pcb_block,
+                                    render_probe, render_write,
+                                    replace_block)
 from eda_agent.sdk.reflect import Property, SdkModel, SdkUnavailable, load_sdk
 from eda_agent.sdk.symbols import (SymbolsUnavailable, SymbolTable,
                                    load_symbols)
@@ -396,3 +397,69 @@ def test_the_two_routines_do_not_disagree_about_a_shared_name():
         left = bodies["GetSchGraphicalGenerated"][name].strip()
         right = bodies["GetSchComponentGenerated"][name].strip()
         assert left == right, f"{name}: {left!r} vs {right!r}"
+
+
+# ---- and the same move on the board side -------------------------------
+
+PCB_GENERIC = REPO / "scripts" / "altium" / "PCBGeneric.pas"
+
+
+def test_the_board_block_matches_its_generator():
+    try:
+        model = load_sdk()
+        table = load_symbols()
+    except (SdkUnavailable, SymbolsUnavailable):
+        pytest.skip("no reflected SDK or symbol table on this machine")
+
+    text = PCB_GENERIC.read_text(encoding="utf-8")
+    start = text.index(BEGIN_MARKER)
+    end = text.index(END_MARKER, start) + len(END_MARKER) + 1
+    assert text[start:end] == render_pcb_block(model, table), (
+        "the generated block in PCBGeneric.pas is not what the generator "
+        "produces; re-run it rather than editing between the markers")
+
+
+def test_the_board_routine_lives_in_the_file_that_is_built_first():
+    """PCBGeneric.pas is concatenated before Generic.pas.
+
+    DelphiScript has no forward declarations, so a routine
+    GetPCBProperty calls has to be above it in the SAME file. Put this
+    one in Generic.pas and the call is an access violation at run time,
+    with nothing said at compile time.
+    """
+    import re
+
+    build = (REPO / "scripts" / "altium" / "build.py").read_text(
+        encoding="utf-8")
+    order = re.findall(r"'(\w+\.pas)'", build)
+    assert order.index("PCBGeneric.pas") < order.index("Generic.pas")
+
+    text = PCB_GENERIC.read_text(encoding="utf-8")
+    assert "Function GetPCBPrimitiveGenerated(Obj : IPCB_Primitive;" in text
+    assert (text.index("Function GetPCBPrimitiveGenerated(")
+            < text.index("Function GetPCBProperty("))
+    # And nowhere else, which is what would happen if someone regenerated
+    # the schematic region into this file or the other way round.
+    generic = GENERIC.read_text(encoding="utf-8")
+    assert "GetPCBPrimitiveGenerated" not in generic
+    assert "GetSchGraphicalGenerated" not in text
+
+
+def test_the_board_fallback_is_reached_without_a_type_test():
+    text = PCB_GENERIC.read_text(encoding="utf-8")
+    assert "Function GetPCBProperty(Obj : IPCB_Primitive;" in text
+    assert "Result := GetPCBPrimitiveGenerated(Obj, PropName, Have);" in text
+
+
+def test_the_board_block_declares_the_flag_it_passes():
+    """Have is a Var parameter, so GetPCBProperty needs a local for it.
+
+    Missing, this is an undeclared identifier: the lint catches it, but
+    only because the name appears nowhere else in the routine.
+    """
+    import re
+
+    text = PCB_GENERIC.read_text(encoding="utf-8")
+    start = text.index("Function GetPCBProperty(Obj : IPCB_Primitive;")
+    head = text[start:text.index("Begin", start)]
+    assert re.search(r"\bHave\s*:\s*Boolean\s*;", head), head

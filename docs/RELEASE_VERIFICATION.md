@@ -1,10 +1,56 @@
-# Release verification: 2026.11.02.1
+# Release verification: 2026.11.02.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
 same: each accepts identifiers the other rejects, and an undeclared one
 faults at runtime where `Try/Except` cannot catch it, halting the
 polling loop.
+
+## 2026.11.02.2 - the same finding on the board side
+
+`GetPCBProperty` gains `GetPCBPrimitiveGenerated` and the same fallback
+branch. 717 read slots were unreachable across the 14 board object
+types, and 42 names were declared on all 14; 37 survive the type and
+symbol filters. `IPCB_Primitive` is already the type `GetPCBProperty`
+takes, so one routine reaches them all.
+
+Board coverage moves from 333/1167 (28.5%) to 845/1167 (72.4%); overall
+from 1114/2207 (50.5%) to 1626/2207 (73.7%).
+
+The region lives in `PCBGeneric.pas`, not `Generic.pas`: the build
+concatenates PCBGeneric first, and DelphiScript has no forward
+declarations, so a routine `GetPCBProperty` calls must sit above it in
+the same file.
+
+**This one has less behind it than the schematic half.** There, the
+component chain had been reading two of the ten live since 2026-10-27.
+Here nothing has read a board property this way at all. The symbol
+table says all 37 resolve, and the table has never been wrong across
+65+ live data points, but it answers "is this name registered", not
+"does this object answer it".
+
+**What to check live, in this order.** Probe before querying, because
+the probe logs each attempt before it makes it, so a halt names the
+property that caused it:
+
+```
+generic.query_objects on any .PcbDoc, object_type "track",
+properties ["Handle", "DescriptorString", "Moveable"]
+```
+
+Those three are the least type-specific of the 37. If they answer, work
+outward to the ones that read as pad or polygon state on an object that
+is neither:
+
+```
+properties ["PadCacheRobotFlag", "PowerPlaneClearance", "ReliefEntries",
+            "PolygonOutline", "IsTenting"]
+```
+
+A halt on any of those is the interesting result: it would be the first
+case of a registered name that does not answer off a declared
+interface, and it belongs in generate.py's UNRELIABLE with the
+measurement, not quietly dropped.
 
 ## 2026.11.02.1 - ten lines for thirty-one object types
 
@@ -552,7 +598,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.02.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.02.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
