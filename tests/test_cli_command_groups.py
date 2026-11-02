@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The help listing and the parser have to describe the same CLI.
 
-`eda-agent --help` is the only listing of the 44 commands anyone reads,
+`eda-agent --help` is the only listing of the 43 commands anyone reads,
 and argparse prints whatever order add_parser happened to run in.
 command_groups() lays that out in sections. Two lists of names can
 drift, so these hold them together: a command added to the parser and

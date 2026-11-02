@@ -22,6 +22,15 @@ first segment, so Designator.Text counts as covering Designator. This
 OVERSTATES coverage slightly, never understates it: a chain that
 handles only Designator.Text still counts Designator as reached, which
 is the honest reading since the caller can get at it.
+
+A chain also DELEGATES. Most of what it answers for a pin, a port, a
+parameter or a dimension is written one routine down, behind a branch
+that tests the object type, or behind a table that maps each property
+name to the type that owns it. Reading only the chain's own body missed
+116 reachable properties. Those routines are followed here, and each
+name is credited to the types the Pascal guards it on, never to all of
+them: a flat union would credit a pin with properties only a component
+can answer.
 """
 
 from __future__ import annotations
@@ -91,22 +100,92 @@ def chain_body(source: str, function_name: str) -> str:
     return block
 
 
-#: A chain delegates the generated accessors rather than carrying a
-#: second copy of them, so the names it answers are not all written in
-#: its own body. The callee is named for the job, ending in Generated.
-_DELEGATE = re.compile(r"\b(\w+Generated)\(")
+#: Every top-level routine header in a Pascal unit.
+_HEADER = re.compile(r"^(?:Function|Procedure) (\w+)\(", re.M)
 
-#: The ObjectId test that guards a branch. The last one before a
-#: delegation call is the type that delegation is reachable for.
-_GUARD = re.compile(r"ObjectId = (e\w+)")
+#: A call to another routine. A chain delegates rather than carrying a
+#: second copy of an accessor, so part of what it answers is written one
+#: level down.
+_CALL = re.compile(r"\b([A-Za-z_]\w*)\(")
+
+#: Where the branch a call sits in begins. These chains are one long
+#: If / Else If ladder, so the nearest If above a call opens the
+#: condition that has to hold for the call to be reached at all.
+_BRANCH = re.compile(r"(?:\bElse\s+)?\bIf\b")
+
+#: The object-type test a branch is guarded on. Generic.pas tests
+#: Obj.ObjectId in place; PCBGeneric.pas reads it into a local, Oid.
+_GUARD = re.compile(r"(?:ObjectId|Oid)\s*=\s*(e\w+)")
+
+#: A call that maps a property name to an owner code. Both domains gate
+#: a family of extra properties on one of these.
+_OWNER_CALL = re.compile(r"\b(\w*Owner)\(PropName\)")
+
+#: The key delegated_names uses for a call no branch guards on a type,
+#: whose names are reachable for whatever object the chain is given.
+ANY_TYPE = "*"
+
+
+def routines(source: str) -> dict[str, str]:
+    """Each top-level routine of a Pascal unit, by name."""
+    marks = list(_HEADER.finditer(source))
+    return {m.group(1): source[m.start():(marks[i + 1].start()
+                                          if i + 1 < len(marks) else len(source))]
+            for i, m in enumerate(marks)}
+
+
+def _call_args(body: str, opening: int) -> str:
+    """The text between one call's parentheses, nesting respected."""
+    depth = 0
+    for i in range(opening, len(body)):
+        if body[i] == "(":
+            depth += 1
+        elif body[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return body[opening + 1:i]
+    return ""
+
+
+def _owner_codes(body: str) -> dict[str, int]:
+    """Each property name an owner routine classifies, to its code.
+
+    The body is a ladder of `(PropName = 'A') Or (PropName = 'B') Then
+    Result := 1`, so the names before each Result belong to that code.
+    """
+    out: dict[str, int] = {}
+    chunks = re.split(r"Then\s+Result := (\d+)", body)
+    for text, code in zip(chunks[0::2], chunks[1::2]):
+        for name in re.findall(r"PropName = '([^']+)'", text):
+            out[name] = int(code)
+    return out
+
+
+def _owner_types(code: dict[str, str], owner: str) -> dict[int, set[str]]:
+    """Each owner code, to the object types that carry its properties.
+
+    The companion routine reads `(Owner = 1) And ((Oid = ePadObject) Or
+    (Oid = eViaObject))`, one alternative per code. It is the only place
+    the Pascal says which type an extra property belongs to, and without
+    it the whole family would have to be credited to every type.
+    """
+    for name, body in code.items():
+        if name == owner or "(Owner = " not in body:
+            continue
+        if not re.search(r"\b" + re.escape(owner) + r"\(PropName\)", body):
+            continue
+        parts = re.split(r"\(Owner = (\d+)\)", body)
+        return {int(c): set(_GUARD.findall(segment))
+                for c, segment in zip(parts[1::2], parts[2::2])}
+    return {}
 
 
 def handled_names(function_name: str) -> set[str]:
     """Every property name a chain carries in its own body.
 
-    Not what it ANSWERS: a chain may delegate to a generated routine,
-    and those names are reported separately by delegated_names, because
-    they are reachable only for the object type the delegation is
+    Not what it ANSWERS: a chain may delegate to another routine, and
+    those names are reported separately by delegated_names, because most
+    of them are reachable only for the object type the delegation is
     guarded on.
     """
     path, _ = CHAINS[function_name]
@@ -115,28 +194,53 @@ def handled_names(function_name: str) -> set[str]:
 
 
 def delegated_names(function_name: str) -> dict:
-    """Names a chain answers through a generated routine, by object type.
+    """Names a chain answers through another routine, by object type.
 
-    The branch reads `If Obj.ObjectId = eSchComponent Then ... Result :=
-    GetSchComponentGenerated(...)`, so the names behind it are reachable
-    for that constant and no other. Returning a flat set instead would
-    credit every schematic type with properties only a component has.
+    Three shapes, all of them in the shipped Pascal:
+
+    - a branch guarded on the type, `Else If Obj.ObjectId = eSchComponent
+      Then ... GetSchComponentGenerated(...)`, whose names belong to that
+      constant and no other;
+    - a family of extra properties gated on an owner routine, where the
+      Pascal's own owner table says which type each name belongs to;
+    - a call no branch guards on a type, reachable for whatever object
+      the chain is given, keyed under ANY_TYPE.
+
+    A call that IS the branch condition is skipped: it gates the branch
+    rather than answering it, and the routine the branch then calls
+    carries the same names. So is one passed a literal name in place of
+    PropName, because the branch testing for that name already has it.
+
+    Returning one flat set instead would credit every schematic type with
+    properties only a component can answer.
     """
     path, _ = CHAINS[function_name]
-    source = _read(path)
-    body = chain_body(source, function_name)
+    code = routines(_read(path))
+    body = code.get(function_name, "")
     out: dict = {}
-    for match in _DELEGATE.finditer(body):
-        # The nearest ObjectId test before the call is its guard.
-        guards = _GUARD.findall(body[:match.start()])
-        if not guards:
+    for match in _CALL.finditer(body):
+        callee = match.group(1)
+        if callee == function_name or callee not in code:
             continue
-        try:
-            delegated = chain_body(source, match.group(1))
-        except ValueError:
+        names = set(re.findall(r"PropName = '([^']+)'", code[callee]))
+        if not names:
             continue
-        names = set(re.findall(r"PropName = '([^']+)'", delegated))
-        out.setdefault(guards[-1], set()).update(names)
+        if not re.search(r"\bPropName\b", _call_args(body, match.end() - 1)):
+            continue
+        opens = [b.start() for b in _BRANCH.finditer(body[:match.start()])]
+        branch = body[opens[-1]:match.start()] if opens else body[:match.start()]
+        if "Then" not in branch:
+            continue
+        owner = _OWNER_CALL.search(branch)
+        if owner:
+            codes = _owner_codes(code.get(owner.group(1), ""))
+            types = _owner_types(code, owner.group(1))
+            for name in names & set(codes):
+                for constant in types.get(codes[name], set()):
+                    out.setdefault(constant, set()).add(name)
+            continue
+        for constant in set(_GUARD.findall(branch)) or {ANY_TYPE}:
+            out.setdefault(constant, set()).update(names)
     return out
 
 
@@ -260,15 +364,27 @@ class Report:
         return [t for t in self.types if not t.resolved]
 
 
+def _delegated_for(delegated: dict | None, constant: str) -> set[str]:
+    """What a chain's delegations add for one object type.
+
+    Its own entry, plus the calls no branch guards on a type, which are
+    reachable for whatever object the chain is given.
+    """
+    delegated = delegated or {}
+    return delegated.get(constant, set()) | delegated.get(ANY_TYPE, set())
+
+
 def _coverage_for(model: SdkModel, type_name: str, constant: str,
                   domain: str, read_heads: set[str],
                   write_heads: set[str],
-                  read_delegated: dict | None = None) -> TypeCoverage:
+                  read_delegated: dict | None = None,
+                  write_delegated: dict | None = None) -> TypeCoverage:
     iface_name = interface_for(constant, domain)
     # Reachable for THIS constant only, because that is what the branch
     # guarding the delegation tests. A flat union would credit a pin
     # with properties only a component can answer.
-    read_heads = read_heads | (read_delegated or {}).get(constant, set())
+    read_heads = read_heads | _delegated_for(read_delegated, constant)
+    write_heads = write_heads | _delegated_for(write_delegated, constant)
     iface: Interface | None = model.get(iface_name)
     declared = model.effective_properties(iface_name) if iface else {}
     return TypeCoverage(
@@ -287,10 +403,13 @@ def build_report(model: SdkModel | None = None) -> Report:
     model = model or load_sdk()
 
     sch_read = handled_heads("GetSchProperty")
-    sch_read_delegated = delegated_heads("GetSchProperty")
     sch_write = handled_heads("SetSchProperty")
     pcb_read = handled_heads("GetPCBProperty")
     pcb_write = handled_heads("SetPCBProperty")
+    sch_read_delegated = delegated_heads("GetSchProperty")
+    sch_write_delegated = delegated_heads("SetSchProperty")
+    pcb_read_delegated = delegated_heads("GetPCBProperty")
+    pcb_write_delegated = delegated_heads("SetPCBProperty")
 
     types: list[TypeCoverage] = []
     seen: set[tuple[str, str]] = set()
@@ -303,14 +422,15 @@ def build_report(model: SdkModel | None = None) -> Report:
         seen.add(("SCH", constant))
         types.append(_coverage_for(model, name, constant, "SCH",
                                    sch_read, sch_write,
-                                   sch_read_delegated))
+                                   sch_read_delegated, sch_write_delegated))
 
     for name, constant in sorted(supported_pcb_types().items()):
         if ("PCB", constant) in seen:
             continue
         seen.add(("PCB", constant))
         types.append(_coverage_for(model, name, constant, "PCB",
-                                   pcb_read, pcb_write))
+                                   pcb_read, pcb_write,
+                                   pcb_read_delegated, pcb_write_delegated))
 
     return Report(sdk_version=model.file_version,
                   sdk_source=model.source,

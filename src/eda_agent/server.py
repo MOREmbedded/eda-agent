@@ -707,7 +707,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
     """Section headings for `eda-agent --help`, in the order shown.
 
     argparse has no notion of grouping subcommands: every add_parser
-    lands in one flat list in call order, and at 44 commands that list
+    lands in one flat list in call order, and at 43 commands that list
     reads as one undifferentiated block. Only membership lives here --
     the one-line help strings stay on the parsers that declare them, so
     there is nothing to keep in sync but the names, and
@@ -729,7 +729,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "dashboard", "stop-dashboard", "vote",
         )),
         ("Altium SDK reach", (
-            "sdk-coverage", "sdk-reach", "sdk-probe", "sdk-symbols",
+            "sdk-coverage", "sdk-probe", "sdk-symbols",
         )),
         ("Owner profiles", (
             "profile-init", "profile-list", "profile-show", "profile-use",
@@ -1302,18 +1302,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the saved Nexar login, so the next altium365_ call signs in again.",
     )
 
-    # sdk-reach -- how much of Altium's SDK the property tools reach
-    sdk_p = subparsers.add_parser(
-        "sdk-reach",
-        help=("Count the properties Altium's SDK declares on each object type "
-              "and the share obj_query/obj_modify reach. Reads the SDK index in "
-              "reference/altium_sdk (or EDA_AGENT_SDK_INDEX)."),
-    )
-    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
-                       help="List up to N properties not reached, per type.")
-    sdk_p.add_argument("--json", action="store_true",
-                       help="Every type with every name not reached, as JSON.")
-
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
         "stop-dashboard",
@@ -1551,21 +1539,6 @@ def main() -> int:
             print(f"Removed the saved Nexar login ({saved})")
         else:
             print(f"No saved Nexar login at {saved}")
-        return 0
-    if args.command == "sdk-reach":
-        import json
-        from .diag import sdk_reach
-        path = sdk_reach.index_path()
-        if not path.is_file():
-            print(f"No SDK index at {path}. It is made from an Altium install "
-                  "(reference/altium_sdk/dump_sdk.ps1); set EDA_AGENT_SDK_INDEX "
-                  "to point at one.")
-            return 1
-        rows = sdk_reach.measure(sdk_reach.SdkIndex(path))
-        if args.json:
-            print(json.dumps(sdk_reach.as_dict(rows), indent=2))
-        else:
-            print(sdk_reach.report(rows, args.detail))
         return 0
     if args.command == "review":
         return _run_review(args)

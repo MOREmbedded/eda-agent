@@ -16,6 +16,33 @@ maturity classification for every tool.
 
 ### Changed
 
+- **SDK coverage: one command, this fork's, with upstream's reach.**
+  `eda-agent sdk-reach` (upstream) and `eda-agent sdk-coverage` (this
+  fork) both counted how many of the properties Altium's SDK declares
+  the four hand-written Pascal chains reach. This one is kept, against
+  the rule the other merge duplicates followed, because three further
+  commands and the code generator are built on it: `sdk-probe`,
+  `sdk-symbols` and `sdk/generate.py` all read the reflected
+  `reference/altium_sdk.json` that `sdk-coverage` reads, where
+  `sdk-reach` read a separate index under `reference/altium_sdk/` whose
+  dump script is not in the repository. Keeping upstream's would have
+  meant rewriting all four onto a data source no clone can produce.
+  Carried across: upstream counted names one call level below the
+  chain, and this did not. That was the whole of the gap between the
+  two figures. The chains answer most of what a pin, a port, a
+  parameter or a dimension carries through routines of their own, and
+  following them adds 116 reachable properties: 688 of 2207 (31.2%)
+  becomes 804 of 2207 (36.4%). Upstream credited those names to every
+  object type; here each goes only to the types the Pascal guards it
+  on, either the `Obj.ObjectId` test on the branch or the owner table
+  (`SchExtraFits`, `ExtraPCBPropertyFits`) that says which type owns
+  each name. A routine called to decide whether a branch is taken, or
+  called with a literal name, is not counted twice. The dotted-chain
+  rule upstream documented (`Location.X` counts for `Location`) was
+  already here. `docs/RELEASE_VERIFICATION.md` keeps its `sdk-reach`
+  measurement, with a note that the two read different dumps of the SDK
+  and so cannot be compared.
+
 - **Multipart symbols: one tool, upstream's, with this fork's shared pins.**
   `lib_create_multipart_symbol` (this fork) and `lib_create_symbol_in_parts`
   (upstream) both made a multi-part symbol in one call, and neither did all
