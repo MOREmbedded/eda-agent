@@ -293,20 +293,34 @@ def render_block(model: SdkModel,
                  allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
     """The whole generated region, markers included.
 
-    One probe per object type. Only ISch_Component today: the point of
-    probing is to learn the exposure rate on one type before committing
-    to generating the other thirty-one.
+    Two probes, because the 32 schematic types turned out not to need
+    32 of them. Of the 442 declared-but-unreached read slots across
+    those types, 310 were ten names, and all ten are declared on
+    ISch_GraphicalObject itself, the type GetSchProperty already takes.
+    One routine against the base answers them for every schematic
+    object, with no cast and no ObjectId guard, where a chain per type
+    would have written the same ten lines thirty-one times.
+
+    ISch_Component keeps its own, because the other 132 slots are
+    type-specific and the component chain is where that work started.
+    The two overlap by those ten names: a component is tried against
+    its own chain first, and the duplication is what lets either
+    routine be correct on its own.
 
     Pass ``table`` and the block carries only what the engine will
     resolve. Without it the block is a list of candidates, and running
     it is how you find out which ones halt the debugger.
     """
-    body = render_probe(
+    already = handled_heads("GetSchProperty")
+    shared = render_probe(
+        model, "ISch_GraphicalObject", "ISch_GraphicalObject",
+        function_name="GetSchGraphicalGenerated",
+        already=already, table=table, allow_getter=allow_getter).pascal
+    component = render_probe(
         model, "ISch_Component", "ISch_Component",
         function_name="GetSchComponentGenerated",
-        already=handled_heads("GetSchProperty"), table=table,
-        allow_getter=allow_getter).pascal
-    return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
+        already=already, table=table, allow_getter=allow_getter).pascal
+    return f"{BEGIN_MARKER}\n{shared}\n{component}{END_MARKER}\n"
 
 
 def replace_block(source: str, block: str) -> str:

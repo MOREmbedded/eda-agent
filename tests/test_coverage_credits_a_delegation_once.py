@@ -167,25 +167,51 @@ def test_a_call_passing_a_literal_name_does_not_drag_the_rest_in(owner_pascal):
 def test_the_real_chain_credits_each_delegation_to_its_own_type():
     """Against the shipped Pascal, not a fixture.
 
-    Five guards, because the chain answers a pin, a port, a parameter and
-    a No-ERC marker through routines of their own as well as a component.
-    A guard added later fails this, which is the point: each one has to
-    be credited to its own type rather than folded into the first.
+    Five type guards, because the chain answers a pin, a port, a
+    parameter and a No-ERC marker through routines of their own as well
+    as a component. A guard added later fails this, which is the point:
+    each one has to be credited to its own type rather than folded into
+    the first. The sixth key is the base chain, which no guard gates.
     """
     delegated = cov.delegated_heads("GetSchProperty")
     assert set(delegated) == {"eSchComponent", "ePin", "ePort",
-                              "eParameter", "eNoERC"}
+                              "eParameter", "eNoERC", cov.ANY_TYPE}
     assert "DescriptionString" in delegated["eSchComponent"]
     # Read live through generic.query_objects on 2026-10-27, so this is
     # a measurement rather than a claim about what should work.
     assert "IdentifierString" in delegated["eSchComponent"]
-    # A pin cannot answer either of those.
+    # A pin does not reach those through the COMPONENT chain. It reaches
+    # them through the base one, which is a different thing and has to
+    # stay a different thing: fold the two together and a pin would be
+    # credited with the properties only a component declares.
     assert not {"DescriptionString", "IdentifierString"} & delegated["ePin"]
     # Symbol_Inner is owner 1 in SchExtraOwner, which SchExtraFits reads
     # as ePin alone; HarnessColor is owner 4, which is ePort alone.
     assert "Symbol_Inner" in delegated["ePin"]
     assert "Symbol_Inner" not in delegated["ePort"]
     assert "HarnessColor" in delegated["ePort"]
+
+
+def test_the_base_chain_is_credited_to_every_schematic_type():
+    """GetSchGraphicalGenerated sits in a branch that names no type.
+
+    Its ten properties are declared on ISch_GraphicalObject, which is
+    what GetSchProperty's own parameter already is, so no cast and no
+    ObjectId test stand between any schematic object and those reads.
+    Crediting them to one constant would undercount 31 types; crediting
+    them to a type that cannot reach them would be the overcount this
+    file exists to prevent. ANY_TYPE is how coverage says "all of them".
+    """
+    delegated = cov.delegated_heads("GetSchProperty")
+    shared = delegated[cov.ANY_TYPE]
+    assert "Dimmed" in shared
+    assert "LiveHighlightValue" in shared
+    # CompilationMasked is declared on the same interface and is NOT
+    # here: it resolves and still does not behave, so generate.py
+    # refuses it. See UNRELIABLE there.
+    assert "CompilationMasked" not in shared
+    # And it really is a separate credit, not the component one renamed.
+    assert shared != delegated["eSchComponent"]
 
 
 def test_the_board_chain_splits_its_extra_family_the_same_way():

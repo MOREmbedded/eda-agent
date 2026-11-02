@@ -1,10 +1,63 @@
-# Release verification: 2026.11.01.1
+# Release verification: 2026.11.02.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
 same: each accepts identifiers the other rejects, and an undeclared one
 faults at runtime where `Try/Except` cannot catch it, halting the
 polling loop.
+
+## 2026.11.02.1 - ten lines for thirty-one object types
+
+`GetSchProperty` gains a second generated chain, `GetSchGraphicalGenerated`,
+and a fallback branch that calls it.
+
+**Not yet executed by Altium.** The reasoning below is offline
+measurement, and the section stays marked this way until a live read
+says otherwise.
+
+The arithmetic that produced it. Across the 32 schematic object types,
+442 declared read slots were unreachable. Only 56 distinct names
+account for all of them, and ten names account for 310:
+`DescriptionString`, `Dimmed`, `Disabled`, `DisplayError`,
+`EnableDraw`, `ErrorString`, `Handle`, `IdentifierString`,
+`LiveHighlightValue`, `WiringDiagramOriginUniqueId`. Every one is
+declared on `ISch_GraphicalObject`, which is already the type of
+`GetSchProperty`'s own parameter, so a routine against the base reaches
+them with no cast and no `ObjectId` test. Thirty-one per-type chains
+would have written the same ten lines thirty-one times.
+
+Schematic coverage moves from 471/1040 (45.3%) to 781/1040 (75.1%);
+overall from 804/2207 (36.4%) to 1114/2207 (50.5%).
+
+Three of the ten resolve only through their getter
+(`Obj.GetState_DescriptionString`, `GetState_IdentifierString`,
+`GetState_WiringDiagramOriginUniqueId`); the symbol table picked that
+spelling, and the component chain has been reading two of them live
+since 2026-10-27.
+
+`CompilationMasked` is declared on the same interface and is **not**
+here. It resolves, `sdk-symbols` calls it plain, and a live probe read
+it, but a part's compile mask reads back unset after it is written, so
+`generate.py` refuses it by name.
+
+A component is offered its own chain first and falls to the base one
+only for what that chain does not carry. The two overlap by these ten
+names on purpose: either routine has to be correct on its own, and a
+test asserts they spell every shared read identically.
+
+**What to check live.** Read one of the ten off an object that is not a
+component, which is the path no measurement covers:
+
+```
+generic.query_objects on any .SchDoc, object_type "wire",
+properties ["Handle", "Dimmed", "ErrorString"]
+```
+
+A value back means the base chain resolved on a non-component. A halted
+debugger means one of the ten does not resolve off that type despite
+being declared on the base, which would be the first counterexample to
+the symbol table and should be recorded here before anything else is
+generated.
 
 ## 2026.10.27.2 - a half-applied refactor, and the linter that could not see it
 
@@ -499,7 +552,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.01.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.02.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.

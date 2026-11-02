@@ -312,3 +312,87 @@ def test_the_block_in_generic_pas_matches_the_generator():
     assert text[start:end] == render_block(model, table), (
         "the generated block in Generic.pas is not what the generator "
         "produces; re-run it rather than editing between the markers")
+
+
+# ---- the base chain ----------------------------------------------------
+# Ten lines that moved schematic coverage from 45.3% to 75.1%, because
+# the same ten names were missing from 31 of the 32 types. They are
+# declared on ISch_GraphicalObject, which is what GetSchProperty already
+# takes, so one routine against the base answers them for every object.
+
+def test_the_block_carries_a_routine_for_the_base_type(model):
+    block = render_block(model, None)
+    assert "Function GetSchGraphicalGenerated(Obj : ISch_GraphicalObject;" \
+        in block
+    assert "Function GetSchComponentGenerated(Obj : ISch_Component;" in block
+
+
+def test_the_base_routine_takes_the_type_getschproperty_already_has():
+    """No cast and no ObjectId test, which is the whole point of it.
+
+    GetSchProperty's parameter is an ISch_GraphicalObject. A routine
+    typed the same way can be handed that parameter directly, so the
+    fallback needs no local of its own and no branch to reach it.
+    """
+    text = GENERIC.read_text(encoding="utf-8")
+    assert "Function GetSchProperty(Obj : ISch_GraphicalObject;" in text
+    assert "Result := GetSchGraphicalGenerated(Obj, PropName, Have);" in text
+
+
+def test_the_base_routine_is_defined_before_the_chain_that_calls_it():
+    """DelphiScript has no forward declarations.
+
+    A call into a routine defined later in the concatenation is an
+    access violation at run time, not a compile error, so the order is
+    load bearing rather than cosmetic.
+    """
+    text = GENERIC.read_text(encoding="utf-8")
+    assert (text.index("Function GetSchGraphicalGenerated(")
+            < text.index("Function GetSchProperty("))
+
+
+def test_the_component_chain_is_tried_before_the_base_one():
+    """A component declares more than the base, so its chain wins.
+
+    The base chain is the fallback, reached when the component one did
+    not set Have. Reverse the two and a component would answer the ten
+    shared names off the base and never be offered the rest.
+    """
+    text = GENERIC.read_text(encoding="utf-8")
+    comp = text.index("Result := GetSchComponentGenerated(Comp, PropName, Have);")
+    base = text.index("Result := GetSchGraphicalGenerated(Obj, PropName, Have);")
+    assert comp < base
+
+
+def test_the_two_routines_do_not_disagree_about_a_shared_name():
+    """ISch_Component inherits the base's ten, so both carry them.
+
+    The duplication is deliberate: either routine has to be correct on
+    its own. What must not happen is the two spelling the same read
+    differently, because then which one answers would change the value.
+
+    Needs the real declarations: the fake model in this file has no
+    inheritance, so there would be nothing shared to compare.
+    """
+    import re
+
+    try:
+        model = load_sdk()
+        table = load_symbols()
+    except (SdkUnavailable, SymbolsUnavailable):
+        pytest.skip("no reflected SDK or symbol table on this machine")
+
+    block = render_block(model, table)
+    bodies = {}
+    for name in ("GetSchGraphicalGenerated", "GetSchComponentGenerated"):
+        start = block.index(f"Function {name}(")
+        end = block.index("End;", start)
+        bodies[name] = dict(re.findall(
+            r"PropName = '([^']+)'\s+Then Result := (.+)", block[start:end]))
+    shared = set(bodies["GetSchGraphicalGenerated"]) & set(
+        bodies["GetSchComponentGenerated"])
+    assert shared, "the component should inherit the base's properties"
+    for name in shared:
+        left = bodies["GetSchGraphicalGenerated"][name].strip()
+        right = bodies["GetSchComponentGenerated"][name].strip()
+        assert left == right, f"{name}: {left!r} vs {right!r}"
