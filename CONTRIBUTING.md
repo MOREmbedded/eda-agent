@@ -16,6 +16,10 @@ APIs are unlikely to land without prior agreement.
   [`SECURITY.md`](SECURITY.md).
 - By contributing you agree your contribution is licensed under
   Apache-2.0 (the project licence).
+- Every edit to a design or library file goes through the Delphi bridge and
+  Altium. Modifying a file directly is not accepted unless it is strictly
+  unavoidable or well constrained, and reading design files directly is
+  discouraged too; the few exceptions are agreed in an issue first.
 
 ## Development environment
 
@@ -144,7 +148,8 @@ commit that makes the substantive change, and is not mentioned in it.
 
 See [`.github/ISSUE_TEMPLATE/bug_report.md`](.github/ISSUE_TEMPLATE/bug_report.md).
 Include the Altium version, the `eda-agent --version` output, and, if you
-can, the contents of the workspace `response.json` from the failing call.
+can, the failing call's line from the workspace `activity.log`, which
+holds the command and Altium's full reply.
 
 ## Suggesting features
 

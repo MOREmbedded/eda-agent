@@ -1317,11 +1317,11 @@ Begin
         End
         Else If PropName = 'Layer1' Then
         Begin
-            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer1); End;
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := LayerDisplayName(Conn.Layer1); End;
         End
         Else If PropName = 'Layer2' Then
         Begin
-            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer2); End;
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := LayerDisplayName(Conn.Layer2); End;
         End
         Else If PropName = 'IsRedundant' Then
         Begin
@@ -2890,6 +2890,7 @@ Var
     First, Removed : Boolean;
     I, Remaining : Integer;
     Victims : TInterfaceList;
+    FilterWas : Boolean;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -2961,6 +2962,9 @@ Begin
     Begin
         Victims := TInterfaceList.Create;
         CollectPCBMatches(Board, ObjTypeInt, FilterStr, Limit, Victims);
+        { A Selected=true in the set string must not be vetoed by the       }
+        { editor's Selection Filter (see PcbSelectFilterOff).               }
+        FilterWas := PcbSelectFilterOff(Board);
         PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
@@ -2983,6 +2987,7 @@ Begin
             End;
         Finally
             PcbEndEdit(0);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Exit;
     End;

@@ -16,6 +16,35 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Merged upstream through 4f4d76f (22 commits), and reached
+  mechanical 17 and up throughout this fork's own handlers.** Most of
+  the batch is a second contributor's: clearance between two objects,
+  a physical-connectivity walk from a seed, object counts from the
+  primitive counter, selection that ignores the Selection Filter,
+  named text records stored in the board file, the PCB editor's
+  visible area, Online DRC through `pcb_edit_options`, region holes in
+  `pcb_apply_geometry_map`, free-primitive nets taken from component
+  pads, and reads and moves through the Layer Stack Manager. The
+  Altium backend advertises 687 tools, 936 with EasyEDA too.
+
+- **Mechanical layers 17 and above are named and walked everywhere.**
+  Altium 25 allows 1024 of them; `GetLayerString` and the legacy
+  `AllLayers` set stop at 16, so anything higher came back `Unknown`
+  or was skipped. Upstream closed this on their side and left a guard
+  test over the Pascal. It failed here on 28 call sites in handlers
+  this fork wrote and upstream has never seen: 16 layer names and 12
+  board walks in `PCB.pas`, plus one each in `Generic.pas` and
+  `Library.pas`. All now use `LayerDisplayName` and
+  `AddFilter_IPCB_LayerSet(LayerSet.AllLayers)`.
+
+- **SCRIPT_VERSION is `2026.11.03.5`.** Upstream was at
+  `2026.11.03.4`, and the two forks reached `2026.11.02.6`
+  independently the day before with different code. A fork suffix was
+  tried and dropped: the release guard reads any `20YY.MM.DD.N` in the
+  procedure as a version naming itself, and a suffixed string contains
+  one. What actually catches a collision is `health`, which compares
+  deployed against tree BY CONTENT rather than by this number.
+
 - **Merged upstream through 51d3899 (12 commits).** Mostly routing:
   `pcb_autoroute` takes pad-entry, neck and join options, reaches pads
   along their axes and necks down only at narrow pads, routes only what

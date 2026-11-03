@@ -38,6 +38,219 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 #: free primitive of a board, tens of thousands on a large one.
 _GEOMETRY_MAP_TIMEOUT = 1800.0
 
+#: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
+#: names them.
+_DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
+
+
+def stack_manager_out_of_step(manager: dict[str, Any],
+                              physical: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where the Layer Stack Manager's own model disagrees with the board.
+
+    ``manager`` is a pcb.layer_stack_manager reply, ``physical`` a
+    pcb.physical_stack reply. The manager keeps its own copy of the stack
+    and a script write to the board's stack does not reach it, so the
+    manager can go on showing old values. Each difference is one entry
+    (layer, field, board, stack_manager); none means the two agree.
+    Paste layers are the board's only (the manager has none).
+    """
+    out: list[dict[str, Any]] = []
+    lsm = {l.get("name"): l for l in manager.get("layers") or []}
+    board = {l.get("name"): l for l in physical.get("layers") or []
+             if l.get("kind") != "paste"}
+    for name, b in board.items():
+        m = lsm.get(name)
+        if m is None:
+            out.append({"layer": name, "field": "layer",
+                        "board": b.get("kind"), "stack_manager": None})
+            continue
+        # The manager gives an overlay no thickness (the board 0.25 mil):
+        # only layers with a real thickness are compared.
+        bt, mt = b.get("thickness_mils"), m.get("thickness_mils")
+        if (b.get("kind") in ("copper", "dielectric", "solder_mask")
+                and isinstance(bt, (int, float)) and isinstance(mt, (int, float))
+                and abs(bt - mt) > 0.01):
+            out.append({"layer": name, "field": "thickness_mils",
+                        "board": bt, "stack_manager": mt})
+        if b.get("kind") in ("dielectric", "solder_mask"):
+            try:
+                mdk = float(m.get("dielectric_constant") or "nan")
+            except ValueError:
+                mdk = math.nan
+            bdk = b.get("constant")
+            if isinstance(bdk, (int, float)) and not abs(bdk - mdk) <= 1e-6:
+                out.append({"layer": name, "field": "dielectric_constant",
+                            "board": bdk, "stack_manager": m.get("dielectric_constant")})
+            if (b.get("material") or "") != (m.get("material") or ""):
+                out.append({"layer": name, "field": "material",
+                            "board": b.get("material"), "stack_manager": m.get("material")})
+            kind = _DIELECTRIC_KIND.get(b.get("dielectric_type"))
+            if kind in ("core", "prepreg") and m.get("type") in ("core", "prepreg") and kind != m.get("type"):
+                out.append({"layer": name, "field": "type",
+                            "board": kind, "stack_manager": m.get("type")})
+    for name, m in lsm.items():
+        if name not in board:
+            out.append({"layer": name, "field": "layer",
+                        "board": None, "stack_manager": m.get("type")})
+    return out
+
+
+#: The Layer Stack Manager's type ids for a core and a prepreg, and the
+#: DIELTYPE number its records give each (pcb_physical_stack's numbers).
+_LSM_DIELECTRIC_TYPE = {"core": ("{136C62EF-1FA6-4897-AE71-7E797B632B92}", "1"),
+                        "prepreg": ("{1A79611A-039D-4D40-A204-53C26C50F8B5}", "2")}
+
+
+async def sync_stack_manager(bridge: Any, dry_run: bool = False) -> dict[str, Any]:
+    """Write the board's stack values into the Layer Stack Manager's own copy.
+
+    Shared by pcb_sync_stack_manager and the tools that change the board's
+    stack, which run it after a change: a board without the manager's copy,
+    or one already in step, reads in step and nothing is loaded.
+    """
+    lsm = await bridge.send_command_async(
+        "pcb.layer_stack_manager", {"include_model": "records"})
+    if not isinstance(lsm, dict) or "layers" not in lsm:
+        return lsm
+    physical = await bridge.send_command_async("pcb.physical_stack", {})
+    diff = stack_manager_out_of_step(lsm, physical)
+    if not diff:
+        return {"in_step": True, "changes": [], "dry_run": dry_run}
+    differ = [d for d in diff if d.get("field") == "layer"]
+    if differ:
+        return {"ok": False, "in_step": False, "layers_differ": differ,
+                "reason": ("the board and the Layer Stack Manager do not have "
+                           "the same layers; add or remove them in the Layer "
+                           "Stack Manager")}
+    kinds = {l.get("name"): l.get("kind") for l in physical.get("layers") or []}
+    model, changes = stack_model_edits(lsm.get("model") or "", diff, kinds)
+    if dry_run or not changes:
+        return {"in_step": False, "changes": changes, "dry_run": dry_run}
+    applied = await bridge.send_command_async(
+        "pcb.load_stack_manager_model", {"model": model})
+    if not isinstance(applied, dict) or applied.get("success") is False:
+        return applied
+    after = await bridge.send_command_async("pcb.layer_stack_manager", {})
+    physical_after = await bridge.send_command_async("pcb.physical_stack", {})
+    left = (stack_manager_out_of_step(after, physical_after)
+            if isinstance(after, dict) and "layers" in after else None)
+    # The apply writes the model into the board: the board's own stack
+    # must read as it did before, or the resync changed the design.
+    changed = board_stack_changes(physical, physical_after)
+    return {"in_step": False, "changes": changes, "dry_run": False,
+            "in_step_after": left == [] and not changed,
+            "out_of_step_after": left, "board_changed": changed,
+            "symmetric": applied.get("symmetric"),
+            "symmetric_after": applied.get("symmetric_after")}
+
+
+def board_stack_changes(before: dict[str, Any],
+                        after: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each layer value of the board's stack that differs between two
+    pcb.physical_stack replies (layer, field, before, after)."""
+    fields = ("kind", "thickness_mils", "constant", "material", "dielectric_type")
+    old = {l.get("name"): l for l in before.get("layers") or []}
+    new = {l.get("name"): l for l in after.get("layers") or []}
+    out: list[dict[str, Any]] = []
+    for name in list(old) + [n for n in new if n not in old]:
+        a, b = old.get(name), new.get(name)
+        if a is None or b is None:
+            out.append({"layer": name, "field": "layer",
+                        "before": a and a.get("kind"), "after": b and b.get("kind")})
+            continue
+        for field in fields:
+            x, y = a.get(field), b.get(field)
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                if abs(x - y) <= 1e-6:
+                    continue
+            elif x == y:
+                continue
+            out.append({"layer": name, "field": field, "before": x, "after": y})
+    return out
+
+
+#: The Layer Stack Manager's copper weight to thickness: 1 oz reads 1.4 mil.
+_MILS_PER_OZ = 1.4
+
+
+def _record_number(value: Any) -> str:
+    return f"{float(value):g}"
+
+
+def stack_model_edits(model: str, out_of_step: list[dict[str, Any]],
+                      kinds: dict[str, str]) -> tuple[str, list[dict[str, Any]]]:
+    """Write the board's values into the Layer Stack Manager's model.
+
+    ``model`` is the manager's model as |KEY=VALUE| records (its format 0),
+    ``out_of_step`` what stack_manager_out_of_step found and ``kinds`` each
+    layer's kind on the board (copper, dielectric, solder_mask). Each value
+    is written to both records the manager keeps for it: the stack record
+    (COPTHICK, DIELHEIGHT, DIELCONST, DIELMATERIAL, DIELTYPE) and its own
+    ($LSM$...). A layer only one side has is not edited here. Returns the
+    model and one change per value written (layer, field, value).
+    """
+    body = model.lstrip("\ufeff")
+    recs = body.split("|")
+    index: dict[str, str] = {}
+    for rec in recs:
+        key, _, value = rec.partition("=")
+        if key.startswith("LAYER_V8_") and key.endswith("NAME") and "_{" not in key:
+            index.setdefault(value, key[len("LAYER_V8_"):-len("NAME")])
+
+    def put(n: str, key: str, value: str) -> None:
+        full = f"LAYER_V8_{n}{key}"
+        for i, rec in enumerate(recs):
+            if rec.partition("=")[0] == full:
+                recs[i] = f"{full}={value}"
+                return
+        # Not there yet: before the layer's per-stack records.
+        at = next((i for i, rec in enumerate(recs)
+                   if rec.startswith(f"LAYER_V8_{n}_{{")), len(recs))
+        recs.insert(at, f"{full}={value}")
+
+    changes: list[dict[str, Any]] = []
+    for diff in out_of_step:
+        name, field, value = diff.get("layer"), diff.get("field"), diff.get("board")
+        n = index.get(name)
+        if n is None or field == "layer" or value is None:
+            continue
+        if field == "thickness_mils":
+            copper = kinds.get(name) == "copper"
+            text = _record_number(value) + "mil"
+            put(n, "COPTHICK" if copper else "DIELHEIGHT", text)
+            put(n, "$LSM$Thickness", text)
+            if copper:
+                # The manager derives a copper layer's thickness from its
+                # weight on load: a stale weight puts the old thickness back.
+                put(n, "$LSM$Weight", _record_number(float(value) / _MILS_PER_OZ) + "oz")
+        elif field == "dielectric_constant":
+            text = _record_number(value)
+            put(n, "DIELCONST", text)
+            put(n, "$LSM$DielectricConstant", text)
+        elif field == "material":
+            text = str(value)
+            put(n, "DIELMATERIAL", text)
+            put(n, "$LSM$Material", text)
+        elif field == "type" and value in _LSM_DIELECTRIC_TYPE:
+            type_id, number = _LSM_DIELECTRIC_TYPE[value]
+            text = str(value)
+            put(n, "TYPEID", type_id)
+            put(n, "DIELTYPE", number)
+        else:
+            continue
+        changes.append({"layer": name, "field": field, "value": text})
+    if changes:
+        # Loaded as symmetric, the manager mirrors one half of the stack
+        # onto the other, over the values just written. It is loaded
+        # non-symmetric; the load asks for symmetry back afterwards and
+        # Altium keeps it only when the stack is.
+        for i, rec in enumerate(recs):
+            key, _, value = rec.partition("=")
+            if (key.startswith("LAYERSUBSTACK_V8_") and key.endswith("SYMMETRIC")
+                    and value == "True"):
+                recs[i] = f"{key}=False"
+    return "|".join(recs), changes
+
 
 def _offset_pair_polyline(
     points: list[tuple[float, float]],
@@ -463,6 +676,70 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
 
 
 #: Altium's internal units per mil.
+#: Design > Netlist > Update Free Primitives From Component Pads asks first.
+#: MEASURED (AD 25.8): a box titled exactly "Confirm" with this text and
+#: Yes / No, raised inside RunProcess, so the handler waits on it.
+_FREE_NETS_TITLE = "Confirm"
+_FREE_NETS_TEXT = "Update free-primitives nets"
+_FREE_NETS_TIMEOUT = 600.0
+
+
+def _is_free_nets_prompt(title: str, text: str) -> bool:
+    """True only for the update's own Confirm box, by title AND text."""
+    return (title or "").strip() == _FREE_NETS_TITLE and _FREE_NETS_TEXT in text
+
+
+def _answer_free_nets_prompt(pid, done, state, poll: float = 0.1) -> None:
+    """Press Yes on the update's Confirm box once it shows. Runs in a thread.
+
+    Every dialog of the process is read; Yes is pressed only on one whose
+    title is "Confirm" and whose text names the update. Any other dialog is
+    left alone, and recorded in ``state["left"]``. Stops when ``done`` is
+    set or after one press.
+    """
+    from ..ui import uia, windows
+
+    passed = set()
+    while not done.is_set():
+        for dialog in windows.dialogs(pid):
+            hwnd = dialog.hwnd
+            if hwnd in passed:
+                continue
+            title = dialog.title or ""
+            read = uia.describe_window(hwnd, depth=4, limit=100)
+            names = [str(e.get("name", "")) for e in read.get("elements", [])]
+            names += [str(getattr(c, "text", "") or "")
+                      for c in getattr(dialog, "controls", []) or []]
+            text = " ".join(names)
+            if (title.strip() == _FREE_NETS_TITLE
+                    and _FREE_NETS_TEXT not in text):
+                # Altium draws this box's message in owner-drawn panels:
+                # neither the controls nor UI Automation expose it, so it
+                # is read the way the bridge reads a blocking dialog, by OCR.
+                from ..ui import dialog_report
+                try:
+                    seen = dialog_report.describe_dialog(dialog)
+                except Exception:  # unreadable: not known to be ours
+                    seen = {}
+                text += " " + " ".join(
+                    str(t) for t in (seen.get("message") or [])
+                    + (seen.get("ocr_text") or []))
+            if not _is_free_nets_prompt(title, text):
+                passed.add(hwnd)
+                state["left"].append(title)
+                continue
+            pressed = uia.invoke(hwnd, "Yes")
+            if not pressed.get("ok"):
+                state["reason"] = ("the Confirm box was found but Yes could "
+                                   "not be pressed: "
+                                   + str(pressed.get("reason", "")))
+                return
+            state["answered"] = True
+            windows.wait_for_close(hwnd, timeout=5.0)
+            return
+        done.wait(poll)
+
+
 _COORDS_PER_MIL = 10000
 
 
@@ -712,6 +989,7 @@ _PCB_EDIT_OPTIONS = {
     "auto_pan_big_step": "AutoPanLargeStep",
     "auto_pan_speed": "AutoPanSpeed",
     "pour_redraw_threshold": "PolygonThreshold",
+    "online_drc": "DoOnlineDRC",
 }
 
 def _option_number_refusal(counts: dict[str, Any],
@@ -1173,6 +1451,42 @@ def register_pcb_tools(mcp):
         elif rule_kind is not None:
             params["rule_kind"] = str(int(rule_kind))
         return await get_bridge().send_command_async("pcb.find_dominant_rule", params)
+
+    @mcp.tool()
+    async def pcb_measure_clearance(object1: str, object2: str) -> dict[str, Any]:
+        """How far apart two board objects are, and whether that breaks a rule.
+
+        The edge-to-edge distance Altium measures between the two
+        (PrimPrimDistance), the clearance rule Altium itself applies to the
+        pair (its own scope and priority resolution) and Altium's own check
+        of that rule against the pair (ActualCheck): the same resolution and
+        the same check the online DRC makes, for one pair, without a DRC run.
+
+        Args:
+            object1: "U1.3" pad 3 of U1, or "<type>:<filter>" for a free
+                primitive in the generic filter grammar, e.g.
+                "track:Layer=TopLayer|X1=100|Y1=200|X2=300|Y2=200" or
+                "via:X=1200|Y=800". The filter must match exactly one
+                object. A whole component ("U1") or a net ("net:GND") is
+                refused: a distance needs one primitive.
+            object2: The second object, in the same forms.
+
+        Returns:
+            ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
+            ``rule`` (``name``, ``kind``, ``priority``, ``enabled``,
+            ``scope1``, ``scope2``, ``descriptor``; null when no clearance
+            rule applies), ``gap_mm`` (the rule's gap, null when unknown)
+            and ``violation`` (false when no rule applies). With no rule,
+            ``scoped_rule`` is the clearance rule whose two scopes take the
+            pair anyway, with ``scoped_gap_mm``, ``net_scope_matches`` (false
+            when its net scope leaves the pair out, as for two objects with
+            no net on a different-nets rule) and ``below_scoped_gap``.
+        """
+        if not object1.strip() or not object2.strip():
+            return {"ok": False, "reason": "object1 and object2 are required"}
+        params: dict[str, Any] = {"object1": object1.strip(),
+                                  "object2": object2.strip()}
+        return await get_bridge().send_command_async("pcb.measure_clearance", params)
 
     @mcp.tool()
     async def pcb_check_rule_scope(
@@ -1733,6 +2047,7 @@ def register_pcb_tools(mcp):
         auto_pan_big_step: Optional[int] = None,
         auto_pan_speed: Optional[int] = None,
         pour_redraw_threshold: Optional[int] = None,
+        online_drc: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Read, or set, how the board editor behaves while editing.
 
@@ -1774,6 +2089,10 @@ def register_pcb_tools(mcp):
                 and auto_pan_speed its steps and speed.
             pour_redraw_threshold: Pours of more pieces than this are drawn
                 as outlines while they are edited.
+            online_drc: Altium's Online DRC preference (PCB Editor >
+                General): every object placed or changed is checked as it
+                goes. Switching it off speeds up bulk edits a lot; read it
+                first and put it back afterwards.
 
         Returns:
             ``options`` (each option by these names), ``changed``,
@@ -1812,7 +2131,8 @@ def register_pcb_tools(mcp):
             "netlist_check_comments": netlist_check_comments,
             "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
             "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
-            "pour_redraw_threshold": pour_redraw_threshold})
+            "pour_redraw_threshold": pour_redraw_threshold,
+            "online_drc": online_drc})
 
     @mcp.tool()
     async def pcb_paste_options(
@@ -2226,6 +2546,91 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.physical_stack", params)
 
     @mcp.tool()
+    async def pcb_layer_stack_manager(include_model: str = "",
+                                      compare: bool = True) -> dict[str, Any]:
+        """Read the Layer Stack Manager's own data for the open board.
+
+        Nothing is written.
+
+        pcb_physical_stack reads the board's layer objects (Z, thickness,
+        material, constant). This reads the Layer Stack Manager's own data,
+        which holds more: each layer's type (copper, core, prepreg,
+        dielectric, solder_mask, overlay or other), material, thickness, dielectric
+        constant, copper weight, and every named material / process
+        property that has a value, such as glass construction, resin
+        content, Tg, frequency, copper weight and process, or pullback;
+        the drill pairs; the stack (symmetric, flex), via spans, drill
+        spans and impedance profiles. The manager's provider is dropped
+        first, so the read follows the board as it is now.
+
+        Args:
+            include_model: "" for none; "xml" adds the manager's model as
+                its StackupDocument XML, "records" the same as |KEY=VALUE|
+                records.
+            compare: Also read pcb_physical_stack and report where the
+                manager disagrees with the board's own stack
+                (``out_of_step``). The manager keeps its own copy of the
+                stack; once it has one, a script write to the board's
+                stack (pcb_set_dielectric, pcb_modify_layer, a rebuild)
+                does not reach it, and the manager goes on showing, and on
+                its next apply writing back, the old values.
+                pcb_sync_stack_manager brings it back in step.
+
+        Returns:
+            ``layers`` (name, guid, type_id, type, material,
+            thickness_mils, dielectric_constant, weight, enabled,
+            properties), ``property_names``, ``drill_pairs`` (name,
+            start_layer / stop_layer ids and their names, micro_via,
+            back_drill), ``stack`` (name, id, symmetric, flex),
+            ``stacks_count``, ``stackup_type``, ``roughness_model``,
+            ``via_spans`` (name, type, start_layer, stop_layer),
+            ``drill_spans``, ``impedance_profiles`` (name, impedance_ohm)
+            and, when asked, ``model``; with compare, ``out_of_step``
+            (layer, field, board, stack_manager) and ``in_step``.
+        """
+        model = (include_model or "").strip().lower()
+        if model not in ("", "xml", "records"):
+            return {"ok": False,
+                    "reason": 'include_model is "", "xml" or "records"'}
+        params: dict[str, Any] = {}
+        if model:
+            params["include_model"] = model
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.layer_stack_manager", params)
+        if compare and isinstance(result, dict) and "layers" in result:
+            physical = await bridge.send_command_async("pcb.physical_stack", {})
+            diff = stack_manager_out_of_step(result, physical)
+            result["out_of_step"] = diff
+            result["in_step"] = not diff
+        return result
+
+    @mcp.tool()
+    async def pcb_sync_stack_manager(dry_run: bool = True) -> dict[str, Any]:
+        """Bring the Layer Stack Manager's own copy of the stack back in step
+        with the board.
+
+        Once a board carries the manager's copy, script writes to its stack
+        (pcb_set_dielectric, pcb_modify_layer, a rebuild) do not reach it:
+        the manager shows the old values and writes them back on its next
+        apply, pcb_move_layer included. This writes the board's thickness,
+        dielectric constant, material and core / prepreg type into the
+        manager's model, loads it and applies it to the board, all through
+        Altium; the board's own values do not change. A layer only one side
+        has is refused: the manager's layers are added or removed in the
+        Layer Stack Manager itself.
+
+        Args:
+            dry_run: Only list what would change (the default).
+
+        Returns:
+            ``in_step`` before, ``changes`` (layer, field, value) and, once
+            run, ``in_step_after``, ``out_of_step_after``, ``symmetric`` and
+            ``symmetric_after`` (Altium keeps a stack symmetric only when it
+            is). Refused: ``layers_differ``.
+        """
+        return await sync_stack_manager(get_bridge(), dry_run)
+
+    @mcp.tool()
     async def pcb_make_layer_stack(
         layers: list[dict[str, Any]],
         dry_run: bool = True,
@@ -2242,8 +2647,10 @@ def register_pcb_tools(mcp):
         fewer than wanted is refused: plan one per gap.
 
         The board must be saved first. Any failure closes it unsaved and
-        reopens it, which restores it. Save after a run that matches; the
-        Layer Stack Manager may show old values until a save and reopen.
+        reopens it, which restores it. A run that matches also brings the
+        Layer Stack Manager's own copy of the stack in step
+        (``stack_manager``, as pcb_sync_stack_manager reports it); save
+        afterwards.
 
         Args:
             layers: Top to bottom: ``{"kind": "copper", "name",
@@ -2256,7 +2663,8 @@ def register_pcb_tools(mcp):
         Returns:
             ``wanted``, ``copper_edits`` (and ``dielectric_edits`` once run),
             ``mismatches`` (empty when the board reads as wanted), ``done``,
-            and ``restored`` after a failure.
+            ``stack_manager`` after a run that matches, and ``restored``
+            after a failure.
         """
         from ..design.layer_stack_plan import (StackError, copper_round,
                                                dielectric_round, mismatches,
@@ -2352,6 +2760,10 @@ def register_pcb_tools(mcp):
         result["mismatches"] = None if trouble else mismatches(await rows(), wanted)
         result["failed"] = trouble
         result["done"] = trouble is None and not result["mismatches"]
+        if result["done"]:
+            # The rebuild does not reach the Layer Stack Manager's own copy of
+            # the layers it kept; bring that copy in step before the save.
+            result["stack_manager"] = await sync_stack_manager(bridge)
         if not result["done"]:
             await bridge.send_command_async(
                 "application.close_document", {"file_path": board, "discard": "true"})
@@ -2376,6 +2788,8 @@ def register_pcb_tools(mcp):
         its type (Altium's number), material, dielectric constant (Dk),
         loss tangent (Df), thickness and whether it is a stiffener. Each
         value is read back; any that did not take is in ``not_applied``.
+        The Layer Stack Manager's own copy of the stack is then brought in
+        step (``stack_manager``, as pcb_sync_stack_manager reports it).
 
         Args:
             layer: The layer's name as pcb_physical_stack lists it.
@@ -2405,7 +2819,12 @@ def register_pcb_tools(mcp):
             params["rename_to"] = rename_to.strip()
         if len(params) == 1:
             return {"ok": False, "reason": "nothing to set"}
-        return await get_bridge().send_command_async("pcb.set_dielectric", params)
+        bridge = get_bridge()
+        reply = await bridge.send_command_async("pcb.set_dielectric", params)
+        if isinstance(reply, dict) and reply.get("success") is not False:
+            # The write does not reach the Layer Stack Manager's own copy.
+            reply["stack_manager"] = await sync_stack_manager(bridge)
+        return reply
 
     @mcp.tool()
     async def pcb_impedance_profile(
@@ -4971,8 +5390,8 @@ def register_pcb_tools(mcp):
 
         A seg is {"kind": 0, "vx", "vy"} (line) or {"kind": 1, "vx", "vy",
         "cx", "cy", "r", "sa", "ea"} (arc). Track ends match in either
-        order. A region keeps its hole count and each hole its vertex
-        count. The outline is replaced whole. Polygons match by layer and
+        order. A region's outline and holes are replaced whole: any
+        number of holes, each of any vertex count. Polygons match by layer and
         first vertex. A repour also deletes free regions lying in the pour,
         teardrops included, so create those after the last repour. ``components`` entries
         are counted and ignored. A delete is matched like a move (an
@@ -7047,6 +7466,78 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.add_layer", params)
 
     @mcp.tool()
+    async def pcb_move_layer(
+        layer: str, direction: str, steps: int = 1, alone: bool = False,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Move a layer up or down the board's layer stack.
+
+        Moves it one or more places and writes the new order into the board.
+
+        This is the Layer Stack Manager's own intelligent move: the layer
+        swaps with its neighbour of the same kind (copper with copper) and
+        the dielectrics between them go with it. Objects stay on their
+        layers, so the routing on a moved layer moves with it. A move that
+        would leave the stack is refused; the moves done before it stay.
+
+        On a symmetric stack the move is mirrored on the opposite half
+        (moving L2 down also swaps the matching layers near the bottom),
+        unless ``alone`` is set: symmetry is then switched off for the move
+        and asked back on afterwards. Altium keeps a stack marked symmetric
+        only when it is: after a move alone that leaves it lopsided it
+        stays non-symmetric (``symmetric_after``).
+
+        The move goes through the Layer Stack Manager's own copy of the
+        stack and writes that copy into the board. Once a board carries
+        that copy, script writes to the board's stack (pcb_set_dielectric,
+        pcb_modify_layer, a rebuild) do not reach it, and a move would put
+        the old values back. So the two are compared first and the move is
+        refused while they disagree (``out_of_step``, as
+        pcb_layer_stack_manager reports it; pcb_sync_stack_manager brings
+        them in step); ``force`` moves anyway.
+
+        Args:
+            layer: The layer's name as the stack shows it, e.g. "Layer 2".
+            direction: "up" or "down".
+            steps: How many places, 1 to 64.
+            alone: Move only this layer on a symmetric stack.
+            force: Move even when the Layer Stack Manager disagrees with
+                the board's stack (its values are then written back).
+
+        Returns:
+            ``layer``, ``direction``, ``steps_requested``, ``steps_done``,
+            ``refused`` (the next move was refused), ``symmetric`` (the
+            stack was symmetric), ``alone``, ``mirrored`` (the opposite
+            layers moved too), ``symmetric_after``, ``order_before`` /
+            ``order_after`` (the board's copper layers top down) and
+            ``stack``; refused for disagreement: ``out_of_step``.
+        """
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        direction = direction.strip().lower()
+        if direction not in ("up", "down"):
+            return {"ok": False, "reason": "direction is up or down"}
+        if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 64:
+            return {"ok": False, "reason": "steps is a whole number from 1 to 64"}
+        bridge = get_bridge()
+        if not force:
+            manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
+            physical = await bridge.send_command_async("pcb.physical_stack", {})
+            diff = stack_manager_out_of_step(manager, physical)
+            if diff:
+                return {"ok": False,
+                        "reason": ("the Layer Stack Manager disagrees with the board's "
+                                   "stack; a move would write its values back over the "
+                                   "board's. pcb_sync_stack_manager brings it in step "
+                                   "(force=True moves anyway)"),
+                        "out_of_step": diff}
+        params: dict[str, Any] = {"layer": layer.strip(), "direction": direction,
+                                  "steps": str(steps),
+                                  "alone": "true" if alone else "false"}
+        return await bridge.send_command_async(
+            "pcb.move_layer", params, timeout=120.0)
+
+    @mcp.tool()
     async def pcb_remove_layer(layer: str) -> dict[str, Any]:
         """Remove a copper layer from the PCB layer stack.
 
@@ -7090,7 +7581,9 @@ def register_pcb_tools(mcp):
             dielectric_material: New dielectric material string (optional)
 
         Returns:
-            Dictionary confirming the changes.
+            Dictionary confirming the changes, and ``stack_manager``: the
+            Layer Stack Manager's own copy of the stack brought in step, as
+            pcb_sync_stack_manager reports it.
         """
         bridge = get_bridge()
         params: dict[str, str] = {"layer": layer}
@@ -7107,6 +7600,9 @@ def register_pcb_tools(mcp):
         if dielectric_material:
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
+        if isinstance(result, dict) and result.get("success") is not False:
+            # The write does not reach the Layer Stack Manager's own copy.
+            result["stack_manager"] = await sync_stack_manager(bridge)
         return result
 
     @mcp.tool()
@@ -8732,6 +9228,58 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.layer_view", params)
 
     @mcp.tool()
+    async def pcb_view(
+        action: str = "get",
+        left: Optional[float] = None,
+        bottom: Optional[float] = None,
+        right: Optional[float] = None,
+        top: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read or set the area of the board the PCB editor shows.
+
+        Save the user's view with ``action="get"``, zoom wherever the work
+        needs, then put the view back with ``action="set"`` and the saved
+        ``left``, ``bottom``, ``right``, ``top``.
+
+        Args:
+            action: "get" (the default) reads the view; "set" zooms the
+                editor on the rectangle given.
+            left, bottom, right, top: the rectangle for "set", in mils
+                (board coordinates, kept to 0.0001 mil).
+
+        Returns:
+            ``left``, ``bottom``, ``right``, ``top``, ``width`` and
+            ``height`` of the view in mils. After "set" these are read back
+            from the editor: Altium fits the rectangle to the window's
+            shape, so the view shown is larger than the one asked for on
+            one axis. The view moves in fixed steps; "set" also returns
+            ``centre_error_mils``, at most half a step. A rectangle
+            read by "get" after any zoom puts that view back exactly. On a
+            board just opened, "get" reads the view saved in the file, which
+            Altium refits to the window on the first zoom. A missing side,
+            right <= left or top <= bottom is refused (BAD_RECT). View state
+            only; the board is not marked modified.
+        """
+        act = (action or "get").strip().lower()
+        if act == "get":
+            return await get_bridge().send_command_async(
+                "pcb.view", {"action": "get"})
+        if act != "set":
+            return {"success": False, "error": "BAD_ACTION",
+                    "reason": 'action is "get" or "set"'}
+        sides = {"left": left, "bottom": bottom, "right": right, "top": top}
+        missing = [k for k, v in sides.items() if v is None]
+        if missing:
+            return {"success": False, "error": "BAD_RECT",
+                    "reason": "set needs " + ", ".join(missing)}
+        if right <= left or top <= bottom:
+            return {"success": False, "error": "BAD_RECT",
+                    "reason": "right must be above left and top above bottom"}
+        params = {"action": "set"}
+        params.update({k: f"{float(v):.4f}" for k, v in sides.items()})
+        return await get_bridge().send_command_async("pcb.view", params)
+
+    @mcp.tool()
     async def pcb_set_layer_color(layer: str, color: str) -> dict[str, Any]:
         """Recolour one layer.
 
@@ -9102,6 +9650,226 @@ def register_pcb_tools(mcp):
         if name.strip():
             ask["name"] = name.strip()
         return await get_bridge().send_command_async("pcb.pour_copper", ask)
+
+    @mcp.tool()
+    async def pcb_embedded_data(
+        action: str, name: str = "", text: Optional[Union[str, dict, list]] = None
+    ) -> dict[str, Any]:
+        """Keep named text records inside the board file, out of sight.
+
+        Each record is an Altium embedded object on Mechanical1: it is saved
+        with the PcbDoc, survives close and reopen, and is neither drawn nor
+        selectable on the canvas, so a designer cannot move or delete it by
+        accident. The data is plain text: encode JSON or anything else
+        yourself; it comes back exactly as written. Not for secrets: anyone
+        who opens the file can read it. Several records can share a name
+        (another writer may have made one), so read, write and delete act
+        on every record with that name, in board order.
+
+        Args:
+            action: ``list`` (every record: ``name``, ``length``, ``head`` =
+                the first 200 characters, ``layer``), ``read`` (the full
+                ``text`` of each record named ``name``), ``write`` (replace
+                the text of every record named ``name``, or make one when
+                there is none) or ``delete`` (remove every record named
+                ``name``).
+            name: The record's name, matched exactly (case and spaces
+                count). Required for read, write and delete.
+            text: The record's text, required for write. Sent unchanged; a
+                JSON object or list is stored as its JSON text.
+
+        Returns:
+            list: ``count`` and ``records``. read: ``found`` and ``records``
+            with ``text``. write: ``created``, ``updated``, ``length`` and
+            ``exact`` (the text read back equals the text sent). delete:
+            ``deleted``. The board is marked modified after a write or a
+            delete; save it to keep the change.
+
+        Name and text are Latin-1 (U+0000 to U+00FF): the bridge carries
+        no more into Altium, so other characters are refused here rather
+        than stored changed. Encode them first, for example as JSON with
+        ``ensure_ascii=True``.
+        """
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "read", "write", "delete"):
+            return {"ok": False, "reason": "action is list, read, write or delete"}
+        if act != "list" and (not isinstance(name, str) or not name.strip()):
+            return {"ok": False, "reason": f"name is required for {act}"}
+        if isinstance(text, (dict, list)):
+            text = json.dumps(text, ensure_ascii=True)
+        if act == "write" and not isinstance(text, str):
+            return {"ok": False, "reason": "text is required for write"}
+        for label, value in (("name", name if act != "list" else ""),
+                             ("text", text if act == "write" else "")):
+            wide = [c for c in value if ord(c) > 0xFF]
+            if wide:
+                return {"ok": False, "reason": (
+                    f"{label} holds {len(wide)} character(s) beyond Latin-1 "
+                    f"(first {wide[0]!r}, U+{ord(wide[0]):04X}); the bridge "
+                    f"would store them changed. Encode them first, e.g. JSON "
+                    f"with ensure_ascii=True")}
+        ask: dict[str, str] = {"action": act}
+        if act != "list":
+            ask["name"] = name
+        if act == "write":
+            ask["text"] = text
+        return await get_bridge().send_command_async("pcb.embedded_data", ask)
+
+    @mcp.tool()
+    async def pcb_connected_copper(
+        object_type: str = "",
+        filter: str = "",
+        pad: str = "",
+        limit: int = 20000,
+        include_objects: bool = False,
+        select: bool = False,
+        clear_selection: bool = False,
+    ) -> dict[str, Any]:
+        """The copper joined to one seed object, found by geometry, not net name.
+
+        Altium's Tab-select grows from the editor's last clicked object and
+        cannot be seeded from a script; this walk can. It finds copper of
+        another net touching a net (a short), free copper with no net that
+        touches it, and what a pour piece connects to. Each object found is
+        searched round its bounding box; copper tracks, arcs, vias, pads,
+        fills and copper regions join when they share a layer (or one spans
+        every layer: a via, a through-hole pad) and Altium measures no gap.
+
+        Args:
+            object_type: The seed's object type (e.g. ``pad``, ``track``).
+            filter: The generic filter for the seed (e.g.
+                ``Component=U1|Name=3``); the first match is the seed.
+            pad: Shorthand for a component pad, ``U1.3`` (designator, then
+                the pad name after the first dot). Replaces object_type and
+                filter.
+            limit: The most objects the walk collects; ``capped`` says it
+                stopped there. On a busy board a ground net of ~700 objects
+                took about 30 s.
+            include_objects: Add ``objects``: per object its ``kind``,
+                ``layer``, ``net`` and bounding box in mils.
+            select: Select every object found (the Selection Filter is
+                bypassed for the run and put back afterwards). Otherwise the
+                walk changes nothing.
+            clear_selection: With select, deselect everything first.
+
+        Returns:
+            ``total``, counts per kind (``tracks``, ``arcs``, ``vias``,
+            ``pads``, ``fills``, ``regions``), ``nets`` (sorted, unique;
+            ``(no net)`` for copper with no net -- poured polygon pieces read
+            no net, their net is on their polygon), ``ms``, ``capped``,
+            ``selected`` with select, ``objects`` with include_objects.
+            NOT_FOUND when the seed matches nothing, NOT_COPPER when it is not
+            copper on a signal layer.
+        """
+        shorthand = pad.strip()
+        if shorthand:
+            designator, dot, name = shorthand.partition(".")
+            designator, name = designator.strip(), name.strip()
+            if not dot or not designator or not name or any(
+                    c in shorthand for c in "|="):
+                return {"ok": False, "reason": "pad is designator.pad, e.g. U1.3"}
+            object_type = "pad"
+            filter = f"Component={designator}|Name={name}"
+        object_type = object_type.strip()
+        if not object_type:
+            return {"ok": False, "reason": "give object_type and filter, or pad"}
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            return {"ok": False, "reason": "limit must be a whole number of at least 1"}
+        ask = {"object_type": object_type, "filter": filter.strip(), "max": str(limit)}
+        if include_objects:
+            ask["include_objects"] = "true"
+        if select:
+            ask["select"] = "true"
+            if clear_selection:
+                ask["clear_selection"] = "true"
+        return await get_bridge().send_command_async("pcb.connected_copper", ask)
+
+    @mcp.tool()
+    async def pcb_update_free_primitive_nets() -> dict[str, Any]:
+        """Design > Netlist > Update Free Primitives From Component Pads.
+
+        Free tracks, arcs, vias, fills and regions with no net that touch a
+        component pad take that pad's net, and copper touching them follows,
+        as Altium decides. Altium asks "Update free-primitives nets from
+        component-pad nets?" in a Confirm box; this tool presses Yes on that
+        box, and on nothing else. Without UI Automation it refuses before
+        sending anything: a direct bridge call (not through this tool)
+        blocks the bridge until someone answers the Confirm box in Altium.
+
+        Returns:
+            What the bridge replied: ``no_net_before`` and ``no_net_after``
+            (free copper with no net), ``changed_count`` and ``changed``
+            (each object that gained a net, at most 200: ``kind``,
+            ``layer``, ``net`` and its box ``x1``, ``y1``, ``x2``, ``y2``
+            in mils), plus ``prompt_answered``.
+        """
+        import asyncio as _asyncio
+        import threading as _threading
+
+        from ..bridge.exceptions import AltiumTimeoutError
+        from ..ui import uia, windows
+
+        if not (windows.available() and uia.available()):
+            return {"success": False, "prompt_answered": False, "reason": (
+                "UI Automation is not available here, and Altium asks for "
+                "confirmation in a modal box that would block the bridge "
+                "until a person answers it, so nothing was sent")}
+        if not windows.automation_enabled():
+            return {"success": False, "prompt_answered": False, "reason": (
+                f"UI automation is disabled by {windows.UI_AUTOMATION_ENV}, "
+                f"and Altium asks for confirmation in a modal box that would "
+                f"block the bridge until a person answers it, so nothing "
+                f"was sent")}
+        bridge = get_bridge()
+        status = bridge.get_altium_status()
+        pid = status.get("pid")
+        if not pid:
+            return {"success": False, "prompt_answered": False, "reason": (
+                (status.get("reason") or "no single Altium process to answer "
+                 "the Confirm box in") + ", so nothing was sent")}
+
+        done = _threading.Event()
+        state: dict[str, Any] = {"answered": False, "left": [], "reason": None}
+        loop = _asyncio.get_running_loop()
+        watcher = loop.run_in_executor(
+            None, _answer_free_nets_prompt, pid, done, state)
+        try:
+            try:
+                reply = await bridge.send_command_async(
+                    "pcb.update_free_primitive_nets", {},
+                    timeout=_FREE_NETS_TIMEOUT)
+            except AltiumTimeoutError as exc:
+                # The bridge's own dialog check can see the box before it is
+                # answered and give up on the reply. If that box is ours,
+                # still answer it so the bridge is free again.
+                found = (getattr(exc, "details", None) or {}).get("dialogs") or {}
+                listed = found.get("dialogs", []) if isinstance(found, dict) else []
+                if not any((d.get("title") or "").strip() == _FREE_NETS_TITLE
+                           for d in listed if isinstance(d, dict)):
+                    raise
+                for _ in range(100):
+                    if state["answered"] or watcher.done():
+                        break
+                    await _asyncio.sleep(0.1)
+                return {"success": False,
+                        "prompt_answered": bool(state["answered"]),
+                        "reason": (
+                            "the bridge stopped waiting for the reply while "
+                            "the Confirm box was up. "
+                            + ("Yes was pressed afterwards, so the update "
+                               "ran: read the nets back to see what changed"
+                               if state["answered"] else
+                               "The box could not be answered: "
+                               + str(state["reason"] or "it was not found")))}
+        finally:
+            done.set()
+            await watcher
+        out = dict(reply) if isinstance(reply, dict) else {"reply": reply}
+        out["prompt_answered"] = bool(state["answered"])
+        if not state["answered"]:
+            out["prompt_note"] = (state["reason"] or
+                                  "no Confirm box for the update was seen")
+        return out
 
     @mcp.tool()
     async def pcb_get_copper(

@@ -5215,7 +5215,7 @@ Begin
             Iterator := Board.BoardIterator_Create;
             Try
                 Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
-                Iterator.AddFilter_LayerSet(AllLayers);
+                Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 Iterator.AddFilter_Method(eProcessAll);
                 AllNet := Iterator.FirstPCBObject;
                 While AllNet <> Nil Do
@@ -5339,7 +5339,7 @@ Begin
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
-            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
             Net := Iterator.FirstPCBObject;
             PcbBeginEdit(0);
@@ -8632,6 +8632,43 @@ Begin
         '{"success":true,"copied":' + IntToStr(MatchCount) + '}');
 End;
 
+{ PCB count without a filter, from the board's own primitive counter.      }
+{                                                                          }
+{ The query path builds the JSON of every matching object only to report   }
+{ how many there were: about 6 s for the 8722 tracks of one board. Altium  }
+{ keeps a per-kind counter that gives the same number at once (checked     }
+{ equal to a full board walk for tracks, pads, vias, polygons, components  }
+{ and texts). The board is resolved exactly as the query path resolves it, }
+{ so the target and the NO_PCB reply do not change. An empty result means  }
+{ the counter could not answer and the caller takes the query path.        }
+{ No "objects" list: the query path's list carries no properties for a    }
+{ count, and obj_count drops it anyway.                                    }
+Function PCBCountFromCounter(ObjTypeInt : Integer; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Counter : IPCB_PrimitiveCounter;
+    N : Integer;
+Begin
+    Result := '';
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    N := -1;
+    Try
+        Counter := Board.GetPrimitiveCounter;
+        If Counter <> Nil Then
+            N := Counter.GetObjectCount(ObjTypeInt);
+    Except
+        N := -1;
+    End;
+    If N < 0 Then Exit;
+    Result := BuildSuccessResponse(RequestId,
+        '{"count":' + IntToStr(N) + ',"counted_by":"counter"}');
+End;
+
 {..............................................................................}
 { Quick count of objects by type on active doc or project                     }
 { Params: object_type, scope (active_doc/project), filter                    }
@@ -8666,7 +8703,13 @@ Begin
             Exit;
         End;
 
-        // PCB count, active doc only
+        // PCB count, active doc only. Without a filter the board's counter
+        // answers at once; a filter still needs every object looked at.
+        If FilterStr = '' Then
+        Begin
+            Result := PCBCountFromCounter(ObjTypeInt, RequestId);
+            If Result <> '' Then Exit;
+        End;
         Result := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', '', 'query', RequestId, 0);
         // The query result already has count, just return it
         Exit;
@@ -14397,7 +14440,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Pad := Iter.FirstPCBObject;
             While Pad <> Nil Do
@@ -15174,7 +15217,7 @@ Var
     PCBSysOpts : IPCB_SystemOptions;
     Lyr : TLayer;
     LayersJson, LyrNm : String;
-    LyrColor : Integer;
+    LyrColor, MechN : Integer;
     LyrVisible, LyrFirst : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -15255,7 +15298,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, ePadObject,
         eViaObject, eTextObject, eRegionObject, eComponentObject));
-    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Try
         Seen := 0;
@@ -15267,7 +15310,7 @@ Begin
             If (Seen Mod 1000) = 0 Then
                 AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
             LayerName := '';
-            Try LayerName := GetLayerString(Obj.Layer); Except End;
+            Try LayerName := LayerDisplayName(Obj.Layer); Except End;
 
             If Obj.ObjectId = eTrackObject Then
             Begin
@@ -15362,8 +15405,8 @@ Begin
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Via.Y)) +
                     ',"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) +
                     ',"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) +
-                    ',"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"' +
-                    ',"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '"' +
+                    ',"high_layer":"' + EscapeJsonString(LayerDisplayName(Via.HighLayer)) + '"' +
+                    ',"low_layer":"' + EscapeJsonString(LayerDisplayName(Via.LowLayer)) + '"' +
                     ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumVias);
             End
@@ -15507,7 +15550,7 @@ Begin
     Begin
         For Lyr := eTopLayer To eMultiLayer Do
         Begin
-            LyrNm := GetLayerString(Lyr);
+            LyrNm := LayerDisplayName(Lyr);
             If LyrNm <> 'Unknown' Then
             Begin
                 LyrColor := 0;
@@ -15521,6 +15564,23 @@ Begin
                     BoolToJsonStr(LyrVisible) + '}';
                 LyrFirst := False;
             End;
+        End;
+        { the legacy range stops at Mechanical16 }
+        For MechN := 17 To 1024 Do
+        Begin
+            Lyr := MechLayerFromNumber(MechN);
+            If Lyr = eNoLayer Then Break;
+            If Not MechLayerEnabled(Board, Lyr) Then Continue;
+            LyrColor := 0;
+            LyrVisible := True;
+            Try LyrColor := PCBSysOpts.LayerColors[Lyr]; Except End;
+            Try LyrVisible := Board.LayerIsDisplayed[Lyr]; Except End;
+            If Not LyrFirst Then LayersJson := LayersJson + ',';
+            LayersJson := LayersJson +
+                '"' + EscapeJsonString(LayerDisplayName(Lyr)) + '":{"color":' +
+                IntToStr(LyrColor) + ',"visible":' +
+                BoolToJsonStr(LyrVisible) + '}';
+            LyrFirst := False;
         End;
     End;
     LayersJson := LayersJson + '}';

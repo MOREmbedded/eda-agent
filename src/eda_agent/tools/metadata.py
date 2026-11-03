@@ -238,6 +238,9 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Altium's Confirm box for the netlist update blocks the loop until it
+    # is answered; the tool presses Yes itself, as above.
+    "pcb_update_free_primitive_nets": MODAL,
     # Pulls new code into the installation and can restart the Altium
     # loop. It is filed under meta, which counts as offline, and offline
     # would otherwise read as readonly.
@@ -292,6 +295,13 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Measures two objects and asks the clearance rule on the pair; writes
+    # nothing. The pcb_ prefix alone would call it mutating.
+    "pcb_measure_clearance": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
