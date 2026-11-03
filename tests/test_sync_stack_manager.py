@@ -298,3 +298,58 @@ def test_the_command_is_dispatched():
     text = _PCB.read_text(encoding="utf-8-sig")
     assert ("'load_stack_manager_model': Result := "
             "PCB_LoadStackManagerModel(Params, RequestId);") in text
+
+
+# ---- a layer only the Layer Stack Manager can have -------------------------------
+
+# MEASURED on a real six-layer board (AD 26.11): the manager carries "Top
+# Surface Finish" and "Bottom Surface Finish", type "other". The board's
+# physical stack has no such layer object and never will, so the two could
+# not be brought in step and both tools refused, each pointing at the
+# other: pcb_move_layer said to run pcb_sync_stack_manager, and
+# pcb_sync_stack_manager said to add or remove the layers in the manager.
+_FINISH = {"name": "Top Surface Finish", "type": "other"}
+_WITH_FINISH = {"layers": _MANAGER["layers"] + [_FINISH], "model": _MODEL}
+
+
+def test_a_manager_only_other_layer_is_not_a_disagreement():
+    out = pcb_tools.stack_manager_out_of_step(_WITH_FINISH, _BOARD)
+    assert {"layer": "Top Surface Finish", "field": "manager_only",
+            "board": None, "stack_manager": "other"} in out
+    assert [d for d in out if d["field"] == "layer"] == []
+
+
+def test_a_manager_only_layer_of_any_other_type_still_is():
+    manager = {"layers": _MANAGER["layers"] + [{"name": "Inner 1", "type": "copper"}],
+               "model": _MODEL}
+    out = pcb_tools.stack_manager_out_of_step(manager, _BOARD)
+    assert {"layer": "Inner 1", "field": "layer",
+            "board": None, "stack_manager": "copper"} in out
+
+
+def test_a_board_layer_the_manager_lacks_still_blocks():
+    board = {"layers": _BOARD["layers"] + [{"name": "GND", "kind": "copper",
+                                            "thickness_mils": 1.2}]}
+    out = pcb_tools.stack_manager_out_of_step(_WITH_FINISH, board)
+    assert {"layer": "GND", "field": "layer",
+            "board": "copper", "stack_manager": None} in out
+
+
+def test_surface_finish_alone_reads_in_step_and_is_reported(monkeypatch):
+    board = {"layers": [dict(_BOARD["layers"][0], thickness_mils=1.4),
+                        _BOARD["layers"][1]]}
+    bridge = _Bridge(manager=_WITH_FINISH, board=board)
+    out = asyncio.run(_tool(monkeypatch, bridge)(dry_run=False))
+    assert out["in_step"] is True
+    assert out["manager_only"] == [{"layer": "Top Surface Finish",
+                                    "field": "manager_only",
+                                    "board": None, "stack_manager": "other"}]
+    assert _loads(bridge) == []
+
+
+def test_surface_finish_does_not_stop_the_values_being_written(monkeypatch):
+    bridge = _Bridge(manager=_WITH_FINISH)
+    out = asyncio.run(_tool(monkeypatch, bridge)(dry_run=True))
+    assert out["changes"] == [{"layer": "Top Layer", "field": "thickness_mils",
+                               "value": "2.8mil"}]
+    assert "layers_differ" not in out

@@ -208,3 +208,40 @@ def test_symmetry_is_read_back_after_the_move():
     restore = body.index("Finally")
     read = body.index("SymAfter := St.IsSymmetric;")
     assert restore < read < body.index("JsonBool('symmetric_after', SymAfter)")
+
+
+# MEASURED on a real six-layer board (AD 26.11): the Layer Stack Manager
+# carries "Top Surface Finish" and "Bottom Surface Finish", type "other",
+# and the board's physical stack has no layer object for either. Before
+# this, the move refused and sent the caller to pcb_sync_stack_manager,
+# which refused and sent them back to the manager, so neither tool could
+# run on the board at all.
+def _with(monkeypatch, manager, **kw):
+    class _ManagerBridge(_Bridge):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "pcb.layer_stack_manager":
+                self.sent.append((command, dict(params or {})))
+                return manager
+            return await _Bridge.send_command_async(self, command, params, timeout)
+
+    bridge = _ManagerBridge()
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    pcb_tools.register_pcb_tools(mcp)
+    return asyncio.run(mcp.tools["pcb_move_layer"](**kw)), bridge.moves
+
+
+def test_a_manager_only_other_layer_does_not_refuse_the_move(monkeypatch):
+    manager = {"layers": _MANAGER["layers"] + [{"name": "Top Surface Finish",
+                                                "type": "other"}]}
+    out, moves = _with(monkeypatch, manager, layer="L1", direction="down")
+    assert out.get("ok") is not False
+    assert len(moves) == 1
+
+
+def test_a_manager_only_copper_layer_still_refuses_the_move(monkeypatch):
+    manager = {"layers": _MANAGER["layers"] + [{"name": "Inner 1", "type": "copper"}]}
+    out, moves = _with(monkeypatch, manager, layer="L1", direction="down")
+    assert out["ok"] is False and not moves
+    assert out["out_of_step"] == [{"layer": "Inner 1", "field": "layer",
+                                   "board": None, "stack_manager": "copper"}]

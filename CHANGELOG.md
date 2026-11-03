@@ -14,6 +14,25 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A layer only the Layer Stack Manager can have no longer deadlocks
+  the two tools that read it.** Found by running them against a real
+  six-layer board: the manager carries `Top Surface Finish` and
+  `Bottom Surface Finish`, type `other`, and the board's physical stack
+  has no layer object for either, so `stack_manager_out_of_step`
+  reported them as layers the two sides disagree about.
+  `pcb_move_layer` then refused and sent the caller to
+  `pcb_sync_stack_manager`, which refused and sent them back to the
+  manager, where the layers cannot be removed. Neither tool could run
+  on the board at all, and `pcb_modify_layer`'s follow-up sync failed
+  the same way on every write. A manager layer of type `other` is now
+  reported as `manager_only` and blocks nothing; the comparison already
+  dropped paste layers in the mirror direction for the same reason. A
+  manager-only layer of any other type, and a board layer the manager
+  lacks, still block as before. Verified live: the move reordered a
+  symmetric six-layer stack and put it back.
+
 ### Changed
 
 - **This fork's own pointers now name this fork.** The update

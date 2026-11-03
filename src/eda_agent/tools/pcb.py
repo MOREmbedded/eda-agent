@@ -52,7 +52,10 @@ def stack_manager_out_of_step(manager: dict[str, Any],
     and a script write to the board's stack does not reach it, so the
     manager can go on showing old values. Each difference is one entry
     (layer, field, board, stack_manager); none means the two agree.
-    Paste layers are the board's only (the manager has none).
+    Paste layers are the board's only (the manager has none), and a
+    manager layer of type "other" is the manager's own (surface finish):
+    that one is reported with field ``manager_only`` and does not mean
+    the stacks disagree.
     """
     out: list[dict[str, Any]] = []
     lsm = {l.get("name"): l for l in manager.get("layers") or []}
@@ -90,7 +93,13 @@ def stack_manager_out_of_step(manager: dict[str, Any],
                             "board": kind, "stack_manager": m.get("type")})
     for name, m in lsm.items():
         if name not in board:
-            out.append({"layer": name, "field": "layer",
+            # A manager entry of type "other" (surface finish is one) has no
+            # board layer object and never will, so it is not something the
+            # two disagree about: reported as manager_only, not blocking.
+            # Paste is dropped above for the mirror reason. A manager-only
+            # layer of any other type IS a real structural difference.
+            out.append({"layer": name,
+                        "field": "manager_only" if m.get("type") == "other" else "layer",
                         "board": None, "stack_manager": m.get("type")})
     return out
 
@@ -114,11 +123,15 @@ async def sync_stack_manager(bridge: Any, dry_run: bool = False) -> dict[str, An
         return lsm
     physical = await bridge.send_command_async("pcb.physical_stack", {})
     diff = stack_manager_out_of_step(lsm, physical)
+    manager_only = [d for d in diff if d.get("field") == "manager_only"]
+    diff = [d for d in diff if d.get("field") != "manager_only"]
+    # Only when there is one, so a reply without surface finish keeps its shape.
+    extra = {"manager_only": manager_only} if manager_only else {}
     if not diff:
-        return {"in_step": True, "changes": [], "dry_run": dry_run}
+        return {"in_step": True, "changes": [], "dry_run": dry_run, **extra}
     differ = [d for d in diff if d.get("field") == "layer"]
     if differ:
-        return {"ok": False, "in_step": False, "layers_differ": differ,
+        return {"ok": False, "in_step": False, "layers_differ": differ, **extra,
                 "reason": ("the board and the Layer Stack Manager do not have "
                            "the same layers; add or remove them in the Layer "
                            "Stack Manager")}
@@ -212,7 +225,7 @@ def stack_model_edits(model: str, out_of_step: list[dict[str, Any]],
     for diff in out_of_step:
         name, field, value = diff.get("layer"), diff.get("field"), diff.get("board")
         n = index.get(name)
-        if n is None or field == "layer" or value is None:
+        if n is None or field in ("layer", "manager_only") or value is None:
             continue
         if field == "thickness_mils":
             copper = kinds.get(name) == "copper"
@@ -2617,7 +2630,10 @@ def register_pcb_tools(mcp):
         manager's model, loads it and applies it to the board, all through
         Altium; the board's own values do not change. A layer only one side
         has is refused: the manager's layers are added or removed in the
-        Layer Stack Manager itself.
+        Layer Stack Manager itself. A manager layer of type ``other``
+        (surface finish) is the exception: the board has no layer object
+        for one, so it is reported as ``manager_only`` and nothing is
+        refused over it.
 
         Args:
             dry_run: Only list what would change (the default).
@@ -2626,7 +2642,8 @@ def register_pcb_tools(mcp):
             ``in_step`` before, ``changes`` (layer, field, value) and, once
             run, ``in_step_after``, ``out_of_step_after``, ``symmetric`` and
             ``symmetric_after`` (Altium keeps a stack symmetric only when it
-            is). Refused: ``layers_differ``.
+            is). Refused: ``layers_differ``. ``manager_only`` when the
+            manager has a layer of type ``other``.
         """
         return await sync_stack_manager(get_bridge(), dry_run)
 
@@ -7502,7 +7519,9 @@ def register_pcb_tools(mcp):
             steps: How many places, 1 to 64.
             alone: Move only this layer on a symmetric stack.
             force: Move even when the Layer Stack Manager disagrees with
-                the board's stack (its values are then written back).
+                the board's stack (its values are then written back). A
+                manager layer of type ``other`` (surface finish) is not a
+                disagreement: the board has no layer object for one.
 
         Returns:
             ``layer``, ``direction``, ``steps_requested``, ``steps_done``,
@@ -7524,13 +7543,17 @@ def register_pcb_tools(mcp):
             manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
             physical = await bridge.send_command_async("pcb.physical_stack", {})
             diff = stack_manager_out_of_step(manager, physical)
-            if diff:
+            # A manager-only layer (surface finish) is not a disagreement:
+            # the board has no such layer to be written over. See
+            # stack_manager_out_of_step.
+            blocking = [d for d in diff if d.get("field") != "manager_only"]
+            if blocking:
                 return {"ok": False,
                         "reason": ("the Layer Stack Manager disagrees with the board's "
                                    "stack; a move would write its values back over the "
                                    "board's. pcb_sync_stack_manager brings it in step "
                                    "(force=True moves anyway)"),
-                        "out_of_step": diff}
+                        "out_of_step": blocking}
         params: dict[str, Any] = {"layer": layer.strip(), "direction": direction,
                                   "steps": str(steps),
                                   "alone": "true" if alone else "false"}
