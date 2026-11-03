@@ -16,6 +16,19 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Merged upstream through d5d1f2a (4 commits), and broke a version
+  tie at `2026.11.03.6`.** Upstream released `2026.11.03.5` for its own
+  script body hours after this fork had taken that number for a
+  different one. Both sides reach the same constant, so git merges it
+  without a conflict and the version quietly stops identifying a
+  build: three distinct bundles would answer `app_ping` with `.5`.
+  Bumped to `2026.11.03.6`. The four commits: a failed OutJob run
+  reports instead of stopping the script, tracking what it opened
+  through `RunOutJobsOpened`; `pcb_embedded_data` passes text through
+  untouched; each `tool_guide` avoid entry carries its tool and
+  reason; and the restart test writes the response before removing the
+  request.
+
 - **Merged upstream through 4f4d76f (22 commits), and reached
   mechanical 17 and up throughout this fork's own handlers.** Most of
   the batch is a second contributor's: clearance between two objects,
