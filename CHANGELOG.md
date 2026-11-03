@@ -16,6 +16,26 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Merged upstream through 51d3899 (12 commits).** Mostly routing:
+  `pcb_autoroute` takes pad-entry, neck and join options, reaches pads
+  along their axes and necks down only at narrow pads, routes only what
+  the board's copper leaves apart, and keeps new vias off holes, off
+  copper the grid cannot see, and clear of solder-mask slivers. The
+  layout DRC checks hole-to-hole clearance. Update checking hears of new
+  commits within the hour rather than the day, and a reinstall survives
+  a running server holding the launcher.
+
+- **Copper asked onto a net the board does not have is refused, not
+  placed unbound.** `pcb_place_tracks` counted such a segment and placed
+  it netless; it is now counted in `failed` and `nets_not_found` and
+  named in `unknown_nets`, and no copper goes down. Upstream's change,
+  and their new guard over the Pascal (every handler that looks a net up
+  by name and creates copper for it must act on the lookup finding
+  nothing) found the same hole in `pcb_place_region_poly`, which is this
+  fork's own handler and which upstream has never seen. Both refuse now.
+  SCRIPT_VERSION is `2026.11.03.1`: both forks had independently bumped
+  to `2026.11.02.6` with different contents.
+
 - **Merged upstream through 89abcf9 (26 commits).** New on the board:
   `pcb_tidy_tracks` relays free tracks as the shortest clean 45/90 runs,
   one pour's poured copper is readable, a generic filter matches
@@ -67,7 +87,9 @@ maturity classification for every tool.
 - **Two files had been committed CRLF while the whole tree is LF**, in
   the 0.8.0 merge, so git read every one of their 14,000 lines as
   rewritten and each conflicted whole-file on every upstream merge.
-  Twenty-eight of those endings were doubled (`
+  Twenty-eight of those endings were doubled (`
+
+
 `), which Python
   reads as two newlines, so four tool docstrings carried a blank line in
   the middle of a sentence - and a tool's docstring is what the model is

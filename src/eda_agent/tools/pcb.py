@@ -5164,6 +5164,8 @@ def register_pcb_tools(mcp):
             # read_live_board requires a board_path and says so by raising.
             # A tool reports that; it does not hand its caller a traceback.
             return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"error": f"board read failed: {exc}"}
         before = list(board.tracks)
         report = await asyncio.to_thread(gloss, board, None, nets, layers)
         now = {id(t) for t in board.tracks}
@@ -7768,7 +7770,8 @@ def register_pcb_tools(mcp):
                 x1, y1, x2, y2 (required, mils; decimals are kept)
                 width (default 10, mils; decimals are kept, so a 0.1 mm
                 rule stays 3.937), layer (default "TopLayer"),
-                net_name (optional, empty = no net)
+                net_name (optional, empty = no net; a net the board does
+                not have skips the track)
 
             Example:
                 [
@@ -7782,16 +7785,20 @@ def register_pcb_tools(mcp):
         individually and, when it names a net, joined to that net's
         primitive list; the batch then triggers a connectivity rebuild
         so ``pcb_get_unrouted_nets`` is trustworthy immediately after.
-        A net name that does not exist on the board is NOT created --
-        the segment is placed netless and counted in ``nets_not_found``.
+        A net name that does not exist on the board is NOT created, and
+        the segment is NOT placed: it is counted in ``failed`` and
+        ``nets_not_found`` and named in ``unknown_nets``. It used to be
+        placed netless, which left copper that looked routed and was not.
 
         Returns:
             Dictionary with:
               - placed, skipped_existing (exact direction-insensitive
                 duplicates), failed: segment counts.
-              - nets_not_found: segments whose ``net_name`` matched no
-                net on the board, so they carry no net. Non-zero here
-                is the usual reason a net still looks unrouted.
+              - nets_not_found: segments refused because ``net_name``
+                matched no net on the board. Non-zero here is the usual
+                reason a net still looks unrouted.
+              - unknown_nets, unknown_layers: the names that did not
+                resolve, so a typo can be read off the reply.
               - connectivity_rebuilt: the rebuild was issued (only when
                 something was actually placed).
         """
@@ -7926,8 +7933,9 @@ def register_pcb_tools(mcp):
                 size_mm and hole_size_mm in place of size and hole_size
 
         Returns:
-            Dictionary with "placed" and "failed" counts and
-            "unknown_layers" naming any layer pair that did not resolve.
+            Dictionary with "placed" and "failed" counts, "unknown_layers"
+            naming any layer pair and "unknown_nets" any net that did not
+            resolve; a via on an unknown net is not placed.
         """
         parts = []
         for v in vias:
@@ -9670,7 +9678,8 @@ def register_pcb_tools(mcp):
         Args:
             vertices: Ordered ``{"x": ..., "y": ...}`` points in mils.
             layer: Target layer.
-            net: Optional net assignment.
+            net: Optional net assignment. A name the board does not
+                have is refused, not placed unbound.
         """
         if len(vertices) < 3:
             return {"success": False, "reason": "at least 3 vertices required"}
@@ -9852,7 +9861,8 @@ def register_pcb_tools(mcp):
         Args:
             x, y: Position in mils
             name: Pad designator / label (optional)
-            net: Net to connect to (optional)
+            net: Net to connect to (optional); one the board does not
+                have is refused and nothing is placed
             shape: "round" (default) / "rect" / "oct", or spelled out as
                 the library tools take them ("rectangular", "octagonal").
                 Any other word is refused.
