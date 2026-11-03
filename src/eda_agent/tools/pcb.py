@@ -5160,9 +5160,7 @@ def register_pcb_tools(mcp):
 
         try:
             board = await asyncio.to_thread(read_live_board, board_path)
-        except (WrongBoard, ValueError) as exc:
-            # read_live_board requires a board_path and says so by raising.
-            # A tool reports that; it does not hand its caller a traceback.
+        except WrongBoard as exc:
             return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001 - reported to the caller
             return {"error": f"board read failed: {exc}"}

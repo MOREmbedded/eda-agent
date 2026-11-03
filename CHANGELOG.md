@@ -100,7 +100,9 @@ maturity classification for every tool.
   caught `WrongBoard` from `read_live_board` but not the `ValueError`
   that same function raises when no board is named, against this
   project's rule that a tool refuses or reports and never hands an MCP
-  client a traceback. Found by the merge; present upstream.
+  client a traceback. Found by the merge, and present upstream, which
+  fixed it the same day; the fix in this tree is upstream's catch-all,
+  the form the other six `read_live_board` call sites already used.
 
 - **`--phases` on a subcommand would have printed nothing.** The
   `--backend` and `--toolset` flags re-exec so the new tool surface is
