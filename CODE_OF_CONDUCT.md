@@ -51,7 +51,7 @@ when an individual is officially representing the project in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer at **info@salitronic.com**.
+reported to the project maintainer at **bartosz.ziolek@morembedded.com**.
 All complaints will be reviewed and investigated promptly and fairly.
 
 The maintainer is obligated to respect the privacy and security of the

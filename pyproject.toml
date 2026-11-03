@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [
-    { name = "George Saliba", email = "george.saliba@salitronic.com" }
+    { name = "MOREmbedded", email = "bartosz.ziolek@morembedded.com" }
 ]
 keywords = ["altium", "mcp", "pcb", "eda", "schematic"]
 classifiers = [
@@ -108,9 +108,9 @@ web = [
 eda-agent = "eda_agent.server:main"
 
 [project.urls]
-Homepage = "https://github.com/salitronic/eda-agent"
-Repository = "https://github.com/salitronic/eda-agent"
-Issues = "https://github.com/salitronic/eda-agent/issues"
+Homepage = "https://github.com/MOREmbedded/eda-agent"
+Repository = "https://github.com/MOREmbedded/eda-agent"
+Issues = "https://github.com/MOREmbedded/eda-agent/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eda_agent"]

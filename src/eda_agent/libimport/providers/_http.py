@@ -36,7 +36,7 @@ __all__ = ["FetchError", "cache_dir", "get_bytes", "get_json_cached"]
 MAX_BYTES = 50 * 1024 * 1024
 TIMEOUT_S = 30.0
 
-_UA = "eda-agent (+https://github.com/salitronic/eda-agent)"
+_UA = "eda-agent (+https://github.com/MOREmbedded/eda-agent)"
 
 
 class FetchError(RuntimeError):

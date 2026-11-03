@@ -54,7 +54,7 @@ _failed_hosts: dict[str, tuple[float, str]] = {}
 #: so a server that prepends a few bytes of whitespace still passes.
 _HEADER_WINDOW = 1024
 _CHUNK = 1024 * 1024
-_UA = "eda-agent datasheet fetch (+https://github.com/salitronic/eda-agent)"
+_UA = "eda-agent datasheet fetch (+https://github.com/MOREmbedded/eda-agent)"
 
 _PAGE_RE = re.compile(rb"/Type\s*/Page(?![A-Za-z])")
 _COUNT_RE = re.compile(rb"/Type\s*/Pages\b(?:(?!>>).)*?/Count\s+(\d+)", re.S)

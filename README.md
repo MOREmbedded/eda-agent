@@ -124,7 +124,7 @@ The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), s
 ## Installation
 
 ```bash
-git clone https://github.com/salitronic/eda-agent
+git clone https://github.com/MOREmbedded/eda-agent
 cd eda-agent
 python -m pip install -e .
 ```
@@ -1370,6 +1370,4 @@ This project is not affiliated with, endorsed by, or sponsored by Altium Limited
 
 ## About
 
-eda-agent was created and is maintained by [George Saliba](https://salitronic.com), an independent electronics design engineer. Thanks to everyone who has contributed, see the [contributors](https://github.com/salitronic/eda-agent/graphs/contributors).
-
-If you need hardware designed, I take on design work, see [salitronic.com](https://salitronic.com).
+eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbedded). It builds on, and tracks, the upstream [salitronic/eda-agent](https://github.com/salitronic/eda-agent) project. Thanks to everyone who has contributed to either, see the [contributors](https://github.com/MOREmbedded/eda-agent/graphs/contributors).

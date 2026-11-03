@@ -42,7 +42,7 @@ _DEFAULT_MODEL_BASE = "https://modules.easyeda.com"
 _MAX_BYTES = 50 * 1024 * 1024
 _TIMEOUT_S = 30
 
-_USER_AGENT = "eda-agent/0.4 (+https://github.com/salitronic/eda-agent)"
+_USER_AGENT = "eda-agent/0.4 (+https://github.com/MOREmbedded/eda-agent)"
 
 
 class EasyEdaFetchError(RuntimeError):

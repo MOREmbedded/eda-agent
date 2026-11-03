@@ -62,7 +62,7 @@ _CACHE_TTL = 7 * 24 * 3600
 #: GitHub requires a User-Agent and blocks requests without one. Naming
 #: the project rather than impersonating a browser is the honest form,
 #: and it lets the host identify this traffic if it ever needs to.
-_UA = "eda-agent (https://github.com/salitronic/eda-agent)"
+_UA = "eda-agent (https://github.com/MOREmbedded/eda-agent)"
 
 #: The repositories indexed, each reachable in one recursive tree call.
 #: `licence` is what the GitHub API reports, NOT what this project

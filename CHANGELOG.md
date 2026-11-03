@@ -16,6 +16,27 @@ maturity classification for every tool.
 
 ### Changed
 
+- **This fork's own pointers now name this fork.** The update
+  checker asked `salitronic/eda-agent` whether a pip install was
+  current, the SARIF reports written by `review` carried upstream's
+  `helpUri` and `informationUri`, four outbound User-Agent strings
+  identified this fork's traffic as upstream's, and `.github/FUNDING.yml`
+  put upstream's GitHub Sponsors and Buy Me a Coffee handles on this
+  repository's Sponsor button. Those, the `pyproject` URLs and author,
+  the README clone line, the issue template's security link, the
+  report address in `SECURITY.md` and `CODE_OF_CONDUCT.md`, and the
+  GitHub Actions workflow in `docs/HARDWARE_CI.md` now point at
+  `MOREmbedded/eda-agent`. That workflow installed the package from
+  PyPI, where the name `eda-agent` is upstream's and this fork cannot
+  publish, so it installs from git instead; there is no
+  `pip install eda-agent` that fetches this fork. The update
+  checker's git path already
+  followed whatever `origin` is, so clones were never affected; only
+  the package-install path was. The Apache-2.0 SPDX headers are
+  untouched, because retaining those notices is a licence condition
+  rather than a branding choice, and the upstream project keeps one
+  credit line in the README and its entries in this file.
+
 - **Merged upstream through d5d1f2a (4 commits), and broke a version
   tie at `2026.11.03.6`.** Upstream released `2026.11.03.5` for its own
   script body hours after this fork had taken that number for a

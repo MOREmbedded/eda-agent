@@ -14,7 +14,7 @@ version receives security fixes. There are no LTS branches.
 
 Please **do not** open a public GitHub issue for security problems.
 
-Email reports to **info@salitronic.com** with:
+Email reports to **bartosz.ziolek@morembedded.com** with:
 
 - A description of the issue and its impact
 - Steps to reproduce, including a minimal `request.json` payload or MCP

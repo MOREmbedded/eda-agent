@@ -39,12 +39,12 @@ from .noconsole import no_window
 
 REMOTE = "origin"
 BRANCH = "main"
-REPO_URL = "https://github.com/salitronic/eda-agent"
+REPO_URL = "https://github.com/MOREmbedded/eda-agent"
 #: The version a package install is compared with.
-PYPROJECT_URL = ("https://raw.githubusercontent.com/salitronic/eda-agent/"
+PYPROJECT_URL = ("https://raw.githubusercontent.com/MOREmbedded/eda-agent/"
                  f"{BRANCH}/pyproject.toml")
 #: The head a package installed from git is compared with.
-COMMIT_URL = f"https://api.github.com/repos/salitronic/eda-agent/commits/{BRANCH}"
+COMMIT_URL = f"https://api.github.com/repos/MOREmbedded/eda-agent/commits/{BRANCH}"
 
 #: How long a check is trusted before the next one reaches the network.
 CHECK_INTERVAL_S = 24 * 3600
