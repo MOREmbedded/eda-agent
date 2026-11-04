@@ -354,6 +354,16 @@ way you like it *is* the template. This is also the only way to pin a
 new board's units and grid, since nothing can set those on a live PCB
 document.
 
+A profile's `design_rules.json` manages the board's Altium design rules:
+`pcb_rules_plan` works out what the profile asks for (pure Python, no
+Altium), `pcb_rules_diff` says how the open board differs, and
+`pcb_rules_apply` closes the gap. Apply is idempotent, so running it on a
+board that already matches writes nothing, and it never deletes: a rule
+the profile does not define, a rule the schematic owns, and a rule kind
+with no in-place writer each come back reported instead. The file holds
+the synthesis targets rather than the rules, so every number stays traced
+to a fab-profile field or a verified calculator.
+
 Full detail, and the format of each file, is in
 [`docs/PROFILES.md`](docs/PROFILES.md).
 

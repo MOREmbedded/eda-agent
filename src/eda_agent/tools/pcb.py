@@ -3188,10 +3188,17 @@ def register_pcb_tools(mcp):
         schematic: the next update from the schematic rewrites it, so
         change it there.
 
+        ``enabled`` is NOT the flag that decides whether DRC checks the
+        rule: that is ``drc_enabled``, which is what
+        ``pcb_set_rules_enabled`` writes and what Altium shows as
+        ``(Disabled)`` inside the descriptor. The two differ often; on a
+        real six-layer board 37 of 159 rules read ``enabled`` true with
+        DRC ignoring them.
+
         Returns:
             Dictionary with "rules" array (each with name, rule_kind,
-            enabled, priority, scope_1, scope_2, comment, descriptor,
-            from_schematic, and
+            enabled, drc_enabled, priority, scope_1, scope_2, comment,
+            descriptor, from_schematic, and
             gap_mm for clearance, component, hole-to-hole and board
             outline clearance rules) and "count".
         """
@@ -11021,9 +11028,12 @@ def register_pcb_tools(mcp):
         Args:
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
 
+        ``drc_enabled`` is the flag that decides whether DRC checks the
+        rule, and it is not ``enabled``; see ``pcb_get_design_rules``.
+
         Returns:
-            Dict with name, rule_kind, enabled, priority, descriptor, and
-            gap_mm for a clearance-family rule.
+            Dict with name, rule_kind, enabled, drc_enabled, priority,
+            descriptor, and gap_mm for a clearance-family rule.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(

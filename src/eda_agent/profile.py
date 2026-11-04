@@ -23,6 +23,10 @@ Two file shapes are genuinely new here (nothing already reads them):
   - document_settings.json  -- {"schematic_units", "pcb_units",
                                "schematic_snap_grid_mil",
                                "schematic_visible_grid_mil"}
+  - design_rules.json       -- {"fab_profile", "class_current_a", ...}: the
+                               TARGETS pcb_rules_plan synthesizes the board's
+                               Altium design rules from, never the computed
+                               rules themselves
   - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
                                stages this owner runs. Absent means none,
                                and the phase tools are not advertised.
@@ -151,6 +155,13 @@ class ActiveProfile:
     footprint_defaults: dict = field(default_factory=dict)
     footprint_policy: dict = field(default_factory=dict)
     document_settings: dict = field(default_factory=dict)
+    #: design_rules.json -- the TARGETS a board's Altium design rules are
+    #: synthesized from (fab profile name, per-class current, differential
+    #: impedance), not the computed rules. rule_synthesis asserts that every
+    #: number it emits traces to a profile field or a verified calculator,
+    #: and storing the output here would let a stored number drift away from
+    #: the calculator that justified it.
+    design_rules: dict = field(default_factory=dict)
     phase_gates: dict = field(default_factory=dict)
     naming_path: Path | None = None
     company_goals_path: Path | None = None
@@ -249,6 +260,7 @@ def load_profile(directory: Path) -> ActiveProfile:
     footprint_defaults = read("footprint_defaults.json")
     footprint_policy = read("footprint_policy.json")
     document_settings = read("document_settings.json")
+    design_rules = read("design_rules.json")
     phase_gates = read("phase_gates.json")
 
     naming_path = directory / "naming.json"
@@ -263,6 +275,7 @@ def load_profile(directory: Path) -> ActiveProfile:
         footprint_defaults=footprint_defaults,
         footprint_policy=footprint_policy,
         document_settings=document_settings,
+        design_rules=design_rules,
         phase_gates=phase_gates,
         naming_path=naming_path if naming_path.exists() else None,
         company_goals_path=company_goals_path if company_goals_path.exists() else None,

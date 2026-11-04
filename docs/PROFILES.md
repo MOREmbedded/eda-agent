@@ -27,6 +27,7 @@ profile/
   footprint_defaults.json    # {"pad_corner_radius_pct": 1}
   footprint_policy.json      # design.footprint_policy's explicit policy dict
   document_settings.json     # schematic units/grid (see below)
+  design_rules.json          # targets the board's DRC rules are built from
   phase_gates.json           # which NPI stages this owner runs (default: none)
   templates/                  # plain files, copied as-is
     default/                   #   a whole project (profile-new-project)
@@ -40,8 +41,8 @@ reuse formats that already existed before profiles did -- see
 [ENGINEERING_TOOLS.md](ENGINEERING_TOOLS.md) for `naming.json` and
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
-`document_settings.json`, `phase_gates.json` and `templates/` are new,
-documented below.
+`document_settings.json`, `design_rules.json`, `phase_gates.json` and
+`templates/` are new, documented below.
 
 ## How a profile is found
 
@@ -218,6 +219,61 @@ different utilities. The pcb_units setting above is still read by
 auto-applied to a live PCB document. A project template (below) sidesteps
 this for brand-new projects, since a template's own documents already carry
 whatever unit/grid state was saved into them.
+
+## `design_rules.json`
+
+```json
+{
+  "fab_profile": "jlcpcb_4layer",
+  "net_classes": {"VBUS": "power", "GND": "power"},
+  "options": {"class_current_a": {"power": 2.0}, "diff_pair_target_ohms": 90}
+}
+```
+
+The board's Altium design rules, managed from the profile by three tools:
+
+| | |
+|---|---|
+| `pcb_rules_plan` | what the profile asks for. Pure Python, no Altium. |
+| `pcb_rules_diff` | how the open board differs from it. |
+| `pcb_rules_apply` | closes the gap. `dry_run=True` by default. |
+
+**This file holds the TARGETS, not the rules.** `fab_profile` names a file
+in the profile's `fab_profiles/` (or carries the profile inline);
+`net_classes` and `options` feed the same synthesis `design_synthesize_rules`
+uses. The rules themselves are derived on every call, because
+`design/rule_synthesis.py` asserts that each number it emits traces to a
+fab-profile field or a verified calculator (IPC-2221 width, IPC-2141
+impedance). A rule stored here could only drift away from the calculator
+that justified it.
+
+**Apply is idempotent, and never deletes.** A rule already on the board is
+updated in place. Altium's own `PCB_CreateDesignRule` sets the name and adds
+with no check for one already there, so applying a set twice without this
+leaves two rules sharing a name and Altium's priority order picks the
+winner. Three things are reported rather than written:
+
+- `extra` -- on the board, not in the profile. Altium ships default rules on
+  every board, and a rule somebody added for this board deliberately is not
+  drift. Seeing them is the point; removing them is the owner's call.
+- `skipped` -- owned by the schematic (`from_schematic`). The next update
+  from the schematic rewrites it, so writing it here is undone silently.
+- `unwritable` -- a rule kind with no in-place writer. Deleting and
+  recreating would lose the rule's priority and any scope edited by hand.
+
+**Reading values back goes through Altium's prose.** Only a
+clearance-family rule reports a number of its own; every other kind is
+readable solely as `Rule.Descriptor`, the text Altium writes for the rules
+dialog, so the comparison parses it. `tolerance_mils` (default 0.02) absorbs
+the round trip through the millimetre descriptor: a rule written as 6 mil
+reads back as `0.152mm`, which is 5.984 mil.
+
+**`enabled` is not the flag that matters.** A rule has both `Enabled` and
+`DRCEnabled`, and only the second decides whether DRC checks it.
+Measured on a real six-layer board: 37 of its 159 rules read `enabled: true`
+while DRC ignored them, and the only sign was the word `(Disabled)` inside
+the descriptor. `pcb_get_design_rules` and `pcb_get_rule_properties` now
+report `drc_enabled` directly.
 
 ## `phase_gates.json`
 

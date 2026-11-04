@@ -1,0 +1,1115 @@
+[
+ {
+  "name": "ComponentClearanceConstraint_0",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (InComponent('J12')),(InComponent('JP1')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "SupplyNet_1",
+  "descriptor": "Supply Net(s)(InNet('VBAT_RTC'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_2",
+  "descriptor": "Supply Net(s)(InNet('VSYS'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_3",
+  "descriptor": "Supply Net(s)(InNet('VLCD_S'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_4",
+  "descriptor": "Supply Net(s)(InNet('VLCD'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_5",
+  "descriptor": "Supply Net(s)(InNet('V3V0'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_6",
+  "descriptor": "Supply Net(s)(InNet('VREGN'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_7",
+  "descriptor": "Supply Net(s)(InNet('VSW'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "ComponentClearanceConstraint_8",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -50mm, Vertical Gap = -50mm ) (HasFootprint('SNAP_LOCK_WURTH_M3.0X9.5MM_709905651')),(HasFootprint('HOLE-3.2MMX5.4MM') OR HasGenericStepModel OR HasFootprint('NUT_WURTH_M3.0X5.5X2.4_709940300')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -49.99999906
+ },
+ {
+  "name": "SilkToSolderMask_9",
+  "descriptor": "Silk To Solder Mask (Clearance=0.02mm) (HasFootprint('TP-75R') OR HasFootprint('TP-100R')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_10",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.254mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.254mm) (All),(IsNamedPolygon('GND_L01_P035'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ClearanceConstraint_11",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (HasFootprint('TP-100R')),(iSVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "RoomPOWER-5V0_12",
+  "descriptor": "Room POWER - 5V0 (Bounding Region = (756.396mm, 781.926mm, 774.924mm, 807.329mm) (InComponentClass('POWER - 5V0'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNEL1-WIRE1_13",
+  "descriptor": "Room DETECTION CHANNEL 1-WIRE1 (Bounding Region = (817.506mm, 822.488mm, 820.57mm, 830.988mm) (InComponentClass('DETECTION CHANNEL 1-WIRE1'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNEL1-WIRE2_14",
+  "descriptor": "Room DETECTION CHANNEL 1-WIRE2 (Bounding Region = (811.053mm, 822.487mm, 814.117mm, 830.988mm) (InComponentClass('DETECTION CHANNEL 1-WIRE2'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNEL1-WIRE3_15",
+  "descriptor": "Room DETECTION CHANNEL 1-WIRE3 (Bounding Region = (804.131mm, 822.487mm, 807.196mm, 830.988mm) (InComponentClass('DETECTION CHANNEL 1-WIRE3'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNEL1-WIRE4_16",
+  "descriptor": "Room DETECTION CHANNEL 1-WIRE4 (Bounding Region = (798.255mm, 822.488mm, 801.32mm, 830.988mm) (InComponentClass('DETECTION CHANNEL 1-WIRE4'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNEL1-WIRE5_17",
+  "descriptor": "Room DETECTION CHANNEL 1-WIRE5 (Bounding Region = (791.869mm, 822.488mm, 794.934mm, 830.988mm) (InComponentClass('DETECTION CHANNEL 1-WIRE5'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomLSM6DSO_18",
+  "descriptor": "Room LSM6DSO (Bounding Region = (768.047mm, 782.402mm, 775.737mm, 787.496mm) (InComponentClass('LSM6DSO'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomLIS2DH12_19",
+  "descriptor": "Room LIS2DH12 (Bounding Region = (775.901mm, 782.434mm, 780.913mm, 788.744mm) (InComponentClass('LIS2DH12'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomRS232_20",
+  "descriptor": "Room RS232 (Bounding Region = (774.083mm, 818.471mm, 784.004mm, 828.746mm) (InComponentClass('RS232'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNELRC5_21",
+  "descriptor": "Room DETECTION CHANNEL RC5 (Bounding Region = (791.164mm, 816.154mm, 797.38mm, 830.686mm) (InComponentClass('DETECTION CHANNEL RC5'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNELRC4_22",
+  "descriptor": "Room DETECTION CHANNEL RC4 (Bounding Region = (797.384mm, 816.154mm, 803.6mm, 830.686mm) (InComponentClass('DETECTION CHANNEL RC4'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNELRC3_23",
+  "descriptor": "Room DETECTION CHANNEL RC3 (Bounding Region = (803.619mm, 816.153mm, 809.835mm, 830.685mm) (InComponentClass('DETECTION CHANNEL RC3'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNELRC2_24",
+  "descriptor": "Room DETECTION CHANNEL RC2 (Bounding Region = (810.073mm, 816.154mm, 816.289mm, 830.686mm) (InComponentClass('DETECTION CHANNEL RC2'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomDETECTIONCHANNELRC1_25",
+  "descriptor": "Room DETECTION CHANNEL RC1 (Bounding Region = (816.294mm, 816.154mm, 822.51mm, 830.686mm) (InComponentClass('DETECTION CHANNEL RC1'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoomCAN_26",
+  "descriptor": "Room CAN (Bounding Region = (761.238mm, 817.509mm, 771.251mm, 832.753mm) (InComponentClass('CAN'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_27",
+  "descriptor": "Supply Net(s)(InNet('VIN_F'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_28",
+  "descriptor": "Supply Net(s)(InNet('VBAT'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_29",
+  "descriptor": "Supply Net(s)(InNet('V5V0'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_30",
+  "descriptor": "Supply Net(s)(InNet('VS'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_31",
+  "descriptor": "Supply Net(s)(InNet('VDD_ESP'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_32",
+  "descriptor": "Supply Net(s)(InNet('VIN_PROT'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_33",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.45mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.3mm) ((InNetClass('VINF_Class') OR InNetClass('VIN_Class'))),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ComponentClearanceConstraint_34",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (Disabled)(InComponent('R50')),(InComponent('R51')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_35",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (Disabled)(InComponent('MISC1')),(InComponent('J13') OR HasFootprint('TP-75R')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_36",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (Disabled)(InComponent('MOD1')),(InComponent('MH2')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_37",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (Disabled)(InComponent('J1')),(InComponent('SIM1')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_38",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (InComponent('L1')),(InComponent('R1') OR InComponent('R2')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_39",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -50mm, Vertical Gap = -50mm ) (InComponent('J18')),((InNamedUnion('Unions 3'))) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -49.99999906
+ },
+ {
+  "name": "SupplyNet_40",
+  "descriptor": "Supply Net(s)(InNet('VIN'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_41",
+  "descriptor": "Supply Net(s)(InNet('GND'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "SupplyNet_42",
+  "descriptor": "Supply Net(s)(InNet('GND_IN'))",
+  "enabled": true,
+  "from_schematic": true,
+  "gap_mm": null
+ },
+ {
+  "name": "ClearanceConstraint_43",
+  "descriptor": "Clearance Constraint (Gap=0.3mm) (InNet('GND_IN')),(InNet('GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2999994
+ },
+ {
+  "name": "ClearanceConstraint_44",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (HasFootprint('TP-75R')),(iSVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_45",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (InComponent('U8A') OR InComponent('U1') OR InComponent('U8B')),(iSVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "PolygonConnectRule_46",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.4mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.12mm) (All),(InNetClass('VUSB2_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_47",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.4mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.12mm) (Not (InNet('GND'))),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_48",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.254mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.254mm) (All),(InNet('GND_IN'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_49",
+  "descriptor": "Polygon Connect Rule(Relief Connect )(Conductor Width=0.5mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.2mm) (All),(InNetClass('VCELL_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_50",
+  "descriptor": "Polygon Connect Rule(Direct Connect )(Conductor Width=0.5mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.2mm) (All),(InNetClass('LoV_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_51",
+  "descriptor": "Polygon Connect Rule(Relief Connect )(Conductor Width=0.65mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.2mm) (All),(InNetClass('HPWR_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "BoardClearanceConstraint_52",
+  "descriptor": "Board Clearance Constraint (Gap=0mm) (All AND (NOT (InNamedUnion('Unions 9'))))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2499995
+ },
+ {
+  "name": "BoardClearanceConstraint_53",
+  "descriptor": "Board Clearance Constraint (Gap=0mm) (OnLayer('Silkscreen Top') OR OnLayer('Silkscreen Bottom'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "BoardClearanceConstraint_54",
+  "descriptor": "Board Clearance Constraint (Gap=0mm) (IsVIA)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "BoardClearanceConstraint_55",
+  "descriptor": "Board Clearance Constraint (Gap=0mm) (IsComponent)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "BoardClearanceConstraint_56",
+  "descriptor": "Board Clearance Constraint (Gap=0mm) (InComponent('MP9'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "ModifiedPolygon_57",
+  "descriptor": "Modified Polygon (Allow modified: No), (Allow shelved: No)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "AssemblyTestpointUsage_58",
+  "descriptor": "Assembly Testpoint Usage (Valid =One Required, Allow multiple per net=No) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "AssemblyTestpointStyle_59",
+  "descriptor": "Assembly Testpoint Style (Under Component=Yes) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "NetAntennae_60",
+  "descriptor": "Net Antennae (Tolerance=0mm) (Disabled)(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "SilktoSilk_61",
+  "descriptor": "Silk to Silk (Clearance=0.05mm) (All),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "SilkToSolderMask_62",
+  "descriptor": "Silk To Solder Mask (Clearance=0.125mm) (IsPad),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "MinimumSolderMaskSliver_63",
+  "descriptor": "Minimum Solder Mask Sliver (Gap=0.01mm) (All),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "HoleToHoleClearance_64",
+  "descriptor": "Hole To Hole Clearance (Gap=0.25mm) (All),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2499995
+ },
+ {
+  "name": "HoleToHoleClearance_65",
+  "descriptor": "Hole To Hole Clearance (Gap=0mm) (InComponent('J17')),(InComponent('J18'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "HoleToHoleClearance_66",
+  "descriptor": "Hole To Hole Clearance (Gap=0.25mm) (All),(InNet('GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2499995
+ },
+ {
+  "name": "HoleToHoleClearance_67",
+  "descriptor": "Hole To Hole Clearance (Gap=0.25mm) (InNet('VDD') OR InNet('MP3423_4V3') OR InNet('NetC18_2')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2499995
+ },
+ {
+  "name": "DifferentialPairsUncoupledLengthusingtheGapConstraints_68",
+  "descriptor": "Differential Pairs Uncoupled Length using the Gap Constraints (Min=0.22mm) (Max=0.254mm) (Prefered=0.254mm)  and Width Constraints (Min=0.15mm) (Max=0.381mm) (Prefered=0.381mm) (Disabled)(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "DifferentialPairsUncoupledLengthusingtheGapConstraints_69",
+  "descriptor": "Differential Pairs Uncoupled Length using the Gap Constraints (Min=0.12mm) (Max=0.315mm) (Prefered=0.315mm)  and Width Constraints (Min=0.15mm) (Max=0.381mm) (Prefered=0.381mm) (InDifferentialPairClass('Diff_USB2_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "HeightConstraint_70",
+  "descriptor": "Height Constraint (Min=0mm) (Max=80mm) (Prefered=12.7mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FanoutControlRule_71",
+  "descriptor": "Fanout Control Rule ( (All) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FanoutControlRule_72",
+  "descriptor": "Fanout Control Rule ( ((CompPinCount < 5)) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FanoutControlRule_73",
+  "descriptor": "Fanout Control Rule ( (IsSOIC) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FanoutControlRule_74",
+  "descriptor": "Fanout Control Rule ( (IsLCC) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FanoutControlRule_75",
+  "descriptor": "Fanout Control Rule ( (IsBGA) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PadsandViastofollowtheDrillpairssettings_76",
+  "descriptor": "Pads and Vias to follow the Drill pairs settings",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "Un-ConnectedPinConstraint_77",
+  "descriptor": "Un-Connected Pin Constraint ( (Disabled)(All) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FabricationTestpointUsage_78",
+  "descriptor": "Fabrication Testpoint Usage (Valid =One Required, Allow multiple per net=No) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "FabricationTestpointStyle_79",
+  "descriptor": "Fabrication Testpoint Style (Under Component=Yes) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "HoleSizeConstraint_80",
+  "descriptor": "Hole Size Constraint (Min=0.2mm) (Max=5.2mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "HoleSizeConstraint_81",
+  "descriptor": "Hole Size Constraint (Min=0.25mm) (Max=3.1mm) (IsVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "Impedance_82",
+  "descriptor": "Impedance (Minimum=50.00Ohms Maximum=150.0Ohms)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "Impedance_83",
+  "descriptor": "Impedance (Minimum=45.00Ohms Maximum=55.00Ohms)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ComponentClearanceConstraint_84",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = 0mm, Vertical Gap = 0mm ) (All),(All) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "ComponentClearanceConstraint_85",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = 0mm, Vertical Gap = 0mm ) (Disabled)(InComponent('BT1')),(All) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "ComponentClearanceConstraint_86",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -10mm, Vertical Gap = -10mm ) (Disabled)(HasFootprint('MISC_CLIP_SHLD_HARWIN_S0971-46R')),(InComponent('SHLD1')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -10.00000032
+ },
+ {
+  "name": "ComponentClearanceConstraint_87",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = 0mm, Vertical Gap = 0mm ) (Disabled)(InComponent('CN13')),(All) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "ComponentClearanceConstraint_88",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -20mm, Vertical Gap = -20mm ) (InComponent('J18')),(InComponent('J17')) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -20.00000064
+ },
+ {
+  "name": "ComponentClearanceConstraint_89",
+  "descriptor": "Component Clearance Constraint ( Horizontal Gap = -10mm, Vertical Gap = -50mm ) (InComponent('J17') OR InComponent('J18')),((InNamedUnion('Unions'))) ",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": -10.00000032
+ },
+ {
+  "name": "SMDToCorner_90",
+  "descriptor": "SMD To Corner (Distance=0.01mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_91",
+  "descriptor": "Polygon Connect Rule(Relief Connect )(Conductor Width=0.25mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.1mm) (HasFootprint('MISC_CLIP_SHLD_WURTH_WE-SHC_36900000')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PolygonConnectRule_92",
+  "descriptor": "Polygon Connect Rule(Relief Connect )(Conductor Width=0.65mm) (Relief Angle=90 Angle) (Entries=4) (Air Gap Width=0.3mm) (All),(InNet('GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "MinimumAnnularRing_93",
+  "descriptor": "Minimum Annular Ring (Minimum=0.15mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "MinimumAnnularRing_94",
+  "descriptor": "Minimum Annular Ring (Minimum=0.15mm) (Disabled)(InComponent('J4'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "MinimumAnnularRing_95",
+  "descriptor": "Minimum Annular Ring (Minimum=0.15mm) (Disabled)(InComponent('U16'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ViasUnderSMDConstraint_96",
+  "descriptor": "Vias Under SMD Constraint (Allowed=Allowed) (InComponent('C52') OR InComponent('C53') OR InComponent('R58') OR InComponent('R45'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ViasUnderSMDConstraint_97",
+  "descriptor": "Vias Under SMD Constraint (Allowed=Allowed) (InComponent('U18'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ViasUnderSMDConstraint_98",
+  "descriptor": "Vias Under SMD Constraint (Allowed=Allowed) (InComponent('U16'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ViasUnderSMDConstraint_99",
+  "descriptor": "Vias Under SMD Constraint (Allowed=Allowed) (InComponent('U4'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "Un-RoutedNetConstraint_100",
+  "descriptor": "Un-Routed Net Constraint ( (All AND (NOT InNamedUnion('Unions 9'))) )",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "Short-CircuitConstraint_101",
+  "descriptor": "Short-Circuit Constraint (Allowed=No) (Disabled)(Not InAnyNet),(Not InAnyNet)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PasteMaskExpansion_102",
+  "descriptor": "Paste Mask Expansion (Expansion =0mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "SolderMaskExpansion_103",
+  "descriptor": "Solder Mask Expansion (Expansion =0mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PowerPlaneClearance_104",
+  "descriptor": "Power Plane Clearance (Clearance =0.475mm) (HasFootprint('CON-1WAY-TSW-101-24-T-S-1.8AAA'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingVia_105",
+  "descriptor": "Routing Via (Templates Used To Check Via: v44h20m0mx0(Tol8-8), v55h25m0mx0(Tol8-8), v55h30m0mx0(Tol8-8), v60h30m0mx0(Tol8-8), v70h30m0mx0(Tol8-8), v75h35m0mx0(Tol8-8), v90h50m0mx0(Tol8-8), v127h25m0mx0(Tol8-8)) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingVia_106",
+  "descriptor": "Routing Via (Templates Used To Check Via: v44h20m0mx0(Tol8-8), v55h25m0mx0(Tol8-8), v55h30m0mx0(Tol8-8), v60h30m0mx0(Tol8-8), v70h30m0mx0(Tol8-8), v75h35m0mx0(Tol8-8), v90h50m0mx0(Tol8-8), v127h25m0mx0(Tol8-8)) (InNet('GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingVia_107",
+  "descriptor": "Routing Via (MinHoleWidth=0.2mm) (MaxHoleWidth=0.5mm) (PreferredHoleWidth=0.3mm) (MinWidth=0.43mm) (MaxWidth=0.8mm) (PreferedWidth=0.6mm) (InNet('VSYS'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingCorners_108",
+  "descriptor": "Routing Corners (Style=45-Degree) (Min Setback=2.54mm) (Max Setback=2.54mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_109",
+  "descriptor": "Routing Layers(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_110",
+  "descriptor": "Routing Layers(InNet('GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_111",
+  "descriptor": "Routing Layers(InNet('VDD_3V3'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_112",
+  "descriptor": "Routing Layers(InNet('SW-IND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_113",
+  "descriptor": "Routing Layers(InNet('VSYS'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_114",
+  "descriptor": "Routing Layers(InNet('3V3'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingLayers_115",
+  "descriptor": "Routing Layers(InNet('VDD_USB_3V3'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "TRoutingPriorityRule_116",
+  "descriptor": "TRoutingPriorityRule(Priority=3) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "RoutingTopologyRule_117",
+  "descriptor": "Routing Topology Rule(Topology=Shortest) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PowerPlaneConnectRule_118",
+  "descriptor": "Power Plane Connect Rule(Relief Connect )(Expansion=0.5mm) (Conductor Width=0.25mm) (Air Gap=0.25mm) (Entries=4) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PowerPlaneConnectRule_119",
+  "descriptor": "Power Plane Connect Rule(Relief Connect )(Expansion=0.65mm) (Conductor Width=0.35mm) (Air Gap=0.15mm) (Entries=4) (HasFootprint('HIROSE_ST60-36P'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "PowerPlaneConnectRule_120",
+  "descriptor": "Power Plane Connect Rule(Direct Connect )(Expansion=0.375mm) (Conductor Width=0.25mm) (Air Gap=0mm) (Entries=4) (HasFootprint('HOLE-3.2MM-5.5MMCLR'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "MatchedLengths_121",
+  "descriptor": "Matched Lengths(Tolerance=240mm) (InDifferentialPairClass('Diff_PCIE_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "LengthConstraint_122",
+  "descriptor": "Length Constraint (Min=0mm) (Max=1270mm) (All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_123",
+  "descriptor": "Width Constraint (Min=0.15mm) (Max=2mm) (Preferred=0.2mm) (All AND (NOT (InNamedUnion('Unions 9'))))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_124",
+  "descriptor": "Width Constraint (Min=0.13mm) (Max=1mm) (Preferred=0.18mm) (InNetClass('NET_RF_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_125",
+  "descriptor": "Width Constraint (Min=0.15mm) (Max=0.5mm) (Preferred=0.2mm) (Disabled)(InNetClass('CLK') OR InNetClass('USB') OR InNetClass('JTAG'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_126",
+  "descriptor": "Width Constraint (Min=0.15mm) (Max=3mm) (Preferred=0.3mm) (Disabled)(InNet('VDDOUT') OR InNet('VDD_MCU_P3V3') OR InNet('VDDUTMIC') OR InNet('SIM_VCC') OR InNet('VDD_OUT') OR InNet('ADVREF') OR InNet('VBG'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_127",
+  "descriptor": "Width Constraint (Min=0.3mm) (Max=3mm) (Preferred=0.5mm) (Disabled)(InNet('GND-ISO'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_128",
+  "descriptor": "Width Constraint (Min=0.15mm) (Max=3mm) (Preferred=0.3mm) (Disabled)(InNet('VBAT'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "WidthConstraint_129",
+  "descriptor": "Width Constraint (Min=0.15mm) (Max=1mm) (Preferred=0.2mm) (All and (NOT InNet('GND') ) AND (NOT InNetClass('V3V3_Class')) AND (NOT InNetClass('HPWR_Class')) AND (NOT InNetClass('V5V0_Class')) AND (NOT InNetClass('PWR_BLOCK')) AND (NOT InNetClass('PWR_RTC')) AND (NOT InNetClass('VUSB2_Class'))  AND (NOT InNetClass('GUSB2_Class')) AND (NOT (InNamedUnion('Unions 9'))))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ParallelSegmentConstraint_130",
+  "descriptor": "Parallel Segment Constraint (Gap=1.6mm ) (Limit=25.4mm) (All),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ParallelSegmentConstraint_131",
+  "descriptor": "Parallel Segment Constraint (Gap=5.08mm ) (Limit=25.4mm) (All),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ },
+ {
+  "name": "ClearanceConstraint_132",
+  "descriptor": "Clearance Constraint (Gap=0.1mm) (Disabled)(InComponent('SHLD5')),(iSVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.0999998
+ },
+ {
+  "name": "ClearanceConstraint_133",
+  "descriptor": "Clearance Constraint (Gap=0mm) (Disabled)(HasFootprint('SPAC_WURTH_7466310') OR HasFootprint('HOLE-3.2MMX5.4MM ')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0
+ },
+ {
+  "name": "ClearanceConstraint_134",
+  "descriptor": "Clearance Constraint (Gap=0.3mm) (Disabled)(InNetClass('VCELL_Class')),(iSVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2999994
+ },
+ {
+  "name": "ClearanceConstraint_135",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNetClass('UART') OR InNetClass('ALL_THE_REST')),(InNetClass('I2C'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_136",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNetClass('SPI')),(InNetClass('I2C'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_137",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNetClass('CLK') OR InNetClass('JTAG')),(InNetClass('ALL_THE_REST'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_138",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNetClass('UART')),(InNetClass('ALL_THE_REST'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_139",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNetClass('SPI')),(InNetClass('UART'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_140",
+  "descriptor": "Clearance Constraint (Gap=0.1mm) (Disabled)(InNet('3V3')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.0999998
+ },
+ {
+  "name": "ClearanceConstraint_141",
+  "descriptor": "Clearance Constraint (Gap=0.1mm) (Disabled)(HasFootprint('CAPC0603X03L')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.0999998
+ },
+ {
+  "name": "ClearanceConstraint_142",
+  "descriptor": "Clearance Constraint (Gap=0.2mm) (Disabled)(InNet('GND-ISO')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1999996
+ },
+ {
+  "name": "ClearanceConstraint_143",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(InNet('ADVREF')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_144",
+  "descriptor": "Clearance Constraint (Gap=0.125mm) (Disabled)(((InComponent('SW2') AND IsPad) OR (InComponent('SHLD3')) AND IsPad)),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.12500102
+ },
+ {
+  "name": "ClearanceConstraint_145",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (All AND (NOT (InNamedUnion('Unions 9')))),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_146",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(IsVia),(IsSMTPin)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_147",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (IsVia),(IsVia)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_148",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(All),((OnLayer('l2 GND') OR OnLayer('L5 GND')))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_149",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (Disabled)(All),((OnLayer('L1 TOP LF SIG - GND FLOOD') OR OnLayer('L6 BOT LF SIG - GND FLOOD') OR OnLayer('L3 HF/LF SIG - GND FLOOD') OR OnLayer('L4 PWR')))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_150",
+  "descriptor": "Clearance Constraint (Gap=0.15mm) (InNet('GND')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.1499997
+ },
+ {
+  "name": "ClearanceConstraint_151",
+  "descriptor": "Clearance Constraint (Gap=0.5mm) (InNet('CHS')),(InNet('MAG_GND'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.499999
+ },
+ {
+  "name": "ClearanceConstraint_152",
+  "descriptor": "Clearance Constraint (Gap=0.3mm) (InNetClass('VINF_Class')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2999994
+ },
+ {
+  "name": "ClearanceConstraint_153",
+  "descriptor": "Clearance Constraint (Gap=0.3mm) (InNetClass('VIN_Class')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.2999994
+ },
+ {
+  "name": "ClearanceConstraint_154",
+  "descriptor": "Clearance Constraint (Gap=0.125mm) (Disabled)(InNetClass('NET_RF_Class')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.12500102
+ },
+ {
+  "name": "ClearanceConstraint_155",
+  "descriptor": "Clearance Constraint (Gap=0.1mm) (Disabled)(InDifferentialPairClass('Diff_USB2_Class')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.0999998
+ },
+ {
+  "name": "ClearanceConstraint_156",
+  "descriptor": "Clearance Constraint (Gap=0.6mm) (Disabled)(InDifferentialPairClass('Diff_USB2_Class')),(All)",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.5999988
+ },
+ {
+  "name": "ClearanceConstraint_157",
+  "descriptor": "Clearance Constraint (Gap=0.6mm) (Disabled)(InDifferentialPairClass('Diff_USB2_Class')),(Not InDifferentialPairClass('Diff_USB2_Class'))",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": 0.5999988
+ },
+ {
+  "name": "Silkprimitivewithoutsilklayer_158",
+  "descriptor": "Silk primitive without silk layer",
+  "enabled": true,
+  "from_schematic": false,
+  "gap_mm": null
+ }
+]

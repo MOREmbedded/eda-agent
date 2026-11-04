@@ -534,7 +534,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch : Boolean;
+    First, FromSch, DrcOn : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -614,6 +614,15 @@ Begin
         FromSch := False;
         Try FromSch := Rule.DefinedByLogicalDocument; Except FromSch := False; End;
         JsonItems := JsonItems + ',"from_schematic":' + BoolToJsonStr(FromSch);
+        { Enabled and DRCEnabled are DIFFERENT flags. Enabled is whether the  }
+        { rule exists to be considered; DRCEnabled is whether DRC checks it,  }
+        { and it is the one pcb_set_rules_enabled writes. MEASURED on a real  }
+        { board: 37 of 159 rules read Enabled=True while DRC ignores them,    }
+        { and the only sign was the word (Disabled) inside Altium's own       }
+        { descriptor prose. Reported so nobody has to parse that to find out. }
+        DrcOn := True;
+        Try DrcOn := Rule.DRCEnabled; Except DrcOn := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(DrcOn);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -831,7 +840,7 @@ Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Rule : IPCB_Rule;
-    RuleName, GapField : String;
+    RuleName, GapField, DrcField : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -857,10 +866,17 @@ Begin
     GapField := ClearanceGapMM(Board, RuleName);
     If GapField <> '' Then GapField := ',"gap_mm":' + GapField;
 
+    { See PCB_GetDesignRules: Enabled and DRCEnabled are different flags, }
+    { and DRCEnabled is the one that decides whether DRC checks the rule. }
+    DrcField := ',"drc_enabled":true';
+    Try DrcField := ',"drc_enabled":' + BoolToJsonStr(Rule.DRCEnabled);
+    Except DrcField := ',"drc_enabled":true'; End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
-        + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
+        + '"enabled":' + BoolToJsonStr(Rule.Enabled)
+        + DrcField + ','
         + '"priority":' + IntToStr(Rule.Priority) + ','
         + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"'
         + GapField + '}');

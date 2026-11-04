@@ -14,7 +14,45 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Added
+
+- **A design-rule manager, run from the workspace profile.** A profile's
+  new `design_rules.json` holds the TARGETS a board's Altium design rules
+  are built from (which fab profile, per-class current, differential
+  impedance), and three tools work over them: `pcb_rules_plan` says what
+  the profile asks for (pure Python, no Altium), `pcb_rules_diff` says how
+  the open board differs, and `pcb_rules_apply` closes the gap.
+
+  **Apply is idempotent.** Altium's own `PCB_CreateDesignRule` sets the
+  name and adds with no check for a name already there, so applying a
+  rule set twice left two rules sharing a name and Altium's priority
+  order picked the winner. A rule already on the board is now updated in
+  place instead. Verified live: a first apply took a board from 35 rules
+  to 39, a second left it at 39 with nothing written, and moving the
+  fab's minimum gap from 7 to 9 mil updated the rule rather than adding
+  one.
+
+  **Nothing is ever deleted.** Three things are reported instead: a rule
+  the profile does not define (Altium ships defaults on every board, and
+  a rule somebody added deliberately is not drift), a rule the schematic
+  owns (the next update from the schematic rewrites it), and a rule kind
+  with no in-place writer (deleting and recreating would lose the rule's
+  priority and any hand-edited scope).
+
+  The file stores targets rather than computed rules because
+  `design/rule_synthesis.py` asserts that every number it emits traces to
+  a fab-profile field or a verified calculator; a stored number could
+  only drift away from the calculator that justified it.
+
 ### Fixed
+
+- **`drc_enabled` is now reported for every design rule.** A rule carries
+  both `Enabled` and `DRCEnabled`, and only the second decides whether
+  DRC checks it. `pcb_get_design_rules` and `pcb_get_rule_properties`
+  reported the first. Measured on a real six-layer board: 37 of its 159
+  rules read `enabled: true` while DRC ignored them, and the only sign
+  was the word `(Disabled)` buried in Altium's descriptor prose, which is
+  what `pcb_set_rules_enabled` had been writing all along.
 
 - **A one-line routine body hid every global a unit declared after it.**
   The DelphiScript linter found the end of a routine by looking for
