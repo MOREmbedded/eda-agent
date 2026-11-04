@@ -16,6 +16,37 @@ maturity classification for every tool.
 
 ### Added
 
+- **An ERC-matrix manager, run from the workspace profile.** Project
+  Options > Error Reporting lives in the `.PrjPcb`, so every new project
+  starts from Altium's defaults and a house policy survives only as long
+  as somebody remembers to re-enter it. A profile's new `erc_levels.json`
+  holds that policy, and three tools work over it: `proj_erc_plan` says
+  what the profile asks for (pure Python, no Altium), `proj_erc_diff`
+  says how the open project differs, and `proj_erc_apply` closes the gap.
+
+  **Sets compose.** Named sets live in `erc_levels/<name>.json` and a set
+  may `extends` another, resolved before anything is compared with the
+  nearer file winning, so a company base policy and a per-workspace
+  narrowing of it stay two files rather than two copies. A level of
+  `null` drops an inherited entry, because "this workspace does not
+  manage that type" is a different statement from "set it to no_report".
+
+  **A type the set does not name is left alone**, and reported under
+  `unmanaged`; `"unlisted": "<level>"` opts into pinning the whole matrix
+  for an owner who wants that. A type this Altium version does not have
+  is reported under `unknown` rather than skipped: the only name a
+  violation type has is Altium's own prose, and a policy quietly missing
+  half its entries is worse than one that says so. Matching folds exactly
+  the way the Pascal writer folds, guarded by a test that reads the
+  Pascal, so a diff saying "same" can never be followed by a write saying
+  "no violation type by that name".
+
+  Apply writes only the types that differ, so a second apply writes
+  nothing, and saves the project afterwards because an unsaved matrix is
+  lost when the project closes. `eda-agent profile-validate` resolves
+  every set in the profile, including those reached only through
+  `extends`.
+
 - **A design-rule manager, run from the workspace profile.** A profile's
   new `design_rules.json` holds the TARGETS a board's Altium design rules
   are built from (which fab profile, per-class current, differential
@@ -45,6 +76,29 @@ maturity classification for every tool.
   only drift away from the calculator that justified it.
 
 ### Fixed
+
+- **`proj_get_erc_levels` reported 295 violation types where the project
+  has 167.** `DM_ViolationTypeDescription` answers by index with no end
+  marker, and past the end of the enum it returns whatever adjacent
+  memory reads as a string, so a fixed 0..400 scan that kept anything
+  non-empty picked up 129 extras: truncated fragments of other string
+  tables (`Out o`, `Unconnec`, `Gray`) and, at index 350, a block of raw
+  UTF-16 carrying NULs and an `=`. The reader now stops at the first
+  empty description, which is the end of a contiguous enum, and reports
+  `type_count` and `beyond_table` so the measurement that justifies the
+  bound travels with every reply. `ErcKindFromText` refuses a kind number
+  past the end for the same reason, since `proj_set_erc_levels` would
+  otherwise have called `DM_SetErrorLevels` on an index outside the array
+  it writes to. Each type now also carries its `group`, the section the
+  Error Reporting dialog files it under. Script version `2026.11.04.10`.
+
+- **`pcb_rules_plan` and `pcb_rules_diff` were advertised as mutating.**
+  Both the `pcb_` and `proj_` prefixes default to `silent`, and the
+  readonly marker for a diff is only recognised with a trailing
+  underscore, so a tool whose whole purpose is "show me what would
+  change" was published to the discovery layer as one that changes
+  something. Both are now `readonly`, and `pcb_rules_plan`, which reads a
+  profile off local disk and never calls the bridge, is `offline`.
 
 - **`drc_enabled` is now reported for every design rule.** A rule carries
   both `Enabled` and `DRCEnabled`, and only the second decides whether

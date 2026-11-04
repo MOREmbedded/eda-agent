@@ -3552,13 +3552,23 @@ def register_project_tools(mcp):
         """The project's ERC report level for every violation type (Project
         Options > Error Reporting): no_report, warning, error or fatal.
 
+        The types are a contiguous enum from 0, and Altium's reader has no
+        end marker: asked past the end it returns whatever adjacent memory
+        reads as a string. ``type_count`` is where the real table stops and
+        ``beyond_table`` counts the look-alike strings found after it and
+        ignored (129 on AD 26.11, among them truncated fragments of other
+        string tables and a block of raw UTF-16).
+
         Args:
             match: only types whose description contains this text, e.g.
                 "multiple names" or "driving source".
             project_path: the .PrjPcb; default the focused project.
 
         Returns:
-            ``levels``: [{kind, description, level}], and ``count``.
+            ``levels``: [{kind, description, group, level}], ``count`` (how
+            many matched), ``type_count`` and ``beyond_table``. ``group`` is
+            the section the Error Reporting dialog files the type under, or
+            -1 where Altium would not say.
         """
         params: dict[str, Any] = {"match": match}
         if project_path:
@@ -3583,7 +3593,8 @@ def register_project_tools(mcp):
         Args:
             levels: {violation type: level}. A type is its exact description
                 as proj_get_erc_levels lists it ("Nets with multiple names")
-                or its kind number; a level is no_report, warning, error or
+                or its kind number, which must be inside that reply's
+                ``type_count``; a level is no_report, warning, error or
                 fatal. Example: {"Nets with no driving source": "no_report"}.
             project_path: the .PrjPcb; default the focused project.
             save: save the project file afterwards so the setting persists.

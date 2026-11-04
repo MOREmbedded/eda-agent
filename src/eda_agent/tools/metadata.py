@@ -161,6 +161,10 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 _OFFLINE_TOOLS = frozenset({
     # Read a profile directory off local disk; Altium is not involved.
     "profile_show", "profile_list",
+    # The plan half of the two profile managers: both read the profile and
+    # run the synthesis with nothing open. Their diff and apply halves do
+    # reach the bridge and keep the live_only their prefix gives them.
+    "pcb_rules_plan", "proj_erc_plan",
     # Read or write library FILES directly (OLE streams, LibPkg text,
     # byte copies); the bridge is never called.
     "lib_read_pcblib_headers", "lib_extract_step_models", "lib_write_libpkg",
@@ -337,6 +341,14 @@ INTERACTION_OVERRIDES = {
     "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
     "design_read_rules_export": READONLY, "design_phase_gate": READONLY,
     "design_phase_standing": READONLY,
+    # The plan and diff halves of the two profile managers. Plan reads a
+    # profile off local disk and diff reads the board or the project; only
+    # apply writes. The pcb_ and proj_ prefixes both default to silent,
+    # which would advertise "show me what would change" as a tool that
+    # changes something, and the "_diff" marker is only recognised with a
+    # trailing underscore so neither diff matched it either.
+    "pcb_rules_plan": READONLY, "pcb_rules_diff": READONLY,
+    "proj_erc_plan": READONLY, "proj_erc_diff": READONLY,
     # Appends to the product's ledger of stage answers in the workspace.
     "design_phase_answer": SILENT,
     # Writes the deck and its results into a run folder in the workspace.

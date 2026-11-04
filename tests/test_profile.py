@@ -245,3 +245,26 @@ def test_a_clean_profile_reports_no_errors(tmp_path):
     p = profile_mod.load_profile(d)
     assert p.errors == ()
     assert p.summary()["errors"] == []
+
+
+def test_the_erc_set_is_loaded_and_its_named_variants_listed(tmp_path):
+    d = tmp_path / "profile"
+    (d / "erc_levels").mkdir(parents=True)
+    (d / "erc_levels.json").write_text(
+        '{"levels": {"Duplicate Net Names": "fatal"}}', encoding="utf-8")
+    (d / "erc_levels" / "strict.json").write_text('{"levels": {}}',
+                                                  encoding="utf-8")
+    p = profile_mod.load_profile(d)
+    assert p.erc_levels["levels"] == {"Duplicate Net Names": "fatal"}
+    assert p.erc_sets() == ["strict"]
+    summary = p.summary()
+    assert summary["has_erc_levels"] is True and summary["erc_sets"] == ["strict"]
+
+
+def test_a_profile_with_no_erc_set_says_so_without_raising(tmp_path):
+    d = tmp_path / "profile"
+    d.mkdir()
+    p = profile_mod.load_profile(d)
+    assert p.erc_levels == {} and p.erc_sets() == []
+    assert p.summary()["has_erc_levels"] is False
+    assert profile_mod.check_erc_sets(d) == []

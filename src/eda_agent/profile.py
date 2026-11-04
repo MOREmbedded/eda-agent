@@ -27,6 +27,13 @@ Two file shapes are genuinely new here (nothing already reads them):
                                TARGETS pcb_rules_plan synthesizes the board's
                                Altium design rules from, never the computed
                                rules themselves
+  - erc_levels.json         -- {"levels": {violation type: level}}: the ERC
+                               matrix (Project Options > Error Reporting)
+                               this owner's projects carry. Named variants
+                               live in erc_levels/<name>.json and may
+                               "extends" one another, which is how a company
+                               base policy and a per-workspace narrowing of
+                               it stay two files rather than two copies.
   - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
                                stages this owner runs. Absent means none,
                                and the phase tools are not advertised.
@@ -162,6 +169,11 @@ class ActiveProfile:
     #: and storing the output here would let a stored number drift away from
     #: the calculator that justified it.
     design_rules: dict = field(default_factory=dict)
+    #: erc_levels.json -- the default ERC set, as written. Kept raw rather
+    #: than resolved, because resolving follows "extends" across files and
+    #: a set naming a base that is not there has to be an error the tool
+    #: reports, not an empty dict every caller silently accepts.
+    erc_levels: dict = field(default_factory=dict)
     phase_gates: dict = field(default_factory=dict)
     naming_path: Path | None = None
     company_goals_path: Path | None = None
@@ -188,6 +200,8 @@ class ActiveProfile:
             "footprint_policy": self.footprint_policy,
             "document_settings": self.document_settings,
             "phase_gates": self.phase_gates,
+            "has_erc_levels": bool(self.erc_levels),
+            "erc_sets": self.erc_sets(),
             "has_naming": self.naming_path is not None,
             "has_company_goals": self.company_goals_path is not None,
             "rulesets": self.rulesets(),
@@ -201,6 +215,13 @@ class ActiveProfile:
         if not self.rules_dir or not self.rules_dir.is_dir():
             return []
         return sorted(p.stem for p in self.rules_dir.glob("*.json"))
+
+    def erc_sets(self) -> list[str]:
+        """The named ERC sets in ``erc_levels/``. The profile's own
+        ``erc_levels.json`` is not one of them: it is the default, reached
+        by naming no set at all."""
+        from .design.erc_matrix import set_names
+        return set_names(self.directory)
 
     def fab_profile_names(self) -> list[str]:
         if not self.fab_profiles_dir or not self.fab_profiles_dir.is_dir():
@@ -261,6 +282,7 @@ def load_profile(directory: Path) -> ActiveProfile:
     footprint_policy = read("footprint_policy.json")
     document_settings = read("document_settings.json")
     design_rules = read("design_rules.json")
+    erc_levels = read("erc_levels.json")
     phase_gates = read("phase_gates.json")
 
     naming_path = directory / "naming.json"
@@ -276,6 +298,7 @@ def load_profile(directory: Path) -> ActiveProfile:
         footprint_policy=footprint_policy,
         document_settings=document_settings,
         design_rules=design_rules,
+        erc_levels=erc_levels,
         phase_gates=phase_gates,
         naming_path=naming_path if naming_path.exists() else None,
         company_goals_path=company_goals_path if company_goals_path.exists() else None,
@@ -382,6 +405,32 @@ def check_document_settings(data: dict) -> list[str]:
             problems.append(
                 f"document_settings.json: {key} must be a whole number of mils, "
                 f"got {value!r}")
+    return problems
+
+
+def check_erc_sets(directory: Path) -> list[str]:
+    """Every ERC set in a profile, each resolved the way the tools resolve it.
+
+    One function rather than a per-file check, because a set is only valid
+    in the company of the sets it ``extends``: a file that is perfect on
+    its own but names a base that is not there sets nothing, and the point
+    of ``profile-validate`` is to say so before somebody applies it to a
+    project and wonders why half their policy is missing.
+    """
+    from .design.erc_matrix import DEFAULT_FILENAME, read_set, set_names
+
+    root = Path(directory)
+    names = [""] if (root / DEFAULT_FILENAME).is_file() else []
+    names += set_names(root)
+    problems: list[str] = []
+    for name in names:
+        got = read_set(root, name)
+        reason = str(got.get("reason"))
+        # A base set is read once on its own and again through every set
+        # that extends it, so the same broken line arrives once per
+        # dependant. Reported once, in the order first met.
+        if not got.get("ok") and reason not in problems:
+            problems.append(reason)
     return problems
 
 

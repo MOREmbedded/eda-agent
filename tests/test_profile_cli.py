@@ -384,3 +384,53 @@ def test_show_reports_a_value_it_had_to_ignore(tmp_path, monkeypatch, capsys):
 
     assert cli.cmd_phases_show(as_json=False) == 1
     assert "bananas" in capsys.readouterr().err
+
+
+def test_the_scaffold_makes_room_for_erc_sets_but_asserts_no_policy(tmp_path):
+    """A scaffolded set would name violation types by Altium's own prose,
+    and a different Altium version calls some of them something else, so a
+    brand-new profile would start out reporting half its policy unknown."""
+    assert cli.cmd_profile_init("acme", here=True) == 0
+    profile_dir = tmp_path / ".eda-agent" / "profile"
+    assert (profile_dir / "erc_levels").is_dir()
+    assert not (profile_dir / "erc_levels.json").exists()
+    assert cli.cmd_profile_validate(name=None, here=True) == 0
+
+
+def test_validate_reports_a_broken_erc_set(tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=True)
+    profile_dir = tmp_path / ".eda-agent" / "profile"
+    (profile_dir / "erc_levels" / "house.json").write_text(
+        json.dumps({"levels": {"Duplicate Net Names": "loud"}}),
+        encoding="utf-8")
+    assert cli.cmd_profile_validate(name=None, here=True) == 1
+    assert "house.json" in capsys.readouterr().err
+
+
+def test_a_base_set_is_reported_once_however_many_sets_extend_it(tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=True)
+    sets = tmp_path / ".eda-agent" / "profile" / "erc_levels"
+    (sets / "company.json").write_text(
+        json.dumps({"levels": {"Duplicate Net Names": "loud"}}),
+        encoding="utf-8")
+    for name in ("house", "project"):
+        (sets / f"{name}.json").write_text(
+            json.dumps({"extends": "company", "levels": {}}), encoding="utf-8")
+    assert cli.cmd_profile_validate(name=None, here=True) == 1
+    reported = [line for line in capsys.readouterr().err.splitlines()
+                if "company.json" in line]
+    assert len(reported) == 1, reported
+
+
+def test_show_names_the_erc_sets(tmp_path, capsys):
+    cli.cmd_profile_init("acme", here=True)
+    profile_dir = tmp_path / ".eda-agent" / "profile"
+    (profile_dir / "erc_levels.json").write_text(
+        json.dumps({"levels": {"Duplicate Net Names": "fatal"}}),
+        encoding="utf-8")
+    (profile_dir / "erc_levels" / "strict.json").write_text(
+        json.dumps({"levels": {}}), encoding="utf-8")
+    assert cli.cmd_profile_show(as_json=False) == 0
+    out = capsys.readouterr().out
+    assert "erc_levels:         1 type(s)" in out
+    assert "strict" in out

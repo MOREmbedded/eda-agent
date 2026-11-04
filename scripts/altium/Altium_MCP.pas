@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.9';
+    SCRIPT_VERSION = '2026.11.04.10';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -14655,20 +14655,55 @@ Begin
     End;
 End;
 
-{ The violation type with this exact description (case ignored), or a      }
-{ number given as text. -1 when neither.                                    }
-Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+{ How many violation types Altium actually has.                             }
+{                                                                           }
+{ DM_ViolationTypeDescription answers by index and has no end marker, and   }
+{ past the end of the enum it hands back whatever adjacent memory reads as  }
+{ a string. MEASURED on AD 26.11: indices 0..166 are the real table, 167 to }
+{ 169 answer empty, and from 170 on it returns truncated fragments of other }
+{ string tables ('Out o', 'Unconnec', 'Gray') plus, at 350, a block of raw  }
+{ UTF-16 carrying NULs. Scanning a fixed 0..400 and keeping anything        }
+{ non-empty therefore reported 295 types where the project has 167, and     }
+{ DM_SetErrorLevels would have been called on 129 indices past the end of   }
+{ the array it indexes.                                                     }
+{                                                                           }
+{ The ids are a contiguous enum from 0, so the first empty description is   }
+{ the end of it. Nothing in the SDK gives a count: IWorkspace declares only }
+{ DM_ViolationTypeDescription and DM_ViolationTypeGroup, and IProject's     }
+{ DM_ViolationCount counts violations, not types.                           }
+Function ErcTypeCount(Workspace : IWorkspace) : Integer;
 Var
     I : Integer;
     Desc : String;
 Begin
+    Result := 0;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc = '' Then Exit;
+        Result := I + 1;
+    End;
+End;
+
+{ The violation type with this exact description (case ignored), or a      }
+{ number given as text. -1 when neither.                                    }
+Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+Var
+    I, Stop : Integer;
+    Desc : String;
+Begin
     Result := -1;
+    Stop := ErcTypeCount(Workspace);
     If (Trim(Text) <> '') And (StrToIntDef(Trim(Text), -1) >= 0) Then
     Begin
         Result := StrToIntDef(Trim(Text), -1);
+        { A number past the end of the table names nothing, and writing to }
+        { it would reach past the array DM_SetErrorLevels indexes.          }
+        If Result >= Stop Then Result := -1;
         Exit;
     End;
-    For I := 0 To 400 Do
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -14683,12 +14718,15 @@ End;
 { Proj_GetErcLevels - every violation type with its current report level. }
 { Params: project_path (default the focused project), match (substring of  }
 { the description, optional).                                              }
+{ Reports type_count (how many types Altium has) and beyond_table (how     }
+{ many look-alike strings the reader found past the end and ignored, which }
+{ is 129 on AD 26.11; see ErcTypeCount).                                   }
 Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
 Var
     Project : IProject;
     Workspace : IWorkspace;
     Problem, Match, Desc, Items : String;
-    I, Level, Count : Integer;
+    I, Level, Count, Stop, Group, Beyond : Integer;
 Begin
     Project := ErcProject(Params, Problem);
     If Project = Nil Then
@@ -14700,7 +14738,8 @@ Begin
     Match := LowerCase(ExtractJsonValue(Params, 'match'));
     Items := '';
     Count := 0;
-    For I := 0 To 400 Do
+    Stop := ErcTypeCount(Workspace);
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -14708,16 +14747,32 @@ Begin
         Begin
             Level := -1;
             Try Level := Project.DM_ErrorLevels(I); Except Level := -1; End;
+            { The section the Error Reporting dialog files this type under. }
+            Group := -1;
+            Try Group := Workspace.DM_ViolationTypeGroup(I); Except Group := -1; End;
             If Items <> '' Then Items := Items + ',';
             Items := Items + '{"kind":' + IntToStr(I)
                 + ',"description":"' + EscapeJsonString(Desc) + '"'
+                + ',"group":' + IntToStr(Group)
                 + ',"level":"' + ErcLevelName(Level) + '"}';
             Inc(Count);
         End;
     End;
+    { Counted, not reported: it is the measurement that says the table ends }
+    { where it does, and a build where it reads 0 has either a different    }
+    { Altium or a reader that stopped too early.                            }
+    Beyond := 0;
+    For I := Stop To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc <> '' Then Inc(Beyond);
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
         + ',"count":' + IntToStr(Count)
+        + ',"type_count":' + IntToStr(Stop)
+        + ',"beyond_table":' + IntToStr(Beyond)
         + ',"levels":[' + Items + ']}');
 End;
 

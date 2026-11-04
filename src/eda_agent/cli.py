@@ -897,6 +897,11 @@ def _profile_scaffold(directory, name: str) -> None:
     (directory / "phase_gates.json").write_text(_PROFILE_EXAMPLE_PHASE_GATES, encoding="utf-8")
     (directory / "rules").mkdir(exist_ok=True)
     (directory / "fab_profiles").mkdir(exist_ok=True)
+    # The directory but not a file: an ERC set is a policy about which
+    # violations this owner cares about, and a scaffolded example would
+    # name types a given Altium version may not have, so a brand-new
+    # profile would start out reporting half its policy as unknown.
+    (directory / "erc_levels").mkdir(exist_ok=True)
     (directory / "templates").mkdir(exist_ok=True)
     # Project templates are a directory each, under templates/; single
     # documents live in templates/documents/ so neither listing has to
@@ -988,6 +993,15 @@ def cmd_profile_show(*, as_json: bool) -> int:
     print(f"  footprint_defaults: {p.footprint_defaults or '(none)'}")
     print(f"  footprint_policy:   {p.footprint_policy or '(none)'}")
     print(f"  document_settings:  {p.document_settings or '(none)'}")
+    print(f"  design_rules:       {p.design_rules or '(none)'}")
+    # The default ERC set and the named ones are two lines because they
+    # are reached differently: the first by naming no set at all, the
+    # second by name, and one line would read as a list the default is
+    # missing from.
+    managed = len(p.erc_levels.get("levels") or {}) if p.erc_levels else 0
+    print(f"  erc_levels:         "
+          f"{str(managed) + ' type(s)' if p.erc_levels else '(none)'}")
+    print(f"  erc sets:           {p.erc_sets() or '(none)'}")
     print(f"  phase_gates:        {p.phase_gates or '(none)'}")
     print(f"  rulesets:           {p.rulesets() or '(none)'}")
     print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
@@ -1037,6 +1051,7 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
     errors += profile_mod.check_footprint_defaults(p.footprint_defaults)
     errors += profile_mod.check_document_settings(p.document_settings)
     errors += profile_mod.check_phase_gates(p.phase_gates)
+    errors += profile_mod.check_erc_sets(directory)
 
     if p.naming_path:
         try:

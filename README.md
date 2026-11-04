@@ -364,6 +364,15 @@ with no in-place writer each come back reported instead. The file holds
 the synthesis targets rather than the rules, so every number stays traced
 to a fab-profile field or a verified calculator.
 
+The same three verbs manage the project's **ERC matrix**, which lives in
+the `.PrjPcb` and so starts at Altium's defaults on every new project:
+`proj_erc_plan`, `proj_erc_diff` and `proj_erc_apply` over the profile's
+`erc_levels.json`. A set can `extends` another, so a company base policy
+and a per-workspace narrowing of it stay two files rather than two
+copies. A violation type the set does not name keeps the level it has,
+and one this Altium version does not have is reported rather than
+quietly skipped.
+
 Full detail, and the format of each file, is in
 [`docs/PROFILES.md`](docs/PROFILES.md).
 

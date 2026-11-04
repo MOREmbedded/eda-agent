@@ -28,6 +28,9 @@ profile/
   footprint_policy.json      # design.footprint_policy's explicit policy dict
   document_settings.json     # schematic units/grid (see below)
   design_rules.json          # targets the board's DRC rules are built from
+  erc_levels.json            # the project's ERC matrix (the default set)
+  erc_levels/                 # named ERC sets, each able to extend another
+    strict.json                #   (one policy per file)
   phase_gates.json           # which NPI stages this owner runs (default: none)
   templates/                  # plain files, copied as-is
     default/                   #   a whole project (profile-new-project)
@@ -41,8 +44,9 @@ reuse formats that already existed before profiles did -- see
 [ENGINEERING_TOOLS.md](ENGINEERING_TOOLS.md) for `naming.json` and
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
-`document_settings.json`, `design_rules.json`, `phase_gates.json` and
-`templates/` are new, documented below.
+`document_settings.json`, `design_rules.json`, `erc_levels.json`,
+`erc_levels/`, `phase_gates.json` and `templates/` are new, documented
+below.
 
 ## How a profile is found
 
@@ -274,6 +278,81 @@ Measured on a real six-layer board: 37 of its 159 rules read `enabled: true`
 while DRC ignored them, and the only sign was the word `(Disabled)` inside
 the descriptor. `pcb_get_design_rules` and `pcb_get_rule_properties` now
 report `drc_enabled` directly.
+
+## `erc_levels.json` and `erc_levels/`
+
+```json
+{
+  "extends": "company",
+  "levels": {
+    "Nets with multiple names": "no_report",
+    "Nets with no driving source": "error",
+    "Floating power object": "fatal"
+  },
+  "unlisted": "leave"
+}
+```
+
+Project Options > Error Reporting: the level every ERC violation type is
+reported at, one of `no_report`, `warning`, `error` or `fatal`. The matrix
+lives in the `.PrjPcb`, so every new project starts from Altium's defaults
+and a house policy survives only as long as somebody remembers to re-enter
+it. Three tools manage it from the profile:
+
+| | |
+|---|---|
+| `proj_erc_plan` | what the profile asks for. Pure Python, no Altium. |
+| `proj_erc_diff` | how the open project differs from it. |
+| `proj_erc_apply` | closes the gap. `dry_run=True` by default. |
+
+**Sets.** `erc_levels.json` at the profile root is the default set, reached
+by naming no set at all. Any number of named ones live in
+`erc_levels/<name>.json` and are chosen with `set_name`. A set may
+`extends` another, which is resolved before anything is compared, with the
+nearer file winning; `chain` in the reply names the files that were merged,
+base first, so a level nobody expected can be traced to the set that asked
+for it. That is what keeps a company base policy and a per-workspace
+narrowing of it two files rather than two copies.
+
+A level of `null` **drops** an entry an extended set made. "This workspace
+does not manage that type" is a different statement from "set it to
+no_report", and without it a company set could be overridden but never
+narrowed.
+
+**A type is named by Altium's own prose.** `DM_ViolationTypeDescription` is
+the only name there is, so a type is written exactly as
+`proj_get_erc_levels` lists it, matched ignoring case and surrounding
+space. Its kind number works too. A name this Altium does not have is
+reported under `unknown` rather than skipped: a policy quietly missing half
+its entries, because it was written against a version that spelled
+something differently, is worse than one that says so.
+
+**Unlisted types are left alone.** A set naming 12 types is a policy about
+those 12, not an assertion that the other 140 belong at Altium's defaults,
+so the rest come back under `unmanaged` untouched. `"unlisted": "<level>"`
+opts into pinning the whole matrix for an owner who wants exactly that, and
+`unlisted=` on any of the three tools overrides the file for one call.
+
+"The whole matrix" is the types Altium actually has, which is a narrower
+claim than it used to be. `DM_ViolationTypeDescription` answers by index
+with no end marker and, past the end of the enum, returns adjacent memory
+read as a string; the reader used to scan a fixed range and keep anything
+non-empty, which on AD 26.11 reported 295 types for a project that has 167.
+It now stops at the first empty description and reports `type_count` and
+`beyond_table` so the bound is visible. Without that, pinning the matrix
+would have written levels into 129 indices past the end of the array
+`DM_SetErrorLevels` writes to.
+
+**Apply writes only what differs**, so a second apply writes nothing.
+Altium reads every write back, and a level that did not take arrives with a
+`problem` rather than being counted as set. The project is saved afterwards
+unless `save=False`, because an unsaved matrix is lost when the project
+closes.
+
+`eda-agent profile-validate` resolves every set in the profile, including
+the ones only reached through `extends`, so a set naming a base that is not
+there is a problem reported there rather than a policy that silently sets
+nothing.
 
 ## `phase_gates.json`
 
