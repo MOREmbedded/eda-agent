@@ -1636,6 +1636,11 @@ def _scan_bracket_balance(path: str, text: str) -> list[Finding]:
     return findings
 
 
+#: The last line of a routine body: End; in column 0, or a whole body
+#: written on one line.
+_ROUTINE_BODY_END = re.compile(r"^(?:End;|Begin\b.*\bEnd;\s*$)")
+
+
 def _file_level_names(lines: list[str]) -> set:
     """Names declared outside any routine, plus every routine name.
 
@@ -1685,8 +1690,13 @@ def _file_level_names(lines: list[str]) -> set:
     harvest(0, heads[0] if heads else len(lines))
     for n, start in enumerate(heads):
         stop = heads[n + 1] if n + 1 < len(heads) else len(lines)
+        # A one-line body, `Begin DoIt(x); End;`, is a legal routine with
+        # no End; in column 0. MEASURED: two of them before the pump's Var
+        # block left this harvest with no end to start from, so every
+        # global the block declares went missing and 22 correct
+        # assignments to them were reported undeclared.
         ends = [k for k in range(start, stop)
-                if re.match(r"^End;", strip_comments_and_strings(lines[k]))]
+                if _ROUTINE_BODY_END.match(strip_comments_and_strings(lines[k]))]
         if ends:
             harvest(ends[-1] + 1, stop)
     return names

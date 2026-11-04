@@ -1945,11 +1945,22 @@ def register_project_tools(mcp):
             count), ``written`` (up to 50 paths), and ``reason`` when
             nothing was written.
         """
+        import os as _os
         import time as _time
 
         bridge = get_bridge()
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
+            # MEASURED: Altium opens a path that is not there as a NEW,
+            # empty OutJob and focuses it, so the run failed and left a
+            # phantom document active that every later tool then refused
+            # to work on. Checked here, where the path is still a string.
+            if not _os.path.isfile(outjob_path):
+                return {"success": False, "container_name": container_name,
+                        "outjob_path": outjob_path, "reason": (
+                            f"{outjob_path} is not a file; Altium would open "
+                            "a new empty OutJob at that path and focus it. "
+                            "Nothing was run.")}
             params["outjob_path"] = outjob_path
             busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
             if busy:

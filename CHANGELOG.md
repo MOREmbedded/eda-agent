@@ -16,6 +16,27 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **A one-line routine body hid every global a unit declared after it.**
+  The DelphiScript linter found the end of a routine by looking for
+  `End;` in column 0, so a body written as a single
+  `Begin DoIt(x); End;` line had no end it could see, and the unit-level
+  `Var` block that followed was never harvested. Two of those arrived in
+  `StatusForm.pas` ahead of the pump's `Var` block, and 22 correct
+  assignments to the globals it declares were reported as undeclared.
+  The linter now recognises a whole body written on one line.
+
+- **An OutJob path that is not there is refused before Altium sees it.**
+  Measured on AD 26.11: `proj_run_outjob` with an `outjob_path` that does
+  not exist did not fail cleanly. Altium opened a new, empty OutJob at
+  that path and made it the ACTIVE document, so the run wrote nothing
+  and every later tool refused to act on the document now in focus. The
+  path is checked while it is still a string, and nothing is sent.
+
+- **`src/eda_agent/ui/panel_wheel.py` had no licence line.** It arrived
+  from upstream without the SPDX identifier or the copyright notice
+  every other file in the tree carries. Both restored; Apache-2.0
+  section 4(c) asks for the second.
+
 - **A layer only the Layer Stack Manager can have no longer deadlocks
   the two tools that read it.** Found by running them against a real
   six-layer board: the manager carries `Top Surface Finish` and
@@ -34,6 +55,16 @@ maturity classification for every tool.
   symmetric six-layer stack and put it back.
 
 ### Changed
+
+- **Merged from upstream (salitronic/eda-agent, 6 commits, 2026-11-04).**
+  A Config tab on the Altium status panel, scrolled with the mouse wheel
+  from outside the script engine; a writer for a text's `Rotation` and
+  for any primitive's `Locked`; `pcb_special_strings`, which lists and
+  resolves the board's special strings; component parameters read by
+  group on AD 25; and `app_format_value`, a component value formatter in
+  the RKM code of IEC 60062. Upstream's `SCRIPT_VERSION` had reached
+  `2026.11.04.7` and this fork's `2026.11.03.6`; the merged bundle is
+  neither, so it is `2026.11.04.8`.
 
 - **This fork's own pointers now name this fork.** The update
   checker asked `salitronic/eda-agent` whether a pip install was

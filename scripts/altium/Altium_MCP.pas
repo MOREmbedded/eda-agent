@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.03.6';
+    SCRIPT_VERSION = '2026.11.04.8';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -54,6 +54,7 @@ Const
 
     CONFIG_FILE = 'mcp_config.json';
     SAVING_FILE = 'saving.json';
+    PREFS_FILE = 'preferences.json';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -134,6 +135,23 @@ Var
     SavingOff : Boolean;
     SavesHeld : Integer;
     HeldFiles : String;
+    { The Config tab's choices, kept in PREFS_FILE. ValueFormat is how a  }
+    { component value is written back: 'none' (left as it is), 'rkm'    }
+    { (4K7, 2u2) or 'si' (4.7k, 2.2u). ValueUnit is 'with' to add the     }
+    { unit symbol under SI (100nF, 10uH, 3.3V; never on resistors).      }
+    ValueFormat : String;
+    ValueUnit : String;
+    { EditsMode 'readonly' refuses every command that is not a read;      }
+    { UiAutomationMode 'off' stops menus, dialogs and keystrokes (the     }
+    { Python side enforces it); KeepInViewMode 'on' fits the view after   }
+    { each edit (the Python side does it). Defaults: allowed, on, off.    }
+    EditsMode : String;
+    { DeletingMode / ClosingMode 'refused' turn away a command that deletes }
+    { or removes, or that closes a document or project. Default allowed.  }
+    DeletingMode : String;
+    ClosingMode : String;
+    UiAutomationMode : String;
+    KeepInViewMode : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
@@ -2203,6 +2221,43 @@ Begin
         WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"off"}')
     Else
         WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"on"}');
+End;
+
+{ The Config tab's choices outlast a restart: read from PREFS_FILE when the }
+{ pump starts. No file, or a value this script does not know, means 'none' }
+{ and 'without': nothing is reformatted unless the user chose a format.    }
+Procedure LoadPreferences(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    ValueFormat := 'none';
+    ValueUnit := 'without';
+    EditsMode := 'allowed';
+    DeletingMode := 'allowed';
+    ClosingMode := 'allowed';
+    UiAutomationMode := 'on';
+    KeepInViewMode := 'off';
+    If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
+    ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
+    If (ValueFormat <> 'rkm') And (ValueFormat <> 'si') Then ValueFormat := 'none';
+    ValueUnit := LowerCase(ExtractJsonValue(Content, 'value_unit'));
+    { Only SI takes a unit: the RKM code of IEC 60062 has none. }
+    If (ValueUnit <> 'with') Or (ValueFormat <> 'si') Then ValueUnit := 'without';
+    If LowerCase(ExtractJsonValue(Content, 'edits')) = 'readonly' Then EditsMode := 'readonly';
+    If LowerCase(ExtractJsonValue(Content, 'deleting')) = 'refused' Then DeletingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'closing')) = 'refused' Then ClosingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
+    If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
+End;
+
+Procedure StorePreferences(Dummy : Integer);
+Begin
+    WriteFileContent(WorkspaceDir + PREFS_FILE,
+        '{"value_format":"' + ValueFormat + '","value_unit":"' + ValueUnit
+        + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
+        + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
+        + '","keep_in_view":"' + KeepInViewMode + '"}');
 End;
 
 {..............................................................................}
@@ -5027,6 +5082,791 @@ Begin
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
+{..............................................................................}
+{ Component values without a decimal point: the RKM code of IEC 60062.       }
+{                                                                              }
+{ A decimal point vanishes in a scaled font, a print or a scan ("4.7K" reads  }
+{ "47K"), and a comma or a point means different things in different locales, }
+{ which a design file does not record. So the value is written with a LETTER }
+{ where the point would be: 4K7, 0R005, 2u2, 10uF, 2u2H, 3V3, 500mA, 0%1,     }
+{ 2ppm5, 125C. Output is pure ASCII and locale-free; input is tolerant (4.7k, }
+{ 4,7 kOhm, 10 000uF, 2.2uF, 0.1 uF, 3,3 V, 125 degC).                        }
+{                                                                              }
+{ NO ROUNDING and no floating point: a value is a digit string and a power of }
+{ ten, the letters only move the point. 1K23456789012345678 comes back as it }
+{ went in. A value travels as a plain decimal string ('0.0000022').           }
+{                                                                              }
+{ The letters are chosen so nothing reads two ways, even upper-cased:        }
+{   ohm      R K M G; m is MEGA (no milli / micro: 0R005, 0R0005)            }
+{   farad    p n u, F; no femto (an upper-cased f is the farad: 0p1)         }
+{   henry    p n u m, H; M read as milli                                     }
+{   volt / ampere  p n u m, V / A; M read as milli (no megavolts), k read    }
+{            but never written (1500V)                                        }
+{ The unit letter (R F H V A, % ppm C) decides the kind; without one, p / n  }
+{ / u is a capacitor and G M m K an ohm value. The F is written only on a    }
+{ whole number of p / n / u (10uF, but 2u2); the H, V and A always.          }
+{                                                                              }
+{ Every Vf function answers a TAB-separated record: 'OK' and its fields, or  }
+{ 'ERR' and the message. No record, array or var parameter: the same text    }
+{ runs under DelphiScript and Free Pascal.                                   }
+{..............................................................................}
+
+Function VfField(Rec : String; N : Integer) : String;
+Var
+    S : String;
+    I, P : Integer;
+Begin
+    Result := '';
+    S := Rec;
+    For I := 1 To N Do
+    Begin
+        P := Pos(Chr(9), S);
+        If P = 0 Then Exit;
+        S := Copy(S, P + 1, Length(S));
+    End;
+    P := Pos(Chr(9), S);
+    If P > 0 Then Result := Copy(S, 1, P - 1) Else Result := S;
+End;
+
+Function VfErr(Msg : String) : String;
+Begin
+    Result := 'ERR' + Chr(9) + Msg;
+End;
+
+Function VfIsDigit(C : String) : Boolean;
+Begin
+    Result := (Length(C) = 1) And (C >= '0') And (C <= '9');
+End;
+
+Function VfIsMult(C : String) : Boolean;
+Begin
+    Result := (Length(C) = 1) And (Pos(C, 'GgMmKkUuNnPp') > 0);
+End;
+
+{ The kind named by K (aliases, case ignored); '' when unknown. }
+Function VfKind(K : String) : String;
+Var
+    U : String;
+Begin
+    U := UpperCase(Trim(K));
+    Result := '';
+    If (U = 'OHM') Or (U = 'R') Or (U = 'RES') Then Result := 'ohm'
+    Else If (U = 'FARAD') Or (U = 'C') Or (U = 'F') Or (U = 'CAP') Then Result := 'farad'
+    Else If (U = 'HENRY') Or (U = 'L') Or (U = 'H') Or (U = 'IND') Then Result := 'henry'
+    Else If (U = 'VOLT') Or (U = 'V') Then Result := 'volt'
+    Else If (U = 'AMPERE') Or (U = 'A') Or (U = 'AMP') Then Result := 'ampere'
+    Else If (U = 'PERCENT') Or (U = '%') Then Result := 'percent'
+    Else If U = 'PPM' Then Result := 'ppm'
+    Else If (U = 'CELSIUS') Or (U = 'DEGC') Or (U = 'TEMP') Then Result := 'celsius';
+End;
+
+Function VfUnitOf(Kind : String) : String;
+Begin
+    Result := '';
+    If Kind = 'ohm' Then Result := 'R'
+    Else If Kind = 'farad' Then Result := 'F'
+    Else If Kind = 'henry' Then Result := 'H'
+    Else If Kind = 'volt' Then Result := 'V'
+    Else If Kind = 'ampere' Then Result := 'A'
+    Else If Kind = 'percent' Then Result := '%'
+    Else If Kind = 'ppm' Then Result := 'ppm'
+    Else If Kind = 'celsius' Then Result := 'C';
+End;
+
+Function VfKindOfUnit(UnitTok : String) : String;
+Begin
+    Result := '';
+    If UnitTok = 'R' Then Result := 'ohm'
+    Else If UnitTok = 'F' Then Result := 'farad'
+    Else If UnitTok = 'H' Then Result := 'henry'
+    Else If UnitTok = 'V' Then Result := 'volt'
+    Else If UnitTok = 'A' Then Result := 'ampere'
+    Else If UnitTok = '%' Then Result := 'percent'
+    Else If UnitTok = 'ppm' Then Result := 'ppm'
+    Else If UnitTok = 'C' Then Result := 'celsius';
+End;
+
+Function VfNegativeOk(Kind : String) : Boolean;
+Begin
+    Result := (Kind = 'volt') Or (Kind = 'ampere') Or (Kind = 'percent')
+              Or (Kind = 'ppm') Or (Kind = 'celsius');
+End;
+
+{ Length of the unit token at S[I]: 3 for ppm, 1 for R F H V A C %, else 0. }
+Function VfUnitLen(S : String; I : Integer) : Integer;
+Var
+    C : String;
+Begin
+    Result := 0;
+    If LowerCase(Copy(S, I, 3)) = 'ppm' Then
+    Begin
+        Result := 3;
+        Exit;
+    End;
+    C := UpperCase(Copy(S, I, 1));
+    If (Length(C) = 1) And (Pos(C, 'RFHVAC%') > 0) Then Result := 1;
+End;
+
+Function VfUnitTok(S : String; I : Integer) : String;
+Begin
+    If VfUnitLen(S, I) = 3 Then Result := 'ppm'
+    Else Result := UpperCase(Copy(S, I, 1));
+End;
+
+{ Power of ten of multiplier M for Kind; 99 when it is not one there. }
+Function VfMultPower(Kind, M : String) : Integer;
+Begin
+    Result := 99;
+    If Kind = 'ohm' Then
+    Begin
+        If (M = 'G') Or (M = 'g') Then Result := 9
+        Else If (M = 'M') Or (M = 'm') Then Result := 6
+        Else If (M = 'K') Or (M = 'k') Then Result := 3;
+    End
+    Else If (Kind = 'farad') Or (Kind = 'henry') Or (Kind = 'volt') Or (Kind = 'ampere') Then
+    Begin
+        If (M = 'u') Or (M = 'U') Then Result := -6
+        Else If (M = 'n') Or (M = 'N') Then Result := -9
+        Else If (M = 'p') Or (M = 'P') Then Result := -12
+        Else If (Kind <> 'farad') And ((M = 'm') Or (M = 'M')) Then Result := -3
+        Else If ((Kind = 'volt') Or (Kind = 'ampere')) And ((M = 'k') Or (M = 'K')) Then Result := 3;
+    End;
+End;
+
+Function VfLetterPower(L : String) : Integer;
+Begin
+    Result := 0;
+    If L = 'G' Then Result := 9
+    Else If L = 'M' Then Result := 6
+    Else If L = 'K' Then Result := 3
+    Else If L = 'm' Then Result := -3
+    Else If L = 'u' Then Result := -6
+    Else If L = 'n' Then Result := -9
+    Else If L = 'p' Then Result := -12;
+End;
+
+{ The output letter for a value whose leading digit is at 10^Mag. }
+Function VfOutLetter(Kind : String; Mag : Integer) : String;
+Begin
+    If Kind = 'ohm' Then
+    Begin
+        If Mag >= 9 Then Result := 'G'
+        Else If Mag >= 6 Then Result := 'M'
+        Else If Mag >= 3 Then Result := 'K'
+        Else Result := 'R';
+    End
+    Else If Kind = 'farad' Then
+    Begin
+        If Mag >= 0 Then Result := 'F'
+        Else If Mag >= -6 Then Result := 'u'
+        Else If Mag >= -9 Then Result := 'n'
+        Else Result := 'p';
+    End
+    Else If (Kind = 'henry') Or (Kind = 'volt') Or (Kind = 'ampere') Then
+    Begin
+        If Mag >= 0 Then Result := VfUnitOf(Kind)
+        Else If Mag >= -3 Then Result := 'm'
+        Else If Mag >= -6 Then Result := 'u'
+        Else If Mag >= -9 Then Result := 'n'
+        Else Result := 'p';
+    End
+    Else Result := VfUnitOf(Kind);
+End;
+
+Function VfZeros(N : Integer) : String;
+Var
+    I : Integer;
+Begin
+    Result := '';
+    For I := 1 To N Do Result := Result + '0';
+End;
+
+{ D (digits) x 10^E as a plain decimal string, no exponent; D has no      }
+{ leading or trailing zeros except '0' itself.                             }
+Function VfPlain(D : String; E : Integer) : String;
+Var
+    P : Integer;
+Begin
+    If D = '0' Then
+    Begin
+        Result := '0';
+        Exit;
+    End;
+    If E >= 0 Then
+    Begin
+        Result := D + VfZeros(E);
+        Exit;
+    End;
+    P := Length(D) + E;
+    If P <= 0 Then Result := '0.' + VfZeros(-P) + D
+    Else Result := Copy(D, 1, P) + '.' + Copy(D, P + 1, Length(D));
+End;
+
+{ Digits and exponent in canonical form: 'OK' D E (no leading / trailing zeros). }
+Function VfCanon(D : String; E : Integer) : String;
+Begin
+    While (Length(D) > 1) And (Copy(D, 1, 1) = '0') Do D := Copy(D, 2, Length(D));
+    If D = '' Then D := '0';
+    While (Length(D) > 1) And (Copy(D, Length(D), 1) = '0') Do
+    Begin
+        D := Copy(D, 1, Length(D) - 1);
+        Inc(E);
+    End;
+    If D = '0' Then E := 0;
+    Result := 'OK' + Chr(9) + D + Chr(9) + IntToStr(E);
+End;
+
+{ VfToString - Kind and a plain decimal ('-0.0000022', '1e3') -> 'OK' text. }
+Function VfToString(Kind, ValueText : String) : String;
+Var
+    K, S, C, Whole, Frac, ExpS, D, Letter, Plain, UnitO, Sign, Rec : String;
+    I, N, E, Mag, PointPos : Integer;
+    Neg : Boolean;
+Begin
+    K := VfKind(Kind);
+    If K = '' Then
+    Begin
+        Result := VfErr('unknown kind ' + Kind);
+        Exit;
+    End;
+    S := Trim(ValueText);
+    N := Length(S);
+    I := 1;
+    Neg := False;
+    If (Copy(S, 1, 1) = '-') Or (Copy(S, 1, 1) = '+') Then
+    Begin
+        Neg := Copy(S, 1, 1) = '-';
+        I := 2;
+    End;
+    Whole := '';
+    While VfIsDigit(Copy(S, I, 1)) Do
+    Begin
+        Whole := Whole + Copy(S, I, 1);
+        Inc(I);
+    End;
+    Frac := '';
+    If Copy(S, I, 1) = '.' Then
+    Begin
+        Inc(I);
+        While VfIsDigit(Copy(S, I, 1)) Do
+        Begin
+            Frac := Frac + Copy(S, I, 1);
+            Inc(I);
+        End;
+    End;
+    ExpS := '';
+    C := Copy(S, I, 1);
+    If ((C = 'e') Or (C = 'E')) And (Whole + Frac <> '') Then
+    Begin
+        Inc(I);
+        If (Copy(S, I, 1) = '-') Or (Copy(S, I, 1) = '+') Then
+        Begin
+            If Copy(S, I, 1) = '-' Then ExpS := '-';
+            Inc(I);
+        End;
+        If Not VfIsDigit(Copy(S, I, 1)) Then I := N + 2;   { no digits: refused below }
+        While VfIsDigit(Copy(S, I, 1)) Do
+        Begin
+            ExpS := ExpS + Copy(S, I, 1);
+            Inc(I);
+        End;
+    End;
+    If (Whole + Frac = '') Or (I <> N + 1) Then
+    Begin
+        Result := VfErr('not a number: ' + ValueText);
+        Exit;
+    End;
+    E := 0;
+    If ExpS <> '' Then E := StrToInt(ExpS);
+    Rec := VfCanon(Whole + Frac, E - Length(Frac));
+    D := VfField(Rec, 1);
+    E := StrToInt(VfField(Rec, 2));
+    If Neg And (D <> '0') And (Not VfNegativeOk(K)) Then
+    Begin
+        Result := VfErr('negative ' + K + ' value');
+        Exit;
+    End;
+    UnitO := VfUnitOf(K);
+    If D = '0' Then
+    Begin
+        Result := 'OK' + Chr(9) + '0' + UnitO;
+        Exit;
+    End;
+    Sign := '';
+    If Neg Then Sign := '-';
+    Mag := Length(D) + E - 1;
+    Letter := VfOutLetter(K, Mag);
+    Plain := VfPlain(D, E - VfLetterPower(Letter));
+    PointPos := Pos('.', Plain);
+    If PointPos > 0 Then
+    Begin
+        Whole := Copy(Plain, 1, PointPos - 1);
+        Frac := Copy(Plain, PointPos + 1, Length(Plain));
+    End
+    Else
+    Begin
+        Whole := Plain;
+        Frac := '';
+    End;
+    If K = 'ohm' Then Result := Sign + Whole + Letter + Frac             { 10R 1K5 0R005 }
+    Else If Letter = UnitO Then Result := Sign + Whole + UnitO + Frac    { 3V3 2F2 0%1 }
+    Else If K = 'farad' Then
+    Begin
+        If Frac = '' Then Result := Sign + Whole + Letter + 'F'           { 10uF }
+        Else Result := Sign + Whole + Letter + Frac;                      { 2u2 }
+    End
+    Else Result := Sign + Whole + Letter + Frac + UnitO;                 { 2u2H 500mV }
+    Result := 'OK' + Chr(9) + Result;
+End;
+
+{ Text with the case-insensitive word W replaced by Rep everywhere. }
+Function VfReplaceWord(S, W, Rep : String) : String;
+Var
+    Rest : String;
+    P : Integer;
+Begin
+    Result := '';
+    Rest := S;
+    P := Pos(W, LowerCase(Rest));
+    While P > 0 Do
+    Begin
+        Result := Result + Copy(Rest, 1, P - 1) + Rep;
+        Rest := Copy(Rest, P + Length(W), Length(Rest));
+        P := Pos(W, LowerCase(Rest));
+    End;
+    Result := Result + Rest;
+End;
+
+{ Grouping characters out, symbols and words to the letters the grammar knows. }
+Function VfNormalise(Text : String) : String;
+Var
+    S, C : String;
+    I, O : Integer;
+Begin
+    S := '';
+    For I := 1 To Length(Text) Do
+    Begin
+        C := Copy(Text, I, 1);
+        O := Ord(Text[I]);
+        If (O = 160) Or (O = $202F) Or (O = $2009) Or (O = $2007)
+           Or (C = '''') Or (C = '_') Or (O = 176) Or (O = 186) Then
+            S := S                     { digit grouping and degree signs: dropped }
+        Else If (O = 181) Or (O = $3BC) Then S := S + 'u'                    { micro }
+        Else If (O = $3A9) Or (O = $2126) Then S := S + 'R'                  { ohm }
+        Else If (O = $2212) Or (O = $2013) Then S := S + '-'                 { minus }
+        Else If O = 9 Then S := S + ' '
+        Else S := S + C;
+    End;
+    S := VfReplaceWord(S, 'ohms', 'R');
+    S := VfReplaceWord(S, 'ohm', 'R');
+    S := VfReplaceWord(S, 'farads', 'F');
+    S := VfReplaceWord(S, 'farad', 'F');
+    S := VfReplaceWord(S, 'henries', 'H');
+    S := VfReplaceWord(S, 'henrys', 'H');
+    S := VfReplaceWord(S, 'henry', 'H');
+    S := VfReplaceWord(S, 'volts', 'V');
+    S := VfReplaceWord(S, 'volt', 'V');
+    S := VfReplaceWord(S, 'amperes', 'A');
+    S := VfReplaceWord(S, 'ampere', 'A');
+    S := VfReplaceWord(S, 'amps', 'A');
+    S := VfReplaceWord(S, 'amp', 'A');
+    S := VfReplaceWord(S, 'mfd', 'uF');
+    S := VfReplaceWord(S, 'meg', 'M');
+    S := VfReplaceWord(S, 'degc', 'C');
+    S := VfReplaceWord(S, 'deg', '');
+    S := VfReplaceWord(S, 'percent', '%');
+    Result := Trim(S);
+End;
+
+{ Whether the word after a space is nothing but value letters, so the     }
+{ space joins it to the number ("10 uF", "4.7 kR", "2u2 H"); a word like   }
+{ "Vishay" is not. UnitOnly: just a unit (after a letter point).          }
+Function VfLetterWord(W : String; UnitOnly : Boolean) : Boolean;
+Var
+    I, N : Integer;
+Begin
+    Result := False;
+    N := Length(W);
+    If N = 0 Then Exit;
+    I := 1;
+    If UnitOnly Then
+    Begin
+        If VfUnitLen(W, 1) = 0 Then Exit;
+        I := 1 + VfUnitLen(W, 1);
+    End
+    Else
+    Begin
+        If VfIsDigit(Copy(W, 1, 1)) Then Exit;
+        If VfIsMult(Copy(W, 1, 1)) And (VfUnitLen(W, 1) <> 3) Then Inc(I);
+        I := I + VfUnitLen(W, I);
+        While VfIsDigit(Copy(W, I, 1)) Do Inc(I);
+        I := I + VfUnitLen(W, I);
+    End;
+    If Copy(W, I, 1) = '/' Then I := N + 1;     { 50 ppm/C }
+    Result := I > N;
+End;
+
+Function VfSkipSpace(S : String; K : Integer; UnitOnly : Boolean) : Integer;
+Var
+    K2, P : Integer;
+    W : String;
+Begin
+    Result := K;
+    If Copy(S, K, 1) <> ' ' Then Exit;
+    K2 := K;
+    While Copy(S, K2, 1) = ' ' Do Inc(K2);
+    W := Copy(S, K2, Length(S));
+    P := Pos(' ', W);
+    If P > 0 Then W := Copy(W, 1, P - 1);
+    If VfLetterWord(W, UnitOnly) Then Result := K2;
+End;
+
+{ VfScan - the normalised text left to right: sign, number, exponent,     }
+{ multiplier, letter-point digits, unit; the rest. A value that runs on   }
+{ into digits, separators or letters it cannot use is malformed.          }
+{ 'OK' sign num exp mult digits unit rest                                 }
+Function VfScan(S, Text : String) : String;
+Var
+    I, J, N, L : Integer;
+    Sign, Num, Ex, Mult, Digits, UnitTok, Rest, C, Raw : String;
+    Go : Boolean;
+Begin
+    N := Length(S);
+    I := 1;
+    Sign := '';
+    If (Copy(S, 1, 1) = '+') Or (Copy(S, 1, 1) = '-') Then
+    Begin
+        Sign := Copy(S, 1, 1);
+        I := 2;
+    End;
+    J := I;
+    Go := True;
+    While Go And (J <= N) Do
+    Begin
+        C := Copy(S, J, 1);
+        If VfIsDigit(C) Or (C = '.') Or (C = ',') Then Inc(J)
+        Else If (C = ' ') And (J > I) And VfIsDigit(Copy(S, J - 1, 1))
+                And VfIsDigit(Copy(S, J + 1, 1)) And VfIsDigit(Copy(S, J + 2, 1))
+                And VfIsDigit(Copy(S, J + 3, 1)) And (Not VfIsDigit(Copy(S, J + 4, 1)))
+                And (Pos('.', Copy(S, I, J - I)) = 0) And (Pos(',', Copy(S, I, J - I)) = 0) Then
+            Inc(J)                                            { 10 000uF }
+        Else Go := False;
+    End;
+    Raw := Copy(S, I, J - I);
+    Num := '';
+    For L := 1 To Length(Raw) Do
+        If Copy(Raw, L, 1) <> ' ' Then Num := Num + Copy(Raw, L, 1);
+    I := J;
+    Ex := '';
+    C := Copy(S, I, 1);
+    If (Num <> '') And ((C = 'e') Or (C = 'E')) Then
+    Begin
+        J := I + 1;
+        If (Copy(S, J, 1) = '-') Or (Copy(S, J, 1) = '+') Then Inc(J);
+        If VfIsDigit(Copy(S, J, 1)) Then
+        Begin
+            While VfIsDigit(Copy(S, J, 1)) Do Inc(J);
+            Ex := Copy(S, I + 1, J - I - 1);
+            If Copy(Ex, 1, 1) = '+' Then Ex := Copy(Ex, 2, Length(Ex));
+            I := J;
+        End;
+    End;
+    If (Num <> '') Or (Ex <> '') Then I := VfSkipSpace(S, I, False);
+    Mult := '';
+    UnitTok := '';
+    Digits := '';
+    L := VfUnitLen(S, I);
+    If L > 0 Then
+    Begin
+        UnitTok := VfUnitTok(S, I);
+        I := I + L;
+    End
+    Else If VfIsMult(Copy(S, I, 1)) Then
+    Begin
+        Mult := Copy(S, I, 1);
+        Inc(I);
+        L := VfUnitLen(S, I);
+        If L > 0 Then
+        Begin
+            UnitTok := VfUnitTok(S, I);
+            I := I + L;
+        End;
+    End;
+    If (Mult <> '') Or (UnitTok <> '') Then
+    Begin
+        J := I;
+        While VfIsDigit(Copy(S, J, 1)) Do Inc(J);
+        If J > I Then
+        Begin
+            Digits := Copy(S, I, J - I);
+            I := J;
+            If UnitTok = '' Then
+            Begin
+                I := VfSkipSpace(S, I, True);                 { 2u2 H }
+                L := VfUnitLen(S, I);
+                If L > 0 Then
+                Begin
+                    UnitTok := VfUnitTok(S, I);               { 2u2F 1m5V 4k7R }
+                    I := I + L;
+                End;
+            End;
+        End;
+    End;
+    Rest := Copy(S, I, Length(S));
+    If (Rest <> '') And (Copy(Rest, 1, 1) <> ' ') Then
+    Begin
+        C := Copy(Rest, 1, 1);
+        If VfIsDigit(C) Or (C = '.') Or (C = ',') Or VfIsMult(C) Or (VfUnitLen(Rest, 1) > 0) Then
+        Begin
+            Result := VfErr('malformed value ' + Text + ' (at ' + Rest + ')');
+            Exit;
+        End;
+    End;
+    Rest := Trim(Rest);
+    Result := 'OK' + Chr(9) + Sign + Chr(9) + Num + Chr(9) + Ex + Chr(9) + Mult
+              + Chr(9) + Digits + Chr(9) + UnitTok + Chr(9) + Rest;
+End;
+
+Function VfLastPos(C, S : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(S) Do
+        If Copy(S, I, 1) = C Then Result := I;
+End;
+
+Function VfCount(C, S : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(S) Do
+        If Copy(S, I, 1) = C Then Inc(Result);
+End;
+
+{ VfNumber - digits with '.' and ',' -> 'OK' whole frac note, deciding which }
+{ is the decimal point: both present, the last; one used twice or more,     }
+{ grouping; once with exactly three digits after and one to three (not 0)  }
+{ before, ambiguous: Sep (the source's decimal separator) decides.          }
+Function VfNumber(Num, Sep : String; LetterPoint : Boolean) : String;
+Var
+    Dots, Commas, P, I : Integer;
+    Point, SepC, Head, Tail, Frac, Note, Whole, Group, C : String;
+    Grouped : Boolean;
+Begin
+    Dots := VfCount('.', Num);
+    Commas := VfCount(',', Num);
+    Point := '';
+    Note := '';
+    If (Dots > 0) And (Commas > 0) Then
+    Begin
+        If VfLastPos('.', Num) > VfLastPos(',', Num) Then Point := '.' Else Point := ',';
+    End
+    Else If Dots + Commas = 1 Then
+    Begin
+        If Dots = 1 Then SepC := '.' Else SepC := ',';
+        P := Pos(SepC, Num);
+        Head := Copy(Num, 1, P - 1);
+        Tail := Copy(Num, P + 1, Length(Num));
+        Grouped := (Length(Tail) = 3) And (Length(Head) >= 1) And (Length(Head) <= 3) And (Head <> '0');
+        If Not Grouped Then Point := SepC
+        Else If LetterPoint Then Point := ''
+        Else If Sep = SepC Then
+        Begin
+            Point := SepC;
+            Note := '''' + Num + ''' read with ''' + SepC + ''' as the decimal point';
+        End
+        Else Note := '''' + Num + ''' read with ''' + SepC + ''' as thousands grouping';
+    End;
+    If LetterPoint And (Point <> '') Then
+    Begin
+        Result := VfErr('decimal point and letter point together: ' + Num);
+        Exit;
+    End;
+    If Point <> '' Then
+    Begin
+        P := Pos(Point, Num);
+        Head := Copy(Num, 1, P - 1);
+        Frac := Copy(Num, P + 1, Length(Num));
+    End
+    Else
+    Begin
+        Head := Num;
+        Frac := '';
+    End;
+    If (Pos('.', Frac) > 0) Or (Pos(',', Frac) > 0) Then
+    Begin
+        Result := VfErr('malformed value: separator after the point in ' + Num);
+        Exit;
+    End;
+    { the whole part: groups of three after the first, the first one to three }
+    Whole := '';
+    Group := '';
+    P := 0;
+    For I := 1 To Length(Head) + 1 Do
+    Begin
+        C := Copy(Head, I, 1);
+        If (C = '.') Or (C = ',') Or (I > Length(Head)) Then
+        Begin
+            If ((P = 0) And (Length(Group) > 3) And (I <= Length(Head)))
+               Or ((P = 0) And (I <= Length(Head)) And (Length(Group) < 1))
+               Or ((P > 0) And (Length(Group) <> 3)) Then
+            Begin
+                Result := VfErr('malformed value: bad grouping in ' + Num);
+                Exit;
+            End;
+            Whole := Whole + Group;
+            Group := '';
+            Inc(P);
+        End
+        Else Group := Group + C;
+    End;
+    Result := 'OK' + Chr(9) + Whole + Chr(9) + Frac + Chr(9) + Note;
+End;
+
+Function VfAddNote(Notes, Note : String) : String;
+Begin
+    If Note = '' Then Result := Notes
+    Else If Notes = '' Then Result := Note
+    Else Result := Notes + Chr(10) + Note;
+End;
+
+{ VfParse - Text -> 'OK' kind value rest notes (notes LF-separated).      }
+{ Kind ('' = from the text) takes precedence; a unit in the text that     }
+{ contradicts it is a note, the value is still read. Sep is the decimal   }
+{ separator of the SOURCE ('.' or ','); '' = this machine's.              }
+Function VfParse(Text, Kind, Sep : String) : String;
+Var
+    K, S, Rec, Sign, Num, Ex, Mult, Digits, UnitTok, Rest : String;
+    Notes, Found, KRead, Whole, Frac, D, Final : String;
+    Power, P, I, E : Integer;
+    HasDigit : Boolean;
+Begin
+    K := '';
+    If Trim(Kind) <> '' Then
+    Begin
+        K := VfKind(Kind);
+        If K = '' Then
+        Begin
+            Result := VfErr('unknown kind ' + Kind);
+            Exit;
+        End;
+    End;
+    If Sep = '' Then Sep := DecimalSeparator;
+    S := VfNormalise(Text);
+    Rec := VfScan(S, Text);
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    Sign := VfField(Rec, 1);
+    Num := VfField(Rec, 2);
+    Ex := VfField(Rec, 3);
+    Mult := VfField(Rec, 4);
+    Digits := VfField(Rec, 5);
+    UnitTok := VfField(Rec, 6);
+    Rest := VfField(Rec, 7);
+    Notes := '';
+    If Rest <> '' Then Notes := VfAddNote(Notes, 'ignored after the value: ' + Rest);
+    HasDigit := False;
+    For I := 1 To Length(Num) Do
+        If VfIsDigit(Copy(Num, I, 1)) Then HasDigit := True;
+    If (Not HasDigit) And (Digits = '') Then
+    Begin
+        Result := VfErr('not a value: ' + Text);
+        Exit;
+    End;
+    If (Ex <> '') And ((Mult <> '') Or (Digits <> '')) Then
+    Begin
+        Result := VfErr('malformed value: exponent and letter together: ' + Text);
+        Exit;
+    End;
+    Found := VfKindOfUnit(UnitTok);
+    If (Found = '') And (Mult <> '') Then
+    Begin
+        If Pos(Mult, 'UuNnPp') > 0 Then Found := 'farad' Else Found := 'ohm';
+    End;
+    If (K <> '') And (Found <> '') And (Found <> K) Then
+        Notes := VfAddNote(Notes, Text + ' reads as ' + Found + '; taken as ' + K + ' as asked');
+    KRead := Found;
+    If KRead = '' Then KRead := K;
+    Power := 0;
+    If Mult <> '' Then
+    Begin
+        P := VfMultPower(KRead, Mult);
+        If P = 99 Then
+        Begin
+            If (KRead = 'ohm') And ((Mult = 'u') Or (Mult = 'U')) Then
+                Result := VfErr('micro is not used for ohms: write 0R0005')
+            Else If (KRead = 'farad') And (Mult = 'm') Then
+                Result := VfErr('milli is not used for farads: write 1000uF')
+            Else If (KRead = 'farad') And (Mult = 'M') Then
+                Result := VfErr('M is not used for farads: write 1000uF')
+            Else
+                Result := VfErr('''' + Mult + ''' is not a multiplier for ' + KRead + ': ' + Text);
+            Exit;
+        End;
+        Power := P;
+        If (P = 3) And ((KRead = 'volt') Or (KRead = 'ampere')) Then
+            Notes := VfAddNote(Notes, 'kilo read; written out in full');
+    End;
+    Rec := VfNumber(Num, Sep, Digits <> '');
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    Whole := VfField(Rec, 1);
+    Frac := VfField(Rec, 2);
+    Notes := VfAddNote(Notes, VfField(Rec, 3));
+    If Frac = '' Then Frac := Digits;
+    E := 0;
+    If Ex <> '' Then E := StrToInt(Ex);
+    Power := Power + E - Length(Frac);
+    Rec := VfCanon(Whole + Frac, Power);
+    D := VfField(Rec, 1);
+    Power := StrToInt(VfField(Rec, 2));
+    Final := K;
+    If Final = '' Then Final := Found;
+    If (Sign = '-') And (D <> '0') And (Final <> '') And (Not VfNegativeOk(Final)) Then
+    Begin
+        Result := VfErr('negative ' + Final + ' value: ' + Text);
+        Exit;
+    End;
+    If (Sign = '-') And (D <> '0') Then D := '-' + VfPlain(D, Power)
+    Else D := VfPlain(D, Power);
+    Result := 'OK' + Chr(9) + Final + Chr(9) + D + Chr(9) + Rest + Chr(9) + Notes;
+End;
+
+{ VfCleanup - a malformed value string made proper: 'OK' text kind value  }
+{ rest notes. The digits are carried over as they stand; nothing rounds.  }
+Function VfCleanup(Text, Kind, Sep : String) : String;
+Var
+    Rec, TextRec : String;
+Begin
+    Rec := VfParse(Text, Kind, Sep);
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Result := Rec;
+        Exit;
+    End;
+    If VfField(Rec, 1) = '' Then
+    Begin
+        Result := VfErr('kind unknown for ' + Text + ': pass kind');
+        Exit;
+    End;
+    TextRec := VfToString(VfField(Rec, 1), VfField(Rec, 2));
+    If VfField(TextRec, 0) <> 'OK' Then
+    Begin
+        Result := TextRec;
+        Exit;
+    End;
+    Result := 'OK' + Chr(9) + VfField(TextRec, 1) + Chr(9) + VfField(Rec, 1) + Chr(9)
+              + VfField(Rec, 2) + Chr(9) + VfField(Rec, 3) + Chr(9) + VfField(Rec, 4);
+End;
+
 { install-scripts writes the hash of this file into the deployed copy. }
 Function UnitStamp_Utils(Dummy : Integer) : String;
 Begin
@@ -6417,6 +7257,85 @@ Begin
         + JsonInt('interval_minutes', Workspace.DM_GetRecoveryInterval Div 60000)));
 End;
 
+{ App_FormatValue - a component value in the RKM code of IEC 60062 (4K7,  }
+{ 2u2, 10uF, 3V3; the Vf functions in Utils.pas). Pure string work: no     }
+{ document is read or touched. action tostring: kind + value (a plain     }
+{ decimal) -> text. fromstring: text (+ kind, decimal) -> value, kind,     }
+{ rest, notes. cleanup: both, the text made proper. decimal is the SOURCE }
+{ text's decimal separator, '.' or ','; empty = this machine's.          }
+Function App_FormatValue(Params : String; RequestId : String) : String;
+Var
+    Action, Text, Value, Kind, Sep, Rec, Msg, Notes, Line, Arr, Body : String;
+    P : Integer;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Text := ExtractJsonValue(Params, 'text');
+    Value := ExtractJsonValue(Params, 'value');
+    Kind := ExtractJsonValue(Params, 'kind');
+    Sep := Trim(ExtractJsonValue(Params, 'decimal'));
+    If (Sep <> '') And (Sep <> '.') And (Sep <> ',') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'decimal is ''.'' or '','': ' + Sep);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+        Rec := VfToString(Kind, Value)
+    Else If Action = 'fromstring' Then
+        Rec := VfParse(Text, Kind, Sep)
+    Else If Action = 'cleanup' Then
+        Rec := VfCleanup(Text, Kind, Sep)
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'action is tostring, fromstring or cleanup: ' + Action);
+        Exit;
+    End;
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Msg := VfField(Rec, 1);
+        If Copy(Msg, 1, 12) = 'unknown kind' Then
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_KIND', Msg)
+        Else
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Msg);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('text', VfField(Rec, 1))));
+        Exit;
+    End;
+    { fromstring: kind value rest notes; cleanup: text kind value rest notes }
+    P := 1;
+    Body := '';
+    If Action = 'cleanup' Then
+    Begin
+        Body := JsonStr('text', VfField(Rec, 1)) + ',';
+        P := 2;
+    End;
+    If VfField(Rec, P) = '' Then Body := Body + JsonNull('kind') + ','
+    Else Body := Body + JsonStr('kind', VfField(Rec, P)) + ',';
+    Body := Body + JsonStr('value', VfField(Rec, P + 1)) + ',' + JsonStr('rest', VfField(Rec, P + 2));
+    Notes := VfField(Rec, P + 3);
+    Arr := '';
+    While Notes <> '' Do
+    Begin
+        P := Pos(Chr(10), Notes);
+        If P > 0 Then
+        Begin
+            Line := Copy(Notes, 1, P - 1);
+            Notes := Copy(Notes, P + 1, Length(Notes));
+        End
+        Else
+        Begin
+            Line := Notes;
+            Notes := '';
+        End;
+        If Arr <> '' Then Arr := Arr + ',';
+        Arr := Arr + '"' + EscapeJsonString(Line) + '"';
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -6439,6 +7358,7 @@ Begin
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
         'stop_server':         Result := App_StopServer(RequestId);
         'autosave':            Result := App_Autosave(Params, RequestId);
+        'format_value':        Result := App_FormatValue(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
@@ -37408,6 +38328,9 @@ Begin
         End
         Else If PropName = 'Layer'    Then SetPrimitiveLayerByName(Obj, Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
+        { Locked is read as Not Moveable, so it is written the same way;   }
+        { PCB_LockNetRouting writes Moveable on any primitive already.      }
+        Else If PropName = 'Locked' Then Obj.Moveable := Not StrToBool(Value)
         Else If PropName = 'ComponentKind' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Comp.ComponentKind := StrToInt(Value); End
@@ -37474,6 +38397,9 @@ Begin
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Comp.Rotation := StrToFloatDef(Value, 0); End
             Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
+            { A free text, or a component's designator / comment text: the   }
+            { same member PCB_PlaceText and the layout copy already write.    }
+            Else If Oid = eTextObject Then Begin Txt := Obj; Txt.Rotation := StrToFloatDef(Value, 0); End
             Else Matched := False;
         End
         { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }
@@ -51708,6 +52634,163 @@ Begin
     Else
         Result := BuildSuccessResponse(RequestId, '{' + JsonStr('name', Name) + ','
             + JsonInt('deleted', Deleted) + '}');
+End;
+
+{..............................................................................}
+{ PCB_SpecialStrings - Altium's special strings on a board, read only.        }
+{ action list (default): every name the special string converter offers, a   }
+{ walk of FirstSpecialStringName / NextSpecialStringName capped at 2000, and  }
+{ the names that belong to this board (GetBoardSpecificSpecialStrings).       }
+{ action resolve, names = a '|' list of texts (".Layer_Count|.Via_Count", or  }
+{ mixed text such as "Rev .Layer_Count"): each is placed as a temporary free  }
+{ text on the top overlay at the board origin, its ConvertedString read, and  }
+{ every text removed again before the call returns, in one edit.             }
+{ MEASURED (AD 25.8.1): only a text that is ON the board resolves. The        }
+{ converter's Convert answered True with an empty string for every name (the  }
+{ out parameter does not come back to a script), the ConvertedString of a     }
+{ text not added to the board was empty, and IProject.DM_TryToResolve*        }
+{ answered False on a free board.                                            }
+{ The converter and the board's list are held in Variants, as they were       }
+{ proven; the list's interface was never declared in a working script.        }
+{..............................................................................}
+Function PCB_SpecialStrings(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Conv, Wide : Variant;
+    Txt : IPCB_Text;
+    Texts : TInterfaceList;
+    Asked : TStringList;
+    Action, Names, Rest, One, S, Rows, BoardRows, Value, Under : String;
+    I, N, P, BoardCount, Removed : Integer;
+    Capped : Boolean;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If Action = '' Then Action := 'list';
+    If (Action <> 'list') And (Action <> 'resolve') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION', 'action is list or resolve');
+        Exit;
+    End;
+    Names := ExtractJsonValue(Params, 'names');
+    If (Action = 'resolve') And (Trim(Names) = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'names is required for resolve: a ''|'' list such as .Layer_Count|.Via_Count');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    If Action = 'list' Then
+    Begin
+        Conv := PCBServer.SpecialStringConverter;
+        Rows := '';
+        N := 0;
+        S := Conv.FirstSpecialStringName;
+        { Capped: a converter that never answers '' must not hang the loop. }
+        While (S <> '') And (N < 2000) Do
+        Begin
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '"' + EscapeJsonString(S) + '"';
+            Inc(N);
+            S := Conv.NextSpecialStringName;
+        End;
+        Capped := S <> '';
+        BoardRows := '';
+        BoardCount := 0;
+        Try
+            Wide := Conv.GetBoardSpecificSpecialStrings(Board);
+            BoardCount := Wide.Count;
+        Except
+            BoardCount := 0;
+        End;
+        For I := 0 To BoardCount - 1 Do
+        Begin
+            S := '';
+            Try S := Wide.Strings[I]; Except S := ''; End;
+            If S = '' Then Continue;
+            If BoardRows <> '' Then BoardRows := BoardRows + ',';
+            BoardRows := BoardRows + '"' + EscapeJsonString(S) + '"';
+        End;
+        Result := BuildSuccessResponse(RequestId, '{' + JsonInt('count', N) + ','
+            + JsonBool('capped', Capped) + ',"names":[' + Rows + '],'
+            + '"board_names":[' + BoardRows + ']}');
+        Exit;
+    End;
+
+    Asked := TStringList.Create;
+    Rest := Names + '|';
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        One := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If Trim(One) <> '' Then Asked.Add(One);
+    End;
+    If Asked.Count > 200 Then
+    Begin
+        N := Asked.Count;
+        Asked.Free;
+        Result := BuildErrorResponse(RequestId, 'TOO_MANY',
+            'at most 200 names in one call, got ' + IntToStr(N));
+        Exit;
+    End;
+
+    { The temporary texts, kept to be removed: never freed, it holds board }
+    { references.                                                          }
+    Texts := TInterfaceList.Create;
+    Rows := '';
+    Removed := 0;
+    PcbBeginEdit(0);
+    Try
+        For I := 0 To Asked.Count - 1 Do
+        Begin
+            One := Asked.Strings[I];
+            Value := '';
+            Under := '';
+            Txt := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+            If Txt <> Nil Then
+            Begin
+                Txt.XLocation := Board.XOrigin;
+                Txt.YLocation := Board.YOrigin;
+                Txt.Text := One;
+                Txt.Layer := eTopOverlay;
+                Board.AddPCBObject(Txt);
+                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, Txt.I_ObjectAddress);
+                Texts.Add(Txt);
+                { ConvertedString is the text as drawn; UnderlyingString what }
+                { was written, which says the name went in unchanged.         }
+                Try Value := Txt.ConvertedString; Except Value := ''; End;
+                Try Under := Txt.UnderlyingString; Except Under := ''; End;
+            End;
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + '{' + JsonStr('name', One) + ',' + JsonStr('value', Value) + ','
+                + JsonBool('resolved', (Value <> '') And (Value <> One)) + ','
+                + JsonStr('underlying', Under) + '}';
+        End;
+    Finally
+        { Removed in the same edit, also when a read above failed. }
+        For I := 0 To Texts.Count - 1 Do
+        Begin
+            Txt := Texts.Items[I];
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Txt.I_ObjectAddress);
+            Board.RemovePCBObject(Txt);
+            Inc(Removed);
+        End;
+        PcbEndEdit(0);
+    End;
+    N := Asked.Count;
+    Asked.Free;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonInt('count', N) + ','
+        + JsonInt('placed', Texts.Count) + ',' + JsonInt('removed', Removed) + ','
+        + '"strings":[' + Rows + ']}');
 End;
 
 {..............................................................................}
@@ -68450,24 +69533,102 @@ Begin
 End;
 
 {..............................................................................}
+{ PcbPartParameters - the board-side parameter list of a placed part, or Nil. }
+{ Altium 26 renamed the factory call: CreatePrimitiveParametersWithoutVariant }
+{ is not in Altium 25's script engine, and calling it there stops the        }
+{ polling loop with an error box a Try does not catch. So the version is     }
+{ read BEFORE the call, and older builds get the variant form with an empty  }
+{ variant name (the part as placed, no variant), which Altium 25 answers.    }
+{..............................................................................}
+Function PcbPartParameters(Comp : IPCB_Component) : IPCB_PrimitiveParameters;
+Var
+    Factory : IPCB_ParametersFactory;
+    Ver : String;
+    Major : Integer;
+Begin
+    Result := Nil;
+    Factory := Nil;
+    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
+    If Factory = Nil Then Exit;
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    If Major >= 26 Then
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Result := Nil; End;
+    End
+    Else
+    Begin
+        Try Result := Factory.CreatePrimitiveParametersOfVariant(Comp, ''); Except Result := Nil; End;
+    End;
+End;
+
+{..............................................................................}
+{ PcbPartParameterItems - one group of a part's parameters as JSON objects,  }
+{ each carrying its group name. Ordinal is the group to switch to first, or  }
+{ -1 to read the list as it stands (the part's own parameters by default).   }
+{ Present / ReadBack report the parameter named PName, if it is there.       }
+{ The getter by name is not given to scripts and halts the loop, so the      }
+{ read-back comes from this walk.                                            }
+{..............................................................................}
+Function PcbPartParameterItems(Prims : IPCB_PrimitiveParameters; Ordinal : Integer;
+    GroupName : String; PName : String; Var Present : Boolean; Var ReadBack : String) : String;
+Var
+    Prm : IPCB_Parameter;
+    Got, Name : String;
+    I, Count : Integer;
+Begin
+    Result := '';
+    { Ordinals, not the enum names: a name the engine's table lacks would  }
+    { fail the whole unit at compile time. 0 own, 1 system, 2 footprint.   }
+    If Ordinal >= 0 Then
+    Begin
+        Try Prims.SwitchAppurtenance(Ordinal); Except Exit; End;
+    End;
+    Count := 0;
+    Try Count := Prims.Count; Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Prm := Nil;
+        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
+        If Prm = Nil Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Got := '';
+        Name := '';
+        Try Got := Prm.GetValue; Except End;
+        Try Name := Prm.GetName; Except End;
+        If (PName <> '') And SameText(Name, PName) Then
+        Begin
+            Present := True;
+            ReadBack := Got;
+        End;
+        Result := Result + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got) + ','
+            + JsonStr('group', GroupName));
+    End;
+End;
+
+{..............................................................................}
 { PCB_ComponentParameters - the parameters a placed part carries on the      }
-{ board: read, set or remove. Params: designator (required), action          }
-{ list|set|remove, name, value.                                              }
+{ board: read, set, add or remove. Params: designator (required), action     }
+{ list|set|add|remove, name, value, group own|system|footprint|all (list     }
+{ only; set, add and remove act on the part's own parameters). add creates  }
+{ a parameter only: it refuses a name already present in any group.         }
 {..............................................................................}
 Function PCB_ComponentParameters(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
-    Factory : IPCB_ParametersFactory;
-    Prims : IPCB_PrimitiveParameters;
-    Prm : IPCB_Parameter;
-    Desig, Action, PName, PValue, Items, Problem, Got, ReadBack, Name : String;
-    I, Count : Integer;
-    Present : Boolean;
+    Prims, Check : IPCB_PrimitiveParameters;
+    Desig, Action, Group, PName, PValue, Items, More, Problem, ReadBack, Seen : String;
+    G : Integer;
+    Present, Taken : Boolean;
 Begin
     Desig := ExtractJsonValue(Params, 'designator');
     Action := LowerCase(ExtractJsonValue(Params, 'action'));
     If Action = '' Then Action := 'list';
+    Group := LowerCase(ExtractJsonValue(Params, 'group'));
+    If Group = '' Then Group := 'own';
     PName := ExtractJsonValue(Params, 'name');
     PValue := ExtractJsonValue(Params, 'value');
     If Desig = '' Then
@@ -68475,14 +69636,25 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator is required');
         Exit;
     End;
-    If (Action <> 'list') And (Action <> 'set') And (Action <> 'remove') Then
+    If (Action <> 'list') And (Action <> 'set') And (Action <> 'add') And (Action <> 'remove') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set or remove');
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is list, set, add or remove');
+        Exit;
+    End;
+    If (Group <> 'own') And (Group <> 'system') And (Group <> 'footprint') And (Group <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'group is own, system, footprint or all');
+        Exit;
+    End;
+    If (Action <> 'list') And (Group <> 'own') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'group is for list only; set, add and remove act on the part''s own parameters');
         Exit;
     End;
     If (Action <> 'list') And (PName = '') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set or remove');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name is required to set, add or remove');
         Exit;
     End;
     Board := GetPCBBoardAnywhere(0);
@@ -68498,13 +69670,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No part ' + Desig + ' on the board');
         Exit;
     End;
-    Factory := Nil;
-    Prims := Nil;
-    Try Factory := PCBServer.GetParametersFactory; Except Factory := Nil; End;
-    If Factory <> Nil Then
-    Begin
-        Try Prims := Factory.CreatePrimitiveParametersWithoutVariant(Comp); Except Prims := Nil; End;
-    End;
+    Prims := PcbPartParameters(Comp);
     If Prims = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
@@ -68512,7 +69678,30 @@ Begin
         Exit;
     End;
     Problem := '';
-    If Action = 'set' Then
+    If Action = 'add' Then
+    Begin
+        { The name must be new in EVERY group, so add can never overwrite a  }
+        { system or footprint parameter. The scan switches groups, so it     }
+        { runs on a list of its own and the write goes through one that was  }
+        { never switched.                                                    }
+        Check := PcbPartParameters(Comp);
+        Taken := False;
+        Seen := '';
+        If Check <> Nil Then
+        Begin
+            For G := 0 To 2 Do
+            Begin
+                PcbPartParameterItems(Check, G, '', PName, Taken, Seen);
+            End;
+        End;
+        If Taken Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'EXISTS',
+                'The part already has a parameter ' + PName + '; add only creates one');
+            Exit;
+        End;
+    End;
+    If (Action = 'set') Or (Action = 'add') Then
     Begin
         PcbBeginEdit(0);
         Try
@@ -68536,37 +69725,30 @@ Begin
         End;
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     End;
-    { The read-back comes from the same walk as the list: the getter by    }
-    { name is not given to scripts and halts the loop.                     }
-    Items := '';
+    { The read-back comes from the same walk as the list. own is the list }
+    { as it stands; all reads own first, then switches to the others.     }
     ReadBack := '';
     Present := False;
-    Count := 0;
-    Try Count := Prims.Count; Except Count := 0; End;
-    For I := 0 To Count - 1 Do
+    If Group = 'system' Then Items := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack)
+    Else If Group = 'footprint' Then Items := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack)
+    Else Items := PcbPartParameterItems(Prims, -1, 'own', PName, Present, ReadBack);
+    If Group = 'all' Then
     Begin
-        Prm := Nil;
-        Try Prm := Prims.GetParameterByIndex(I); Except Prm := Nil; End;
-        If Prm = Nil Then Continue;
-        If Items <> '' Then Items := Items + ',';
-        Got := '';
-        Name := '';
-        Try Got := Prm.GetValue; Except End;
-        Try Name := Prm.GetName; Except End;
-        If (PName <> '') And SameText(Name, PName) Then
-        Begin
-            Present := True;
-            ReadBack := Got;
-        End;
-        Items := Items + JsonObj(JsonStr('name', Name) + ',' + JsonStr('value', Got));
+        More := PcbPartParameterItems(Prims, 1, 'system', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
+        More := PcbPartParameterItems(Prims, 2, 'footprint', PName, Present, ReadBack);
+        If (Items <> '') And (More <> '') Then Items := Items + ',';
+        Items := Items + More;
     End;
-    If (Action = 'set') And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
+    If ((Action = 'set') Or (Action = 'add')) And (Problem = '') And ((Not Present) Or (ReadBack <> PValue)) Then
         Problem := 'the value does not read back';
     If (Action = 'remove') And (Problem = '') And Present Then
         Problem := 'the parameter is still there';
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('designator', Desig) + ','
         + JsonStr('action', Action) + ','
+        + JsonStr('group', Group) + ','
         + JsonBool('done', Problem = '') + ','
         + JsonStr('problem', Problem) + ','
         + JsonStr('read_back', ReadBack) + ','
@@ -69690,6 +70872,7 @@ Begin
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
         'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
         'embedded_data':           Result := PCB_EmbeddedData(Params, RequestId);
+        'special_strings':         Result := PCB_SpecialStrings(Params, RequestId);
         'connected_copper':        Result := PCB_ConnectedCopper(Params, RequestId);
         'update_free_primitive_nets': Result := PCB_UpdateFreePrimitiveNets(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
@@ -91675,6 +92858,10 @@ End;
 {   - Log tab with newest-on-top entries, request-ID column, inline error    }
 {     detail rows, free-text filter                                            }
 {   - Perf tab with per-command stats, sorted by max duration desc            }
+{   - Config tab: the user's choices for the bridge, kept across restarts in  }
+{     preferences.json in the workspace: component value format, read-only  }
+{     edits, deleting, closing documents, interface automation and keeping  }
+{     the board in view                                                      }
 {                                                                              }
 { State lives in module-level TStringLists, function locals avoid fixed-size  }
 { arrays per [[delphiscript_fixed_string_array_bug]]. Module-level fixed-size }
@@ -91725,6 +92912,10 @@ Var
     { Open Dashboard button only enables when this is within the last 60s. }
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
+
+    { Altium's own tooltip timeout, put back when the form is hidden. Its  }
+    { 2.5 s default hid a tip while the pointer was still on the button.  }
+    SavedHintHidePause : Integer;
 
 
 { Static UI constants: Altium's dark theme, read off AD 26.11's own      }
@@ -92175,13 +93366,39 @@ Begin
         + 'in ms, request id and command.');
     SetTip(tab_Perf, 'Totals per command for this session: how many times '
         + 'it ran, and its average and longest time in ms.');
-    Tip := 'Starts the web dashboard on its own, without an AI client. '
-        + 'Copy it with the button on the right and run it in a terminal.';
-    SetTip(lbl_FooterHint, Tip);  SetTip(lbl_LaunchCmd, Tip);
-    SetTip(btn_CopyCmd, 'Copy the command that starts the web dashboard '
-        + 'to the clipboard.');
-    SetTip(btn_CopyLog, 'Copy the open tab to the clipboard: the command '
-        + 'log on Log, the table of totals on Perf.');
+    SetTip(tab_Config, 'Your choices for how the bridge works. Kept across '
+        + 'restarts.');
+    Tip := 'How a component value is written when it is cleaned up. '
+        + 'Kept across restarts.';
+    SetTip(lbl_CfgValue, Tip);
+    SetTip(opt_FmtNone, 'Leave every value as it is written.');
+    SetTip(opt_FmtRkm, 'RKM code of IEC 60062: the letter in place of the '
+        + 'decimal point, so a lost point cannot change the value. No unit.');
+    SetTip(opt_FmtSi, 'A decimal point and an SI prefix, without the unit.');
+    SetTip(opt_FmtSiUnit, 'A decimal point and an SI prefix, with the unit '
+        + 'symbol. Resistors carry no unit, since the ohm sign cannot pass '
+        + 'through the bridge.');
+    Tip := 'Whether the AI may change designs. Read-only refuses every '
+        + 'command that is not a read. EDA_AGENT_READONLY in the AI client''s '
+        + 'config also makes it read-only, whatever this says.';
+    SetTip(lbl_CfgEdits, Tip);  SetTip(opt_EditsAllowed, Tip);
+    SetTip(opt_EditsReadOnly, Tip);
+    Tip := 'Whether the AI may delete or remove anything: objects, parts, '
+        + 'footprints, nets, sheets, rules, variants, layers, documents from a '
+        + 'project, routing. Other edits still run.';
+    SetTip(lbl_CfgDelete, Tip);  SetTip(opt_DeleteAllowed, Tip);
+    SetTip(opt_DeleteRefused, Tip);
+    Tip := 'Whether the AI may close a document or a project.';
+    SetTip(lbl_CfgClose, Tip);  SetTip(opt_CloseAllowed, Tip);
+    SetTip(opt_CloseRefused, Tip);
+    Tip := 'Whether the AI may pick menus, press dialog buttons and type into '
+        + 'Altium. EDA_AGENT_UI_AUTOMATION=0 in the AI client''s config also '
+        + 'turns it off, whatever this says.';
+    SetTip(lbl_CfgAuto, Tip);  SetTip(opt_AutoOn, Tip);  SetTip(opt_AutoOff, Tip);
+    Tip := 'Fit the board or sheet in the window after each edit the AI '
+        + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
+        + 'in the AI client''s config also turns it on.';
+    SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
 End;
 
 
@@ -92392,7 +93609,18 @@ Begin
     OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
     OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
-    OwnPanelColours(btn_CopyLog);
+    OwnPanelColours(btn_CopyLog);   OwnPanelColours(tab_Config);
+    OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
+    OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
+    OwnPanelColours(opt_FmtSiUnit);
+    OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
+    OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
+    OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
+    OwnPanelColours(sep_Cfg3);
+    OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
+    OwnPanelColours(opt_CloseAllowed);  OwnPanelColours(opt_CloseRefused);
+    OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
 End;
 
 
@@ -92423,6 +93651,110 @@ Begin
 End;
 
 
+{ One option of a choice: the chosen one in the accent colour. }
+Procedure PaintOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_BLUE;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ A restrictive choice, once chosen, shows amber like Saving OFF. }
+Procedure PaintWarnOption(Pnl : TPanel; Chosen : Boolean);
+Begin
+    Try
+        If Chosen Then
+        Begin
+            Pnl.Color := COLOR_ACCENT_AMBER;
+            Pnl.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
+End;
+
+{ The value format on the Config tab, with what the choice does. }
+Procedure PaintValueFormat(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_FmtNone, ValueFormat = 'none');
+        PaintOption(opt_FmtRkm, ValueFormat = 'rkm');
+        PaintOption(opt_FmtSi, (ValueFormat = 'si') And (ValueUnit <> 'with'));
+        PaintOption(opt_FmtSiUnit, (ValueFormat = 'si') And (ValueUnit = 'with'));
+        If ValueFormat = 'rkm' Then
+            lbl_CfgValueHint.Caption := 'RKM code of IEC 60062, the letter in '
+                + 'place of the decimal point: 4K7, 2u2, 100n, 3V3, 0R1.'
+        Else If (ValueFormat = 'si') And (ValueUnit = 'with') Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix, '
+                + 'with the unit: 4.7k, 2.2uF, 100nF, 10uH, 3.3V. Resistors '
+                + 'carry no unit.'
+        Else If ValueFormat = 'si' Then
+            lbl_CfgValueHint.Caption := 'A decimal point and an SI prefix: '
+                + '4.7k, 2.2u, 100n, 3.3V, 0.1.'
+        Else
+            lbl_CfgValueHint.Caption := 'Values are left as they are written. '
+                + 'Nothing is reformatted.';
+    Except End;
+End;
+
+
+{ The agent and view settings on the Config tab, with what each does. }
+Procedure PaintAgentSettings(Dummy : Integer);
+Begin
+    Try
+        PaintOption(opt_EditsAllowed, EditsMode <> 'readonly');
+        PaintWarnOption(opt_EditsReadOnly, EditsMode = 'readonly');
+        If EditsMode = 'readonly' Then
+            lbl_CfgEditsHint.Caption := 'Read-only: every command that changes '
+                + 'a design is refused. Reads, checks and exports still run.'
+        Else
+            lbl_CfgEditsHint.Caption := 'The AI may change the open designs.';
+        PaintOption(opt_DeleteAllowed, DeletingMode <> 'refused');
+        PaintWarnOption(opt_DeleteRefused, DeletingMode = 'refused');
+        If DeletingMode = 'refused' Then
+            lbl_CfgDeleteHint.Caption := 'Refused: nothing is deleted or '
+                + 'removed. Other edits still run.'
+        Else
+            lbl_CfgDeleteHint.Caption := 'The AI may delete objects, parts, '
+                + 'nets, rules and the like.';
+        PaintOption(opt_CloseAllowed, ClosingMode <> 'refused');
+        PaintWarnOption(opt_CloseRefused, ClosingMode = 'refused');
+        If ClosingMode = 'refused' Then
+            lbl_CfgCloseHint.Caption := 'Refused: the AI cannot close a '
+                + 'document or a project.'
+        Else
+            lbl_CfgCloseHint.Caption := 'The AI may close documents and projects.';
+        PaintOption(opt_AutoOn, UiAutomationMode <> 'off');
+        PaintWarnOption(opt_AutoOff, UiAutomationMode = 'off');
+        If UiAutomationMode = 'off' Then
+            lbl_CfgAutoHint.Caption := 'Off: the AI cannot pick menus, press '
+                + 'dialog buttons or type. Some tasks have no other route.'
+        Else
+            lbl_CfgAutoHint.Caption := 'The AI may pick menus, press dialog '
+                + 'buttons and type where there is no API route.';
+        PaintOption(opt_ViewOff, KeepInViewMode <> 'on');
+        PaintOption(opt_ViewOn, KeepInViewMode = 'on');
+        If KeepInViewMode = 'on' Then
+            lbl_CfgViewHint.Caption := 'After each edit the window is fitted '
+                + 'to the whole board or sheet, at most every 2 seconds.'
+        Else
+            lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+    Except End;
+End;
+
+
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -92445,11 +93777,20 @@ Begin
         OpenWebEnabled  := False;
 
         OwnAllPanelColours(0);
+        Try
+            If Application.HintHidePause < 30000 Then
+            Begin
+                SavedHintHidePause := Application.HintHidePause;
+                Application.HintHidePause := 30000;
+            End;
+        Except End;
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  'Slow only');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'On top');
         ApplyTips(0);
         PaintSavingSwitch(0);
+        PaintValueFormat(0);
+        PaintAgentSettings(0);
         ApplyAlwaysOnTop(0);
 
         ResetPerfStats(0);
@@ -92492,6 +93833,9 @@ Procedure HideStatusForm(Dummy : Integer);
 Begin
     Try
         If StatusForm.Visible Then StatusForm.Hide;
+    Except End;
+    Try
+        If SavedHintHidePause > 0 Then Application.HintHidePause := SavedHintHidePause;
     Except End;
 End;
 
@@ -92769,30 +94113,132 @@ Begin
 End;
 
 
-Procedure tab_LogClick(Sender : TObject);
+{ Show one of the three tabs: 0 Log, 1 Perf, 2 Config. }
+Procedure PaintTab(Pnl : TPanel; Open : Boolean);
 Begin
     Try
-        mmo_Log.Visible := True;
-        mmo_Perf.Visible := False;
-        tab_Log.Color := COLOR_BG_LOG;
-        tab_Log.Font.Color := COLOR_TEXT_BODY;
-        tab_Perf.Color := COLOR_BG_CARD;
-        tab_Perf.Font.Color := COLOR_TEXT_MUTED;
+        If Open Then
+        Begin
+            Pnl.Color := COLOR_BG_LOG;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End
+        Else
+        Begin
+            Pnl.Color := COLOR_BG_CARD;
+            Pnl.Font.Color := COLOR_TEXT_MUTED;
+        End;
     Except End;
 End;
 
-Procedure tab_PerfClick(Sender : TObject);
+Procedure ShowTab(Which : Integer);
 Begin
     Try
-        RefreshPerfPanel(0);
-        mmo_Log.Visible := False;
-        mmo_Perf.Visible := True;
-        tab_Perf.Color := COLOR_BG_LOG;
-        tab_Perf.Font.Color := COLOR_TEXT_BODY;
-        tab_Log.Color := COLOR_BG_CARD;
-        tab_Log.Font.Color := COLOR_TEXT_MUTED;
+        If Which = 1 Then RefreshPerfPanel(0);
+        mmo_Log.Visible := Which = 0;
+        mmo_Perf.Visible := Which = 1;
+        pnl_Config.Visible := Which = 2;
+        lbl_LogHint.Visible := Which <> 2;
+        btn_CopyLog.Visible := Which <> 2;
+        PaintTab(tab_Log, Which = 0);
+        PaintTab(tab_Perf, Which = 1);
+        PaintTab(tab_Config, Which = 2);
     Except End;
 End;
+
+Procedure tab_LogClick(Sender : TObject);
+Begin ShowTab(0); End;
+
+Procedure tab_PerfClick(Sender : TObject);
+Begin ShowTab(1); End;
+
+Procedure tab_ConfigClick(Sender : TObject);
+Begin ShowTab(2); End;
+
+Procedure tab_ConfigEnter(Sender : TObject);
+Begin
+    Try
+        If Not pnl_Config.Visible Then tab_Config.Color := $004A4A4A;
+    Except End;
+End;
+
+Procedure tab_ConfigLeave(Sender : TObject);
+Begin
+    Try
+        If pnl_Config.Visible Then tab_Config.Color := COLOR_BG_LOG
+        Else tab_Config.Color := COLOR_BG_CARD;
+    Except End;
+End;
+
+{ A value format chosen on the Config tab is stored at once, so the server }
+{ and a restart see it. Only SI takes a unit.                             }
+Procedure ChooseValueFormat(Choice : String; UnitChoice : String);
+Begin
+    Try
+        ValueFormat := Choice;
+        ValueUnit := UnitChoice;
+        StorePreferences(0);
+        PaintValueFormat(0);
+        mmo_Log.Lines.Insert(0, '      value format set to ' + Choice + ', unit '
+            + UnitChoice);
+    Except End;
+End;
+
+Procedure opt_FmtNoneClick(Sender : TObject);
+Begin ChooseValueFormat('none', 'without'); End;
+
+Procedure opt_FmtRkmClick(Sender : TObject);
+Begin ChooseValueFormat('rkm', 'without'); End;
+
+Procedure opt_FmtSiClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'without'); End;
+
+Procedure opt_FmtSiUnitClick(Sender : TObject);
+Begin ChooseValueFormat('si', 'with'); End;
+
+{ An agent or view setting chosen on the Config tab, stored at once. }
+Procedure ChooseAgentSetting(Setting : String; Choice : String);
+Begin
+    Try
+        If Setting = 'edits' Then EditsMode := Choice
+        Else If Setting = 'deleting' Then DeletingMode := Choice
+        Else If Setting = 'closing' Then ClosingMode := Choice
+        Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
+        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
+    Except End;
+End;
+
+Procedure opt_EditsAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'allowed'); End;
+
+Procedure opt_EditsReadOnlyClick(Sender : TObject);
+Begin ChooseAgentSetting('edits', 'readonly'); End;
+
+Procedure opt_DeleteAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'allowed'); End;
+
+Procedure opt_DeleteRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('deleting', 'refused'); End;
+
+Procedure opt_CloseAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'allowed'); End;
+
+Procedure opt_CloseRefusedClick(Sender : TObject);
+Begin ChooseAgentSetting('closing', 'refused'); End;
+
+Procedure opt_AutoOnClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'on'); End;
+
+Procedure opt_AutoOffClick(Sender : TObject);
+Begin ChooseAgentSetting('ui_automation', 'off'); End;
+
+Procedure opt_ViewOffClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'off'); End;
+
+Procedure opt_ViewOnClick(Sender : TObject);
+Begin ChooseAgentSetting('keep_in_view', 'on'); End;
 
 
 { ============================================================================ }
@@ -93223,7 +94669,48 @@ Begin
            Or ActionHasPrefix(Verb, 'inspect_')
            Or ActionHasPrefix(Verb, 'diff_')
            Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
+           Or (Verb = 'ping')
+           Or (Verb = 'format_value');
+End;
+
+{ Deleting and Closing documents on the Config tab. A command deletes when its
+  verb is delete_*, remove_*, batch_delete, unroute or a clear_*source*library,
+  or when its action is delete or remove (pcb.embedded_data, component
+  parameters). It closes when it is application.close_document or
+  project.close. MIRRORED in safety.py, pinned by a test. }
+Function CommandDeletes(Command : String; Params : String) : Boolean;
+Var
+    Verb, Op : String;
+Begin
+    Verb := LowerCase(Copy(Command, Pos('.', Command) + 1, Length(Command)));
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
+    Result := ActionHasPrefix(Verb, 'delete_') Or ActionHasPrefix(Verb, 'remove_')
+        Or (Verb = 'batch_delete') Or (Verb = 'unroute')
+        Or ((Pos('clear_', Verb) = 1) And (Pos('source', Verb) > 0))
+        Or (Op = 'delete') Or (Op = 'remove');
+End;
+
+Function CommandCloses(Command : String) : Boolean;
+Begin
+    Result := (Command = 'application.close_document') Or (Command = 'project.close');
+End;
+
+Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
+Begin
+    Result := '';
+    If (EditsMode = 'readonly') And Not CommandIsReadOnly(Command) Then
+        Result := BuildErrorResponse(RequestId, 'READ_ONLY',
+            Command + ' is refused: edits are set to read-only on the '
+            + 'Config tab of the bridge panel in Altium. Only commands '
+            + 'that leave the design alone run.')
+    Else If (DeletingMode = 'refused') And CommandDeletes(Command, Params) Then
+        Result := BuildErrorResponse(RequestId, 'DELETE_REFUSED',
+            Command + ' is refused: deleting is switched off on the Config '
+            + 'tab of the bridge panel in Altium. Nothing was deleted.')
+    Else If (ClosingMode = 'refused') And CommandCloses(Command) Then
+        Result := BuildErrorResponse(RequestId, 'CLOSE_REFUSED',
+            Command + ' is refused: closing documents is switched off on the '
+            + 'Config tab of the bridge panel in Altium. Nothing was closed.');
 End;
 
 { SessionFocus - put the session's own document back in front, in the same }
@@ -93385,7 +94872,11 @@ Begin
     LastErrorMsg := '';
     Try
         Try
-            ResponseContent := ProcessCommand(Command, Params, RequestId);
+            { The Config tab's permissions: refused here, where every request
+              passes, so a client running older Python is held to them too. }
+            ResponseContent := SettingRefusal(Command, Params, RequestId);
+            If ResponseContent = '' Then
+                ResponseContent := ProcessCommand(Command, Params, RequestId);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
@@ -93772,6 +95263,7 @@ Begin
     EnsureWorkspaceDir(0);
     LoadMCPConfig(0);
     LoadSavingSwitch(0);
+    LoadPreferences(0);
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
