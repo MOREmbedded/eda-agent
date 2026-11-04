@@ -1346,7 +1346,8 @@ def cmd_sdk_symbols(*, refresh: bool = False, as_json: bool = False,
 
 def cmd_sdk_probe(*, designator: str = "", properties: str = "",
                   doc_path: str = "", as_json: bool = False,
-                  sdk_json: str | None = None) -> int:
+                  sdk_json: str | None = None,
+                  object_type: str = "component", index: int = 0) -> int:
     """Ask the running Altium which DECLARED properties it actually exposes.
 
     `sdk-coverage` counts what the chains reach. This measures something
@@ -1383,8 +1384,17 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
             # Without the table this is the old behaviour: a list of
             # candidates, one of which may halt the debugger.
             table = None
-        _, take, _ = candidates_for(model, "component", "read", table)
+        try:
+            _, take, _ = candidates_for(model, object_type, "read", table)
+        except KeyError as unknown:
+            print(str(unknown), file=sys.stderr)
+            return 1
         names = [name for name, _prop in take]
+    if not names:
+        print(f"nothing left to probe on {object_type}: every property the "
+              f"SDK declares for it is already read by the deployed block.",
+              file=sys.stderr)
+        return 0
 
     # A probe list built from today's table against yesterday's script
     # is how the debugger gets halted: the running block may still read
@@ -1405,7 +1415,8 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
               f"StartMCPServer again.", file=sys.stderr)
         return 1
 
-    params = {"properties": ",".join(names)}
+    params = {"properties": ",".join(names), "object_type": object_type,
+              "index": str(index)}
     if designator:
         params["designator"] = designator
     if doc_path:
@@ -1432,9 +1443,10 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
 
     rows = reply["results"]
     exposed = [r for r in rows if r.get("exposed")]
+    target = reply.get("designator") or f"#{index}"
     print(f"Probed {len(rows)} declared properties on "
           f"{reply.get('interface', '?')} "
-          f"(component {reply.get('designator') or '?'})")
+          f"({object_type} {target})")
     print(f"  {len(exposed)} of {len(rows)} answered "
           f"({100.0 * len(exposed) / len(rows):.0f}%)" if rows else "  nothing probed")
     print()
@@ -1869,21 +1881,33 @@ def cmd_laminates(*, as_json: bool = False) -> int:
     if not data.get("ok"):
         print(data["reason"], file=sys.stderr)
         return 1
-    print(f"{'laminate':24} {'er(proc)':>9} {'er(design)':>11} "
-          f"{'tan d':>8} {'Tg':>6}")
+    # Every column may be absent: a maker that tabulates typical values by
+    # frequency publishes no process and no design value, and only Rogers
+    # of the four publishes a Tg here.
+    def cell(value) -> str:
+        return "-" if value is None else str(value)
+
+    print(f"{'laminate':30} {'er(proc)':>9} {'er(design)':>11} "
+          f"{'er(use)':>8} {'tan d':>8} {'Tg':>6}")
     for lam in data["laminates"]:
-        design = "-" if lam["er_design"] is None else lam["er_design"]
-        loss = "-" if lam["loss_tangent"] is None else lam["loss_tangent"]
-        tg = "-" if lam["tg_c"] is None else lam["tg_c"]
-        print(f"{lam['name']:24} {lam['er_process']:>9} {design:>11} "
-              f"{loss:>8} {tg:>6}")
+        print(f"{lam['name'][:30]:30} {cell(lam.get('er_process')):>9} "
+              f"{cell(lam.get('er_design')):>11} "
+              f"{cell(lam.get('er_for_design')):>8} "
+              f"{cell(lam.get('loss_tangent')):>8} "
+              f"{cell(lam.get('tg_c')):>6}")
     for conv in data["conventions"]:
-        print(f"{conv['name']:24} {conv['er_low']:>9} to {conv['er_high']}")
+        print(f"{conv['name'][:30]:30} {conv['er_low']:>9} to {conv['er_high']}")
+    for fig in data.get("fab_figures") or []:
+        print(f"{fig['name'][:30]:30} {cell(fig.get('er_process')):>9} "
+              f"{'(fab figure, no conditions published)'}")
     sys.stdout.flush()
     print("\nTwo dielectric constants per laminate on purpose: the PROCESS "
           "value is\nmeasured one way and the DESIGN value another, they "
           "differ by about 5%,\nand the design value is the one to size an "
-          "impedance with.", file=sys.stderr)
+          "impedance with. er(use) is that\nchoice made for you: the design "
+          "value where there is one, else the typical\nvalue at the highest "
+          "frequency listed, never the process value.",
+          file=sys.stderr)
     print(data["note"], file=sys.stderr)
     return 0
 

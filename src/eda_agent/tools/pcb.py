@@ -3591,7 +3591,17 @@ def register_pcb_tools(mcp):
     async def pcb_apply_silk_clip_plan(
         board_path: str, plan_path: str, apply: bool = False,
     ) -> dict[str, Any]:
-        """Validate or apply a reviewed JSONL plan of overlay track changes."""
+        """Validate or apply a reviewed JSONL plan of overlay track changes.
+
+        One JSON object per line: ``address`` (from
+        ``pcb_get_overlay_tracks``), ``layer`` ("TopOverlay" or
+        "BottomOverlay"), ``assembly_layer`` ("Mechanical11" for the top,
+        "Mechanical12" for the bottom), ``x1``/``y1``/``x2``/``y2`` as the
+        RAW coordinates that reader gives, and optionally ``segments``.
+        The raw coordinates are compared as text, so a value converted to
+        millimetres and back never matches and the whole line reads as
+        "not the original".
+        """
         return await get_bridge().send_command_async(
             "pcb.apply_silk_clip_plan",
             {"board_path": board_path, "plan_path": plan_path, "apply": str(apply).lower()},
@@ -3599,11 +3609,54 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_get_overlay_tracks(
+        board_path: str = "",
+        layer: str = "",
+        designator: str = "",
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """Silkscreen tracks, with the address the two silk tools take.
+
+        ``pcb_clone_silk_track_fragment`` and ``pcb_apply_silk_clip_plan``
+        both identify a track by its object address, and nothing emitted
+        one: the only place an overlay track address appeared was in
+        clone's own reply, which you need an address to get. Both were
+        unreachable without this.
+
+        ``x1``..``y2`` are RAW Altium coordinates, which is what a clip
+        plan compares against; ``*_mils`` are the same values for a human
+        and must not be put in a plan.
+
+        Args:
+            board_path: The .PcbDoc, which must be the focused board, as
+                both writers require. Empty uses the active board.
+            layer: "TopOverlay" or "BottomOverlay". Empty means both.
+            designator: Only tracks owned by that component. Empty means
+                all, including tracks owned by no component.
+            limit: Stop after this many. 0 means every one.
+
+        Returns:
+            ``tracks``: [{address, layer, component, x1, y1, x2, y2,
+            width, and the _mils of each}], ``count`` and ``board``.
+        """
+        params: dict[str, Any] = {"limit": str(int(limit))}
+        for key, value in (("board_path", board_path), ("layer", layer),
+                           ("designator", designator)):
+            if value:
+                params[key] = value
+        return await get_bridge().send_command_async(
+            "pcb.get_overlay_tracks", params, timeout=180.0)
+
+    @mcp.tool()
     async def pcb_clone_silk_track_fragment(
         board_path: str, address: str,
         x1_mm: float, y1_mm: float, x2_mm: float, y2_mm: float,
     ) -> dict[str, Any]:
-        """Clone an overlay track segment while preserving its component."""
+        """Clone an overlay track segment while preserving its component.
+
+        ``address`` comes from ``pcb_get_overlay_tracks``; there was no
+        other way to obtain one.
+        """
         coords = dict(zip(("x1", "y1", "x2", "y2"), (x1_mm, y1_mm, x2_mm, y2_mm)))
         if not all(math.isfinite(value) for value in coords.values()):
             raise ValueError("fragment coordinates must be finite")

@@ -17078,12 +17078,12 @@ Function Gen_ProbeSdkProperties(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     Iter : ISch_Iterator;
-    Comp, Target : ISch_Component;
+    Obj, Target : ISch_GraphicalObject;
     Designator, DocPath, Wanted, Remaining, PropName, Val : String;
-    ResultsJson, UsedDesignator : String;
+    ResultsJson, UsedDesignator, TypeStr : String;
     ProbeStatus : String;
     Found, Faulted : Boolean;
-    CommaPos, NumOk, NumMissing : Integer;
+    CommaPos, NumOk, NumMissing, Kind, Nth, Seen : Integer;
 Begin
     Wanted := ExtractJsonValue(Params, 'properties');
     If Wanted = '' Then
@@ -17106,19 +17106,49 @@ Begin
         Exit;
     End;
 
+    { Any schematic object kind, not just a component. The generated base
+      probe answers the ten names declared on ISch_GraphicalObject itself,
+      which is most of what the other thirty-one types were missing, and
+      without a way to aim at one of them those names could only ever be
+      measured through a component. }
+    TypeStr := ExtractJsonValue(Params, 'object_type');
+    If TypeStr = '' Then TypeStr := 'component';
+    Kind := ObjectTypeFromString(TypeStr);
+    If Kind < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'object_type ' + TypeStr + ' is not a schematic object kind');
+        Exit;
+    End;
+    { Which one of that kind, for the kinds that have no designator. }
+    Nth := StrToIntDef(ExtractJsonValue(Params, 'index'), 0);
+
     Target := Nil;
+    Seen := 0;
     Iter := SchDoc.SchIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
-        Comp := Iter.FirstSchObject;
-        While Comp <> Nil Do
+        Iter.AddFilter_ObjectSet(MkSet(Kind));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
         Begin
-            If (Designator = '') Or (Comp.Designator.Text = Designator) Then
+            { A designator only names a component; for every other kind it
+              is index that picks one, and a designator passed with one of
+              them would silently match nothing. }
+            If (Designator <> '') And (Kind = eSchComponent) Then
             Begin
-                Target := Comp;
+                If Obj.Designator.Text = Designator Then
+                Begin
+                    Target := Obj;
+                    Break;
+                End;
+            End
+            Else If Seen >= Nth Then
+            Begin
+                Target := Obj;
                 Break;
-            End;
-            Comp := Iter.NextSchObject;
+            End
+            Else Inc(Seen);
+            Obj := Iter.NextSchObject;
         End;
     Finally
         SchDoc.SchIterator_Destroy(Iter);
@@ -17127,7 +17157,7 @@ Begin
     If Target = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
-            'No component to probe on this sheet');
+            'No ' + TypeStr + ' to probe on this sheet');
         Exit;
     End;
 
@@ -17164,8 +17194,16 @@ Begin
         { The release notes say this cannot be caught. If that holds, the }
         { Except never runs and the debugger halts on the read, exactly   }
         { as it did before. If it does not, one run measures the lot.     }
+        { The component block first for a component, because that is where
+          the type-specific slots live, then the shared base block, which
+          is the only one the other kinds have. Asking the base for a name
+          the component block already answered costs one failed lookup and
+          keeps either routine correct on its own. }
         Try
-            Val := GetSchComponentGenerated(Target, PropName, Found);
+            If Kind = eSchComponent Then
+                Val := GetSchComponentGenerated(Target, PropName, Found);
+            If Not Found Then
+                Val := GetSchGraphicalGenerated(Target, PropName, Found);
         Except
             Faulted := True;
             Found := False;

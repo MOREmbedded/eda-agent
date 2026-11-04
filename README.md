@@ -637,11 +637,22 @@ and the design value is the one to size an impedance with. A table
 carrying a single `er` silently picks one, so both are carried and
 `er_design` is null where none is published.
 
+Not every maker publishes both. Isola and Panasonic tabulate **typical**
+values by frequency instead, and for those both columns stay empty
+rather than borrowing a typical figure and calling it a process or
+design one. Every laminate also carries `er_for_design`: the one number
+to size an impedance with, which is the design value where there is one
+and the nearest typical value otherwise, never the process value, and it
+says which kind it chose.
+
 The laminate list is deliberately short: only entries read off a
 datasheet are in it. pcb-toolkit carries 45 presets extracted from the
 Saturn PCB Toolkit binary, which its own README calls compatibility
 data rather than manufacturer data; copying them here would turn an
 acknowledged approximation into what looks like a reference table.
+A fab's own figure for its own stack, like JLCPCB's 4.6, is reported
+separately under `fab_figures` for the same reason: it has no
+measurement conditions and does not carry to another fab's FR-4.
 
 ### Applying one to a board
 

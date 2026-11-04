@@ -30693,6 +30693,95 @@ Begin
         And (DotValue >= -3 * LengthValue) And (DotValue <= Length2 + 3 * LengthValue);
 End;
 
+{..............................................................................}
+{ PCB_GetOverlayTracks - every silkscreen track with the address the two     }
+{ silk tools take.                                                           }
+{                                                                            }
+{ WHY THIS EXISTS. pcb.clone_silk_track_fragment and                        }
+{ pcb.apply_silk_clip_plan both identify a track by I_ObjectAddress, and     }
+{ nothing in the bridge emitted one: the only place an overlay track address }
+{ ever appeared was in clone's own reply, which you need an address to get.  }
+{ Both handlers were therefore unreachable, which is why neither had ever    }
+{ been run against a board.                                                  }
+{                                                                            }
+{ X1..Y2 are RAW Coords, not mils. The plan reader compares them as text     }
+{ against IntToStr(Track.X1), so a rounded millimetre would never match and  }
+{ every line would read as "not the original". Mils are given alongside for  }
+{ a human, under different names.                                            }
+{                                                                            }
+{ Params: board_path (required, must be the focused board, as the two        }
+{ writers require), layer (TopOverlay / BottomOverlay, default both),        }
+{ designator (only tracks owned by that component), limit (default 0, all).  }
+{..............................................................................}
+
+Function PCB_GetOverlayTracks(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Track : IPCB_Track;
+    Parent : IPCB_Component;
+    BoardPath, WantLayer, WantComp, OwnerName, LayerName, Items : String;
+    Count, Limit : Integer;
+    First : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath <> '') And (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the exact requested PCB first'); Exit; End;
+    WantLayer := ExtractJsonValue(Params, 'layer');
+    WantComp := ExtractJsonValue(Params, 'designator');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 0);
+
+    Items := ''; First := True; Count := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+        Iter.AddFilter_LayerSet(MkSet(eTopOverlay, eBottomOverlay));
+        Iter.AddFilter_Method(eProcessAll);
+        Track := Iter.FirstPCBObject;
+        While Track <> Nil Do
+        Begin
+            LayerName := LayerDisplayName(Track.Layer);
+            OwnerName := '';
+            Parent := Nil;
+            Try Parent := Track.Component; Except Parent := Nil; End;
+            If Parent <> Nil Then
+            Begin
+                Try OwnerName := Parent.Name.Text; Except OwnerName := ''; End;
+            End;
+            If ((WantLayer = '') Or (LayerName = WantLayer))
+               And ((WantComp = '') Or (OwnerName = WantComp)) Then
+            Begin
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + '{"address":"' + IntToStr(Track.I_ObjectAddress) + '"'
+                    + ',"layer":"' + EscapeJsonString(LayerName) + '"'
+                    + ',"component":"' + EscapeJsonString(OwnerName) + '"'
+                    + ',"x1":' + IntToStr(Track.X1)
+                    + ',"y1":' + IntToStr(Track.Y1)
+                    + ',"x2":' + IntToStr(Track.X2)
+                    + ',"y2":' + IntToStr(Track.Y2)
+                    + ',"width":' + IntToStr(Track.Width)
+                    + ',"x1_mils":' + FloatToJsonStr(CoordToMilsF(Track.X1))
+                    + ',"y1_mils":' + FloatToJsonStr(CoordToMilsF(Track.Y1))
+                    + ',"x2_mils":' + FloatToJsonStr(CoordToMilsF(Track.X2))
+                    + ',"y2_mils":' + FloatToJsonStr(CoordToMilsF(Track.Y2))
+                    + ',"width_mils":' + FloatToJsonStr(CoordToMilsF(Track.Width)) + '}';
+                Inc(Count);
+                If (Limit > 0) And (Count >= Limit) Then Break;
+            End;
+            Track := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"board":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"count":' + IntToStr(Count)
+        + ',"tracks":[' + Items + ']}');
+End;
+
 Function PCB_CloneSilkTrackFragment(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -31114,6 +31203,7 @@ Begin
         'teardrops':               Result := PCB_Teardrops(Params, RequestId);
         'apply_silk_clip_plan': Result := PCB_ApplySilkClipPlan(Params, RequestId);
         'clone_silk_track_fragment': Result := PCB_CloneSilkTrackFragment(Params, RequestId);
+        'get_overlay_tracks':  Result := PCB_GetOverlayTracks(Params, RequestId);
         'autoplace_silkscreen':    Result := PCB_AutoplaceSilkscreen(Params, RequestId);
         'tune_length':             Result := PCB_TuneLength(Params, RequestId);
         'panelize':                Result := PCB_Panelize(Params, RequestId);

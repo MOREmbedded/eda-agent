@@ -430,6 +430,79 @@ def _verdict(template, findings, wanted, actual) -> dict[str, Any]:
 
 # --- laminates --------------------------------------------------------
 
+def _conditions(entry: dict[str, Any]) -> str:
+    """One Dk or Df figure written out as the flat table states it."""
+    bits: list[str] = []
+    frequency = entry.get("frequency_ghz")
+    if isinstance(frequency, (list, tuple)) and len(frequency) == 2:
+        bits.append(f"{frequency[0]} to {frequency[1]} GHz")
+    elif frequency is not None:
+        bits.append(f"{frequency} GHz")
+    if entry.get("method"):
+        bits.append(str(entry["method"]))
+    if entry.get("tolerance") is not None:
+        bits.append(f"+/- {entry['tolerance']}")
+    return ", ".join(bits)
+
+
+def _flatten_laminate(record: dict[str, Any]) -> dict[str, Any]:
+    """One structured laminate in the flat shape this table publishes.
+
+    ``fab_data/laminates.json`` carries every Dk with its own kind,
+    frequency and method, which is the shape a design Dk has to be picked
+    in. This table promises ``er_process`` / ``er_design`` and is read by
+    the CLI and by ``design_list_laminates``, so the structured record is
+    projected rather than either side being changed to match the other.
+    """
+    dk = record.get("dk") or []
+    process = next((d for d in dk if d.get("kind") == "process"), None)
+    design = next((d for d in dk if d.get("kind") == "design"), None)
+    typical = [d for d in dk if d.get("kind") == "typical"]
+    df = record.get("df") or []
+    source = record.get("source") or {}
+
+    out: dict[str, Any] = {
+        "name": record.get("name"),
+        "manufacturer": record.get("maker"),
+        "family": record.get("kind"),
+        "er_process": process.get("value") if process else None,
+        "er_process_conditions": _conditions(process) if process else None,
+        "er_design": design.get("value") if design else None,
+        "er_design_conditions": _conditions(design) if design else None,
+        "loss_tangent": df[0].get("value") if df else None,
+        "loss_tangent_conditions": _conditions(df[0]) if df else None,
+        "source": source.get("url") or source.get("document") or "",
+        "retrieved": source.get("retrieved") or "",
+    }
+    if typical:
+        # Kept whole: picking one typical value for a flat column would
+        # throw away the frequency dependence that is the whole reason
+        # the maker tabulated it, and putting it in er_process would call
+        # a typical value a QC measurement.
+        out["er_typical"] = [{"value": d.get("value"),
+                              "frequency_ghz": d.get("frequency_ghz")}
+                             for d in typical]
+    # The one number to size an impedance with, worked out the same way
+    # design_get_laminate works it out: the design value when the maker
+    # publishes one, else the typical value nearest the frequency asked
+    # for. Never the process value, which is a QC result and reads low.
+    from .fab_library import design_dk
+
+    chosen = design_dk(record.get("name") or "")
+    out["er_for_design"] = chosen.get("dk") if chosen.get("ok") else None
+    out["er_for_design_note"] = (
+        f"{chosen['used'].get('kind')} value, {_conditions(chosen['used'])}"
+        if chosen.get("ok") else chosen.get("reason"))
+    if len(df) > 1:
+        out["loss_tangent_by_frequency"] = [
+            {"value": d.get("value"), "frequency_ghz": d.get("frequency_ghz")}
+            for d in df]
+    for key in ("tg_c", "tg_note", "tg_provenance", "caveat"):
+        if record.get(key) is not None:
+            out[key] = record[key]
+    return out
+
+
 def list_laminates() -> dict[str, Any]:
     """Laminate electrical properties, with both dielectric constants.
 
@@ -439,18 +512,31 @@ def list_laminates() -> dict[str, Any]:
     one to size an impedance with, and a table carrying a single ``er``
     silently picks one. Both are reported, and ``er_design`` is null
     where the manufacturer publishes none.
+
+    Reads ``design/fab_data/laminates.json``, the same file
+    ``design_get_laminate`` reads. There used to be a second copy under
+    ``data/stackups/``, and the two had drifted: the copy this listed was
+    transcribed from third-party reproductions of the Rogers data sheet
+    rather than from the maker, and it was missing two laminates that
+    asking for one BY NAME returned perfectly well.
     """
-    path = data_dir() / "laminates.json"
+    from .fab_library import _DATA
+
+    path = _DATA / "laminates.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "reason": f"laminates.json is unreadable: {exc}"}
-    laminates = raw.get("laminates") or []
+    laminates = [_flatten_laminate(r) for r in raw.get("laminates") or []]
     return {
         "ok": True,
         "count": len(laminates),
         "laminates": laminates,
         "conventions": raw.get("conventions") or [],
+        # A fab's number for its own stack is not a laminate datasheet
+        # figure, and listing it beside them is how it ends up used for
+        # another fab's FR-4.
+        "fab_figures": raw.get("fab_figures") or [],
         "note": ("deliberately short: only entries read off a datasheet "
                  "are here. Add your own to the profile's laminates, "
                  "where they carry your source rather than someone "

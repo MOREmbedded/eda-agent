@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.11';
+    SCRIPT_VERSION = '2026.11.04.13';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -70634,6 +70634,95 @@ Begin
         And (DotValue >= -3 * LengthValue) And (DotValue <= Length2 + 3 * LengthValue);
 End;
 
+{..............................................................................}
+{ PCB_GetOverlayTracks - every silkscreen track with the address the two     }
+{ silk tools take.                                                           }
+{                                                                            }
+{ WHY THIS EXISTS. pcb.clone_silk_track_fragment and                        }
+{ pcb.apply_silk_clip_plan both identify a track by I_ObjectAddress, and     }
+{ nothing in the bridge emitted one: the only place an overlay track address }
+{ ever appeared was in clone's own reply, which you need an address to get.  }
+{ Both handlers were therefore unreachable, which is why neither had ever    }
+{ been run against a board.                                                  }
+{                                                                            }
+{ X1..Y2 are RAW Coords, not mils. The plan reader compares them as text     }
+{ against IntToStr(Track.X1), so a rounded millimetre would never match and  }
+{ every line would read as "not the original". Mils are given alongside for  }
+{ a human, under different names.                                            }
+{                                                                            }
+{ Params: board_path (required, must be the focused board, as the two        }
+{ writers require), layer (TopOverlay / BottomOverlay, default both),        }
+{ designator (only tracks owned by that component), limit (default 0, all).  }
+{..............................................................................}
+
+Function PCB_GetOverlayTracks(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Track : IPCB_Track;
+    Parent : IPCB_Component;
+    BoardPath, WantLayer, WantComp, OwnerName, LayerName, Items : String;
+    Count, Limit : Integer;
+    First : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath <> '') And (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the exact requested PCB first'); Exit; End;
+    WantLayer := ExtractJsonValue(Params, 'layer');
+    WantComp := ExtractJsonValue(Params, 'designator');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 0);
+
+    Items := ''; First := True; Count := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+        Iter.AddFilter_LayerSet(MkSet(eTopOverlay, eBottomOverlay));
+        Iter.AddFilter_Method(eProcessAll);
+        Track := Iter.FirstPCBObject;
+        While Track <> Nil Do
+        Begin
+            LayerName := LayerDisplayName(Track.Layer);
+            OwnerName := '';
+            Parent := Nil;
+            Try Parent := Track.Component; Except Parent := Nil; End;
+            If Parent <> Nil Then
+            Begin
+                Try OwnerName := Parent.Name.Text; Except OwnerName := ''; End;
+            End;
+            If ((WantLayer = '') Or (LayerName = WantLayer))
+               And ((WantComp = '') Or (OwnerName = WantComp)) Then
+            Begin
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + '{"address":"' + IntToStr(Track.I_ObjectAddress) + '"'
+                    + ',"layer":"' + EscapeJsonString(LayerName) + '"'
+                    + ',"component":"' + EscapeJsonString(OwnerName) + '"'
+                    + ',"x1":' + IntToStr(Track.X1)
+                    + ',"y1":' + IntToStr(Track.Y1)
+                    + ',"x2":' + IntToStr(Track.X2)
+                    + ',"y2":' + IntToStr(Track.Y2)
+                    + ',"width":' + IntToStr(Track.Width)
+                    + ',"x1_mils":' + FloatToJsonStr(CoordToMilsF(Track.X1))
+                    + ',"y1_mils":' + FloatToJsonStr(CoordToMilsF(Track.Y1))
+                    + ',"x2_mils":' + FloatToJsonStr(CoordToMilsF(Track.X2))
+                    + ',"y2_mils":' + FloatToJsonStr(CoordToMilsF(Track.Y2))
+                    + ',"width_mils":' + FloatToJsonStr(CoordToMilsF(Track.Width)) + '}';
+                Inc(Count);
+                If (Limit > 0) And (Count >= Limit) Then Break;
+            End;
+            Track := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"board":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"count":' + IntToStr(Count)
+        + ',"tracks":[' + Items + ']}');
+End;
+
 Function PCB_CloneSilkTrackFragment(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -71055,6 +71144,7 @@ Begin
         'teardrops':               Result := PCB_Teardrops(Params, RequestId);
         'apply_silk_clip_plan': Result := PCB_ApplySilkClipPlan(Params, RequestId);
         'clone_silk_track_fragment': Result := PCB_CloneSilkTrackFragment(Params, RequestId);
+        'get_overlay_tracks':  Result := PCB_GetOverlayTracks(Params, RequestId);
         'autoplace_silkscreen':    Result := PCB_AutoplaceSilkscreen(Params, RequestId);
         'tune_length':             Result := PCB_TuneLength(Params, RequestId);
         'panelize':                Result := PCB_Panelize(Params, RequestId);
@@ -88165,12 +88255,12 @@ Function Gen_ProbeSdkProperties(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     Iter : ISch_Iterator;
-    Comp, Target : ISch_Component;
+    Obj, Target : ISch_GraphicalObject;
     Designator, DocPath, Wanted, Remaining, PropName, Val : String;
-    ResultsJson, UsedDesignator : String;
+    ResultsJson, UsedDesignator, TypeStr : String;
     ProbeStatus : String;
     Found, Faulted : Boolean;
-    CommaPos, NumOk, NumMissing : Integer;
+    CommaPos, NumOk, NumMissing, Kind, Nth, Seen : Integer;
 Begin
     Wanted := ExtractJsonValue(Params, 'properties');
     If Wanted = '' Then
@@ -88193,19 +88283,49 @@ Begin
         Exit;
     End;
 
+    { Any schematic object kind, not just a component. The generated base
+      probe answers the ten names declared on ISch_GraphicalObject itself,
+      which is most of what the other thirty-one types were missing, and
+      without a way to aim at one of them those names could only ever be
+      measured through a component. }
+    TypeStr := ExtractJsonValue(Params, 'object_type');
+    If TypeStr = '' Then TypeStr := 'component';
+    Kind := ObjectTypeFromString(TypeStr);
+    If Kind < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'object_type ' + TypeStr + ' is not a schematic object kind');
+        Exit;
+    End;
+    { Which one of that kind, for the kinds that have no designator. }
+    Nth := StrToIntDef(ExtractJsonValue(Params, 'index'), 0);
+
     Target := Nil;
+    Seen := 0;
     Iter := SchDoc.SchIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
-        Comp := Iter.FirstSchObject;
-        While Comp <> Nil Do
+        Iter.AddFilter_ObjectSet(MkSet(Kind));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
         Begin
-            If (Designator = '') Or (Comp.Designator.Text = Designator) Then
+            { A designator only names a component; for every other kind it
+              is index that picks one, and a designator passed with one of
+              them would silently match nothing. }
+            If (Designator <> '') And (Kind = eSchComponent) Then
             Begin
-                Target := Comp;
+                If Obj.Designator.Text = Designator Then
+                Begin
+                    Target := Obj;
+                    Break;
+                End;
+            End
+            Else If Seen >= Nth Then
+            Begin
+                Target := Obj;
                 Break;
-            End;
-            Comp := Iter.NextSchObject;
+            End
+            Else Inc(Seen);
+            Obj := Iter.NextSchObject;
         End;
     Finally
         SchDoc.SchIterator_Destroy(Iter);
@@ -88214,7 +88334,7 @@ Begin
     If Target = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
-            'No component to probe on this sheet');
+            'No ' + TypeStr + ' to probe on this sheet');
         Exit;
     End;
 
@@ -88251,8 +88371,16 @@ Begin
         { The release notes say this cannot be caught. If that holds, the }
         { Except never runs and the debugger halts on the read, exactly   }
         { as it did before. If it does not, one run measures the lot.     }
+        { The component block first for a component, because that is where
+          the type-specific slots live, then the shared base block, which
+          is the only one the other kinds have. Asking the base for a name
+          the component block already answered costs one failed lookup and
+          keeps either routine correct on its own. }
         Try
-            Val := GetSchComponentGenerated(Target, PropName, Found);
+            If Kind = eSchComponent Then
+                Val := GetSchComponentGenerated(Target, PropName, Found);
+            If Not Found Then
+                Val := GetSchGraphicalGenerated(Target, PropName, Found);
         Except
             Faulted := True;
             Found := False;

@@ -158,8 +158,15 @@ def test_the_data_directory_is_not_empty():
         f"no bundled data found under {data_dir()}. If this is an "
         f"installed copy rather than a checkout, packaging has dropped "
         f"src/eda_agent/data/ and every stackup tool is broken.")
-    for required in ("jlcpcb.json", "pcbway.json", "laminates.json"):
+    # laminates.json is NOT here: there used to be a copy under this
+    # directory and another under design/fab_data/, and the two had
+    # drifted. The fab_data one is the only one now, and test_fab_library
+    # is where its packaging is checked.
+    for required in ("jlcpcb.json", "pcbway.json"):
         assert required in found, f"{required} is missing from {found}"
+    assert "laminates.json" not in found, (
+        "the duplicate laminate table is back; list_laminates and "
+        "design_get_laminate must read one file or they will disagree")
 
 
 def test_a_bundled_stackup_adds_up_to_the_thickness_it_claims():
@@ -285,10 +292,55 @@ def test_both_dielectric_constants_are_carried():
 
 
 def test_a_laminate_with_no_published_design_er_says_null_not_the_other_one():
+    """Isola tabulates 370HR by frequency and publishes neither a process
+    nor a design value, so both columns stay empty rather than borrowing a
+    typical figure and calling it something it is not."""
     laminates = {l["name"]: l for l in list_laminates()["laminates"]}
-    jlc = laminates["JLCPCB 7628 prepreg"]
+    isola = laminates["370HR"]
+    assert isola["er_process"] is None
+    assert isola["er_design"] is None
+    assert len(isola["er_typical"]) == 5
+
+
+def test_the_one_er_to_design_with_is_given_and_says_what_it_is():
+    """The whole reason both constants are carried: a caller still has to
+    be handed one number, and which kind it is decides whether an
+    impedance comes out right."""
+    laminates = {l["name"]: l for l in list_laminates()["laminates"]}
+    assert laminates["RO4350B"]["er_for_design"] == 3.66
+    assert "design value" in laminates["RO4350B"]["er_for_design_note"]
+    assert laminates["370HR"]["er_for_design"] == 3.92
+    assert "typical value" in laminates["370HR"]["er_for_design_note"]
+    for laminate in laminates.values():
+        assert laminate["er_for_design"] != laminate["er_process"] or (
+            laminate["er_process"] is None), (
+            f"{laminate['name']}: a process Dk is a QC result and reads low "
+            f"for design")
+
+
+def test_a_fab_s_figure_for_its_own_stack_is_not_listed_as_a_laminate():
+    """JLCPCB publishes 4.6 for its 7628 prepreg with no measurement
+    conditions and no named supplier. Listed beside datasheet laminates it
+    would be carried over to another fab's FR-4."""
+    got = list_laminates()
+    assert "JLCPCB 7628 prepreg" not in {l["name"] for l in got["laminates"]}
+    jlc = {f["name"]: f for f in got["fab_figures"]}["JLCPCB 7628 prepreg"]
     assert jlc["er_process"] == 4.6
     assert jlc["er_design"] is None
+    assert "should not be carried over" in jlc["source_caveat"]
+
+
+def test_the_list_and_the_by_name_lookup_cannot_disagree():
+    """They read different files once, and the list was the smaller and
+    second-hand of the two: it had three laminates where asking by name
+    answered for four."""
+    from eda_agent.design import fab_library
+
+    listed = {l["name"] for l in list_laminates()["laminates"]}
+    by_name = {l["name"] for l in fab_library.list_laminates()}
+    assert listed == by_name
+    for name in listed:
+        assert fab_library.laminate(name)["ok"], name
 
 
 def test_every_laminate_cites_a_source():

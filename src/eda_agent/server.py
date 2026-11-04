@@ -1128,9 +1128,18 @@ def build_parser() -> argparse.ArgumentParser:
         "sdk-probe",
         help="Ask the running Altium which declared properties it exposes.",
     )
+    probe_p.add_argument("--object-type", default="component",
+                         metavar="KIND", dest="object_type",
+                         help="Schematic object kind to probe: component, "
+                              "pin, port, netlabel, wire, sheetsymbol, ... "
+                              "(default: component).")
     probe_p.add_argument("--designator", default="", metavar="REF",
                          help="Component to read (default: the first on the "
-                              "active sheet).")
+                              "active sheet). Components only; every other "
+                              "kind is picked with --index.")
+    probe_p.add_argument("--index", type=int, default=0, metavar="N",
+                         help="Which object of that kind on the sheet, from "
+                              "0. For the kinds that have no designator.")
     probe_p.add_argument("--properties", default="", metavar="A,B,C",
                          help="Probe only these names. Default: every "
                               "candidate the generator plans for.")
@@ -1725,6 +1734,8 @@ def main() -> int:
                                     sdk_json=args.sdk_json)
     if args.command == "sdk-probe":
         return cli.cmd_sdk_probe(designator=args.designator,
+                                 object_type=args.object_type,
+                                 index=args.index,
                                  properties=args.properties,
                                  doc_path=args.doc_path,
                                  as_json=args.json_out,

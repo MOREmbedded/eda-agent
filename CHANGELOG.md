@@ -16,6 +16,30 @@ maturity classification for every tool.
 
 ### Added
 
+- **`pcb_get_overlay_tracks`, which makes two existing tools reachable.**
+  `pcb_clone_silk_track_fragment` and `pcb_apply_silk_clip_plan` both
+  identify a silkscreen track by its object address, and nothing in the
+  bridge emitted one: the only place an overlay track address ever
+  appeared was in clone's own reply, which you need an address to get.
+  Both handlers were unreachable, which is why neither had ever been run
+  against a board. The reader gives each track its address, layer, owning
+  component, width and endpoints. The endpoints are RAW Altium
+  coordinates, because a clip plan compares them as text against
+  `IntToStr(Track.X1)` and a value converted to millimetres and back
+  would never match; the same figures in mils are alongside under
+  different names, for a human. Verified live on a real board: 8 tracks,
+  addresses, and the owning designator. Script version `2026.11.04.13`.
+
+- **`sdk-probe` can aim at any schematic object, not only a component.**
+  The planner handled all 37 types all along; the CLI passed "component"
+  and the Pascal filtered on `eSchComponent` whatever it was asked for,
+  so the ten names declared on `ISch_GraphicalObject` itself, which are
+  most of what the other thirty-one types were missing, could only ever
+  be measured through a component. `--object-type` and `--index` now
+  reach them, and a non-component is probed against the shared base block
+  rather than the component chain, which would have reported every name
+  missing.
+
 - **`profile_diff_all` and `profile_apply_all`.** One call that puts
   everything a profile declares onto what is open: the design rules, the
   ERC matrix, and the schematic units and grid. A section the profile does
@@ -117,6 +141,28 @@ maturity classification for every tool.
   only drift away from the calculator that justified it.
 
 ### Fixed
+
+- **`design_list_laminates` listed a different, smaller, second-hand set
+  than `design_get_laminate` answered for.** There were two laminate
+  tables: `data/stackups/laminates.json`, which the list read, and
+  `design/fab_data/laminates.json`, which the by-name lookup read. The
+  first held three laminates transcribed from third-party reproductions
+  of the Rogers data sheet; the second held four with the maker's own URL
+  and document revision. So 370HR and MEGTRON 6 were missing from the
+  list while asking for either by name worked perfectly well. The
+  duplicate is deleted, both read one file, and a test fails if it comes
+  back.
+
+  Nothing was lost in the move: the Tg figures are carried across saying
+  in the record that they came from that earlier transcription and were
+  not re-read, the generic-FR4 range is kept as a convention rather than
+  a laminate, and JLCPCB's figure for its own 7628 stack moved to
+  `fab_figures`, out of a list whose note promises datasheet figures
+  only. Two further corrections on the way: a laminate that publishes
+  typical values by frequency and no process value now leaves
+  `er_process` empty instead of borrowing a typical figure and labelling
+  it a QC measurement, and every laminate carries `er_for_design`, the
+  one number to size an impedance with, saying which kind of value it is.
 
 - **A failed `default_configuration_name` write cleared the name already
   set.** Measured on a live project: naming a configuration the project

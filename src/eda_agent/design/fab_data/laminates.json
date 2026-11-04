@@ -1,56 +1,160 @@
 {
- "note": "Only figures read off the maker's own datasheet. Each Dk says what it is: 'process' (the maker's QC test value), 'design' (the maker's recommendation for circuit design), or 'typical' (a typical value at the stated frequency, with no separate design value published). Impedance sizing takes the design value when there is one, else the typical value nearest the frequency asked for.",
+ "note": "Only figures read off the maker's own datasheet. Each Dk says what it is: 'process' (the maker's QC test value), 'design' (the maker's recommendation for circuit design), or 'typical' (a typical value at the stated frequency, with no separate design value published). Impedance sizing takes the design value when there is one, else the typical value nearest the frequency asked for. conventions holds values that are not datasheet figures at all, and fab_figures holds a fab's number for its own stack, which has no measurement conditions and does not carry over to another fab.",
  "laminates": [
   {
    "name": "RO4003C",
    "maker": "Rogers",
    "kind": "hydrocarbon ceramic",
-   "source": {"url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
-              "retrieved": "2026-10-22", "document": "Revised 1592 080322 PUB# 92-004"},
+   "source": {
+    "url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
+    "retrieved": "2026-10-22",
+    "document": "Revised 1592 080322 PUB# 92-004"
+   },
    "dk": [
-    {"value": 3.38, "tolerance": 0.05, "kind": "process", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"},
-    {"value": 3.55, "kind": "design", "frequency_ghz": [8, 40], "method": "differential phase length, Z"}
+    {
+     "value": 3.38,
+     "tolerance": 0.05,
+     "kind": "process",
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"
+    },
+    {
+     "value": 3.55,
+     "kind": "design",
+     "frequency_ghz": [
+      8,
+      40
+     ],
+     "method": "differential phase length, Z"
+    }
    ],
    "df": [
-    {"value": 0.0027, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, 23°C"},
-    {"value": 0.0021, "frequency_ghz": 2.5, "method": "IPC-TM-650 2.5.5.5, 23°C"}
-   ]
+    {
+     "value": 0.0027,
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5, 23°C"
+    },
+    {
+     "value": 0.0021,
+     "frequency_ghz": 2.5,
+     "method": "IPC-TM-650 2.5.5.5, 23°C"
+    }
+   ],
+   "tg_c": 280,
+   "tg_note": "Published as >280 degC by TMA, a lower bound rather than a single transition point",
+   "tg_provenance": "carried from the earlier transcription this file replaced, which was read from third-party reproductions of the data sheet rather than from the maker; not re-read"
   },
   {
    "name": "RO4350B",
    "maker": "Rogers",
    "kind": "hydrocarbon ceramic",
-   "source": {"url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
-              "retrieved": "2026-10-22", "document": "Revised 1592 080322 PUB# 92-004"},
+   "source": {
+    "url": "https://www.rogerscorp.com/-/media/project/rogerscorp/documents/advanced-electronics-solutions/english/data-sheets/ro4000-laminates-ro4003c-and-ro4350b---data-sheet.pdf",
+    "retrieved": "2026-10-22",
+    "document": "Revised 1592 080322 PUB# 92-004"
+   },
    "dk": [
-    {"value": 3.48, "tolerance": 0.05, "kind": "process", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"},
-    {"value": 3.66, "kind": "design", "frequency_ghz": [8, 40], "method": "differential phase length, Z"}
+    {
+     "value": 3.48,
+     "tolerance": 0.05,
+     "kind": "process",
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5 clamped stripline, Z, 23°C"
+    },
+    {
+     "value": 3.66,
+     "kind": "design",
+     "frequency_ghz": [
+      8,
+      40
+     ],
+     "method": "differential phase length, Z"
+    }
    ],
    "df": [
-    {"value": 0.0037, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, 23°C"},
-    {"value": 0.0031, "frequency_ghz": 2.5, "method": "IPC-TM-650 2.5.5.5, 23°C"}
+    {
+     "value": 0.0037,
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5, 23°C"
+    },
+    {
+     "value": 0.0031,
+     "frequency_ghz": 2.5,
+     "method": "IPC-TM-650 2.5.5.5, 23°C"
+    }
    ],
-   "caveat": "The datasheet: 'The design Dk value decreases by about 0.1 as the core thickness decreases from 0.020\" to 0.004\".'"
+   "caveat": "The datasheet: 'The design Dk value decreases by about 0.1 as the core thickness decreases from 0.020\" to 0.004\".'",
+   "tg_c": 280,
+   "tg_note": "Published as >280 degC by TMA, a lower bound rather than a single transition point",
+   "tg_provenance": "carried from the earlier transcription this file replaced, which was read from third-party reproductions of the data sheet rather than from the maker; not re-read"
   },
   {
    "name": "370HR",
    "maker": "Isola",
    "kind": "FR-4, 180°C Tg multifunctional epoxy",
-   "source": {"url": "https://www.isola-group.com/wp-content/uploads/data-sheets/370hr.pdf",
-              "retrieved": "2026-10-22", "document": "Revision No: C, last updated April 15, 2021"},
+   "source": {
+    "url": "https://www.isola-group.com/wp-content/uploads/data-sheets/370hr.pdf",
+    "retrieved": "2026-10-22",
+    "document": "Revision No: C, last updated April 15, 2021"
+   },
    "dk": [
-    {"value": 4.24, "kind": "typical", "frequency_ghz": 0.1, "method": "IPC-TM-650 2.5.5.3"},
-    {"value": 4.17, "kind": "typical", "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9"},
-    {"value": 4.04, "kind": "typical", "frequency_ghz": 2, "method": "Bereskin stripline"},
-    {"value": 3.92, "kind": "typical", "frequency_ghz": 5, "method": "Bereskin stripline"},
-    {"value": 3.92, "kind": "typical", "frequency_ghz": 10, "method": "Bereskin stripline"}
+    {
+     "value": 4.24,
+     "kind": "typical",
+     "frequency_ghz": 0.1,
+     "method": "IPC-TM-650 2.5.5.3"
+    },
+    {
+     "value": 4.17,
+     "kind": "typical",
+     "frequency_ghz": 1,
+     "method": "IPC-TM-650 2.5.5.9"
+    },
+    {
+     "value": 4.04,
+     "kind": "typical",
+     "frequency_ghz": 2,
+     "method": "Bereskin stripline"
+    },
+    {
+     "value": 3.92,
+     "kind": "typical",
+     "frequency_ghz": 5,
+     "method": "Bereskin stripline"
+    },
+    {
+     "value": 3.92,
+     "kind": "typical",
+     "frequency_ghz": 10,
+     "method": "Bereskin stripline"
+    }
    ],
    "df": [
-    {"value": 0.0150, "frequency_ghz": 0.1, "method": "IPC-TM-650 2.5.5.3"},
-    {"value": 0.0161, "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9"},
-    {"value": 0.0210, "frequency_ghz": 2, "method": "Bereskin stripline"},
-    {"value": 0.0250, "frequency_ghz": 5, "method": "Bereskin stripline"},
-    {"value": 0.0250, "frequency_ghz": 10, "method": "Bereskin stripline"}
+    {
+     "value": 0.015,
+     "frequency_ghz": 0.1,
+     "method": "IPC-TM-650 2.5.5.3"
+    },
+    {
+     "value": 0.0161,
+     "frequency_ghz": 1,
+     "method": "IPC-TM-650 2.5.5.9"
+    },
+    {
+     "value": 0.021,
+     "frequency_ghz": 2,
+     "method": "Bereskin stripline"
+    },
+    {
+     "value": 0.025,
+     "frequency_ghz": 5,
+     "method": "Bereskin stripline"
+    },
+    {
+     "value": 0.025,
+     "frequency_ghz": 10,
+     "method": "Bereskin stripline"
+    }
    ],
    "caveat": "The datasheet states no resin content for these; Isola publishes Dk/Df by construction separately, and a thin, resin-rich ply sits well below these values."
   },
@@ -58,17 +162,64 @@
    "name": "MEGTRON 6 (R-5775 / R-5670)",
    "maker": "Panasonic",
    "kind": "low-loss polyphenylene ether blend",
-   "source": {"url": "https://industrial.panasonic.com/content/data/EM/PDF/ipcdatasheet_R-5775.pdf",
-              "retrieved": "2026-10-22", "document": "No.21041931, 2021"},
+   "source": {
+    "url": "https://industrial.panasonic.com/content/data/EM/PDF/ipcdatasheet_R-5775.pdf",
+    "retrieved": "2026-10-22",
+    "document": "No.21041931, 2021"
+   },
    "dk": [
-    {"value": 3.71, "kind": "typical", "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9, C-24/23/50"},
-    {"value": 3.61, "kind": "typical", "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, C-24/23/50"}
+    {
+     "value": 3.71,
+     "kind": "typical",
+     "frequency_ghz": 1,
+     "method": "IPC-TM-650 2.5.5.9, C-24/23/50"
+    },
+    {
+     "value": 3.61,
+     "kind": "typical",
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5, C-24/23/50"
+    }
    ],
    "df": [
-    {"value": 0.002, "frequency_ghz": 1, "method": "IPC-TM-650 2.5.5.9, C-24/23/50"},
-    {"value": 0.004, "frequency_ghz": 10, "method": "IPC-TM-650 2.5.5.5, C-24/23/50"}
+    {
+     "value": 0.002,
+     "frequency_ghz": 1,
+     "method": "IPC-TM-650 2.5.5.9, C-24/23/50"
+    },
+    {
+     "value": 0.004,
+     "frequency_ghz": 10,
+     "method": "IPC-TM-650 2.5.5.5, C-24/23/50"
+    }
    ],
    "caveat": "Laminate R-5775 measured on a 0.750 mm (core type 30) sample; the datasheet: 'The data in the above table are not guaranteed values.' Thinner, resin-rich constructions are lower (its per-construction table)."
+  }
+ ],
+ "conventions": [
+  {
+   "name": "FR-4 (generic)",
+   "er_low": 4.2,
+   "er_high": 4.6,
+   "note": "NOT a material specification. 'FR-4' names a flammability rating, not a formulation, and its permittivity varies with the glass style, the resin content and the frequency. Carried as a RANGE so it cannot be mistaken for a datasheet figure. Use the laminate your fab actually presses, or the er in that fab's own stackup template."
+  }
+ ],
+ "fab_figures": [
+  {
+   "name": "JLCPCB 7628 prepreg",
+   "manufacturer": "JLCPCB (laminate supplier not stated)",
+   "family": "FR-4",
+   "er_process": 4.6,
+   "er_process_conditions": "As published on JLCPCB's impedance page for its 7628 templates; the measurement conditions are not stated there",
+   "er_design": null,
+   "er_design_conditions": null,
+   "loss_tangent": null,
+   "loss_tangent_conditions": null,
+   "tg_c": null,
+   "tg_note": "Not published alongside the impedance templates",
+   "source": "https://jlcpcb.com/impedance",
+   "source_caveat": "A fab's figure for its own stack, not a laminate datasheet. JLCPCB does not state which supplier's glass-epoxy this is, and the number has no measurement conditions attached, so it is usable for JLCPCB's own templates and should not be carried over to another fab's FR-4.",
+   "retrieved": "2026-10-18"
   }
  ]
 }
