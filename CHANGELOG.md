@@ -16,6 +16,40 @@ maturity classification for every tool.
 
 ### Added
 
+- **`profile_diff_all` and `profile_apply_all`.** One call that puts
+  everything a profile declares onto what is open: the design rules, the
+  ERC matrix, and the schematic units and grid. A section the profile does
+  not define is skipped rather than failed, because a profile declaring
+  only an ERC policy is a complete profile. One section failing does not
+  hide the others: the design rules need a board open and the ERC matrix
+  needs a project, so a caller with only one of them still gets the
+  other's answer, and `applied` and `failed` name the sections either way.
+  `document_settings` is reported as apply-only, since nothing reads a
+  schematic's units back to compare against.
+
+- **Every writable project option can now be read back.**
+  `proj_get_options` was missing four of the options `proj_project_setup`
+  writes, so holding a project against a stored policy meant applying it
+  with one tool and checking it with another that reported different
+  fields. It now also reports `pin_swap_by_pin`, `pin_swap_by_netlabel`,
+  `default_pcb_type` and `default_configuration_name`.
+
+  `proj_project_setup` gained the two options it could not write,
+  `default_pcb_type` and `default_configuration_name`, read back and
+  listed in `not_applied` like the rest. They went there rather than into
+  a new tool: a second writer over the same state, under its own option
+  names, is one more place for the two to disagree about what a project
+  is set to.
+
+  Still not writable, and reported rather than attempted:
+  `channel_designator_format` and `channel_room_separator`, for which the
+  engine registers no setter under any spelling; and
+  `netlist_single_pin_nets`, `log_folder_path` and the difference levels,
+  which are `IProjectProperties` members while `IProject` is a sibling of
+  that interface rather than a descendant, so calling one blind risks
+  stopping the polling loop behind an exception dialog. Script version
+  `2026.11.04.11`.
+
 - **An ERC-matrix manager, run from the workspace profile.** Project
   Options > Error Reporting lives in the `.PrjPcb`, so every new project
   starts from Altium's defaults and a house policy survives only as long
@@ -47,6 +81,13 @@ maturity classification for every tool.
   every set in the profile, including those reached only through
   `extends`.
 
+  Verified live on a disposable project: a first apply wrote and saved
+  all three types the set named, a second wrote nothing and read
+  `in_step`, and the levels read back exactly as asked. A diff of a real
+  project matched three types by Altium's own prose with nothing
+  `unknown`, and a deliberately misspelt type came back `unknown` rather
+  than being skipped.
+
 - **A design-rule manager, run from the workspace profile.** A profile's
   new `design_rules.json` holds the TARGETS a board's Altium design rules
   are built from (which fab profile, per-class current, differential
@@ -77,11 +118,28 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **A failed `default_configuration_name` write cleared the name already
+  set.** Measured on a live project: naming a configuration the project
+  does not have did not take AND blanked the existing name, from
+  `Sources` to empty, so a write that failed left the project worse off
+  than not calling at all. `proj_project_setup` now reads the previous
+  value first and puts it back when the read-back disagrees. Verified:
+  the invalid name is refused, `not_applied` names it, and `Sources`
+  survives.
+
+- **`proj_project_setup` reported a successful `output_path` as
+  `not_applied`.** A relative output path is resolved against the project
+  folder, so the read-back is the absolute path and the exact comparison
+  never matched: `Outputs Test` came back as
+  `<project folder>\Outputs Test` and was reported as not applied while
+  the reader showed the new value. An absolute path still has to match in
+  full.
+
 - **`proj_get_erc_levels` reported 295 violation types where the project
   has 167.** `DM_ViolationTypeDescription` answers by index with no end
   marker, and past the end of the enum it returns whatever adjacent
   memory reads as a string, so a fixed 0..400 scan that kept anything
-  non-empty picked up 129 extras: truncated fragments of other string
+  non-empty picked up 128 extras: truncated fragments of other string
   tables (`Out o`, `Unconnec`, `Gray`) and, at index 350, a block of raw
   UTF-16 carrying NULs and an `=`. The reader now stops at the first
   empty description, which is the end of a contiguous enum, and reports
@@ -91,6 +149,13 @@ maturity classification for every tool.
   otherwise have called `DM_SetErrorLevels` on an index outside the array
   it writes to. Each type now also carries its `group`, the section the
   Error Reporting dialog files it under. Script version `2026.11.04.10`.
+
+  Verified live afterwards: the reader returns exactly 167 types, all of
+  them printable, every one with a group in 0..16, ending at `Generic
+  Component Not Replaced With Library Component`; `beyond_table` read 127
+  on one pass and 128 on another, which is what uninitialised memory
+  does. Writing a kind past the end is refused, with `set: 0` and
+  `failed: 1`.
 
 - **`pcb_rules_plan` and `pcb_rules_diff` were advertised as mutating.**
   Both the `pcb_` and `proj_` prefixes default to `silent`, and the

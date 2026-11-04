@@ -5586,6 +5586,7 @@ Var
     I, Idx, Total, Mode : Integer;
     Order : TStringList;
     OutPath : String;
+    PcbType, ConfigName : String;
     Sub, AllowPort, AllowEntry, AppendSheet, SwapLabel, SwapPin : Boolean;
 Begin
     Order := TStringList.Create;
@@ -5653,6 +5654,13 @@ Begin
     Try AppendSheet := Project.DM_GetAppendSheetNumberToLocalNets; Except End;
     Try SwapLabel := Project.DM_GetPinSwapBy_Netlabel; Except End;
     Try SwapPin := Project.DM_GetPinSwapBy_Pin; Except End;
+    { The defaults a new document in this project inherits. Reported and    }
+    { written here rather than in a tool of their own: they are Project     }
+    { Options like the rest, and a second writer over the same state would  }
+    { be one more place for the two to disagree.                            }
+    PcbType := ''; ConfigName := '';
+    Try PcbType := Project.DM_GetDefaultPcbType; Except End;
+    Try ConfigName := Project.DM_GetDefaultConfigurationName; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
@@ -5662,7 +5670,9 @@ Begin
         + JsonStr('output_path', OutPath) + ','
         + JsonBool('append_sheet_number_to_local_nets', AppendSheet) + ','
         + JsonBool('pin_swap_by_net_label', SwapLabel) + ','
-        + JsonBool('pin_swap_by_pin', SwapPin);
+        + JsonBool('pin_swap_by_pin', SwapPin) + ','
+        + JsonStr('default_pcb_type', PcbType) + ','
+        + JsonStr('default_configuration_name', ConfigName);
 End;
 
 {..............................................................................}
@@ -5680,6 +5690,8 @@ Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
     ModeStr, OutStr, AppendStr, SwapLabelStr, SwapPinStr : String;
+    PcbTypeStr, ConfigStr, WasType, WasConfig : String;
+    GotOut, WantOut : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
@@ -5698,6 +5710,9 @@ Begin
     AppendStr := LowerCase(ExtractJsonValue(Params, 'append_sheet_number_to_local_nets'));
     SwapLabelStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_net_label'));
     SwapPinStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_pin'));
+    { Not lower-cased: these two are names, not flags. }
+    PcbTypeStr := ExtractJsonValue(Params, 'default_pcb_type');
+    ConfigStr := ExtractJsonValue(Params, 'default_configuration_name');
     If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
@@ -5773,8 +5788,17 @@ Begin
     Begin
         Project.DM_SetOutputPath(OutStr);
         Changed := True;
-        If UpperCase(NoTrailingSlash(Project.DM_GetOutputPath))
-           <> UpperCase(NoTrailingSlash(OutStr)) Then
+        { A RELATIVE output path is resolved against the project folder, so  }
+        { the read-back is the absolute one and an exact compare called a    }
+        { write that worked not_applied. MEASURED: 'Outputs Test' read back  }
+        { as <project folder>\Outputs Test, and the tool reported it as not  }
+        { applied while the reader showed the new value. Matched by tail for }
+        { exactly that case; an absolute path still has to match in full.    }
+        GotOut := UpperCase(NoTrailingSlash(Project.DM_GetOutputPath));
+        WantOut := UpperCase(NoTrailingSlash(OutStr));
+        If (GotOut <> WantOut)
+           And (Copy(GotOut, Length(GotOut) - Length(WantOut), Length(WantOut) + 1)
+                <> '\' + WantOut) Then
             NotApplied := NotApplied + '"output_path",';
     End;
     If AppendStr <> '' Then
@@ -5797,6 +5821,35 @@ Begin
         Changed := True;
         If Project.DM_GetPinSwapBy_Pin <> (SwapPinStr = 'true') Then
             NotApplied := NotApplied + '"pin_swap_by_pin",';
+    End;
+    { These two are not free-text. MEASURED: setting the configuration   }
+    { name to one the project does not have did not take AND cleared the  }
+    { name it already had, from 'Sources' to empty, so a write that failed }
+    { left the project worse off than not calling at all. The previous     }
+    { value is put back when the read-back disagrees.                      }
+    If PcbTypeStr <> '' Then
+    Begin
+        WasType := '';
+        Try WasType := Project.DM_GetDefaultPcbType; Except End;
+        Try Project.DM_SetDefaultPcbType(PcbTypeStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultPcbType <> PcbTypeStr Then
+        Begin
+            Try Project.DM_SetDefaultPcbType(WasType); Except End;
+            NotApplied := NotApplied + '"default_pcb_type",';
+        End;
+    End;
+    If ConfigStr <> '' Then
+    Begin
+        WasConfig := '';
+        Try WasConfig := Project.DM_GetDefaultConfigurationName; Except End;
+        Try Project.DM_SetDefaultConfigurationName(ConfigStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultConfigurationName <> ConfigStr Then
+        Begin
+            Try Project.DM_SetDefaultConfigurationName(WasConfig); Except End;
+            NotApplied := NotApplied + '"default_configuration_name",';
+        End;
     End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -7125,6 +7178,29 @@ Begin
     Except
     End;
 
+    { Pin swapping, and the defaults a new document inherits. Reported so   }
+    { every option Proj_ProjectSetup can WRITE can also be read back here,  }
+    { which is what lets a caller diff a project against a stored policy    }
+    { without the writer's other machinery. The two channel settings above  }
+    { are the exception: readable, and the engine registers no setter for   }
+    { either under any spelling.                                            }
+    Try
+        Data := Data + ',"pin_swap_by_pin":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Pin);
+    Except
+    End;
+    Try
+        Data := Data + ',"pin_swap_by_netlabel":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Netlabel);
+    Except
+    End;
+    Try
+        Data := Data + ',"default_pcb_type":"' + EscapeJsonString(Project.DM_GetDefaultPcbType) + '"';
+    Except
+    End;
+    Try
+        Data := Data + ',"default_configuration_name":"' + EscapeJsonString(Project.DM_GetDefaultConfigurationName) + '"';
+    Except
+    End;
+
     Data := Data + '}';
     Result := BuildSuccessResponse(RequestId, Data);
 End;
@@ -7289,9 +7365,10 @@ End;
 { 169 answer empty, and from 170 on it returns truncated fragments of other }
 { string tables ('Out o', 'Unconnec', 'Gray') plus, at 350, a block of raw  }
 { UTF-16 carrying NULs. Scanning a fixed 0..400 and keeping anything        }
-{ non-empty therefore reported 295 types where the project has 167, and     }
-{ DM_SetErrorLevels would have been called on 129 indices past the end of   }
-{ the array it indexes.                                                     }
+{ non-empty therefore reported 295 types where there are 167, and           }
+{ DM_SetErrorLevels would have been called on the 128 indices past the end  }
+{ of the array it indexes. The exact count moves between reads, because     }
+{ what is past the end is whatever that memory holds at the time.           }
 {                                                                           }
 { The ids are a contiguous enum from 0, so the first empty description is   }
 { the end of it. Nothing in the SDK gives a count: IWorkspace declares only }
@@ -7345,8 +7422,9 @@ End;
 { Params: project_path (default the focused project), match (substring of  }
 { the description, optional).                                              }
 { Reports type_count (how many types Altium has) and beyond_table (how     }
-{ many look-alike strings the reader found past the end and ignored, which }
-{ is 129 on AD 26.11; see ErcTypeCount).                                   }
+{ many look-alike strings the reader found past the end and ignored: 127   }
+{ and 128 on two reads of the same AD 26.11, since it is uninitialised     }
+{ memory; see ErcTypeCount).                                               }
 Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
 Var
     Project : IProject;

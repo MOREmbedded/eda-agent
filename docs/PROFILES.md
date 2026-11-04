@@ -340,7 +340,7 @@ read as a string; the reader used to scan a fixed range and keep anything
 non-empty, which on AD 26.11 reported 295 types for a project that has 167.
 It now stops at the first empty description and reports `type_count` and
 `beyond_table` so the bound is visible. Without that, pinning the matrix
-would have written levels into 129 indices past the end of the array
+would have written levels into the 128 indices past the end of the array
 `DM_SetErrorLevels` writes to.
 
 **Apply writes only what differs**, so a second apply writes nothing.
@@ -353,6 +353,36 @@ closes.
 the ones only reached through `extends`, so a set naming a base that is not
 there is a problem reported there rather than a policy that silently sets
 nothing.
+
+## Applying the whole profile at once
+
+```
+profile_diff_all    # how what is open differs from everything the profile declares
+profile_apply_all   # closes the gap. dry_run=True by default.
+```
+
+Each section runs its own manager: `pcb_rules_diff` over the board's design
+rules, `proj_erc_diff` over the project's ERC matrix. Two rules keep the
+combined answer honest.
+
+**A section the profile does not define is skipped, not failed.** A profile
+declaring only an ERC policy is a complete profile, and saying
+"design_rules.json is not a file" about it would be noise dressed as a
+problem.
+
+**One failing section does not hide the others.** The design rules need a
+board open and the ERC matrix needs a project, so a caller with only one of
+them still gets the other's answer. `applied` and `failed` name the
+sections either way, because a partial apply is a real outcome rather than
+an error.
+
+`in_step` reports only the sections that actually compared something.
+`document_settings` is reported as apply-only: nothing reads a schematic's
+units and grid back, so there is no comparison to make, and leaving it out
+entirely would make a profile that sets it look ignored. It is also the one
+section that reads the **active** profile rather than `profile_dir`, so
+pointing `profile_dir` elsewhere refuses it by name instead of writing
+another profile's units.
 
 ## `phase_gates.json`
 

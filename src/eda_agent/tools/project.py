@@ -273,6 +273,11 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new Altium project.
 
+        Not idempotent. The stub is written to disk and then opened, so
+        calling this for a project Altium already has open rewrites the
+        file underneath it; measured, the very next lookup by path then
+        failed with "No project found". Check proj_list_open first.
+
         Args:
             project_path: Full path for the new project file (.PrjPcb, .PrjLib, etc.)
             project_type: Type of project to create:
@@ -3113,11 +3118,13 @@ def register_project_tools(mcp):
         append_sheet_number_to_local_nets: Optional[bool] = None,
         pin_swap_by_net_label: Optional[bool] = None,
         pin_swap_by_pin: Optional[bool] = None,
+        default_pcb_type: str = "",
+        default_configuration_name: str = "",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or change, a project's document order, library search
-        paths, net naming options, net identifier scope, output path and
-        pin swap options.
+        paths, net naming options, net identifier scope, output path,
+        pin swap options and the defaults a new document inherits.
 
         Call with no changes to read. Every change is read back, and
         any that did not take is listed in ``not_applied``. Save the
@@ -3140,6 +3147,16 @@ def register_project_tools(mcp):
                 net labels on the schematic.
             pin_swap_by_pin: Pin swaps on the board may move pins on
                 the schematic.
+            default_pcb_type: The PCB type a new board in this project
+                starts as. Empty leaves it alone. Not free text: Altium
+                keeps its own value for anything it does not recognise,
+                and the name comes back in ``not_applied``.
+            default_configuration_name: The project configuration used
+                when none is named. Empty leaves it alone, and it must
+                name a configuration the project has. Measured: naming
+                one it does not have both failed AND cleared the name
+                already set, so a failed write now puts the previous
+                value back and reports ``not_applied``.
             project_path: The .PrjPcb. Defaults to the focused project.
 
         Returns:
@@ -3149,6 +3166,7 @@ def register_project_tools(mcp):
             ``hierarchy_mode_name``, ``output_path``,
             ``append_sheet_number_to_local_nets``,
             ``pin_swap_by_net_label``, ``pin_swap_by_pin``,
+            ``default_pcb_type``, ``default_configuration_name``,
             ``changed``, ``moved_from`` / ``moved_to`` and
             ``not_applied``.
         """
@@ -3183,6 +3201,11 @@ def register_project_tools(mcp):
                         + ", ".join(_HIERARCHY_MODES) + " or 0 to 4"}
         if output_path.strip():
             params["output_path"] = output_path.strip()
+        for key, text in (("default_pcb_type", default_pcb_type),
+                          ("default_configuration_name",
+                           default_configuration_name)):
+            if text.strip():
+                params[key] = text.strip()
         if project_path:
             params["project_path"] = project_path
         reply = await get_bridge().send_command_async(
@@ -3556,8 +3579,10 @@ def register_project_tools(mcp):
         end marker: asked past the end it returns whatever adjacent memory
         reads as a string. ``type_count`` is where the real table stops and
         ``beyond_table`` counts the look-alike strings found after it and
-        ignored (129 on AD 26.11, among them truncated fragments of other
-        string tables and a block of raw UTF-16).
+        ignored: 127 and 128 on two reads of the same AD 26.11, because
+        what is past the end is whatever that memory holds at the time.
+        Among them are truncated fragments of other string tables and a
+        block of raw UTF-16.
 
         Args:
             match: only types whose description contains this text, e.g.
@@ -3952,8 +3977,14 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get project options: output path, hierarchy mode, compiler settings.
 
-        Returns configuration details including output directory, hierarchy mode,
-        document counts, variant count, channel settings, and net naming options.
+        A read, and the whole of it: ``proj_project_setup`` is what WRITES
+        these, and it reads them back too. This is the smaller call for a
+        caller that only wants to look, and it reports every option that
+        one can write, so a project can be compared against a stored
+        policy without going through the writer.
+
+        The two channel settings are the exception: readable here, and
+        Altium's engine registers no setter for either under any spelling.
 
         Args:
             project_path: Optional project path. If None, uses active project.
@@ -3961,7 +3992,9 @@ def register_project_tools(mcp):
         Returns:
             Dictionary with project_name, output_path, hierarchy_mode,
             logical_document_count, physical_document_count, variant_count,
-            channel settings, and net naming options
+            channel settings, net naming options, pin_swap_by_pin,
+            pin_swap_by_netlabel, default_pcb_type and
+            default_configuration_name.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}

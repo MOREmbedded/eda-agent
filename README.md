@@ -373,6 +373,12 @@ copies. A violation type the set does not name keeps the level it has,
 and one this Altium version does not have is reported rather than
 quietly skipped.
 
+`profile_diff_all` and `profile_apply_all` run every section in one call.
+A section the profile does not define is skipped rather than failed, and
+one section failing does not hide the others: the design rules need a
+board open and the ERC matrix needs a project, so a caller with only one
+of them still gets the other's answer.
+
 Full detail, and the format of each file, is in
 [`docs/PROFILES.md`](docs/PROFILES.md).
 
