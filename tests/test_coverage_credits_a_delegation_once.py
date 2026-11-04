@@ -176,15 +176,23 @@ def test_the_real_chain_credits_each_delegation_to_its_own_type():
     delegated = cov.delegated_heads("GetSchProperty")
     assert set(delegated) == {"eSchComponent", "ePin", "ePort",
                               "eParameter", "eNoERC", cov.ANY_TYPE}
-    assert "DescriptionString" in delegated["eSchComponent"]
-    # Read live through generic.query_objects on 2026-10-27, so this is
-    # a measurement rather than a claim about what should work.
-    assert "IdentifierString" in delegated["eSchComponent"]
-    # A pin does not reach those through the COMPONENT chain. It reaches
-    # them through the base one, which is a different thing and has to
-    # stay a different thing: fold the two together and a pin would be
-    # credited with the properties only a component declares.
+    # AliasAsText is declared on ISch_Component and nothing else, so it
+    # must be credited to the component and to no other type.
+    assert "AliasAsText" in delegated["eSchComponent"]
+    assert "AliasAsText" not in delegated["ePin"]
+
+    # DescriptionString and IdentifierString used to be the example here,
+    # on the measurement that a pin could not answer them. They moved:
+    # GetSchProperty reads both off ISch_GraphicalObject in a branch that
+    # names no type, so EVERY schematic object answers them now and they
+    # are credited to the host chain rather than to any delegation. The
+    # rule this test exists for is unchanged, which is why the example
+    # moved rather than the assertion being dropped.
+    handled = cov.handled_names("GetSchProperty")
+    assert {"DescriptionString", "IdentifierString"} <= handled
     assert not {"DescriptionString", "IdentifierString"} & delegated["ePin"]
+    assert not ({"DescriptionString", "IdentifierString"}
+                & delegated["eSchComponent"])
     # Symbol_Inner is owner 1 in SchExtraOwner, which SchExtraFits reads
     # as ePin alone; HarnessColor is owner 4, which is ePort alone.
     assert "Symbol_Inner" in delegated["ePin"]

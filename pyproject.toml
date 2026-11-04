@@ -61,14 +61,10 @@ dependencies = [
 render = [
     "matplotlib>=3.5,<4",
 ]
-# KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). kipy is the
-# official KiCad IPC client; it is imported lazily inside the bridge so the
-# core install and the Altium backend never need it, and the KiCad tools
-# degrade to a clear "install kicad-python" reason when it is absent. Needs
-# KiCad 9+ with Preferences > Plugins > KiCad API server enabled.
-kicad = [
-    "kicad-python>=0.7",
-]
+# KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). It talks to
+# KiCad's API server with the standard library alone, so this extra is
+# empty; it stays so that `pip install eda-agent[kicad]` keeps working.
+kicad = []
 # Reading an exported fab package back (pcb_check_fab_output). gerbonara
 # handles Gerber and Excellon in one library and is Apache-2.0, like this
 # project. It is an extra rather than a core dependency for two reasons:
@@ -77,6 +73,14 @@ kicad = [
 # its optional viewer, none of which the parsing path imports.
 gerber = [
     "gerbonara>=1.6,<2; python_version >= '3.12'",
+]
+# Pulling pin tables out of a datasheet PDF
+# (engineering/pins.py, extract_tables_from_pdf). pdfplumber is imported
+# inside that one function, which is the only caller; every other path in
+# that module works on text already extracted, so the core install does
+# not carry a PDF parser.
+pdf = [
+    "pdfplumber>=0.10",
 ]
 # STEP models built from a package drawing (design/models3d.py). CadQuery
 # is imported lazily; without it the generator uses FreeCAD's freecadcmd

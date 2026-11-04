@@ -9,6 +9,7 @@ race that the older single-file scheme had when keep-alive pings overlapped
 user tool calls.
 """
 
+import contextlib
 import itertools
 import json
 import locale
@@ -90,13 +91,30 @@ _QUEUE_FRESH_S = 5.0
 #: the failure this exists to remove. Checking on an interval catches it
 #: whenever it turns up.
 #:
-#: The first check is delayed so ordinary calls never pay for it. MEASURED
-#: on this workspace, the compile-bound reads are the slowest legitimate
-#: handlers and return in about a second, so a 3 second grace leaves
-#: headroom. After that the cost is one Win32 window enumeration per
-#: interval, against a call that is already stalled.
-_DIALOG_PROBE_AFTER = 3.0
-_DIALOG_PROBE_EVERY = 3.0
+#: One look costs about 60 ms (a Toolhelp scan for Altium's pid and a
+#: Win32 window enumeration), so it starts after a second and repeats
+#: every half second. A dialog counts as blocking the call only when the
+#: same one is seen on two looks in a row, so a progress window Altium
+#: opens and closes by itself never stops a call.
+_DIALOG_PROBE_AFTER = 1.0
+_DIALOG_PROBE_EVERY = 0.5
+
+
+def _blocking_signature(report: Optional[dict], expected: frozenset = frozenset()) -> str:
+    """The dialogs blocking Altium, as one comparable string; '' if none.
+
+    A dialog whose title contains one of ``expected`` is one the caller
+    is answering itself (proj_sync_pcb and its change order) and is not
+    counted.
+    """
+    if not report or not report.get("blocked"):
+        return ""
+    dialogs = [d for d in report.get("dialogs") or [] if isinstance(d, dict)]
+    if not dialogs:
+        return "blocked"
+    return "|".join(sorted(
+        f"{d.get('hwnd')}:{d.get('title')}" for d in dialogs
+        if not any(e.lower() in str(d.get("title") or "").lower() for e in expected)))
 
 #: One worker, so this server's calls reach Altium one at a
 #: time: the Pascal loop processes a single request anyway, and
@@ -130,7 +148,7 @@ def _trace_log(workspace_dir: Path, msg: str) -> None:
         path = workspace_dir / "bridge_trace.log"
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{time.time():.3f} {msg}\n")
-    except Exception:
+    except OSError:  # a trace line is not worth failing a call over
         pass
 
 
@@ -189,7 +207,7 @@ def _make_dir_watcher(directory: Path):
         if not handle or handle == _INVALID_HANDLE:
             return None
         return handle
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller falls back to sleeping
         return None
 
 
@@ -208,7 +226,7 @@ def _wait_dir_change(handle, timeout_ms: float) -> bool:
             _kernel32.FindNextChangeNotification(handle)
             return True
         return False
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller re-checks and waits again
         return False
 
 
@@ -217,7 +235,7 @@ def _close_dir_watcher(handle) -> None:
         return
     try:
         _kernel32.FindCloseChangeNotification(handle)
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the handle is gone either way
         pass
 
 
@@ -340,10 +358,7 @@ def _wants_board_in_view(command: str, now: Optional[float] = None) -> bool:
     """
     if os.environ.get(KEEP_IN_VIEW_ENV, "").strip().lower() not in ("1", "true", "yes"):
         from ..preferences import keep_in_view
-        try:
-            if not keep_in_view():
-                return False
-        except Exception:
+        if not keep_in_view():
             return False
     domain, _, verb = command.partition(".")
     if domain not in ("pcb", "generic") or not verb:
@@ -535,6 +550,9 @@ class AltiumBridge:
     def __init__(self):
         self.config = get_config()
         self.process_manager = AltiumProcessManager()
+        #: Titles of dialogs a caller is answering itself while its call
+        #: runs; the poll loop does not stop for them. See expecting().
+        self.expected_dialogs: frozenset = frozenset()
         self._attached = False
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop = threading.Event()
@@ -751,8 +769,8 @@ class AltiumBridge:
         # cleaned without waiting for a full re-attach.
         try:
             self._sweep_orphan_responses()
-        except Exception:
-            pass
+        except OSError as e:  # leftover files cost nothing now; say so in the trace
+            _trace_log(self.config.workspace_dir, f"orphan sweep failed: {e}")
         self._keepalive_stop.clear()
         self._keepalive_thread = threading.Thread(
             target=self._keepalive_loop, daemon=True, name="altium-keepalive"
@@ -963,6 +981,8 @@ class AltiumBridge:
         first_appearance: Optional[float] = None
         parse_errors = 0
         next_dialog_probe = start + _DIALOG_PROBE_AFTER
+        #: The blocking dialogs the last look saw; see _DIALOG_PROBE_EVERY.
+        last_blocked = ""
 
         while True:
             poll_count += 1
@@ -997,7 +1017,10 @@ class AltiumBridge:
                         and maintenance_in_progress(workspace_dir)
                         and self._request_path(request_id).exists()):
                     continue
-                if early and early.get("blocked"):
+                seen = _blocking_signature(early, self.expected_dialogs)
+                confirmed = bool(seen) and seen == last_blocked
+                last_blocked = seen
+                if confirmed:
                     waited = now - start
                     _trace_log(
                         workspace_dir,
@@ -1676,6 +1699,17 @@ class AltiumBridge:
         self._ensure_keepalive()
         return self._execute_command(command, one_spelling(params or {}), timeout)
 
+    @contextlib.contextmanager
+    def expecting(self, title: str):
+        """While inside, a dialog whose title contains ``title`` does not
+        stop a call: the caller is answering it itself."""
+        before = self.expected_dialogs
+        self.expected_dialogs = before | {title}
+        try:
+            yield
+        finally:
+            self.expected_dialogs = before
+
     async def send_command_async(
         self,
         command: str,
@@ -1798,7 +1832,7 @@ class AltiumBridge:
         try:
             self.send_command("application.ping", timeout=3.0)
             return True
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return False
 
     def ping_with_version(
@@ -1822,7 +1856,7 @@ class AltiumBridge:
                 # which prepares the workspace itself. No keepalive: one
                 # diagnostic round trip should not leave a thread behind.
                 result = self._execute_command("application.ping", {}, 3.0)
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return None
         if isinstance(result, dict):
             return result

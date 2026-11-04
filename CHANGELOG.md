@@ -14,6 +14,49 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Merged from upstream
+
+- **27 commits, `214f5d3..5e126f6`.** Fifteen files conflicted. Four
+  resolutions were not a choice of side:
+
+  - `KnownPCBPropertyList` was unioned. The file's own comment warns that
+    a list lagging the reader tells a caller a property does not exist
+    when it does, so both sides' names are in it.
+  - In `PCB_PlaceTracks`, upstream's block was a SECOND `Result`
+    assignment after ours. Taking it would have dropped
+    `skipped_existing`, `nets_not_found` and `connectivity_rebuilt`; ours
+    is kept and upstream's current-layer report lifted into it.
+  - `Gen_BatchDelete` took upstream's rewrite whole: our side had become a
+    stale duplicate of the same logic under different variable names.
+  - `proj_sync_pcb` moved onto upstream's `send_answering`, and pad-net
+    checking folded into `_after_sync`, which reports mismatched pads as
+    well as unbound ones. Our `verify_pad_nets` knob and `_verify_pad_nets`
+    helper were deleted rather than left as a second way to say the same
+    thing.
+
+### Fixed
+
+- **The merged pad-net check read only the first 500 pads.**
+  `pcb.get_pad_properties` windows at 500 and reports `truncated`;
+  `_after_sync` called it once with no paging and ignored that, so on any
+  real board it would have reported a fraction of the unbound pads as if
+  it were the whole board. That is the bug the check was written to catch,
+  reappearing in a new place. It now goes through `_fetch_all_pads`, and
+  its two sweep counters are named `pads_swept` and `sweep_complete`
+  because `verify_eco` already answers `complete` and `pads_checked` with
+  different meanings.
+
+- **`proj_sync_pcb`'s `wait_seconds` had become a dead parameter.** The
+  rewrite onto `send_answering` left it in the signature, and so in the
+  tool's schema, with nothing reading it. It is passed as the waiter's
+  timeout again.
+
+- **The sync tests were environment-dependent.** `driver` returns a dialog
+  presser only when Dialogs Automatic is on AND Altium's process can be
+  named, so the tests took one path on a machine with Altium open and
+  another in CI. They force it off now, and the fake bridge implements the
+  `expecting` contract `send_answering` requires.
+
 ### Added
 
 - **`pcb_get_overlay_tracks`, which makes two existing tools reachable.**

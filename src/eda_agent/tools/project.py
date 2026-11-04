@@ -10,6 +10,8 @@ from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
 from ..export.variant_bom import apply_variant, find_variant
+from ..ui import change_order
+from .answering import send_answering
 
 # Pads fetched per round-trip when verifying an ECO. pcb_get_pad_properties
 # windows its output, so a dense board needs paging -- reading only the
@@ -29,7 +31,7 @@ def _list_open_dialogs() -> list[dict[str, Any]]:
     try:
         from .application import _get_ui_inspector
         return list(_get_ui_inspector().list_dialogs())
-    except Exception:
+    except Exception:  # a failed inventory must not mask the real error
         return []
 
 
@@ -86,57 +88,6 @@ async def _fetch_all_pads(bridge) -> tuple[list[dict[str, Any]], bool]:
     return pads, False
 
 
-async def _verify_pad_nets(bridge) -> dict[str, Any]:
-    """Compare the compiled netlist against the board's pad nets.
-
-    Any failure to gather either side is reported as ``checked:false`` with
-    a reason. A verification that could not run must never look like a
-    verification that passed.
-    """
-    from ..core.eco_verify import verify_eco
-
-    try:
-        pads, complete = await _fetch_all_pads(bridge)
-    except Exception as exc:
-        return {"checked": False,
-                "reason": f"could not read board pads: {exc}"}
-    if not complete:
-        return {"checked": False,
-                "reason": "pad sweep did not reach the end of the board; "
-                          "the comparison would be based on a partial "
-                          "board and is not reported",
-                "pads_read": len(pads)}
-
-    designators = sorted({
-        str(p.get("component") or "").strip()
-        for p in pads if str(p.get("component") or "").strip()
-    })
-    if not designators:
-        return {"checked": False,
-                "reason": "no component pads on the board to verify"}
-
-    try:
-        netlist = await bridge.send_command_async(
-            "project.get_connectivity_batch",
-            {"designators": "~~".join(designators)},
-        )
-    except Exception as exc:
-        return {"checked": False,
-                "reason": f"could not read the compiled netlist: {exc}"}
-    if not isinstance(netlist, dict):
-        return {"checked": False,
-                "reason": "compiled netlist response was not a dict"}
-
-    report = verify_eco(netlist.get("components") or [], pads)
-    report["checked"] = True
-    report["hint"] = (
-        "Repair anything in pads_unbound with pcb_bind_pad_nets; a "
-        "non-empty list means the ECO reported success but did not "
-        "finish the job."
-    )
-    return report
-
-
 def _rows(result: Any, key: str) -> list:
     if isinstance(result, dict):
         inner = result.get("result", result)
@@ -156,7 +107,52 @@ async def _pair_names(bridge) -> set:
             if isinstance(p, dict) and p.get("name")}
 
 
-async def _after_sync(bridge, pairs_before: set) -> dict:
+def _record_change_order(result, driven) -> list[str]:
+    """Put what was done to the change order on the reply, with the lines
+    that failed and the raw rows moved out of the way; the failed lines."""
+    if not isinstance(result, dict) or driven is None:
+        return []
+    failed = change_order.failed_lines(driven)
+    rows = driven.pop("read", None)
+    filtered = driven.pop("read_filtered", None)
+    if filtered:
+        driven["failed_lines"] = failed
+        driven["failed_lines_note"] = (
+            "read from the dialog by OCR with Only Show Errors ticked: the "
+            "rows that fit in the dialog, a long line sometimes split in "
+            "two, names with 0/O and 1/l slips")
+    elif rows is not None:
+        driven["failed_lines"] = None
+        driven["failed_lines_note"] = (
+            "Only Show Errors could not be ticked, so which lines failed "
+            "was not read")
+    result["change_order"] = driven
+    return failed
+
+
+async def _footprint_source(bridge, designator: str) -> dict:
+    """Where Altium looks for a part's current footprint: the library each
+    of its datafiles names and the path it resolves to ('' when none)."""
+    try:
+        reply = await bridge.send_command_async(
+            "project.component_models",
+            {"designator": designator, "limit": "1"}, timeout=180.0)
+    except Exception as exc:                    # noqa: BLE001 - reported, not raised
+        return {"footprint_source_error": str(exc)}
+    for part in _rows(reply, "parts"):
+        models = part.get("models") if isinstance(part, dict) else None
+        for model in models or []:
+            if (isinstance(model, dict) and model.get("current")
+                    and str(model.get("type", "")).upper() == "PCBLIB"):
+                if model.get("integrated"):
+                    return {"footprint_source": [{"integrated": True}]}
+                return {"footprint_source": [
+                    {"library": f.get("library", ""), "found_at": f.get("found_at", "")}
+                    for f in model.get("datafiles") or [] if isinstance(f, dict)]}
+    return {}
+
+
+async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
     """What a schematic-to-board sync left undone, read from both sides."""
     bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
     board = await bridge.send_command_async("pcb.get_components", {})
@@ -167,15 +163,57 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
     mismatch = [{"designator": d, "schematic": fp, "board": pcb[d]}
                 for d, fp in sorted(sch.items())
                 if d in pcb and fp and pcb[d] and fp.lower() != pcb[d].lower()]
+    for row in mismatch:
+        line = change_order.failure_for(row["schematic"], list(failed), row["designator"])
+        if line:
+            row["eco_line"] = line
+            if change_order.says_not_found(line):
+                row.update(await _footprint_source(bridge, row["designator"]))
     missing = sorted(d for d in sch if d not in pcb)
     removed = sorted(pairs_before - await _pair_names(bridge))
     out: dict[str, Any] = {"footprint_mismatch": mismatch,
                            "missing_on_board": missing,
                            "diff_pairs_removed": removed}
-    problems = []
+    problems: list[str] = []
+    on_both = sorted(d for d in sch if d in pcb)
+    if on_both:
+        from ..core.eco_verify import verify_eco
+        pins = await bridge.send_command_async(
+            "project.get_connectivity_batch", {"designators": "~~".join(on_both)})
+        # Paged, NOT one call: pcb.get_pad_properties windows at 500 pads
+        # by default and says so in `truncated`. Reading page one and
+        # reporting the unbound list as the board's is the original bug in
+        # a new place, and every real board is past that window.
+        pads, complete = await _fetch_all_pads(bridge)
+        nets = verify_eco(_rows(pins, "components"), pads)
+        # Distinct names on purpose: verify_eco's own `complete` means
+        # "nothing was wrong" and its `pads_checked` counts pads it could
+        # pair with a pin. These two are about the SWEEP that fed it.
+        nets["pads_swept"] = len(pads)
+        nets["sweep_complete"] = complete
+        out["pad_nets"] = nets
+        if not complete:
+            problems.append(
+                "the pad sweep hit its guard rail, so pad_nets describes "
+                "part of the board only")
+        if nets["unbound_count"] or nets["mismatched_count"]:
+            problems.append(
+                f"{nets['unbound_count']} pad(s) have no net and "
+                f"{nets['mismatched_count']} carry another net than their pin "
+                f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
-        problems.append(f"{len(mismatch)} part(s) kept a footprint the "
-                        f"schematic no longer uses")
+        explained = sum(1 for row in mismatch if row.get("eco_line"))
+        unresolved = sorted({f["library"] for row in mismatch
+                             for f in row.get("footprint_source") or []
+                             if f.get("library") and not f.get("found_at")})
+        problems.append(
+            f"{len(mismatch)} part(s) kept a footprint the schematic no longer "
+            f"uses" + (f"; for {explained} the change order says why "
+                       f"(eco_line), typically a footprint it found in no "
+                       f"library it searches" if explained else "")
+            + (f"; Altium finds no library named {', '.join(unresolved)} "
+               f"(footprint_source): install it (lib_install_library) or "
+               f"relink the part" if unresolved else ""))
     if missing:
         problems.append(f"{len(missing)} schematic part(s) are not on the board")
     if removed:
@@ -3793,20 +3831,14 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_sync_pcb(
-        wait_seconds: float = 60.0,
-        verify_pad_nets: bool = True,
+        wait_seconds: float = 360.0,
     ) -> dict[str, Any]:
         """Push schematic changes to PCB (ECO): Design > Update PCB Document.
 
-        NOT SILENT: the ECO dialog BLOCKS the bridge until Execute Changes
-        is pressed. Prefer opening it without blocking and pressing it
-        yourself: app_menu(how="click", args={"menu_path": "Design|Import
-        Changes From <Project>.PrjPcb", "expect_dialog": "Engineering
-        Change Order"}), then app_press_dialog_button("Execute Changes",
-        allow_irreversible=True) and "Close". It focuses the PCB first so the update runs
-        schematic to board (refuses with WRONG_FOCUS if it cannot); check
-        the ECO lists the PcbDoc before executing. ``app_list_open_dialogs``
-        reads the dialog while the bridge is blocked.
+        With Dialogs Automatic (Config tab) the tool executes and closes
+        the change order (``change_order``); otherwise it waits for the
+        user and blocks the bridge (``app_list_open_dialogs`` reads it).
+        Focuses the PCB first (WRONG_FOCUS if it cannot).
 
         The wait is bounded by ``wait_seconds``. Giving up does NOT cancel
         the ECO: Altium still sits on the dialog, and the changes are
@@ -3816,26 +3848,17 @@ def register_project_tools(mcp):
             wait_seconds: How long to wait for the ECO to return before
                 reporting the dialog as blocking. The ECO itself is
                 unaffected by this.
-            verify_pad_nets: After the ECO, compare the compiled netlist's
-                (designator, pin, net) triples with the board's pad nets
-                and report every pad left unbound: an ECO has been seen to
-                skip one part silently while reporting success. Costs a
-                compiled-netlist read and a paged pad sweep.
 
         Returns:
-            success, pcb_path, before/after mapping counts,
-            components_added_to_pcb, components_removed_from_pcb,
-            components_in_sync, and dialog_outcome_verified (always
-            false: which button was pressed is unknown). The counts see
-            components added or removed only. ``after_sync`` then reads the
-            board against the schematic: ``footprint_mismatch`` (the
-            board's footprint is not the schematic's), ``missing_on_board``
-            and ``diff_pairs_removed`` (pairs defined only on the board,
-            which a sync deletes).
-            With ``verify_pad_nets``, also ``pad_net_verification`` and
-            its ``pads_unbound``: repair those with ``pcb_bind_pad_nets``.
-            When the bounded wait expires: ``success:false`` with
-            ``error.code == "ECO_DIALOG_BLOCKING"`` and the open dialogs.
+            success, pcb_path, mapping counts, components added, removed
+            and in sync, ``change_order``, and ``after_sync``:
+            ``footprint_mismatch``, ``missing_on_board``,
+            ``diff_pairs_removed`` (board-only pairs),
+            ``pad_nets`` (pads ``unbound`` or ``mismatched``).
+            ``change_order.failed_lines``: failed lines read by OCR (0/O,
+            1/l slips); a mismatch it explains carries ``eco_line``
+            and, for Footprint Not Found, ``footprint_source``: each
+            library and ``found_at`` ('' if none).
         """
         from ..bridge.exceptions import AltiumTimeoutError
 
@@ -3855,66 +3878,39 @@ def register_project_tools(mcp):
                 eco_fired=False,
             )
 
-        # Bound the wait. The heartbeat is a presence marker written once,
+        # The wait is bounded by wait_seconds, which send_answering passes
+        # to the bridge. The heartbeat is a presence marker written once,
         # not a tick, so a handler parked on a modal looks exactly like one
         # doing slow work; only an explicit cap distinguishes them.
-        try:
-            poll_window = max(1.0, float(bridge.config.poll_timeout))
-        except (AttributeError, TypeError, ValueError):
-            # Lightweight bridge adapters and test doubles may not expose the
-            # AltiumBridge config object. Keep the wait bounded in that case.
-            poll_window = min(5.0, max(1.0, float(wait_seconds)))
-        extensions = max(1, int(round(float(wait_seconds) / poll_window)))
         pairs_before = await _pair_names(bridge)
-        try:
-            result = await bridge.send_command_async(
-                "project.update_pcb", {},
-                timeout=poll_window,
-                max_extensions=extensions,
-            )
-        except AltiumTimeoutError as exc:
-            return _modal_blocked_response(
-                "ECO_DIALOG_BLOCKING",
-                f"The ECO did not return within {wait_seconds:.0f}s. Altium "
-                f"created a progress marker, but that one-time marker does "
-                f"not prove the polling loop is still alive. The modal ECO "
-                f"was NOT cancelled and is expected to remain pending until "
-                f"its dialog is answered; inspect the returned dialog list "
-                f"before deciding whether recovery is needed. ({exc})",
-                _list_open_dialogs(),
-                eco_fired=True,
-            )
-
-        if not isinstance(result, dict):
-            return result
-        # Which button was pressed is unknowable, so read the board back
-        # against the schematic rather than trusting the dialog's outcome.
-        try:
-            result["after_sync"] = await _after_sync(bridge, pairs_before)
-        except Exception as exc:            # noqa: BLE001 - a report only
-            result["after_sync"] = {"error": f"not read: {exc}"}
-        if verify_pad_nets:
-            result["pad_net_verification"] = await _verify_pad_nets(bridge)
-
+        result, driven = await send_answering(
+            bridge, "project.update_pcb", {}, change_order.TITLE,
+            change_order.STEPS, timeout=wait_seconds,
+            on_the_way=change_order.ON_THE_WAY)
+        failed = _record_change_order(result, driven)
+        if isinstance(result, dict):
+            try:
+                result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
+            except Exception as exc:            # noqa: BLE001 - a report only
+                result["after_sync"] = {"error": f"not read: {exc}"}
         return result
 
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:
-        """Push PCB changes back to schematic (back-annotate ECO). Attempts silent execution.
+        """Push PCB changes back to schematic (back-annotate ECO).
 
-        Design > Update Schematic, compiled before and after with the
-        change reported. Older Altium versions may still show a dialog
-        (``dialog_may_have_opened``).
+        Design > Update Schematic, compiled before and after. A change
+        order it opens is answered as in proj_sync_pcb.
 
         Returns:
-            Dictionary with success, pcb_path, before/after mapping counts,
-            components_added_to_schematic, components_removed_from_schematic,
-            in_sync, and dialog_may_have_opened flag.
+            success, pcb_path, mapping counts, components added and
+            removed, in_sync, ``change_order``.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "project.update_schematic", {}
-        )
+        result, driven = await send_answering(
+            bridge, "project.update_schematic", {},
+            change_order.TITLE, change_order.STEPS, on_the_way=change_order.ON_THE_WAY)
+        _record_change_order(result, driven)
         return result
 
     @mcp.tool()

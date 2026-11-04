@@ -113,13 +113,13 @@ Begin
     If Obj = Nil Then Exit;
     If Component <> Nil Then
     Begin
-        Try Obj.OwnerPartId := Component.CurrentPartID; Except End;
-        Try Obj.OwnerPartDisplayMode := Component.DisplayMode; Except End;
+        Try Obj.OwnerPartId := Component.CurrentPartID; Except NoteWriteFailed('OwnerPartId'); End;
+        Try Obj.OwnerPartDisplayMode := Component.DisplayMode; Except NoteWriteFailed('OwnerPartDisplayMode'); End;
     End
     Else
     Begin
-        Try Obj.OwnerPartId := 1; Except End;
-        Try Obj.OwnerPartDisplayMode := 0; Except End;
+        Try Obj.OwnerPartId := 1; Except NoteWriteFailed('OwnerPartId'); End;
+        Try Obj.OwnerPartDisplayMode := 0; Except NoteWriteFailed('OwnerPartDisplayMode'); End;
     End;
 End;
 
@@ -133,8 +133,8 @@ Begin
     If Obj = Nil Then Exit;
     If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, 0) > 0) Then
     Begin
-        Try Obj.OwnerPartId := StrToIntDef(OwnerStr, 1); Except End;
-        Try Obj.OwnerPartDisplayMode := 0; Except End;
+        Try Obj.OwnerPartId := StrToIntDef(OwnerStr, 1); Except NoteWriteFailed('OwnerPartId'); End;
+        Try Obj.OwnerPartDisplayMode := 0; Except NoteWriteFailed('OwnerPartDisplayMode'); End;
     End
     Else
         SetOwnerPart(Obj, Component);
@@ -251,7 +251,9 @@ Begin
         NoteDocEdited(FullPath);
         ServerDoc := Client.GetDocumentByPath(FullPath);
         If ServerDoc <> Nil Then
-            Try ServerDoc.SetModified(True); Except End
+        Begin
+            Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark library modified (save may skip it)'); End;
+        End
         Else
             { NO SILENT FALLBACK TO THE FOCUSED DOCUMENT. Marking a
               different document is what caused the defect above, and it
@@ -449,10 +451,10 @@ Begin
         ServerDoc := Client.GetDocumentByPath(LibPath);
         If ServerDoc <> Nil Then
         Begin
-            Try ServerDoc.SetModified(True); Except End;
-            Try ServerDoc.DoFileSave(''); Except End;
+            Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark library modified before reload'); End;
+            Try ServerDoc.DoFileSave(''); Except NoteWriteFailed('save library before reload (unsaved edits are lost)'); End;
         End;
-    Except End;
+    Except NoteWriteFailed('save library before reload (unsaved edits are lost)'); End;
 
     { The close below frees every component in this document, so the      }
     { reference held from creation stops pointing at anything. Dropping   }
@@ -591,7 +593,7 @@ Begin
         { Multi-part symbols (quad op-amp, dual gate, etc) need PartCount  }
         { set BEFORE pin / primitive add so each primitive's OwnerPartId    }
         { can address a real sub-part.                                      }
-        Try Component.PartCount := PartCount; Except End;
+        Try Component.PartCount := PartCount; Except NoteWriteFailed('PartCount'); End;
         Component.LibReference := Name;
         Component.Designator.Text := DesignatorPrefix + '?';
         Component.ComponentDescription := Description;
@@ -620,7 +622,9 @@ Begin
         { above: AddSchComponent does not necessarily keep what was set on    }
         { the detached object.                                                }
         If PartCount > 1 Then
-            Try Component.PartCount := PartCount; Except End;
+        Begin
+            Try Component.PartCount := PartCount; Except NoteWriteFailed('PartCount'); End;
+        End;
 
         SchLib.CurrentSchComponent := Component;
         LastCreatedLibComponent := Component;
@@ -764,7 +768,7 @@ Begin
 
     Parked := Target - 1;
     If Parked < 1 Then Parked := 1;
-    Try Component.CurrentPartID := Parked; Except End;
+    Try Component.CurrentPartID := Parked; Except { the part reached is read back below } End;
 
     ResetParameters;
     RunProcess('SCH:NextComponentPart');
@@ -963,11 +967,11 @@ Begin
     { when the property is assigned. The measured reset was three separate }
     { calls with the UI running between them; done back to back inside one }
     { handler, the display stayed on part 3 (live, 2026-09-23).            }
-    Try SchLib.CurrentSchComponent := Other; Except End;
+    Try SchLib.CurrentSchComponent := Other; Except { the evidence check below decides } End;
     Try Application.ProcessMessages; Except End;
-    Try SchLib.CurrentSchComponent := Component; Except End;
+    Try SchLib.CurrentSchComponent := Component; Except { the evidence check below decides } End;
     Try Application.ProcessMessages; Except End;
-    Try Component.CurrentPartID := 1; Except End;
+    Try Component.CurrentPartID := 1; Except { the evidence check below decides } End;
 
     Evidence := PartOneEvidence(SchLib);
     Result := (Evidence >= 0);
@@ -1021,8 +1025,8 @@ Begin
         Else
             Target := PartId;   { let Altium reject an out-of-range id }
     End;
-    Try Component.CurrentPartID := Target; Except End;
-    Try Component.DisplayMode := 0; Except End;
+    Try Component.CurrentPartID := Target; Except { stepped and read back below when a part was asked for } End;
+    Try Component.DisplayMode := 0; Except NoteWriteFailed('DisplayMode'); End;
 
     { Assigning CurrentPartID is NOT enough, and this is the whole bug        }
     { reported in GH #11 against a 4-part TPS23881B: the property takes the   }
@@ -1170,7 +1174,7 @@ Begin
             + IntToStr(MaxParts) + ']');
         Exit;
     End;
-    Try Component.CurrentPartID := PartId; Except End;
+    Try Component.CurrentPartID := PartId; Except NoteWriteFailed('SchComponent.CurrentPartID'); End;
     Try SchLib.GraphicallyInvalidate; Except End;
     Result := BuildSuccessResponse(RequestId,
         '{"part_id":' + IntToStr(PartId)
@@ -1345,18 +1349,26 @@ Begin
         { symbol rectangle solid in colour -1.                              }
         Rect.IsSolid := False;
         If BorderColorStr <> '' Then
-            Try Rect.Color := StrToIntDef(BorderColorStr, 0); Except End;
+        Begin
+            Try Rect.Color := StrToIntDef(BorderColorStr, 0); Except NoteWriteFailed('Rectangle.Color'); End;
+        End;
         If (FillColorStr <> '') And (StrToIntDef(FillColorStr, -1) >= 0) Then
+        Begin
             Try
                 Rect.AreaColor := StrToIntDef(FillColorStr, 0);
                 Rect.IsSolid := True;
-            Except End;
+            Except NoteWriteFailed('Rectangle.AreaColor'); End;
+        End;
         { A house style is three numbers: border, fill, line width (issue   }
         { #114). An explicit is_solid wins over what the fill implied.     }
         If LineW >= 0 Then
-            Try Rect.LineWidth := LineW; Except End;
+        Begin
+            Try Rect.LineWidth := LineW; Except NoteWriteFailed('Rectangle.LineWidth'); End;
+        End;
         If (SolidStr = 'true') Or (SolidStr = 'false') Then
-            Try Rect.IsSolid := (SolidStr = 'true'); Except End;
+        Begin
+            Try Rect.IsSolid := (SolidStr = 'true'); Except NoteWriteFailed('Rectangle.IsSolid'); End;
+        End;
 
         SchBeginEdit(SchLib, '');
         SetOwnerPartFrom(Rect, Component, ExtractJsonValue(Params, 'owner_part_id'));
@@ -1425,7 +1437,9 @@ Begin
         Line.Corner := Loc;
         Line.LineWidth := Width;
         If ColorStr <> '' Then
-            Try Line.Color := StrToIntDef(ColorStr, 0); Except End;
+        Begin
+            Try Line.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Line.Color'); End;
+        End;
 
         SchBeginEdit(SchLib, '');
         SetOwnerPart(Line, Component);
@@ -1572,7 +1586,7 @@ Begin
         Problem := 'Footprint not found in the library: ' + Name;
         Exit;
     End;
-    Try PcbLib.CurrentComponent := Result; Except End;
+    Try PcbLib.CurrentComponent := Result; Except { read back below } End;
     CurName := '';
     Try
         Cur := PcbLib.CurrentComponent;
@@ -3073,18 +3087,18 @@ Begin
             Else
                 Body.BodyProjection := eBoardSide_Top;
             DidLayer := True;
-        Except End;
+        Except { layer_applied reports it } End;
         Try
             Body.StandoffHeight := Standoff;
             Body.OverallHeight := Overall;
             DidHeights := True;
-        Except End;
+        Except { heights_applied reports it } End;
         If ColorStr <> '' Then
-            Try Body.BodyColor3D := StrToIntDef(ColorStr, 0); DidColor := True; Except End;
+            Try Body.BodyColor3D := StrToIntDef(ColorStr, 0); DidColor := True; Except { color_applied reports it } End;
         If OpacityStr <> '' Then
-            Try Body.BodyOpacity3D := StrToFloatDef(OpacityStr, 1); DidOpacity := True; Except End;
+            Try Body.BodyOpacity3D := StrToFloatDef(OpacityStr, 1); DidOpacity := True; Except { opacity_applied reports it } End;
         If Ident <> '' Then
-            Try Body.SetState_Identifier(Ident); DidIdent := True; Except End;
+            Try Body.SetState_Identifier(Ident); DidIdent := True; Except { identifier_applied reports it } End;
     Finally
         Body.EndModify;
     End;
@@ -3997,7 +4011,9 @@ Begin
                 'Footprint not found in library: ' + CompName);
             Exit;
         End;
-        Try PcbLib.SetState_CurrentComponent(Footprint); Except End;
+        { The board adds to the CURRENT footprint, so a refused switch puts }
+        { the new object on another one.                                     }
+        Try PcbLib.SetState_CurrentComponent(Footprint); Except NoteWriteFailed('make footprint current'); End;
     End
     Else
         Footprint := PcbLib.CurrentComponent;
@@ -4036,8 +4052,8 @@ Begin
         Text.UnderlyingString := TextStr;
         Text.Size := CoordFromUnits(Size, UnitsStr);
         Text.Width := CoordFromUnits(Width, UnitsStr);
-        Try Text.MirrorFlag := Mirror; Except End;
-        Try Text.Rotation := Rotation; Except End;
+        Try Text.MirrorFlag := Mirror; Except NoteWriteFailed('Text.MirrorFlag'); End;
+        Try Text.Rotation := Rotation; Except NoteWriteFailed('Text.Rotation'); End;
 
         { The working pattern: add to footprint AND to its                  }
         { underlying Board, then broadcast registration to both. Footprint  }
@@ -4940,7 +4956,7 @@ Begin
             End;
             { Board.AddPCBObject attaches to the library's CURRENT component,
               so the target must be made current or the text lands elsewhere. }
-            Try PcbLib.CurrentComponent := Target; Except End;
+            Try PcbLib.CurrentComponent := Target; Except { checked on the next line } End;
             If PcbLib.CurrentComponent <> Target Then
             Begin
                 Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
@@ -4981,7 +4997,7 @@ Begin
             Try
                 Desig.Layer := Lyr;
                 ChangedJson := ChangedJson + '"layer",';
-            Except End;
+            Except { left out of "changed" } End;
         End;
         { Size FIRST: resizing changes the bounding box the centring uses. }
         If NewH > 0 Then
@@ -4989,7 +5005,7 @@ Begin
             Try
                 Desig.Size := MilsToCoordF(NewH);
                 ChangedJson := ChangedJson + '"height",';
-            Except End;
+            Except { left out of "changed" } End;
         End;
         If (XStr <> '') And (YStr <> '') Then
         Begin
@@ -5004,7 +5020,7 @@ Begin
                 Desig.XLocation := XOrg + NewX;
                 Desig.YLocation := YOrg + NewY;
                 ChangedJson := ChangedJson + '"position",';
-            Except End;
+            Except { left out of "changed" } End;
             { BoundingRectangle is CACHED and is not invalidated by assigning
               XLocation; without this the next read reports the OLD box. }
             Try Desig.GraphicallyInvalidate; Except End;
@@ -5168,15 +5184,15 @@ Begin
                             PCBServer.SendMessageToRobots(Desig.I_ObjectAddress,
                                 c_Broadcast, PCBM_BeginModify, c_NoEventData);
                         Except End;
-                        Try Desig.UseTTFonts := False; Except End;
-                        Try Desig.Bold := False; Except End;
-                        Try Desig.Italic := False; Except End;
+                        Try Desig.UseTTFonts := False; Except NoteWriteFailed('Designator.UseTTFonts'); End;
+                        Try Desig.Bold := False; Except NoteWriteFailed('Designator.Bold'); End;
+                        Try Desig.Italic := False; Except NoteWriteFailed('Designator.Italic'); End;
                         { An inverted / inverted-rectangle text has its geometry
                           driven by the rectangle, so its effective position is
                           not the plain anchor -- clearing these makes it a plain
                           stroke text whose XLocation is authoritative. }
-                        Try Desig.Inverted := False; Except End;
-                        Try Desig.UseInvertedRectangle := False; Except End;
+                        Try Desig.Inverted := False; Except NoteWriteFailed('Designator.Inverted'); End;
+                        Try Desig.UseInvertedRectangle := False; Except NoteWriteFailed('Designator.UseInvertedRectangle'); End;
                         Try Desig.GraphicallyInvalidate; Except End;
                         Try
                             PCBServer.SendMessageToRobots(Desig.I_ObjectAddress,
@@ -5427,7 +5443,7 @@ Begin
                               IPCB_LibComponent handed to Footprint.AddPCBObject.
                               Without making the target current first, every
                               create in a sweep piles onto one footprint. }
-                            Try PcbLib.CurrentComponent := Footprint; Except End;
+                            Try PcbLib.CurrentComponent := Footprint; Except { checked on the next line } End;
                             If PcbLib.CurrentComponent <> Footprint Then
                             Begin
                                 Inc(FailedCount);
@@ -5461,12 +5477,14 @@ Begin
                         If LayerId >= 0 Then
                         Begin
                             Lyr := LayerId;
-                            Try Desig.Layer := Lyr; Except End;
+                            Try Desig.Layer := Lyr; Except NoteWriteFailed('Designator.Layer'); End;
                         End;
                         { Size FIRST: resizing the text changes its bounding box,
                           so centring must be computed against the final size. }
                         If NewH > 0 Then
-                            Try Desig.Size := MilsToCoordF(NewH); Except End;
+                        Begin
+                            Try Desig.Size := MilsToCoordF(NewH); Except NoteWriteFailed('Designator.Size'); End;
+                        End;
                         MovedOk := True;
                         If (XStr <> '') And (YStr <> '') Then
                         Begin
@@ -5484,7 +5502,7 @@ Begin
                             Try
                                 Desig.XLocation := XOrg + NewX;
                                 Desig.YLocation := YOrg + NewY;
-                            Except End;
+                            Except { read back below } End;
                             { READ BACK. Some designator texts silently refuse to
                               move (the assignment neither takes nor raises), and
                               reporting those as applied hides a failed repair
@@ -5923,13 +5941,13 @@ Begin
         Try Impl.ClearAllDatafileLinks; Except End;
         Impl.ModelName := FootprintName;
         Impl.ModelType := cDocKind_PcbLib;
-        Try Impl.IsCurrent := True; Except End;
+        Try Impl.IsCurrent := True; Except NoteWriteFailed('footprint model IsCurrent'); End;
         { A footprint implementation MUST carry a datafile link (entity name =   }
         { the footprint) or the compiler reports "Missing Component Models".     }
         { Bind by name: entity = footprint, EMPTY location. Never pass a full    }
         { .PcbLib path as the location -- a path blocks/wedges AD26; empty is    }
         { safe and is what a self-contained package wants.                       }
-        Try Impl.AddDataFileLink(FootprintName, '', 'PCBLib'); Except End;
+        Try Impl.AddDataFileLink(FootprintName, '', 'PCBLib'); Except NoteWriteFailed('footprint model library link'); End;
     End;
 
     SchEndEdit(SchLib, 'Link footprint');
@@ -6026,7 +6044,9 @@ Begin
                 'Footprint not found in library: ' + ComponentName);
             Exit;
         End;
-        Try PcbLib.SetState_CurrentComponent(Footprint); Except End;
+        { The board adds to the CURRENT footprint, so a refused switch puts }
+        { the new object on another one.                                     }
+        Try PcbLib.SetState_CurrentComponent(Footprint); Except NoteWriteFailed('make footprint current'); End;
     End
     Else
         Footprint := PcbLib.CurrentComponent;
@@ -6065,7 +6085,7 @@ Begin
                     Try
                         Model.SetState(RotX, RotY, RotZ, 0);
                         DidRotation := True;
-                    Except End;
+                    Except { "rotation" in the applied list reports it } End;
                 Body.Model := Model;
                 Footprint.AddPCBObject(Body);
                 { Same registration the pad, track, arc and text paths
@@ -6106,7 +6126,7 @@ Begin
                     Try
                         Body.StandoffHeight := MilsToCoordF(OffZ);
                         DidStandoff := True;
-                    Except End;
+                    Except { "standoff_height" in the applied list reports it } End;
                 { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
                 { current above sits at Altium's library origin (about     }
                 { 50000,50000 mil, see FootprintOriginX), so the body      }
@@ -6120,7 +6140,7 @@ Begin
                         Body.MoveByXY(OrgX + MilsToCoordF(OffX), OrgY + MilsToCoordF(OffY));
                         Shifted := True;
                         DidMove := (OffX <> 0) Or (OffY <> 0);
-                    Except End;
+                    Except NoteWriteFailed('move 3D body onto its footprint'); End;
 
                 AppliedJson := JsonBool('standoff_height', DidStandoff) + ','
                     + JsonBool('rotation', DidRotation) + ','
@@ -7634,7 +7654,9 @@ Begin
         Arc.EndAngle := EndAngle;
         Arc.LineWidth := Width;
         If ColorStr <> '' Then
-            Try Arc.Color := StrToIntDef(ColorStr, 0); Except End;
+        Begin
+            Try Arc.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Arc.Color'); End;
+        End;
 
         SchBeginEdit(SchLib, '');
         SetOwnerPartFrom(Arc, Component, ExtractJsonValue(Params, 'owner_part_id'));
@@ -7755,18 +7777,26 @@ Begin
             If (FillStr <> '') And IsIntStr(FillStr) Then
             Begin
                 If StrToIntDef(FillStr, -1) >= 0 Then
-                    Try Polygon.AreaColor := StrToIntDef(FillStr, 0); Except End
+                Begin
+                    Try Polygon.AreaColor := StrToIntDef(FillStr, 0); Except NoteWriteFailed('Polygon.AreaColor'); End;
+                End
                 Else
                     Polygon.IsSolid := False;
             End;
             { Border colour, line width and an explicit solid flag: the   }
             { rest of a house style (issue #114).                         }
             If ColorStr <> '' Then
-                Try Polygon.Color := StrToIntDef(ColorStr, 0); Except End;
+            Begin
+                Try Polygon.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Polygon.Color'); End;
+            End;
             If LineW >= 0 Then
-                Try Polygon.LineWidth := LineW; Except End;
+            Begin
+                Try Polygon.LineWidth := LineW; Except NoteWriteFailed('Polygon.LineWidth'); End;
+            End;
             If (SolidStr = 'true') Or (SolidStr = 'false') Then
-                Try Polygon.IsSolid := (SolidStr = 'true'); Except End;
+            Begin
+                Try Polygon.IsSolid := (SolidStr = 'true'); Except NoteWriteFailed('Polygon.IsSolid'); End;
+            End;
 
             For I := 1 To XValues.Count Do
                 Polygon.Vertex[I] := Point(
@@ -8363,8 +8393,8 @@ Begin
             If OwnerExplicit Then
             Begin
                 { Explicit owner_part_id from caller (multi-part symbol).  }
-                Try Pin.OwnerPartId := OwnerPartId; Except End;
-                Try Pin.OwnerPartDisplayMode := 0; Except End;
+                Try Pin.OwnerPartId := OwnerPartId; Except NoteWriteFailed('pin OwnerPartId'); End;
+                Try Pin.OwnerPartDisplayMode := 0; Except NoteWriteFailed('pin OwnerPartDisplayMode'); End;
             End
             Else
                 SetOwnerPart(Pin, Component);
@@ -8496,18 +8526,20 @@ Begin
             Try
                 Lbl.Orientation := (((Rotation Mod 360) + 360) Mod 360) Div 90;
             Except
+                NoteWriteFailed('text Orientation');
             End;
 
             Try
                 Lbl.FontId := FontMgr.GetFontID(FontSize, 0, False, Italic,
                                                 Bold, False, FontName);
             Except
+                NoteWriteFailed('text FontId');
             End;
 
             If OwnerExplicit Then
             Begin
-                Try Lbl.OwnerPartId := OwnerPartId; Except End;
-                Try Lbl.OwnerPartDisplayMode := 0; Except End;
+                Try Lbl.OwnerPartId := OwnerPartId; Except NoteWriteFailed('text OwnerPartId'); End;
+                Try Lbl.OwnerPartDisplayMode := 0; Except NoteWriteFailed('text OwnerPartDisplayMode'); End;
             End
             Else
                 SetOwnerPart(Lbl, Component);
@@ -8592,7 +8624,9 @@ Begin
                 Continue;
             End;
             If GetBatchField(Op, 'color') <> '' Then
-                Try Line.Color := StrToIntDef(GetBatchField(Op, 'color'), 0); Except End;
+            Begin
+                Try Line.Color := StrToIntDef(GetBatchField(Op, 'color'), 0); Except NoteWriteFailed('Line.Color'); End;
+            End;
 
             { Read-modify-write the TLocation record -- see Lib_AddSymbolLine. }
             Loc := Line.Location;
@@ -9294,7 +9328,10 @@ Begin
           Altium wants it, so the move read back in memory and never reached
           the saved file. Same as the component move in Generic.pas. }
         If (XStr <> '') Or (YStr <> '') Then
-            Try Lbl.Autoposition := False; Except End;
+        Begin
+            { Left on, Altium puts the moved label back where it was. }
+            Try Lbl.Autoposition := False; Except NoteWriteFailed('Label.Autoposition off after a move'); End;
+        End;
         If TextStr <> '' Then Lbl.Text := TextStr;
         SchEndModify(Lbl);
         Result := 1;
@@ -9797,7 +9834,7 @@ Begin
                         );
                     End;
                 End;
-            Except End;
+            Except NoteWriteFailed('footprint Height'); End;
             Footprint := LibIter.NextPCBObject;
         End;
     Finally
@@ -10131,7 +10168,7 @@ Begin
                         First := False;
                         Changed := Changed + '"' + EscapeJsonString(Pin.Designator) + '"';
                         ChangedCount := ChangedCount + 1;
-                    Except End;
+                    Except { left out of "changed" } End;
                 End;
                 Pin := Iter.NextSchObject;
             End;
@@ -11308,7 +11345,7 @@ Begin
     End;
 
     PcbBeginEdit(0);
-    Try Target.Name := NewName; Except End;
+    Try Target.Name := NewName; Except NoteWriteFailed('footprint Name'); End;
     PcbEndEdit(0);
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try PcbLib.RefreshView; Except End;
@@ -11392,7 +11429,7 @@ Begin
     Was := '';
     Try Was := Target.Description; Except End;
     PcbBeginEdit(0);
-    Try Target.Description := Wanted; Except End;
+    Try Target.Description := Wanted; Except { read back below } End;
     PcbEndEdit(0);
     Got := '';
     Try Got := Target.Description; Except End;
@@ -11525,9 +11562,9 @@ Begin
             If Target <> Nil Then
             Begin
                 Try Target.ClearAllDatafileLinks; Except End;
-                Try Target.ModelName := NewName; Except End;
-                Try Target.ModelType := cDocKind_PcbLib; Except End;
-                Try Target.IsCurrent := True; Except End;
+                Try Target.ModelName := NewName; Except NoteWriteFailed('SchImplementation.ModelName'); End;
+                Try Target.ModelType := cDocKind_PcbLib; Except NoteWriteFailed('SchImplementation.ModelType'); End;
+                Try Target.IsCurrent := True; Except NoteWriteFailed('SchImplementation.IsCurrent'); End;
                 Try Target.AddDataFileLink(NewName, '', 'PCBLib'); Except End;
             End;
             SchEndEdit(SchDoc, 'Replace footprint model');
@@ -11561,14 +11598,14 @@ Begin
         End;
         SchBeginEdit(SchDoc, 'Set model name');
         SchBeginModify(Target);
-        Try Target.ModelName := NewName; Except End;
+        Try Target.ModelName := NewName; Except NoteWriteFailed('SchImplementation.ModelName'); End;
         LinkCount := 0;
         Try LinkCount := Target.DatafileLinkCount; Except End;
         For J := 0 To LinkCount - 1 Do
         Begin
             Link := Nil;
             Try Link := Target.DatafileLink[J]; Except End;
-            If Link <> Nil Then Try Link.EntityName := NewName; Except End;
+            If Link <> Nil Then Try Link.EntityName := NewName; Except NoteWriteFailed('DatafileLink.EntityName'); End;
         End;
         SchEndModify(Target);
         SchEndEdit(SchDoc, 'Set model name');
@@ -11627,7 +11664,7 @@ Begin
     End;
 
     SchBeginEdit(SchLib, '');
-    Try Target.ModelName := NewName; Except End;
+    Try Target.ModelName := NewName; Except NoteWriteFailed('model ModelName'); End;
     SchEndEdit(SchLib, 'Set model name');
     MarkLibDirty(SchLib);
 
@@ -11710,8 +11747,8 @@ Begin
             { it (and the target-file tag) here. }
             OldSrc := '';
             Try OldSrc := Component.SourceLibraryName; Except End;
-            Try Component.SourceLibraryName := ''; Except End;
-            Try Component.TargetFileName := '*'; Except End;
+            Try Component.SourceLibraryName := ''; Except NoteWriteFailed('clear SourceLibraryName'); End;
+            Try Component.TargetFileName := '*'; Except NoteWriteFailed('TargetFileName'); End;
             If OldSrc <> '' Then Inc(SourcesCleared);
 
             { Capture (type|name, was-current) up front, so after dedupe the      }
@@ -11796,14 +11833,14 @@ Begin
                         Cur := False;
                         For J := 0 To AllKeys.Count - 1 Do
                             If (AllKeys[J] = Key) And (AllCurs[J] = '1') Then Cur := True;
-                        Try Impl.IsCurrent := Cur; Except End;
+                        Try Impl.IsCurrent := Cur; Except NoteWriteFailed('model IsCurrent'); End;
 
                         If (Not DedupeOnly) And (RenameMap <> '') Then
                         Begin
                             NewName := LookupRename(RenameMap, ModelName, ModelName);
                             If NewName <> ModelName Then
                             Begin
-                                Try Impl.ModelName := NewName; Except End;
+                                Try Impl.ModelName := NewName; Except NoteWriteFailed('model ModelName'); End;
                                 LinkCount := 0;
                                 Try LinkCount := Impl.DatafileLinkCount; Except End;
                                 For J := 0 To LinkCount - 1 Do
@@ -11815,7 +11852,9 @@ Begin
                                         EntNm := '';
                                         Try EntNm := Link.EntityName; Except End;
                                         If EntNm = ModelName Then
-                                            Try Link.EntityName := NewName; Except End;
+                                        Begin
+                                            Try Link.EntityName := NewName; Except NoteWriteFailed('model link EntityName'); End;
+                                        End;
                                     End;
                                 End;
                                 ModelName := NewName;
@@ -11841,9 +11880,17 @@ Begin
                             Begin
                                 SchBeginModify(Impl);
                                 For J := 0 To LinkCount - 1 Do
-                                    Try Impl.DatafileLink[J].Location := SourceLib; Except End;
-                                If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except End;
-                                If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except End;
+                                Begin
+                                    Try Impl.DatafileLink[J].Location := SourceLib; Except NoteWriteFailed('model link Location'); End;
+                                End;
+                                If UseLibStr = 'true' Then
+                                Begin
+                                    Try Impl.UseComponentLibrary := True; Except NoteWriteFailed('model UseComponentLibrary'); End;
+                                End;
+                                If UseLibStr = 'false' Then
+                                Begin
+                                    Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('model UseComponentLibrary'); End;
+                                End;
                                 SchEndModify(Impl);
                                 Inc(SourcesSet);
                             End;
@@ -11960,9 +12007,9 @@ Begin
                         Try LinkCount := Impl.DatafileLinkCount; Except End;
                     End;
                     For J := 0 To LinkCount - 1 Do
-                        Try Impl.DatafileLink[J].Location := SourceLib; Except End;
-                    If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except End;
-                    If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except End;
+                        Try Impl.DatafileLink[J].Location := SourceLib; Except NoteWriteFailed('DatafileLink.Location'); End;
+                    If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except NoteWriteFailed('SchImplementation.UseComponentLibrary'); End;
+                    If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('SchImplementation.UseComponentLibrary'); End;
                     SchEndModify(Impl);
                     Inc(Updated);
                 End;
@@ -12018,9 +12065,17 @@ Begin
                     Try LinkCount := Impl.DatafileLinkCount; Except End;
                 End;
                 For J := 0 To LinkCount - 1 Do
-                    Try Impl.DatafileLink[J].Location := SourceLib; Except End;
-                If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except End;
-                If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except End;
+                Begin
+                    Try Impl.DatafileLink[J].Location := SourceLib; Except NoteWriteFailed('model link Location'); End;
+                End;
+                If UseLibStr = 'true' Then
+                Begin
+                    Try Impl.UseComponentLibrary := True; Except NoteWriteFailed('model UseComponentLibrary'); End;
+                End;
+                If UseLibStr = 'false' Then
+                Begin
+                    Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('model UseComponentLibrary'); End;
+                End;
                 SchEndModify(Impl);
                 Inc(Updated);
             End;
@@ -12312,6 +12367,28 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
+{ The open PcbLib at Path, opened as a document when it is not open yet.     }
+{ Path arrives with backslashes (CanonicalPathValue): a library open as     }
+{ C:\x\y.PcbLib was not found as C:/x/y.PcbLib, and LoadPCBLibraryByPath     }
+{ then loaded a second, hidden copy. A copy into it answered success and    }
+{ never reached the open library or the file. A library that is not open    }
+{ is opened through the client, so the edit is in a document that saves.    }
+{ The hidden load is the last resort and says so in Hidden.                 }
+Function PcbLibAtPath(Var Path : String; Var Hidden : Boolean) : IPCB_Library;
+Begin
+    Result := Nil;
+    Hidden := False;
+    Path := CanonicalPathValue('path', Path);
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    If Not FileExists(Path) Then Exit;
+    Try Client.OpenDocument('PCBLIB', Path); Except End;
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    Try Result := PCBServer.LoadPCBLibraryByPath(Path); Except Result := Nil; End;
+    Hidden := (Result <> Nil);
+End;
+
 { AlignCopiedFootprint - after Footprint.CopyTo, put every primitive of the    }
 { copy where it sat relative to its own footprint. CopyTo keeps ABSOLUTE       }
 { coordinates, and a source open in the editor sits at Altium's library        }
@@ -12368,7 +12445,7 @@ Begin
         Try
             Prim.MoveByXY(DX, DY);
             Inc(Result);
-        Except End;
+        Except NoteWriteFailed('align copied footprint primitive'); End;
     End;
 End;
 
@@ -12376,7 +12453,7 @@ End;
 { PcbLibs, the PcbLib analog of Lib_MoveComponents. Uses the canonical combine   }
 { pattern: DestLib.CreateNewComponent + Footprint.CopyTo(NewFP, eFullCopy) +     }
 { RegisterComponent, then RemoveComponent + DeRegisterComponent on the source.   }
-{ Both libraries are resolved by path (GetPCBLibraryByPath, load if needed), so  }
+{ Both libraries are resolved by path (PcbLibAtPath, opened if needed), so     }
 { neither needs to be focused. A name already in dest is skipped unless          }
 { overwrite. delete_from_source defaults true. Names arrive '~~'-separated.      }
 { Params: source_library, dest_library, names (required), overwrite,            }
@@ -12384,7 +12461,7 @@ End;
 Function Lib_MoveFootprints(Params : String; RequestId : String) : String;
 Var
     SourcePath, DestPath, NamesStr, Remaining, Name, OverwriteStr, DeleteStr, RespJson, FpName : String;
-    Overwrite, DeleteFromSource : Boolean;
+    Overwrite, DeleteFromSource, Hidden : Boolean;
     SourceLib, DestLib : IPCB_Library;
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
     Moved, Skipped, Failed, J : Integer;
@@ -12407,26 +12484,26 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'names is required');
         Exit;
     End;
+    SourcePath := CanonicalPathValue('path', SourcePath);
+    DestPath := CanonicalPathValue('path', DestPath);
     If UpperCase(SourcePath) = UpperCase(DestPath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'SAME_LIBRARY', 'source_library and dest_library are the same');
         Exit;
     End;
 
-    SourceLib := Nil;
-    Try SourceLib := PCBServer.GetPCBLibraryByPath(SourcePath); Except End;
-    If SourceLib = Nil Then Try SourceLib := PCBServer.LoadPCBLibraryByPath(SourcePath); Except End;
-    If SourceLib = Nil Then
+    SourceLib := PcbLibAtPath(SourcePath, Hidden);
+    If (SourceLib = Nil) Or Hidden Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Failed to open source PCB library at ' + SourcePath);
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Could not open the source PCB library as a document at ' + SourcePath
+            + '. An edit to a library loaded out of sight is never saved, so nothing was moved.');
         Exit;
     End;
-    DestLib := Nil;
-    Try DestLib := PCBServer.GetPCBLibraryByPath(DestPath); Except End;
-    If DestLib = Nil Then Try DestLib := PCBServer.LoadPCBLibraryByPath(DestPath); Except End;
-    If DestLib = Nil Then
+    DestLib := PcbLibAtPath(DestPath, Hidden);
+    If (DestLib = Nil) Or Hidden Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Failed to open destination PCB library at ' + DestPath);
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Could not open the destination PCB library as a document at ' + DestPath
+            + '. An edit to a library loaded out of sight is never saved, so nothing was moved.');
         Exit;
     End;
 
@@ -12461,15 +12538,17 @@ Begin
 
         NewFP := DestLib.CreateNewComponent;
         If NewFP = Nil Then Begin Inc(Failed); Continue; End;
-        Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+        Try Footprint.CopyTo(NewFP, eFullCopy); Except NoteWriteFailed('copy footprint'); End;
         AlignCopiedFootprint(Footprint, NewFP);
-        Try NewFP.Name := Name; Except End;
+        Try NewFP.Name := Name; Except NoteWriteFailed('copied footprint Name'); End;
         DestLib.RegisterComponent(NewFP);
+        { Read back: the source is deleted only once the copy is there. }
+        If DestLib.GetComponentByName(Name) = Nil Then Begin Inc(Failed); Continue; End;
 
         If DeleteFromSource Then
         Begin
-            Try SourceLib.RemoveComponent(Footprint); Except End;
-            Try SourceLib.DeRegisterComponent(Footprint); Except End;
+            Try SourceLib.RemoveComponent(Footprint); Except NoteWriteFailed('remove moved footprint from the source library'); End;
+            Try SourceLib.DeRegisterComponent(Footprint); Except NoteWriteFailed('deregister moved footprint'); End;
         End;
 
         Inc(Moved);
@@ -12500,7 +12579,7 @@ End;
 Function Lib_CopyFootprint(Params : String; RequestId : String) : String;
 Var
     SourceLibPath, DestLibPath, SourceName, NewName, OverwriteStr, RespJson, FpName : String;
-    Overwrite, SameLib : Boolean;
+    Overwrite, SameLib, SourceHidden, DestHidden : Boolean;
     SourceLib, DestLib : IPCB_Library;
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
     J, Aligned : Integer;
@@ -12520,11 +12599,9 @@ Begin
 
     { Source library: by path, else the focused PcbLib. }
     SourceLib := Nil;
+    SourceHidden := False;
     If SourceLibPath <> '' Then
-    Begin
-        Try SourceLib := PCBServer.GetPCBLibraryByPath(SourceLibPath); Except End;
-        If SourceLib = Nil Then Try SourceLib := PCBServer.LoadPCBLibraryByPath(SourceLibPath); Except End;
-    End
+        SourceLib := PcbLibAtPath(SourceLibPath, SourceHidden)
     Else
         SourceLib := PCBServer.GetCurrentPCBLibrary;
     If SourceLib = Nil Then
@@ -12533,11 +12610,18 @@ Begin
         Exit;
     End;
     If SourceLibPath = '' Then Try SourceLibPath := SourceLib.Board.FileName; Except End;
+    DestLibPath := CanonicalPathValue('path', DestLibPath);
 
     { Destination library: default = source. }
     SameLib := (DestLibPath = '') Or (UpperCase(DestLibPath) = UpperCase(SourceLibPath));
     If SameLib Then
     Begin
+        If SourceHidden Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Could not open the PCB library as a document at '
+                + SourceLibPath + '. An edit to a library loaded out of sight is never saved, so nothing was copied.');
+            Exit;
+        End;
         DestLib := SourceLib;
         DestLibPath := SourceLibPath;
         If NewName = SourceName Then
@@ -12548,12 +12632,11 @@ Begin
     End
     Else
     Begin
-        DestLib := Nil;
-        Try DestLib := PCBServer.GetPCBLibraryByPath(DestLibPath); Except End;
-        If DestLib = Nil Then Try DestLib := PCBServer.LoadPCBLibraryByPath(DestLibPath); Except End;
-        If DestLib = Nil Then
+        DestLib := PcbLibAtPath(DestLibPath, DestHidden);
+        If (DestLib = Nil) Or DestHidden Then
         Begin
-            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Failed to open destination PCB library at ' + DestLibPath);
+            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'Could not open the destination PCB library as a document at '
+                + DestLibPath + '. An edit to a library loaded out of sight is never saved, so nothing was copied.');
             Exit;
         End;
     End;
@@ -12592,15 +12675,23 @@ Begin
         Result := BuildErrorResponse(RequestId, 'COPY_FAILED', 'CreateNewComponent returned Nil');
         Exit;
     End;
-    Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+    Try Footprint.CopyTo(NewFP, eFullCopy); Except NoteWriteFailed('copy footprint'); End;
     Aligned := AlignCopiedFootprint(Footprint, NewFP);
-    Try NewFP.Name := NewName; Except End;
+    Try NewFP.Name := NewName; Except NoteWriteFailed('copied footprint Name'); End;
     DestLib.RegisterComponent(NewFP);
     PcbEndEdit(0);
 
     Try DestLib.Board.ViewManager_FullUpdate; Except End;
     Try DestLib.RefreshView; Except End;
     MarkDocDirtyByPath(DestLib.Board.FileName);
+
+    { Read back: success only when the copy is in the library. }
+    If DestLib.GetComponentByName(NewName) = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COPY_FAILED', 'The copy "' + NewName
+            + '" is not in ' + DestLibPath + ' after registering it.');
+        Exit;
+    End;
 
     RespJson := '{"success":true'
         + ',"source_library":"' + EscapeJsonString(SourceLibPath) + '"'
@@ -14501,7 +14592,7 @@ Begin
                         Component.SourceLibraryName := '';
                         Inc(ClearedSrc);
                     End;
-                Except End;
+                Except NoteWriteFailed('clear SourceLibraryName'); End;
 
                 If ClearTarget Then
                 Begin
@@ -14511,7 +14602,7 @@ Begin
                             Component.TargetFileName := '*';
                             Inc(ClearedTgt);
                         End;
-                    Except End;
+                    Except NoteWriteFailed('TargetFileName'); End;
                 End;
 
                 If SyncId Then
@@ -14523,7 +14614,7 @@ Begin
                             Component.DesignItemId := LibRef;
                             Inc(Synced);
                         End;
-                    Except End;
+                    Except NoteWriteFailed('sync DesignItemId'); End;
                 End;
             End;
         Finally
@@ -14639,6 +14730,61 @@ Begin
     End;
 End;
 
+{ Take a PAIR kind off every other pair holding it.                          }
+{                                                                              }
+{ A pair kind belongs to one pair at a time, as a layer kind belongs to one    }
+{ layer: giving "Assembly" to one pair while another already carries it reads  }
+{ back unchanged and raises nothing. The layer kinds were always released from }
+{ their old holder; the pair kinds never were, so a paired kind already in use }
+{ elsewhere was refused. Returns the indexes it cleared, comma terminated, so  }
+{ a write that is still refused can put them back.                             }
+
+Function ReleasePairKindHolders(MechPairs : IPCB_MechanicalLayerPairs;
+    PairKind : Integer; KeepIdx : Integer) : String;
+Var
+    I, N, K : Integer;
+Begin
+    Result := '';
+    If MechPairs = Nil Then Exit;
+    { Not Set is the one pair kind any number of pairs may share. }
+    If PairKind <= 0 Then Exit;
+    N := 0;
+    Try N := MechPairs.Count; Except N := 0; End;
+    For I := 0 To N - 1 Do
+        If I <> KeepIdx Then
+        Begin
+            K := -1;
+            Try K := MechPairs.LayerPairKind(I); Except K := -1; End;
+            If K = PairKind Then
+            Begin
+                Try MechPairs.SetState_LayerPairKind(I) := 0; Except { the caller reads the kind back } End;
+                Result := Result + IntToStr(I) + ',';
+            End;
+        End;
+End;
+
+{ Give a pair kind back to the pairs ReleasePairKindHolders took it from, so  }
+{ a write that still does not take leaves the board as it was.                }
+
+Procedure RestorePairKindHolders(MechPairs : IPCB_MechanicalLayerPairs;
+    PairKind : Integer; Released : String);
+Var
+    Remaining : String;
+    I : Integer;
+Begin
+    If MechPairs = Nil Then Exit;
+    Remaining := Released;
+    While Pos(',', Remaining) > 0 Do
+    Begin
+        I := StrToIntDef(Copy(Remaining, 1, Pos(',', Remaining) - 1), -1);
+        Remaining := Copy(Remaining, Pos(',', Remaining) + 1, Length(Remaining));
+        If I >= 0 Then
+        Begin
+            Try MechPairs.SetState_LayerPairKind(I) := PairKind; Except NoteWriteFailed('give a pair kind back'); End;
+        End;
+    End;
+End;
+
 { Join two mechanical layers and give the PAIR its kind.                      }
 {                                                                              }
 { AddPair APPENDS WITHOUT CHECKING, so calling it for a pair that already      }
@@ -14655,6 +14801,7 @@ Function JoinAndKindPair(MechPairs : IPCB_MechanicalLayerPairs;
     TopL : TLayer; BotL : TLayer; PairKind : Integer) : Boolean;
 Var
     PairIdx, KindBack : Integer;
+    Released : String;
 Begin
     Result := False;
     If MechPairs = Nil Then Exit;
@@ -14669,9 +14816,22 @@ Begin
     Try PairIdx := MechPairs.AddPair(TopL, BotL); Except PairIdx := -1; End;
     If PairIdx < 0 Then Exit;
 
-    Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except End;
+    Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except { read back below } End;
     KindBack := -1;
     Try KindBack := MechPairs.LayerPairKind(PairIdx); Except KindBack := -1; End;
+    { Refused while another pair holds the kind: take it off that pair and  }
+    { write once more, putting it back if the second write fails as well.   }
+    If (KindBack >= 0) And (KindBack <> PairKind) Then
+    Begin
+        Released := ReleasePairKindHolders(MechPairs, PairKind, PairIdx);
+        If Released <> '' Then
+        Begin
+            Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except { read back below } End;
+            Try KindBack := MechPairs.LayerPairKind(PairIdx); Except KindBack := -1; End;
+            If (KindBack >= 0) And (KindBack <> PairKind) Then
+                RestorePairKindHolders(MechPairs, PairKind, Released);
+        End;
+    End;
     { A build that will not report the pair kind back must not read as a    }
     { failure, so only a value that came back DIFFERENT counts as refused.  }
     Result := (KindBack = PairKind) Or (KindBack < 0);
@@ -14850,7 +15010,7 @@ Begin
                 If EnabledStr <> '' Then
                 Begin
                     WantEnabled := (EnabledStr = 'true') Or (EnabledStr = '1');
-                    Try LayerObj.MechanicalLayerEnabled := WantEnabled; Except End;
+                    Try LayerObj.MechanicalLayerEnabled := WantEnabled; Except { read back below } End;
                     GotEnabled := Not WantEnabled;
                     Try GotEnabled := LayerObj.MechanicalLayerEnabled; Except End;
                     If GotEnabled <> WantEnabled Then
@@ -14861,12 +15021,14 @@ Begin
                     { display flag follows the enable rather than being a    }
                     { second call the caller has to remember.                }
                     If WantEnabled Then
-                        Try Board.LayerIsDisplayed[TargetLayer] := True; Except End;
+                    Begin
+                        Try Board.LayerIsDisplayed[TargetLayer] := True; Except NoteWriteFailed('show the enabled layer'); End;
+                    End;
                 End;
 
                 If NewName <> '' Then
                 Begin
-                    Try LayerObj.Name := NewName; Except End;
+                    Try LayerObj.Name := NewName; Except { read back below } End;
                     NameBack := '';
                     Try NameBack := LayerObj.Name; Except End;
                     If NameBack <> NewName Then
@@ -14993,7 +15155,7 @@ Begin
                         KindBack := -1;
                         If MechObj <> Nil Then
                         Begin
-                            Try MechObj.Kind := KindId; Except End;
+                            Try MechObj.Kind := KindId; Except { read back on the next line } End;
                             Try KindBack := MechObj.Kind; Except KindBack := -1; End;
                         End;
 
@@ -15028,7 +15190,7 @@ Begin
                                         Try OtherKind := OtherMech.Kind; Except OtherKind := -1; End;
                                         If OtherKind = KindId Then
                                         Begin
-                                            Try OtherMech.Kind := 0; Except End;
+                                            Try OtherMech.Kind := 0; Except { the retry below reads the kind back } End;
                                             OpReleased := OpReleased
                                                 + IntToStr(Scan) + ',';
                                             If DisplacedJson <> '' Then
@@ -15039,7 +15201,7 @@ Begin
                                                 + EscapeJsonString(MechKindToString(KindId))
                                                 + '","released_for":"Mechanical'
                                                 + IntToStr(MechNumber) + '"}';
-                                            Try MechObj.Kind := KindId; Except End;
+                                            Try MechObj.Kind := KindId; Except { read back on the next line } End;
                                             Try KindBack := MechObj.Kind; Except KindBack := -1; End;
                                         End;
                                     End;
@@ -15091,7 +15253,7 @@ Begin
                                     End;
                                     If OtherMech <> Nil Then
                                     Begin
-                                        Try OtherMech.Kind := KindId; Except End;
+                                        Try OtherMech.Kind := KindId; Except NoteWriteFailed('give a layer kind back'); End;
                                         Restored := Restored + 1;
                                     End;
                                 End;
@@ -15106,7 +15268,7 @@ Begin
                         { no MasterLayerStack at all.                       }
                         If (KindBack <> KindId) And (MechObj = Nil) Then
                         Begin
-                            Try LayerObj.Kind := KindId; Except End;
+                            Try LayerObj.Kind := KindId; Except { read back on the next line } End;
                             KindBack := ReadMechKind(LayerObj);
                         End;
 
@@ -15120,7 +15282,7 @@ Begin
                         Begin
                             If NewName <> '' Then
                             Begin
-                                Try LayerObj.Name := NewName; Except End;
+                                Try LayerObj.Name := NewName; Except { read back below } End;
                                 NameBack := '';
                                 Try NameBack := LayerObj.Name; Except End;
                                 If NameBack <> NewName Then
@@ -15142,7 +15304,9 @@ Begin
                                     PartnerObj := Nil;
                                 End;
                                 If PartnerObj <> Nil Then
-                                    Try PartnerObj.Name := PartnerName; Except End;
+                                Begin
+                                    Try PartnerObj.Name := PartnerName; Except NoteWriteFailed('restore partner layer Name'); End;
+                                End;
                             End;
                         End;
 
@@ -15988,7 +16152,7 @@ Var
     Prim : IPCB_Primitive;
     Model : IPCB_Model;
     Angle, Quarter : Integer;
-    DryRun : Boolean;
+    DryRun, Hidden : Boolean;
     OX, OY, X1, Y1, X2, Y2, WantX, WantY : TCoord;
     PadRotBefore, PadRotAfter : Double;
     NPads, NTracks, NArcs, NFills, NRegions, NVias, NTexts, NBodies, NOther : Integer;
@@ -16018,13 +16182,18 @@ Begin
     End;
     Quarter := Angle Div 90;
 
-    PcbLib := Nil;
-    Try PcbLib := PCBServer.GetPCBLibraryByPath(LibPath); Except End;
-    If PcbLib = Nil Then Try PcbLib := PCBServer.LoadPCBLibraryByPath(LibPath); Except End;
+    PcbLib := PcbLibAtPath(LibPath, Hidden);
     If PcbLib = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
             'Could not open the PCB library at ' + LibPath);
+        Exit;
+    End;
+    If Hidden And (Not DryRun) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'Could not open the PCB library as a document at ' + LibPath
+            + '. An edit to a library loaded out of sight is never saved, so nothing was turned.');
         Exit;
     End;
     Footprint := FootprintByName(PcbLib, FpWanted);
@@ -16314,7 +16483,7 @@ Begin
     { default: it changes what the user's library editor has on screen.    }
     If (ShowStr = 'true') Or (ShowStr = '1') Then
     Begin
-        Try PcbLib.CurrentComponent := Footprint; Except End;
+        Try PcbLib.CurrentComponent := Footprint; Except { only shows it } End;
     End;
     If Not DryRun Then
     Begin
@@ -17473,7 +17642,8 @@ Begin
                     Continue;
                 End;
                 Inc(Checked);
-                Try PcbLib.CurrentComponent := Fp; Except End;
+                { Made current before its origin is read: that relocates it. }
+                Try PcbLib.CurrentComponent := Fp; Except NoteWriteFailed('make footprint current for the check'); End;
                 OX := Fp.X;
                 OY := Fp.Y;
 
@@ -17638,7 +17808,10 @@ Begin
         End;
     Finally
         FpNames.Free;
-        If WasCurrent <> Nil Then Try PcbLib.CurrentComponent := WasCurrent; Except End;
+        If WasCurrent <> Nil Then
+        Begin
+            Try PcbLib.CurrentComponent := WasCurrent; Except { the view only } End;
+        End;
     End;
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('library', LibPath) + ','
@@ -18593,7 +18766,9 @@ Begin
         Begin
             SavedCurrent := FootprintByName(PcbLib, SavedName);
             If SavedCurrent <> Nil Then
-                Try PcbLib.SetState_CurrentComponent(SavedCurrent); Except End;
+            Begin
+                Try PcbLib.SetState_CurrentComponent(SavedCurrent); Except { the view only } End;
+            End;
         End;
         If TempMade Then
         Begin
@@ -20713,16 +20888,16 @@ Begin
     End;
 
     SchBeginEdit(SchDoc, '');
-    Try SchDoc.AddSchObject(Comp); Except End;
-    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except End;
+    Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
     OrientationVal := 0;
     If Rotation = 90 Then OrientationVal := 1;
     If Rotation = 180 Then OrientationVal := 2;
     If Rotation = 270 Then OrientationVal := 3;
-    Try Comp.SetState_Orientation(OrientationVal); Except End;
+    Try Comp.SetState_Orientation(OrientationVal); Except NoteWriteFailed('component Orientation'); End;
     If DesigStr <> '' Then
     Begin
-        Try Comp.Designator.Text := DesigStr; Except End;
+        Try Comp.Designator.Text := DesigStr; Except NoteWriteFailed('component Designator'); End;
     End;
     { Which part of a multi-part component to place, the same two writers }
     { the generic CurrentPartID setter uses; read back below.             }
@@ -20730,8 +20905,8 @@ Begin
     Try PartCount := Comp.PartCount; Except End;
     If (PartId > 0) And ((PartCount = 0) Or (PartId <= PartCount)) Then
     Begin
-        Try Comp.SetState_CurrentPartID(PartId); Except End;
-        Try Comp.CurrentPartID := PartId; Except End;
+        Try Comp.SetState_CurrentPartID(PartId); Except { read back below } End;
+        Try Comp.CurrentPartID := PartId; Except { read back below } End;
     End;
     SchRegisterObject(SchDoc, Comp);
     SchEndEdit(SchDoc, 'Edit');
@@ -20975,7 +21150,7 @@ End;
 
 Function ResponseField(Response : String; Key : String) : String;
 Begin
-    Result := ExtractJsonValue(Response, Key);
+    Result := JsonValueAnywhere(Response, Key);
 End;
 
 { Which library actions only LOOK, and so must leave the active document  }
@@ -21048,7 +21223,7 @@ Begin
     Cur := Nil;
     Try Cur := PcbLib.CurrentComponent; Except Cur := Nil; End;
     If Cur = Nil Then Exit;
-    Try PcbLib.SetState_CurrentComponent(Cur); Except End;
+    Try PcbLib.SetState_CurrentComponent(Cur); Except NoteWriteFailed('settle current footprint (a later walk may meet a primitive twice)'); End;
 End;
 
 Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;

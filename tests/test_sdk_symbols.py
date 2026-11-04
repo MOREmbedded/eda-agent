@@ -153,6 +153,12 @@ def test_the_table_never_contradicts_the_shipped_pascal():
     source = "\n".join(
         p.read_text(encoding="utf-8", errors="replace")
         for p in sorted(PAS.glob("*.pas")) if p.name != "Altium_MCP.pas")
+    # String literals out first. A write that fails is reported with a
+    # label naming the property, 'NoERC.ErrorKindSetToSuppress', and the
+    # dereference search below matched the LABEL: it reported a property
+    # as unreachable-but-used when the code touches the Str-prefixed
+    # member the engine actually registers.
+    source = re.sub(r"'[^'\n]*'", "''", source)
 
     contradicted = []
     for chain in CHAINS:

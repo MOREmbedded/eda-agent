@@ -13,12 +13,13 @@ The bridge is faked here -- no Altium, no dialogs, no file IPC.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from types import SimpleNamespace
 
 import pytest
 
+import eda_agent.tools.answering as answering
 import eda_agent.tools.project as project_tools
-from eda_agent.bridge.exceptions import AltiumTimeoutError
 
 
 class _CapturingMCP:
@@ -39,6 +40,12 @@ class _FakeBridge:
         self.config = SimpleNamespace(poll_timeout=10.0)
         self.responses = responses or {}
         self.calls: list[tuple[str, dict, dict]] = []
+
+    @contextlib.contextmanager
+    def expecting(self, _title):
+        """send_answering tells the bridge which dialog it is driving so a
+        reply that arrives mid-press is not read as a stall."""
+        yield
 
     async def send_command_async(self, command, params=None, timeout=None,
                                  max_extensions=None):
@@ -66,6 +73,19 @@ def tools():
 def _no_real_dialogs(monkeypatch):
     """Default: no dialogs open. Individual tests override."""
     monkeypatch.setattr(project_tools, "_list_open_dialogs", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def _dialogs_left_to_the_user(monkeypatch):
+    """Answer no dialogs here.
+
+    ``driver`` returns a presser only when Dialogs Automatic is on AND
+    Altium's process can be named, so without this the test takes one
+    path on a developer machine with Altium open and the other in CI.
+    The pressing path is exercised where it belongs, against the
+    answering module.
+    """
+    monkeypatch.setattr(answering, "driver", lambda *a, **k: None)
 
 
 def _install(monkeypatch, bridge):
@@ -107,74 +127,31 @@ def test_refuses_when_a_dialog_is_already_open(tools, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Bounded wait
+# The bounded wait, now carried by send_answering
 # ---------------------------------------------------------------------------
 
 
-def test_bounds_the_wait_instead_of_inheriting_the_300s_ceiling(
-        tools, monkeypatch):
-    bridge = _FakeBridge({"project.update_pcb": _eco_ok})
-    _install(monkeypatch, bridge)
+def test_the_wait_is_bounded_by_wait_seconds(tools, monkeypatch):
+    """Upstream moved the ECO onto send_answering, which takes the budget
+    as a timeout. The knob kept working only because it is passed on; an
+    unused parameter would still have appeared in the tool's schema."""
+    seen = {}
 
-    _run(tools["proj_sync_pcb"](wait_seconds=60, verify_pad_nets=False))
+    async def _fake(bridge, command, params, title, steps, timeout=360.0,
+                    on_the_way=None):
+        seen["timeout"] = timeout
+        return _eco_ok(), None
 
-    # The sync reads the differential pairs before firing the ECO, so
-    # the ECO is no longer call 0; find it by name.
-    _, _, kwargs = next(c for c in bridge.calls
-                        if c[0] == "project.update_pcb")
-    assert kwargs["timeout"] == 10.0
-    # 60 s budget over a 10 s poll window = 6 extensions, not the default 30.
-    assert kwargs["max_extensions"] == 6
-
-
-def test_timeout_returns_actionable_modal_error_not_an_exception(
-        tools, monkeypatch):
     bridge = _FakeBridge({
-        "project.update_pcb": AltiumTimeoutError("no response"),
+        "pcb.get_differential_pairs": {"pairs": []},
+        "project.get_bom": {"components": []},
+        "pcb.get_components": {"components": []},
     })
     _install(monkeypatch, bridge)
+    monkeypatch.setattr(project_tools, "send_answering", _fake)
 
-    # Nothing open at pre-flight; the ECO's own modal appears afterwards.
-    seen: list[int] = []
-
-    def _dialogs():
-        seen.append(1)
-        if len(seen) == 1:
-            return []
-        return [{"handle": 7, "title": "Engineering Change Order"}]
-
-    monkeypatch.setattr(project_tools, "_list_open_dialogs", _dialogs)
-
-    res = _run(tools["proj_sync_pcb"](wait_seconds=30))
-
-    assert res["success"] is False
-    assert res["error"]["code"] == "ECO_DIALOG_BLOCKING"
-    # The ECO was fired and is still pending -- the caller must not assume
-    # it was cancelled.
-    assert res["eco_fired"] is True
-    assert res["eco_state"] == "pending_on_dialog"
-    assert res["dialogs"][0]["title"] == "Engineering Change Order"
-    steps = " ".join(res["next_steps"]).lower()
-    assert "app_list_dialogs" in steps
-    assert "app_click_dialog_button" in steps
-    assert res["recovery"]["fault"] == "modal_dialog"
-
-
-def test_timeout_still_reports_when_the_dialog_inventory_is_empty(
-        tools, monkeypatch):
-    # Win32 may return nothing (inventory failed, or the modal is not a
-    # top-level window). The timeout must still be reported as a blocking
-    # dialog rather than degrading into a generic failure.
-    bridge = _FakeBridge({
-        "project.update_pcb": AltiumTimeoutError("no response"),
-    })
-    _install(monkeypatch, bridge)
-
-    res = _run(tools["proj_sync_pcb"](wait_seconds=30))
-
-    assert res["error"]["code"] == "ECO_DIALOG_BLOCKING"
-    assert res["eco_fired"] is True
-    assert res["dialogs"] == []
+    _run(tools["proj_sync_pcb"](wait_seconds=45))
+    assert seen["timeout"] == 45
 
 
 def test_dialog_inventory_failure_never_raises(monkeypatch):
@@ -190,7 +167,7 @@ def test_dialog_inventory_failure_never_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Post-ECO completeness verification
+# Post-ECO pad-net check, read through after_sync
 # ---------------------------------------------------------------------------
 
 
@@ -208,7 +185,21 @@ def _pads_page(pads, offset, limit):
     }
 
 
-def test_verification_reports_pads_the_eco_left_unbound(tools, monkeypatch):
+def _sync_bridge(pads, netlist, designators=("U14", "U15")):
+    return _FakeBridge({
+        "project.update_pcb": _eco_ok,
+        "pcb.get_differential_pairs": {"pairs": []},
+        "project.get_bom": {"components": [{"designator": d, "footprint": "F"}
+                                           for d in designators]},
+        "pcb.get_components": {"components": [
+            {"designator": d, "footprint": "F"} for d in designators]},
+        "pcb.get_pad_properties": lambda p: _pads_page(
+            pads, int(p.get("offset", 0)), int(p.get("limit", 500))),
+        "project.get_connectivity_batch": netlist,
+    })
+
+
+def test_the_check_reports_pads_the_eco_left_unbound(tools, monkeypatch):
     pads = [
         {"component": "U14", "name": "1", "net": "GND"},
         {"component": "U15", "name": "1", "net": ""},
@@ -219,69 +210,60 @@ def test_verification_reports_pads_the_eco_left_unbound(tools, monkeypatch):
         {"designator": "U15", "pins": [{"pin_number": "1", "net": "GND"},
                                        {"pin_number": "2", "net": "3V3"}]},
     ]}
-    bridge = _FakeBridge({
-        "project.update_pcb": _eco_ok,
-        "pcb.get_pad_properties": lambda p: _pads_page(
-            pads, int(p.get("offset", 0)), int(p.get("limit", 500))),
-        "project.get_connectivity_batch": netlist,
-    })
+    bridge = _sync_bridge(pads, netlist)
     _install(monkeypatch, bridge)
 
-    res = _run(tools["proj_sync_pcb"]())
+    nets = _run(tools["proj_sync_pcb"]())["after_sync"]["pad_nets"]
 
-    check = res["pad_net_verification"]
-    assert check["checked"] is True
-    assert check["complete"] is False
-    assert check["unbound_count"] == 2
-    assert check["unbound_by_component"] == {"U15": 2}
+    assert nets["unbound_count"] == 2
+    assert nets["unbound_by_component"] == {"U15": 2}
+    assert nets["sweep_complete"] is True
 
 
-def test_verification_pages_past_the_first_pad_window(tools, monkeypatch):
-    # 1200 pads over a 500-pad window: reading only page one is exactly the
-    # mistake this verification exists to catch.
-    pads = [{"component": f"U{i // 4}", "name": str(i % 4), "net": "GND"}
+def test_the_check_pages_past_the_first_pad_window(tools, monkeypatch):
+    """pcb.get_pad_properties windows at 500 pads and says so in
+    `truncated`. Reading page one and reporting the unbound list as the
+    board's is the bug this whole check exists to catch, and the merged
+    code did exactly that until it was wired through the pager."""
+    pads = [{"component": "U14", "name": str(i), "net": "GND"}
             for i in range(1200)]
     netlist = {"components": []}
-    bridge = _FakeBridge({
-        "project.update_pcb": _eco_ok,
-        "pcb.get_pad_properties": lambda p: _pads_page(
-            pads, int(p.get("offset", 0)), int(p.get("limit", 500))),
-        "project.get_connectivity_batch": netlist,
-    })
+    bridge = _sync_bridge(pads, netlist, designators=("U14",))
     _install(monkeypatch, bridge)
 
-    res = _run(tools["proj_sync_pcb"]())
+    nets = _run(tools["proj_sync_pcb"]())["after_sync"]["pad_nets"]
 
-    pad_calls = [c for c in bridge.calls
-                 if c[0] == "pcb.get_pad_properties"]
+    pad_calls = [c for c in bridge.calls if c[0] == "pcb.get_pad_properties"]
     assert len(pad_calls) == 3  # 500 + 500 + 200
-    assert res["pad_net_verification"]["pads_checked"] == 1200
+    assert nets["pads_swept"] == 1200
 
 
-def test_verification_can_be_switched_off(tools, monkeypatch):
-    bridge = _FakeBridge({"project.update_pcb": _eco_ok})
+def test_the_sweep_counters_do_not_overwrite_the_verifier_s_own(
+        tools, monkeypatch):
+    """verify_eco already answers `complete` ("nothing was wrong") and
+    `pads_checked` (pads it could pair with a pin). The sweep's two
+    counters are about something else and must not land on those names."""
+    pads = [{"component": "U14", "name": "1", "net": "GND"}]
+    netlist = {"components": [
+        {"designator": "U14", "pins": [{"pin_number": "1", "net": "GND"}]}]}
+    bridge = _sync_bridge(pads, netlist, designators=("U14",))
     _install(monkeypatch, bridge)
 
-    res = _run(tools["proj_sync_pcb"](verify_pad_nets=False))
+    nets = _run(tools["proj_sync_pcb"]())["after_sync"]["pad_nets"]
 
-    assert "pad_net_verification" not in res
-    # The pairs are read before the ECO and the board after it, so a
-    # sync that "ran" and never reached the board is caught.
-    assert "project.update_pcb" in [c[0] for c in bridge.calls]
+    assert nets["complete"] is True          # verify_eco's meaning
+    assert nets["sweep_complete"] is True    # the pager's
+    assert nets["pads_checked"] == 1
+    assert nets["pads_swept"] == 1
 
 
-def test_verification_failure_is_reported_not_silently_passed(
-        tools, monkeypatch):
+def test_a_check_that_could_not_run_is_reported_not_passed(tools, monkeypatch):
     # A check that could not run must never look like a check that passed.
-    bridge = _FakeBridge({
-        "project.update_pcb": _eco_ok,
-        "pcb.get_pad_properties": RuntimeError("board closed"),
-    })
+    bridge = _sync_bridge([], {"components": []})
+    bridge.responses["pcb.get_pad_properties"] = RuntimeError("board closed")
     _install(monkeypatch, bridge)
 
     res = _run(tools["proj_sync_pcb"]())
 
-    check = res["pad_net_verification"]
-    assert check["checked"] is False
-    assert "complete" not in check
-    assert "board closed" in check["reason"]
+    assert "board closed" in res["after_sync"]["error"]
+    assert "pad_nets" not in res["after_sync"]

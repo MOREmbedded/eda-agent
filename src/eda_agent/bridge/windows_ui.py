@@ -284,7 +284,7 @@ class WindowsUiInspector:
         finally:
             try:
                 self._w.gui.DeleteObject(bitmap.GetHandle())
-            except Exception:
+            except Exception:  # a leaked GDI handle, not a failed capture
                 pass
             memory_dc.DeleteDC()
             source_dc.DeleteDC()

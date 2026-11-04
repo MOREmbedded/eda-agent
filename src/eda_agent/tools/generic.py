@@ -373,9 +373,11 @@ def register_generic_tools(mcp):
         Args:
             object_type: Altium object type constant.
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
-                "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
+                "eWire", "eBus", "eBusEntry", "eParameter", "eParameterSet", "ePin",
                 "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry",
-                "eNoERC", "eJunction"; symbol graphics as "sch_polygon",
+                "eNoERC", "eJunction", "eBlanket" (outline in "Vertices",
+                settable as "x1,y1,x2,y2,..."; also "LineStyle",
+                "Collapsed"); symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
                 (plain "polygon" and "arc" are the board's), the bare
                 "ellipse", "elliptical_arc" and "bezier", and "eDesignator" and
@@ -442,8 +444,12 @@ def register_generic_tools(mcp):
                 "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
                 (a value that is not a number matches no < > <= >=);
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
-                character, case ignored), "Net!~VCC*" excludes by one. The
-                same grammar holds for obj_modify, obj_delete and obj_select.
+                character, case ignored), "Net!~VCC*" excludes by one. A
+                PCB Layer (Layer1, Layer2) takes the internal name
+                ("Mechanical21") or the board's own name ("FluidGon"), in
+                any case; a ~ pattern meets either, and a name that is no
+                layer is refused. The same grammar holds for obj_modify,
+                obj_delete and obj_select.
             limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
@@ -548,8 +554,8 @@ def register_generic_tools(mcp):
                     if str(p.get("pin_number")) == str(pin):
                         result["compiled_net"] = p.get("net")
                         break
-            except Exception:
-                pass
+            except Exception as e:  # the pin read stands; say why the net is missing
+                result["compiled_net_unread"] = str(e)
         return result
 
     @mcp.tool()
@@ -640,14 +646,18 @@ def register_generic_tools(mcp):
                 OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
                 SolderMaskExpansionMode (Altium's numbers: from the rule or
                 manual), PasteMaskUsePercent, PasteMaskPercent and
-                PasteMaskEnabled; on tracks, arcs and vias IsPreRoute
+                PasteMaskEnabled; on any board object DetailString,
+                DRCError, UniqueID and IsElectricalPrim (reads); on any
+                schematic object DescriptionString, IdentifierString and
+                ErrorString (reads); on tracks, arcs and vias IsPreRoute
                 (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
                 TTFInvertedTextJustify, TTFOffsetFromInvertedRect and
                 ConvertedString (reads: the text as shown, special
-                strings resolved); on a 3D body OverrideColor (draw its
+                strings resolved) and UnderlyingString (reads: the text
+                as typed, a special string kept as the link); on a 3D body OverrideColor (draw its
                 own colour, not the model's), Texture (an image file) and
                 TextureRotation; on a board pad DrillType (how the hole
                 is made: 0 drilled, 1 punched, 2 laser, 3 plasma) and
@@ -3061,7 +3071,8 @@ def register_generic_tools(mcp):
         """Place a parameter-set directive at (x, y) on the active schematic.
 
         Attaches one ``name=value`` parameter to the wire or net under it,
-        e.g. ``DifferentialPair=USB`` or ``NetClass=HighSpeed``.
+        e.g. ``DifferentialPair=USB`` or ``NetClass=HighSpeed``. To apply
+        a directive to every net in an area, use sch_place_blanket.
 
         Args:
             x, y: Location in mils, place ON the target wire/net.
@@ -3087,12 +3098,16 @@ def register_generic_tools(mcp):
     async def sch_get_directives() -> dict[str, Any]:
         """Enumerate parameter-set directives on the active schematic sheet.
 
-        Each with its location and the parameters it carries.
+        Each with its location and the parameters it carries, including
+        the directives held inside blankets (sch_get_blankets lists the
+        blankets themselves and the nets they cover).
 
         Returns:
             Dictionary with ``directives`` array, each entry has
-            ``name``, ``x``, ``y``, and a ``parameters`` list of
-            ``{name, value}`` objects, plus ``count``.
+            ``name``, ``x``, ``y``, ``owner`` ("sheet", or "blanket" for
+            one held inside a blanket) and a ``parameters`` list of
+            ``{name, value}`` objects, plus ``count`` and
+            ``in_blankets``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.get_directives", {})
@@ -3120,6 +3135,82 @@ def register_generic_tools(mcp):
             "generic.place_compile_mask",
             {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
         )
+
+    @mcp.tool()
+    async def sch_place_blanket(
+        vertices: list[list[float]],
+        parameters: dict[str, str] | None = None,
+        directive_x: float | None = None,
+        directive_y: float | None = None,
+        line_style: int | None = None,
+        collapsed: bool | None = None,
+    ) -> dict[str, Any]:
+        """Place a blanket on the active schematic: a polygon whose directive
+        applies to every net it encloses (a net class, a differential pair,
+        No ERC over an area).
+
+        Args:
+            vertices: Outline as [[x, y], ...] in mils, at least 3 points.
+            parameters: The directive's parameters, e.g. {"NetClass": "PWR"}.
+                Omit for a bare blanket.
+            directive_x, directive_y: Where the directive sits, in mils.
+                Default: the first vertex, on the outline, which is where
+                Altium reads a blanket's directive from.
+            line_style: Outline style, as Altium's integer.
+            collapsed: Draw the blanket collapsed.
+
+        Reshape it later with obj_modify, object_type "eBlanket", set
+        "Vertices=x1,y1,x2,y2,...". Check what it caught with
+        sch_get_blankets after a compile.
+
+        Returns:
+            ``placed``, ``vertices_count``, ``vertices`` as read back, and
+            the ``directive`` placed with its parameters (null if none).
+        """
+        if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": "vertices must be at least 3 [x, y] points in mils. "
+                           "Nothing was placed."}}
+        for name, value in (parameters or {}).items():
+            if not name or any(c in f"{name}{value}" for c in "|="):
+                return {"success": False, "error": {
+                    "code": "INVALID_PARAMS",
+                    "message": f"parameter {name!r}={value!r}: a name must be "
+                               "non-empty, and neither may contain '|' or '='. "
+                               "Nothing was placed."}}
+        args: dict[str, Any] = {
+            "vertices": ",".join(f"{float(x):g},{float(y):g}" for x, y in vertices),
+            "parameters": "|".join(f"{k}={v}" for k, v in (parameters or {}).items()),
+        }
+        if directive_x is not None:
+            args["directive_x"] = f"{float(directive_x):g}"
+        if directive_y is not None:
+            args["directive_y"] = f"{float(directive_y):g}"
+        if line_style is not None:
+            args["line_style"] = str(int(line_style))
+        if collapsed is not None:
+            args["collapsed"] = "true" if collapsed else "false"
+        bridge = get_bridge()
+        return await bridge.send_command_async("generic.place_blanket", args)
+
+    @mcp.tool()
+    async def sch_get_blankets() -> dict[str, Any]:
+        """List the blankets on the active schematic sheet.
+
+        Returns:
+            ``blankets``: each with ``vertices`` ("x,y;x,y;..." in mils), its
+            box (x1, y1, x2, y2), ``line_style``, ``collapsed`` and the
+            ``directives`` inside it or on its edge (``owner`` "blanket" or
+            "sheet").
+            ``coverage``: from the last compile, one entry per blanket in
+            the compiler's order, with ``net_items`` and the ``nets`` it
+            caught; compile first (proj_compile) after an edit.
+            ``compiled`` false means the sheet is not in the focused
+            project, so coverage is empty.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("generic.get_blankets", {})
 
     @mcp.tool()
     async def sch_place_image(

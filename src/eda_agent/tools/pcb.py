@@ -38,6 +38,17 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 #: free primitive of a board, tens of thousands on a large one.
 _GEOMETRY_MAP_TIMEOUT = 1800.0
 
+
+def _list_field(value: Any, what: str) -> str:
+    """A name inside a comma / pipe separated list row: one holding either
+    separator would shift every field after it, so it is refused."""
+    text = str(value or "")
+    if "," in text or "|" in text:
+        raise ValueError(f"{what} {text!r} holds ',' or '|', which separate "
+                         f"the list's fields and rows")
+    return text
+
+
 #: pcb_physical_stack's dielectric_type numbers as the Layer Stack Manager
 #: names them.
 _DIELECTRIC_KIND = {1: "core", 2: "prepreg", 3: "solder_mask"}
@@ -1090,6 +1101,44 @@ _TESTPOINT_SETTINGS = {
     "body_clearance_mils": False, "edge_clearance_mils": False,
     "under_component": True, "use_grid": True,
 }
+
+
+async def _teardrop_count(bridge) -> Optional[int]:
+    """Teardrop objects on the active board; None if any count failed."""
+    total = 0
+    for kind in ("eRegionObject", "eTrackObject", "eArcObject"):
+        reply = await bridge.send_command_async(
+            "generic.get_object_count",
+            {"object_type": kind, "scope": "active_doc", "filter": "TearDrop=true"})
+        if not isinstance(reply, dict) or not isinstance(reply.get("count"), int):
+            return None
+        total += reply["count"]
+    return total
+
+
+async def _teardrops(action: str, scope: str,
+                     options: dict[str, Optional[bool]]) -> dict[str, Any]:
+    """Run the Teardrops dialog for ``action`` (Add or Remove)."""
+    from ..ui.dialog_answer import Check, Press
+    from .answering import send_answering
+    where = {"all": "All", "selected": "Selected only"}.get(scope.strip().lower())
+    if where is None:
+        return {"ok": False, "reason": "scope is 'all' or 'selected'"}
+    steps = [Check(action), Check(where)]
+    steps += [Check(label, bool(on)) for label, on in options.items() if on is not None]
+    steps += [Check("Generate report", False), Press("OK", closes=True)]
+    bridge = get_bridge()
+    before = await _teardrop_count(bridge)
+    result, driven = await send_answering(
+        bridge, "pcb.teardrops", {}, "Teardrops", steps)
+    if not isinstance(result, dict):
+        return result
+    result["teardrops_before"] = before
+    result["teardrops_after"] = await _teardrop_count(bridge)
+    if driven is not None:
+        result["dialog"] = driven
+        result.pop("note", None)
+    return result
 
 
 def register_pcb_tools(mcp):
@@ -2276,32 +2325,59 @@ def register_pcb_tools(mcp):
                               "distance_mils": repr(float(distance_mils))})
 
     @mcp.tool()
-    async def pcb_plane_connections(designator: str, pad: str = "") -> dict[str, Any]:
-        """How each pad of a part meets the internal planes, as the
-        board's rules decide it: relief, direct or no connection, and the
-        relief and clearance (conductor width, entries, air gap, relief
-        expansion, plane clearance).
+    async def pcb_plane_connections(
+        designator: str = "", pad: str = "", kind: str = "", net: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """How pads and vias meet the internal planes.
 
-        Use it to check that a power pad joins its plane solidly and a
-        signal pad clears the planes it passes.
+        Per object: the connection the board's rules give it (relief,
+        direct or none) with the relief and clearance values, the ruling
+        rule names, ``manual_reliefs`` (a hand-edited thermal relief; the
+        rule's values do not show one) and ``plane_contacts``: the planes
+        the object really passes through, each with the plane's net (on
+        a split plane, the region under the object) and ``joins`` (same net) -- an SMD pad has none, a hole spans every
+        plane, a blind / buried via only the planes it reaches.
+
+        Use it to check that a power pad or via joins its plane, and that
+        a signal via only clears the planes it passes.
 
         Args:
-            designator: The part, e.g. "U1".
-            pad: One pad name; empty lists every pad.
+            designator: One part's pads, e.g. "U1".
+            pad: One pad name of that part; empty lists every pad.
+            kind: Without a designator, "via" for the board's free vias or
+                "pad" for its free pads.
+            net: Only objects on this net.
+            limit: Most objects reported (``truncated`` says when more
+                matched; ``matched`` counts them all).
 
         Returns:
-            ``plane_layers`` and ``pads``, each with ``net``,
-            ``connection`` (relief, direct or none; ``rule_style`` is
-            Altium's number) and the relief values in mils.
+            ``plane_layers``, ``planes`` (layer, name, net), ``matched``,
+            ``truncated`` and ``pads`` or ``vias``, each with ``net``,
+            ``connection`` (``rule_style`` is Altium's number), the relief
+            values in mils, ``rule``, ``clearance_rule``,
+            ``manual_reliefs`` and ``plane_contacts``; free objects also
+            carry ``x`` / ``y`` in mils from the board origin.
         """
-        if not designator.strip():
-            return {"ok": False, "reason": "designator is required"}
-        params: dict[str, Any] = {"designator": designator.strip()}
-        if pad.strip():
-            params["pad"] = pad.strip()
+        kind = kind.strip().lower()
+        if not designator.strip() and kind not in ("via", "pad"):
+            return {"ok": False,
+                    "reason": 'designator is required, or kind="via" / "pad" '
+                              "for the free vias / pads"}
+        params: dict[str, Any] = {}
+        if designator.strip():
+            params["designator"] = designator.strip()
+            if pad.strip():
+                params["pad"] = pad.strip()
+        else:
+            params["kind"] = kind
+        if net.strip():
+            params["net"] = net.strip()
+        if limit != 500:
+            params["limit"] = str(int(limit))
         reply = await get_bridge().send_command_async("pcb.plane_connections", params)
         if isinstance(reply, dict):
-            for item in reply.get("pads") or []:
+            for item in (reply.get("pads") or []) + (reply.get("vias") or []):
                 style = item.get("rule_style")
                 # Measured on AD 26.11 by switching the rule.
                 item["connection"] = {0: "relief", 1: "direct", 2: "none"}.get(style, str(style))
@@ -3565,27 +3641,43 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
-    async def pcb_add_teardrops() -> dict[str, Any]:
-        """Add teardrops with Altium's own Teardrops command.
+    async def pcb_add_teardrops(
+        scope: str = "all",
+        via_th_pads: Optional[bool] = None,
+        smd_pads: Optional[bool] = None,
+        tracks: Optional[bool] = None,
+        t_junctions: Optional[bool] = None,
+        force: Optional[bool] = None,
+        adjust_size: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Add teardrops through Altium's Teardrops dialog.
 
-        Opens Altium's modal Teardrop dialog, which no script parameter
-        suppresses: choose Add, the scope and the settings there, then OK.
-        The reply comes when the dialog closes, and the bridge waits until
-        then; app_ui and app_press_dialog_button can answer it meanwhile. The selection is not changed. A later repour can
-        delete teardrops, so count them after it.
+        With Dialogs Automatic (Config tab) the tool sets Add, the scope
+        and the options given, then OK; None keeps the dialog's value.
+        Otherwise the dialog waits for the user. A repour can delete them.
+
+        Args:
+            scope: "all" or "selected".
+            via_th_pads, smd_pads, tracks, t_junctions: Objects to treat.
+            force: Place even where a rule is broken.
+            adjust_size: Shrink one that would not fit.
+
+        Returns:
+            ``teardrops_before``, ``teardrops_after``, ``dialog``.
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async("pcb.teardrops", {})
+        return await _teardrops("Add", scope, {
+            "Via/TH Pad": via_th_pads, "SMD Pad": smd_pads, "Tracks": tracks,
+            "T-Junction": t_junctions, "Force teardrops": force,
+            "Adjust teardrop size": adjust_size})
 
     @mcp.tool()
-    async def pcb_remove_teardrops() -> dict[str, Any]:
-        """Remove teardrops board-wide.
+    async def pcb_remove_teardrops(scope: str = "all") -> dict[str, Any]:
+        """Remove teardrops, as pcb_add_teardrops with Remove.
 
-        Opens the same modal Teardrop dialog as `pcb_add_teardrops`; choose
-        Remove and confirm it in Altium.
+        Args:
+            scope: "all" or "selected".
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async("pcb.teardrops", {})
+        return await _teardrops("Remove", scope, {})
 
     @mcp.tool()
     async def pcb_apply_silk_clip_plan(
@@ -8381,7 +8473,8 @@ def register_pcb_tools(mcp):
             tracks: List of track dicts. Each dict supports:
                 x1, y1, x2, y2 (required, mils; decimals are kept)
                 width (default 10, mils; decimals are kept, so a 0.1 mm
-                rule stays 3.937), layer (default "TopLayer"),
+                rule stays 3.937), layer (default "TopLayer"; "current" =
+                the editor's current layer, see pcb_layer_view),
                 net_name (optional, empty = no net; a net the board does
                 not have skips the track)
 
@@ -8411,6 +8504,8 @@ def register_pcb_tools(mcp):
                 reason a net still looks unrouted.
               - unknown_nets, unknown_layers: the names that did not
                 resolve, so a typo can be read off the reply.
+              - current_layer and on_current_layer, when any track took
+                "current" for its layer.
               - connectivity_rebuilt: the rebuild was issued (only when
                 something was actually placed).
         """
@@ -8634,6 +8729,154 @@ def register_pcb_tools(mcp):
             params["keepout"] = "1" if keepout else "0"
         result = await bridge.send_command_async("pcb.place_arc", params)
         return result
+
+    @mcp.tool()
+    async def pcb_place_arcs(
+        arcs: list[dict[str, Any]],
+        width: float = 10,
+        layer: str = "",
+        net: str = "",
+        keepout: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Place many arcs on the active PCB in ONE call and one Altium edit.
+
+        Each layer and net name is looked up once for the whole list. Mils,
+        decimals kept.
+
+        Args:
+            arcs: List of arc dicts. Each dict supports:
+                x_center, y_center, radius (required),
+                start_angle (default 0), end_angle (default 360),
+                and optionally its own width, layer, net, keepout
+            width: Line width for every arc that gives none (default 10)
+            layer: Layer for every arc that gives none (default
+                "TopLayer"). "current" = the editor's CURRENT layer, set
+                with pcb_layer_view current_layer; it is read once per call
+                and named in the reply, since a click on another layer tab
+                between calls moves it.
+            net: Net for every arc that gives none (empty = no net); an
+                arc on a net the board does not have is skipped
+            keepout: Mark the arcs keep-outs. Omitted: on for
+                "KeepOutLayer", off elsewhere.
+
+        Returns:
+            "placed" and "failed" counts, "bad_geometry" (radius not above
+            0 or a negative width), "unknown_layers" and "unknown_nets";
+            "current_layer" / "on_current_layer" when arcs went there.
+        """
+        parts = []
+        for a in arcs:
+            own_keep = a.get("keepout")
+            parts.append(",".join([
+                _mils(a["x_center"]), _mils(a["y_center"]), _mils(a["radius"]),
+                _angle_text(a.get("start_angle", 0)),
+                _angle_text(a.get("end_angle", 360)),
+                _mils(a["width"]) if a.get("width") is not None else "",
+                _list_field(a.get("layer", ""), "layer"),
+                _list_field(a.get("net", ""), "net"),
+                "" if own_keep is None else ("1" if own_keep else "0"),
+            ]))
+        params: dict[str, Any] = {"arcs": "|".join(parts),
+                                  "width": _mils(width)}
+        if layer:
+            params["layer"] = _list_field(layer, "layer")
+        if net:
+            params["net"] = _list_field(net, "net")
+        if keepout is not None:
+            params["keepout"] = "1" if keepout else "0"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.place_arcs", params)
+
+    @mcp.tool()
+    async def pcb_place_pads(
+        pads: list[dict[str, Any]],
+        shape: str = "round",
+        x_size: Optional[float] = None,
+        y_size: Optional[float] = None,
+        corner_radius: int = 25,
+        hole_size: float = 0,
+        hole_length: float = 0,
+        hole_rotation: float = 0,
+        plated: bool = True,
+        mask_expansion: Optional[float] = None,
+        paste_expansion: Optional[float] = None,
+        layer: str = "",
+        net: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Place many free pads that are all ONE pad, moved, turned and
+        named, in ONE call and one Altium edit.
+
+        The pad is described once by the arguments; each item of ``pads``
+        only says where it goes. Use for pad arrays, test point rows,
+        fiducials, mounting holes.
+
+        Args:
+            pads: List of dicts: x, y (required), rotation (degrees,
+                default 0), name, and optionally its own layer and net
+            shape: "round" (default) / "rect" / "oct" / "roundrect";
+                "rectangular", "octagonal", "rounded_rectangular" taken too
+            x_size, y_size: Pad size (default 60 mil)
+            corner_radius: roundrect corner, percent of half the shorter
+                side (default 25)
+            hole_size: Drill (0 = SMD). A pad with a hole goes on
+                MultiLayer.
+            hole_length: Slot length; above hole_size the hole is a slot
+                along the pad's X, turned by hole_rotation
+            plated: False for a non-plated hole
+            mask_expansion, paste_expansion: Manual solder / paste mask
+                expansion (omitted = the board's rules)
+            layer: Copper layer of an SMD pad (default "TopLayer").
+                "current" = the editor's CURRENT layer, read once and named
+                in the reply.
+            net: Net for every pad that gives none; a pad on a net the
+                board does not have is skipped
+            units: "mil" (default) or "mm" for every length
+
+        Returns:
+            "placed", "failed", "total", "slots", "unplated",
+            "expansions", "property_failures", "unknown_layers",
+            "unknown_nets"; "current_layer" / "on_current_layer" when pads
+            went there.
+        """
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        rows = []
+        for p in pads:
+            rows.append(",".join([
+                format_length(p["x"]), format_length(p["y"]),
+                _angle_text(p.get("rotation", 0)),
+                _list_field(p.get("name", ""), "name"),
+                _list_field(p.get("layer", ""), "layer"),
+                _list_field(p.get("net", ""), "net"),
+            ]))
+        params: dict[str, Any] = {
+            "pads": "|".join(rows),
+            "shape": shape,
+            "x_size": format_length(
+                length_in(units, 60) if x_size is None else x_size),
+            "y_size": format_length(
+                length_in(units, 60) if y_size is None else y_size),
+            "corner_radius": str(int(corner_radius)),
+            "hole_size": format_length(hole_size),
+        }
+        if hole_length:
+            params["hole_length"] = format_length(hole_length)
+            params["hole_rotation"] = _angle_text(hole_rotation)
+        if not plated:
+            params["plated"] = "false"
+        if mask_expansion is not None:
+            params["mask_expansion"] = format_length(mask_expansion)
+        if paste_expansion is not None:
+            params["paste_expansion"] = format_length(paste_expansion)
+        if layer:
+            params["layer"] = _list_field(layer, "layer")
+        if net:
+            params["net"] = _list_field(net, "net")
+        if normalise_units(units) == "mm":
+            params["units"] = "mm"
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.place_pads", params)
 
     @mcp.tool()
     async def pcb_place_text(
@@ -9222,7 +9465,9 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dict with ``mechanical_layers`` (each: layer, number, name,
-            enabled, displayed, kind, kind_id, primitive_count),
+            enabled, displayed, kind, kind_id, partner_layer -- the
+            enabled layer it is paired with, or None -- and
+            primitive_count),
             ``count``, ``occupied_count``, ``counted_primitives`` and
             ``scanned_to``, the layer number the scan stopped at.
         """
@@ -9426,7 +9671,8 @@ def register_pcb_tools(mcp):
         checks, assembly drawings, 3D bodies and via treatments read the
         KIND. A single kind ("Fab Notes") moves off any layer holding it
         (``cleared_from``). A kind ending in Top or Bottom belongs to a
-        layer PAIR and needs ``partner_layer``. The write is read back.
+        layer PAIR and needs ``partner_layer``; it moves off any other
+        pair holding it (``pairs_released``). The write is read back.
 
         Args:
             layer: Mechanical layer, e.g. "Mechanical13".
@@ -9438,7 +9684,8 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dict with ``layer``, ``kind``, ``kind_id``, ``paired``,
-            ``pair_kind``, ``partner_layer`` and ``cleared_from``.
+            ``pair_kind``, ``partner_layer``, ``pairs_released`` and
+            ``cleared_from``.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"layer": layer, "kind": kind}

@@ -557,6 +557,11 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'What happens to a dialog a tool opens, such as the Engineering '
+        + 'Change Order or the Teardrops options. Automatic: the AI answers '
+        + 'it as the tool was asked, then reads the result back. Manual: the '
+        + 'dialog waits for you.';
+    SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
 End;
 
 
@@ -779,6 +784,8 @@ Begin
     OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
     OwnPanelColours(opt_CloseAllowed);  OwnPanelColours(opt_CloseRefused);
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
+    OwnPanelColours(sep_Cfg6);
+    OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
 End;
 
 
@@ -909,6 +916,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_EcoAuto, DialogMode <> 'manual');
+        PaintOption(opt_EcoManual, DialogMode = 'manual');
+        If DialogMode = 'manual' Then
+            lbl_CfgEcoHint.Caption := 'A dialog a tool opens waits for you '
+                + 'to answer it.'
+        Else
+            lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
+                + 'open: change orders, teardrops.';
     Except End;
 End;
 
@@ -1361,7 +1376,8 @@ Begin
         Else If Setting = 'deleting' Then DeletingMode := Choice
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
-        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice;
+        Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'dialogs' Then DialogMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1385,6 +1401,12 @@ Begin ChooseAgentSetting('closing', 'allowed'); End;
 
 Procedure opt_CloseRefusedClick(Sender : TObject);
 Begin ChooseAgentSetting('closing', 'refused'); End;
+
+Procedure opt_EcoAutoClick(Sender : TObject);
+Begin ChooseAgentSetting('dialogs', 'auto'); End;
+
+Procedure opt_EcoManualClick(Sender : TObject);
+Begin ChooseAgentSetting('dialogs', 'manual'); End;
 
 Procedure opt_AutoOnClick(Sender : TObject);
 Begin ChooseAgentSetting('ui_automation', 'on'); End;
@@ -1598,6 +1620,43 @@ Begin
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
+{..............................................................................}
+{ Per-request state, set back to its starting value in one place.             }
+{                                                                              }
+{ The unit-level variables below describe ONE request or one item of a bulk  }
+{ call. Each is reset here and nowhere else at the start of its run, so a     }
+{ variable added later is listed here or it carries over into the next        }
+{ request. Session-lifetime variables (the pump, the dashboard, the config,   }
+{ the save pass, the JSON index) are not reset; the test that pins this list  }
+{ names them.                                                                 }
+{                                                                              }
+{ Not here: the next-step note and the last error, which the pump clears      }
+{ before it restores the session's document, because that step can note one. }
+{..............................................................................}
+Procedure ResetItemState(Dummy : Integer);
+Begin
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
+    WritesFailed := 0;
+    WritesFailedAt := '';
+    LibScopeName := '';
+    LibScopePart := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
+    SavesHeld := 0;
+    HeldFiles := '';
+End;
+
+Procedure ResetRequestState(Dummy : Integer);
+Begin
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchBulkHold := False;
+    ResetPropertyDiag(0);
+    ResetItemState(0);
+End;
+
 Function ProcessOne(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -1622,15 +1681,7 @@ Begin
         Exit;
     End;
 
-    SheetsSeen := 0;
-    SheetsSkipped := 0;
-    LibScopeName := '';
-    LibScopePart := 0;
-    BoardFallbackPath := '';
-    BoardFallbackFrom := '';
-    BoardMissWhy := '';
-    SavesHeld := 0;
-    HeldFiles := '';
+    ResetItemState(0);
     Result := SavingRefusal(Command, Params, RequestId);
     If Result <> '' Then Exit;
     Case Category Of
@@ -1647,6 +1698,7 @@ Begin
             'commands, or audit.* for design-lint checks.');
     End;
     Result := SheetCoverage(Result);
+    Result := WriteFailures(Result);
     Result := BoardFallbackNote(Result);
     Result := SavingNote(Result);
 End;
@@ -1757,11 +1809,9 @@ End;
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Begin
-    { A handler that crashed mid-edit leaves the count up, and every later }
-    { edit would then skip PreProcess. Each request starts from none open. }
-    PcbEditDepth := 0;
-    SchEditOpen := '|';
-    SchBulkHold := False;
+    { A handler that crashed mid-edit leaves the edit count up, and every   }
+    { later edit would then skip PreProcess. Each request starts clean.     }
+    ResetRequestState(0);
     SchReleaseHeld(0);
     If ExtractJsonValue(Params, 'bulk_count') <> '' Then
         Result := ProcessBulk(Command, Params, RequestId)
@@ -1803,55 +1853,67 @@ Begin
     Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
 End;
 
+{ BEGIN COMMAND RULES, generated from safety.py: edit the Python. }
+
+{ The verb of a command: lower case, after the first dot. }
+Function CommandVerb(Command : String) : String;
+Var
+    Verb : String;
+Begin
+    Verb := LowerCase(Trim(Command));
+    If Pos('.', Verb) > 0 Then Verb := Copy(Verb, Pos('.', Verb) + 1, Length(Verb));
+    Result := Verb;
+End;
+
 Function CommandIsReadOnly(Command : String) : Boolean;
 Var
     Verb : String;
-    DotPos : Integer;
 Begin
-    Verb := LowerCase(Trim(Command));
-    DotPos := Pos('.', Verb);
-    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
-
+    Verb := CommandVerb(Command);
     Result := ActionHasPrefix(Verb, 'get_')
-           Or ActionHasPrefix(Verb, 'list_')
-           Or ActionHasPrefix(Verb, 'query')
-           Or ActionHasPrefix(Verb, 'read_')
-           Or ActionHasPrefix(Verb, 'find_')
-           Or ActionHasPrefix(Verb, 'count')
-           Or ActionHasPrefix(Verb, 'audit_')
-           Or ActionHasPrefix(Verb, 'check_')
-           Or ActionHasPrefix(Verb, 'calc_')
-           Or ActionHasPrefix(Verb, 'export_')
-           Or ActionHasPrefix(Verb, 'render_')
-           Or ActionHasPrefix(Verb, 'probe_')
-           Or ActionHasPrefix(Verb, 'inspect_')
-           Or ActionHasPrefix(Verb, 'diff_')
-           Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping')
-           Or (Verb = 'format_value');
+        Or ActionHasPrefix(Verb, 'list_')
+        Or ActionHasPrefix(Verb, 'query')
+        Or ActionHasPrefix(Verb, 'read_')
+        Or ActionHasPrefix(Verb, 'find_')
+        Or ActionHasPrefix(Verb, 'count')
+        Or ActionHasPrefix(Verb, 'audit_')
+        Or ActionHasPrefix(Verb, 'check_')
+        Or ActionHasPrefix(Verb, 'calc_')
+        Or ActionHasPrefix(Verb, 'export_')
+        Or ActionHasPrefix(Verb, 'render_')
+        Or ActionHasPrefix(Verb, 'probe_')
+        Or ActionHasPrefix(Verb, 'inspect_')
+        Or ActionHasPrefix(Verb, 'diff_')
+        Or ActionHasPrefix(Verb, 'compare_')
+        Or (Verb = 'ping')
+        Or (Verb = 'format_value');
 End;
 
-{ Deleting and Closing documents on the Config tab. A command deletes when its
-  verb is delete_*, remove_*, batch_delete, unroute or a clear_*source*library,
-  or when its action is delete or remove (pcb.embedded_data, component
-  parameters). It closes when it is application.close_document or
-  project.close. MIRRORED in safety.py, pinned by a test. }
 Function CommandDeletes(Command : String; Params : String) : Boolean;
 Var
     Verb, Op : String;
 Begin
-    Verb := LowerCase(Copy(Command, Pos('.', Command) + 1, Length(Command)));
-    Op := LowerCase(ExtractJsonValue(Params, 'action'));
-    Result := ActionHasPrefix(Verb, 'delete_') Or ActionHasPrefix(Verb, 'remove_')
-        Or (Verb = 'batch_delete') Or (Verb = 'unroute')
-        Or ((Pos('clear_', Verb) = 1) And (Pos('source', Verb) > 0))
-        Or (Op = 'delete') Or (Op = 'remove');
+    Verb := CommandVerb(Command);
+    Op := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Result := ActionHasPrefix(Verb, 'delete_')
+        Or ActionHasPrefix(Verb, 'remove_')
+        Or (Verb = 'batch_delete')
+        Or (Verb = 'unroute')
+        Or (ActionHasPrefix(Verb, 'clear_') And (Pos('source', Verb) > 0))
+        Or (Op = 'delete')
+        Or (Op = 'remove');
 End;
 
 Function CommandCloses(Command : String) : Boolean;
+Var
+    Cmd : String;
 Begin
-    Result := (Command = 'application.close_document') Or (Command = 'project.close');
+    Cmd := LowerCase(Trim(Command));
+    Result := (Cmd = 'application.close_document')
+        Or (Cmd = 'project.close');
 End;
+
+{ END COMMAND RULES }
 
 Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
 Begin
@@ -2093,22 +2155,38 @@ Begin
               + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
-    { error banner) when the response is success=false. ExtractJsonValue   }
-    { handles the nested error/code/message path via two successive calls. }
+    { error banner) when the response is success=false.                    }
+    { The reply is never parsed whole here: indexing a reply of several    }
+    { hundred KB character by character held Altium's main thread for      }
+    { minutes after the reply was already sent. The envelope says          }
+    { success:false within its first fields; only then is the error read,  }
+    { from what the handler recorded when it built it, else from a reply   }
+    { small enough to parse. The recorded error is used only when it is    }
+    { this reply's: a failed reply has data null, so its code sits in the  }
+    { first few hundred characters.                                        }
     DashIsError := (ResultTag = 'EXCEPTION');
-    DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+    DashErrPayload := '';
     DashDetail := '';
     DashCode := '';
-    If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+    If Pos('"success":false', Copy(ResponseContent, 1, 200)) > 0 Then
     Begin
         DashIsError := True;
-        DashCode    := ExtractJsonValue(DashErrPayload, 'code');
-        DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
-        { The message as the handler wrote it, when this reply is the error }
-        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
-        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
-            And (LastErrorMsg <> '') Then
+        If (LastErrorId = RequestId) And (LastErrorCode <> '')
+            And (Pos('"error":{"code":"' + LastErrorCode + '"',
+                     Copy(ResponseContent, 1, 400)) > 0) Then
+        Begin
+            DashCode := LastErrorCode;
             DashDetail := LastErrorMsg;
+        End
+        Else If Length(ResponseContent) <= 65536 Then
+        Begin
+            DashErrPayload := ExtractJsonValue(ResponseContent, 'error');
+            If (DashErrPayload <> '') And (DashErrPayload <> 'null') Then
+            Begin
+                DashCode    := ExtractJsonValue(DashErrPayload, 'code');
+                DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+            End;
+        End;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then
@@ -2166,7 +2244,7 @@ Begin
 
     { FIRST, and unconditionally. A tick that fires after this point would }
     { run against an engine Altium may already be unloading.                }
-    Try tmr_Poll.Enabled := False; Except End;
+    Try tmr_Poll.Enabled := False; Except { the engine is going away; nothing is left to tell } End;
 
     QuitTag := 'no';
     If PumpQuitting Then QuitTag := 'yes';
@@ -2340,7 +2418,7 @@ Begin
                 If PumpInterval <> PollIntervalActiveMs Then
                 Begin
                     PumpInterval := PollIntervalActiveMs;
-                    Try tmr_Poll.Interval := PumpInterval; Except End;
+                    Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
@@ -2364,7 +2442,7 @@ Begin
                     If PumpInterval <> PollIntervalIdleMs Then
                     Begin
                         PumpInterval := PollIntervalIdleMs;
-                        Try tmr_Poll.Interval := PumpInterval; Except End;
+                        Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                     End;
                 End;
                 If (PumpIdleCount Mod 10) = 0 Then
@@ -2435,6 +2513,10 @@ Begin
     { stopped the loop on "Undeclared identifier". Start with none held.   }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
+    JsonIdxDoc0 := ''; JsonIdxDoc1 := ''; JsonIdxDoc2 := ''; JsonIdxDoc3 := '';
+    JsonIdx0 := ''; JsonIdx1 := ''; JsonIdx2 := ''; JsonIdx3 := '';
+    JsonIdxNext := 0;
+    JsonNestedSeen := '';
 
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';
@@ -2465,7 +2547,7 @@ Begin
     Try
         tmr_Poll.Interval := PumpInterval;
         tmr_Poll.Enabled := True;
-    Except End;
+    Except { read back below } End;
     { Read back: an arm that raised inside the Try used to leave a session }
     { that logged _session_start and then served nothing, with no sign.    }
     Try Armed := tmr_Poll.Enabled; Except Armed := False; End;

@@ -40,7 +40,7 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, WorkspaceDir : String;
+    UiAutomationMode, KeepInViewMode, DialogMode, WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
 var P, Q : Integer;
@@ -132,7 +132,7 @@ def test_python_reads_the_same_file(tmp_path):
     assert preferences.preferences(tmp_path) == {
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
-        "ui_automation": "on", "keep_in_view": "off"}
+        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -153,7 +153,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_EditsReadOnlyClick", "opt_AutoOnClick", "opt_AutoOffClick",
                     "opt_ViewOffClick", "opt_ViewOnClick",
                     "opt_DeleteAllowedClick", "opt_DeleteRefusedClick",
-                    "opt_CloseAllowedClick", "opt_CloseRefusedClick"):
+                    "opt_CloseAllowedClick", "opt_CloseRefusedClick",
+                    "opt_EcoAutoClick", "opt_EcoManualClick"):
         assert f"= {handler}" in dfm, handler
         assert handler in form, handler
     for option, call in (("None", "'none', 'without'"), ("Rkm", "'rkm', 'without'"),
@@ -171,7 +172,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("DeleteAllowed", "'deleting', 'allowed'"),
                          ("DeleteRefused", "'deleting', 'refused'"),
                          ("CloseAllowed", "'closing', 'allowed'"),
-                         ("CloseRefused", "'closing', 'refused'")):
+                         ("CloseRefused", "'closing', 'refused'"),
+                         ("EcoAuto", "'dialogs', 'auto'"),
+                         ("EcoManual", "'dialogs', 'manual'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -188,16 +191,21 @@ def test_one_tab_shows_at_a_time():
 
 def test_the_agent_settings_are_kept_and_default_to_permissive(tmp_path):
     out = _run(tmp_path, [
-        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode);",
-        "  EditsMode := 'readonly'; UiAutomationMode := 'off'; KeepInViewMode := 'on';",
+        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', DialogMode);",
+        "  EditsMode := 'readonly'; UiAutomationMode := 'off'; KeepInViewMode := 'on'; DialogMode := 'manual';",
         "  StorePreferences(0);",
-        "  EditsMode := ''; UiAutomationMode := ''; KeepInViewMode := '';",
-        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode);",
+        "  EditsMode := ''; UiAutomationMode := ''; KeepInViewMode := ''; DialogMode := '';",
+        "  LoadPreferences(0); WriteLn(EditsMode, ' ', UiAutomationMode, ' ', KeepInViewMode, ' ', DialogMode);",
     ])
-    assert out == ["allowed on off", "readonly off on"]
+    assert out == ["allowed on off auto", "readonly off on manual"]
     assert preferences.edits_read_only(tmp_path)
     assert preferences.ui_automation_off(tmp_path)
     assert preferences.keep_in_view(tmp_path)
+    assert not preferences.dialogs_auto(tmp_path)
+
+
+def test_dialogs_default_to_automatic(tmp_path):
+    assert preferences.dialogs_auto(tmp_path)
 
 
 def test_the_permissions_are_refused_where_every_request_passes():
@@ -228,19 +236,52 @@ _CLASSIFIED = [
 ]
 
 
-def test_python_and_pascal_agree_on_what_deletes_and_closes(tmp_path):
+_DISPATCH_UNITS = {"Application": "application", "Project": "project",
+                   "Library": "library", "Generic": "generic", "PCB": "pcb",
+                   "Audit": "audit"}
+
+
+def _every_dispatched_command() -> list[tuple[str, dict]]:
+    commands = []
+    for unit, category in _DISPATCH_UNITS.items():
+        for verb in sorted(set(re.findall(r"^\s+'(\w+)':", _code(f"{unit}.pas"), flags=re.M))):
+            commands.append((f"{category}.{verb}", {}))
+    assert len(commands) > 300, "the dispatch scan found almost nothing"
+    return commands
+
+
+def test_python_and_pascal_agree_on_every_command(tmp_path):
+    """The Pascal rules are generated from safety.py; run both on every
+    dispatched command, the hand-picked cases and odd spellings."""
     from eda_agent import safety
+    cases = _CLASSIFIED + _every_dispatched_command() + [
+        ("PCB.Delete_Object", {}), (" project.close ", {}), ("nodot", {}),
+        ("Application.Ping", {}), ("generic.x", {"action": " Remove "})]
     lines = []
-    for command, params in _CLASSIFIED:
+    for command, params in cases:
         js = json.dumps(params).replace("'", "''").replace(": ", ":")
-        lines.append(f"  WriteLn(CommandDeletes('{command}', '{js}'), ' ', CommandCloses('{command}'));")
-    out = _run(tmp_path, lines, extra=("ActionHasPrefix", "CommandDeletes", "CommandCloses"))
-    expected = [f"{str(safety.command_deletes(c, p)).upper()} {str(safety.command_closes(c)).upper()}"
-                for c, p in _CLASSIFIED]
-    assert out == expected
+        lines.append(f"  WriteLn(CommandDeletes('{command}', '{js}'), ' ', "
+                     f"CommandCloses('{command}'), ' ', CommandIsReadOnly('{command}'));")
+    out = _run(tmp_path, lines, extra=("ActionHasPrefix", "CommandVerb", "CommandIsReadOnly",
+                                       "CommandDeletes", "CommandCloses"))
+    expected = [" ".join(str(v).upper() for v in (
+                    safety.command_deletes(c, p), safety.command_closes(c),
+                    safety.command_is_read_only(c)))
+                for c, p in cases]
+    wrong = [(c, got, want) for (c, _), got, want in zip(cases, out, expected) if got != want]
+    assert not wrong, wrong[:10]
     deletes = [c for (c, p), line in zip(_CLASSIFIED, out) if line.startswith("TRUE")]
     assert len(deletes) == 12, deletes
     assert "generic.clear_highlights" not in deletes
+
+
+def test_the_pascal_rules_are_generated_from_safety_py():
+    from eda_agent import safety
+    code = _code("StatusForm.pas").replace("\r\n", "\n")
+    start = code.index(safety.PASCAL_RULES_BEGIN)
+    end = code.index(safety.PASCAL_RULES_END) + len(safety.PASCAL_RULES_END)
+    assert code[start:end] == safety.pascal_command_rules(), (
+        "StatusForm.pas command rules are stale; run python scripts/altium/sync_rules.py")
 
 
 def test_every_deleting_verb_in_the_dispatch_tables_is_caught():

@@ -73,7 +73,7 @@ def _altium_process_scan() -> tuple[Optional[bool], list[int], list[str]]:
 
     try:
         pids = [c.pid for c in manager.select_altium_process().candidates]
-    except Exception:
+    except Exception:  # the check reports no process; that is the finding
         pids = []
 
     # A pid from the slow path settles it even if the fast one said no.
@@ -105,7 +105,7 @@ def _recent_activity(window_s: float = _ACTIVITY_WINDOW_S) -> Optional[float]:
         if not path.exists():
             return None
         stamp = last_activity_at(_tail_text(path))
-    except Exception:
+    except Exception:  # an unreadable log is reported as no activity
         return None
     if stamp is None:
         return None
@@ -177,7 +177,7 @@ def bundled_script_version() -> str:
             for line in main_pas.read_text(encoding="utf-8").splitlines():
                 if "SCRIPT_VERSION" in line and "=" in line:
                     return line.split("=", 1)[1].strip().strip(";").strip("'")
-    except Exception:
+    except Exception:  # no bundled version found; the caller says so
         pass
     return ""
 
@@ -194,17 +194,19 @@ def _ping_altium() -> Optional[dict]:
     try:
         from eda_agent.bridge import get_bridge
         bridge = get_bridge()
-    except Exception:
+    except Exception:  # no bridge to ping; reported as no reply
         return None
     try:
         result = bridge.ping_with_version()
-    except Exception:
+    except Exception:  # retried below without the process check
         result = None
     if result is not None:
         return result
     try:
+        # A loop that answers while the process check says otherwise is
+        # still a loop; this is what finds it.
         return bridge.ping_with_version(require_process=False)
-    except Exception:
+    except Exception:  # the check reports no reply; that is what was found
         return None
 
 
