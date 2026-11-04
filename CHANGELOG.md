@@ -30,6 +30,17 @@ maturity classification for every tool.
   different names, for a human. Verified live on a real board: 8 tracks,
   addresses, and the owning designator. Script version `2026.11.04.13`.
 
+  With it, both silk writers ran against a board for the first time. A
+  real footprint was placed on a disposable board for its silkscreen,
+  since the disposables carry no components and a component owner is
+  required. `pcb_clone_silk_track_fragment` took the track count from 3
+  to 4 and refused a fragment off the original segment with
+  NOT_SUBSEGMENT. `pcb_apply_silk_clip_plan` validated 1 line, applied
+  it, and reported it `already_applied` on a second pass, with the track
+  gone from the overlay afterwards; a wrong assembly layer, a
+  non-overlay layer, an unfocused board and a missing plan file were
+  each refused by name.
+
 - **`sdk-probe` can aim at any schematic object, not only a component.**
   The planner handled all 37 types all along; the CLI passed "component"
   and the Pascal filtered on `eSchComponent` whatever it was asked for,
@@ -141,6 +152,18 @@ maturity classification for every tool.
   only drift away from the calculator that justified it.
 
 ### Fixed
+
+- **The two silk tools now say what a plan line must carry.** Running
+  them against a board for the first time, which
+  `pcb_get_overlay_tracks` made possible, turned up two requirements
+  nothing documented. A plan line without `width` is refused with
+  STALE_PLAN, because the missing field reads as a width that changed. A
+  track with no component owner is refused with BAD_OWNER however
+  complete the rest of the line is, so a board of free silk cannot
+  exercise the tool at all. Both are in `pcb_apply_silk_clip_plan`'s
+  docstring now, with the rest of the required fields, and guarded by
+  tests that read the handler.
+
 
 - **`design_list_laminates` listed a different, smaller, second-hand set
   than `design_get_laminate` answered for.** There were two laminate

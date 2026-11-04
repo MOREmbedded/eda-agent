@@ -3593,14 +3593,29 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Validate or apply a reviewed JSONL plan of overlay track changes.
 
-        One JSON object per line: ``address`` (from
-        ``pcb_get_overlay_tracks``), ``layer`` ("TopOverlay" or
-        "BottomOverlay"), ``assembly_layer`` ("Mechanical11" for the top,
-        "Mechanical12" for the bottom), ``x1``/``y1``/``x2``/``y2`` as the
-        RAW coordinates that reader gives, and optionally ``segments``.
-        The raw coordinates are compared as text, so a value converted to
-        millimetres and back never matches and the whole line reads as
-        "not the original".
+        One JSON object per line. ``pcb_get_overlay_tracks`` reports every
+        field a line needs, and ALL of these are required:
+
+        * ``address`` -- the track's object address.
+        * ``layer`` -- "TopOverlay" or "BottomOverlay". Nothing else is
+          accepted.
+        * ``assembly_layer`` -- "Mechanical11" for a top track,
+          "Mechanical12" for a bottom one. The other pairing is refused.
+        * ``x1``, ``y1``, ``x2``, ``y2`` -- the RAW coordinates that
+          reader gives. They are compared as TEXT, so a value converted
+          to millimetres and back never matches.
+        * ``width`` -- raw too. MEASURED: a line without it is refused
+          with STALE_PLAN naming the address, because the missing field
+          reads as a width that changed.
+        * ``component`` -- the owning designator, and the track must
+          actually have an owner. A free overlay track is refused with
+          BAD_OWNER however complete the rest of the line is.
+
+        ``segments`` is optional and clips the track rather than moving
+        it whole.
+
+        Applying twice is safe: the second pass reports the line under
+        ``already_applied`` and changes nothing.
         """
         return await get_bridge().send_command_async(
             "pcb.apply_silk_clip_plan",
