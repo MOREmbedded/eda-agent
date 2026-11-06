@@ -32,6 +32,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from eda_agent import compute
 from eda_agent.route.model import (
     DEFAULT_GRID_PITCH_MILS,
     RouteRules,
@@ -132,6 +133,10 @@ def route_problem(problem: RoutingProblem,
     """Route a prebuilt :class:`RoutingProblem` (mils). Same payload as
     :func:`route_geometry`. Mutates the problem's obstacle map."""
     opt = options or RouterOptions()
+    # Which implementation runs the search, decided once per run so the
+    # report cannot name one and the nets use the other. Raises here,
+    # before any net is touched, when Rust was asked for and is missing.
+    implementation = compute.active()
     order = _net_order(problem)
 
     nets_out: dict[str, dict[str, Any]] = {}
@@ -190,6 +195,8 @@ def route_problem(problem: RoutingProblem,
         "completion": completion,
         "failed_hints": failed_hints,
         "grid": problem.grid_info(),
+        # python | rust: which A* produced this (eda_agent.compute).
+        "compute": implementation,
         "track_count": len(all_tracks),
         "via_count": len(all_vias),
         "total_length_mils": sum(
@@ -248,15 +255,30 @@ def validate_solution(problem: RoutingProblem,
             "layer_b": layer_b,
         })
 
+    # BOXES FIRST. Every pair below is still visited and counted, in the
+    # same order, but a pair whose boxes are further apart than the
+    # distance that would be a violation is skipped before the exact
+    # distance. The exact distance is never less than the gap between
+    # the boxes, so a skipped pair could not have been reported: the
+    # result is identical, and on a 1090-pad board this check went from
+    # most of the run time to a fraction of it.
+    tbox = [_seg_box(t["x1"], t["y1"], t["x2"], t["y2"]) for t in tracks]
+    gbox = [_geom_box(g) for g in problem.geoms]
+    vbox = [(v["x"], v["y"], v["x"], v["y"]) for v in vias]
+    tlayer = [str(t["layer"]).lower() for t in tracks]
+
     # Track vs track (same layer, different nets).
     for i, a in enumerate(tracks):
-        for b in tracks[i + 1:]:
+        for j in range(i + 1, len(tracks)):
+            b = tracks[j]
             if a["net_name"] == b["net_name"]:
                 continue
-            if str(a["layer"]).lower() != str(b["layer"]).lower():
+            if tlayer[i] != tlayer[j]:
                 continue
             checked += 1
             need = a["width"] / 2.0 + b["width"] / 2.0 + clearance
+            if _box_gap(tbox[i], tbox[j]) > need:
+                continue
             d = dist_seg_seg(a["x1"], a["y1"], a["x2"], a["y2"],
                              b["x1"], b["y1"], b["x2"], b["y2"])
             if d < need - _EPS:
@@ -265,15 +287,18 @@ def validate_solution(problem: RoutingProblem,
                         str(a["layer"]), str(b["layer"]))
 
     # Track vs static copper (pads / existing tracks / existing vias).
-    for a in tracks:
-        ali = layer_idx[str(a["layer"]).lower()]
+    for ai, a in enumerate(tracks):
+        ali = layer_idx[tlayer[ai]]
         ahw = a["width"] / 2.0
-        for g in problem.geoms:
+        abox = tbox[ai]
+        for gi, g in enumerate(problem.geoms):
             if g["net"] == a["net_name"]:
                 continue
             if g["layer"] is not None and g["layer"] != ali:
                 continue
             checked += 1
+            if _box_gap(abox, gbox[gi]) > ahw + clearance + _geom_reach(g):
+                continue
             if g["kind"] == "rect":
                 need = ahw + clearance
                 d = dist_seg_rect(a["x1"], a["y1"], a["x2"], a["y2"],
@@ -298,21 +323,25 @@ def validate_solution(problem: RoutingProblem,
     # Vias span every layer: check against all tracks, pads, and vias.
     for i, v in enumerate(vias):
         vr = v["size"] / 2.0
-        for a in tracks:
+        for ai, a in enumerate(tracks):
             if a["net_name"] == v["net"]:
                 continue
             checked += 1
             need = vr + a["width"] / 2.0 + clearance
+            if _box_gap(vbox[i], tbox[ai]) > need:
+                continue
             d = dist_point_seg(v["x"], v["y"],
                                a["x1"], a["y1"], a["x2"], a["y2"])
             if d < need - _EPS:
                 _report("via_track", v["net"], a["net_name"],
                         d, need, (v["x"], v["y"]),
                         _MULTI_LAYER, str(a["layer"]))
-        for g in problem.geoms:
+        for gi, g in enumerate(problem.geoms):
             if g["net"] == v["net"]:
                 continue
             checked += 1
+            if _box_gap(vbox[i], gbox[gi]) > vr + clearance + _geom_reach(g):
+                continue
             if g["kind"] == "rect":
                 need = vr + clearance
                 d = dist_point_rect_edge(v["x"], v["y"],
@@ -375,6 +404,39 @@ def validate_solution(problem: RoutingProblem,
             "violations": violations,
             "unconnected": unconnected,
             "checked": checked}
+
+
+def _seg_box(x1: float, y1: float, x2: float, y2: float
+             ) -> tuple[float, float, float, float]:
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def _geom_box(g: dict[str, Any]) -> tuple[float, float, float, float]:
+    """Box around the part of a static obstacle its distance is measured
+    from: the rect itself, a segment's centreline, a circle's centre."""
+    if g["kind"] == "rect":
+        ex, ey = rect_extents(g["hw"], g["hh"], g.get("rot", 0.0))
+        return (g["cx"] - ex, g["cy"] - ey, g["cx"] + ex, g["cy"] + ey)
+    if g["kind"] == "seg":
+        return _seg_box(g["x1"], g["y1"], g["x2"], g["y2"])
+    return (g["x"], g["y"], g["x"], g["y"])
+
+
+def _geom_reach(g: dict[str, Any]) -> float:
+    """What a static obstacle adds to the required distance beyond its
+    measured core: a segment's half-width, a circle's radius."""
+    if g["kind"] == "seg":
+        return g["hw"]
+    if g["kind"] == "rect":
+        return 0.0
+    return g["r"]
+
+
+def _box_gap(a: tuple[float, float, float, float],
+             b: tuple[float, float, float, float]) -> float:
+    """Largest axis gap between two boxes; 0 or less when they touch.
+    Never more than the true distance between anything inside them."""
+    return max(b[0] - a[2], a[0] - b[2], b[1] - a[3], a[1] - b[3])
 
 
 def _geom_layer_name(problem: RoutingProblem, g: dict[str, Any]) -> str:
@@ -821,6 +883,9 @@ def _astar(problem: RoutingProblem, net: str,
     """
     if not targets:
         return None, False, 0
+    native = compute.native()
+    if native is not None:
+        return _astar_native(native, problem, net, starts, targets, opt)
     txs = [ix for (_l, ix, _y) in targets]
     tys = [iy for (_l, _x, iy) in targets]
     bx1, bx2 = min(txs), max(txs)
@@ -898,6 +963,27 @@ def _astar(problem: RoutingProblem, net: str,
     return (None,
             bool(open_heap) and expansions >= opt.max_expansions,
             expansions)
+
+
+def _astar_native(native, problem: RoutingProblem, net: str,
+                  starts: list[tuple[int, int, int]],
+                  targets: set[tuple[int, int, int]],
+                  opt: RouterOptions,
+                  ) -> tuple[list[tuple[int, int, int]] | None, bool, int]:
+    """:func:`_astar` in the compiled kernel (eda_agent.compute).
+
+    Same contract, same answer: the kernel is a line-for-line port and
+    tests/route/test_compute_parity.py holds it to that.
+    """
+    d = problem.dense_grid()
+    path, exhausted, used = native.astar(
+        problem.nx, problem.ny, len(problem.layers),
+        d.blocked, d.via_blocked, d.pad_any, d.net_id(net),
+        sorted(set(starts)), list(targets),
+        bool(opt.allow_diagonal), float(opt.bend_penalty),
+        float(opt.via_cost), bool(opt.allow_via_in_pad),
+        int(opt.max_expansions))
+    return path, exhausted, used
 
 
 def _reconstruct(parent: dict, last: tuple[int, int, int, int]

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "eda-agent-compute"
+version = "0.1.0"
+description = "Optional compiled kernels for eda-agent. eda-agent runs without it; with it, EDA_AGENT_COMPUTE=rust (or --compute rust) moves the hot loops here."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "eda_agent_compute._native"
+features = ["pyo3/extension-module"]

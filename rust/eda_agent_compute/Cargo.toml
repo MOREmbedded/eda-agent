@@ -1,0 +1,20 @@
+[package]
+name = "eda_agent_compute"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Optional compiled kernels for eda-agent (grid A* search)."
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Apache-2.0 OR MIT. abi3-py311: one wheel serves every CPython >= 3.11,
+# the same floor as eda-agent itself.
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

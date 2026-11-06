@@ -29,6 +29,11 @@ TRANSITIVE = {"werkzeug": "flask"}
 # Not packages: modules a running server loads from a directory it puts on
 # sys.path itself (the EasyEDA extension's build.py).
 LOCAL = {"build"}
+# Built from this repository (rust/eda_agent_compute), not from PyPI, and
+# optional by design: eda_agent/compute.py guards the import and runs
+# Python without it. Declaring it would make every install try to fetch a
+# package that is not published.
+IN_REPO_OPTIONAL = {"eda_agent_compute"}
 
 
 def _declared() -> set[str]:
@@ -60,7 +65,8 @@ def test_every_third_party_import_is_declared():
     declared = _declared()
     missing = []
     for name, where in sorted(_imported().items()):
-        if name in sys.stdlib_module_names or name == "eda_agent" or name in LOCAL:
+        if (name in sys.stdlib_module_names or name == "eda_agent" or name in LOCAL
+                or name in IN_REPO_OPTIONAL):
             continue
         dist = TRANSITIVE.get(name) or DISTRIBUTION.get(name, name).lower()
         if dist not in declared:

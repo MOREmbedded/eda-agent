@@ -114,3 +114,6 @@ extensions/easyeda/dist/
 extensions/easyeda/verified.json
 extensions/easyeda/*.eext
 /.eda-local/*
+
+# Rust build output of the optional compute wheel
+rust/*/target/
