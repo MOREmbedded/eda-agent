@@ -543,3 +543,150 @@ def get_footprint_defaults(start: Path | None = None) -> dict:
         return {}
     data, _error = _read_json_lenient(directory / "footprint_defaults.json")
     return data
+
+
+# ------------------------------------------------------------ where, and which
+#
+# The CLI and the dashboard both answer "which profile applies here, and
+# why" and both switch the central one. Each answer lives here once, so a
+# button on the dashboard can never do something `profile-use` would not.
+
+
+def central_profile_names() -> list[str]:
+    """Every profile under ~/.eda-agent/profiles/, sorted."""
+    root = central_profiles_root()
+    return sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+
+
+def central_active_name() -> str:
+    """The name ``active_profile`` holds, or "" when it holds none."""
+    pointer = active_profile_pointer()
+    try:
+        return pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def resolution(start: Path | None = None) -> dict:
+    """Which step of the resolution order decided, and what the others hold.
+
+    ``source`` is "environment", "project", "central" or "none". The other
+    steps are reported too, because the question a person asks after
+    switching profiles is "why is it still the old one", and the answer is
+    always one of the steps above the one they changed.
+    """
+    override = os.environ.get(_ENV_OVERRIDE, "")
+    project = find_project_profile(start or Path.cwd())
+    central_name = central_active_name()
+    central_dir = central_profiles_root() / central_name if central_name else None
+    directory = resolve_profile_dir(start)
+    if override:
+        source = "environment" if directory is not None else "none"
+    elif project is not None:
+        source = "project"
+    elif directory is not None:
+        source = "central"
+    else:
+        source = "none"
+    return {
+        "source": source,
+        "directory": str(directory) if directory else "",
+        "environment": {"variable": _ENV_OVERRIDE, "value": override,
+                        "usable": bool(override) and Path(override).is_dir()},
+        "project": str(project) if project else "",
+        "central": {"name": central_name,
+                    "directory": str(central_dir) if central_dir else "",
+                    "exists": bool(central_dir) and central_dir.is_dir(),
+                    "root": str(central_profiles_root())},
+        "start": str((start or Path.cwd()).resolve()),
+    }
+
+
+def use_central_profile(name: str) -> Path:
+    """Make ``name`` the centrally active profile; its directory.
+
+    Raises ValueError for a name that is not a profile under the central
+    root. A name with a path separator in it is refused rather than
+    resolved: the pointer file holds a name, not a path.
+    """
+    if not name or name in (".", "..") or any(c in name for c in "/\\:"):
+        raise ValueError(f"{name!r} is not a profile name")
+    target = central_profiles_root() / name
+    if not target.is_dir():
+        raise ValueError(f"no profile named {name!r} at {target}. "
+                         f"Run `eda-agent profile-init {name}` first.")
+    pointer = active_profile_pointer()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    return target
+
+
+def follow_env(previous: Path | None, current: ActiveProfile | None) -> bool:
+    """After a switch inside a running server, move the naming/IPC-goals
+    pointer apply_env set at startup onto the new profile. True if moved.
+
+    Only a value apply_env itself wrote (the previous profile's directory)
+    is touched: one the person set in their own environment always wins,
+    exactly as it does at startup.
+    """
+    var = _IPC_DIR_ENV_VARS[0]
+    value = os.environ.get(var, "")
+    if any(os.environ.get(v) for v in _IPC_DIR_ENV_VARS[1:]):
+        return False
+    if value and (previous is None or Path(value) != Path(previous)):
+        return False
+    wanted = ""
+    if current is not None and (current.naming_path or current.company_goals_path):
+        wanted = str(current.directory)
+    if wanted == value:
+        return False
+    if wanted:
+        os.environ[var] = wanted
+    else:
+        os.environ.pop(var, None)
+    return True
+
+
+def validate_profile(directory: Path) -> list[str]:
+    """Every problem in a profile, as `profile-validate` reports them.
+
+    Loading degrades rather than raising (so a typo cannot break startup or
+    pad authoring), which makes this the place those problems surface. The
+    same checks the consumers apply, so "valid" here means the tools will
+    accept it rather than refuse at the point of use.
+    """
+    from .design.fab_profile import load_fab_profile
+    from .engineering.naming import NamingPolicy
+    from .engineering.rules import validate_ruleset
+
+    p = load_profile(Path(directory))
+    errors: list[str] = list(p.errors)
+    errors += check_footprint_defaults(p.footprint_defaults)
+    errors += check_document_settings(p.document_settings)
+    errors += check_phase_gates(p.phase_gates)
+    errors += check_erc_sets(p.directory)
+
+    if p.naming_path:
+        try:
+            NamingPolicy(path=p.naming_path)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise
+            errors.append(f"naming.json: {exc}")
+
+    if p.rules_dir:
+        for rs_path in sorted(p.rules_dir.glob("*.json")):
+            try:
+                validate_ruleset(json.loads(rs_path.read_text(encoding="utf-8")))
+            except Exception as exc:  # noqa: BLE001
+                # "ruleset invalid" alone names no line to fix; the
+                # per-rule reasons travel in the error's details.
+                details = getattr(exc, "details", None) or {}
+                reasons = details.get("errors") if isinstance(details, dict) else None
+                suffix = f" ({'; '.join(map(str, reasons))})" if reasons else ""
+                errors.append(f"rules/{rs_path.name}: {exc}{suffix}")
+
+    if p.fab_profiles_dir:
+        for fp_path in sorted(p.fab_profiles_dir.glob("*.json")):
+            result = load_fab_profile(str(fp_path))
+            if not result.get("ok"):
+                errors.append(f"fab_profiles/{fp_path.name}: {result.get('reason')}")
+    return errors

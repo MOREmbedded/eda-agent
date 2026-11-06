@@ -934,14 +934,11 @@ def cmd_profile_use(name: str) -> int:
     """Set the centrally active profile (~/.eda-agent/active_profile)."""
     from . import profile as profile_mod
 
-    target = profile_mod.central_profiles_root() / name
-    if not target.is_dir():
-        print(f"ERROR: no profile named {name!r} at {target}. "
-              f"Run `eda-agent profile-init {name}` first.", file=sys.stderr)
+    try:
+        target = profile_mod.use_central_profile(name)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    pointer = profile_mod.active_profile_pointer()
-    pointer.parent.mkdir(parents=True, exist_ok=True)
-    pointer.write_text(name, encoding="utf-8")
     print(f"Active profile: {name} ({target})")
     return 0
 
@@ -951,9 +948,8 @@ def cmd_profile_list() -> int:
     from . import profile as profile_mod
 
     root = profile_mod.central_profiles_root()
-    names = sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
-    pointer = profile_mod.active_profile_pointer()
-    active = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    names = profile_mod.central_profile_names()
+    active = profile_mod.central_active_name()
     if not names:
         print(f"No central profiles under {root}.")
     for n in names:
@@ -1023,9 +1019,6 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
     relying on it (same discipline engineering/rules.py documents for
     rulesets)."""
     from . import profile as profile_mod
-    from .engineering.naming import NamingPolicy
-    from .engineering.rules import validate_ruleset
-    from .design.fab_profile import load_fab_profile
 
     if here:
         directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
@@ -1041,37 +1034,7 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
         print(f"ERROR: {directory} does not exist.", file=sys.stderr)
         return 1
 
-    p = profile_mod.load_profile(directory)
-    # Loading degrades rather than raising (so a typo cannot break startup or
-    # pad authoring), which makes this command the place those problems have
-    # to surface.
-    errors: list[str] = list(p.errors)
-    # The same checks the consumers apply, so "valid" here means the tools
-    # will accept it rather than refuse at the point of use.
-    errors += profile_mod.check_footprint_defaults(p.footprint_defaults)
-    errors += profile_mod.check_document_settings(p.document_settings)
-    errors += profile_mod.check_phase_gates(p.phase_gates)
-    errors += profile_mod.check_erc_sets(directory)
-
-    if p.naming_path:
-        try:
-            NamingPolicy(path=p.naming_path)
-        except Exception as exc:  # noqa: BLE001 -- report, don't crash the CLI
-            errors.append(f"naming.json: {exc}")
-
-    if p.rules_dir:
-        import json as _json
-        for rs_path in sorted(p.rules_dir.glob("*.json")):
-            try:
-                validate_ruleset(_json.loads(rs_path.read_text(encoding="utf-8")))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"rules/{rs_path.name}: {exc}")
-
-    if p.fab_profiles_dir:
-        for fp_path in sorted(p.fab_profiles_dir.glob("*.json")):
-            result = load_fab_profile(str(fp_path))
-            if not result.get("ok"):
-                errors.append(f"fab_profiles/{fp_path.name}: {result.get('reason')}")
+    errors = profile_mod.validate_profile(directory)
 
     if errors:
         print(f"{len(errors)} problem(s) in {directory}:", file=sys.stderr)

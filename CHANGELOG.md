@@ -14,6 +14,20 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Added
+
+- **Dashboard Workspace mode.** A top-bar chip names the profile in
+  effect and where it comes from; mode 8 shows the resolution order, a
+  button per central profile to switch to it, the design-rule targets and
+  the rules they produce, rulesets, ERC sets, fab limits, templates and
+  conventions, each file viewable read-only, plus compare, preview and
+  apply against what is open in Altium. See docs/PROFILES.md. The
+  compare/apply buttons call the existing `profile_diff_all` and
+  `profile_apply_all`; UNVERIFIED from the page against a live Altium.
+- `profile-validate` now names why a ruleset is invalid, not only that it
+  is. The check itself moved to `profile.validate_profile`, which the
+  dashboard uses too.
+
 ### Merged from upstream
 
 - **27 commits, `214f5d3..5e126f6`.** Fifteen files conflicted. Four

@@ -153,6 +153,41 @@ being picked up at all. Keys starting with `_` are left alone, so
   board from one of the profile's `templates/documents/` files and open it
   (Altium backend only).
 
+## Dashboard
+
+The dashboard (`eda-agent dashboard`, or the button on the Altium status
+form) has a **Workspace** mode (key `8`), and the top bar carries a chip
+naming the profile in effect. The chip's dot says where it came from:
+green for the central choice, amber for a project profile, blue for
+`EDA_AGENT_PROFILE_DIR`, grey for none. A red border means the profile has
+problems `profile-validate` would report.
+
+The mode shows:
+
+- **Where it comes from.** The three steps of the resolution order above,
+  each with what it holds, and which one decided. This is read inside the
+  server process, so it is the answer the AI's tools get, which is not
+  always the answer a shell in another folder gets.
+- **Switch the central profile.** One button per profile under
+  `~/.eda-agent/profiles/`. It writes the same pointer `profile-use` does.
+  If a project profile or `EDA_AGENT_PROFILE_DIR` decides here, the
+  switch is recorded and the page says it does not apply yet. The
+  naming/IPC pointer `apply_env` set at startup follows the switch; one you
+  set yourself is never touched. Which phase tools are advertised is fixed
+  when the server starts, so a switch between profiles with different
+  `phase_gates.json` says a restart is needed.
+- **What it declares.** Design-rule targets, with a button that shows the
+  rules `pcb_rules_plan` would put on a board (pure Python, Altium is not
+  asked); rulesets with their rule counts by severity; every ERC set,
+  resolved through `extends`; fab profiles' limits; project and document
+  templates; naming, document settings, footprint defaults and policy, and
+  phase gates. Any file name opens the file read-only. Nothing in a profile
+  is edited from the page.
+- **Hold the open design to it.** Compare (`profile_diff_all`), preview
+  (`profile_apply_all`, dry run) and apply (`profile_apply_all`,
+  `dry_run=False`). Apply asks for a second click, since it writes to
+  Altium. It only adds and updates, never deletes.
+
 ## `footprint_defaults.json`
 
 ```json
