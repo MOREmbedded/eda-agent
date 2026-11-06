@@ -1303,7 +1303,11 @@ function workspaceSideBlock() {
   const sec = (name, s) => {
     let state, cls = "";
     if (!s) state = "-";
-    else if (s.skipped) state = T("Not in this profile");
+    // A section the profile does not define is {skipped: "<why>"}. A rules
+    // diff that ran carries its own skipped LIST (rules the schematic owns),
+    // and [] is truthy, so testing s.skipped labelled every rules diff
+    // "Not in this profile". profile_apply.py records the same trap.
+    else if (typeof s.skipped === "string") state = T("Not in this profile");
     else if (s.apply_only) state = T("Applied only, nothing to compare");
     else if (s.ok === false) { state = s.reason || T("Failed"); cls = "bad"; }
     else if (s.in_step === true) { state = T("In step"); cls = "good"; }

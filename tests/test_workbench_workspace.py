@@ -266,3 +266,15 @@ def test_describe_runs_without_flask(tmp_path):
     _central("acme")
     profile_mod.use_central_profile("acme")
     assert workspace_view.describe()["profile"]["directory"].endswith("acme")
+
+
+def test_a_rules_diff_with_an_empty_skipped_list_is_not_called_absent():
+    """Measured live 2026-11-06: a rules diff that ran carries skipped: []
+    (the rules the schematic owns), [] is truthy in JavaScript, and the page
+    labelled a profile WITH design_rules.json "Not in this profile". Only a
+    skipped section, {skipped: "<why>"}, may read that way."""
+    from pathlib import Path
+    page = (Path(__file__).resolve().parents[1] / "src" / "eda_agent" / "web"
+            / "dashboard_static" / "workbench.html").read_text(encoding="utf-8")
+    assert 'else if (typeof s.skipped === "string") state = T("Not in this profile");' in page
+    assert 'else if (s.skipped) state = T("Not in this profile");' not in page
