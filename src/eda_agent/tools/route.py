@@ -601,29 +601,23 @@ def register_route_tools(mcp):
             geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /
                 pads / tracks / vias, all mils). Pads and copper of
                 nets NOT being routed stay in the obstacle map.
-            rules: Routing rules, all mils -- ``clearance_mils``,
-                ``track_width_mils`` (int, or per-class dict with
-                ``"default"``), ``via_size_mils``, ``via_drill_mils``,
-                ``layers`` (default TopLayer + BottomLayer). ``None``
-                uses defaults.
-            nets: Route only these net names; everything else stays a
-                static obstacle. Unknown names are reported in
-                ``unknown_nets``. ``None`` routes every netted pad
-                group.
+            rules: All mils: ``clearance_mils``, ``track_width_mils``
+                (int, or per-class dict with ``"default"``),
+                ``via_size_mils``, ``via_drill_mils``, ``layers``
+                (default Top + Bottom). ``None`` uses defaults.
+            nets: Route only these; the rest stay obstacles. Unknown
+                names go to ``unknown_nets``. ``None`` routes all.
             net_classes: Net name -> class (``power`` / ``ground`` /
                 ``differential`` / ...). Sets routing order and the
                 per-class track width. Unlisted nets are ``signal``.
-            grid_pitch_mils: Routing grid pitch in mils (default 25).
-                Never changes which nets exist -- a pitch too fine for
-                the node budget fails with ``reason_code
-                "grid_too_fine"`` rather than degrading.
+            grid_pitch_mils: Grid pitch (default 25). Too fine for the
+                node budget fails with ``reason_code "grid_too_fine"``.
             bend_penalty: A* corner cost in grid-pitch units.
             via_cost: A* layer-change cost in grid-pitch units.
-            max_expansions: Per-connection A* budget so a walled-in
-                net fails fast. Halving the pitch quadruples the cells a
-                flood must chew through, so a failure carrying hint
-                ``expansion_budget_exhausted`` means this knob ran out,
-                not that the route is impossible.
+            max_expansions: Per-connection A* budget. Hint
+                ``expansion_budget_exhausted`` means it ran out, not that
+                the route is impossible; halving the pitch quadruples
+                the cells.
             routing_style: ``manhattan`` or ``45deg``. The latter permits
                 diagonal moves but conservatively prevents corner cutting.
             fetch_geometry: When True and ``geometry`` is None, pull
@@ -641,13 +635,10 @@ def register_route_tools(mcp):
             ``summary.unknown_count``.
             ``{"ok": False, "reason": ...}`` on malformed input.
 
-            ``geometry`` says which board state was planned against:
-            ``source`` is ``live`` when this call read the board and
-            ``caller`` when you supplied the dict, plus the ``bbox`` and
-            ``counts`` from that payload. A ``caller`` plan is only as
-            current as the snapshot behind it, and this tool cannot date
-            it: after placing anything, re-read before re-planning or
-            the next plan routes through copper it cannot see.
+            ``geometry.source`` is ``live`` (read now) or ``caller``
+            (your dict), with its ``bbox`` and ``counts``. A ``caller``
+            plan cannot be dated: after placing anything, re-read before
+            re-planning, or the plan routes through copper it cannot see.
         """
         geom, geom_source = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:

@@ -16,6 +16,17 @@ maturity classification for every tool.
 
 ### Added
 
+- **Dashboard Workspace mode.** A top-bar chip names the profile in
+  effect and where it comes from; mode 8 shows the resolution order, a
+  button per central profile to switch to it, the design-rule targets and
+  the rules they produce, rulesets, ERC sets, fab limits, templates and
+  conventions, each file viewable read-only, plus compare, preview and
+  apply against what is open in Altium. See docs/PROFILES.md. The
+  compare/apply buttons call the existing `profile_diff_all` and
+  `profile_apply_all`; UNVERIFIED from the page against a live Altium.
+- `profile-validate` now names why a ruleset is invalid, not only that it
+  is. The check itself moved to `profile.validate_profile`, which the
+  dashboard uses too.
 - **Optional Rust compute (`--compute rust|auto|python`,
   `EDA_AGENT_COMPUTE`, `eda-agent compute-status`).** The routing
   planner's grid A* has a compiled port in a separate wheel,

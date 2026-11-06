@@ -30,11 +30,8 @@ def _profile_summary() -> dict:
 
 
 def _profile_list() -> dict:
-    root = profile_mod.central_profiles_root()
-    names = sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
-    pointer = profile_mod.active_profile_pointer()
-    active_name = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
-    return {"profiles": names, "central_active": active_name or None}
+    return {"profiles": profile_mod.central_profile_names(),
+            "central_active": profile_mod.central_active_name() or None}
 
 
 def _list_rulesets() -> dict:
