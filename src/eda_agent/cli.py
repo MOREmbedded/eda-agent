@@ -1454,6 +1454,17 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
     from .sdk.reflect import SdkUnavailable, load_sdk
     from .sdk.symbols import SymbolsUnavailable, load_symbols
 
+    from .sdk.coverage import supported_sch_types
+
+    # Checked before anything is loaded: the kinds come from the deployed
+    # Pascal, so a typo is refused by name even where the reflected SDK
+    # (local only, never committed) is absent.
+    types = supported_sch_types()
+    if object_type.lower() not in types:
+        print(f"unknown schematic object type {object_type!r}; "
+              f"known: {', '.join(sorted(types))}", file=sys.stderr)
+        return 1
+
     names = [n.strip() for n in properties.split(",") if n.strip()]
     if not names:
         try:
