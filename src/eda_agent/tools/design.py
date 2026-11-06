@@ -224,7 +224,10 @@ def register_design_tools(mcp) -> None:
         return store.active()
 
     @mcp.tool()
-    async def design_session_start(requirement: str, session_id: str = "") -> dict[str, Any]:
+    async def design_session_start(requirement: str, session_id: str = "",
+                                   mode: str = "",
+                                   inputs: Optional[Union[dict, str]] = None,
+                                   ) -> dict[str, Any]:
         """Open a durable design-session journal for an autonomous run.
 
         The journal is append-only state that survives context compaction,
@@ -236,13 +239,75 @@ def register_design_tools(mcp) -> None:
         Args:
             requirement: the design requirement text this run implements.
             session_id: optional explicit id; defaults to a timestamp.
+            mode: the design mode (see design_list_modes), e.g.
+                "reference_redraw" to redraw a vendor dev kit's schematic,
+                "layout_only" for a finished schematic. Blank uses the
+                selected mode (EDA_AGENT_MODE, then `eda-agent mode-use`),
+                else "full_design", the whole 13-stage pipeline.
+            inputs: the mode's inputs as an object (or JSON text), e.g.
+                {"vendor": "NXP", "board": "MIMXRT1170-EVKB",
+                 "source": "<URL of the schematic PDF>"}. A required input
+                left out is refused with the list of what is missing.
 
         Returns:
-            ``{"session_id": ..., "state": {...}}``.
+            ``{"session_id": ..., "mode": {...}, "state": {...}}``.
         """
+        from ..design.modes import get_mode, session_payload
+        if isinstance(inputs, str):
+            try:
+                inputs = json.loads(inputs) if inputs.strip() else None
+            except json.JSONDecodeError as exc:
+                return {"error": f"inputs is not valid JSON: {exc}"}
+        if inputs is not None and not isinstance(inputs, dict):
+            return {"error": "inputs must be a JSON object"}
+        try:
+            chosen = get_mode(mode)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        missing = chosen.missing_inputs(inputs or {})
+        if missing:
+            return {"error": f"the {chosen.name!r} mode needs {missing}; pass "
+                             f"them in inputs",
+                    "mode": chosen.as_dict()}
         store = _session_store()
-        journal = store.start(requirement, session_id=session_id or None)
-        return {"session_id": journal.session_id, "state": asdict(journal.state())}
+        journal = store.start(requirement, session_id=session_id or None,
+                              mode=session_payload(chosen, chosen.resolve_inputs(inputs or {})))
+        return {"session_id": journal.session_id, "mode": chosen.as_dict(),
+                "state": asdict(journal.state())}
+
+    @mcp.tool()
+    async def design_list_modes() -> dict[str, Any]:
+        """The design modes a run can be started in, and which one is selected.
+
+        A mode is a preset for a kind of job: which pipeline stages it walks,
+        the rules it adds, what each stage does differently and the inputs
+        it needs. Built in: full_design (the whole pipeline), schematic_only,
+        layout_only, reference_redraw (redraw a vendor dev kit or reference
+        design's schematic) and devkit_derivative (a new board from a dev
+        kit). The active profile's modes/ folder adds its own or changes
+        these. Start a run in one with design_session_start(mode=...).
+        """
+        from ..design.modes import load_modes, selected_mode_name
+        modes, problems = load_modes()
+        name, source = selected_mode_name()
+        return {"ok": True, "selected": name, "selected_by": source,
+                "modes": [{"name": m.name, "title": m.title,
+                           "description": m.description,
+                           "stages": len(m.stages),
+                           "inputs": [i.name for i in m.inputs],
+                           "source": m.source} for m in modes.values()],
+                "problems": problems}
+
+    @mcp.tool()
+    async def design_get_mode(name: str = "") -> dict[str, Any]:
+        """One design mode in full: stages, skipped stages, inputs, rules,
+        per-stage notes and the profile pieces it points at. Blank name
+        gives the selected mode."""
+        from ..design.modes import get_mode
+        try:
+            return {"ok": True, **get_mode(name).as_dict()}
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
 
     @mcp.tool()
     async def design_session_log(
@@ -345,7 +410,9 @@ def register_design_tools(mcp) -> None:
         if state.open_question:
             guidance = f"BLOCKED: ask the user: {state.open_question}"
         elif state.complete:
-            guidance = "All 13 pipeline stages complete."
+            guidance = (f"All {len(state.stages)} stages of the '{state.mode}' "
+                        f"mode complete." if state.mode
+                        else "All 13 pipeline stages complete.")
         else:
             guidance = f"Next stage: {state.next_stage}"
             sent_back = gates.get(state.next_stage)
