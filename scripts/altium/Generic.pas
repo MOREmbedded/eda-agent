@@ -465,6 +465,58 @@ Begin
     End;
 End;
 
+{ A parameter's or designator's display settings: ShowName (name shown    }
+{ beside the value), Autoposition and GraphicallyLocked (the Locked tick:  }
+{ the label cannot be dragged). Only these two types carry them, so the   }
+{ callers check SchHasParamDisplay first; asked of another object the     }
+{ names are undeclared and halt the loop. ShowName on a pin stays with    }
+{ the pin settings above.                                                 }
+Function IsSchParamDisplayProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Autoposition') Or (PropName = 'GraphicallyLocked');
+End;
+
+Function SchHasParamDisplay(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator);
+End;
+
+Function ReadSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    P : ISch_Parameter;
+Begin
+    Result := '';
+    P := Obj;
+    Try
+        If PropName = 'ShowName' Then Result := BoolToJsonStr(P.ShowName)
+        Else If PropName = 'Autoposition' Then Result := BoolToJsonStr(P.Autoposition)
+        Else If PropName = 'GraphicallyLocked' Then Result := BoolToJsonStr(P.GraphicallyLocked);
+    Except
+        Result := '';
+    End;
+End;
+
+Function WriteSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    P : ISch_Parameter;
+    Flag : Boolean;
+Begin
+    Result := True;
+    P := Obj;
+    Flag := (LowerCase(Value) = 'true') Or (Value = '1');
+    Try
+        SchBeginModify(P);
+        If PropName = 'ShowName' Then P.ShowName := Flag
+        Else If PropName = 'Autoposition' Then P.Autoposition := Flag
+        Else If PropName = 'GraphicallyLocked' Then P.GraphicallyLocked := Flag;
+        SchEndModify(P);
+    Except
+        Result := False;
+    End;
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -2319,6 +2371,13 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            Result := ReadSchParamDisplayProp(Obj, PropName)
+        Else If IsSchParamDisplayProp(PropName) Then
+            NotePropertyDiag('unreadable', PropName)
+
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
         Begin
@@ -2808,6 +2867,13 @@ Begin
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
 
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            WroteOK := WriteSchParamDisplayProp(Obj, PropName, Value)
+        Else If IsSchParamDisplayProp(PropName) Then
+            Matched := False
+
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
         Begin
@@ -3272,16 +3338,30 @@ End;
 { Re-scans after each removal rather than deleting inside the walk: removing  }
 { a child invalidates the iterator, and a walk that continues past it skips   }
 { entries, which reads as a filter that matched less than it did.             }
+{                                                                             }
+{ A VISIBLE PARAMETER OF THE SYMBOL ON SCREEN IS HELD BY THE LIBRARY.         }
+{ MEASURED on AD 25.8: Comp.RemoveSchObject on a shown symbol's visible       }
+{ parameter does nothing, so every pass found the same parameter again and    }
+{ the loop counted it until the guard ran out: matched 10000, and the         }
+{ parameter still there after a save and reopen. A hidden one went at once.   }
+{ The library document holds the symbol's visible children while it is on    }
+{ screen, and hiding one does not move it back until a reload. So when the    }
+{ same object comes back, it is removed from Lib (the library document; Nil   }
+{ on a sheet), and a remove that took nothing is never counted.               }
 
-Procedure RemoveMatchingParamsFromComponent(Comp : ISch_Component;
-    ReducedFilter : String; Var TotalMatched : Integer);
+Procedure RemoveMatchingParamsFromComponent(Lib : ISch_Document;
+    Comp : ISch_Component; ReducedFilter : String; Var TotalMatched : Integer);
 Var
     ParamIter : ISch_Iterator;
     Param, FoundParam : ISch_GraphicalObject;
-    Guard : Integer;
+    Guard, ThisAddr, LastAddr, SameTries : Integer;
+    Pending : Boolean;
 Begin
     If Comp = Nil Then Exit;
     Guard := 10000;
+    LastAddr := 0;
+    SameTries := 0;
+    Pending := False;
     While Guard > 0 Do
     Begin
         FoundParam := Nil;
@@ -3301,9 +3381,33 @@ Begin
         Finally
             Comp.SchIterator_Destroy(ParamIter);
         End;
+        ThisAddr := 0;
+        If FoundParam <> Nil Then
+            Try ThisAddr := FoundParam.I_ObjectAddress; Except End;
+        { The last remove took: the object it acted on is not found again. }
+        If Pending And ((FoundParam = Nil) Or (ThisAddr <> LastAddr)) Then
+        Begin
+            Inc(TotalMatched);
+            Pending := False;
+        End;
         If FoundParam = Nil Then Break;
+        If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then
+        Begin
+            { Still there after the component's remove. }
+            Inc(SameTries);
+            If (SameTries > 1) Or (Lib = Nil) Then
+            Begin
+                NoteDeleteFault('a parameter stayed on the symbol after it was removed');
+                Break;
+            End;
+            Try Lib.RemoveSchObject(FoundParam); Except { the next pass finds it again and reports the fault } End;
+            Dec(Guard);
+            Continue;
+        End;
+        SameTries := 0;
+        LastAddr := ThisAddr;
         Comp.RemoveSchObject(FoundParam);
-        Inc(TotalMatched);
+        Pending := True;
         Dec(Guard);
     End;
 End;
@@ -3346,7 +3450,7 @@ Begin
         Comp := Nil;
         Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
         If Comp = Nil Then Comp := LastCreatedLibComponent;
-        RemoveMatchingParamsFromComponent(Comp, ReducedFilter, TotalMatched);
+        RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter, TotalMatched);
         Exit;
     End;
 
@@ -3369,7 +3473,7 @@ Begin
                     { Removing a child does not disturb the outer         }
                     { component iterator, so the shared helper is safe here. }
                     RemoveMatchingParamsFromComponent(
-                        Comp, ReducedFilter, TotalMatched);
+                        Nil, Comp, ReducedFilter, TotalMatched);
                 End;
                 Comp := CompIter.NextSchObject;
             End;

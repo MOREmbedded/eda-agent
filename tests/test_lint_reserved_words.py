@@ -50,8 +50,7 @@ def test_reserved_set_matches_memory(lint):
         "String", "File", "Unit", "Function", "Procedure", "Const", "Var",
         "End", "Begin", "If", "Then", "Else", "Goto", "With", "In", "Is",
         "As", "Of", "Out", "Index", "Reference",
-        # Not a keyword: measured 2026-11-05, this Boolean local stopped
-        # the whole PCB unit loading. See lint.py.
+        # Not a keyword: as a local name it stopped PCB.pas loading (AD 26.11).
         "DrcOn",
     }
     missing = expected - lint.RESERVED_AS_NAME

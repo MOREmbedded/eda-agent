@@ -4235,6 +4235,10 @@ def register_pcb_tools(mcp):
 
         Deletes zero-length tracks and zero-area regions (board hygiene that
         accumulates from edits and imports). Returns the count removed.
+        Free objects only: primitives of a placed component, a polygon pour
+        or a dimension belong to their owner and are left alone (a
+        zero-length track in a footprint is a round dot, often a pin-1
+        mark).
 
         Returns:
             {"removed": N}.
@@ -5473,6 +5477,8 @@ def register_pcb_tools(mcp):
 
         Pads are sorted by position and numbered in sequence; rows and
         columns are banded by a small tolerance so a grid numbers cleanly.
+        A pad's position is its copper centre, not its origin, so a custom
+        pad numbers where it is drawn.
         Acts on the active PCB library's current footprint.
 
         Args:
@@ -8850,6 +8856,8 @@ def register_pcb_tools(mcp):
             Dictionary with:
               - placed, skipped_existing (exact direction-insensitive
                 duplicates), failed: segment counts.
+              - zero_length: tracks not placed because both ends are
+                the same point (Altium drops them; counted in failed).
               - nets_not_found: segments refused because ``net_name``
                 matched no net on the board. Non-zero here is the usual
                 reason a net still looks unrouted.
