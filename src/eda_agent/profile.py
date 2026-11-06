@@ -37,6 +37,9 @@ Two file shapes are genuinely new here (nothing already reads them):
   - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
                                stages this owner runs. Absent means none,
                                and the phase tools are not advertised.
+  - modes/<name>.json       -- design modes (design.modes): presets for a
+                               kind of run, e.g. a company's variant of
+                               reference_redraw
   - templates/<name>/       -- plain files, copied as-is by
                                `eda-agent profile-new-project`
 
@@ -208,8 +211,14 @@ class ActiveProfile:
             "fab_profiles": self.fab_profile_names(),
             "templates": self.template_names(),
             "document_templates": [t["name"] for t in self.document_templates()],
+            "modes": self.mode_names(),
             "errors": list(self.errors),
         }
+
+    def mode_names(self) -> list[str]:
+        """The design modes this profile adds or changes (modes/*.json)."""
+        d = self.directory / "modes"
+        return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
 
     def rulesets(self) -> list[str]:
         if not self.rules_dir or not self.rules_dir.is_dir():
@@ -665,6 +674,8 @@ def validate_profile(directory: Path) -> list[str]:
     errors += check_document_settings(p.document_settings)
     errors += check_phase_gates(p.phase_gates)
     errors += check_erc_sets(p.directory)
+    from .design.modes import load_modes
+    errors += load_modes(p.directory)[1]
 
     if p.naming_path:
         try:

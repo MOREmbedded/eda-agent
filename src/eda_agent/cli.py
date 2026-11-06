@@ -1045,6 +1045,126 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
     return 0
 
 
+def cmd_mode_list() -> int:
+    """List the design modes and which one is selected."""
+    from .design.modes import load_modes, selected_mode_name
+
+    modes, problems = load_modes()
+    selected, source = selected_mode_name()
+    for m in modes.values():
+        marker = " (selected)" if m.name == selected else ""
+        where = "" if m.source == "built-in" else f"  [{m.source}]"
+        print(f"{m.name}{marker} -- {m.title}: {len(m.stages)} stage(s){where}")
+    if selected not in modes:
+        print(f"\nERROR: the selected mode {selected!r} ({source}) does not "
+              f"exist; runs that name no mode will be refused.", file=sys.stderr)
+    for problem in problems:
+        print(f"  problem: {problem}", file=sys.stderr)
+    return 1 if problems or selected not in modes else 0
+
+
+def cmd_mode_show(name: Optional[str], *, as_json: bool) -> int:
+    """Print one mode in full: the selected one when no name is given."""
+    import json as _json
+    from .design.modes import get_mode
+
+    try:
+        mode = get_mode(name or "")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    d = mode.as_dict()
+    if as_json:
+        print(_json.dumps(d, indent=2))
+        return 0
+    print(f"Mode: {d['name']} -- {d['title']}  ({d['source']})")
+    print(f"  {d['description']}")
+    print(f"  stages:  {', '.join(d['stages'])}")
+    if d["skipped_stages"]:
+        print(f"  skipped: {', '.join(d['skipped_stages'])}")
+    for i in d["inputs"]:
+        need = "required" if i["required"] else "optional"
+        default = f", default {i['default']!r}" if i["default"] else ""
+        print(f"  input {i['name']} ({need}{default}): {i['description']}")
+    for r in d["rules"]:
+        print(f"  rule: {r}")
+    for stage, note in d["stage_notes"].items():
+        print(f"  {stage}: {note}")
+    if d["profile_hints"]:
+        print(f"  profile hints: {d['profile_hints']}")
+    return 0
+
+
+def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
+    """Select the mode runs use when they name none (~/.eda-agent/active_mode)."""
+    from .design.modes import MODE_ENV, active_mode_pointer, load_modes
+
+    pointer = active_mode_pointer()
+    if clear:
+        if pointer.exists():
+            pointer.unlink()
+        print("Mode selection cleared: runs that name no mode use full_design.")
+        return 0
+    if not name:
+        print("ERROR: name a mode, or pass --clear.", file=sys.stderr)
+        return 2
+    modes, _problems = load_modes()
+    if name not in modes:
+        print(f"ERROR: no mode named {name!r}. The modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    print(f"Selected mode: {name}")
+    if os.environ.get(MODE_ENV):
+        print(f"  ({MODE_ENV} is set to {os.environ[MODE_ENV]!r} in this "
+              f"shell and overrules this.)")
+    return 0
+
+
+def cmd_mode_init(name: str, *, extends: Optional[str], force: bool) -> int:
+    """Scaffold modes/<name>.json in the profile in effect here."""
+    import json as _json
+    from . import profile as profile_mod
+    from .design.modes import MODES_SUBDIR, _NAME, load_modes
+
+    if not _NAME.match(name):
+        print("ERROR: a mode name is lowercase letters, digits and "
+              "underscores, starting with a letter.", file=sys.stderr)
+        return 2
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("ERROR: no profile is active here; modes live in a profile's "
+              "modes/ folder. Run `eda-agent profile-init` first.", file=sys.stderr)
+        return 1
+    modes, _problems = load_modes(directory)
+    if extends and extends not in modes:
+        print(f"ERROR: cannot extend {extends!r}; the modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    target = directory / MODES_SUBDIR / f"{name}.json"
+    if target.exists() and not force:
+        print(f"ERROR: {target} exists; pass --force to replace it.", file=sys.stderr)
+        return 1
+    body: dict = {"_comment": "A design mode; see docs/DESIGN_MODES.md. Every "
+                              "key is optional. With extends, rules are added "
+                              "to the base's and stage_notes merged."}
+    if extends:
+        body["extends"] = extends
+    body.update({"title": name.replace("_", " ").capitalize(),
+                 "description": "",
+                 "rules": [],
+                 "stage_notes": {}})
+    if not extends:
+        from .design.session import STAGES
+        body["stages"] = list(STAGES)
+        body["inputs"] = []
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {target}")
+    return 0
+
+
 def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
     """Copy a profile's templates/<template>/ tree verbatim to dest. Plain
     file copy -- Altium project files are just files on disk, so no

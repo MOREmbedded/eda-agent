@@ -32,6 +32,8 @@ profile/
   erc_levels/                 # named ERC sets, each able to extend another
     strict.json                #   (one policy per file)
   phase_gates.json           # which NPI stages this owner runs (default: none)
+  modes/                      # design modes (see DESIGN_MODES.md)
+    nxp_redraw.json            #   (one mode per file)
   templates/                  # plain files, copied as-is
     default/                   #   a whole project (profile-new-project)
       ...
