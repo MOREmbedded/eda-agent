@@ -3950,6 +3950,11 @@ End;
 { small Y tolerance so a grid of pads numbers row-by-row rather than           }
 { interleaving slightly-misaligned pads.                                       }
 {                                                                              }
+{ A pad is placed by its COPPER centre, not its origin: a custom pad's copper  }
+{ need not be centred on its origin (issue #236). The centre of the            }
+{ bounding rectangle is the copper's, the mask in it being the same on every   }
+{ side (as library.get_pad_geometry's copper_x_mm / copper_y_mm).              }
+{                                                                              }
 { Params:                                                                       }
 {   order     -- lr_tb (default: rows top-to-bottom, left-to-right in a row),  }
 {                tb_lr (columns left-to-right, top-to-bottom in a column).     }
@@ -3971,7 +3976,8 @@ Var
     StartIdx, Increment, N, I, J, P, BestPos, Num, K : Integer;
     Ai, Aj, Bj : Integer;
     Xs, Ys, Order, NewNames : TStringList;   { parallel string lists, no fixed arrays }
-    Tol, Xa, Ya, Xb, Yb : TCoord;
+    Tol, Xa, Ya, Xb, Yb, CuX, CuY : TCoord;
+    PadBR : TCoordRect;
     Better : Boolean;
     First : Boolean;
     Tmp : String;
@@ -4003,15 +4009,26 @@ Begin
     Order := TStringList.Create;
     NewNames := TStringList.Create;
     Try
-        { Pass 1: collect pad coordinates (stringified) in iteration order. }
+        { Pass 1: collect each pad's copper centre (stringified) in       }
+        { iteration order; the origin when the rectangle is empty.        }
         GrpIter := Footprint.GroupIterator_Create;
         Try
             GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
             Pad := GrpIter.FirstPCBObject;
             While Pad <> Nil Do
             Begin
-                Xs.Add(IntToStr(Pad.X));
-                Ys.Add(IntToStr(Pad.Y));
+                CuX := Pad.X;
+                CuY := Pad.Y;
+                Try
+                    PadBR := Pad.BoundingRectangle;
+                    If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
+                    Begin
+                        CuX := (PadBR.Left + PadBR.Right) Div 2;
+                        CuY := (PadBR.Bottom + PadBR.Top) Div 2;
+                    End;
+                Except End;
+                Xs.Add(IntToStr(CuX));
+                Ys.Add(IntToStr(CuY));
                 Pad := GrpIter.NextPCBObject;
             End;
         Finally
@@ -9916,7 +9933,7 @@ Var
     ExistingIter : IPCB_BoardIterator;
     ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx : Integer;
+    PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx, ZeroLength : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
     LayerStr, NetStr, BadLayers, BadNets, ExistingNetStr, TrackKey, P1, P2 : String;
@@ -9952,6 +9969,7 @@ Begin
     Failed := 0;
     SkippedExisting := 0;
     NetMissing := 0;
+    ZeroLength := 0;
     BadLayers := '';
     BadNets := '';
     Remaining := TracksStr;
@@ -10109,6 +10127,16 @@ Begin
                 End;
             End;
 
+            { A zero-length track is dropped by Altium as it is added (AD 26.11), }
+            { so it was counted as placed and was not there. Counted apart.     }
+            If (MilsToCoordF(TX1) = MilsToCoordF(TX2))
+                And (MilsToCoordF(TY1) = MilsToCoordF(TY2)) Then
+            Begin
+                Inc(Failed);
+                Inc(ZeroLength);
+                Continue;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -10158,6 +10186,7 @@ Begin
           + '"skipped_existing":' + IntToStr(SkippedExisting) + ','
           + '"failed":' + IntToStr(Failed) + ','
           + '"nets_not_found":' + IntToStr(NetMissing) + ','
+          + '"zero_length":' + IntToStr(ZeroLength) + ','
           + CurrentLayerJson(CurLayer, OnCurrent)
           + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
           + '"unknown_nets":"' + EscapeJsonString(BadNets) + '",'
@@ -21087,6 +21116,9 @@ End;
 { PCB_DeleteInvalidObjects - remove degenerate primitives: zero-area regions  }
 { and zero-length tracks. Find-one-remove-restart so a live iterator is never  }
 { invalidated by a removal.                                                    }
+{ Free objects only: a primitive held by a component, a polygon pour or a      }
+{ dimension is its owner's (a zero-length track in a footprint is a round dot, }
+{ often a pin-1 mark), so it is never a candidate (issue #235).                }
 {..............................................................................}
 Function PCB_DeleteInvalidObjects(Params : String; RequestId : String) : String;
 Var
@@ -21096,7 +21128,7 @@ Var
     Trk : IPCB_Track;
     BR : TCoordRect;
     Removed, Guard : Integer;
-    FoundOne : Boolean;
+    FoundOne, Owned : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -21123,7 +21155,11 @@ Begin
                 Obj := Iter.FirstPCBObject;
                 While Obj <> Nil Do
                 Begin
-                    If Obj.ObjectId = eTrackObject Then
+                    { An owned primitive is skipped; one whose owner cannot }
+                    { be read is skipped too.                               }
+                    Owned := True;
+                    Try Owned := Obj.InComponent Or Obj.InPolygon Or Obj.InDimension; Except End;
+                    If (Not Owned) And (Obj.ObjectId = eTrackObject) Then
                     Begin
                         Trk := Obj;
                         If (Trk.x1 = Trk.x2) And (Trk.y1 = Trk.y2) Then
@@ -21132,7 +21168,7 @@ Begin
                             FoundOne := True;
                         End;
                     End
-                    Else If Obj.ObjectId = eRegionObject Then
+                    Else If (Not Owned) And (Obj.ObjectId = eRegionObject) Then
                     Begin
                         Try
                             BR := Obj.BoundingRectangle;

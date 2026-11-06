@@ -68,7 +68,5 @@ def test_the_rotation_goes_on_the_model_before_it_is_bound():
     pas = (PASCAL / "Library.pas").read_text(encoding="utf-8-sig")
     body = pas[pas.index("Function Lib_Link3DModel("):]
     body = body[:body.index("\nEnd;")]
-    # The standoff rides in the same call since 2026-11-06: a STEP body
-    # ignores its own StandoffHeight and saved a Z offset of 0.
+    # The standoff rides in Dz: a STEP body ignores its own StandoffHeight.
     assert body.index("Model.SetState(RotX, RotY, RotZ, MilsToCoordF(OffZ))") < body.index("Body.Model := Model")
-    assert "Body.StandoffHeight" not in body

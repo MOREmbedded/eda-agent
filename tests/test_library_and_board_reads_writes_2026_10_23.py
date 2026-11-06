@@ -139,7 +139,7 @@ def test_a_schlib_query_walks_the_symbol_on_screen_first():
 def test_a_schlib_parameter_delete_prefers_the_symbol_on_screen():
     body = _decommented(_src("Generic.pas"))
     start = body.index("Procedure DeleteParametersAnyOwner(")
-    part = body[start:body.index("RemoveMatchingParamsFromComponent(Comp, ReducedFilter", start)]
+    part = body[start:body.index("RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter", start)]
     assert part.index("SchDoc.CurrentSchComponent") < part.index("LastCreatedLibComponent")
 
 
@@ -176,6 +176,25 @@ def test_the_footprint_read_reports_via_mask_tenting_testpoints_and_stack():
     assert "LibViaDetailJson(Via)" in body
     assert body.count('"selected":') >= 5
     assert '"editor_origin_x_mm":' in body
+
+
+def test_the_editor_origin_is_reported_only_for_the_current_footprint():
+    # Board.XOrigin is the current footprint's marker; another footprint
+    # reads X = 0, so the difference would be the marker's absolute place.
+    body = _fn("Library.pas", "Lib_GetFootprintPrimitives")
+    assert "Try IsCurrent := PcbLib.CurrentComponent = Target; Except End;" in body
+    current = body.index("If IsCurrent Then")
+    other = body.index("Else", current)
+    assert "FloatToJsonStr(OriginX)" in body[current:other]
+    assert (
+        "OriginJson := ',\"editor_origin_x_mm\":null,\"editor_origin_y_mm\":null';"
+        in body[other:other + 120]
+    )
+    reply = body[body.index("RespJson :="):]
+    assert "OriginJson +" in reply
+    assert "',\"current\":' + BoolToJsonStr(IsCurrent)" in reply
+    # A read never makes the footprint current.
+    assert "CurrentComponent :=" not in body
 
 
 def test_each_kind_of_the_footprint_read_can_be_left_out():

@@ -1,4 +1,4 @@
-# Release verification: 2026.11.05.11
+# Release verification: 2026.11.06.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -353,7 +353,7 @@ works elsewhere cannot be an undeclared identifier:
 | 43, xSignals | `CreateFromPins`, `AssignPinPairClass` on the board's pin pair manager | no, nowhere | medium, ran live; the new xSignal is read back by name |
 | 43, text anchors | `ChangeNameAutoposition`, `ChangeCommentAutoposition` on a placed part | yes, `PCB_AutoplaceSilkscreen` | low, ran live; hidden text keeps its place |
 | 43, auto position | `AutoPosition_NameComment` on a placed part | no, nowhere | low, ran live |
-| 43, part text properties | `LockStrings`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, the first two written and read back live |
+| 43, part text properties | `LockStrings`, `PrimitiveLock`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, `LockStrings`, `PrimitiveLock` and `FootprintDescription` written and read back live |
 | 43, project setup | `DM_MoveSourceDocument`, `DM_AddSearchPath`, `DM_SetAllowPortNetNames`, `DM_SetAllowSheetEntryNetNames` on a project | no, nowhere | medium, ran live, read back, saved and reopened |
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 | 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
@@ -633,7 +633,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.05.11`, `version_match` =
+Expect `altium_script_version` = `2026.11.06.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.

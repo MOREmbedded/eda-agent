@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.05.11';
+    SCRIPT_VERSION = '2026.11.06.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -30301,6 +30301,8 @@ Var
     ModelRot, BodyTop, BodyStandoff : Double;
     Kinds, SelStr, BodyBoxJson : String;
     OriginX, OriginY : Double;
+    IsCurrent : Boolean;
+    OriginJson : String;
 Begin
     BodyModelsJson := '';
     SelStr := 'null';
@@ -30377,6 +30379,19 @@ Begin
     OriginY := 0;
     Try OriginX := CoordToMM(PcbLib.Board.XOrigin - XOrg); Except End;
     Try OriginY := CoordToMM(PcbLib.Board.YOrigin - YOrg); Except End;
+    { Board.XOrigin is the marker of the library's backing board, which holds }
+    { the CURRENT footprint. Any other footprint reads X / Y = 0, so the      }
+    { difference would be the marker's absolute place (1270 mm on a fresh    }
+    { library), not an origin in its frame (issue #233). Reported only for    }
+    { the current footprint; null for the others, which a read never makes   }
+    { current.                                                              }
+    IsCurrent := False;
+    Try IsCurrent := PcbLib.CurrentComponent = Target; Except End;
+    If IsCurrent Then
+        OriginJson := ',"editor_origin_x_mm":' + FloatToJsonStr(OriginX) +
+            ',"editor_origin_y_mm":' + FloatToJsonStr(OriginY)
+    Else
+        OriginJson := ',"editor_origin_x_mm":null,"editor_origin_y_mm":null';
 
     TracksJson := '';
     ArcsJson := '';
@@ -30780,8 +30795,8 @@ Begin
         '{"name":"' + EscapeJsonString(FpName) + '"' +
         ',"library_path":"' + EscapeJsonString(LibPath) + '"' +
         ',"height_mm":' + FloatToJsonStr(HeightMM) +
-        ',"editor_origin_x_mm":' + FloatToJsonStr(OriginX) +
-        ',"editor_origin_y_mm":' + FloatToJsonStr(OriginY) +
+        OriginJson +
+        ',"current":' + BoolToJsonStr(IsCurrent) +
         ',"kinds":"' + EscapeJsonString(Kinds) + '"' +
         ',"bodies":' + IntToStr(NBodies) +
         ',"body_layers":[' + BodyLayersJson + ']' +
@@ -37875,6 +37890,7 @@ Begin
             (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Then Result := 5
     Else If (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
             (PropName = 'IsBGA') Or (PropName = 'LockStrings') Or
+            (PropName = 'PrimitiveLock') Or
             (PropName = 'NameAutoPosition') Or (PropName = 'CommentAutoPosition') Or
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
             (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
@@ -38050,6 +38066,7 @@ Begin
         Else If PropName = 'EnablePartSwapping' Then Result := BoolToJsonStr(Comp.EnablePartSwapping)
         Else If PropName = 'IsBGA' Then Result := BoolToJsonStr(Comp.IsBGA)
         Else If PropName = 'LockStrings' Then Result := BoolToJsonStr(Comp.LockStrings)
+        Else If PropName = 'PrimitiveLock' Then Result := BoolToJsonStr(Comp.PrimitiveLock)
         Else If PropName = 'NameAutoPosition' Then Result := IntToStr(Comp.NameAutoPosition)
         Else If PropName = 'CommentAutoPosition' Then Result := IntToStr(Comp.CommentAutoPosition)
         Else If PropName = 'FootprintDescription' Then Result := Comp.FootprintDescription
@@ -38131,7 +38148,8 @@ Begin
         (PropName = 'ClipAcuteCorners') Or (PropName = 'MitreCorners') Or
         (PropName = 'IgnoreViolations') Or (PropName = 'ArcPourMode') Or
         (PropName = 'EnablePinSwapping') Or (PropName = 'EnablePartSwapping') Or
-        (PropName = 'LockStrings') Or (PropName = 'Inverted') Or
+        (PropName = 'LockStrings') Or (PropName = 'PrimitiveLock') Or
+        (PropName = 'Inverted') Or
         (PropName = 'UseInvertedRectangle') Or (PropName = 'DrawRemovedNecks') Or
         (PropName = 'DrawRemovedIslands') Or (PropName = 'DrawDeadCopper') Or
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
@@ -38312,6 +38330,7 @@ Begin
         If PropName = 'EnablePinSwapping' Then Comp.EnablePinSwapping := B
         Else If PropName = 'EnablePartSwapping' Then Comp.EnablePartSwapping := B
         Else If PropName = 'LockStrings' Then Comp.LockStrings := B
+        Else If PropName = 'PrimitiveLock' Then Comp.PrimitiveLock := B
         { Change*Autoposition moves the text to the anchor as well as       }
         { recording it; writing NameAutoPosition alone leaves it where it is. }
         Else If PropName = 'NameAutoPosition' Then Comp.ChangeNameAutoposition(N)
@@ -40414,7 +40433,7 @@ Begin
         + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
         + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
         + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
-        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, '
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, PrimitiveLock, '
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
@@ -45268,6 +45287,11 @@ End;
 { small Y tolerance so a grid of pads numbers row-by-row rather than           }
 { interleaving slightly-misaligned pads.                                       }
 {                                                                              }
+{ A pad is placed by its COPPER centre, not its origin: a custom pad's copper  }
+{ need not be centred on its origin (issue #236). The centre of the            }
+{ bounding rectangle is the copper's, the mask in it being the same on every   }
+{ side (as library.get_pad_geometry's copper_x_mm / copper_y_mm).              }
+{                                                                              }
 { Params:                                                                       }
 {   order     -- lr_tb (default: rows top-to-bottom, left-to-right in a row),  }
 {                tb_lr (columns left-to-right, top-to-bottom in a column).     }
@@ -45289,7 +45313,8 @@ Var
     StartIdx, Increment, N, I, J, P, BestPos, Num, K : Integer;
     Ai, Aj, Bj : Integer;
     Xs, Ys, Order, NewNames : TStringList;   { parallel string lists, no fixed arrays }
-    Tol, Xa, Ya, Xb, Yb : TCoord;
+    Tol, Xa, Ya, Xb, Yb, CuX, CuY : TCoord;
+    PadBR : TCoordRect;
     Better : Boolean;
     First : Boolean;
     Tmp : String;
@@ -45321,15 +45346,26 @@ Begin
     Order := TStringList.Create;
     NewNames := TStringList.Create;
     Try
-        { Pass 1: collect pad coordinates (stringified) in iteration order. }
+        { Pass 1: collect each pad's copper centre (stringified) in       }
+        { iteration order; the origin when the rectangle is empty.        }
         GrpIter := Footprint.GroupIterator_Create;
         Try
             GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
             Pad := GrpIter.FirstPCBObject;
             While Pad <> Nil Do
             Begin
-                Xs.Add(IntToStr(Pad.X));
-                Ys.Add(IntToStr(Pad.Y));
+                CuX := Pad.X;
+                CuY := Pad.Y;
+                Try
+                    PadBR := Pad.BoundingRectangle;
+                    If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
+                    Begin
+                        CuX := (PadBR.Left + PadBR.Right) Div 2;
+                        CuY := (PadBR.Bottom + PadBR.Top) Div 2;
+                    End;
+                Except End;
+                Xs.Add(IntToStr(CuX));
+                Ys.Add(IntToStr(CuY));
                 Pad := GrpIter.NextPCBObject;
             End;
         Finally
@@ -51234,7 +51270,7 @@ Var
     ExistingIter : IPCB_BoardIterator;
     ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx : Integer;
+    PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx, ZeroLength : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
     LayerStr, NetStr, BadLayers, BadNets, ExistingNetStr, TrackKey, P1, P2 : String;
@@ -51270,6 +51306,7 @@ Begin
     Failed := 0;
     SkippedExisting := 0;
     NetMissing := 0;
+    ZeroLength := 0;
     BadLayers := '';
     BadNets := '';
     Remaining := TracksStr;
@@ -51427,6 +51464,16 @@ Begin
                 End;
             End;
 
+            { A zero-length track is dropped by Altium as it is added (AD 26.11), }
+            { so it was counted as placed and was not there. Counted apart.     }
+            If (MilsToCoordF(TX1) = MilsToCoordF(TX2))
+                And (MilsToCoordF(TY1) = MilsToCoordF(TY2)) Then
+            Begin
+                Inc(Failed);
+                Inc(ZeroLength);
+                Continue;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -51476,6 +51523,7 @@ Begin
           + '"skipped_existing":' + IntToStr(SkippedExisting) + ','
           + '"failed":' + IntToStr(Failed) + ','
           + '"nets_not_found":' + IntToStr(NetMissing) + ','
+          + '"zero_length":' + IntToStr(ZeroLength) + ','
           + CurrentLayerJson(CurLayer, OnCurrent)
           + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
           + '"unknown_nets":"' + EscapeJsonString(BadNets) + '",'
@@ -62405,6 +62453,9 @@ End;
 { PCB_DeleteInvalidObjects - remove degenerate primitives: zero-area regions  }
 { and zero-length tracks. Find-one-remove-restart so a live iterator is never  }
 { invalidated by a removal.                                                    }
+{ Free objects only: a primitive held by a component, a polygon pour or a      }
+{ dimension is its owner's (a zero-length track in a footprint is a round dot, }
+{ often a pin-1 mark), so it is never a candidate (issue #235).                }
 {..............................................................................}
 Function PCB_DeleteInvalidObjects(Params : String; RequestId : String) : String;
 Var
@@ -62414,7 +62465,7 @@ Var
     Trk : IPCB_Track;
     BR : TCoordRect;
     Removed, Guard : Integer;
-    FoundOne : Boolean;
+    FoundOne, Owned : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -62441,7 +62492,11 @@ Begin
                 Obj := Iter.FirstPCBObject;
                 While Obj <> Nil Do
                 Begin
-                    If Obj.ObjectId = eTrackObject Then
+                    { An owned primitive is skipped; one whose owner cannot }
+                    { be read is skipped too.                               }
+                    Owned := True;
+                    Try Owned := Obj.InComponent Or Obj.InPolygon Or Obj.InDimension; Except End;
+                    If (Not Owned) And (Obj.ObjectId = eTrackObject) Then
                     Begin
                         Trk := Obj;
                         If (Trk.x1 = Trk.x2) And (Trk.y1 = Trk.y2) Then
@@ -62450,7 +62505,7 @@ Begin
                             FoundOne := True;
                         End;
                     End
-                    Else If Obj.ObjectId = eRegionObject Then
+                    Else If (Not Owned) And (Obj.ObjectId = eRegionObject) Then
                     Begin
                         Try
                             BR := Obj.BoundingRectangle;
@@ -75000,6 +75055,58 @@ Begin
     End;
 End;
 
+{ A parameter's or designator's display settings: ShowName (name shown    }
+{ beside the value), Autoposition and GraphicallyLocked (the Locked tick:  }
+{ the label cannot be dragged). Only these two types carry them, so the   }
+{ callers check SchHasParamDisplay first; asked of another object the     }
+{ names are undeclared and halt the loop. ShowName on a pin stays with    }
+{ the pin settings above.                                                 }
+Function IsSchParamDisplayProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Autoposition') Or (PropName = 'GraphicallyLocked');
+End;
+
+Function SchHasParamDisplay(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator);
+End;
+
+Function ReadSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    P : ISch_Parameter;
+Begin
+    Result := '';
+    P := Obj;
+    Try
+        If PropName = 'ShowName' Then Result := BoolToJsonStr(P.ShowName)
+        Else If PropName = 'Autoposition' Then Result := BoolToJsonStr(P.Autoposition)
+        Else If PropName = 'GraphicallyLocked' Then Result := BoolToJsonStr(P.GraphicallyLocked);
+    Except
+        Result := '';
+    End;
+End;
+
+Function WriteSchParamDisplayProp(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Boolean;
+Var
+    P : ISch_Parameter;
+    Flag : Boolean;
+Begin
+    Result := True;
+    P := Obj;
+    Flag := (LowerCase(Value) = 'true') Or (Value = '1');
+    Try
+        SchBeginModify(P);
+        If PropName = 'ShowName' Then P.ShowName := Flag
+        Else If PropName = 'Autoposition' Then P.Autoposition := Flag
+        Else If PropName = 'GraphicallyLocked' Then P.GraphicallyLocked := Flag;
+        SchEndModify(P);
+    Except
+        Result := False;
+    End;
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -76854,6 +76961,13 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            Result := ReadSchParamDisplayProp(Obj, PropName)
+        Else If IsSchParamDisplayProp(PropName) Then
+            NotePropertyDiag('unreadable', PropName)
+
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
         Begin
@@ -77343,6 +77457,13 @@ Begin
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
 
+        // Parameter / designator display settings
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            WroteOK := WriteSchParamDisplayProp(Obj, PropName, Value)
+        Else If IsSchParamDisplayProp(PropName) Then
+            Matched := False
+
         // Pin text settings (issue #77)
         Else If IsSchPinProp(PropName) Then
         Begin
@@ -77807,16 +77928,30 @@ End;
 { Re-scans after each removal rather than deleting inside the walk: removing  }
 { a child invalidates the iterator, and a walk that continues past it skips   }
 { entries, which reads as a filter that matched less than it did.             }
+{                                                                             }
+{ A VISIBLE PARAMETER OF THE SYMBOL ON SCREEN IS HELD BY THE LIBRARY.         }
+{ MEASURED on AD 25.8: Comp.RemoveSchObject on a shown symbol's visible       }
+{ parameter does nothing, so every pass found the same parameter again and    }
+{ the loop counted it until the guard ran out: matched 10000, and the         }
+{ parameter still there after a save and reopen. A hidden one went at once.   }
+{ The library document holds the symbol's visible children while it is on    }
+{ screen, and hiding one does not move it back until a reload. So when the    }
+{ same object comes back, it is removed from Lib (the library document; Nil   }
+{ on a sheet), and a remove that took nothing is never counted.               }
 
-Procedure RemoveMatchingParamsFromComponent(Comp : ISch_Component;
-    ReducedFilter : String; Var TotalMatched : Integer);
+Procedure RemoveMatchingParamsFromComponent(Lib : ISch_Document;
+    Comp : ISch_Component; ReducedFilter : String; Var TotalMatched : Integer);
 Var
     ParamIter : ISch_Iterator;
     Param, FoundParam : ISch_GraphicalObject;
-    Guard : Integer;
+    Guard, ThisAddr, LastAddr, SameTries : Integer;
+    Pending : Boolean;
 Begin
     If Comp = Nil Then Exit;
     Guard := 10000;
+    LastAddr := 0;
+    SameTries := 0;
+    Pending := False;
     While Guard > 0 Do
     Begin
         FoundParam := Nil;
@@ -77836,9 +77971,33 @@ Begin
         Finally
             Comp.SchIterator_Destroy(ParamIter);
         End;
+        ThisAddr := 0;
+        If FoundParam <> Nil Then
+            Try ThisAddr := FoundParam.I_ObjectAddress; Except End;
+        { The last remove took: the object it acted on is not found again. }
+        If Pending And ((FoundParam = Nil) Or (ThisAddr <> LastAddr)) Then
+        Begin
+            Inc(TotalMatched);
+            Pending := False;
+        End;
         If FoundParam = Nil Then Break;
+        If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then
+        Begin
+            { Still there after the component's remove. }
+            Inc(SameTries);
+            If (SameTries > 1) Or (Lib = Nil) Then
+            Begin
+                NoteDeleteFault('a parameter stayed on the symbol after it was removed');
+                Break;
+            End;
+            Try Lib.RemoveSchObject(FoundParam); Except { the next pass finds it again and reports the fault } End;
+            Dec(Guard);
+            Continue;
+        End;
+        SameTries := 0;
+        LastAddr := ThisAddr;
         Comp.RemoveSchObject(FoundParam);
-        Inc(TotalMatched);
+        Pending := True;
         Dec(Guard);
     End;
 End;
@@ -77881,7 +78040,7 @@ Begin
         Comp := Nil;
         Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
         If Comp = Nil Then Comp := LastCreatedLibComponent;
-        RemoveMatchingParamsFromComponent(Comp, ReducedFilter, TotalMatched);
+        RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter, TotalMatched);
         Exit;
     End;
 
@@ -77904,7 +78063,7 @@ Begin
                     { Removing a child does not disturb the outer         }
                     { component iterator, so the shared helper is safe here. }
                     RemoveMatchingParamsFromComponent(
-                        Comp, ReducedFilter, TotalMatched);
+                        Nil, Comp, ReducedFilter, TotalMatched);
                 End;
                 Comp := CompIter.NextSchObject;
             End;
