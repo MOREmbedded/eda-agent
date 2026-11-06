@@ -18,6 +18,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
 - [Checking the fab package](#checking-the-fab-package) - verify what you are about to send
 - [NPI phase gates](#npi-phase-gates) - the 42 questions, and which ones a tool can answer
+- [Design modes](#design-modes) - reference-design redraw, dev-kit derivative, schematic only, layout only
 - [Measuring performance](#measuring-performance) - where call time actually goes
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
@@ -474,6 +475,19 @@ first one that does not pass: a board whose feasibility never closed is
 at feasibility however much layout has been done.
 
 See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
+
+## Design modes
+
+A design run does not have to be the whole spec-to-board pipeline. A
+mode picks the stages, adds the rules for that kind of job and names the
+inputs it needs: `reference_redraw` redraws a vendor dev kit's schematic
+faithfully in your own libraries, `devkit_derivative` builds a new board
+around a dev kit's proven core, `schematic_only` and `layout_only` do
+half the pipeline each, `full_design` all of it. Start a run with
+`design_session_start(requirement, mode="reference_redraw",
+inputs={...})`, pick one from the client's prompt list (`mode_<name>`),
+or select a default with `eda-agent mode-use`. Your own modes go in the
+owner profile's `modes/`. See [docs/DESIGN_MODES.md](docs/DESIGN_MODES.md).
 
 ## Measuring performance
 
@@ -1131,6 +1145,7 @@ The deeper references:
 | [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) | the part providers, what each one answers, and what none of them do |
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | the Altium, KiCad and EasyEDA Pro backends |
 | [`docs/AUTONOMOUS_DESIGN.md`](docs/AUTONOMOUS_DESIGN.md) | driving a full spec-to-board run from any MCP client |
+| [`docs/DESIGN_MODES.md`](docs/DESIGN_MODES.md) | presets for the kind of run: reference-design redraw, dev-kit derivative, schematic only, layout only |
 | [`docs/AI_ALTIUM_FIELD_NOTES.md`](docs/AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating constraints |
 | [`docs/ALTIUM_AUTONOMY_RUNBOOK.md`](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | the by-hand runbook, deliberately outside the unit suite because it drives a real Altium |
 | [`docs/HARDWARE_CI.md`](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
@@ -1231,6 +1246,16 @@ listings can be read against each other.
 | `eda-agent phases-show [--json]` | Which [NPI stages](#npi-phase-gates) are in force, and which setting decided it |
 | `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all five when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
+
+### Design modes
+
+| Command | Purpose |
+|---|---|
+| `eda-agent mode-list` | List the [design modes](docs/DESIGN_MODES.md) and which one is selected |
+| `eda-agent mode-show [name] [--json]` | One mode in full: stages, inputs, rules, stage notes |
+| `eda-agent mode-use <name>` / `--clear` | Select the mode a run uses when it names none |
+| `eda-agent mode-init <name> [--extends MODE]` | Scaffold `modes/<name>.json` in the active profile |
+| `eda-agent --mode <name> <command>` | Use a mode for one command (same as `EDA_AGENT_MODE`) |
 
 ### Offline analysis (no running Altium)
 

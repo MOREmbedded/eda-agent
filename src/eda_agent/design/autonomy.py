@@ -343,7 +343,8 @@ def apply_measured_gates(state, events) -> tuple:
             status[stage] = STATUS_FAILED
     if status == state.stage_status:
         return state, verdicts
-    nxt = next((s for s in STAGES if status.get(s) != STATUS_OK), None)
+    nxt = next((s for s in getattr(state, "stages", STAGES)
+                if status.get(s) != STATUS_OK), None)
     return replace(state, stage_status=status, next_stage=nxt,
                    complete=nxt is None), verdicts
 

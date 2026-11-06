@@ -851,6 +851,9 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "profile-validate", "profile-new-project",
             "phases-show", "phases-enable", "phases-disable",
         )),
+        ("Design modes", (
+            "mode-list", "mode-show", "mode-use", "mode-init",
+        )),
         ("Offline analysis (no running Altium)", (
             "review", "bom", "netlist",
         )),
@@ -1005,6 +1008,16 @@ def build_parser() -> argparse.ArgumentParser:
               "leaves the three design_phase_* tools unadvertised. 'none' "
               "turns the gate off over a profile that turned it on. "
               "Equivalent to setting EDA_AGENT_PHASES."),
+    )
+    parser.add_argument(
+        # For one run. Unlike --phases this needs no reload: a mode does
+        # not change which tools exist, only what design_session_start
+        # picks when a run names no mode.
+        "--mode", default=None, metavar="MODE",
+        help=("The design mode a run uses when it names none: full_design, "
+              "schematic_only, layout_only, reference_redraw, "
+              "devkit_derivative, or one from the profile's modes/. "
+              "Equivalent to setting EDA_AGENT_MODE; see mode-list."),
     )
     # title= puts the commands in their own section rather than under
     # argparse's "positional arguments", which is what they are but not
@@ -1322,6 +1335,26 @@ def build_parser() -> argparse.ArgumentParser:
              "and come back if the stages do.",
     )
 
+    # mode-* -- design modes: presets for the kind of run (design/modes.py)
+    subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
+    mode_show_p = subparsers.add_parser(
+        "mode-show", help="Show one design mode in full (default: the selected one).")
+    mode_show_p.add_argument("name", nargs="?", default=None)
+    mode_show_p.add_argument("--json", action="store_true", dest="json_out",
+                             help="Emit machine-readable JSON.")
+    mode_use_p = subparsers.add_parser(
+        "mode-use", help="Select the design mode runs use when they name none.")
+    mode_use_p.add_argument("name", nargs="?", default=None)
+    mode_use_p.add_argument("--clear", action="store_true",
+                            help="Forget the selection (back to full_design).")
+    mode_init_p = subparsers.add_parser(
+        "mode-init", help="Scaffold a design mode in the active profile's modes/.")
+    mode_init_p.add_argument("name")
+    mode_init_p.add_argument("--extends", default=None, metavar="MODE",
+                             help="Base it on this mode, e.g. reference_redraw.")
+    mode_init_p.add_argument("--force", action="store_true",
+                             help="Replace an existing file.")
+
     # dashboard -- local web UI for the MCP bridge
     update_p = subparsers.add_parser(
         "update",
@@ -1622,6 +1655,8 @@ def main() -> int:
     # is chosen at import, so changing it after parsing is too late.
     # --phases likewise: whether the three phase tools exist is decided
     # while design.py is registering, which has already happened here.
+    if getattr(args, "mode", None):
+        os.environ["EDA_AGENT_MODE"] = args.mode.strip()
     # --compute before anything can run a search, and checked here: a
     # server asked for Rust that cannot load it should say so at start,
     # not on the first routing call an hour later.
@@ -1847,6 +1882,14 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
+    if args.command == "mode-list":
+        return cli.cmd_mode_list()
+    if args.command == "mode-show":
+        return cli.cmd_mode_show(args.name, as_json=args.json_out)
+    if args.command == "mode-use":
+        return cli.cmd_mode_use(args.name, clear=args.clear)
+    if args.command == "mode-init":
+        return cli.cmd_mode_init(args.name, extends=args.extends, force=args.force)
     if args.command == "phases-show":
         return cli.cmd_phases_show(as_json=args.json_out)
     if args.command == "phases-enable":

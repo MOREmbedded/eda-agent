@@ -48,6 +48,12 @@ class NextAction:
     guidance: str = ""
     attempt: int = 0
     open_question: Optional[str] = None
+    #: The run's design mode (see design.modes), what it asks of this
+    #: stage beyond the playbook, and the rules it adds. Empty for a run
+    #: started without a mode, which reads exactly as it always has.
+    mode: str = ""
+    mode_note: str = ""
+    mode_rules: list = field(default_factory=list)
 
 
 # Per-stage playbook: what the stage is for, which tools do it, and what
@@ -178,6 +184,9 @@ def _advertised(tools) -> list:
 def next_action(state: SessionState) -> NextAction:
     """Decide the single next action for a design session."""
     sid = state.session_id
+    mode = getattr(state, "mode", "") or ""
+    mode_def = getattr(state, "mode_def", None) or {}
+    rules = list(mode_def.get("rules") or [])
 
     # 1. A human question outranks everything: stop and surface it.
     if state.open_question:
@@ -188,6 +197,7 @@ def next_action(state: SessionState) -> NextAction:
             goal="Waiting on a human decision.",
             guidance=f"BLOCKED: ask the user: {state.open_question}",
             open_question=state.open_question,
+            mode=mode,
         )
 
     # 2. All stages ok -> done.
@@ -197,7 +207,10 @@ def next_action(state: SessionState) -> NextAction:
             status=COMPLETE,
             stage=None,
             goal="Design pipeline complete.",
-            guidance="All 13 pipeline stages are ok. Nothing left to do.",
+            guidance=(f"All {len(state.stages)} stages of the '{mode}' mode are "
+                      f"ok. Nothing left to do." if mode else
+                      "All 13 pipeline stages are ok. Nothing left to do."),
+            mode=mode,
         )
 
     stage = state.next_stage
@@ -219,11 +232,14 @@ def next_action(state: SessionState) -> NextAction:
             ),
             attempt=attempts,
             open_question=f"Stage '{stage}' keeps failing: how should I proceed?",
+            mode=mode,
         )
 
     # 4. Normal path: proceed (or retry if this stage has a prior failure).
     status = RETRY if last_status in ("failed", "blocked") else PROCEED
     prefix = "" if status == PROCEED else f"Retry ({attempts + 1}/{MAX_STAGE_ATTEMPTS}): "
+    note = str((mode_def.get("stage_notes") or {}).get(stage) or "")
+    mode_text = f" Mode '{mode}': {note}" if note else ""
     return NextAction(
         session_id=sid,
         status=status,
@@ -232,10 +248,13 @@ def next_action(state: SessionState) -> NextAction:
         suggested_tools=_advertised(play.get("tools", [])),
         exit_gate=play.get("exit_gate", ""),
         guidance=(
-            f"{prefix}{play.get('goal', stage)} "
+            f"{prefix}{play.get('goal', stage)}{mode_text} "
             f"When done, log design_session_log(event='stage_result', "
             f"stage='{stage}', status='ok'): or status='blocked' with a "
             f"question if you need the user."
         ),
         attempt=attempts,
+        mode=mode,
+        mode_note=note,
+        mode_rules=rules,
     )
