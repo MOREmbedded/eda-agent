@@ -22,7 +22,7 @@ every call, so a child process inherits it.
 |---|---|---|
 | Grid A* of the routing planner (`route/router.py`, `_astar`) | Pure-Python heap search, 150 M dict lookups per run | 25 mil grid: 32.5 s → 2.2 s. 10 mil grid: 184 s → 11 s |
 
-Both columns are the whole `route_geometry` call, including problem setup,
+Both columns time the whole routing call (`router.route_geometry`), including problem setup,
 copper emission and the solution check. The Rust output is **byte-identical**
 to the Python output on that board at both pitches. The numbers come from a
 4-core Linux cloud machine; expect the same ratio on Windows.
@@ -46,7 +46,7 @@ Measured, not guessed:
 - **The test suite**: 11.7 min serially, with no single hot spot. Use
   `pytest -n auto` (pytest-xdist is already a dev dependency).
 - **Anything that talks to Altium.** Each call is a file round trip to a
-  DelphiScript loop that polls every 10–30 ms and runs interpreted script.
+  DelphiScript loop that polls every 10-30 ms and runs interpreted script.
   Rust on the Python side cannot make Altium answer sooner.
 
 The next candidate is the annealing placer (`design/pcb_placement.py`). It
