@@ -143,8 +143,9 @@ _SIMULATOR_TOOLS = frozenset({
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
     "proj_list_documents", "proj_list_open", "proj_list_variants",
     "proj_open", "proj_remove_document", "proj_run_output", "proj_save",
-    "proj_set_parameter", "proj_visual_cross_probe",
-    "sch_place_comment", "sch_tidy_port_references"
+    "proj_set_parameter", "proj_update_from_libraries",
+    "proj_visual_cross_probe",
+    "sch_place_comment", "sch_tidy_port_references",
 })
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
@@ -231,6 +232,13 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    # Who edits which document: reading it, or handing one over, writes
+    # nothing to a design.
+    "app_document_owners": READONLY,
+    "app_claim_document": READONLY,
+    # Reads the rules, or keeps an approved copy beside the board: nothing
+    # in the design changes.
+    "pcb_drc_rules": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog

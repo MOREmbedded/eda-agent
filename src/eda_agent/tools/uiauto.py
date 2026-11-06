@@ -198,9 +198,10 @@ def register_uiauto_tools(mcp):
         menu_may_steal_focus: bool = False,
         first_step_timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Drive Tools > Update From Libraries, ECO included.
+        """Drive Tools > Update From Libraries, ECO included, from the GUI.
 
-        THIS PRESSES BUTTONS IN THE GUI: the wizard has no API. Each
+        proj_update_from_libraries does the same through the bridge, with
+        no menu or focus taken; use this for a wizard already open. Each
         dialog is read and answered by the role of its buttons; it STOPS
         on an error, an unexpected question or unknown buttons. The end
         presses EXECUTE CHANGES on the ECO, which is not undoable here:
@@ -235,13 +236,11 @@ def register_uiauto_tools(mcp):
                 f"launch must be already_open or menu, not {launch!r}")}
         if launch == "menu" and not menu_may_steal_focus:
             return {"ok": False, "reason": (
-                "launch='menu' has to drive Altium's menu bar with real "
-                "keyboard and mouse input, because nothing scriptable "
-                "opens this wizard: the bridge's menu call reports "
-                "success and invokes nothing, and Altium's menus expose "
-                "no working accessible action. That means bringing "
-                "Altium to the front and briefly moving the pointer, so "
-                "it is not done unless asked. Pass "
+                "launch='menu' drives Altium's menu bar with real "
+                "keyboard and mouse input, which brings Altium to the "
+                "front and briefly moves the pointer, so it is not done "
+                "unless asked. proj_update_from_libraries runs the same "
+                "update through the bridge without either. Pass "
                 "menu_may_steal_focus=True, or open Tools > "
                 + _MENUS[target].split("|", 1)[1] +
                 " yourself and use launch='already_open'.")}
@@ -1297,7 +1296,9 @@ def register_uiauto_tools(mcp):
 
         Args:
             force: restart even when Altium's title does not name the
-                script project, the usual sign of a halt.
+                script project and the loop answers a ping. Without it a
+                loop that does not answer, while no session's call is
+                running, is restarted.
 
         Returns:
             ``halted`` (whether a restart ran), ``screenshots``,
@@ -1310,18 +1311,31 @@ def register_uiauto_tools(mcp):
         if problem:
             return problem
 
+        bridge = get_bridge()
+        workspace = bridge.config.workspace_dir
+        # A loop that does not answer a ping while no session's call is
+        # running is dead whatever the title says; one serving another
+        # session's long call is not, and a restart would kill that call.
+        dead = False
+        if not force:
+            dead = (await asyncio.to_thread(bridge.ping_with_version) is None
+                    and not script_crash.another_call_running(workspace))
+
         def recover():
             report = dialog_report.report(pid)
             box = script_crash.script_error_dialog(report)
             return script_crash.recover(
-                get_bridge().config.workspace_dir, pid, "app_recover_script",
-                "manual00", box, lambda seconds: False, force=force)
+                workspace, pid, "app_recover_script",
+                "manual00", box, lambda seconds: False, force=force or dead)
 
         outcome = await asyncio.to_thread(recover)
+        if dead:
+            outcome["no_ping"] = True
         if not outcome.get("halted"):
             outcome["reason"] = (
                 "no halt was seen: Altium's title does not name the script "
-                "project. Check app_ping; pass force=True to restart anyway.")
+                "project and the loop answers a ping, or another session's "
+                "call is running. Pass force=True to restart anyway.")
         return outcome
 
     @mcp.tool()

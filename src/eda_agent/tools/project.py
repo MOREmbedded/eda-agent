@@ -3,6 +3,7 @@
 """Project management tools for Altium Designer MCP Server."""
 
 import asyncio
+import re
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..units import MM_PER_MIL
@@ -150,6 +151,63 @@ async def _footprint_source(bridge, designator: str) -> dict:
                     {"library": f.get("library", ""), "found_at": f.get("found_at", "")}
                     for f in model.get("datafiles") or [] if isinstance(f, dict)]}
     return {}
+
+
+def _signal(name: str) -> str:
+    """An entry or port name as it connects: Repeat(X) is X, case aside."""
+    m = re.fullmatch(r"\s*repeat\s*\(\s*([^,()]+?)\s*\)\s*", name or "", re.I)
+    return (m.group(1) if m else (name or "")).strip().upper()
+
+
+def _direction(io: str) -> str:
+    """input, output or '' for anything that does not conflict."""
+    io = (io or "").strip().lower()
+    return io if io in ("input", "output") else ""
+
+
+def _channel_copy(sym: dict, siblings: list) -> bool:
+    """A compiled channel of a Repeat() symbol after the first: Altium
+    gives it only the Repeat() entries, the first channel carries all."""
+    names = {str(e.get("name", "")) for e in sym.get("entries") or []}
+    if not names or any(_signal(n) == n.strip().upper() for n in names):
+        return False
+    return any(s is not sym and str(s.get("file", "")).lower() == str(sym.get("file", "")).lower()
+               and names < {str(e.get("name", "")) for e in s.get("entries") or []}
+               for s in siblings)
+
+
+def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
+    """What does not join up in a compiled hierarchy: dangling symbols,
+    entries and ports without a partner, opposite directions, orphans."""
+    by_file = {str(s.get("file", "")).lower(): s for s in sheets if isinstance(s, dict)}
+    problems: list[dict] = []
+    for sheet in by_file.values():
+        name = sheet.get("file", "")
+        if not sheet.get("parents") and name.lower() != top.lower():
+            problems.append({"kind": "orphan_sheet", "sheet": name})
+        symbols = sheet.get("sheet_symbols") or []
+        for sym in symbols:
+            if _channel_copy(sym, symbols):
+                continue
+            where = {"sheet": name, "sheet_symbol": sym.get("sheet_name", ""),
+                     "file": sym.get("file", "")}
+            child = by_file.get(str(sym.get("file", "")).lower())
+            if child is None or sym.get("child_sheets") == 0:
+                problems.append({"kind": "missing_child", **where})
+                continue
+            ports = {_signal(p.get("name", "")): p for p in child.get("ports") or []}
+            entries = {_signal(e.get("name", "")): e for e in sym.get("entries") or []}
+            for sig in sorted(set(entries) - set(ports)):
+                problems.append({"kind": "entry_without_port", "name": sig, **where})
+            for sig in sorted(set(ports) - set(entries)):
+                problems.append({"kind": "port_without_entry", "name": sig, **where})
+            for sig in sorted(set(entries) & set(ports)):
+                a = _direction(entries[sig].get("io", ""))
+                b = _direction(ports[sig].get("io", ""))
+                if a and b and a != b:
+                    problems.append({"kind": "direction_conflict", "name": sig,
+                                     "entry_io": a, "port_io": b, **where})
+    return problems
 
 
 async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
@@ -390,8 +448,10 @@ def register_project_tools(mcp):
         stops and reports it as ``closed_instead``. Without saving, it
         clears each member's modified flag so no save prompt appears; if
         one appears anyway it answers "Save None" then "OK", but only
-        when every listed document belongs to this project, else it
-        presses nothing. A document shared with another
+        when every listed document belongs to this project. A prompt
+        that lists another project's documents is cancelled, in either
+        mode, and the close reported as not done with
+        ``foreign_documents``. A document shared with another
         open project loses its edits too. A prompt left open blocks the
         bridge: answer it with app_press_dialog_button.
 
@@ -414,13 +474,37 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         members = None
-        if not save and project_path:
+        if project_path:
             members = await _close_members(bridge, project_path)
         try:
             result = await bridge.send_command_async("project.close", params)
         except Exception as exc:                    # noqa: BLE001
             prompt = _close_prompt_in(exc)
-            if prompt is None or save:
+            if prompt is None:
+                raise
+            # MEASURED 2026-11-05: closing a library package raised "Confirm
+            # Save Locally" listing only OTHER projects' documents. Saving
+            # or discarding there acts on work nobody named, so it is
+            # cancelled and the close reported as not done.
+            loop = _asyncio.get_running_loop()
+            foreign = await loop.run_in_executor(
+                None, _cancel_foreign_prompt, bridge, members, prompt)
+            if foreign is not None:
+                return {"success": False, "closed": False,
+                        "project_path": project_path,
+                        "prompt": prompt["title"],
+                        "cancelled": foreign["cancelled"],
+                        "foreign_documents": foreign["paths"],
+                        "reason": (
+                            "Altium's save prompt for this close listed "
+                            "documents of other projects, so nothing in it "
+                            "was saved or discarded. "
+                            + ("It was cancelled and the project left open."
+                               if foreign["cancelled"] else
+                               "Cancel could not be pressed and the prompt is "
+                               "still open, blocking the bridge: answer it "
+                               "with app_press_dialog_button(\"Cancel\")."))}
+            if save:
                 raise
             left = {"success": False, "closed": False,
                     "project_path": project_path, "prompt": prompt["title"],
@@ -434,7 +518,6 @@ def register_project_tools(mcp):
                     "and the bridge is blocked until the prompt is answered")
                 return left
 
-            loop = _asyncio.get_running_loop()
             answered, discarded, refusal = await loop.run_in_executor(
                 None, _answer_close_prompts, bridge, members, prompt)
 
@@ -530,6 +613,38 @@ def register_project_tools(mcp):
             if title.startswith(_CLOSE_PROMPT_TITLES):
                 return {"title": title, "hwnd": dialog.get("hwnd")}
         return None
+
+    def _prompt_paths(hwnd):
+        """Absolute paths a save prompt lists, or None when it cannot be read."""
+        from ..ui import uia, windows
+        if not (windows.available() and uia.available()
+                and windows.automation_enabled()):
+            return None
+        read = uia.describe_window(hwnd, depth=6, limit=400)
+        return sorted({e.get("name", "") for e in read.get("elements", [])
+                       if _is_absolute(e.get("name", ""))})
+
+    def _cancel_foreign_prompt(bridge, members, prompt):
+        """Cancel a close prompt that lists another project's documents.
+
+        Returns {paths, cancelled} when it lists foreign paths, else None (the
+        prompt lists only members, or membership or the prompt cannot be
+        read, and the caller goes on as before).
+        """
+        from ..ui import uia, windows
+        hwnd = prompt.get("hwnd")
+        if members is None or not hwnd:
+            return None
+        listed = _prompt_paths(hwnd)
+        if not listed:
+            return None
+        foreign = [p for p in listed if p.upper() not in members]
+        if not foreign:
+            return None
+        cancelled = bool(uia.invoke(hwnd, "Cancel").get("ok"))
+        if cancelled:
+            cancelled = windows.wait_for_close(hwnd, timeout=10.0)
+        return {"paths": foreign, "cancelled": cancelled}
 
     def _answer_close_prompts(bridge, members, prompt, budget=30.0):
         """Answer the save prompt: Save None, then OK. Runs in a thread.
@@ -2131,6 +2246,31 @@ def register_project_tools(mcp):
                           "newly_produced": st.st_mtime >= cutoff})
         return True, files
 
+    def _drill_report_duplicates(paths):
+        """Each fresh NC drill report that lists holes at the same point.
+
+        MEASURED 2026-10-30: after 279 via holes were resized, the drill
+        file held 5 holes while every other output looked right, and the
+        report said "Two holes at same point : 279". The report is the
+        only place that says so, so it is read after every run.
+        """
+        import re
+        from pathlib import Path
+
+        found = []
+        for p in paths:
+            if not str(p).lower().endswith(".drr"):
+                continue
+            try:
+                text = Path(p).read_text(encoding="latin-1", errors="replace")
+            except OSError:
+                continue
+            counts = [int(m.group(1)) for m in re.finditer(
+                r"(?i)holes at same point\s*:\s*(\d+)", text)]
+            if counts or re.search(r"(?i)holes at same point", text):
+                found.append({"report": str(p), "count": sum(counts) or 1})
+        return found
+
     def _judge_outjob_run(run, started_at, fresh_window_seconds):
         """A run reply with ``success`` decided by what was written.
 
@@ -2148,6 +2288,16 @@ def register_project_tools(mcp):
         out["files_written"] = len(fresh)
         out["written"] = fresh[:50]
         out["success"] = bool(fresh)
+        duplicates = _drill_report_duplicates(fresh)
+        if duplicates:
+            out["success"] = False
+            out["drill_duplicates"] = duplicates
+            out["reason"] = (
+                "the drill report says holes share a point, and the NC "
+                "drill file leaves such holes out: "
+                + "; ".join(f"{d['report']}: {d['count']}" for d in duplicates)
+                + ". Close and reopen the board, then run the output again")
+            return out
         if run.get("dialog"):
             out["reason"] = (
                 f"Altium raised a dialog during the run and the bridge "
@@ -3041,6 +3191,28 @@ def register_project_tools(mcp):
             "project.get_channels", params, timeout=120.0)
 
     @mcp.tool()
+    async def proj_get_hierarchy(project_path: str = "") -> dict[str, Any]:
+        """The compiled sheet hierarchy: each sheet's ``parents``,
+        ``ports`` and ``sheet_symbols`` with their ``entries``, and the
+        ``problems``: a missing child, an entry without a port or a port
+        without an entry, opposite directions, an orphan sheet.
+
+        Args:
+            project_path: The .PrjPcb. Default: the focused project.
+        """
+        params = {"project_path": project_path} if project_path else {}
+        out = await get_bridge().send_command_async(
+            "project.get_hierarchy", params, timeout=180.0)
+        sheets = _rows(out, "sheets")
+        if sheets:
+            for s in sheets:
+                if isinstance(s, dict) and isinstance(s.get("parents"), list):
+                    s["parents"] = list(dict.fromkeys(s["parents"]))
+            body = out.get("result", out) if isinstance(out.get("result"), dict) else out
+            out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
+        return out
+
+    @mcp.tool()
     async def proj_component_models(project_path: str = "", designator: str = "",
                                     limit: int = 300) -> dict[str, Any]:
         """Show where each part's models resolve, as Altium finds them.
@@ -3894,6 +4066,60 @@ def register_project_tools(mcp):
             except Exception as exc:            # noqa: BLE001 - a report only
                 result["after_sync"] = {"error": f"not read: {exc}"}
         return result
+
+    @mcp.tool()
+    async def proj_update_from_libraries(target: str = "schematic",
+                                         document_path: str = "") -> dict[str, Any]:
+        """Update the project's parts from their libraries: Tools > Update
+        From Libraries (symbols, parameters, models) or Update From PCB
+        Libraries (the board's footprints). Run as Altium's own process,
+        so neither the menu nor the focus is touched.
+
+        With Dialogs Automatic (Config tab) every dialog is answered: the
+        wizard finishes with its options as set, a count of footprints no
+        library has is answered Yes (its sentence kept in
+        ``change_order.passed``), and the change order is executed, its
+        failed lines read, and closed. With Manual the wizard is left to
+        you and the bridge waits until it closes.
+
+        Args:
+            target: "schematic" or "pcb".
+            document_path: a sheet (schematic) or the board (pcb) of the
+                project, focused first. Default: the document in front.
+
+        Returns:
+            ``document``, ``updated`` (a change order was executed) and
+            ``change_order``: ``done``, ``passed`` and ``failed_lines``.
+        """
+        if target not in change_order.LIBRARY_UPDATE:
+            return {"ok": False, "reason": 'target is "schematic" or "pcb"'}
+        bridge = get_bridge()
+        if document_path:
+            await bridge.send_command_async("application.set_active_document",
+                                            {"file_path": document_path})
+        doc = await bridge.send_command_async("application.get_active_document", {})
+        kind = str((doc or {}).get("document_kind", "")).upper() if isinstance(doc, dict) else ""
+        want = "SCH" if target == "schematic" else "PCB"
+        if kind != want:
+            return {"ok": False, "error": "WRONG_FOCUS", "document": (doc or {}).get("file_path"),
+                    "reason": f"a {'sheet' if want == 'SCH' else 'board'} of the project "
+                              f"must be in front (document_path), not {kind or 'nothing'}"}
+        result, driven = await send_answering(
+            bridge, "generic.run_process", change_order.library_update_params(target),
+            change_order.TITLE, change_order.STEPS, timeout=900.0,
+            on_the_way=change_order.library_on_the_way())
+        out: dict[str, Any] = {"ok": isinstance(result, dict) and result.get("success") is not False,
+                               "target": target, "document": doc.get("file_path")}
+        _record_change_order(out, driven)
+        if driven is None:
+            out["note"] = ("Dialogs is Manual (Config tab): the wizard was left to you "
+                           "and has been closed")
+        else:
+            out["updated"] = bool(driven.get("appeared")
+                                  and "Execute Changes" in (driven.get("done") or []))
+            if not driven.get("appeared"):
+                out["note"] = "no change order appeared: nothing to update"
+        return out
 
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:

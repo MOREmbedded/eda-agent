@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.17';
+    SCRIPT_VERSION = '2026.11.05.11';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -46,11 +46,21 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+    { A document stays its writer's while it wrote within this. }
+    OWNER_IDLE_MS = 600000;
 
-    { How long one Claude session may run commands back to back while      }
-    { another session is waiting. See ScanForRequestFile. A session alone   }
-    { is never slotted.                                                     }
+    { PickSession's slot length. Sessions now take turns per tool call, so  }
+    { the scan passes either 0 (the session is inside a tool call: keep    }
+    { going) or this (rotate to the next waiting session).                 }
     SESSION_SLOT_MS = 30000;
+
+    { A tool call keeps Altium between its own commands. While another      }
+    { session waits, the gap between two of its commands may last          }
+    { KEEP_GRACE_MS before the turn passes on, and the whole call may hold  }
+    { the turn for KEEP_MAX_MS. The server ends the hold at once by writing }
+    { callend_<tag>-<call>.flag when the tool call returns.                 }
+    KEEP_GRACE_MS = 3000;
+    KEEP_MAX_MS = 20000;
 
     CONFIG_FILE = 'mcp_config.json';
     SAVING_FILE = 'saving.json';
@@ -99,6 +109,10 @@ Var
     PollIntervalIdleMs   : Integer;
     IdleThreshold        : Integer;
     AutoShutdownMs       : Cardinal;
+    { The auto-off period a double-click on the status window's auto-off  }
+    { card returns to after "always on": the config file's value when it  }
+    { is above 0, else the 10-minute default.                              }
+    ConfiguredShutdownMs : Cardinal;
     YieldIterations      : Integer;
     YieldEveryNActive    : Integer;
 
@@ -106,6 +120,11 @@ Var
     { pointer it was run against, so we only skip when the SAME project was    }
     { compiled recently. Reset to 0 / Nil at startup.                          }
     LastCompileTick : Cardinal;
+    { Bumped by every write that goes through the edit helpers           }
+    { (SchBeginModify, PcbBeginEdit, NoteDocEdited); SmartCompile reuses }
+    { a compile only while it has not moved.                             }
+    WriteSerial : Integer;
+    CompiledAtSerial : Integer;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
@@ -116,6 +135,10 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
+    { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
+    { upper case with back slashes. See OwnerRefusal.                     }
+    DocOwners : String;
     { Full paths of the OutJobs proj_run_outjob opened, each
       wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
     RunOutJobsOpened : String;
@@ -206,6 +229,16 @@ Var
     SlotStartTick : Integer;
     QueueNoteTick : Integer;
 
+    { The tool call being served: HoldCall is its mark ('k' and four       }
+    { letters, '' for a request outside a tool call), HoldStartTick when   }
+    { its first command was picked, LastDoneTick when the last command     }
+    { finished, JustPicked that a command was handed out since the last    }
+    { scan. See ScanForRequestFile.                                        }
+    HoldCall : String;
+    HoldStartTick : Integer;
+    LastDoneTick : Integer;
+    JustPicked : Boolean;
+
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
     { ObjectId-checking should have ruled out. Surfaced via application.ping }
@@ -266,6 +299,7 @@ Begin
     PollIntervalIdleMs   := 30;
     IdleThreshold        := 150;
     AutoShutdownMs       := 600000;  { 10 min }
+    ConfiguredShutdownMs := 600000;
     YieldIterations      := 5;
     YieldEveryNActive    := 5;
 End;
@@ -445,13 +479,19 @@ Begin
     // since the last compile. An external UI edit invalidates the cache
     // immediately, so the next MCP call after the user clicked "Add part"
     // sees the new state instead of a 2-second-stale snapshot.
+    // A write of our own does too, through WriteSerial: the Modified flag
+    // can read False while the editor holds an edit made through
+    // ProcessControl, so a net read right after a schematic write was
+    // answered from the netlist as it was before it.
     If (Project = LastCompiledProject) And (LastCompileTick > 0) And
        ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) And
+       (WriteSerial = CompiledAtSerial) And
        (Not ProjectHasDirtyDocs(Project)) Then
         Exit;
     Project.DM_Compile;
     LastCompiledProject := Project;
     LastCompileTick := GetTickCount;
+    CompiledAtSerial := WriteSerial;
 End;
 
 { Resolve the post-compile document set. After Project.DM_Compile the          }
@@ -501,6 +541,7 @@ End;
 
 Procedure SchBeginModify(Obj : ISch_BasicContainer);
 Begin
+    WriteSerial := WriteSerial + 1;
     If (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(
             Obj.I_ObjectAddress, c_BroadCast, SCHM_BeginModify, c_NoEventData);
@@ -550,10 +591,97 @@ Procedure NoteDocEdited(FilePath : String);
 Var
     Key : String;
 Begin
+    WriteSerial := WriteSerial + 1;
     If FilePath = '' Then Exit;
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
 End;
+
+{ ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
+{ write landed on a board another session was working on with nothing to   }
+{ say so. Each write a session's tool call makes claims the document it    }
+{ acts on; another session's write to it is refused while the owner has   }
+{ written within OWNER_IDLE_MS. The person at the dashboard is never       }
+{ refused and claims nothing; application.claim_document hands a document  }
+{ over when the user says so.                                              }
+Function OwnerKey(Path : String) : String;
+Begin
+    Result := UpperCase(Trim(StringReplace(Path, '/', '\', -1)));
+End;
+
+{ The owner record of KEY without its delimiters, '' when none. }
+Function OwnerRecord(Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P + Length(Key) + 2, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Rest, 1, E - 1);
+End;
+
+{ Field I (0 tag, 1 tick, 2 command) of an owner record. }
+Function OwnerField(Rec : String; I : Integer) : String;
+Var
+    N, P : Integer;
+Begin
+    Result := '';
+    For N := 0 To I - 1 Do
+    Begin
+        P := Pos(Chr(2), Rec);
+        If P = 0 Then Exit;
+        Rec := Copy(Rec, P + 1, Length(Rec));
+    End;
+    P := Pos(Chr(2), Rec);
+    If P = 0 Then Result := Rec
+    Else Result := Copy(Rec, 1, P - 1);
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P > 0 Then
+    Begin
+        Rest := Copy(DocOwners, P, Length(DocOwners));
+        E := Pos(Chr(3), Rest);
+        If E > 0 Then
+            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+    End;
+    DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
+        + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
+End;
+
+{ The session tag a request id starts with. }
+Function RequestTag(RequestId : String) : String;
+Var
+    P : Integer;
+Begin
+    P := Pos('-', RequestId);
+    If P > 1 Then Result := LowerCase(Copy(RequestId, 1, P - 1))
+    Else Result := LowerCase(RequestId);
+End;
+
+{ Milliseconds since the owner of a record last wrote. }
+Function OwnerAgeMs(Rec : String) : Integer;
+Var
+    Tick : Integer;
+Begin
+    Tick := StrToIntDef(OwnerField(Rec, 1), 0);
+    If (Tick = 0) Or (GetTickCount < Tick) Then Result := 0
+    Else Result := GetTickCount - Tick;
+End;
+
+
+
 
 Function DocWasEdited(FilePath : String) : Boolean;
 Begin
@@ -592,6 +720,7 @@ End;
 
 Procedure PcbBeginEdit(Dummy : Integer);
 Begin
+    WriteSerial := WriteSerial + 1;
     If PcbEditDepth <= 0 Then
     Begin
         PcbEditDepth := 0;
@@ -2623,17 +2752,24 @@ End;
 { eliminate any cross-caller race: each caller publishes to its own filename }
 { and polls only its own response file.                                      }
 {                                                                              }
-{ TIME SLOTS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude   }
-{ session) writes ids <tag>-<seq>-<random>: an 8-character session tag and an }
-{ 8-digit sequence. Any other id is the 'legacy' session (a server from       }
-{ before this). Of the pending requests, each session's lowest sequence is    }
-{ its next. With one session pending it is served straight through: one      }
-{ session is never slotted. With several, the session whose slot is running  }
-{ keeps it for SESSION_SLOT_MS, then the next waiting session in tag order    }
-{ gets one slot, so no session has a second slot before every waiting one     }
-{ has had one. A command is never cut off: slots change between commands.    }
-{ While sessions contend, queue.json is refreshed about once a second, so a  }
-{ waiting client can tell a queue from a dead loop.                           }
+{ TURNS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude        }
+{ session) writes ids <tag>-<seq>-<mark><random>: an 8-character session tag, }
+{ an 8-digit sequence, and a mark: 'k' and four letters for a command of a    }
+{ tool call (the four letters name the call), 'q' for background work such   }
+{ as the dashboard's reads, none otherwise. Any other id is the 'legacy'      }
+{ session. Of the pending requests, each session's lowest sequence is its     }
+{ next; a session's background requests queue as a session of their own.     }
+{ Background work runs only when no session's request waits.                  }
+{ With one session pending it is served straight through. With several, they }
+{ take turns PER TOOL CALL: the session being served keeps Altium while its  }
+{ next command belongs to the same tool call (a select-then-act sequence is   }
+{ never split), and between its commands waits up to KEEP_GRACE_MS for the  }
+{ next one, unless the server has written callend_<tag>-<call>.flag to say   }
+{ the call is over. A call holds the turn for KEEP_MAX_MS at most. Then the   }
+{ next waiting session in tag order goes, so a session waits for at most one }
+{ tool call of each other session, not for a whole run of them. A command is }
+{ never cut off. While sessions contend, queue.json is refreshed about once  }
+{ a second, so a waiting client can tell a queue from a dead loop.           }
 
 { PickSession - which session's request goes next. Tags: the sessions with   }
 { a pending request, joined by '|'. Current: the session whose slot is       }
@@ -2714,15 +2850,127 @@ Begin
     Result := 'restore';
 End;
 
+{ NextTurn - which pending key goes next, or '' to wait for the tool call    }
+{ being served. Keys: the pending keys joined by '|', each a session's tag,  }
+{ or its tag and '.bg' for its background work. Marks: each key's next       }
+{ request's tool-call mark in the same order, '-' for none. Current: the key }
+{ being served; HoldCall the mark of its last command ('' outside a tool     }
+{ call); HoldMs how long that call has held the turn; IdleMs since its last  }
+{ command finished; CallEnded 1 when the server has said the call is over.   }
+{ Background keys go only when no other key is pending. Inside a tool call   }
+{ the current key keeps the turn while its next command is that call's;     }
+{ with none pending yet it is waited for up to GraceMs, unless the call     }
+{ ended. A call holds the turn for KeepMaxMs at most. Otherwise the turn    }
+{ passes after every command, through PickSession. Pure strings, so the     }
+{ Free Pascal cross-check runs a verbatim copy.                              }
+Function NextTurn(Keys : String; Marks : String; Current : String; HoldCall : String;
+    HoldMs : Integer; IdleMs : Integer; KeepMaxMs : Integer; GraceMs : Integer;
+    CallEnded : Integer) : String;
+Var
+    RestK, RestM, Key, Mark, Fore, CurMark : String;
+    Bar, ForeCount, Elapsed : Integer;
+    CurPending, AnyFore : Boolean;
+Begin
+    Result := '';
+    AnyFore := False;
+    RestK := Keys;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        If (Key <> '') And (Pos('.bg', Key) = 0) Then AnyFore := True;
+    End;
+    Fore := '';
+    ForeCount := 0;
+    CurPending := False;
+    CurMark := '';
+    RestK := Keys;
+    RestM := Marks;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        Bar := Pos('|', RestM);
+        If Bar = 0 Then
+        Begin
+            Mark := RestM;
+            RestM := '';
+        End
+        Else
+        Begin
+            Mark := Copy(RestM, 1, Bar - 1);
+            RestM := Copy(RestM, Bar + 1, Length(RestM));
+        End;
+        If (Key <> '') And ((Not AnyFore) Or (Pos('.bg', Key) = 0)) Then
+        Begin
+            If Fore <> '' Then Fore := Fore + '|';
+            Fore := Fore + Key;
+            Inc(ForeCount);
+            If Key = Current Then
+            Begin
+                CurPending := True;
+                CurMark := Mark;
+            End;
+        End;
+    End;
+    If ForeCount = 0 Then Exit;
+    Elapsed := 1;
+    If (HoldCall <> '') And (HoldMs < KeepMaxMs) Then
+    Begin
+        If CurPending Then
+        Begin
+            If CurMark = HoldCall Then Elapsed := 0;
+        End
+        Else If (CallEnded = 0) And (IdleMs < GraceMs) Then
+            Exit;
+    End;
+    Result := PickSession(Fore, Current, Elapsed, 1);
+End;
+
+{ CallMark - a request id's tool-call mark: 'k' and the four letters naming  }
+{ its call, or '' for any other request. Lower case, because FindFiles can   }
+{ return the file names upper-cased. Pure strings.                           }
+Function CallMark(IdPart : String) : String;
+Begin
+    Result := '';
+    If (Length(IdPart) >= 23) And (LowerCase(Copy(IdPart, 19, 1)) = 'k') Then
+        Result := LowerCase(Copy(IdPart, 19, 5));
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
     Files, Tags, BestSeq, BestName : TStringList;
-    I, NameLen, Pick, NowTick : Integer;
-    Name, IdPart, Tag, Seq, NextTag, Pending : String;
+    I, NameLen, Pick, NowTick, Ended : Integer;
+    Name, IdPart, Tag, Seq, NextTag, Keys, Marks, Mark, EndFlag, Pending : String;
 Begin
     Result := False;
     FilePath := '';
     RequestId := '';
+    NowTick := GetTickCount;
+    { The scan after a hand-out runs once that command has finished. }
+    If JustPicked Then
+    Begin
+        LastDoneTick := NowTick;
+        JustPicked := False;
+    End;
 
     Files := TStringList.Create;
     Tags := TStringList.Create;
@@ -2750,6 +2998,8 @@ Begin
                     Begin
                         Tag := LowerCase(Copy(IdPart, 1, 8));
                         Seq := Copy(IdPart, 10, 8);
+                        // A session's background work queues apart.
+                        If LowerCase(Copy(IdPart, 19, 1)) = 'q' Then Tag := Tag + '.bg';
                     End;
                     Pick := Tags.IndexOf(Tag);
                     If Pick < 0 Then
@@ -2772,43 +3022,74 @@ Begin
 
         If Tags.Count > 0 Then
         Begin
-            NowTick := GetTickCount;
-            Pending := '';
+            Keys := '';
+            Marks := '';
             For I := 0 To Tags.Count - 1 Do
             Begin
-                If Pending <> '' Then Pending := Pending + '|';
-                Pending := Pending + Tags[I];
-            End;
-            NextTag := PickSession(Pending, SlotSession, NowTick - SlotStartTick,
-                SESSION_SLOT_MS);
-            Pick := Tags.IndexOf(NextTag);
-            If Pick < 0 Then Pick := 0;
-            If Tags.Count > 1 Then
-            Begin
-                If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                If Keys <> '' Then
                 Begin
-                    Pending := '';
-                    For I := 0 To Tags.Count - 1 Do
-                    Begin
-                        If Pending <> '' Then Pending := Pending + ',';
-                        Pending := Pending + '"' + Tags[I] + '"';
-                    End;
-                    Try
-                        WriteFileContent(WorkspaceDir + 'queue.json',
-                            '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
-                            + '],"slot_ms":' + IntToStr(SESSION_SLOT_MS) + '}');
-                    Except End;
-                    QueueNoteTick := NowTick;
+                    Keys := Keys + '|';
+                    Marks := Marks + '|';
+                End;
+                Keys := Keys + Tags[I];
+                Mark := CallMark(Copy(BestName[I], 9, Length(BestName[I]) - 13));
+                If Mark = '' Then Mark := '-';
+                Marks := Marks + Mark;
+            End;
+            { The server says when a tool call is over, so the turn passes }
+            { at once instead of after the grace.                          }
+            Ended := 0;
+            If HoldCall <> '' Then
+            Begin
+                EndFlag := WorkspaceDir + 'callend_' + SlotSession + '-'
+                    + Copy(HoldCall, 2, 4) + '.flag';
+                If FileExists(EndFlag) Then
+                Begin
+                    Ended := 1;
+                    Try DeleteFile(EndFlag); Except End;
                 End;
             End;
-            If Tags[Pick] <> SlotSession Then
+            NextTag := NextTurn(Keys, Marks, SlotSession, HoldCall,
+                NowTick - HoldStartTick, NowTick - LastDoneTick, KEEP_MAX_MS,
+                KEEP_GRACE_MS, Ended);
+            If Ended = 1 Then HoldCall := '';
+            Pick := Tags.IndexOf(NextTag);
+            If Pick >= 0 Then
             Begin
-                SlotSession := Tags[Pick];
-                SlotStartTick := NowTick;
+                { Noted while anyone else waits: another session, or     }
+                { background work held back.                             }
+                If Tags.Count > 1 Then
+                Begin
+                    If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                    Begin
+                        Pending := '';
+                        For I := 0 To Tags.Count - 1 Do
+                        Begin
+                            If Pending <> '' Then Pending := Pending + ',';
+                            Pending := Pending + '"' + Tags[I] + '"';
+                        End;
+                        Try
+                            WriteFileContent(WorkspaceDir + 'queue.json',
+                                '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
+                                + '],"turn":"tool call"}');
+                        Except End;
+                        QueueNoteTick := NowTick;
+                    End;
+                End;
+                If Tags[Pick] <> SlotSession Then
+                Begin
+                    SlotSession := Tags[Pick];
+                    SlotStartTick := NowTick;
+                End;
+                IdPart := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
+                Mark := CallMark(IdPart);
+                If Mark <> HoldCall Then HoldStartTick := NowTick;
+                HoldCall := Mark;
+                JustPicked := True;
+                RequestId := IdPart;
+                FilePath := WorkspaceDir + BestName[Pick];
+                Result := True;
             End;
-            RequestId := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
-            FilePath := WorkspaceDir + BestName[Pick];
-            Result := True;
         End;
     Finally
         Files.Free;
@@ -2849,9 +3130,17 @@ End;
 { withdrawn its own request.                                               }
 Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
-    Files : TStringList;
+    Files, Flags : TStringList;
     I, Purged : Integer;
 Begin
+    { A new loop starts with no tool call holding the turn. }
+    HoldCall := '';
+    DocOwners := '';
+    WriteSerial := 0;
+    CompiledAtSerial := -1;
+    HoldStartTick := 0;
+    LastDoneTick := 0;
+    JustPicked := False;
     If FileExists(WorkspaceDir + 'maintenance.json') Then
     Begin
         AppendLog(FormatLogStamp(0) + ',0,_purge_requests,kept for restart,0,');
@@ -2866,6 +3155,14 @@ Begin
                 DeleteFile(Files[I]);
                 Inc(Purged);
             Except End;
+        Flags := TStringList.Create;
+        Try
+            FindFiles(WorkspaceDir, 'callend_*.flag', 63, False, Flags);
+            For I := 0 To Flags.Count - 1 Do
+                Try DeleteFile(Flags[I]); Except End;
+        Finally
+            Flags.Free;
+        End;
     Finally
         Files.Free;
     End;
@@ -2930,6 +3227,7 @@ Begin
 
     V := ExtractJsonValue(Content, 'auto_shutdown_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
+    If AutoShutdownMs > 0 Then ConfiguredShutdownMs := AutoShutdownMs;
 
     V := ExtractJsonValue(Content, 'yield_iterations');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldIterations := N; Except End; End;
@@ -5030,6 +5328,88 @@ Begin
         Board.RemovePCBObject(Obj);
         Board.AddPCBObject(Obj);
     Except NoteWriteFailed('re-index an object on the board'); End;
+End;
+
+{ WHETHER THE BOARD'S SPATIAL INDEX HANDS OUT OBJ AT (X, Y). Searches by     }
+{ area (obj_query by bounds, Altium's online DRC, pours, picking) go through }
+{ that index; an object it does not hold there is invisible to them while    }
+{ its own getters, and a board walk, still find it.                          }
+Function BoardIndexFinds(Board : IPCB_Board; Obj : IPCB_Primitive;
+    X, Y : TCoord) : Boolean;
+Var
+    Spatial : IPCB_SpatialIterator;
+    Other : IPCB_Primitive;
+    Key : String;
+    Found : Boolean;
+Begin
+    Found := False;
+    Key := IntToStr(Obj.I_ObjectAddress);
+    Spatial := Board.SpatialIterator_Create;
+    Try
+        Spatial.AddFilter_ObjectSet(MkSet(Obj.ObjectId));
+        Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Spatial.AddFilter_Area(X - 10, Y - 10, X + 10, Y + 10);
+        Other := Spatial.FirstPCBObject;
+        While (Other <> Nil) And Not Found Do
+        Begin
+            If IntToStr(Other.I_ObjectAddress) = Key Then Found := True
+            Else Other := Spatial.NextPCBObject;
+        End;
+    Finally
+        Board.SpatialIterator_Destroy(Spatial);
+    End;
+    Result := Found;
+End;
+
+{ WHERE THE INDEX HOLDS OBJ: bit 1 at the centre of its bounding box, bit 2 }
+{ at two opposite corners of it, so 3 is the whole box and 0 is nowhere it }
+{ is. MEASURED on AD 26.11 (a board just opened, nothing written): every  }
+{ via whose mask comes from the rules reads 1, its index box narrower than }
+{ the box BoundingRectangle reports, and taking it off the board and back  }
+{ leaves it so. Altium indexes it that way; 1 is not stale. 0 is.          }
+Function BoardIndexState(Board : IPCB_Board; Obj : IPCB_Primitive) : Integer;
+Var
+    BR : TCoordRect;
+    State : Integer;
+Begin
+    State := 0;
+    If (Board <> Nil) And (Obj <> Nil) Then
+    Begin
+        BR := Obj.BoundingRectangle;
+        If BoardIndexFinds(Board, Obj, (BR.Left + BR.Right) Div 2,
+            (BR.Bottom + BR.Top) Div 2) Then State := 1;
+        If BoardIndexFinds(Board, Obj, BR.Left, BR.Bottom) Then
+            If BoardIndexFinds(Board, Obj, BR.Right, BR.Top) Then
+                State := State + 2;
+    End;
+    Result := State;
+End;
+
+{ A WRITE MAY NOT LEAVE A READ PATH WORSE THAN IT FOUND IT. Before is the    }
+{ BoardIndexState read before the write; call this after the object's       }
+{ modify bracket. Where the index now holds the object less than it did      }
+{ (#208: a via's mask grew its box past the index entry), the object is      }
+{ re-indexed. Returns 0 when nothing was lost, 1 when re-indexing put it     }
+{ back, 2 when it was left alone (a component, polygon or dimension, or a    }
+{ primitive one of them owns, is not taken off the board and put back), 3    }
+{ when it is still worse after re-indexing.                                  }
+Function EnsureIndexed(Board : IPCB_Board; Obj : IPCB_Primitive;
+    Before : Integer) : Integer;
+Var
+    After : Integer;
+Begin
+    Result := 0;
+    If (Board = Nil) Or (Obj = Nil) Then Exit;
+    After := BoardIndexState(Board, Obj);
+    If (After And Before) = Before Then Exit;
+    Result := 2;
+    If Obj.InComponent Or Obj.InPolygon Or Obj.InDimension Then Exit;
+    If (Obj.ObjectId = eComponentObject) Or (Obj.ObjectId = ePolyObject)
+        Or (Obj.ObjectId = eDimensionObject) Then Exit;
+    ReindexBoardObject(Board, Obj);
+    After := BoardIndexState(Board, Obj);
+    If (After And Before) = Before Then Result := 1
+    Else Result := 3;
 End;
 
 { A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
@@ -7692,6 +8072,67 @@ Begin
     Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
 End;
 
+{ Which session is editing which document (DocOwners in Main.pas), with how }
+{ long ago it last wrote and whether that owner still holds it.             }
+Function App_DocumentOwners(RequestId : String) : String;
+Var
+    Rest, Rec, Path, Items, Response : String;
+    P, Q, Age : Integer;
+Begin
+    Items := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Break;
+        Path := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Path);
+        If Rec <> '' Then
+        Begin
+            Age := OwnerAgeMs(Rec);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + JsonObj(JsonStr('document', Path) + ','
+                + JsonStr('session', OwnerField(Rec, 0)) + ','
+                + JsonStr('last_command', OwnerField(Rec, 2)) + ','
+                + JsonInt('seconds_since_write', Age Div 1000) + ','
+                + JsonBool('held', Age < OWNER_IDLE_MS) + ','
+                + JsonBool('yours', OwnerField(Rec, 0) = RequestTag(RequestId)));
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('documents', '[' + Items + ']') + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonInt('idle_release_seconds', OWNER_IDLE_MS Div 1000)));
+    Result := Response;
+End;
+
+{ Hand a document to the calling session, whoever held it. }
+Function App_ClaimDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Before, Response : String;
+Begin
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Result := Response;
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    Before := '';
+    If Rec <> '' Then Before := OwnerField(Rec, 0);
+    OwnerSet(Key, RequestTag(RequestId), 'claimed');
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Path) + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonStr('previous_owner', Before)));
+    Result := Response;
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -7715,6 +8156,8 @@ Begin
         'stop_server':         Result := App_StopServer(RequestId);
         'autosave':            Result := App_Autosave(Params, RequestId);
         'format_value':        Result := App_FormatValue(Params, RequestId);
+        'document_owners':     Result := App_DocumentOwners(RequestId);
+        'claim_document':      Result := App_ClaimDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
@@ -10494,6 +10937,139 @@ Begin
         + JsonInt('sheet_instances', Count) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('instances', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ HierItemJson - a compiled port or sheet entry: its name and direction.     }
+{ The name is DM_PortName, else DM_NetName; both are read, since which one  }
+{ an entry carries is the compiler's choice.                                 }
+{..............................................................................}
+Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Var
+    Name, NetName, Electric : String;
+Begin
+    Name := ''; NetName := ''; Electric := '';
+    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Try NetName := Item.DM_NetName; Except Inc(Misses); End;
+    Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    If Name = '' Then Name := NetName;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('net', NetName) + ','
+        + JsonStr('io', Electric));
+End;
+
+{..............................................................................}
+{ Proj_GetHierarchy - the compiled sheet hierarchy: every schematic with    }
+{ its parents, the ports it offers up, and the sheet symbols on it with     }
+{ their file, sheet name, entries and how many child sheets the compiler   }
+{ found for them (0: the file is not in the project).                       }
+{..............................................................................}
+Function Proj_GetHierarchy(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc, TopDoc, ParentDoc : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
+    SymFile, SymName, PName : String;
+    I, J, K, Misses, Children, Sheets : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Misses := 0;
+    TopName := '';
+    TopDoc := Nil;
+    Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
+    If TopDoc <> Nil Then
+    Begin
+        Try TopName := TopDoc.DM_FileName; Except Inc(Misses); End;
+    End;
+    Items := '';
+    Sheets := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Kind := '';
+        Try Kind := UpperCase(Doc.DM_DocumentKind); Except End;
+        If Kind <> 'SCH' Then Continue;
+        Inc(Sheets);
+        FileName := '';
+        Try FileName := Doc.DM_FileName; Except Inc(Misses); End;
+
+        Parents := '';
+        Try
+            For J := 0 To Doc.DM_ParentDocumentCount - 1 Do
+            Begin
+                ParentDoc := Nil; PName := '';
+                Try ParentDoc := Doc.DM_ParentDocuments(J); Except ParentDoc := Nil; End;
+                If ParentDoc = Nil Then Continue;
+                Try PName := ParentDoc.DM_FileName; Except End;
+                If Parents <> '' Then Parents := Parents + ',';
+                Parents := Parents + '"' + EscapeJsonString(PName) + '"';
+            End;
+        Except Inc(Misses); End;
+
+        Ports := '';
+        Try
+            For J := 0 To Doc.DM_PortCount - 1 Do
+            Begin
+                Item := Nil;
+                Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
+                If Item = Nil Then Continue;
+                If Ports <> '' Then Ports := Ports + ',';
+                Ports := Ports + HierItemJson(Item, Misses);
+            End;
+        Except Inc(Misses); End;
+
+        Syms := '';
+        Try
+            For J := 0 To Doc.DM_SheetSymbolCount - 1 Do
+            Begin
+                Sym := Nil;
+                Try Sym := Doc.DM_SheetSymbols(J); Except Sym := Nil; End;
+                If Sym = Nil Then Continue;
+                SymFile := ''; SymName := ''; Children := -1;
+                Try SymFile := Sym.DM_SheetSymbolFileName; Except Inc(Misses); End;
+                Try SymName := Sym.DM_LogicalDesignator; Except Inc(Misses); End;
+                Try Children := Sym.DM_ChildSheetCount; Except Inc(Misses); End;
+                Entries := '';
+                Try
+                    For K := 0 To Sym.DM_SheetEntryCount - 1 Do
+                    Begin
+                        Item := Nil;
+                        Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                        If Item = Nil Then Continue;
+                        If Entries <> '' Then Entries := Entries + ',';
+                        Entries := Entries + HierItemJson(Item, Misses);
+                    End;
+                Except Inc(Misses); End;
+                If Syms <> '' Then Syms := Syms + ',';
+                Syms := Syms + JsonObj(JsonStr('sheet_name', SymName) + ','
+                    + JsonStr('file', SymFile) + ','
+                    + JsonInt('child_sheets', Children) + ','
+                    + JsonRaw('entries', '[' + Entries + ']'));
+            End;
+        Except Inc(Misses); End;
+
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('file', FileName) + ','
+            + JsonRaw('parents', '[' + Parents + ']') + ','
+            + JsonRaw('ports', '[' + Ports + ']') + ','
+            + JsonRaw('sheet_symbols', '[' + Syms + ']'));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('top', TopName) + ','
+        + JsonInt('sheet_count', Sheets) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('sheets', '[' + Items + ']')));
 End;
 
 {..............................................................................}
@@ -15623,6 +16199,7 @@ Begin
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'step_options':      Result := Proj_StepOptions(Params, RequestId);
         'get_channels':      Result := Proj_GetChannels(Params, RequestId);
+        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'component_models':  Result := Proj_ComponentModels(Params, RequestId);
         'library_lookup':    Result := Proj_LibraryLookup(Params, RequestId);
         'output_panel':      Result := Proj_OutputPanel(Params, RequestId);
@@ -19757,14 +20334,21 @@ End;
 {                                                                              }
 { Params:                                                                      }
 {   library_path - optional .PcbLib to focus first; defaults to focused doc. }
+{                                                                              }
+{ Response also carries "current": the name of the footprint the editor has  }
+{ current in the library whose footprints are listed ("" when none). Writers }
+{ given no footprint_name, the origin read and processes such as            }
+{ PCB:SetComponentReference all act on that footprint.                      }
 Function Lib_GetFootprints(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpName, FpDescr, FpsJson, RespJson : String;
+    CurName : String;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
     Iter : IPCB_LibraryIterator;
     Footprint : IPCB_LibComponent;
+    Cur : IPCB_LibComponent;
     Count : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -19823,9 +20407,17 @@ Begin
     End;
     FpsJson := FpsJson + ']';
 
+    { Read off the same PcbLib the iterator walked, by Name only: reading }
+    { I_ObjectAddress off a footprint faulted on AD 26.11 (issue #135).    }
+    CurName := '';
+    Cur := Nil;
+    Try Cur := PcbLib.CurrentComponent; Except End;
+    If Cur <> Nil Then Try CurName := Cur.Name; Except End;
+
     RespJson :=
         '{"library_path":"' + EscapeJsonString(LibPath) + '"' +
         ',"count":' + IntToStr(Count) +
+        ',"current":"' + EscapeJsonString(CurName) + '"' +
         ',"footprints":' + FpsJson + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
@@ -21747,16 +22339,19 @@ Begin
             Else
             Begin
                 Body.SetState_FromModel;
-                { The rotation goes on the MODEL, before it is bound to the   }
-                { body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as the SDK }
-                { declares it and AutoSTEPplacer.pas uses                     }
-                { it. Dz stays 0; the standoff is written below as before.   }
+                { Rotation AND standoff go on the MODEL, before it is bound   }
+                { to the body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as  }
+                { the SDK declares it and AutoSTEPplacer.pas uses it. A STEP  }
+                { body ignores its own StandoffHeight (see Lib_Set3DBody):    }
+                { written there it reported applied and saved a Z offset of 0.}
                 DidRotation := False;
-                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Then
+                DidStandoff := False;
+                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Or (OffZ <> 0) Then
                     Try
-                        Model.SetState(RotX, RotY, RotZ, 0);
-                        DidRotation := True;
-                    Except { "rotation" in the applied list reports it } End;
+                        Model.SetState(RotX, RotY, RotZ, MilsToCoordF(OffZ));
+                        DidRotation := (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0);
+                        DidStandoff := OffZ <> 0;
+                    Except { "rotation" and "standoff_height" in the applied list report it } End;
                 Body.Model := Model;
                 Footprint.AddPCBObject(Body);
                 { Same registration the pad, track, arc and text paths
@@ -21790,14 +22385,8 @@ Begin
                 { careful and could never have fired.                      }
                 {                                                          }
                 { The rotation is on the MODEL, set above before the bind. }
-                DidStandoff := False;
                 DidMove := False;
                 Shifted := False;
-                If OffZ <> 0 Then
-                    Try
-                        Body.StandoffHeight := MilsToCoordF(OffZ);
-                        DidStandoff := True;
-                    Except { "standoff_height" in the applied list reports it } End;
                 { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
                 { current above sits at Altium's library origin (about     }
                 { 50000,50000 mil, see FootprintOriginX), so the body      }
@@ -25913,7 +26502,8 @@ End;
 Function Lib_UninstallLibrary(Params : String; RequestId : String) : String;
 Var
     Path, Have : String;
-    Ok : Boolean;
+    Ok, Still, Closed : Boolean;
+    ServerDoc : IServerDocument;
     Mgr : IPCB_PadViaLibraryManager;
     PvLib : IPCB_PadViaLibrary;
     I, N : Integer;
@@ -25967,9 +26557,36 @@ Begin
         IntegratedLibraryManager.UnInstallLibrary(Path);
         Ok := True;
     Except End;
+    { Checked against the installed list, not assumed from no exception. }
+    Still := False;
+    N := 0;
+    Try N := IntegratedLibraryManager.InstalledLibraryCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Have := '';
+        Try Have := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+        If UpperCase(Have) = UpperCase(Path) Then Still := True;
+    End;
+    { A library opened as a document keeps its file open after the       }
+    { uninstall. An IntLib is not edited, so closing it loses nothing.    }
+    Closed := False;
+    If UpperCase(ExtractFileExt(Path)) = '.INTLIB' Then
+    Begin
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            Try Client.CloseDocument(ServerDoc); Except End;
+            ServerDoc := Nil;
+            Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+            Closed := ServerDoc = Nil;
+        End;
+    End;
     Result := BuildSuccessResponse(RequestId,
-        '{"uninstalled":' + BoolToJsonStr(Ok) + ',"library_path":"'
-        + EscapeJsonString(Path) + '"}');
+        '{"uninstalled":' + BoolToJsonStr(Ok And Not Still)
+        + ',"still_installed":' + BoolToJsonStr(Still)
+        + ',"closed_document":' + BoolToJsonStr(Closed)
+        + ',"library_path":"' + EscapeJsonString(Path) + '"}');
 End;
 
 {..............................................................................}
@@ -32689,6 +33306,9 @@ Begin
                                 Body.StandoffHeight := MilsToCoordF(StrToFloatDef(StandoffStr, 0));
                             If (StandoffStr <> '') And (Model <> Nil) Then
                             Begin
+                                { By file name: the saved record holds the name of the  }
+                                { embedded model, a body linked this session the full  }
+                                { path it was loaded from.                             }
                                 ModelFile := '';
                                 Try ModelFile := Model.FileName; Except End;
                                 SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
@@ -32700,7 +33320,8 @@ Begin
                                         + 'this body: save the library, then retry'));
                                 End
                                 Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
-                                    Or (UpperCase(SavedFile) <> UpperCase(ModelFile)) Then
+                                    Or (UpperCase(ExtractFileName(SavedFile))
+                                        <> UpperCase(ExtractFileName(ModelFile))) Then
                                 Begin
                                     If Skipped <> '' Then Skipped := Skipped + ',';
                                     Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
@@ -40017,12 +40638,14 @@ End;
 {                     and the Net getter answers the pour's net for it);      }
 {   Component=<name>  the primitives of every component of that designator;   }
 {   BoundsLeft / BoundsRight / X1 / X2 and BoundsBottom / BoundsTop / Y1 / Y2 }
-{                     a point every match's bounding box holds, so a spatial  }
+{                     a point on every match's bounding box, so a spatial     }
 {                     search of a small area round it (primitives only: a     }
-{                     spatial iterator does not hand out group objects);      }
+{                     spatial iterator does not hand out group objects). The  }
+{                     index does not always hold an object by the box its     }
+{                     getters print, so a search that hands out no match      }
+{                     goes on to the walk;                                    }
 { else the board walk, narrowed by Layer= (NarrowPCBWalk). MatchesFilterPCB   }
-{ still decides every object any route hands out, so a route can only leave  }
-{ out what the filter would reject.                                           }
+{ still decides every object any route hands out.                             }
 { Every route sees layers by their internal names: a user name in a Layer   }
 { condition is resolved once here, not per object (CanonicalLayerFilter). A }
 { value that names no layer stays as given; ProcessActivePCBDoc refuses     }
@@ -40040,7 +40663,8 @@ Var
     Seen : TStringList;
     Wanted, Value, BadLayer : String;
     HasX, HasY, IsPrimitive : Boolean;
-    X, Y, Lo, Hi : TCoord;
+    X, Y, Lo, Hi, Margin : TCoord;
+    Found : Integer;
 Begin
     FilterStr := CanonicalLayerFilter(Board, FilterStr, BadLayer);
     Seen := TStringList.Create;
@@ -40172,9 +40796,18 @@ Begin
         End;
         If HasX Or HasY Then
         Begin
-            { One mil round the point: the filter compares printed values. }
+            { One mil round the point: the filter compares printed values.   }
+            { A via or pad is searched 100 mil round it. MEASURED on AD 26.11 }
+            { on a board just opened: every via whose mask comes from the     }
+            { rules is indexed by a box 16 mil per side narrower than the     }
+            { Bounds the getters print, and a search by those Bounds found    }
+            { none of its 279 vias.                                           }
+            Margin := MilsToCoordF(1);
+            If (ObjTypeInt = eViaObject) Or (ObjTypeInt = ePadObject) Then
+                Margin := MilsToCoordF(100);
             Lo := MilsToCoordF(-200000);
             Hi := MilsToCoordF(200000);
+            Found := Matches.Count;
             { Every layer: a spatial search narrowed to TopLayer left out    }
             { the SMD pads on it (MEASURED); the filter checks Layer anyway. }
             Spatial := Board.SpatialIterator_Create;
@@ -40182,12 +40815,11 @@ Begin
                 Spatial.AddFilter_ObjectSet(MkSet(ObjTypeInt));
                 Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                 If HasX And HasY Then
-                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Y - MilsToCoordF(1),
-                        X + MilsToCoordF(1), Y + MilsToCoordF(1))
+                    Spatial.AddFilter_Area(X - Margin, Y - Margin, X + Margin, Y + Margin)
                 Else If HasX Then
-                    Spatial.AddFilter_Area(X - MilsToCoordF(1), Lo, X + MilsToCoordF(1), Hi)
+                    Spatial.AddFilter_Area(X - Margin, Lo, X + Margin, Hi)
                 Else
-                    Spatial.AddFilter_Area(Lo, Y - MilsToCoordF(1), Hi, Y + MilsToCoordF(1));
+                    Spatial.AddFilter_Area(Lo, Y - Margin, Hi, Y + Margin);
                 Obj := Spatial.FirstPCBObject;
                 While (Obj <> Nil) And PCBStillCollecting(Matches, Limit) Do
                 Begin
@@ -40197,7 +40829,15 @@ Begin
             Finally
                 Board.SpatialIterator_Destroy(Spatial);
             End;
-            Exit;
+            { For a via or pad the index is a shortcut, not the last word:    }
+            { when it hands out no match, the board walk below decides, so    }
+            { one the index holds by some other box is still found. Every     }
+            { other primitive is indexed by exactly the box its getters print }
+            { (audit.find_stale_read_paths, MEASURED on a board just opened), }
+            { and obj_modify keeps it so; walking for them on every miss cost }
+            { 10 s on a 1817-track board.                                     }
+            If Matches.Count > Found Then Exit;
+            If (ObjTypeInt <> eViaObject) And (ObjTypeInt <> ePadObject) Then Exit;
         End;
 
         Iterator := Board.BoardIterator_Create;
@@ -40220,16 +40860,20 @@ End;
 
 Function ProcessPCBBoardObjects(Board : IPCB_Board; ObjTypeInt : Integer;
     FilterStr : String; PropsStr : String; SetStr : String;
-    Mode : String; Var TotalMatched : Integer; Limit : Integer) : String;
+    Mode : String; Var TotalMatched : Integer; Limit : Integer;
+    Var IndexJson : String) : String;
 Var
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
     First, Removed : Boolean;
-    I, Remaining : Integer;
+    I, Remaining, Held, Reindexed, LeftStale, IndexBefore : Integer;
     Victims : TInterfaceList;
     FilterWas : Boolean;
 Begin
     Result := '';
+    IndexJson := '';
+    Reindexed := 0;
+    LeftStale := 0;
     First := (TotalMatched = 0);
 
     { EVERY PreProcess BELOW IS IN A Try/Finally, and that is not tidiness.   }
@@ -40313,16 +40957,21 @@ Begin
                 { while the board's spatial index still held the old one, so }
                 { the mouse could not pick it and a spatial search found it  }
                 { where it no longer was.                                    }
+                IndexBefore := BoardIndexState(Board, FoundObj);
                 FoundObj.BeginModify;
                 Try
                     ApplySetPropertiesPCB(FoundObj, SetStr);
                 Finally
                     FoundObj.EndModify;
                 End;
-                { A via's mask moves its box but not its index entry. }
-                If (FoundObj.ObjectId = eViaObject)
-                    And (Pos('SolderMask', SetStr) > 0) Then
-                    ReindexBoardObject(Board, FoundObj);
+                { A WRITE IS DONE WHEN THE INDEX STILL FINDS THE OBJECT. A   }
+                { via's mask grew its box past its index entry (#208), and   }
+                { the bracket does not re-index every property, so each      }
+                { changed object is looked up again after the write and      }
+                { re-indexed where the index holds it less than before.      }
+                Held := EnsureIndexed(Board, FoundObj, IndexBefore);
+                If Held = 1 Then Inc(Reindexed)
+                Else If Held >= 2 Then Inc(LeftStale);
                 FoundObj.GraphicallyInvalidate;
                 Inc(TotalMatched);
             End;
@@ -40330,6 +40979,8 @@ Begin
             PcbEndEdit(0);
             PcbSelectFilterRestore(Board, FilterWas);
         End;
+        IndexJson := ',"reindexed":' + IntToStr(Reindexed)
+            + ',"stale_index":' + IntToStr(LeftStale);
         Exit;
     End;
 
@@ -40528,7 +41179,7 @@ Function ProcessActivePCBDoc(ObjTypeInt : Integer;
 Var
     Board : IPCB_Board;
     TotalMatched : Integer;
-    JsonItems, Why, BadLayer, BadCond, Canon : String;
+    JsonItems, Why, BadLayer, BadCond, Canon, IndexJson : String;
 Begin
     BadCond := FilterProblem(FilterStr);
     If BadCond <> '' Then
@@ -40596,7 +41247,7 @@ Begin
     End;
     TotalMatched := 0;
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
-        Canon, PropsStr, SetStr, Mode, TotalMatched, Limit);
+        Canon, PropsStr, SetStr, Mode, TotalMatched, Limit, IndexJson);
 
     { Nothing matched, nothing changed: no redraw of the whole board and no }
     { dirty mark on a document the call did not touch.                     }
@@ -40615,7 +41266,7 @@ Begin
           whether a property write landed. The tail reports that, the same
           way the schematic modify replies do. }
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched)
+            '{"matched":' + IntToStr(TotalMatched) + IndexJson
             + ModifyOutcomeJson(0) + '}');
 End;
 
@@ -41203,7 +41854,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch, DrcOn : Boolean;
+    First, FromSch, RuleChecked : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -41289,9 +41940,9 @@ Begin
         { board: 37 of 159 rules read Enabled=True while DRC ignores them,    }
         { and the only sign was the word (Disabled) inside Altium's own       }
         { descriptor prose. Reported so nobody has to parse that to find out. }
-        DrcOn := True;
-        Try DrcOn := Rule.DRCEnabled; Except DrcOn := True; End;
-        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(DrcOn);
+        RuleChecked := True;
+        Try RuleChecked := Rule.DRCEnabled; Except RuleChecked := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(RuleChecked);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -41304,7 +41955,8 @@ Begin
     GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -43216,6 +43868,7 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{' + DrcViolationsJson(Board) + ','
             + '"mode":"batch",'
+            + '"board_path":"' + EscapeJsonString(Board.FileName) + '",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','
@@ -48683,6 +49336,179 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_CockpitState - what the dashboard's cockpit polls: the document in      }
+{ front, a stamp of the parts and one of the copper that change when anything }
+{ moves, and what is selected. Reads only; touches PCBServer only when a PCB  }
+{ is in front (see GetPCBBoardAnywhere).                                      }
+{..............................................................................}
+
+{ The copper stamp: the count and the walked sums, or "n:<count>" when the }
+{ copper was only counted (the Python keeps its last walked stamp then).    }
+Function CopperWalk(N : Integer; K1, K2, K3 : Double; Walked : Boolean) : String;
+Begin
+    If Walked Then
+        Result := IntToStr(N) + ':' + FloatToJsonStr(K1) + ':' + FloatToJsonStr(K2)
+            + ':' + FloatToJsonStr(K3)
+    Else
+        Result := 'n:' + IntToStr(N);
+End;
+
+Function PCB_CockpitState(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Obj : IPCB_Primitive;
+    Counter : IPCB_PrimitiveCounter;
+    DocPath, Kind, Ref, NetName, SelComps, SelNets, SeenNets : String;
+    CompN, CopperN, I, SelCount, NetCount : Integer;
+    C1, C2, C3, K1, K2, K3 : Double;
+Begin
+    DocPath := CurrentFocusedDocPath(0);
+    Kind := '';
+    Try
+        Workspace := GetWorkspace;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Kind := UpperCase(Doc.DM_DocumentKind);
+    Except Kind := ''; End;
+    { With a PCB in front the wrapper returns that board; with anything   }
+    { else in front none is read.                                         }
+    Board := Nil;
+    If Kind = 'PCB' Then
+        Try Board := GetPCBBoardAnywhere(0); Except Board := Nil; End;
+    If Board = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+            + ',' + JsonStr('kind', Kind) + ',"board":false}');
+        Exit;
+    End;
+
+    { Parts: position, rotation and side, weighted by their order so a swap }
+    { of two parts changes the stamp too. The selection flag is read in the }
+    { same pass, so a selection made by a script is seen as well.           }
+    C1 := 0; C2 := 0; C3 := 0; CompN := 0; SelComps := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            CompN := CompN + 1;
+            C1 := C1 + Comp.X * CompN;
+            C2 := C2 + Comp.Y * CompN;
+            C3 := C3 + (Comp.Rotation + Comp.Layer * 1000) * CompN;
+            If Comp.Selected Then
+            Begin
+                Ref := '';
+                Try Ref := Comp.Name.Text; Except Ref := ''; End;
+                If SelComps <> '' Then SelComps := SelComps + ',';
+                SelComps := SelComps + '"' + EscapeJsonString(Ref) + '"';
+            End;
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Copper drawn on the board: tracks, arcs and vias. Walking it is most }
+    { of this call's time, so only when asked; otherwise the counts alone,  }
+    { which still change when copper is added or deleted.                    }
+    K1 := 0; K2 := 0; K3 := 0; CopperN := 0;
+    If LowerCase(ExtractJsonValue(Params, 'copper')) = 'false' Then
+    Begin
+        Counter := Nil;
+        Try Counter := Board.GetPrimitiveCounter; Except Counter := Nil; End;
+        If Counter <> Nil Then
+            Try
+                CopperN := Counter.GetObjectCount(eTrackObject)
+                    + Counter.GetObjectCount(eArcObject) + Counter.GetObjectCount(eViaObject);
+            Except CopperN := -1; End;
+    End
+    Else
+    Begin
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            CopperN := CopperN + 1;
+            { A part's own primitives move with it; the parts stamp has them. }
+            { Counted all the same, so the count matches the counter's.       }
+            If Obj.InComponent Then
+            Begin
+                Obj := Iter.NextPCBObject;
+                Continue;
+            End;
+            If Obj.ObjectId = eTrackObject Then
+            Begin
+                Track := Obj;
+                K1 := K1 + (Track.X1 + Track.X2) * CopperN;
+                K2 := K2 + (Track.Y1 + Track.Y2) * CopperN;
+                K3 := K3 + (Track.Width + Track.Layer * 1000) * CopperN;
+            End
+            Else If Obj.ObjectId = eArcObject Then
+            Begin
+                Arc := Obj;
+                K1 := K1 + (Arc.XCenter + Arc.StartAngle) * CopperN;
+                K2 := K2 + (Arc.YCenter + Arc.EndAngle) * CopperN;
+                K3 := K3 + (Arc.Radius + Arc.LineWidth + Arc.Layer * 1000) * CopperN;
+            End
+            Else
+            Begin
+                Via := Obj;
+                K1 := K1 + Via.X * CopperN;
+                K2 := K2 + Via.Y * CopperN;
+                K3 := K3 + Via.Size * CopperN;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    End;
+
+    { Nets of whatever else is selected: tracks, pads, vias, arcs. }
+    SelNets := ''; SeenNets := '|'; NetCount := 0;
+    SelCount := Board.SelectecObjectCount;
+    For I := 0 To SelCount - 1 Do
+    Begin
+        Obj := Board.SelectecObject[I];
+        If Obj = Nil Then Continue;
+        If Obj.ObjectId = eComponentObject Then Continue;
+        NetName := '';
+        Try
+            If Obj.InNet Then NetName := Obj.Net.Name;
+        Except NetName := ''; End;
+        If (NetName = '') Or (Pos('|' + NetName + '|', SeenNets) > 0) Then Continue;
+        If NetCount >= 200 Then Break;
+        SeenNets := SeenNets + NetName + '|';
+        NetCount := NetCount + 1;
+        If SelNets <> '' Then SelNets := SelNets + ',';
+        SelNets := SelNets + '"' + EscapeJsonString(NetName) + '"';
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+        + ',' + JsonStr('kind', Kind) + ',"board":true'
+        + ',' + JsonStr('parts_stamp', IntToStr(CompN) + ':' + FloatToJsonStr(C1)
+            + ':' + FloatToJsonStr(C2) + ':' + FloatToJsonStr(C3))
+        + ',' + JsonStr('copper_stamp', CopperWalk(CopperN, K1, K2, K3,
+            LowerCase(ExtractJsonValue(Params, 'copper')) <> 'false'))
+        + ',"parts":' + IntToStr(CompN) + ',"copper":' + IntToStr(CopperN)
+        + ',"selected":{"parts":[' + SelComps + '],"nets":[' + SelNets
+        + '],"count":' + IntToStr(SelCount) + '}}');
+End;
+
+{..............................................................................}
 { Layer colour conversion.                                                    }
 {                                                                              }
 { Altium carries a colour as a Windows TColor, which is $00BBGGRR: the byte   }
@@ -48884,6 +49710,11 @@ End;
 { to nothing in unknown_layers. The reply always lists every layer: the       }
 { legacy range as get_layer_display does, then each ENABLED mechanical layer  }
 { from 17 up. View state only: the document is not marked modified.          }
+{                                                                              }
+{ With a PcbLib in front it acts on the library's own board, the footprint    }
+{ being edited (LvPcbLibInFront). GetPCBBoardAnywhere would answer from some }
+{ other open board then, or refuse when there are several, and hide layers or }
+{ move the current layer of a board the user is not looking at.              }
 {..............................................................................}
 
 Function LvNextItem(Var Rest : String) : String;
@@ -49101,8 +49932,31 @@ Begin
     Result := Result + '"' + EscapeJsonString(Item) + '"';
 End;
 
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is safe to name only after this     }
+{ says yes (see GetPCBBoardAnywhere).                                       }
+Function LvPcbLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
 Function PCB_LayerView(Params : String; RequestId : String) : String;
 Var
+    PcbLib : IPCB_Library;
     Board : IPCB_Board;
     Opts : IPCB_SystemOptions;
     LayerStack : IPCB_LayerStack_V7;
@@ -49112,10 +49966,22 @@ Var
     Rest, Item, Want, Items, NotApplied, Unknown, SlmStr : String;
     Show, Lock, Got, Enabled, Slm, Changed : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { A library in front: its own board, the footprint being edited, and    }
+    { never another open board, also when the library cannot be had.       }
+    PcbLib := Nil;
+    Board := Nil;
+    If LvPcbLibInFront(0) Then
+    Begin
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib <> Nil Then
+            Try Board := PcbLib.Board; Except Board := Nil; End;
+    End
+    Else
+        Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'No PCB document or PCB library is active');
         Exit;
     End;
     Opts := Nil;
@@ -49216,6 +50082,8 @@ Begin
     Begin
         Try Board.ViewManager_UpdateLayerTabs; Except End;
         Try Board.ViewManager_FullUpdate; Except End;
+        If PcbLib <> Nil Then
+            Try PcbLib.RefreshView; Except End;
     End;
 
     { the reply: the legacy range, then every enabled mechanical layer above 16 }
@@ -50359,6 +51227,7 @@ End;
 
 Function PCB_PlaceTracks(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Track : IPCB_Track;
     ExistingTrack : IPCB_Track;
@@ -50379,10 +51248,14 @@ Var
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
     F0, F1, F2, F3, F4, F5, F6, Token : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -50623,6 +51496,7 @@ End;
 
 Function PCB_PlaceVias(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Via : IPCB_Via;
     ViasStr, ViaStr, Remaining, Token, BadLayers, BadNets : String;
@@ -50633,10 +51507,14 @@ Var
     F0, F1, F2, F3, F4, F5, F6 : String;
     LayerCache, LastNetName : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -50802,6 +51680,7 @@ End;
 
 Function PCB_PlaceArcs(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Arc : IPCB_Arc;
     ArcsStr, ArcStr, Remaining, Token : String;
@@ -50816,10 +51695,14 @@ Var
     { the return slot in DelphiScript (see PCB_PlaceTracks).             }
     F0, F1, F2, F3, F4, F5, F6, F7, F8 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -51013,6 +51896,7 @@ End;
 
 Function PCB_PlacePads(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Pad : IPCB_Pad;
     PadsStr, PadStr, Remaining, Token, UnitsStr : String;
@@ -51027,10 +51911,14 @@ Var
     Cache : TPadCache;
     F0, F1, F2, F3, F4, F5 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -51941,6 +52829,17 @@ Begin
     If RuleName = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing "name" parameter');
+        Exit;
+    End;
+
+    { A second rule of the same name was added without complaint, and      }
+    { Altium's priority order then decided which of the two applied.        }
+    If PCB_FindRuleByName(Board, RuleName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule named "' + RuleName + '" is already on the board. Nothing '
+            + 'was created. Change it with pcb_set_rule_properties, or delete '
+            + 'it with pcb_delete_design_rule first.');
         Exit;
     End;
 
@@ -54935,6 +55834,15 @@ Begin
     If (X1Str = '') Or (Y1Str = '') Or (X2Str = '') Or (Y2Str = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing coordinate parameters (x1, y1, x2, y2)');
+        Exit;
+    End;
+    { A room is a rule; a second of the same name was added without      }
+    { complaint and left two rooms answering to one name.                 }
+    If PCB_FindRuleByName(Board, RoomName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule or room named "' + RoomName + '" is already on the board. '
+            + 'Nothing was created.');
         Exit;
     End;
 
@@ -72279,6 +73187,788 @@ Begin
 End;
 
 {..............................................................................}
+{ pcb.pad_relief -- one pad's own thermal relief, the way Properties > Thermal }
+{ Relief and its custom-relief "Edit" show it (issue #226).                   }
+{                                                                              }
+{ The relief record is ThermalReliefData keyed by an EMPTY                     }
+{ TPadViaThermalReliefItem. A layer number as the key stops the script, and   }
+{ EditThermalReliefData only opens the dialog. Custom spokes are points on    }
+{ the relief outline (GetShapeForCustomRelief): AddCustomRelief(layer,        }
+{ segment, fraction), the fraction from a line's start vertex or from an      }
+{ arc's Angle1 counter-clockwise. GetCustomThermalReliefInfo on a pad whose   }
+{ custom list was never created stops the script, so a list is only read     }
+{ after an add has made sure it exists, and a write always replaces: record  }
+{ (manual, relief, custom on), add one, clear, add the wanted spokes, read.  }
+{ Measured on AD 25.8.1.                                                       }
+{..............................................................................}
+
+{ The one pad named: a part's pad by designator + name, else a free pad by    }
+{ exact x / y (mils from the board origin) or by name. Count says how many    }
+{ matched; the caller refuses anything but one.                               }
+Function PadReliefFind(Board : IPCB_Board; Des, PadName, XS, YS : String;
+    Var Count : Integer) : IPCB_Pad;
+Var
+    Comp : IPCB_Component;
+    GIter : IPCB_GroupIterator;
+    Iter : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+    Name : String;
+    X, Y : Double;
+    ByXY, Hit : Boolean;
+Begin
+    Result := Nil;
+    Count := 0;
+    If Des <> '' Then
+    Begin
+        Comp := Board.GetPcbComponentByRefDes(Des);
+        If Comp = Nil Then Exit;
+        GIter := Comp.GroupIterator_Create;
+        Try
+            GIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                Name := '';
+                Try Name := Pad.Name; Except End;
+                If Name = PadName Then
+                Begin
+                    Inc(Count);
+                    If Result = Nil Then Result := Pad;
+                End;
+                Pad := GIter.NextPCBObject;
+            End;
+        Finally
+            Comp.GroupIterator_Destroy(GIter);
+        End;
+        Exit;
+    End;
+    ByXY := (XS <> '') And (YS <> '');
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessFree);
+        Pad := Iter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            If ByXY Then
+                Hit := (Abs(CoordToMilsF(Pad.X - Board.XOrigin) - X) < 0.001)
+                    And (Abs(CoordToMilsF(Pad.Y - Board.YOrigin) - Y) < 0.001)
+            Else
+            Begin
+                Name := '';
+                Try Name := Pad.Name; Except End;
+                Hit := Name = PadName;
+            End;
+            If Hit Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Pad;
+            End;
+            Pad := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ The layer whose spoke list / outline a via or thru-hole pad call means:  }
+{ top (default), bottom, mid (the first inner layer: every inner layer of a }
+{ top-middle-bottom stack), or a copper layer name. False for anything else. }
+Function PadReliefLayer(Board : IPCB_Board; LayerS : String; Var L : TLayer) : Boolean;
+Begin
+    L := eTopLayer;
+    If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer
+    Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1
+    Else If (LayerS <> '') And (LowerCase(LayerS) <> 'top') Then
+        L := ResolveLayerId(Board, LayerS);
+    Result := ((L >= eTopLayer) And (L <= eBottomLayer))
+        Or ((L >= eInternalPlane1) And (L <= eInternalPlane16));
+End;
+
+{ Stack mode 0 simple, 1 top-middle-bottom, 2 full stack, and the layers   }
+{ the record the empty key reaches covers (measured on vias: the MIDDLE    }
+{ record on a top-middle-bottom stack).                                     }
+Function PadReliefScope(Mode : Integer) : String;
+Begin
+    { Spoke lists: ONE for every layer on a simple stack (a write to any     }
+    { layer replaces it), one each for top / inner / bottom on a             }
+    { top-middle-bottom stack (measured on a via and a thru-hole pad), one   }
+    { per copper layer, planes included, on a full stack (thru-hole pad).    }
+    If Mode = 0 Then
+        Result := JsonStr('mode', 'simple') + ',' + JsonStr('record_scope', 'all layers')
+            + ',' + JsonStr('spoke_scope', 'all layers')
+    Else If Mode = 1 Then
+        Result := JsonStr('mode', 'top-middle-bottom') + ',' + JsonStr('record_scope', 'inner layers')
+            + ',' + JsonStr('spoke_scope', 'per layer')
+    Else
+        Result := JsonStr('mode', 'full stack') + ',' + JsonStr('record_scope', 'unknown')
+            + ',' + JsonStr('spoke_scope', 'per layer');
+End;
+
+{ The free via at exact x / y (mils from the board origin). }
+Function PadReliefFindVia(Board : IPCB_Board; XS, YS : String; Var Count : Integer) : IPCB_Via;
+Var
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    X, Y : Double;
+Begin
+    Result := Nil;
+    Count := 0;
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessFree);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            If (Abs(CoordToMilsF(Via.X - Board.XOrigin) - X) < 0.001)
+                And (Abs(CoordToMilsF(Via.Y - Board.YOrigin) - Y) < 0.001) Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Via;
+            End;
+            Via := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is named only after this says yes   }
+{ (see GetPCBBoardAnywhere).                                                 }
+Function PadReliefLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
+{ The one pad (by name or exact x / y) or via (exact x / y) in a footprint, }
+{ mils from the library's origin. Count says how many matched.              }
+Function PadReliefFindInFootprint(Board : IPCB_Board; Footprint : IPCB_LibComponent;
+    IsVia : Boolean; PadName, XS, YS : String; Var Count : Integer) : IPCB_Primitive;
+Var
+    GIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Name : String;
+    X, Y : Double;
+    ByXY, Hit : Boolean;
+Begin
+    Result := Nil;
+    Count := 0;
+    ByXY := (XS <> '') And (YS <> '');
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    GIter := Footprint.GroupIterator_Create;
+    Try
+        If IsVia Then GIter.AddFilter_ObjectSet(MkSet(eViaObject))
+        Else GIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Prim := GIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If ByXY Then
+                Hit := (Abs(CoordToMilsF(Prim.X - Board.XOrigin) - X) < 0.001)
+                    And (Abs(CoordToMilsF(Prim.Y - Board.YOrigin) - Y) < 0.001)
+            Else
+            Begin
+                Name := '';
+                Try Name := Prim.Name; Except End;
+                Hit := Name = PadName;
+            End;
+            If Hit Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Prim;
+            End;
+            Prim := GIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GIter);
+    End;
+End;
+
+{ The relief record as JSON members. }
+Function PadReliefRecord(D : Variant) : String;
+Var
+    S : String;
+Begin
+    If D.DefinedType = 0 Then S := JsonStr('defined', 'rule')
+    Else S := JsonStr('defined', 'manual');
+    { ConnectStyle on AD 25: 0 relief, 1 direct, 2 no connect. }
+    If D.ConnectStyle = 0 Then S := S + ',' + JsonStr('style', 'relief')
+    Else If D.ConnectStyle = 1 Then S := S + ',' + JsonStr('style', 'direct')
+    Else If D.ConnectStyle = 2 Then S := S + ',' + JsonStr('style', 'none')
+    Else S := S + ',' + JsonStr('style', IntToStr(D.ConnectStyle));
+    S := S + ',' + JsonInt('spokes', D.Entries)
+        + ',' + JsonRaw('width', FloatToJsonStr(CoordToMilsF(D.ConductorWidth)))
+        + ',' + JsonRaw('gap', FloatToJsonStr(CoordToMilsF(D.AirGapWidth)));
+    { Rotation 0 = "45 Angle", 1 = "90 Angle" (the dialog's names). }
+    If D.Rotation = 0 Then S := S + ',' + JsonInt('rotation', 45)
+    Else S := S + ',' + JsonInt('rotation', 90);
+    S := S + ',' + JsonBool('custom', D.UseCustomRelief);
+    Result := S;
+End;
+
+{ The relief outline as a JSON array, mils from the board origin. }
+Function PadReliefOutline(Board : IPCB_Board; Pad : Variant; L : TLayer;
+    Var SegCount : Integer) : String;
+Var
+    Shp : Variant;
+    Seg : TPolySegment;
+    K : Integer;
+    S, One : String;
+Begin
+    S := '';
+    Shp := Pad.GetShapeForCustomRelief(L);
+    SegCount := Shp.ShapeSegmentCount;
+    For K := 0 To SegCount - 1 Do
+    Begin
+        Seg := Shp.ShapeSegments(K);
+        If Seg.Kind = ePolySegmentLine Then One := JsonStr('kind', 'line')
+        Else One := JsonStr('kind', 'arc');
+        One := One + ',' + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Seg.vx - Board.XOrigin)))
+            + ',' + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Seg.vy - Board.YOrigin)));
+        If Seg.Kind <> ePolySegmentLine Then
+            One := One
+                + ',' + JsonRaw('cx', FloatToJsonStr(CoordToMilsF(Seg.cx - Board.XOrigin)))
+                + ',' + JsonRaw('cy', FloatToJsonStr(CoordToMilsF(Seg.cy - Board.YOrigin)))
+                + ',' + JsonRaw('r', FloatToJsonStr(CoordToMilsF(Seg.Radius)))
+                + ',' + JsonRaw('a1', FloatToJsonStr(Seg.Angle1))
+                + ',' + JsonRaw('a2', FloatToJsonStr(Seg.Angle2));
+        If S <> '' Then S := S + ',';
+        S := S + JsonObj(One);
+    End;
+    Result := '[' + S + ']';
+End;
+
+{ The custom spoke points, mils from the board origin. Only call it once an  }
+{ add has made sure the list exists.                                          }
+Function PadReliefSpokes(Board : IPCB_Board; Pad : Variant; L : TLayer) : String;
+Var
+    CRI, Loc : Variant;
+    K, N : Integer;
+    S : String;
+Begin
+    S := '';
+    CRI := Pad.GetCustomThermalReliefInfo(L);
+    N := CRI.ThermalRelieafsCount;
+    For K := 0 To N - 1 Do
+    Begin
+        Loc := CRI.GetState_ThermalRelieafLocation(K);
+        If S <> '' Then S := S + ',';
+        S := S + JsonObj(JsonRaw('x', FloatToJsonStr(CoordToMilsF(Loc.X - Board.XOrigin)))
+            + ',' + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Loc.Y - Board.YOrigin))));
+    End;
+    Result := '[' + S + ']';
+End;
+
+{ Takes the next "segment:fraction" off a points list. False at the end;    }
+{ Edge -1 for a token that does not read.                                     }
+Function PadReliefTake(Var S : String; Var Edge : Integer; Var Frac : Double) : Boolean;
+Var
+    P : Integer;
+    Tok : String;
+Begin
+    Result := False;
+    Tok := '';
+    While (Tok = '') And (Trim(S) <> '') Do
+    Begin
+        P := Pos(';', S);
+        If P > 0 Then
+        Begin
+            Tok := Trim(Copy(S, 1, P - 1));
+            S := Copy(S, P + 1, Length(S));
+        End
+        Else
+        Begin
+            Tok := Trim(S);
+            S := '';
+        End;
+    End;
+    If Tok = '' Then Exit;
+    Result := True;
+    Edge := -1;
+    Frac := -1;
+    P := Pos(':', Tok);
+    If P < 2 Then Exit;
+    Edge := StrToIntDef(Trim(Copy(Tok, 1, P - 1)), -1);
+    Frac := StrToFloatDef(Trim(Copy(Tok, P + 1, Length(Tok))), -1);
+End;
+
+{ Where the throwaway spoke goes (segment 0): a fraction none of the wanted }
+{ points use. A spoke added at the spot of one just cleared is dropped, and  }
+{ a read's add + remove at a real spoke's spot would delete it, so the       }
+{ default is an odd fraction no one picks by hand.                           }
+Function PadReliefSpare(Points : String) : Double;
+Var
+    Rest : String;
+    Edge, K : Integer;
+    Frac, Want : Double;
+    Used : Boolean;
+Begin
+    Result := 0.123457;
+    For K := 0 To 3 Do
+    Begin
+        If K = 0 Then Want := 0.123457
+        Else If K = 1 Then Want := 0.876543
+        Else If K = 2 Then Want := 0.314159
+        Else Want := 0.687213;
+        Used := False;
+        Rest := Points;
+        While PadReliefTake(Rest, Edge, Frac) Do
+            If (Edge = 0) And (Abs(Frac - Want) < 0.0001) Then Used := True;
+        If Not Used Then
+        Begin
+            Result := Want;
+            Exit;
+        End;
+    End;
+End;
+
+{ Params: designator + pad, or pad / x + y for a free pad; action = read     }
+{ (default) | set | spokes.                                                    }
+{   read:   read_spokes = true also lists the custom spokes (it adds and      }
+{           removes one spoke first, so the list exists: one undo step).      }
+{   set:    style rule | relief | direct | none, spokes 2 | 4, width, gap     }
+{           (mils), rotation 45 | 90, custom false (back to standard spokes). }
+{           style rule drops the pad's own values and takes no other value.  }
+{   spokes: points = "segment:fraction;..." on the relief outline, replacing  }
+{           the custom list; width / gap optional.                            }
+{ A thru-hole pad takes a layer like a via (its record and spokes behave    }
+{ the same way: a record, and a spoke list per layer).                      }
+{ kind = via: a free via by exact x + y; layer = top (default) | mid |      }
+{ bottom | a layer name picks the spoke list. A simple via has one record    }
+{ for every layer; on a top-middle-bottom via the record this key reaches   }
+{ is the MIDDLE one (every inner layer): top and bottom records need the    }
+{ key's layer field, which stops the script. Spokes are per layer on both.  }
+{ With a PcbLib in front it acts on a footprint (the current one, or         }
+{ footprint_name made current), whose pads and vias carry the same relief    }
+{ into every board the footprint is placed on; x / y are then mils from the  }
+{ library's origin. GetPCBBoardAnywhere would answer from another board.     }
+Function PCB_PadRelief(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Obj, Item, D : Variant;
+    Des, PadName, XS, YS, Action, Style, SpokesS, WidthS, GapS, RotS, CustomS : String;
+    Points, Rest, Body, Outline, Net, Side, Kind, LayerS : String;
+    L : TLayer;
+    Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge, FinalStyle : Integer;
+    Width, Gap, Frac, PadMin, SpokeW, Spare : Double;
+    IsSmd, ReadSpokes, IsVia : Boolean;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    FootS, Problem : String;
+Begin
+    Des := Trim(ExtractJsonValue(Params, 'designator'));
+    FootS := Trim(ExtractJsonValue(Params, 'footprint_name'));
+    PadName := Trim(ExtractJsonValue(Params, 'pad'));
+    XS := Trim(ExtractJsonValue(Params, 'x'));
+    YS := Trim(ExtractJsonValue(Params, 'y'));
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If Action = '' Then Action := 'read';
+    Style := LowerCase(Trim(ExtractJsonValue(Params, 'style')));
+    SpokesS := Trim(ExtractJsonValue(Params, 'spokes'));
+    WidthS := Trim(ExtractJsonValue(Params, 'width'));
+    GapS := Trim(ExtractJsonValue(Params, 'gap'));
+    RotS := Trim(ExtractJsonValue(Params, 'rotation'));
+    CustomS := LowerCase(Trim(ExtractJsonValue(Params, 'custom')));
+    Points := Trim(ExtractJsonValue(Params, 'points'));
+    ReadSpokes := LowerCase(ExtractJsonValue(Params, 'read_spokes')) = 'true';
+    Kind := LowerCase(Trim(ExtractJsonValue(Params, 'kind')));
+    If Kind = '' Then Kind := 'pad';
+    LayerS := Trim(ExtractJsonValue(Params, 'layer'));
+    IsVia := Kind = 'via';
+
+    If (Action <> 'read') And (Action <> 'set') And (Action <> 'spokes') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is read, set or spokes');
+        Exit;
+    End;
+    If (Kind <> 'pad') And (Kind <> 'via') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'kind is pad or via');
+        Exit;
+    End;
+    If IsVia And ((Des <> '') Or (PadName <> '') Or (XS = '') Or (YS = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'a via is named by x + y only (a free via)');
+        Exit;
+    End;
+    If (Des <> '') And (PadName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pad is required with a designator');
+        Exit;
+    End;
+    If (Des = '') And (PadName = '') And ((XS = '') Or (YS = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designator + pad, or a free pad by pad name or x + y, is required');
+        Exit;
+    End;
+
+    { Every value is checked before anything is written. }
+    StyleN := -1;
+    If Style = 'relief' Then StyleN := 0
+    Else If Style = 'direct' Then StyleN := 1
+    Else If Style = 'none' Then StyleN := 2
+    Else If (Style <> '') And (Style <> 'rule') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'style is rule, relief, direct or none');
+        Exit;
+    End;
+    If (Style = 'rule') And ((SpokesS <> '') Or (WidthS <> '') Or (GapS <> '')
+        Or (RotS <> '') Or (CustomS <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'style rule drops the pad''s own values and takes no other value');
+        Exit;
+    End;
+    Entries := 0;
+    If SpokesS <> '' Then
+    Begin
+        Entries := StrToIntDef(SpokesS, 0);
+        If (Entries <> 2) And (Entries <> 4) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'spokes is 2 or 4');
+            Exit;
+        End;
+    End;
+    Width := 0;
+    If WidthS <> '' Then
+    Begin
+        Width := StrToFloatDef(WidthS, -1);
+        If Width <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'width is a length in mils above 0');
+            Exit;
+        End;
+    End;
+    Gap := 0;
+    If GapS <> '' Then
+    Begin
+        Gap := StrToFloatDef(GapS, -1);
+        If Gap <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'gap is a length in mils above 0');
+            Exit;
+        End;
+    End;
+    If (RotS <> '') And (RotS <> '45') And (RotS <> '90') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'rotation is 45 or 90');
+        Exit;
+    End;
+    If (CustomS <> '') And (CustomS <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'custom takes only false here; custom spokes are set with action spokes');
+        Exit;
+    End;
+    If (Action = 'set') And (Style = '') And (SpokesS = '') And (WidthS = '')
+        And (GapS = '') And (RotS = '') And (CustomS = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'set needs at least one value');
+        Exit;
+    End;
+    NPts := 0;
+    If Action = 'spokes' Then
+    Begin
+        If (Style <> '') Or (SpokesS <> '') Or (RotS <> '') Or (CustomS <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'spokes takes points, width and gap only');
+            Exit;
+        End;
+        MaxEdge := -1;
+        Rest := Points;
+        While PadReliefTake(Rest, Edge, Frac) Do
+        Begin
+            If (Edge < 0) Or (Frac < 0) Or (Frac > 1) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                    'points is "segment:fraction;...", fraction 0 .. 1');
+                Exit;
+            End;
+            If Edge > MaxEdge Then MaxEdge := Edge;
+            Inc(NPts);
+        End;
+        If NPts = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'spokes needs points');
+            Exit;
+        End;
+    End;
+
+    Footprint := Nil;
+    If PadReliefLibInFront(0) Then
+    Begin
+        If Des <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a footprint has no parts: name the pad by pad name or x + y');
+            Exit;
+        End;
+        PcbLib := Nil;
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'The PcbLib in front could not be reached');
+            Exit;
+        End;
+        Footprint := PcbLibTarget(PcbLib, FootS, Problem);
+        If Footprint = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', Problem);
+            Exit;
+        End;
+        Board := PcbLib.Board;
+    End
+    Else
+    Begin
+        If FootS <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'footprint_name is for a PcbLib in front');
+            Exit;
+        End;
+        Board := GetPCBBoardAnywhere(0);
+    End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If Footprint <> Nil Then
+    Begin
+        If IsVia Then
+            Via := PadReliefFindInFootprint(Board, Footprint, True, '', XS, YS, Count)
+        Else
+            Pad := PadReliefFindInFootprint(Board, Footprint, False, PadName, XS, YS, Count);
+    End
+    Else If IsVia Then
+        Via := PadReliefFindVia(Board, XS, YS, Count)
+    Else
+        Pad := PadReliefFind(Board, Des, PadName, XS, YS, Count);
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no ' + Kind + ' ' + Des + ' ' + PadName + ' ' + XS + ' ' + YS);
+        Exit;
+    End;
+    If Count > 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS',
+            IntToStr(Count) + ' ' + Kind + 's match; name a free one by x + y');
+        Exit;
+    End;
+
+    If IsVia Then
+    Begin
+        Obj := Via;
+        If Not PadReliefLayer(Board, LayerS, L) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+            Exit;
+        End;
+        IsSmd := True;
+    End
+    Else
+    Begin
+        Obj := Pad;
+        L := Pad.Layer;
+        IsSmd := (L = eTopLayer) Or (L = eBottomLayer);
+        If IsSmd And (LayerS <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'an SMD pad''s relief is on its own layer; layer is for vias and thru-hole pads');
+            Exit;
+        End;
+        If Not IsSmd Then
+        Begin
+            If Not PadReliefLayer(Board, LayerS, L) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                    'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+                Exit;
+            End;
+            { Like a via from here: a record and a spoke list per layer. }
+            IsSmd := True;
+        End;
+    End;
+    SegCount := 0;
+    Outline := '[]';
+    If IsSmd Then Outline := PadReliefOutline(Board, Obj, L, SegCount);
+    { A spoke as wide as the pad, or wider, has no edge to leave from: the  }
+    { pour then makes a blob of it. Checked wherever spokes will be poured: }
+    { the width given, else the record's own.                               }
+    If IsVia Then
+        PadMin := CoordToMilsF(Via.Size)
+    Else
+    Begin
+        PadMin := CoordToMilsF(Pad.TopXSize);
+        If CoordToMilsF(Pad.TopYSize) < PadMin Then PadMin := CoordToMilsF(Pad.TopYSize);
+    End;
+    Item := TPadViaThermalReliefItem;
+    D := Obj.ThermalReliefData[Item];
+    { The style the pad ends up with: spokes are poured only for relief. }
+    FinalStyle := D.ConnectStyle;
+    If StyleN >= 0 Then FinalStyle := StyleN;
+    If Action = 'spokes' Then FinalStyle := 0;
+    SpokeW := CoordToMilsF(D.ConductorWidth);
+    If WidthS <> '' Then SpokeW := Width;
+    If (Action <> 'read') And (Style <> 'rule') And (FinalStyle = 0) Then
+    Begin
+        If SpokeW >= PadMin Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a spoke ' + FloatToJsonStr(SpokeW) + ' mil wide is not narrower than the pad ('
+                + FloatToJsonStr(PadMin) + ' mil): give a smaller width');
+            Exit;
+        End;
+    End;
+    If (Action = 'spokes') And (MaxEdge >= SegCount) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'the relief outline has ' + IntToStr(SegCount) + ' segments; '
+            + IntToStr(MaxEdge) + ' is not one of them');
+        Exit;
+    End;
+
+    Item := TPadViaThermalReliefItem;
+    If Action <> 'read' Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            Obj.BeginModify;
+            If Style = 'rule' Then
+                Obj.SetAllThermalReliefsToRule
+            Else
+            Begin
+                D := Obj.ThermalReliefData[Item];
+                D.DefinedType := 1;
+                If StyleN >= 0 Then D.ConnectStyle := StyleN;
+                If Entries > 0 Then D.Entries := Entries;
+                If WidthS <> '' Then D.ConductorWidth := MilsToCoordF(Width);
+                If GapS <> '' Then D.AirGapWidth := MilsToCoordF(Gap);
+                If RotS = '45' Then D.Rotation := 0;
+                If RotS = '90' Then D.Rotation := 1;
+                If CustomS = 'false' Then D.UseCustomRelief := False;
+                If Action = 'spokes' Then
+                Begin
+                    D.ConnectStyle := 0;
+                    D.UseCustomRelief := True;
+                End;
+                Obj.ThermalReliefData[Item] := D;
+                If Action = 'spokes' Then
+                Begin
+                    { The add makes sure the list exists before the clear; }
+                    { at a spot no wanted spoke uses.                        }
+                    Spare := PadReliefSpare(Points);
+                    Obj.AddCustomRelief(L, 0, Spare);
+                    Obj.ClearCustomRelief(L);
+                    Rest := Points;
+                    While PadReliefTake(Rest, Edge, Frac) Do
+                        Obj.AddCustomRelief(L, Edge, Frac);
+                End;
+            End;
+            Obj.EndModify;
+            Obj.GraphicallyInvalidate;
+        Finally
+            PcbEndEdit(0);
+        End;
+        If Footprint <> Nil Then MarkDocDirtyByPath(Board.FileName);
+    End
+    Else If ReadSpokes And IsSmd And (SegCount > 0) Then
+    Begin
+        D := Obj.ThermalReliefData[Item];
+        If D.UseCustomRelief Then
+        Begin
+            PcbBeginEdit(0);
+            Try
+                Obj.BeginModify;
+                Spare := PadReliefSpare('');
+                Obj.AddCustomRelief(L, 0, Spare);
+                Obj.RemoveCustomRelief(L, 0, Spare);
+                Obj.EndModify;
+            Finally
+                PcbEndEdit(0);
+            End;
+        End;
+    End;
+
+    D := Obj.ThermalReliefData[Item];
+    Net := '';
+    Try If Obj.Net <> Nil Then Net := Obj.Net.Name; Except End;
+    If IsVia Then
+    Begin
+        Body := JsonStr('kind', 'via') + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Via.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Via.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', 'via') + ','
+            + PadReliefScope(Via.Mode) + ','
+            + JsonRaw('pad_rotation', '0') + ','
+            + JsonStr('shape', 'round') + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Via.HoleSize))) + ',';
+    End
+    Else
+    Begin
+        If Pad.Layer = eTopLayer Then Side := 'top'
+        Else If Pad.Layer = eBottomLayer Then Side := 'bottom'
+        Else Side := 'thru';
+        Body := JsonStr('kind', 'pad') + ',' + JsonStr('designator', Des) + ','
+            + JsonStr('pad', Pad.Name) + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Pad.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Pad.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', Side) + ','
+            + JsonRaw('pad_rotation', FloatToJsonStr(Pad.Rotation)) + ','
+            + JsonStr('shape', LmShapeName(Pad.TopShape)) + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Pad.TopXSize))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Pad.TopYSize))) + ',';
+        If Side = 'thru' Then
+            Body := Body + PadReliefScope(Pad.Mode) + ','
+                + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Pad.HoleSize))) + ',';
+    End;
+    Body := Body + JsonStr('net', Net) + ','
+        + PadReliefRecord(D) + ','
+        + JsonInt('manual_reliefs', Obj.ManualThermalReliefsCount) + ','
+        + JsonRaw('outline', Outline);
+    { The custom list is read only where this call made sure it exists. }
+    If IsSmd And (SegCount > 0) And D.UseCustomRelief
+        And ((Action = 'spokes') Or ReadSpokes) Then
+        Body := Body + ',' + JsonRaw('custom_spokes', PadReliefSpokes(Board, Obj, L));
+    If Footprint <> Nil Then
+        Body := Body + ',' + JsonStr('footprint', Footprint.Name);
+    Result := BuildSuccessResponse(RequestId, '{' + Body + '}');
+End;
+
+{..............................................................................}
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
@@ -72715,6 +74405,7 @@ Begin
         'output_options':          Result := PCB_OutputOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'plane_connections':       Result := PCB_PlaneConnections(Params, RequestId);
+        'pad_relief':              Result := PCB_PadRelief(Params, RequestId);
         'grow_pour':               Result := PCB_GrowPour(Params, RequestId);
         'board_regions':           Result := PCB_BoardRegions(Params, RequestId);
         'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
@@ -72741,6 +74432,7 @@ Begin
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
+        'cockpit_state':           Result := PCB_CockpitState(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'layer_view':              Result := PCB_LayerView(Params, RequestId);
         'view':                    Result := PCB_View(Params, RequestId);
@@ -73206,6 +74898,14 @@ Begin
     Else If PropName = 'SuppressableErrors' Then
     Begin
         Try Result := N.StrSuppressableErrors; Except End;
+    End
+    Else If PropName = 'Symbol' Then
+    Begin
+        Try Result := IntToStr(N.Symbol); Except End;
+    End
+    Else If PropName = 'Orientation' Then
+    Begin
+        Try Result := IntToStr(N.Orientation); Except End;
     End;
 End;
 
@@ -73231,6 +74931,14 @@ Begin
     Else If PropName = 'ConnectionPairsToSuppress' Then
     Begin
         Try N.StrConnectionPairsToSuppress := Value; Except NoteWriteFailed('NoERC.ConnectionPairsToSuppress'); End;
+    End
+    Else If (PropName = 'Symbol') And IsIntStr(Value) Then
+    Begin
+        Try N.Symbol := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Symbol'); End;
+    End
+    Else If (PropName = 'Orientation') And IsIntStr(Value) Then
+    Begin
+        Try N.Orientation := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Orientation'); End;
     End;
 End;
 
@@ -74904,7 +76612,7 @@ Begin
         Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
             Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
             Or (PropName = 'ConnectionPairsToSuppress')
-            Or (PropName = 'SuppressableErrors')) Then
+            Or (PropName = 'SuppressableErrors') Or (PropName = 'Symbol')) Then
             Result := ReadNoErcProp(Obj, PropName)
         Else If PropName = 'CurrentPartID' Then
         Begin
@@ -75453,7 +77161,7 @@ Begin
         End
         Else If (Obj.ObjectId = eNoERC) And ((PropName = 'SuppressAll')
             Or (PropName = 'IsActive') Or (PropName = 'ErrorKindSetToSuppress')
-            Or (PropName = 'ConnectionPairsToSuppress')) Then
+            Or (PropName = 'ConnectionPairsToSuppress') Or (PropName = 'Symbol')) Then
         Begin
             WriteNoErcProp(Obj, PropName, Value);
             WroteOK := (LowerCase(ReadNoErcProp(Obj, PropName)) = LowerCase(Value));
@@ -79875,7 +81583,10 @@ Begin
                 If Sym.SheetName <> Nil Then
                     ThisName := Sym.SheetName.Text;
             Except End;
-            If ThisName = SheetNameStr Then
+            { A repeated sheet is named Repeat(CH,1,4); its plain name finds it. }
+            If (ThisName = SheetNameStr)
+                Or (Pos(UpperCase('Repeat(' + SheetNameStr + ','),
+                        UpperCase(StringReplace(ThisName, ' ', '', -1))) = 1) Then
             Begin
                 Found := True;
                 Break;
@@ -80554,6 +82265,58 @@ Begin
         + '"designator":"' + EscapeJsonString(DesigStr) + '"}');
 End;
 
+{ A new parameter set at (X, Y) mils carrying 'Name=Value|Name=Value'.      }
+{ Nil when the list holds no Name=Value pair. Used by directives and        }
+{ blankets alike.                                                           }
+Function NewParamSet(X : Double; Y : Double; ParamList : String) : ISch_ParameterSet;
+Var
+    PSet : ISch_ParameterSet;
+    Remaining, Pair, PName, PValue : String;
+    BarPos, EqPos, Added : Integer;
+    Param : ISch_Parameter;
+Begin
+    Result := Nil;
+    PSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+    If PSet = Nil Then Exit;
+    PSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
+    Added := 0;
+    Remaining := ParamList;
+    While Remaining <> '' Do
+    Begin
+        BarPos := Pos('|', Remaining);
+        If BarPos > 0 Then
+        Begin
+            Pair := Copy(Remaining, 1, BarPos - 1);
+            Remaining := Copy(Remaining, BarPos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Pair);
+        If EqPos > 1 Then
+        Begin
+            PName := Trim(Copy(Pair, 1, EqPos - 1));
+            PValue := Trim(Copy(Pair, EqPos + 1, Length(Pair)));
+            Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+            If Param <> Nil Then
+            Begin
+                Param.Name := PName;
+                Param.Text := PValue;
+                PSet.AddSchObject(Param);
+                SchRegisterObject(PSet, Param);
+                If Added = 0 Then
+                Begin
+                    Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
+                End;
+                Inc(Added);
+            End;
+        End;
+    End;
+    If Added > 0 Then Result := PSet;
+End;
+
 { One parameter set as JSON: name, place, the parameters it carries, and   }
 { where it was found ("sheet", or "blanket" for one held inside a blanket). }
 Function ParamSetJson(ParamSet : ISch_BasicContainer; Owner : String) : String;
@@ -80563,9 +82326,12 @@ Var
     ChildJson, PName, PValue, DirName : String;
     FirstChild : Boolean;
     X, Y : Double;
+    Style, Orient : Integer;
 Begin
-    DirName := ''; X := 0; Y := 0;
+    DirName := ''; X := 0; Y := 0; Style := -1; Orient := -1;
     Try DirName := ParamSet.Name; Except End;
+    Try Style := ParamSet.Style; Except End;
+    Try Orient := ParamSet.Orientation; Except End;
     Try X := CoordToMilsF(ParamSet.Location.X); Except End;
     Try Y := CoordToMilsF(ParamSet.Location.Y); Except End;
     ChildJson := '';
@@ -80590,6 +82356,7 @@ Begin
     Result := '{"name":"' + EscapeJsonString(DirName) + '",'
         + '"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
         + '"owner":"' + Owner + '",'
+        + '"style":' + IntToStr(Style) + ',"orientation":' + IntToStr(Orient) + ','
         + '"parameters":[' + ChildJson + ']}';
 End;
 
@@ -80598,25 +82365,36 @@ End;
 { A parameter-set directive attaches a named parameter to a wire or net,     }
 { commonly used for differential pairs (DifferentialPair=<pair name>), net   }
 { class membership (NetClass=<class name>), or custom net-level rules.        }
-{ Params: x, y, param_name, param_value                                       }
+{ Params: x, y, and param_name + param_value or parameters                   }
+{         'Name=Value|Name=Value'; optional style and orientation (integers)  }
 {..............................................................................}
 
 Function Gen_PlaceDirective(Params : String; RequestId : String) : String;
 Var
     X, Y : Double;
-    ParamName, ParamValue : String;
+    ParamName, ParamValue, ParamList, StyleStr, OrientStr : String;
     SchDoc : ISch_Document;
     ParamSet : ISch_ParameterSet;
-    Param : ISch_Parameter;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     ParamName := ExtractJsonValue(Params, 'param_name');
     ParamValue := ExtractJsonValue(Params, 'param_value');
+    ParamList := ExtractJsonValue(Params, 'parameters');
+    StyleStr := ExtractJsonValue(Params, 'style');
+    OrientStr := ExtractJsonValue(Params, 'orientation');
+    If (ParamList = '') And (ParamName <> '') Then ParamList := ParamName + '=' + ParamValue;
 
-    If ParamName = '' Then
+    If ParamList = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'param_name or parameters required');
+        Exit;
+    End;
+    If ((StyleStr <> '') And (Not IsIntStr(StyleStr)))
+        Or ((OrientStr <> '') And (Not IsIntStr(OrientStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'style and orientation are integers. Nothing was placed.');
         Exit;
     End;
 
@@ -80628,27 +82406,24 @@ Begin
     End;
 
     { ISch_ParameterSet is the proper directive interface, a group of
-      parameters applied to the wire/net at its location. Create the
-      parameter set first, then add a child ISch_Parameter carrying the
-      actual (name, value) payload. ISch_Parameter alone would render
-      as free-standing text and not act as a directive. }
-    ParamSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
+      parameters applied to the wire/net at its location; each carries
+      one ISch_Parameter. ISch_Parameter alone would render as
+      free-standing text and not act as a directive. }
+    ParamSet := NewParamSet(X, Y, ParamList);
     If ParamSet = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create parameter-set directive');
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'parameters must be Name=Value pairs joined by |; got "'
+            + EscapeJsonString(ParamList) + '". Nothing was placed.');
         Exit;
     End;
-
-    ParamSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
-    Try ParamSet.Name := ParamName; Except NoteWriteFailed('directive Name'); End;
-
-    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-    If Param <> Nil Then
+    If StyleStr <> '' Then
     Begin
-        Param.Name := ParamName;
-        Param.Text := ParamValue;
-        ParamSet.AddSchObject(Param);
-        SchRegisterObject(ParamSet, Param);
+        Try ParamSet.Style := StrToIntDef(StyleStr, 0); Except NoteWriteFailed('directive Style'); End;
+    End;
+    If OrientStr <> '' Then
+    Begin
+        Try ParamSet.Orientation := StrToIntDef(OrientStr, 0); Except NoteWriteFailed('directive Orientation'); End;
     End;
 
     SchBeginEdit(SchDoc, '');
@@ -80668,7 +82443,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
         + '"param_name":"' + EscapeJsonString(ParamName) + '",'
-        + '"param_value":"' + EscapeJsonString(ParamValue) + '"}');
+        + '"param_value":"' + EscapeJsonString(ParamValue) + '",'
+        + '"directive":' + ParamSetJson(ParamSet, 'sheet') + '}');
 End;
 
 {..............................................................................}
@@ -80758,17 +82534,19 @@ End;
 
 Function Gen_PlaceCompileMask(Params : String; RequestId : String) : String;
 Var
-    TmpI : Integer;
+    TmpF : Double;
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     Mask : ISch_CompileMask;
+    CollStr : String;
 Begin
     X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
     Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
     X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
     Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    CollStr := LowerCase(ExtractJsonValue(Params, 'collapsed'));
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -80786,6 +82564,10 @@ Begin
 
     Mask.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Mask.Corner := Point(MilsToCoordF(X2), MilsToCoordF(Y2));
+    If (CollStr = 'true') Or (CollStr = 'false') Then
+    Begin
+        Try Mask.Collapsed := (CollStr = 'true'); Except NoteWriteFailed('CompileMask.Collapsed'); End;
+    End;
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Mask);
@@ -80801,10 +82583,14 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    { Read back, so a mask that did not take its box says so. }
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
-        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
+        + '"x1":' + FloatToJsonStr(CoordToMilsF(Mask.Location.X))
+        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Mask.Location.Y)) + ','
+        + '"x2":' + FloatToJsonStr(CoordToMilsF(Mask.Corner.X))
+        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Mask.Corner.Y)) + ','
+        + '"collapsed":' + BoolToJsonStr(Mask.Collapsed) + '}');
 End;
 
 {..............................................................................}
@@ -80816,57 +82602,6 @@ End;
 { is checked rather than trusted. ParamSetJson, which they share with      }
 { Gen_GetDirectives, is defined above that function.                         }
 {..............................................................................}
-
-{ A new parameter set at (X, Y) mils carrying 'Name=Value|Name=Value'.      }
-{ Nil when the list holds no Name=Value pair.                               }
-Function NewParamSet(X : Double; Y : Double; ParamList : String) : ISch_ParameterSet;
-Var
-    PSet : ISch_ParameterSet;
-    Remaining, Pair, PName, PValue : String;
-    BarPos, EqPos, Added : Integer;
-    Param : ISch_Parameter;
-Begin
-    Result := Nil;
-    PSet := SchServer.SchObjectFactory(eParameterSet, eCreate_Default);
-    If PSet = Nil Then Exit;
-    PSet.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
-    Added := 0;
-    Remaining := ParamList;
-    While Remaining <> '' Do
-    Begin
-        BarPos := Pos('|', Remaining);
-        If BarPos > 0 Then
-        Begin
-            Pair := Copy(Remaining, 1, BarPos - 1);
-            Remaining := Copy(Remaining, BarPos + 1, Length(Remaining));
-        End
-        Else
-        Begin
-            Pair := Remaining;
-            Remaining := '';
-        End;
-        EqPos := Pos('=', Pair);
-        If EqPos > 1 Then
-        Begin
-            PName := Trim(Copy(Pair, 1, EqPos - 1));
-            PValue := Trim(Copy(Pair, EqPos + 1, Length(Pair)));
-            Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
-            If Param <> Nil Then
-            Begin
-                Param.Name := PName;
-                Param.Text := PValue;
-                PSet.AddSchObject(Param);
-                SchRegisterObject(PSet, Param);
-                If Added = 0 Then
-                Begin
-                    Try PSet.Name := PName; Except NoteWriteFailed('directive Name'); End;
-                End;
-                Inc(Added);
-            End;
-        End;
-    End;
-    If Added > 0 Then Result := PSet;
-End;
 
 { Place a blanket from an outline, with the directive it carries.           }
 { Params: vertices 'x1,y1,x2,y2,...' (mils, at least 3 points);             }
@@ -81021,7 +82756,8 @@ Var
     DMDoc : IDocument;
     DMB : IBlanket;
     Item : INetItem;
-    Json, DirJson, NetsJson, NetList, NetName, Seen : String;
+    DMSym : ISheetSymbol;
+    Json, DirJson, NetsJson, NetList, NetName, Seen, SymList, SymName, SymFile : String;
     First, FirstDir, FirstNet : Boolean;
     Count, I, J, Style : Integer;
     Coll : Boolean;
@@ -81139,13 +82875,30 @@ Begin
                         NetList := NetList + '"' + EscapeJsonString(NetName) + '"';
                     End;
                 End;
+                { Sheet symbols it covers: its directive reaches every net }
+                { through their entries.                                    }
+                SymList := '';
+                Try
+                    For J := 0 To DMB.DM_SheetSymbolCount - 1 Do
+                    Begin
+                        DMSym := Nil; SymName := ''; SymFile := '';
+                        Try DMSym := DMB.DM_SheetSymbols(J); Except DMSym := Nil; End;
+                        If DMSym = Nil Then Continue;
+                        Try SymName := DMSym.DM_LogicalDesignator; Except End;
+                        Try SymFile := DMSym.DM_SheetSymbolFileName; Except End;
+                        If SymList <> '' Then SymList := SymList + ',';
+                        SymList := SymList + '{"sheet_name":"' + EscapeJsonString(SymName)
+                            + '","file":"' + EscapeJsonString(SymFile) + '"}';
+                    End;
+                Except End;
                 If Not First Then NetsJson := NetsJson + ',';
                 First := False;
                 { No position: a compiled blanket reports 0,0 for its      }
                 { location (measured on AD 26.11), so it would only mislead. }
                 NetsJson := NetsJson + '{"index":' + IntToStr(I)
                     + ',"net_items":' + IntToStr(DMB.DM_NetItemCount)
-                    + ',"nets":[' + NetList + ']}';
+                    + ',"nets":[' + NetList + ']'
+                    + ',"sheet_symbols":[' + SymList + ']}';
             End;
         End;
     End;
@@ -82182,8 +83935,15 @@ End;
 
 {..............................................................................}
 { Place a No-ERC marker at coordinates on active schematic                    }
-{ Params: x, y                                                                }
+{ Params: x, y; optional symbol, orientation (integers), suppress_all,       }
+{ active (true/false), error_kinds, connection_pairs (Altium's strings).     }
 {..............................................................................}
+
+{ A number or true/false read off a marker, as JSON; null when unreadable. }
+Function NoErcJsonVal(S : String) : String;
+Begin
+    If S = '' Then Result := 'null' Else Result := S;
+End;
 
 Function Gen_PlaceNoERC(Params : String; RequestId : String) : String;
 Var
@@ -82194,6 +83954,7 @@ Var
     Iterator : ISch_Iterator;
     Workspace : IWorkspace;
     TemplatePath, TemplateId, NewId : String;
+    Value, Back : String;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
@@ -82254,8 +84015,24 @@ Begin
         Exit;
     End;
 
-    ApplyNoErcDefaults(NoERC);
+    { A replica keeps the template's suppression: the template was checked
+      above to suppress specific violations only, and the defaults would
+      turn it back into a suppress-everything marker. }
+    If TemplateId = '' Then ApplyNoErcDefaults(NoERC);
     NoERC.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
+    { The caller's options, after the defaults so they can narrow them. }
+    Value := ExtractJsonValue(Params, 'symbol');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'Symbol', Value);
+    Value := ExtractJsonValue(Params, 'orientation');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'Orientation', Value);
+    Value := ExtractJsonValue(Params, 'suppress_all');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'SuppressAll', Value);
+    Value := ExtractJsonValue(Params, 'active');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'IsActive', Value);
+    Value := ExtractJsonValue(Params, 'error_kinds');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'ErrorKindSetToSuppress', Value);
+    Value := ExtractJsonValue(Params, 'connection_pairs');
+    If Value <> '' Then WriteNoErcProp(NoERC, 'ConnectionPairsToSuppress', Value);
 
     SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NoERC);
@@ -82271,10 +84048,16 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Back := '"symbol":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'Symbol'))
+        + ',"orientation":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'Orientation'))
+        + ',"suppress_all":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'SuppressAll'))
+        + ',"active":' + NoErcJsonVal(ReadNoErcProp(NoERC, 'IsActive'))
+        + ',"error_kinds":"' + EscapeJsonString(ReadNoErcProp(NoERC, 'ErrorKindSetToSuppress')) + '"'
+        + ',"connection_pairs":"' + EscapeJsonString(ReadNoErcProp(NoERC, 'ConnectionPairsToSuppress')) + '"';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) +
         ',"unique_id":"' + EscapeJsonString(NoERC.UniqueId) +
-        '","template_unique_id":"' + EscapeJsonString(TemplateId) + '"}');
+        '","template_unique_id":"' + EscapeJsonString(TemplateId) + '",' + Back + '}');
 End;
 
 {..............................................................................}
@@ -95280,6 +97063,219 @@ Begin
 End;
 
 
+{ Audit_FindStaleReadPaths                                                    }
+{                                                                              }
+{ A write that reports success can leave a read path behind: the getters show }
+{ the new state while another way of finding the object still answers from   }
+{ the old one (#208: a via's mask moved its box, its spatial index entry     }
+{ stayed, and a search by the new box found nothing). This walks the board  }
+{ and asks each read path for every object:                                   }
+{   index   the spatial index hands the object out where it is, at the      }
+{           centre of its bounding box (searches by area, the online DRC,    }
+{           pours and picking go through it). An object it holds there but  }
+{           not at the corners of the box the getters report is counted as  }
+{           index_box, not as stale: Altium indexes a via whose mask comes  }
+{           from the rules by a narrower box (BoardIndexState);              }
+{   net     an object that reports a net is in that net's own list           }
+{           (connectivity, the ratsnest and pours walk the list; poured      }
+{           copper is not in it and is not asked);                           }
+{   counts  per primitive type (the spatial iterator never hands out group }
+{           objects: components and polygons), the index over the board     }
+{           holds as many objects as the board walk: more means an entry    }
+{           left for a deleted object, fewer an object never indexed.       }
+
+Function StaleTypeId(T : Integer) : Integer;
+Begin
+    Case T Of
+        0 : Result := eTrackObject;
+        1 : Result := eArcObject;
+        2 : Result := eViaObject;
+        3 : Result := ePadObject;
+        4 : Result := eFillObject;
+        5 : Result := eRegionObject;
+        6 : Result := eTextObject;
+    Else
+        Result := eComponentBodyObject;
+    End;
+End;
+
+Function StaleTypeWanted(Types : String; Name : String) : Boolean;
+Begin
+    Result := (Types = '') Or (Pos(',' + Name + ',', ',' + Types + ',') > 0);
+End;
+
+Function Audit_FindStaleReadPaths(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Spatial : IPCB_SpatialIterator;
+    NetIter : IPCB_BoardIterator;
+    Group : IPCB_GroupIterator;
+    Obj, Member : IPCB_Primitive;
+    Net : IPCB_Net;
+    Members : TStringList;
+    BR : TCoordRect;
+    T, TypeId, State, Narrow, Limit, Checked, StaleIdx, StaleNet, Mismatch, Walked, Indexed, Shown : Integer;
+    Types, Name, ItemsJson, CountsJson, Response, NetName, Owner : String;
+    Lo, Hi : TCoord;
+Begin
+    Board := ResolvePCBBoard(ExtractJsonValue(Params, 'board_path'));
+    If Board = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No board open at that path, and none focused');
+        Result := Response;
+        Exit;
+    End;
+    Types := LowerCase(ExtractJsonValue(Params, 'types'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
+
+    { Every primitive any net lists. }
+    Members := TStringList.Create;
+    Members.Sorted := True;
+    NetIter := Board.BoardIterator_Create;
+    Try
+        NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+        NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        NetIter.AddFilter_Method(eProcessAll);
+        Net := NetIter.FirstPCBObject;
+        While Net <> Nil Do
+        Begin
+            Group := Net.GroupIterator_Create;
+            Try
+                Group.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    ePadObject, eFillObject, eRegionObject, eTextObject,
+                    eComponentBodyObject));
+                Member := Group.FirstPCBObject;
+                While Member <> Nil Do
+                Begin
+                    Members.Add(IntToStr(Member.I_ObjectAddress));
+                    Member := Group.NextPCBObject;
+                End;
+            Finally
+                Net.GroupIterator_Destroy(Group);
+            End;
+            Net := NetIter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(NetIter);
+    End;
+
+    Checked := 0; Narrow := 0; StaleIdx := 0; StaleNet := 0; Mismatch := 0; Shown := 0;
+    ItemsJson := ''; CountsJson := '';
+    Lo := MilsToCoordF(-200000);
+    Hi := MilsToCoordF(200000);
+    Try
+        For T := 0 To 7 Do
+        Begin
+            TypeId := StaleTypeId(T);
+            Name := ObjectIDToObjectName(TypeId);
+            If Not StaleTypeWanted(Types, Name) Then Continue;
+            Walked := 0;
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(TypeId));
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iter.AddFilter_Method(eProcessAll);
+                Obj := Iter.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Walked);
+                    Inc(Checked);
+                    State := BoardIndexState(Board, Obj);
+                    If State = 1 Then Inc(Narrow);
+                    If (State And 1) = 0 Then
+                    Begin
+                        Inc(StaleIdx);
+                        If Shown < Limit Then
+                        Begin
+                            BR := Obj.BoundingRectangle;
+                            Owner := '';
+                            If Obj.InComponent Then Owner := 'component'
+                            Else If Obj.InPolygon Then Owner := 'polygon'
+                            Else If Obj.InDimension Then Owner := 'dimension';
+                            If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                            ItemsJson := ItemsJson + JsonObj(
+                                JsonStr('read_path', 'index') + ','
+                                + JsonStr('type', Name) + ','
+                                + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
+                                + JsonStr('owner', Owner) + ','
+                                + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                + JsonFloat('bottom', CoordToMilsF(BR.Bottom)) + ','
+                                + JsonFloat('right', CoordToMilsF(BR.Right)) + ','
+                                + JsonFloat('top', CoordToMilsF(BR.Top)));
+                            Inc(Shown);
+                        End;
+                    End;
+                    Net := Nil;
+                    If Not Obj.InPolygon Then Net := Obj.Net;
+                    If Net <> Nil Then
+                    Begin
+                        If Members.IndexOf(IntToStr(Obj.I_ObjectAddress)) < 0 Then
+                        Begin
+                            Inc(StaleNet);
+                            If Shown < Limit Then
+                            Begin
+                                BR := Obj.BoundingRectangle;
+                                NetName := '';
+                                Try NetName := Net.Name; Except End;
+                                If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                                ItemsJson := ItemsJson + JsonObj(
+                                    JsonStr('read_path', 'net') + ','
+                                    + JsonStr('type', Name) + ','
+                                    + JsonStr('net', NetName) + ','
+                                    + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
+                                    + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                    + JsonFloat('bottom', CoordToMilsF(BR.Bottom)));
+                                Inc(Shown);
+                            End;
+                        End;
+                    End;
+                    Obj := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+
+            Indexed := 0;
+            Spatial := Board.SpatialIterator_Create;
+            Try
+                Spatial.AddFilter_ObjectSet(MkSet(TypeId));
+                Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Spatial.AddFilter_Area(Lo, Lo, Hi, Hi);
+                Obj := Spatial.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Indexed);
+                    Obj := Spatial.NextPCBObject;
+                End;
+            Finally
+                Board.SpatialIterator_Destroy(Spatial);
+            End;
+            If Indexed <> Walked Then Inc(Mismatch);
+            If CountsJson <> '' Then CountsJson := CountsJson + ',';
+            CountsJson := CountsJson + JsonObj(JsonStr('type', Name) + ','
+                + JsonInt('board', Walked) + ',' + JsonInt('index', Indexed));
+        End;
+    Finally
+        Members.Free;
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonInt('checked', Checked) + ',' +
+            JsonInt('violations', StaleIdx + StaleNet + Mismatch) + ',' +
+            JsonInt('stale_index', StaleIdx) + ',' +
+            JsonInt('count_mismatches', Mismatch) + ',' +
+            JsonInt('index_box', Narrow) + ',' +
+            JsonInt('stale_net', StaleNet) + ',' +
+            JsonRaw('counts', '[' + CountsJson + ']') + ',' +
+            JsonRaw('items', '[' + ItemsJson + ']')
+        ));
+    Result := Response;
+End;
+
+
 Function HandleAuditCommand(Action : String; Params : String;
                              RequestId : String) : String;
 Begin
@@ -95343,6 +97339,8 @@ Begin
         Result := Audit_FindInconsistentTrackWidths(Params, RequestId)
     Else If Action = 'find_pads_center_not_connected' Then
         Result := Audit_FindPadsCenterNotConnected(Params, RequestId)
+    Else If Action = 'find_stale_read_paths' Then
+        Result := Audit_FindStaleReadPaths(Params, RequestId)
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown audit action: ' + Action);
@@ -95848,7 +97846,8 @@ Begin
     Tip := 'Time left before the bridge stops on its own when no commands '
         + 'arrive. Every command starts the countdown again, and so does '
         + 'Renew. Amber under two minutes, red under 30 seconds; it does not '
-        + 'run while paused.';
+        + 'run while paused. Double-click to switch auto-off off ("always on") '
+        + 'or back on for this session; the config file is not changed.';
     SetTip(pnl_K4, Tip);  SetTip(lbl_LblStop, Tip);  SetTip(lbl_ValStop, Tip);
 
     Tip := 'The latest error or notice from the bridge.';
@@ -95991,6 +97990,16 @@ Var
     Col : Cardinal;
     Caption : String;
 Begin
+    { 0 = no auto-off: the countdown would otherwise subtract the elapsed }
+    { time from 0 and show a meaningless number.                          }
+    If AutoShutdownMs = 0 Then
+    Begin
+        Try
+            lbl_ValStop.Font.Color := COLOR_ACCENT_GREEN;
+            lbl_ValStop.Caption := 'always on';
+        Except End;
+        Exit;
+    End;
     If IdleSecToShutdown <= 30 Then Col := COLOR_ACCENT_RED
     Else If IdleSecToShutdown <= 120 Then Col := COLOR_ACCENT_AMBER
     Else Col := COLOR_ACCENT_GREEN;
@@ -96433,6 +98442,24 @@ Begin
     { Also reset the local tick so the visible countdown jumps back to the   }
     { full window immediately, without waiting for the next poll.            }
     Try LastActivityTick := GetTickCount; Except End;
+End;
+
+{ Double-click on the auto-off card: "always on" (no auto-off) or back to  }
+{ the countdown, from the full configured period. For this session only;   }
+{ mcp_config.json keeps its auto_shutdown_ms.                              }
+Procedure pnl_K4DblClick(Sender : TObject);
+Begin
+    If AutoShutdownMs > 0 Then
+        AutoShutdownMs := 0
+    Else
+    Begin
+        AutoShutdownMs := ConfiguredShutdownMs;
+        If AutoShutdownMs = 0 Then AutoShutdownMs := 600000;
+        { Start from the full period, as Renew does. }
+        Try RenewRequested := True; Except End;
+        Try LastActivityTick := GetTickCount; Except End;
+    End;
+    ColorCountdown(AutoShutdownMs Div 1000);
 End;
 
 
@@ -97271,7 +99298,51 @@ Begin
         Or (Cmd = 'project.close');
 End;
 
+{ A read, or a command that only brings a document forward or moves the }
+{ view: it neither claims a document nor is refused one (OwnerRefusal). }
+Function CommandOnlyLooks(Command : String) : Boolean;
+Var
+    Verb : String;
+Begin
+    Verb := CommandVerb(Command);
+    Result := CommandIsReadOnly(Command)
+        Or (Verb = 'focus_board')
+        Or (Verb = 'set_active_document')
+        Or (Verb = 'cockpit_state')
+        Or (Verb = 'zoom')
+        Or (Verb = 'switch_view')
+        Or (Verb = 'refresh_document')
+        Or (Verb = 'highlight_net')
+        Or (Verb = 'clear_highlights')
+        Or (Verb = 'layer_view')
+        Or (Verb = 'document_owners')
+        Or (Verb = 'claim_document');
+End;
+
 { END COMMAND RULES }
+
+{ The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
+Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
+Var
+    Rec, Owner : String;
+    Age : Integer;
+Begin
+    Result := '';
+    Rec := OwnerRecord(OwnerKey(Path));
+    If Rec = '' Then Exit;
+    Owner := OwnerField(Rec, 0);
+    If Owner = RequestTag(RequestId) Then Exit;
+    Age := OwnerAgeMs(Rec);
+    If Age >= OWNER_IDLE_MS Then Exit;
+    Result := BuildErrorResponse(RequestId, 'DOCUMENT_IN_USE',
+        Command + ' is refused: ' + Path + ' is being edited by another '
+        + 'Claude session (' + Owner + ', last ' + OwnerField(Rec, 2) + ' '
+        + IntToStr(Age Div 1000) + ' s ago). Nothing was changed. Work on '
+        + 'another document, or ask the user: application.claim_document '
+        + '(app_claim_document) hands it over when they say so. It is free '
+        + 'again once that session has left it alone for '
+        + IntToStr(OWNER_IDLE_MS Div 60000) + ' minutes.');
+End;
 
 Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
 Begin
@@ -97343,6 +99414,8 @@ Var
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
+    Actor, OwnTarget : String;
+    Writes, OwnRefused : Boolean;
     DashDetail, DashErrPayload, DashCode : String;
 Begin
     Result := False;
@@ -97437,6 +99510,14 @@ Begin
       below reports only what the handler itself moved. }
     SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
+    { What a write would act on: a path the command names, else the
+      document in front once the session's own is back. }
+    Actor := LowerCase(ExtractJsonValue(RequestContent, 'actor'));
+    Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
+    OwnTarget := ExtractJsonValue(Params, 'board_path');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'expect_file');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'file_path');
+    If OwnTarget = '' Then OwnTarget := FocusBefore;
     ResetNextStep(0);
 
     ExceptionMsg := '';
@@ -97453,8 +99534,21 @@ Begin
             { The Config tab's permissions: refused here, where every request
               passes, so a client running older Python is held to them too. }
             ResponseContent := SettingRefusal(Command, Params, RequestId);
+            { A write from a session's tool call, never the person at the
+              dashboard, may not land on a document another session is
+              editing (OwnerRefusal). }
+            OwnRefused := False;
+            If (ResponseContent = '') And Writes And (Actor <> 'user')
+                And Not CommandOnlyLooks(Command) Then
+            Begin
+                ResponseContent := OwnerRefusal(OwnTarget, RequestId, Command);
+                OwnRefused := ResponseContent <> '';
+            End;
             If ResponseContent = '' Then
                 ResponseContent := ProcessCommand(Command, Params, RequestId);
+            If Writes And (Actor <> 'user') And (Not OwnRefused)
+                And (OwnTarget <> '') And Not CommandOnlyLooks(Command) Then
+                OwnerSet(OwnerKey(OwnTarget), RequestTag(RequestId), Command);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
@@ -97509,8 +99603,11 @@ Begin
     DurationMs := GetTickCount - StartMs;
     StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
 
-    AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
-              + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
+    { The dashboard's cockpit polls pcb.cockpit_state every few seconds;  }
+    { logged, it would bury every other line. Only a failed one is kept.  }
+    If (Command <> 'pcb.cockpit_state') Or (ResultTag <> 'OK') Then
+        AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
+                  + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
     { error banner) when the response is success=false.                    }
@@ -97556,7 +99653,9 @@ Begin
             If (DashCode <> '') Then DashDetail := DashCode;
         End;
     End;
-    AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
+    { Nor in the status window's list: a cockpit poll that worked is noise. }
+    If (Command <> 'pcb.cockpit_state') Or DashIsError Then
+        AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
 
     ResetInFlight(0);
 

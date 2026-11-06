@@ -28,7 +28,7 @@ HELD_SCHEMATIC_EDIT = {"SchHeld", "SchHeldDoc", "SchHeldPath"}
 SESSION = {
     # Workspace, pump and polling configuration.
     "WorkspaceDir", "Running", "PollIntervalActiveMs", "PollIntervalIdleMs",
-    "IdleThreshold", "AutoShutdownMs", "YieldIterations", "YieldEveryNActive",
+    "IdleThreshold", "AutoShutdownMs", "ConfiguredShutdownMs", "YieldIterations", "YieldEveryNActive",
     "PumpStopPath", "PumpIdleCount", "PumpLastActivityMs", "PumpInterval",
     "PumpInTick", "PumpFinalised", "PumpQuitting", "PumpTicked",
     # Config tab settings.
@@ -38,13 +38,15 @@ SESSION = {
     "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
-    "LastCompileTick", "LastCompiledProject", "CastErrorCount",
+    "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "DocOwners", "CastErrorCount",
     "LastCreatedLibComponent", "LastCreatedLibComponentName",
     "JsonIdxDoc0", "JsonIdxDoc1", "JsonIdxDoc2", "JsonIdxDoc3",
     "JsonIdx0", "JsonIdx1", "JsonIdx2", "JsonIdx3", "JsonIdxNext",
     "JsonNestedSeen",
     # Session slots and queue notes between callers.
     "SlotSession", "SlotStartTick", "QueueNoteTick",
+    # The tool call holding the turn, and when its last command finished.
+    "HoldCall", "HoldStartTick", "LastDoneTick", "JustPicked",
     # Dashboard.
     "HidePingsFlag", "OnlySlowFlag", "AlwaysOnTopFlag", "PausedFlag",
     "RenewRequested", "SpinnerFrame", "InFlightCommand", "InFlightStartMs",

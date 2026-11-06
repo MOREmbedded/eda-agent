@@ -11,6 +11,7 @@ so a restart shows as a new id, and "slow" takes a second to answer.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -201,3 +202,18 @@ def test_a_call_the_restart_cut_off_is_answered_with_an_error(tmp_path):
         assert "result" in c.call("tools/list")
     finally:
         c.proc.kill()
+
+
+def test_a_script_version_bump_is_watched_too(tmp_path, monkeypatch):
+    # The server records Main.pas's SCRIPT_VERSION at start; a bump that
+    # did not restart it made it warn, wrongly, that its Python was stale.
+    from eda_agent import cli, devproxy
+    main = tmp_path / "Main.pas"
+    main.write_text("SCRIPT_VERSION = '1';\n")
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: tmp_path)
+    before = devproxy.script_version_stamp()
+    assert list(before) == [str(main)]
+    main.write_text("SCRIPT_VERSION = '2';\n")
+    later = main.stat().st_mtime_ns + 1_000_000_000
+    os.utime(main, ns=(later, later))
+    assert devproxy.script_version_stamp() != before

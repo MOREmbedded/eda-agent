@@ -4086,14 +4086,21 @@ End;
 {                                                                              }
 { Params:                                                                      }
 {   library_path - optional .PcbLib to focus first; defaults to focused doc. }
+{                                                                              }
+{ Response also carries "current": the name of the footprint the editor has  }
+{ current in the library whose footprints are listed ("" when none). Writers }
+{ given no footprint_name, the origin read and processes such as            }
+{ PCB:SetComponentReference all act on that footprint.                      }
 Function Lib_GetFootprints(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpName, FpDescr, FpsJson, RespJson : String;
+    CurName : String;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
     Iter : IPCB_LibraryIterator;
     Footprint : IPCB_LibComponent;
+    Cur : IPCB_LibComponent;
     Count : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -4152,9 +4159,17 @@ Begin
     End;
     FpsJson := FpsJson + ']';
 
+    { Read off the same PcbLib the iterator walked, by Name only: reading }
+    { I_ObjectAddress off a footprint faulted on AD 26.11 (issue #135).    }
+    CurName := '';
+    Cur := Nil;
+    Try Cur := PcbLib.CurrentComponent; Except End;
+    If Cur <> Nil Then Try CurName := Cur.Name; Except End;
+
     RespJson :=
         '{"library_path":"' + EscapeJsonString(LibPath) + '"' +
         ',"count":' + IntToStr(Count) +
+        ',"current":"' + EscapeJsonString(CurName) + '"' +
         ',"footprints":' + FpsJson + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
@@ -6076,16 +6091,19 @@ Begin
             Else
             Begin
                 Body.SetState_FromModel;
-                { The rotation goes on the MODEL, before it is bound to the   }
-                { body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as the SDK }
-                { declares it and AutoSTEPplacer.pas uses                     }
-                { it. Dz stays 0; the standoff is written below as before.   }
+                { Rotation AND standoff go on the MODEL, before it is bound   }
+                { to the body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as  }
+                { the SDK declares it and AutoSTEPplacer.pas uses it. A STEP  }
+                { body ignores its own StandoffHeight (see Lib_Set3DBody):    }
+                { written there it reported applied and saved a Z offset of 0.}
                 DidRotation := False;
-                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Then
+                DidStandoff := False;
+                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Or (OffZ <> 0) Then
                     Try
-                        Model.SetState(RotX, RotY, RotZ, 0);
-                        DidRotation := True;
-                    Except { "rotation" in the applied list reports it } End;
+                        Model.SetState(RotX, RotY, RotZ, MilsToCoordF(OffZ));
+                        DidRotation := (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0);
+                        DidStandoff := OffZ <> 0;
+                    Except { "rotation" and "standoff_height" in the applied list report it } End;
                 Body.Model := Model;
                 Footprint.AddPCBObject(Body);
                 { Same registration the pad, track, arc and text paths
@@ -6119,14 +6137,8 @@ Begin
                 { careful and could never have fired.                      }
                 {                                                          }
                 { The rotation is on the MODEL, set above before the bind. }
-                DidStandoff := False;
                 DidMove := False;
                 Shifted := False;
-                If OffZ <> 0 Then
-                    Try
-                        Body.StandoffHeight := MilsToCoordF(OffZ);
-                        DidStandoff := True;
-                    Except { "standoff_height" in the applied list reports it } End;
                 { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
                 { current above sits at Altium's library origin (about     }
                 { 50000,50000 mil, see FootprintOriginX), so the body      }
@@ -10242,7 +10254,8 @@ End;
 Function Lib_UninstallLibrary(Params : String; RequestId : String) : String;
 Var
     Path, Have : String;
-    Ok : Boolean;
+    Ok, Still, Closed : Boolean;
+    ServerDoc : IServerDocument;
     Mgr : IPCB_PadViaLibraryManager;
     PvLib : IPCB_PadViaLibrary;
     I, N : Integer;
@@ -10296,9 +10309,36 @@ Begin
         IntegratedLibraryManager.UnInstallLibrary(Path);
         Ok := True;
     Except End;
+    { Checked against the installed list, not assumed from no exception. }
+    Still := False;
+    N := 0;
+    Try N := IntegratedLibraryManager.InstalledLibraryCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Have := '';
+        Try Have := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+        If UpperCase(Have) = UpperCase(Path) Then Still := True;
+    End;
+    { A library opened as a document keeps its file open after the       }
+    { uninstall. An IntLib is not edited, so closing it loses nothing.    }
+    Closed := False;
+    If UpperCase(ExtractFileExt(Path)) = '.INTLIB' Then
+    Begin
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            Try Client.CloseDocument(ServerDoc); Except End;
+            ServerDoc := Nil;
+            Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+            Closed := ServerDoc = Nil;
+        End;
+    End;
     Result := BuildSuccessResponse(RequestId,
-        '{"uninstalled":' + BoolToJsonStr(Ok) + ',"library_path":"'
-        + EscapeJsonString(Path) + '"}');
+        '{"uninstalled":' + BoolToJsonStr(Ok And Not Still)
+        + ',"still_installed":' + BoolToJsonStr(Still)
+        + ',"closed_document":' + BoolToJsonStr(Closed)
+        + ',"library_path":"' + EscapeJsonString(Path) + '"}');
 End;
 
 {..............................................................................}
@@ -17018,6 +17058,9 @@ Begin
                                 Body.StandoffHeight := MilsToCoordF(StrToFloatDef(StandoffStr, 0));
                             If (StandoffStr <> '') And (Model <> Nil) Then
                             Begin
+                                { By file name: the saved record holds the name of the  }
+                                { embedded model, a body linked this session the full  }
+                                { path it was loaded from.                             }
                                 ModelFile := '';
                                 Try ModelFile := Model.FileName; Except End;
                                 SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
@@ -17029,7 +17072,8 @@ Begin
                                         + 'this body: save the library, then retry'));
                                 End
                                 Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
-                                    Or (UpperCase(SavedFile) <> UpperCase(ModelFile)) Then
+                                    Or (UpperCase(ExtractFileName(SavedFile))
+                                        <> UpperCase(ExtractFileName(ModelFile))) Then
                                 Begin
                                     If Skipped <> '' Then Skipped := Skipped + ',';
                                     Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','

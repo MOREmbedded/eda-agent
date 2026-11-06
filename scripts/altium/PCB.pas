@@ -536,7 +536,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch, DrcOn : Boolean;
+    First, FromSch, RuleChecked : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -622,9 +622,9 @@ Begin
         { board: 37 of 159 rules read Enabled=True while DRC ignores them,    }
         { and the only sign was the word (Disabled) inside Altium's own       }
         { descriptor prose. Reported so nobody has to parse that to find out. }
-        DrcOn := True;
-        Try DrcOn := Rule.DRCEnabled; Except DrcOn := True; End;
-        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(DrcOn);
+        RuleChecked := True;
+        Try RuleChecked := Rule.DRCEnabled; Except RuleChecked := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(RuleChecked);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -637,7 +637,8 @@ Begin
     GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -2549,6 +2550,7 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{' + DrcViolationsJson(Board) + ','
             + '"mode":"batch",'
+            + '"board_path":"' + EscapeJsonString(Board.FileName) + '",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','
@@ -8016,6 +8018,179 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_CockpitState - what the dashboard's cockpit polls: the document in      }
+{ front, a stamp of the parts and one of the copper that change when anything }
+{ moves, and what is selected. Reads only; touches PCBServer only when a PCB  }
+{ is in front (see GetPCBBoardAnywhere).                                      }
+{..............................................................................}
+
+{ The copper stamp: the count and the walked sums, or "n:<count>" when the }
+{ copper was only counted (the Python keeps its last walked stamp then).    }
+Function CopperWalk(N : Integer; K1, K2, K3 : Double; Walked : Boolean) : String;
+Begin
+    If Walked Then
+        Result := IntToStr(N) + ':' + FloatToJsonStr(K1) + ':' + FloatToJsonStr(K2)
+            + ':' + FloatToJsonStr(K3)
+    Else
+        Result := 'n:' + IntToStr(N);
+End;
+
+Function PCB_CockpitState(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Obj : IPCB_Primitive;
+    Counter : IPCB_PrimitiveCounter;
+    DocPath, Kind, Ref, NetName, SelComps, SelNets, SeenNets : String;
+    CompN, CopperN, I, SelCount, NetCount : Integer;
+    C1, C2, C3, K1, K2, K3 : Double;
+Begin
+    DocPath := CurrentFocusedDocPath(0);
+    Kind := '';
+    Try
+        Workspace := GetWorkspace;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Kind := UpperCase(Doc.DM_DocumentKind);
+    Except Kind := ''; End;
+    { With a PCB in front the wrapper returns that board; with anything   }
+    { else in front none is read.                                         }
+    Board := Nil;
+    If Kind = 'PCB' Then
+        Try Board := GetPCBBoardAnywhere(0); Except Board := Nil; End;
+    If Board = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+            + ',' + JsonStr('kind', Kind) + ',"board":false}');
+        Exit;
+    End;
+
+    { Parts: position, rotation and side, weighted by their order so a swap }
+    { of two parts changes the stamp too. The selection flag is read in the }
+    { same pass, so a selection made by a script is seen as well.           }
+    C1 := 0; C2 := 0; C3 := 0; CompN := 0; SelComps := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            CompN := CompN + 1;
+            C1 := C1 + Comp.X * CompN;
+            C2 := C2 + Comp.Y * CompN;
+            C3 := C3 + (Comp.Rotation + Comp.Layer * 1000) * CompN;
+            If Comp.Selected Then
+            Begin
+                Ref := '';
+                Try Ref := Comp.Name.Text; Except Ref := ''; End;
+                If SelComps <> '' Then SelComps := SelComps + ',';
+                SelComps := SelComps + '"' + EscapeJsonString(Ref) + '"';
+            End;
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Copper drawn on the board: tracks, arcs and vias. Walking it is most }
+    { of this call's time, so only when asked; otherwise the counts alone,  }
+    { which still change when copper is added or deleted.                    }
+    K1 := 0; K2 := 0; K3 := 0; CopperN := 0;
+    If LowerCase(ExtractJsonValue(Params, 'copper')) = 'false' Then
+    Begin
+        Counter := Nil;
+        Try Counter := Board.GetPrimitiveCounter; Except Counter := Nil; End;
+        If Counter <> Nil Then
+            Try
+                CopperN := Counter.GetObjectCount(eTrackObject)
+                    + Counter.GetObjectCount(eArcObject) + Counter.GetObjectCount(eViaObject);
+            Except CopperN := -1; End;
+    End
+    Else
+    Begin
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            CopperN := CopperN + 1;
+            { A part's own primitives move with it; the parts stamp has them. }
+            { Counted all the same, so the count matches the counter's.       }
+            If Obj.InComponent Then
+            Begin
+                Obj := Iter.NextPCBObject;
+                Continue;
+            End;
+            If Obj.ObjectId = eTrackObject Then
+            Begin
+                Track := Obj;
+                K1 := K1 + (Track.X1 + Track.X2) * CopperN;
+                K2 := K2 + (Track.Y1 + Track.Y2) * CopperN;
+                K3 := K3 + (Track.Width + Track.Layer * 1000) * CopperN;
+            End
+            Else If Obj.ObjectId = eArcObject Then
+            Begin
+                Arc := Obj;
+                K1 := K1 + (Arc.XCenter + Arc.StartAngle) * CopperN;
+                K2 := K2 + (Arc.YCenter + Arc.EndAngle) * CopperN;
+                K3 := K3 + (Arc.Radius + Arc.LineWidth + Arc.Layer * 1000) * CopperN;
+            End
+            Else
+            Begin
+                Via := Obj;
+                K1 := K1 + Via.X * CopperN;
+                K2 := K2 + Via.Y * CopperN;
+                K3 := K3 + Via.Size * CopperN;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    End;
+
+    { Nets of whatever else is selected: tracks, pads, vias, arcs. }
+    SelNets := ''; SeenNets := '|'; NetCount := 0;
+    SelCount := Board.SelectecObjectCount;
+    For I := 0 To SelCount - 1 Do
+    Begin
+        Obj := Board.SelectecObject[I];
+        If Obj = Nil Then Continue;
+        If Obj.ObjectId = eComponentObject Then Continue;
+        NetName := '';
+        Try
+            If Obj.InNet Then NetName := Obj.Net.Name;
+        Except NetName := ''; End;
+        If (NetName = '') Or (Pos('|' + NetName + '|', SeenNets) > 0) Then Continue;
+        If NetCount >= 200 Then Break;
+        SeenNets := SeenNets + NetName + '|';
+        NetCount := NetCount + 1;
+        If SelNets <> '' Then SelNets := SelNets + ',';
+        SelNets := SelNets + '"' + EscapeJsonString(NetName) + '"';
+    End;
+
+    Result := BuildSuccessResponse(RequestId, '{' + JsonStr('file', DocPath)
+        + ',' + JsonStr('kind', Kind) + ',"board":true'
+        + ',' + JsonStr('parts_stamp', IntToStr(CompN) + ':' + FloatToJsonStr(C1)
+            + ':' + FloatToJsonStr(C2) + ':' + FloatToJsonStr(C3))
+        + ',' + JsonStr('copper_stamp', CopperWalk(CopperN, K1, K2, K3,
+            LowerCase(ExtractJsonValue(Params, 'copper')) <> 'false'))
+        + ',"parts":' + IntToStr(CompN) + ',"copper":' + IntToStr(CopperN)
+        + ',"selected":{"parts":[' + SelComps + '],"nets":[' + SelNets
+        + '],"count":' + IntToStr(SelCount) + '}}');
+End;
+
+{..............................................................................}
 { Layer colour conversion.                                                    }
 {                                                                              }
 { Altium carries a colour as a Windows TColor, which is $00BBGGRR: the byte   }
@@ -8217,6 +8392,11 @@ End;
 { to nothing in unknown_layers. The reply always lists every layer: the       }
 { legacy range as get_layer_display does, then each ENABLED mechanical layer  }
 { from 17 up. View state only: the document is not marked modified.          }
+{                                                                              }
+{ With a PcbLib in front it acts on the library's own board, the footprint    }
+{ being edited (LvPcbLibInFront). GetPCBBoardAnywhere would answer from some }
+{ other open board then, or refuse when there are several, and hide layers or }
+{ move the current layer of a board the user is not looking at.              }
 {..............................................................................}
 
 Function LvNextItem(Var Rest : String) : String;
@@ -8434,8 +8614,31 @@ Begin
     Result := Result + '"' + EscapeJsonString(Item) + '"';
 End;
 
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is safe to name only after this     }
+{ says yes (see GetPCBBoardAnywhere).                                       }
+Function LvPcbLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
 Function PCB_LayerView(Params : String; RequestId : String) : String;
 Var
+    PcbLib : IPCB_Library;
     Board : IPCB_Board;
     Opts : IPCB_SystemOptions;
     LayerStack : IPCB_LayerStack_V7;
@@ -8445,10 +8648,22 @@ Var
     Rest, Item, Want, Items, NotApplied, Unknown, SlmStr : String;
     Show, Lock, Got, Enabled, Slm, Changed : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { A library in front: its own board, the footprint being edited, and    }
+    { never another open board, also when the library cannot be had.       }
+    PcbLib := Nil;
+    Board := Nil;
+    If LvPcbLibInFront(0) Then
+    Begin
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib <> Nil Then
+            Try Board := PcbLib.Board; Except Board := Nil; End;
+    End
+    Else
+        Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'No PCB document or PCB library is active');
         Exit;
     End;
     Opts := Nil;
@@ -8549,6 +8764,8 @@ Begin
     Begin
         Try Board.ViewManager_UpdateLayerTabs; Except End;
         Try Board.ViewManager_FullUpdate; Except End;
+        If PcbLib <> Nil Then
+            Try PcbLib.RefreshView; Except End;
     End;
 
     { the reply: the legacy range, then every enabled mechanical layer above 16 }
@@ -9692,6 +9909,7 @@ End;
 
 Function PCB_PlaceTracks(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Track : IPCB_Track;
     ExistingTrack : IPCB_Track;
@@ -9712,10 +9930,14 @@ Var
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
     F0, F1, F2, F3, F4, F5, F6, Token : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -9956,6 +10178,7 @@ End;
 
 Function PCB_PlaceVias(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Via : IPCB_Via;
     ViasStr, ViaStr, Remaining, Token, BadLayers, BadNets : String;
@@ -9966,10 +10189,14 @@ Var
     F0, F1, F2, F3, F4, F5, F6 : String;
     LayerCache, LastNetName : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -10135,6 +10362,7 @@ End;
 
 Function PCB_PlaceArcs(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Arc : IPCB_Arc;
     ArcsStr, ArcStr, Remaining, Token : String;
@@ -10149,10 +10377,14 @@ Var
     { the return slot in DelphiScript (see PCB_PlaceTracks).             }
     F0, F1, F2, F3, F4, F5, F6, F7, F8 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -10346,6 +10578,7 @@ End;
 
 Function PCB_PlacePads(Params : String; RequestId : String) : String;
 Var
+    BoardRefusal : String;
     Board : IPCB_Board;
     Pad : IPCB_Pad;
     PadsStr, PadStr, Remaining, Token, UnitsStr : String;
@@ -10360,10 +10593,14 @@ Var
     Cache : TPadCache;
     F0, F1, F2, F3, F4, F5 : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    { board_path names the board to place on: taken by its path, and     }
+    { refused when it is not open, whatever another session has in front. }
+    { Through StackBoard: a direct call into Main from here stopped this   }
+    { unit loading (2026-11-05), as LookupLibComponent did Generic's.      }
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -11274,6 +11511,17 @@ Begin
     If RuleName = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing "name" parameter');
+        Exit;
+    End;
+
+    { A second rule of the same name was added without complaint, and      }
+    { Altium's priority order then decided which of the two applied.        }
+    If PCB_FindRuleByName(Board, RuleName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule named "' + RuleName + '" is already on the board. Nothing '
+            + 'was created. Change it with pcb_set_rule_properties, or delete '
+            + 'it with pcb_delete_design_rule first.');
         Exit;
     End;
 
@@ -14268,6 +14516,15 @@ Begin
     If (X1Str = '') Or (Y1Str = '') Or (X2Str = '') Or (Y2Str = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing coordinate parameters (x1, y1, x2, y2)');
+        Exit;
+    End;
+    { A room is a rule; a second of the same name was added without      }
+    { complaint and left two rooms answering to one name.                 }
+    If PCB_FindRuleByName(Board, RoomName) <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'RULE_EXISTS',
+            'A rule or room named "' + RoomName + '" is already on the board. '
+            + 'Nothing was created.');
         Exit;
     End;
 
@@ -31612,6 +31869,788 @@ Begin
 End;
 
 {..............................................................................}
+{ pcb.pad_relief -- one pad's own thermal relief, the way Properties > Thermal }
+{ Relief and its custom-relief "Edit" show it (issue #226).                   }
+{                                                                              }
+{ The relief record is ThermalReliefData keyed by an EMPTY                     }
+{ TPadViaThermalReliefItem. A layer number as the key stops the script, and   }
+{ EditThermalReliefData only opens the dialog. Custom spokes are points on    }
+{ the relief outline (GetShapeForCustomRelief): AddCustomRelief(layer,        }
+{ segment, fraction), the fraction from a line's start vertex or from an      }
+{ arc's Angle1 counter-clockwise. GetCustomThermalReliefInfo on a pad whose   }
+{ custom list was never created stops the script, so a list is only read     }
+{ after an add has made sure it exists, and a write always replaces: record  }
+{ (manual, relief, custom on), add one, clear, add the wanted spokes, read.  }
+{ Measured on AD 25.8.1.                                                       }
+{..............................................................................}
+
+{ The one pad named: a part's pad by designator + name, else a free pad by    }
+{ exact x / y (mils from the board origin) or by name. Count says how many    }
+{ matched; the caller refuses anything but one.                               }
+Function PadReliefFind(Board : IPCB_Board; Des, PadName, XS, YS : String;
+    Var Count : Integer) : IPCB_Pad;
+Var
+    Comp : IPCB_Component;
+    GIter : IPCB_GroupIterator;
+    Iter : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+    Name : String;
+    X, Y : Double;
+    ByXY, Hit : Boolean;
+Begin
+    Result := Nil;
+    Count := 0;
+    If Des <> '' Then
+    Begin
+        Comp := Board.GetPcbComponentByRefDes(Des);
+        If Comp = Nil Then Exit;
+        GIter := Comp.GroupIterator_Create;
+        Try
+            GIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                Name := '';
+                Try Name := Pad.Name; Except End;
+                If Name = PadName Then
+                Begin
+                    Inc(Count);
+                    If Result = Nil Then Result := Pad;
+                End;
+                Pad := GIter.NextPCBObject;
+            End;
+        Finally
+            Comp.GroupIterator_Destroy(GIter);
+        End;
+        Exit;
+    End;
+    ByXY := (XS <> '') And (YS <> '');
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessFree);
+        Pad := Iter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            If ByXY Then
+                Hit := (Abs(CoordToMilsF(Pad.X - Board.XOrigin) - X) < 0.001)
+                    And (Abs(CoordToMilsF(Pad.Y - Board.YOrigin) - Y) < 0.001)
+            Else
+            Begin
+                Name := '';
+                Try Name := Pad.Name; Except End;
+                Hit := Name = PadName;
+            End;
+            If Hit Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Pad;
+            End;
+            Pad := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ The layer whose spoke list / outline a via or thru-hole pad call means:  }
+{ top (default), bottom, mid (the first inner layer: every inner layer of a }
+{ top-middle-bottom stack), or a copper layer name. False for anything else. }
+Function PadReliefLayer(Board : IPCB_Board; LayerS : String; Var L : TLayer) : Boolean;
+Begin
+    L := eTopLayer;
+    If LowerCase(LayerS) = 'bottom' Then L := eBottomLayer
+    Else If LowerCase(LayerS) = 'mid' Then L := eMidLayer1
+    Else If (LayerS <> '') And (LowerCase(LayerS) <> 'top') Then
+        L := ResolveLayerId(Board, LayerS);
+    Result := ((L >= eTopLayer) And (L <= eBottomLayer))
+        Or ((L >= eInternalPlane1) And (L <= eInternalPlane16));
+End;
+
+{ Stack mode 0 simple, 1 top-middle-bottom, 2 full stack, and the layers   }
+{ the record the empty key reaches covers (measured on vias: the MIDDLE    }
+{ record on a top-middle-bottom stack).                                     }
+Function PadReliefScope(Mode : Integer) : String;
+Begin
+    { Spoke lists: ONE for every layer on a simple stack (a write to any     }
+    { layer replaces it), one each for top / inner / bottom on a             }
+    { top-middle-bottom stack (measured on a via and a thru-hole pad), one   }
+    { per copper layer, planes included, on a full stack (thru-hole pad).    }
+    If Mode = 0 Then
+        Result := JsonStr('mode', 'simple') + ',' + JsonStr('record_scope', 'all layers')
+            + ',' + JsonStr('spoke_scope', 'all layers')
+    Else If Mode = 1 Then
+        Result := JsonStr('mode', 'top-middle-bottom') + ',' + JsonStr('record_scope', 'inner layers')
+            + ',' + JsonStr('spoke_scope', 'per layer')
+    Else
+        Result := JsonStr('mode', 'full stack') + ',' + JsonStr('record_scope', 'unknown')
+            + ',' + JsonStr('spoke_scope', 'per layer');
+End;
+
+{ The free via at exact x / y (mils from the board origin). }
+Function PadReliefFindVia(Board : IPCB_Board; XS, YS : String; Var Count : Integer) : IPCB_Via;
+Var
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    X, Y : Double;
+Begin
+    Result := Nil;
+    Count := 0;
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessFree);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            If (Abs(CoordToMilsF(Via.X - Board.XOrigin) - X) < 0.001)
+                And (Abs(CoordToMilsF(Via.Y - Board.YOrigin) - Y) < 0.001) Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Via;
+            End;
+            Via := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ Whether the focused document is a PCB library, read through the DM layer, }
+{ which never loads a server: PCBServer is named only after this says yes   }
+{ (see GetPCBBoardAnywhere).                                                 }
+Function PadReliefLibInFront(Dummy : Integer) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Kind : String;
+Begin
+    Kind := '';
+    Workspace := Nil;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except Doc := Nil; End;
+        If Doc <> Nil Then
+            Try Kind := UpperCase(Doc.DM_DocumentKind); Except Kind := ''; End;
+    End;
+    Result := Kind = 'PCBLIB';
+End;
+
+{ The one pad (by name or exact x / y) or via (exact x / y) in a footprint, }
+{ mils from the library's origin. Count says how many matched.              }
+Function PadReliefFindInFootprint(Board : IPCB_Board; Footprint : IPCB_LibComponent;
+    IsVia : Boolean; PadName, XS, YS : String; Var Count : Integer) : IPCB_Primitive;
+Var
+    GIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Name : String;
+    X, Y : Double;
+    ByXY, Hit : Boolean;
+Begin
+    Result := Nil;
+    Count := 0;
+    ByXY := (XS <> '') And (YS <> '');
+    X := StrToFloatDef(XS, 0);
+    Y := StrToFloatDef(YS, 0);
+    GIter := Footprint.GroupIterator_Create;
+    Try
+        If IsVia Then GIter.AddFilter_ObjectSet(MkSet(eViaObject))
+        Else GIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Prim := GIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If ByXY Then
+                Hit := (Abs(CoordToMilsF(Prim.X - Board.XOrigin) - X) < 0.001)
+                    And (Abs(CoordToMilsF(Prim.Y - Board.YOrigin) - Y) < 0.001)
+            Else
+            Begin
+                Name := '';
+                Try Name := Prim.Name; Except End;
+                Hit := Name = PadName;
+            End;
+            If Hit Then
+            Begin
+                Inc(Count);
+                If Result = Nil Then Result := Prim;
+            End;
+            Prim := GIter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(GIter);
+    End;
+End;
+
+{ The relief record as JSON members. }
+Function PadReliefRecord(D : Variant) : String;
+Var
+    S : String;
+Begin
+    If D.DefinedType = 0 Then S := JsonStr('defined', 'rule')
+    Else S := JsonStr('defined', 'manual');
+    { ConnectStyle on AD 25: 0 relief, 1 direct, 2 no connect. }
+    If D.ConnectStyle = 0 Then S := S + ',' + JsonStr('style', 'relief')
+    Else If D.ConnectStyle = 1 Then S := S + ',' + JsonStr('style', 'direct')
+    Else If D.ConnectStyle = 2 Then S := S + ',' + JsonStr('style', 'none')
+    Else S := S + ',' + JsonStr('style', IntToStr(D.ConnectStyle));
+    S := S + ',' + JsonInt('spokes', D.Entries)
+        + ',' + JsonRaw('width', FloatToJsonStr(CoordToMilsF(D.ConductorWidth)))
+        + ',' + JsonRaw('gap', FloatToJsonStr(CoordToMilsF(D.AirGapWidth)));
+    { Rotation 0 = "45 Angle", 1 = "90 Angle" (the dialog's names). }
+    If D.Rotation = 0 Then S := S + ',' + JsonInt('rotation', 45)
+    Else S := S + ',' + JsonInt('rotation', 90);
+    S := S + ',' + JsonBool('custom', D.UseCustomRelief);
+    Result := S;
+End;
+
+{ The relief outline as a JSON array, mils from the board origin. }
+Function PadReliefOutline(Board : IPCB_Board; Pad : Variant; L : TLayer;
+    Var SegCount : Integer) : String;
+Var
+    Shp : Variant;
+    Seg : TPolySegment;
+    K : Integer;
+    S, One : String;
+Begin
+    S := '';
+    Shp := Pad.GetShapeForCustomRelief(L);
+    SegCount := Shp.ShapeSegmentCount;
+    For K := 0 To SegCount - 1 Do
+    Begin
+        Seg := Shp.ShapeSegments(K);
+        If Seg.Kind = ePolySegmentLine Then One := JsonStr('kind', 'line')
+        Else One := JsonStr('kind', 'arc');
+        One := One + ',' + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Seg.vx - Board.XOrigin)))
+            + ',' + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Seg.vy - Board.YOrigin)));
+        If Seg.Kind <> ePolySegmentLine Then
+            One := One
+                + ',' + JsonRaw('cx', FloatToJsonStr(CoordToMilsF(Seg.cx - Board.XOrigin)))
+                + ',' + JsonRaw('cy', FloatToJsonStr(CoordToMilsF(Seg.cy - Board.YOrigin)))
+                + ',' + JsonRaw('r', FloatToJsonStr(CoordToMilsF(Seg.Radius)))
+                + ',' + JsonRaw('a1', FloatToJsonStr(Seg.Angle1))
+                + ',' + JsonRaw('a2', FloatToJsonStr(Seg.Angle2));
+        If S <> '' Then S := S + ',';
+        S := S + JsonObj(One);
+    End;
+    Result := '[' + S + ']';
+End;
+
+{ The custom spoke points, mils from the board origin. Only call it once an  }
+{ add has made sure the list exists.                                          }
+Function PadReliefSpokes(Board : IPCB_Board; Pad : Variant; L : TLayer) : String;
+Var
+    CRI, Loc : Variant;
+    K, N : Integer;
+    S : String;
+Begin
+    S := '';
+    CRI := Pad.GetCustomThermalReliefInfo(L);
+    N := CRI.ThermalRelieafsCount;
+    For K := 0 To N - 1 Do
+    Begin
+        Loc := CRI.GetState_ThermalRelieafLocation(K);
+        If S <> '' Then S := S + ',';
+        S := S + JsonObj(JsonRaw('x', FloatToJsonStr(CoordToMilsF(Loc.X - Board.XOrigin)))
+            + ',' + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Loc.Y - Board.YOrigin))));
+    End;
+    Result := '[' + S + ']';
+End;
+
+{ Takes the next "segment:fraction" off a points list. False at the end;    }
+{ Edge -1 for a token that does not read.                                     }
+Function PadReliefTake(Var S : String; Var Edge : Integer; Var Frac : Double) : Boolean;
+Var
+    P : Integer;
+    Tok : String;
+Begin
+    Result := False;
+    Tok := '';
+    While (Tok = '') And (Trim(S) <> '') Do
+    Begin
+        P := Pos(';', S);
+        If P > 0 Then
+        Begin
+            Tok := Trim(Copy(S, 1, P - 1));
+            S := Copy(S, P + 1, Length(S));
+        End
+        Else
+        Begin
+            Tok := Trim(S);
+            S := '';
+        End;
+    End;
+    If Tok = '' Then Exit;
+    Result := True;
+    Edge := -1;
+    Frac := -1;
+    P := Pos(':', Tok);
+    If P < 2 Then Exit;
+    Edge := StrToIntDef(Trim(Copy(Tok, 1, P - 1)), -1);
+    Frac := StrToFloatDef(Trim(Copy(Tok, P + 1, Length(Tok))), -1);
+End;
+
+{ Where the throwaway spoke goes (segment 0): a fraction none of the wanted }
+{ points use. A spoke added at the spot of one just cleared is dropped, and  }
+{ a read's add + remove at a real spoke's spot would delete it, so the       }
+{ default is an odd fraction no one picks by hand.                           }
+Function PadReliefSpare(Points : String) : Double;
+Var
+    Rest : String;
+    Edge, K : Integer;
+    Frac, Want : Double;
+    Used : Boolean;
+Begin
+    Result := 0.123457;
+    For K := 0 To 3 Do
+    Begin
+        If K = 0 Then Want := 0.123457
+        Else If K = 1 Then Want := 0.876543
+        Else If K = 2 Then Want := 0.314159
+        Else Want := 0.687213;
+        Used := False;
+        Rest := Points;
+        While PadReliefTake(Rest, Edge, Frac) Do
+            If (Edge = 0) And (Abs(Frac - Want) < 0.0001) Then Used := True;
+        If Not Used Then
+        Begin
+            Result := Want;
+            Exit;
+        End;
+    End;
+End;
+
+{ Params: designator + pad, or pad / x + y for a free pad; action = read     }
+{ (default) | set | spokes.                                                    }
+{   read:   read_spokes = true also lists the custom spokes (it adds and      }
+{           removes one spoke first, so the list exists: one undo step).      }
+{   set:    style rule | relief | direct | none, spokes 2 | 4, width, gap     }
+{           (mils), rotation 45 | 90, custom false (back to standard spokes). }
+{           style rule drops the pad's own values and takes no other value.  }
+{   spokes: points = "segment:fraction;..." on the relief outline, replacing  }
+{           the custom list; width / gap optional.                            }
+{ A thru-hole pad takes a layer like a via (its record and spokes behave    }
+{ the same way: a record, and a spoke list per layer).                      }
+{ kind = via: a free via by exact x + y; layer = top (default) | mid |      }
+{ bottom | a layer name picks the spoke list. A simple via has one record    }
+{ for every layer; on a top-middle-bottom via the record this key reaches   }
+{ is the MIDDLE one (every inner layer): top and bottom records need the    }
+{ key's layer field, which stops the script. Spokes are per layer on both.  }
+{ With a PcbLib in front it acts on a footprint (the current one, or         }
+{ footprint_name made current), whose pads and vias carry the same relief    }
+{ into every board the footprint is placed on; x / y are then mils from the  }
+{ library's origin. GetPCBBoardAnywhere would answer from another board.     }
+Function PCB_PadRelief(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Obj, Item, D : Variant;
+    Des, PadName, XS, YS, Action, Style, SpokesS, WidthS, GapS, RotS, CustomS : String;
+    Points, Rest, Body, Outline, Net, Side, Kind, LayerS : String;
+    L : TLayer;
+    Count, SegCount, NPts, StyleN, Entries, Edge, MaxEdge, FinalStyle : Integer;
+    Width, Gap, Frac, PadMin, SpokeW, Spare : Double;
+    IsSmd, ReadSpokes, IsVia : Boolean;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    FootS, Problem : String;
+Begin
+    Des := Trim(ExtractJsonValue(Params, 'designator'));
+    FootS := Trim(ExtractJsonValue(Params, 'footprint_name'));
+    PadName := Trim(ExtractJsonValue(Params, 'pad'));
+    XS := Trim(ExtractJsonValue(Params, 'x'));
+    YS := Trim(ExtractJsonValue(Params, 'y'));
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    If Action = '' Then Action := 'read';
+    Style := LowerCase(Trim(ExtractJsonValue(Params, 'style')));
+    SpokesS := Trim(ExtractJsonValue(Params, 'spokes'));
+    WidthS := Trim(ExtractJsonValue(Params, 'width'));
+    GapS := Trim(ExtractJsonValue(Params, 'gap'));
+    RotS := Trim(ExtractJsonValue(Params, 'rotation'));
+    CustomS := LowerCase(Trim(ExtractJsonValue(Params, 'custom')));
+    Points := Trim(ExtractJsonValue(Params, 'points'));
+    ReadSpokes := LowerCase(ExtractJsonValue(Params, 'read_spokes')) = 'true';
+    Kind := LowerCase(Trim(ExtractJsonValue(Params, 'kind')));
+    If Kind = '' Then Kind := 'pad';
+    LayerS := Trim(ExtractJsonValue(Params, 'layer'));
+    IsVia := Kind = 'via';
+
+    If (Action <> 'read') And (Action <> 'set') And (Action <> 'spokes') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is read, set or spokes');
+        Exit;
+    End;
+    If (Kind <> 'pad') And (Kind <> 'via') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'kind is pad or via');
+        Exit;
+    End;
+    If IsVia And ((Des <> '') Or (PadName <> '') Or (XS = '') Or (YS = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'a via is named by x + y only (a free via)');
+        Exit;
+    End;
+    If (Des <> '') And (PadName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pad is required with a designator');
+        Exit;
+    End;
+    If (Des = '') And (PadName = '') And ((XS = '') Or (YS = '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'designator + pad, or a free pad by pad name or x + y, is required');
+        Exit;
+    End;
+
+    { Every value is checked before anything is written. }
+    StyleN := -1;
+    If Style = 'relief' Then StyleN := 0
+    Else If Style = 'direct' Then StyleN := 1
+    Else If Style = 'none' Then StyleN := 2
+    Else If (Style <> '') And (Style <> 'rule') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'style is rule, relief, direct or none');
+        Exit;
+    End;
+    If (Style = 'rule') And ((SpokesS <> '') Or (WidthS <> '') Or (GapS <> '')
+        Or (RotS <> '') Or (CustomS <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'style rule drops the pad''s own values and takes no other value');
+        Exit;
+    End;
+    Entries := 0;
+    If SpokesS <> '' Then
+    Begin
+        Entries := StrToIntDef(SpokesS, 0);
+        If (Entries <> 2) And (Entries <> 4) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'spokes is 2 or 4');
+            Exit;
+        End;
+    End;
+    Width := 0;
+    If WidthS <> '' Then
+    Begin
+        Width := StrToFloatDef(WidthS, -1);
+        If Width <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'width is a length in mils above 0');
+            Exit;
+        End;
+    End;
+    Gap := 0;
+    If GapS <> '' Then
+    Begin
+        Gap := StrToFloatDef(GapS, -1);
+        If Gap <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'gap is a length in mils above 0');
+            Exit;
+        End;
+    End;
+    If (RotS <> '') And (RotS <> '45') And (RotS <> '90') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'rotation is 45 or 90');
+        Exit;
+    End;
+    If (CustomS <> '') And (CustomS <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'custom takes only false here; custom spokes are set with action spokes');
+        Exit;
+    End;
+    If (Action = 'set') And (Style = '') And (SpokesS = '') And (WidthS = '')
+        And (GapS = '') And (RotS = '') And (CustomS = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'set needs at least one value');
+        Exit;
+    End;
+    NPts := 0;
+    If Action = 'spokes' Then
+    Begin
+        If (Style <> '') Or (SpokesS <> '') Or (RotS <> '') Or (CustomS <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'spokes takes points, width and gap only');
+            Exit;
+        End;
+        MaxEdge := -1;
+        Rest := Points;
+        While PadReliefTake(Rest, Edge, Frac) Do
+        Begin
+            If (Edge < 0) Or (Frac < 0) Or (Frac > 1) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                    'points is "segment:fraction;...", fraction 0 .. 1');
+                Exit;
+            End;
+            If Edge > MaxEdge Then MaxEdge := Edge;
+            Inc(NPts);
+        End;
+        If NPts = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'spokes needs points');
+            Exit;
+        End;
+    End;
+
+    Footprint := Nil;
+    If PadReliefLibInFront(0) Then
+    Begin
+        If Des <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a footprint has no parts: name the pad by pad name or x + y');
+            Exit;
+        End;
+        PcbLib := Nil;
+        Try PcbLib := PCBServer.GetCurrentPCBLibrary; Except PcbLib := Nil; End;
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'The PcbLib in front could not be reached');
+            Exit;
+        End;
+        Footprint := PcbLibTarget(PcbLib, FootS, Problem);
+        If Footprint = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', Problem);
+            Exit;
+        End;
+        Board := PcbLib.Board;
+    End
+    Else
+    Begin
+        If FootS <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'footprint_name is for a PcbLib in front');
+            Exit;
+        End;
+        Board := GetPCBBoardAnywhere(0);
+    End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If Footprint <> Nil Then
+    Begin
+        If IsVia Then
+            Via := PadReliefFindInFootprint(Board, Footprint, True, '', XS, YS, Count)
+        Else
+            Pad := PadReliefFindInFootprint(Board, Footprint, False, PadName, XS, YS, Count);
+    End
+    Else If IsVia Then
+        Via := PadReliefFindVia(Board, XS, YS, Count)
+    Else
+        Pad := PadReliefFind(Board, Des, PadName, XS, YS, Count);
+    If Count = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'no ' + Kind + ' ' + Des + ' ' + PadName + ' ' + XS + ' ' + YS);
+        Exit;
+    End;
+    If Count > 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS',
+            IntToStr(Count) + ' ' + Kind + 's match; name a free one by x + y');
+        Exit;
+    End;
+
+    If IsVia Then
+    Begin
+        Obj := Via;
+        If Not PadReliefLayer(Board, LayerS, L) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+            Exit;
+        End;
+        IsSmd := True;
+    End
+    Else
+    Begin
+        Obj := Pad;
+        L := Pad.Layer;
+        IsSmd := (L = eTopLayer) Or (L = eBottomLayer);
+        If IsSmd And (LayerS <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'an SMD pad''s relief is on its own layer; layer is for vias and thru-hole pads');
+            Exit;
+        End;
+        If Not IsSmd Then
+        Begin
+            If Not PadReliefLayer(Board, LayerS, L) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                    'layer is top, mid, bottom or a copper layer name: ' + LayerS);
+                Exit;
+            End;
+            { Like a via from here: a record and a spoke list per layer. }
+            IsSmd := True;
+        End;
+    End;
+    SegCount := 0;
+    Outline := '[]';
+    If IsSmd Then Outline := PadReliefOutline(Board, Obj, L, SegCount);
+    { A spoke as wide as the pad, or wider, has no edge to leave from: the  }
+    { pour then makes a blob of it. Checked wherever spokes will be poured: }
+    { the width given, else the record's own.                               }
+    If IsVia Then
+        PadMin := CoordToMilsF(Via.Size)
+    Else
+    Begin
+        PadMin := CoordToMilsF(Pad.TopXSize);
+        If CoordToMilsF(Pad.TopYSize) < PadMin Then PadMin := CoordToMilsF(Pad.TopYSize);
+    End;
+    Item := TPadViaThermalReliefItem;
+    D := Obj.ThermalReliefData[Item];
+    { The style the pad ends up with: spokes are poured only for relief. }
+    FinalStyle := D.ConnectStyle;
+    If StyleN >= 0 Then FinalStyle := StyleN;
+    If Action = 'spokes' Then FinalStyle := 0;
+    SpokeW := CoordToMilsF(D.ConductorWidth);
+    If WidthS <> '' Then SpokeW := Width;
+    If (Action <> 'read') And (Style <> 'rule') And (FinalStyle = 0) Then
+    Begin
+        If SpokeW >= PadMin Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'a spoke ' + FloatToJsonStr(SpokeW) + ' mil wide is not narrower than the pad ('
+                + FloatToJsonStr(PadMin) + ' mil): give a smaller width');
+            Exit;
+        End;
+    End;
+    If (Action = 'spokes') And (MaxEdge >= SegCount) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'the relief outline has ' + IntToStr(SegCount) + ' segments; '
+            + IntToStr(MaxEdge) + ' is not one of them');
+        Exit;
+    End;
+
+    Item := TPadViaThermalReliefItem;
+    If Action <> 'read' Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            Obj.BeginModify;
+            If Style = 'rule' Then
+                Obj.SetAllThermalReliefsToRule
+            Else
+            Begin
+                D := Obj.ThermalReliefData[Item];
+                D.DefinedType := 1;
+                If StyleN >= 0 Then D.ConnectStyle := StyleN;
+                If Entries > 0 Then D.Entries := Entries;
+                If WidthS <> '' Then D.ConductorWidth := MilsToCoordF(Width);
+                If GapS <> '' Then D.AirGapWidth := MilsToCoordF(Gap);
+                If RotS = '45' Then D.Rotation := 0;
+                If RotS = '90' Then D.Rotation := 1;
+                If CustomS = 'false' Then D.UseCustomRelief := False;
+                If Action = 'spokes' Then
+                Begin
+                    D.ConnectStyle := 0;
+                    D.UseCustomRelief := True;
+                End;
+                Obj.ThermalReliefData[Item] := D;
+                If Action = 'spokes' Then
+                Begin
+                    { The add makes sure the list exists before the clear; }
+                    { at a spot no wanted spoke uses.                        }
+                    Spare := PadReliefSpare(Points);
+                    Obj.AddCustomRelief(L, 0, Spare);
+                    Obj.ClearCustomRelief(L);
+                    Rest := Points;
+                    While PadReliefTake(Rest, Edge, Frac) Do
+                        Obj.AddCustomRelief(L, Edge, Frac);
+                End;
+            End;
+            Obj.EndModify;
+            Obj.GraphicallyInvalidate;
+        Finally
+            PcbEndEdit(0);
+        End;
+        If Footprint <> Nil Then MarkDocDirtyByPath(Board.FileName);
+    End
+    Else If ReadSpokes And IsSmd And (SegCount > 0) Then
+    Begin
+        D := Obj.ThermalReliefData[Item];
+        If D.UseCustomRelief Then
+        Begin
+            PcbBeginEdit(0);
+            Try
+                Obj.BeginModify;
+                Spare := PadReliefSpare('');
+                Obj.AddCustomRelief(L, 0, Spare);
+                Obj.RemoveCustomRelief(L, 0, Spare);
+                Obj.EndModify;
+            Finally
+                PcbEndEdit(0);
+            End;
+        End;
+    End;
+
+    D := Obj.ThermalReliefData[Item];
+    Net := '';
+    Try If Obj.Net <> Nil Then Net := Obj.Net.Name; Except End;
+    If IsVia Then
+    Begin
+        Body := JsonStr('kind', 'via') + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Via.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Via.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', 'via') + ','
+            + PadReliefScope(Via.Mode) + ','
+            + JsonRaw('pad_rotation', '0') + ','
+            + JsonStr('shape', 'round') + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Via.Size))) + ','
+            + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Via.HoleSize))) + ',';
+    End
+    Else
+    Begin
+        If Pad.Layer = eTopLayer Then Side := 'top'
+        Else If Pad.Layer = eBottomLayer Then Side := 'bottom'
+        Else Side := 'thru';
+        Body := JsonStr('kind', 'pad') + ',' + JsonStr('designator', Des) + ','
+            + JsonStr('pad', Pad.Name) + ','
+            + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Pad.X - Board.XOrigin))) + ','
+            + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Pad.Y - Board.YOrigin))) + ','
+            + JsonStr('layer', LayerDisplayName(L)) + ','
+            + JsonStr('side', Side) + ','
+            + JsonRaw('pad_rotation', FloatToJsonStr(Pad.Rotation)) + ','
+            + JsonStr('shape', LmShapeName(Pad.TopShape)) + ','
+            + JsonRaw('size_x', FloatToJsonStr(CoordToMilsF(Pad.TopXSize))) + ','
+            + JsonRaw('size_y', FloatToJsonStr(CoordToMilsF(Pad.TopYSize))) + ',';
+        If Side = 'thru' Then
+            Body := Body + PadReliefScope(Pad.Mode) + ','
+                + JsonRaw('hole', FloatToJsonStr(CoordToMilsF(Pad.HoleSize))) + ',';
+    End;
+    Body := Body + JsonStr('net', Net) + ','
+        + PadReliefRecord(D) + ','
+        + JsonInt('manual_reliefs', Obj.ManualThermalReliefsCount) + ','
+        + JsonRaw('outline', Outline);
+    { The custom list is read only where this call made sure it exists. }
+    If IsSmd And (SegCount > 0) And D.UseCustomRelief
+        And ((Action = 'spokes') Or ReadSpokes) Then
+        Body := Body + ',' + JsonRaw('custom_spokes', PadReliefSpokes(Board, Obj, L));
+    If Footprint <> Nil Then
+        Body := Body + ',' + JsonStr('footprint', Footprint.Name);
+    Result := BuildSuccessResponse(RequestId, '{' + Body + '}');
+End;
+
+{..............................................................................}
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
@@ -32048,6 +33087,7 @@ Begin
         'output_options':          Result := PCB_OutputOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'plane_connections':       Result := PCB_PlaneConnections(Params, RequestId);
+        'pad_relief':              Result := PCB_PadRelief(Params, RequestId);
         'grow_pour':               Result := PCB_GrowPour(Params, RequestId);
         'board_regions':           Result := PCB_BoardRegions(Params, RequestId);
         'layer_stacks':            Result := PCB_LayerStacks(Params, RequestId);
@@ -32074,6 +33114,7 @@ Begin
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
+        'cockpit_state':           Result := PCB_CockpitState(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'layer_view':              Result := PCB_LayerView(Params, RequestId);
         'view':                    Result := PCB_View(Params, RequestId);
