@@ -281,3 +281,47 @@ jobs:
 
       - name: Check and install the wheel
         run: python scripts/verify_distribution.py dist
+
+  # The optional Rust compute wheel (docs/RUST_COMPUTE.md). Built from
+  # source here, because nothing else builds it, and uploaded so a machine
+  # without a Rust toolchain can install the same file.
+  #
+  # EDA_AGENT_REQUIRE_RUST=1 turns "wheel missing" from a skip into a
+  # failure. Without it, a broken build would make the parity tests skip,
+  # and a skip is green: the job would pass having compared nothing.
+  rust-compute:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      # The runner image has rustup and the MSVC toolchain already.
+      - name: Build the compute wheel
+        run: |
+          rustc --version
+          python -m pip wheel ./rust/eda_agent_compute --no-deps -w wheelhouse
+          python -m pip install --no-index --find-links wheelhouse eda-agent-compute
+
+      - name: The server sees it
+        run: eda-agent --compute rust compute-status
+
+      - name: Rust and Python route identically
+        env:
+          EDA_AGENT_REQUIRE_RUST: "1"
+        run: python -m pytest tests/route/test_compute_parity.py -q -rs --durations=10
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eda-agent-compute-wheel
+          path: wheelhouse/*.whl
+          if-no-files-found: error

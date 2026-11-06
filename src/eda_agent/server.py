@@ -838,7 +838,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "update", "easyeda-extension",
         )),
         ("Diagnostics", (
-            "doctor", "health", "perf",
+            "doctor", "health", "perf", "compute-status",
         )),
         ("Browser UIs", (
             "dashboard", "stop-dashboard", "vote",
@@ -980,6 +980,16 @@ def build_parser() -> argparse.ArgumentParser:
               "EDA_AGENT_BACKEND."),
     )
     parser.add_argument(
+        # Read per call, not at import, so unlike --backend it needs no
+        # re-exec: setting the variable before anything runs is enough.
+        "--compute", choices=("python", "rust", "auto"), default=None,
+        help=("Which implementation runs the CPU-heavy loops (default: "
+              "python). 'rust' uses the optional eda-agent-compute wheel "
+              "and refuses to start without it; 'auto' uses it when "
+              "installed. Same results either way. Equivalent to setting "
+              "EDA_AGENT_COMPUTE. See docs/RUST_COMPUTE.md."),
+    )
+    parser.add_argument(
         "--toolset", choices=TOOLSETS, default=None,
         help=("How many tools to advertise (default: full). 'minimal' "
               "exposes only tool_catalog and tool_invoke, keeping every "
@@ -1117,6 +1127,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of the text report.",
+    )
+
+    # compute-status -- which A* implementation would run, and why
+    subparsers.add_parser(
+        "compute-status",
+        help="Show whether the Rust compute wheel is installed and in use",
     )
 
     # eco-execute -- EXPERIMENTAL, UNVERIFIED: auto-press the ECO dialog
@@ -1641,6 +1657,25 @@ def main() -> int:
     # while design.py is registering, which has already happened here.
     if getattr(args, "mode", None):
         os.environ["EDA_AGENT_MODE"] = args.mode.strip()
+    # --compute before anything can run a search, and checked here: a
+    # server asked for Rust that cannot load it should say so at start,
+    # not on the first routing call an hour later.
+    requested_compute = getattr(args, "compute", None)
+    if requested_compute:
+        os.environ["EDA_AGENT_COMPUTE"] = requested_compute
+    if args.command == "compute-status":
+        from . import compute as _compute
+        st = _compute.status()
+        for k, v in st.items():
+            print(f"{k}: {v}")
+        return 1 if "error" in st else 0
+    if args.command in (None, "serve"):
+        from . import compute as _compute
+        st = _compute.status()
+        if "error" in st:
+            print(f"compute: {st['error']}", file=sys.stderr)
+            return 2
+
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
     requested_phases = getattr(args, "phases", None)

@@ -27,6 +27,26 @@ maturity classification for every tool.
 - `profile-validate` now names why a ruleset is invalid, not only that it
   is. The check itself moved to `profile.validate_profile`, which the
   dashboard uses too.
+- **Optional Rust compute (`--compute rust|auto|python`,
+  `EDA_AGENT_COMPUTE`, `eda-agent compute-status`).** The routing
+  planner's grid A* has a compiled port in a separate wheel,
+  `rust/eda_agent_compute` (PyO3, Apache-2.0). On the 1090-pad board from
+  `tests/route/test_scale.py`, a whole run takes 11 s instead of 184 s at
+  a 10 mil grid, and 2.2 s instead of 32.5 s at 25 mil, with
+  byte-identical output. Python stays the default. `rust` refuses to start
+  without a matching wheel, and every routing result names its
+  implementation in `summary.compute`. `tests/route/test_compute_parity.py`
+  holds the two implementations to the same paths, verdicts and expansion
+  counts. A new CI job builds the Windows wheel and uploads it. See
+  `docs/RUST_COMPUTE.md`.
+
+### Changed
+
+- **The routing solution check rejects far-apart pairs by their bounding
+  boxes before measuring.** Same violations, same order, same `checked`
+  count. A box gap is never larger than the true distance, so no reported
+  pair is skipped. The Python path on the 10 mil benchmark went from 184 s
+  to 160 s.
 
 ### Merged from upstream
 
