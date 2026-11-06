@@ -536,7 +536,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch, DrcOn : Boolean;
+    First, FromSch, RuleChecked : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -622,9 +622,9 @@ Begin
         { board: 37 of 159 rules read Enabled=True while DRC ignores them,    }
         { and the only sign was the word (Disabled) inside Altium's own       }
         { descriptor prose. Reported so nobody has to parse that to find out. }
-        DrcOn := True;
-        Try DrcOn := Rule.DRCEnabled; Except DrcOn := True; End;
-        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(DrcOn);
+        RuleChecked := True;
+        Try RuleChecked := Rule.DRCEnabled; Except RuleChecked := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(RuleChecked);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -637,7 +637,8 @@ Begin
     GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -2549,6 +2550,7 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{' + DrcViolationsJson(Board) + ','
             + '"mode":"batch",'
+            + '"board_path":"' + EscapeJsonString(Board.FileName) + '",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','

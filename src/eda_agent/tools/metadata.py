@@ -232,6 +232,13 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    # Who edits which document: reading it, or handing one over, writes
+    # nothing to a design.
+    "app_document_owners": READONLY,
+    "app_claim_document": READONLY,
+    # Reads the rules, or keeps an approved copy beside the board: nothing
+    # in the design changes.
+    "pcb_drc_rules": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.05.8';
+    SCRIPT_VERSION = '2026.11.05.11';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -46,6 +46,8 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+    { A document stays its writer's while it wrote within this. }
+    OWNER_IDLE_MS = 600000;
 
     { PickSession's slot length. Sessions now take turns per tool call, so  }
     { the scan passes either 0 (the session is inside a tool call: keep    }
@@ -133,6 +135,10 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
+    { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
+    { upper case with back slashes. See OwnerRefusal.                     }
+    DocOwners : String;
     { Full paths of the OutJobs proj_run_outjob opened, each
       wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
     RunOutJobsOpened : String;
@@ -590,6 +596,92 @@ Begin
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
 End;
+
+{ ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
+{ write landed on a board another session was working on with nothing to   }
+{ say so. Each write a session's tool call makes claims the document it    }
+{ acts on; another session's write to it is refused while the owner has   }
+{ written within OWNER_IDLE_MS. The person at the dashboard is never       }
+{ refused and claims nothing; application.claim_document hands a document  }
+{ over when the user says so.                                              }
+Function OwnerKey(Path : String) : String;
+Begin
+    Result := UpperCase(Trim(StringReplace(Path, '/', '\', -1)));
+End;
+
+{ The owner record of KEY without its delimiters, '' when none. }
+Function OwnerRecord(Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P + Length(Key) + 2, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Rest, 1, E - 1);
+End;
+
+{ Field I (0 tag, 1 tick, 2 command) of an owner record. }
+Function OwnerField(Rec : String; I : Integer) : String;
+Var
+    N, P : Integer;
+Begin
+    Result := '';
+    For N := 0 To I - 1 Do
+    Begin
+        P := Pos(Chr(2), Rec);
+        If P = 0 Then Exit;
+        Rec := Copy(Rec, P + 1, Length(Rec));
+    End;
+    P := Pos(Chr(2), Rec);
+    If P = 0 Then Result := Rec
+    Else Result := Copy(Rec, 1, P - 1);
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P > 0 Then
+    Begin
+        Rest := Copy(DocOwners, P, Length(DocOwners));
+        E := Pos(Chr(3), Rest);
+        If E > 0 Then
+            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+    End;
+    DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
+        + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
+End;
+
+{ The session tag a request id starts with. }
+Function RequestTag(RequestId : String) : String;
+Var
+    P : Integer;
+Begin
+    P := Pos('-', RequestId);
+    If P > 1 Then Result := LowerCase(Copy(RequestId, 1, P - 1))
+    Else Result := LowerCase(RequestId);
+End;
+
+{ Milliseconds since the owner of a record last wrote. }
+Function OwnerAgeMs(Rec : String) : Integer;
+Var
+    Tick : Integer;
+Begin
+    Tick := StrToIntDef(OwnerField(Rec, 1), 0);
+    If (Tick = 0) Or (GetTickCount < Tick) Then Result := 0
+    Else Result := GetTickCount - Tick;
+End;
+
+
+
 
 Function DocWasEdited(FilePath : String) : Boolean;
 Begin
@@ -3043,6 +3135,7 @@ Var
 Begin
     { A new loop starts with no tool call holding the turn. }
     HoldCall := '';
+    DocOwners := '';
     WriteSerial := 0;
     CompiledAtSerial := -1;
     HoldStartTick := 0;
@@ -7979,6 +8072,67 @@ Begin
     Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
 End;
 
+{ Which session is editing which document (DocOwners in Main.pas), with how }
+{ long ago it last wrote and whether that owner still holds it.             }
+Function App_DocumentOwners(RequestId : String) : String;
+Var
+    Rest, Rec, Path, Items, Response : String;
+    P, Q, Age : Integer;
+Begin
+    Items := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Break;
+        Path := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Path);
+        If Rec <> '' Then
+        Begin
+            Age := OwnerAgeMs(Rec);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + JsonObj(JsonStr('document', Path) + ','
+                + JsonStr('session', OwnerField(Rec, 0)) + ','
+                + JsonStr('last_command', OwnerField(Rec, 2)) + ','
+                + JsonInt('seconds_since_write', Age Div 1000) + ','
+                + JsonBool('held', Age < OWNER_IDLE_MS) + ','
+                + JsonBool('yours', OwnerField(Rec, 0) = RequestTag(RequestId)));
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('documents', '[' + Items + ']') + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonInt('idle_release_seconds', OWNER_IDLE_MS Div 1000)));
+    Result := Response;
+End;
+
+{ Hand a document to the calling session, whoever held it. }
+Function App_ClaimDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Before, Response : String;
+Begin
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Result := Response;
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    Before := '';
+    If Rec <> '' Then Before := OwnerField(Rec, 0);
+    OwnerSet(Key, RequestTag(RequestId), 'claimed');
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Path) + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonStr('previous_owner', Before)));
+    Result := Response;
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -8002,6 +8156,8 @@ Begin
         'stop_server':         Result := App_StopServer(RequestId);
         'autosave':            Result := App_Autosave(Params, RequestId);
         'format_value':        Result := App_FormatValue(Params, RequestId);
+        'document_owners':     Result := App_DocumentOwners(RequestId);
+        'claim_document':      Result := App_ClaimDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
@@ -22183,16 +22339,19 @@ Begin
             Else
             Begin
                 Body.SetState_FromModel;
-                { The rotation goes on the MODEL, before it is bound to the   }
-                { body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as the SDK }
-                { declares it and AutoSTEPplacer.pas uses                     }
-                { it. Dz stays 0; the standoff is written below as before.   }
+                { Rotation AND standoff go on the MODEL, before it is bound   }
+                { to the body: IPCB_Model.SetState(RotX, RotY, RotZ, Dz), as  }
+                { the SDK declares it and AutoSTEPplacer.pas uses it. A STEP  }
+                { body ignores its own StandoffHeight (see Lib_Set3DBody):    }
+                { written there it reported applied and saved a Z offset of 0.}
                 DidRotation := False;
-                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Then
+                DidStandoff := False;
+                If (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0) Or (OffZ <> 0) Then
                     Try
-                        Model.SetState(RotX, RotY, RotZ, 0);
-                        DidRotation := True;
-                    Except { "rotation" in the applied list reports it } End;
+                        Model.SetState(RotX, RotY, RotZ, MilsToCoordF(OffZ));
+                        DidRotation := (RotX <> 0) Or (RotY <> 0) Or (RotZ <> 0);
+                        DidStandoff := OffZ <> 0;
+                    Except { "rotation" and "standoff_height" in the applied list report it } End;
                 Body.Model := Model;
                 Footprint.AddPCBObject(Body);
                 { Same registration the pad, track, arc and text paths
@@ -22226,14 +22385,8 @@ Begin
                 { careful and could never have fired.                      }
                 {                                                          }
                 { The rotation is on the MODEL, set above before the bind. }
-                DidStandoff := False;
                 DidMove := False;
                 Shifted := False;
-                If OffZ <> 0 Then
-                    Try
-                        Body.StandoffHeight := MilsToCoordF(OffZ);
-                        DidStandoff := True;
-                    Except { "standoff_height" in the applied list reports it } End;
                 { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
                 { current above sits at Altium's library origin (about     }
                 { 50000,50000 mil, see FootprintOriginX), so the body      }
@@ -26349,7 +26502,8 @@ End;
 Function Lib_UninstallLibrary(Params : String; RequestId : String) : String;
 Var
     Path, Have : String;
-    Ok : Boolean;
+    Ok, Still, Closed : Boolean;
+    ServerDoc : IServerDocument;
     Mgr : IPCB_PadViaLibraryManager;
     PvLib : IPCB_PadViaLibrary;
     I, N : Integer;
@@ -26403,9 +26557,36 @@ Begin
         IntegratedLibraryManager.UnInstallLibrary(Path);
         Ok := True;
     Except End;
+    { Checked against the installed list, not assumed from no exception. }
+    Still := False;
+    N := 0;
+    Try N := IntegratedLibraryManager.InstalledLibraryCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Have := '';
+        Try Have := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+        If UpperCase(Have) = UpperCase(Path) Then Still := True;
+    End;
+    { A library opened as a document keeps its file open after the       }
+    { uninstall. An IntLib is not edited, so closing it loses nothing.    }
+    Closed := False;
+    If UpperCase(ExtractFileExt(Path)) = '.INTLIB' Then
+    Begin
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            Try Client.CloseDocument(ServerDoc); Except End;
+            ServerDoc := Nil;
+            Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+            Closed := ServerDoc = Nil;
+        End;
+    End;
     Result := BuildSuccessResponse(RequestId,
-        '{"uninstalled":' + BoolToJsonStr(Ok) + ',"library_path":"'
-        + EscapeJsonString(Path) + '"}');
+        '{"uninstalled":' + BoolToJsonStr(Ok And Not Still)
+        + ',"still_installed":' + BoolToJsonStr(Still)
+        + ',"closed_document":' + BoolToJsonStr(Closed)
+        + ',"library_path":"' + EscapeJsonString(Path) + '"}');
 End;
 
 {..............................................................................}
@@ -33125,6 +33306,9 @@ Begin
                                 Body.StandoffHeight := MilsToCoordF(StrToFloatDef(StandoffStr, 0));
                             If (StandoffStr <> '') And (Model <> Nil) Then
                             Begin
+                                { By file name: the saved record holds the name of the  }
+                                { embedded model, a body linked this session the full  }
+                                { path it was loaded from.                             }
                                 ModelFile := '';
                                 Try ModelFile := Model.FileName; Except End;
                                 SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
@@ -33136,7 +33320,8 @@ Begin
                                         + 'this body: save the library, then retry'));
                                 End
                                 Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
-                                    Or (UpperCase(SavedFile) <> UpperCase(ModelFile)) Then
+                                    Or (UpperCase(ExtractFileName(SavedFile))
+                                        <> UpperCase(ExtractFileName(ModelFile))) Then
                                 Begin
                                     If Skipped <> '' Then Skipped := Skipped + ',';
                                     Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
@@ -41669,7 +41854,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr, GapStr : String;
-    First, FromSch, DrcOn : Boolean;
+    First, FromSch, RuleChecked : Boolean;
     Count, GapIdx : Integer;
     GapNames, GapValues : TStringList;
     GapIter : IPCB_BoardIterator;
@@ -41755,9 +41940,9 @@ Begin
         { board: 37 of 159 rules read Enabled=True while DRC ignores them,    }
         { and the only sign was the word (Disabled) inside Altium's own       }
         { descriptor prose. Reported so nobody has to parse that to find out. }
-        DrcOn := True;
-        Try DrcOn := Rule.DRCEnabled; Except DrcOn := True; End;
-        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(DrcOn);
+        RuleChecked := True;
+        Try RuleChecked := Rule.DRCEnabled; Except RuleChecked := True; End;
+        JsonItems := JsonItems + ',"drc_enabled":' + BoolToJsonStr(RuleChecked);
         GapIdx := GapNames.IndexOf(Rule.Name);
         If GapIdx >= 0 Then
             JsonItems := JsonItems + ',"gap_mm":' + GapValues[GapIdx];
@@ -41770,7 +41955,8 @@ Begin
     GapValues.Free;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -43682,6 +43868,7 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{' + DrcViolationsJson(Board) + ','
             + '"mode":"batch",'
+            + '"board_path":"' + EscapeJsonString(Board.FileName) + '",'
             + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','
@@ -99111,7 +99298,51 @@ Begin
         Or (Cmd = 'project.close');
 End;
 
+{ A read, or a command that only brings a document forward or moves the }
+{ view: it neither claims a document nor is refused one (OwnerRefusal). }
+Function CommandOnlyLooks(Command : String) : Boolean;
+Var
+    Verb : String;
+Begin
+    Verb := CommandVerb(Command);
+    Result := CommandIsReadOnly(Command)
+        Or (Verb = 'focus_board')
+        Or (Verb = 'set_active_document')
+        Or (Verb = 'cockpit_state')
+        Or (Verb = 'zoom')
+        Or (Verb = 'switch_view')
+        Or (Verb = 'refresh_document')
+        Or (Verb = 'highlight_net')
+        Or (Verb = 'clear_highlights')
+        Or (Verb = 'layer_view')
+        Or (Verb = 'document_owners')
+        Or (Verb = 'claim_document');
+End;
+
 { END COMMAND RULES }
+
+{ The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
+Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
+Var
+    Rec, Owner : String;
+    Age : Integer;
+Begin
+    Result := '';
+    Rec := OwnerRecord(OwnerKey(Path));
+    If Rec = '' Then Exit;
+    Owner := OwnerField(Rec, 0);
+    If Owner = RequestTag(RequestId) Then Exit;
+    Age := OwnerAgeMs(Rec);
+    If Age >= OWNER_IDLE_MS Then Exit;
+    Result := BuildErrorResponse(RequestId, 'DOCUMENT_IN_USE',
+        Command + ' is refused: ' + Path + ' is being edited by another '
+        + 'Claude session (' + Owner + ', last ' + OwnerField(Rec, 2) + ' '
+        + IntToStr(Age Div 1000) + ' s ago). Nothing was changed. Work on '
+        + 'another document, or ask the user: application.claim_document '
+        + '(app_claim_document) hands it over when they say so. It is free '
+        + 'again once that session has left it alone for '
+        + IntToStr(OWNER_IDLE_MS Div 60000) + ' minutes.');
+End;
 
 Function SettingRefusal(Command : String; Params : String; RequestId : String) : String;
 Begin
@@ -99183,6 +99414,8 @@ Var
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
+    Actor, OwnTarget : String;
+    Writes, OwnRefused : Boolean;
     DashDetail, DashErrPayload, DashCode : String;
 Begin
     Result := False;
@@ -99277,6 +99510,14 @@ Begin
       below reports only what the handler itself moved. }
     SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
+    { What a write would act on: a path the command names, else the
+      document in front once the session's own is back. }
+    Actor := LowerCase(ExtractJsonValue(RequestContent, 'actor'));
+    Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
+    OwnTarget := ExtractJsonValue(Params, 'board_path');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'expect_file');
+    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'file_path');
+    If OwnTarget = '' Then OwnTarget := FocusBefore;
     ResetNextStep(0);
 
     ExceptionMsg := '';
@@ -99293,8 +99534,21 @@ Begin
             { The Config tab's permissions: refused here, where every request
               passes, so a client running older Python is held to them too. }
             ResponseContent := SettingRefusal(Command, Params, RequestId);
+            { A write from a session's tool call, never the person at the
+              dashboard, may not land on a document another session is
+              editing (OwnerRefusal). }
+            OwnRefused := False;
+            If (ResponseContent = '') And Writes And (Actor <> 'user')
+                And Not CommandOnlyLooks(Command) Then
+            Begin
+                ResponseContent := OwnerRefusal(OwnTarget, RequestId, Command);
+                OwnRefused := ResponseContent <> '';
+            End;
             If ResponseContent = '' Then
                 ResponseContent := ProcessCommand(Command, Params, RequestId);
+            If Writes And (Actor <> 'user') And (Not OwnRefused)
+                And (OwnTarget <> '') And Not CommandOnlyLooks(Command) Then
+                OwnerSet(OwnerKey(OwnTarget), RequestTag(RequestId), Command);
         Except
             ExceptionMsg := 'Unhandled exception processing: ' + Command;
             ResponseContent := BuildErrorResponse(RequestId, 'INTERNAL_ERROR', ExceptionMsg);
