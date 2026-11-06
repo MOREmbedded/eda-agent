@@ -130,7 +130,8 @@ def test_rust_without_the_wheel_refuses_and_auto_falls_back(mode, monkeypatch):
     mode("rust")
     with pytest.raises(compute.ComputeUnavailable, match="not installed"):
         compute.native()
-    assert compute.status()["error"]
+    st = compute.status()
+    assert st["error"] and st["active"] == "none"
     mode("auto")
     assert compute.native() is None
     assert compute.active() == "python"

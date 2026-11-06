@@ -121,7 +121,10 @@ def status() -> dict[str, Any]:
     if mode_error:
         out["error"] = mode_error
     else:
-        out["active"] = "rust" if (mode != "python" and mod) else "python"
         if mode == "rust" and mod is None:
+            # Nothing runs: rust refuses rather than fall back.
+            out["active"] = "none"
             out["error"] = f"{ENV_VAR}=rust but {why}"
+        else:
+            out["active"] = "rust" if (mode != "python" and mod) else "python"
     return out

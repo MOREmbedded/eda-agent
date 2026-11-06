@@ -5,6 +5,14 @@ eda-agent is pure Python. An optional wheel, **eda-agent-compute**
 measured to be CPU-bound. You turn it on with a flag. Without the flag,
 nothing changes.
 
+**Rust is never required.** `pip install -e .` and the eda-agent wheel are
+pure Python (`py3-none-any`). They do not build, fetch or import anything
+Rust. Without the compute wheel, the default and `auto` run the Python
+code, and only an explicit `rust` refuses to start. This was checked in a
+clean virtual environment with no Rust toolchain on `PATH`: an editable
+install, a wheel install, `compute-status` in every mode, and a full
+routing run with `auto`.
+
 ```
 eda-agent --compute rust     # always Rust; refuses to start without the wheel
 eda-agent --compute auto     # Rust when a matching wheel is installed, else Python
