@@ -1,4 +1,4 @@
-# Release verification: 2026.11.04.17
+# Release verification: 2026.11.05.8
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -456,6 +456,8 @@ works elsewhere cannot be an undeclared identifier:
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | no, nowhere | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
+| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
+| 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -631,7 +633,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.04.17`, `version_match` =
+Expect `altium_script_version` = `2026.11.05.8`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3948,6 +3950,159 @@ Live check after the deploy, on scratch copies only:
 3. Point that part at a footprint no library has and run
    `proj_sync_pcb`: `after_sync.footprint_mismatch` carries an `eco_line`
    with "Footprint Not Found".
+
+## 69. Hierarchy read, repeated channels, compile masks, directive and No ERC options (live verified)
+
+Measured 2026-11-05 on AD 26.11.1.5 with the last 4 November build, on a scratch
+project of three sheets added by explicit `project_path`: Top with one
+sheet symbol for Chan.SchDoc, Chan with ports DIN (input), DOUT
+(output), PG (output) and FB (input), and Orphan linked from nowhere.
+
+* `sch_place_sheet_symbol` with `repeat_first` 1 and `repeat_last` 4
+  named it `Repeat(CH,1,4)`; `sch_place_sheet_entry` found it by `CH`,
+  and `repeat` named the entry `Repeat(DIN)`. `proj_get_channels`
+  listed CH1 to CH4 with `channel_index` 1 to 4.
+* `proj_get_hierarchy` read 3 sheets, no read errors, and reported
+  exactly the four planted breaks: SPARE entry without a port, FB port
+  without an entry, PG input entry on an output port, Orphan.SchDoc.
+  Altium gives compiled channels after the first only their Repeat()
+  entries; those copies are not checked, and each parent is listed once.
+* `sch_place_compile_mask` read back its box and `collapsed`.
+* `sch_add_directive` with two parameters, `style` 1, `orientation` 1
+  read back all four.
+* `sch_place_no_erc` with `symbol` 1, `orientation` 2,
+  `suppress_all` false, `active` true read back each.
+* `sch_get_blankets` coverage of a blanket over the repeated symbol
+  listed its nets and `sheet_symbols` CH1 to CH4.
+
+Not run live here: a compile mask's effect on the netlist, and what
+each `style` and `symbol` integer looks like.
+
+## 70. Pad relief, the library's own board, the current footprint, auto-off, IPC batch
+
+Pull requests #221, #222, #225, #227 (vincent-himpe), #223 (All4Motion)
+and #228 (StarX-ai). Measured 2026-11-05 on AD 26.11.1.5 with this
+build, on a scratch board and a scratch PcbLib:
+
+* `pcb_pad_relief` on a free SMD pad read the rule's relief (4 spokes,
+  10 / 10 mil), set 2 spokes, 8 mil width, 9 mil gap and read them back
+  as `defined` manual; `style` "rule" put it back.
+* `pcb_pad_relief_spokes` refused "E" on a round pad (its east end is an
+  arc) with the reason, then placed "N" and "0" degrees and read both
+  points back in `custom_spokes`.
+* With a PcbLib in front, `lib_get_footprints` named the `current`
+  footprint and `pcb_layer_view` read and wrote the library's own
+  board (Mechanical16 hidden, then shown, both read back).
+
+* `lib_ipc_batch_template` read the 38 templates Altium installs under
+  ProgramData (family code in A1, columns, legend); "QFP" is found in
+  the PQFP file, whose code differs from its name.
+* `lib_generate_ipc_batch` on tables filled from TI package drawings:
+  RGT0016C (VQFN-16, 4222419/E) gave 17 pads at 0.50 mm pitch, terminal
+  pads 0.25 mm wide and a 1.68 mm thermal pad, with one STEP body
+  extracted and checksummed; DBZ0003A (SOT-23, 4214838/F), a family the
+  old check refused, gave 3 pads at 0.95 / 1.9 mm. Altium's reports: no
+  errors, only its pad-trimming warnings. Afterwards the session's
+  document stayed the library, not the generator's HTML report.
+
+Not run live here: the status window's double-click (an interface
+action). The generator's designator removal is off unless asked for,
+and it writes nothing of its own into the output folder.
+
+## 71. A rule or room name already on the board is refused
+
+`pcb_create_design_rule` and `pcb_create_room` added a second rule of a
+name the board already had, and Altium's priority order then decided
+which applied. Both now refuse it (`RULE_EXISTS`), and
+`tests/test_rule_names_are_unique.py` refuses a rule factory call with
+no name check before it. Measured 2026-11-05 on a scratch board: a
+second `DupCheck` rule and a room of that name were both refused, and
+the first rule was unchanged.
+
+## 72. Board rules and ERC levels from the policy folder
+
+`pcb_apply_policy_rules`, `proj_apply_policy_erc` and
+`design_apply_policy` bring a board's rules and a project's ERC levels
+to `board_rules.json` and `erc_levels.json` / `erc_levels/<set>.json` in
+EDA_AGENT_POLICY_DIR. They write through `pcb.create_design_rule`,
+`pcb.set_rule_properties` and `project.set_erc_levels`; nothing is
+deleted. Measured 2026-11-05 on a scratch board and project:
+
+* Board: a dry run proposed two rules to create and one to rewrite
+  (comment and a 12 to 20 mil gap). Applying created both and rewrote
+  the third (`gap_written`); applying again created nothing, showed no
+  difference and left no duplicate.
+* ERC: a set extending another changed three levels and saved the
+  project; a second look found all three the same.
+
+## 73. The dashboard cockpit: the board in front, kept current, with its checks
+
+The Layout tab's "follow Altium" draws the board in front in Altium and
+lists the layout checks on it. `pcb.cockpit_state` (read only) gives the
+document in front, a stamp of the parts, one of the free copper (walked
+only when asked; otherwise the counter's count) and the selection. The
+dashboard polls it about every 1.5 s, stretched to keep near a tenth of
+Altium's script time; a change that holds still for one poll re-reads
+only its sections, then the checks run. Its calls follow the front
+(`following_front`): they neither put a document back nor adopt one.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build, on a scratch copy of
+a 146-part, 2,095-copper board:
+
+* First read 16 to 17 s, fast checks 2 s, slow ones 2 s; 153 located
+  findings. Counting poll about 0.2 s in Altium, walking poll about 0.9 s;
+  on an 11,084-copper board the walk took 5 s, so above 4,000 objects
+  the copper is counted, not walked.
+* A part moved 100 mil: parts and pads re-read (9 s), findings updated
+  14 s after the move, no copper re-read.
+* A part and a net selected in Altium appeared in the state; clicking a
+  part selected it and zoomed to it, a net was highlighted, a finding
+  zoomed Altium to it; the focus stayed on the board throughout.
+* Pinned to the scratch board while another session had its schematic
+  in front, nothing was read.
+
+## 74. Update From Libraries without the menu, every dialog answered
+
+`proj_update_from_libraries` runs Tools > Update From Libraries or Update
+From PCB Libraries as Altium's own process
+(`WorkspaceManager:DocumentOptions`, `ObjectKind=Project|Action=
+LibrarySynch` or `PCBLibrarySynch`), so no menu or pointer is used. With
+Dialogs Automatic the dialogs on the way are answered and the change
+order is executed, its failed lines read, and closed. A dialog passed on
+the way can require text: the "Confirm" counting footprints no library
+has is answered only when it says so, and its sentence is kept.
+
+Measured 2026-11-05 on AD 26.11.1.5, on the scratch RoundLED project:
+
+* Schematic: "Update From Library" Finish, then the change order
+  executed and closed; no failed lines.
+* Board: "Update From PCB Libraries - Options" Update All Footprints
+  (Create ECO); "Confirm" read as "9 of the 155 footprints were not found
+  in libraries. Continue?" and answered Yes; on Execute, "Component(s)
+  Update Options" OK; the change order closed; no failed lines.
+
+The tool focuses its document first (`document_path`). Another session
+placing tracks between its own focus and its placement put 17 tracks on
+this scratch board, which was discarded unsaved: placing tools should
+name their board and refuse another (open).
+
+## 75. Placement names its board
+
+`pcb_place_tracks`, `pcb_place_vias`, `pcb_place_arcs` and `pcb_place_pads`
+take `board_path`: the handler takes that board by its path at the moment
+it places (through `StackBoard`), and refuses when it is not open. Without
+it they act on the board in front as before. Another session focusing its
+own document between a focus and a placement put 17 tracks on the wrong
+board before this.
+
+The first build called `ResolvePCBBoard` (Main.pas) directly from the four
+handlers and the PCB unit then failed to load on every deploy ("Undeclared
+identifier: HandlePCBCommand"); the same call through `StackBoard`, a
+PCB.pas wrapper, loads.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build: with a scratch sheet in
+front, a track with `board_path` naming a scratch board went onto that
+board; a path naming no open board was refused and placed nothing.
 
 ## Still open, and not blocking
 
