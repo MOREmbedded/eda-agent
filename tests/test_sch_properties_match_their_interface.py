@@ -447,6 +447,15 @@ procedure ApplyNoErcDefaults(Obj: TSchObject);
 begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
+// The library branch and the PCB-type refusal the creators gained
+// upstream. Neither is exercised here (no run opens a SchLib or names a
+// PCB type), but the program has to compile around them.
+procedure SetOwnerPart(Obj: TSchObject; Component: TSchObject);
+begin end;
+procedure MarkLibDirty(SchLib: TSchObject);
+begin end;
+function ObjectTypeFromStringPCB(S: String): Integer;
+begin Result := -1; end;
 function ObjectTypeFromString(S: String): Integer;
 begin
   Result := -1;

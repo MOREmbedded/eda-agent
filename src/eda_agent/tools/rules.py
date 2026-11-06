@@ -83,6 +83,30 @@ def _fab_profile_of(targets: dict, profile_dir: Optional[Path]) -> dict:
     return load_fab_profile(path)
 
 
+def plan_rules(targets: Optional[dict] = None, profile_dir: str = "") -> dict[str, Any]:
+    """pcb_rules_plan's body, callable without the MCP server: the
+    dashboard's Workspace view shows the same plan the tool returns."""
+    targets, refusal = _resolve_targets(targets, profile_dir)
+    if refusal:
+        return refusal
+    active = _active_profile()
+    directory = Path(profile_dir) if profile_dir else (
+        active.directory if active else None)
+    loaded = _fab_profile_of(targets, directory)
+    if not loaded.get("ok"):
+        return {"ok": False, "reason": loaded.get("reason")}
+    # net_class_map is required and refuses None: a profile that names
+    # no net classes asks for the fab-minimum rules alone, which is an
+    # empty map, not a missing argument.
+    got = synthesize_rules(
+        loaded["profile"],
+        net_class_map=targets.get("net_classes") or {},
+        options=targets.get("options") or {})
+    if isinstance(got, dict):
+        got.setdefault("source", str(directory) if directory else "targets")
+    return got
+
+
 def register_rule_tools(mcp):
     """Register the design-rule manager tools."""
 
@@ -118,25 +142,7 @@ def register_rule_tools(mcp):
             ``stackup_ops``, ``notes`` saying how each number was reached,
             ``skipped`` and the ``source`` the targets came from.
         """
-        targets, refusal = _resolve_targets(targets, profile_dir)
-        if refusal:
-            return refusal
-        active = _active_profile()
-        directory = Path(profile_dir) if profile_dir else (
-            active.directory if active else None)
-        loaded = _fab_profile_of(targets, directory)
-        if not loaded.get("ok"):
-            return {"ok": False, "reason": loaded.get("reason")}
-        # net_class_map is required and refuses None: a profile that names
-        # no net classes asks for the fab-minimum rules alone, which is an
-        # empty map, not a missing argument.
-        got = synthesize_rules(
-            loaded["profile"],
-            net_class_map=targets.get("net_classes") or {},
-            options=targets.get("options") or {})
-        if isinstance(got, dict):
-            got.setdefault("source", str(directory) if directory else "targets")
-        return got
+        return plan_rules(targets, profile_dir)
 
     @mcp.tool()
     async def pcb_rules_diff(
