@@ -33,7 +33,10 @@ next, do it, log the result.
 ## The loop (all clients)
 
 1. `design_get_discipline`: hard rules + the DesignPlan schema (once).
-2. `design_session_start(requirement)` → keep the `session_id`. Open
+2. `design_session_start(requirement)` → keep the `session_id`. Pass
+   `mode=` (and its `inputs`) for a run that is not the whole pipeline,
+   e.g. `reference_redraw` to redraw a vendor dev kit's schematic; see
+   [DESIGN_MODES.md](DESIGN_MODES.md). Open
    `design_live_view` so the board can be watched as it changes, and log
    each decision before acting on it with `design_live_note`.
 3. `app_checkpoint("before autonomous run")` if a project will be modified.

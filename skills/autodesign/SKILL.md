@@ -25,7 +25,11 @@ pipeline, because the integrity lives server-side.
 ## The loop
 
 1. `design_session_start(requirement)` opens the durable journal. Keep the
-   returned `session_id`; every later call takes it. Then `design_live_view`
+   returned `session_id`; every later call takes it. If the job is not
+   the whole pipeline (redraw a vendor reference design, schematic only,
+   layout only, a board derived from a dev kit), pass `mode=` and its
+   `inputs` (`design_list_modes` lists them); `design_next_action` then
+   walks only that mode's stages and carries its rules in `mode_rules`. Then `design_live_view`
    so the user can watch the board change, and record each decision with
    its reason before acting on it (`design_live_note`).
 2. If a project is open or will be modified, checkpoint first so the whole

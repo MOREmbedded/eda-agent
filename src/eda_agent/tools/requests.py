@@ -299,6 +299,51 @@ def _prompt_fn(req: Request, backend: str):
     return fn
 
 
+def _mode_prompt_fn(mode):
+    """A prompt function for one design mode, its inputs as arguments."""
+    from ..design.modes import prompt_text
+
+    def fn(**values: str) -> str:
+        return prompt_text(mode, values)
+
+    params = []
+    # Every input is optional at the prompt: one left blank is asked for
+    # in the text, and design_session_start refuses a required one that
+    # is still missing when the run starts.
+    for inp in mode.inputs:
+        ann = Annotated[str, Field(description=inp.description)]
+        params.append(inspect.Parameter(
+            inp.name, inspect.Parameter.KEYWORD_ONLY, annotation=ann,
+            default=inp.default or ""))
+    fn.__signature__ = inspect.Signature(params, return_annotation=str)
+    fn.__annotations__ = {p.name: p.annotation for p in params}
+    fn.__annotations__["return"] = str
+    fn.__name__ = f"mode_{mode.name}"
+    return fn
+
+
+def register_mode_prompts(mcp) -> list[str]:
+    """One prompt per design mode (``mode_<name>``) that starts a run in it.
+
+    Registered on every backend: design_session_start and
+    design_next_action are offline tools that every backend has.
+    """
+    if not hasattr(mcp, "prompt"):
+        return []
+    from ..design.modes import load_modes
+
+    modes, problems = load_modes()
+    for problem in problems:
+        logger.warning("design mode skipped: %s", problem)
+    names = []
+    for mode in modes.values():
+        name = f"mode_{mode.name}"
+        mcp.prompt(name=name, title=f"Mode: {mode.title}",
+                   description=mode.description)(_mode_prompt_fn(mode))
+        names.append(name)
+    return names
+
+
 def register_request_prompts(mcp, backend: str,
                              workspace: Optional[Path] = None) -> list[str]:
     """Register the canned requests that apply to ``backend``; return their names."""

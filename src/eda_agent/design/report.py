@@ -330,7 +330,9 @@ def _issues(j: _Journal) -> list[str]:
         elif verdict["verdict"] == "incomplete":
             out.append(f"- Gate for {stage} not fully measured; not logged: "
                        + "; ".join(verdict["missing"]))
-    unreached = [s for s in STAGES if s not in j.state.stage_status]
+    # Only the run's own stages: a stage its mode leaves out was never
+    # going to be reached, and listing it reads as unfinished work.
+    unreached = [s for s in j.state.stages if s not in j.state.stage_status]
     if unreached:
         out.append("- Stages not reached: " + ", ".join(unreached))
     return out + j.note_lines("issue")
@@ -354,10 +356,20 @@ def build_report(journal) -> str:
 
     out += ["## Requirement", "", _line(st.requirement) if st.requirement.strip() else NOTHING, ""]
 
+    if st.mode:
+        title = (st.mode_def or {}).get("title") or st.mode
+        out += ["## Mode", "", f"{st.mode}: {_line(title)}"]
+        out += [f"- {k}: {_line(v)}" for k, v in sorted(st.mode_inputs.items())]
+        skipped = [s for s in STAGES if s not in st.stages]
+        if skipped:
+            out += [f"- Stages outside this mode: {', '.join(skipped)}"]
+        out += [""]
+
     out += ["## Stage outcomes", ""]
     rows = []
     for stage in STAGES:
-        logged = st.stage_status.get(stage, "not reached")
+        logged = st.stage_status.get(
+            stage, "not reached" if stage in st.stages else "not in mode")
         verdict = j.gates.get(stage)
         rows.append([stage, logged, st.attempts.get(stage, 0) or "-",
                      verdict["verdict"] if verdict else "-"])

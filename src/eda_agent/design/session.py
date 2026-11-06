@@ -83,6 +83,16 @@ class SessionState:
     artifacts: list
     complete: bool
     attempts: dict = field(default_factory=dict)  # stage -> stage_result count
+    #: The design mode the run was started in (see design.modes) and the
+    #: stages it walks, in pipeline order. A journal from before modes
+    #: existed has no mode and walks all of STAGES.
+    mode: str = ""
+    stages: tuple = STAGES
+    #: The mode's definition as it was when the run started, and the
+    #: inputs it was started with. Recorded, never re-read from the mode
+    #: file, so editing a mode does not change a run under way.
+    mode_def: dict = field(default_factory=dict)
+    mode_inputs: dict = field(default_factory=dict)
 
 
 class SessionJournal:
@@ -105,12 +115,14 @@ class SessionJournal:
     def _next_seq(self) -> int:
         return sum(1 for _ in self._raw_lines()) + 1
 
-    def start(self, requirement: str, *, now: Optional[datetime] = None) -> JournalEvent:
-        return self._append(
-            KIND_SESSION_START,
-            {"session_id": self.session_id, "requirement": requirement},
-            now=now,
-        )
+    def start(self, requirement: str, *, mode: Optional[dict] = None,
+              now: Optional[datetime] = None) -> JournalEvent:
+        """``mode`` is design.modes.session_payload's dict; left out, the
+        event reads exactly as it did before modes existed."""
+        payload = {"session_id": self.session_id, "requirement": requirement}
+        if mode:
+            payload.update(mode)
+        return self._append(KIND_SESSION_START, payload, now=now)
 
     def enter_stage(self, stage: str, *, now=None) -> JournalEvent:
         _check_stage(stage)
@@ -183,6 +195,13 @@ class SessionJournal:
         return _replay(self.session_id, self.events())
 
 
+def stages_of(mode_def: dict) -> tuple:
+    """The stages a recorded mode walks, in pipeline order. No mode, or a
+    mode naming no known stage, walks them all."""
+    wanted = {s for s in (mode_def or {}).get("stages") or () if s in STAGES}
+    return tuple(s for s in STAGES if s in wanted) if wanted else STAGES
+
+
 def _check_stage(stage: str) -> None:
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r}; must be one of {STAGES}")
@@ -197,12 +216,20 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
     plan_revision = 0
     open_question = None
     artifacts: list[dict] = []
+    mode = ""
+    stages: tuple = STAGES
+    mode_def: dict = {}
+    mode_inputs: dict = {}
 
     for ev in events:
         p = ev.payload
         if ev.kind == KIND_SESSION_START:
             requirement = p.get("requirement", "")
             created = created or ev.ts
+            mode = str(p.get("mode") or "")
+            mode_def = p.get("mode_def") or {}
+            mode_inputs = p.get("inputs") or {}
+            stages = stages_of(mode_def)
         elif ev.kind == KIND_STAGE_ENTER:
             current_stage = p.get("stage")
         elif ev.kind == KIND_STAGE_RESULT:
@@ -220,9 +247,9 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
         elif ev.kind == KIND_RESOLVED:
             open_question = None
 
-    # next_stage: first pipeline stage not yet marked ok.
+    # next_stage: first of the run's stages not yet marked ok.
     next_stage = None
-    for st in STAGES:
+    for st in stages:
         if stage_status.get(st) != STATUS_OK:
             next_stage = st
             break
@@ -241,6 +268,10 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
         artifacts=artifacts,
         complete=complete,
         attempts=attempts,
+        mode=mode,
+        stages=stages,
+        mode_def=mode_def,
+        mode_inputs=mode_inputs,
     )
 
 
@@ -258,11 +289,12 @@ class SessionStore:
         return self.root / f"{session_id}.jsonl"
 
     def start(self, requirement: str, session_id: Optional[str] = None,
-              *, now: Optional[datetime] = None) -> SessionJournal:
+              *, mode: Optional[dict] = None,
+              now: Optional[datetime] = None) -> SessionJournal:
         now = now or datetime.now()
         sid = session_id or now.strftime("%Y%m%d-%H%M%S")
         journal = SessionJournal(self._path(sid), sid)
-        journal.start(requirement, now=now)
+        journal.start(requirement, mode=mode, now=now)
         return journal
 
     def get(self, session_id: str) -> SessionJournal:
