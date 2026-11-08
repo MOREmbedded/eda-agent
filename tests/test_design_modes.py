@@ -322,6 +322,24 @@ def test_list_and_get_modes(mcp):
     assert _call(mcp, "design_get_mode", {"name": "nope"})["ok"] is False
 
 
+def test_an_unknown_selected_mode_is_flagged(mcp, monkeypatch):
+    """Seen 2026-11-08: EDA_AGENT_MODE=no_such_mode was listed as selected
+    with no problem, though a run that names no mode is then refused."""
+    monkeypatch.setenv("EDA_AGENT_MODE", "no_such_mode")
+    listed = _call(mcp, "design_list_modes", {})
+    assert listed["selected"] == "no_such_mode"
+    assert listed["selected_known"] is False
+    assert any("no_such_mode" in p and "not a mode" in p
+               for p in listed["problems"])
+
+
+def test_a_known_selected_mode_raises_no_problem(mcp, monkeypatch):
+    monkeypatch.setenv("EDA_AGENT_MODE", "layout_only")
+    listed = _call(mcp, "design_list_modes", {})
+    assert listed["selected_known"] is True
+    assert not any("selected mode" in p for p in listed["problems"])
+
+
 def test_each_mode_is_a_prompt_that_starts_a_run_in_it():
     from mcp.server.fastmcp import FastMCP
 
