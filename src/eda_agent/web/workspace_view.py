@@ -10,9 +10,17 @@ gives: the server resolves from its own working directory and environment.
 This view answers from inside the server process, so what it shows is what
 the tools use.
 
-Read-only except for one thing: switching the centrally active profile, the
-same write ``eda-agent profile-use`` makes (profile.use_central_profile).
-Profile files are owner-written and are never edited from here.
+It writes two things. Switching the centrally active profile, the same
+write ``eda-agent profile-use`` makes (profile.use_central_profile). And the
+profile's ``preferences.json`` from the Settings card: the value format, the
+safety switches and the default design mode this profile wants
+(preferences.save_profile_preferences). Every other profile file is
+owner-written and never edited from here.
+
+The Settings card also shows what the Config tab on the Altium panel chose
+(the bridge folder's preferences.json) and which of the two is in effect;
+that file belongs to the panel and is only read here, because the panel
+rewrites it whole from what it holds in memory on every click.
 """
 from __future__ import annotations
 
@@ -126,7 +134,62 @@ def _restart_note(before: Optional[profile_mod.ActiveProfile],
     return ""
 
 
-def describe(start: Optional[Path] = None) -> dict[str, Any]:
+def _mode_names(profile_dir: Optional[Path]) -> tuple[dict, list[str]]:
+    from ..design.modes import load_modes
+    return load_modes(profile_dir)
+
+
+def settings(workspace: Optional[Path] = None,
+             start: Optional[Path] = None) -> dict[str, Any]:
+    """The Settings card: each preference, what the panel and the profile say,
+    which one is in effect, and the design mode a run starts in."""
+    from .. import preferences as prefs
+    from ..design import modes as modes_mod
+
+    directory = profile_mod.resolve_profile_dir(start)
+    modes, _ = _mode_names(directory)
+    stored = prefs.read_profile_file(directory)
+    pointer = modes_mod.active_mode_pointer()
+    try:
+        machine_mode = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        machine_mode = ""
+    selected, source = modes_mod.selected_mode_name(directory)
+    panel_file = Path(workspace) / prefs.PREFERENCES_FILE if workspace else None
+    return {
+        "can_save": directory is not None,
+        "profile_file": prefs.PROFILE_FILE if (directory and (directory / prefs.PROFILE_FILE).is_file()) else "",
+        "panel_file": str(panel_file) if panel_file else "",
+        "items": prefs.resolved(workspace),
+        "choices": {k: list(v) for k, v in prefs.CHOICES.items()},
+        "strict": dict(prefs.STRICT),
+        "problems": prefs.check_profile_preferences(stored, set(modes)) if stored else [],
+        "mode": {"selected": selected, "source": source,
+                 "exists": selected in modes,
+                 "profile": modes_mod.profile_default_mode(directory) if directory else "",
+                 "machine": machine_mode,
+                 "environment": os.environ.get(modes_mod.MODE_ENV, "").strip(),
+                 "modes": [{"name": m.name, "title": m.title, "source": m.source}
+                           for m in modes.values()]},
+    }
+
+
+def save_settings(changes: Any, start: Optional[Path] = None) -> dict[str, Any]:
+    """Write CHANGES into the profile's preferences.json (None clears a key)."""
+    from .. import preferences as prefs
+
+    directory = profile_mod.resolve_profile_dir(start)
+    if directory is None:
+        return {"ok": False, "reason": "no profile is in effect, so there is nowhere to "
+                                       "keep a per-profile setting; choose or make one first"}
+    if not isinstance(changes, dict):
+        return {"ok": False, "reason": "changes must be an object of setting: value"}
+    modes, _ = _mode_names(directory)
+    return prefs.save_profile_preferences(directory, changes, set(modes))
+
+
+def describe(start: Optional[Path] = None,
+             workspace: Optional[Path] = None) -> dict[str, Any]:
     """Everything the Workspace view shows, in one read."""
     where = profile_mod.resolution(start)
     central = profile_mod.central_profile_names()
@@ -141,7 +204,8 @@ def describe(start: Optional[Path] = None) -> dict[str, Any]:
                          and name == where["central"]["name"]})
     out: dict[str, Any] = {"ok": True, "where": where, "profiles": profiles,
                            "ipc_dir": os.environ.get("EDA_AGENT_IPC_DIR", ""),
-                           "profile": None}
+                           "profile": None,
+                           "settings": settings(workspace, start)}
     p = profile_mod.get_active_profile(start)
     if p is None:
         return out
@@ -244,7 +308,8 @@ def rules_plan(start: Optional[Path] = None) -> dict[str, Any]:
 def register(app: Flask) -> None:
     @app.route("/api/wb/workspace")
     def wb_workspace() -> Response:
-        out = describe()
+        out = describe(workspace=Path(app.config["WORKSPACE_DIR"])
+                       if app.config.get("WORKSPACE_DIR") else None)
         out["workspace_dir"] = str(app.config.get("WORKSPACE_DIR") or "")
         return jsonify(out)
 
@@ -260,3 +325,8 @@ def register(app: Flask) -> None:
     def wb_workspace_use() -> Response:
         body = request.get_json(silent=True) or {}
         return jsonify(use(str(body.get("name") or "")))
+
+    @app.route("/api/wb/workspace/settings", methods=["POST"])
+    def wb_workspace_settings() -> Response:
+        body = request.get_json(silent=True) or {}
+        return jsonify(save_settings(body.get("changes")))

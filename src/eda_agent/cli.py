@@ -1051,6 +1051,7 @@ def cmd_mode_list() -> int:
 
     modes, problems = load_modes()
     selected, source = selected_mode_name()
+    print(f"Selected: {selected} (from {source})")
     for m in modes.values():
         marker = " (selected)" if m.name == selected else ""
         where = "" if m.source == "built-in" else f"  [{m.source}]"
@@ -1103,7 +1104,10 @@ def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
     if clear:
         if pointer.exists():
             pointer.unlink()
-        print("Mode selection cleared: runs that name no mode use full_design.")
+        from .design.modes import selected_mode_name
+        now, source = selected_mode_name()
+        print(f"Mode selection cleared: runs that name no mode use {now} "
+              f"(from {source}).")
         return 0
     if not name:
         print("ERROR: name a mode, or pass --clear.", file=sys.stderr)
@@ -1116,6 +1120,12 @@ def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(name, encoding="utf-8")
     print(f"Selected mode: {name}")
+    from .design.modes import profile_default_mode
+    from_profile = profile_default_mode()
+    if from_profile and from_profile != name:
+        print(f"  (the active profile's preferences.json sets default_mode "
+              f"{from_profile!r}, which overrules this while that profile is "
+              f"in effect.)")
     if os.environ.get(MODE_ENV):
         print(f"  ({MODE_ENV} is set to {os.environ[MODE_ENV]!r} in this "
               f"shell and overrules this.)")

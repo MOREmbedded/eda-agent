@@ -1754,7 +1754,8 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Read, write or clean up a component value. HOW IT IS WRITTEN IS
         THE USER'S CHOICE on the Config tab of the bridge panel in Altium,
-        read on every call: RKM (IEC 60062, a letter where the decimal
+        or in the active profile's preferences.json, which wins, read on
+        every call: RKM (IEC 60062, a letter where the decimal
         point would be: 4K7, 0R005, 2u2, 10uF, 3V3), SI (4.7k, 0.005, 2.2u,
         3.3V), SI with the unit (2.2uF, 100nF, 10uH; never on resistors), or
         None, which leaves values as written: cleanup returns the text
@@ -1820,21 +1821,21 @@ def register_application_tools(mcp):
         if act == "fromstring":
             return await get_bridge().send_command_async("application.format_value", params)
 
-        from ..preferences import value_format, value_unit
+        from ..preferences import value_format, value_unit, where_set
         style, unit = value_format(), value_unit()
         if style == "none" and act == "tostring":
+            where, undo = where_set("value_format")
             return {"ok": False, "value_format": "none",
-                    "reason": "No value format is chosen: the Config tab of the "
-                              "bridge panel in Altium says None, so values are "
-                              "left as written. The user can choose one there."}
+                    "reason": f"No value format is chosen: it is None {where}, "
+                              f"so values are left as written. {undo}"}
         reply = await get_bridge().send_command_async("application.format_value", params)
         if not isinstance(reply, dict) or reply.get("success") is False or "text" not in reply:
             return reply
         reply = dict(reply)
         if style == "none":
             reply["text"] = str(text)
-            reply["note"] = ("Left as written: the value format on the Config tab "
-                             "of the bridge panel is None.")
+            reply["note"] = (f"Left as written: the value format is None "
+                             f"{where_set('value_format')[0]}.")
         elif style == "si":
             exact = params.get("value") if act == "tostring" else reply.get("value")
             kind_of = kind if act == "tostring" else reply.get("kind")

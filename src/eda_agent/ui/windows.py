@@ -191,11 +191,15 @@ def _gate(what: str) -> None:
     in this package passes through here or through require_foreground.
     """
     if not automation_enabled():
+        if _panel_off():
+            from ..preferences import where_set
+            where, undo = where_set("ui_automation")
+            raise AutomationDisabled(
+                f"refusing {what}: UI automation (Menus, dialogs, keys) is "
+                f"switched off {where}. {undo}")
         raise AutomationDisabled(
-            f"refusing {what}: UI automation is switched off, by "
-            f"{UI_AUTOMATION_ENV} or on the Config tab of the bridge panel "
-            f"in Altium (Menus, dialogs, keys). The user can turn it back "
-            f"on there, or unset the variable")
+            f"refusing {what}: UI automation is switched off by "
+            f"{UI_AUTOMATION_ENV}. The user can unset the variable")
 
 
 class ForegroundLost(RuntimeError):

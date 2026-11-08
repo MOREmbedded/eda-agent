@@ -257,6 +257,10 @@ table.grid a { color:var(--blue); }
 .ladder .step b { display:block; font-size:12px; margin-bottom:2px; }
 .ladder .m, #pane p.m, .kv dd.m { font-family:var(--mono); font-size:11px; overflow-wrap:anywhere; }
 h2.wsh { font-size:13px; margin:0 0 6px; }
+.wsset { margin-bottom:var(--s3); }
+.wsset table.grid td { cursor:default; vertical-align:middle; }
+.wsset select { font-size:12px; max-width:100%; }
+.wsset .src-profile { color:var(--green); font-weight:600; } .wsset .src-panel { color:var(--ink); } .wsset .src-default { color:var(--ink3); }
 .chipset button small { opacity:.7; }
 .wsgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:var(--s3); margin-top:var(--s3); }
 .card { background:var(--paper); border:1px solid var(--rule); border-radius:4px; padding:10px 12px; min-width:0; }
@@ -1234,6 +1238,52 @@ function paintWsChip() {
 const wsFile = (path, label) => `<button class="file" data-wsfile="${esc(path)}" title="${esc(T("Show the file"))}">${esc(label || path)}</button>`;
 const wsKv = obj => { const e = Object.entries(obj || {}).filter(([k]) => !k.startsWith("_")); return e.length ? `<dl class="kv">${e.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</dd>`).join("")}</dl>` : `<p class="hint">${esc(T("Not set: the built-in defaults apply."))}</p>`; };
 const wsCard = (title, sub, body, file) => `<section class="card"><h3>${esc(title)}${sub ? `<small>${esc(sub)}</small>` : ""}<span class="sp"></span>${file || ""}</h3>${body}</section>`;
+// The Settings card: the Config-tab preferences and the default design mode,
+// what the Altium panel and this profile each say, and which is in effect.
+// Changes go to the profile's preferences.json; the panel's own file is
+// only read (the panel rewrites it whole on every click).
+const WS_FMT = {none: "None", rkm: "4K7  2u2", si: "4.7k  2.2u", si_unit: "4.7k  2.2uF"};
+const wsFmtKey = (f, u) => f === "si" && u === "with" ? "si_unit" : f;
+function wsSettingsCard(w) {
+  const st = w.settings; if (!st) return "";
+  const it = st.items, mode = st.mode, can = st.can_save;
+  const MODE_SRC = {environment: "EDA_AGENT_MODE", "mode-use": "eda-agent mode-use"};
+  const from = src => `<span class="src-${esc(src)}">${esc(MODE_SRC[src] || T({profile: "This profile", panel: "Altium panel", default: "Default"}[src]) || src)}</span>`;
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  const inherit = T("Not set here");
+  const sel = (key, cur, opts) => `<select data-wsset="${esc(key)}" ${can ? "" : "disabled"} aria-label="${esc(T("This profile"))}">${opt("", inherit, cur)}${opts.map(([v, l]) => opt(v, l, cur)).join("")}</select>`;
+  const word = {allowed: T("Allowed"), readonly: T("Read-only"), refused: T("Refused"), on: T("On"), off: T("Off"), auto: T("Answered by the tool"), manual: T("Left to you")};
+  const fmtNow = wsFmtKey(it.value_format.value, it.value_unit.value);
+  const fmtProfile = it.value_format.profile ? wsFmtKey(it.value_format.profile, it.value_unit.profile) : "";
+  const row = (label, now, src, control) => `<tr><td>${esc(label)}</td><td><b>${esc(now)}</b></td><td>${from(src)}</td><td>${control}</td></tr>`;
+  const safety = (key, label) => { const r = it[key], strict = st.strict[key];
+    return row(label, word[r.value] || r.value, r.source, sel(key, r.profile === strict ? strict : "", [[strict, word[strict] || strict]])); };
+  const plain = (key, label) => { const r = it[key];
+    return row(label, word[r.value] || r.value, r.source, sel(key, r.profile || "", st.choices[key].map(v => [v, word[v] || v]))); };
+  const modes = mode.modes.map(m => [m.name, m.name + (m.title ? " (" + m.title + ")" : "")]);
+  const rows = row(T("Component value format"), WS_FMT[fmtNow] || fmtNow, it.value_format.source, sel("value_format", fmtProfile, Object.entries(WS_FMT)))
+    + row(T("Design mode a run starts in"), mode.selected + (mode.exists ? "" : " ?"), mode.source, sel("default_mode", mode.profile, modes))
+    + safety("edits", T("Edits")) + safety("deleting", T("Deleting")) + safety("closing", T("Closing documents"))
+    + safety("ui_automation", T("Menus, dialogs and keys")) + plain("keep_in_view", T("Keep the board in view")) + plain("dialogs", T("Dialogs a tool opens"));
+  const r = S.wsSet;
+  return `<section class="card wsset"><h3>${esc(T("Settings"))}<small>${esc(can ? T("kept in this profile") : T("No profile"))}</small><span class="sp"></span>${st.profile_file ? wsFile(st.profile_file) : ""}</h3>
+    <table class="grid"><thead><tr><th>${esc(T("Setting"))}</th><th>${esc(T("In effect"))}</th><th>${esc(T("Comes from"))}</th><th>${esc(T("This profile"))}</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="hint">${esc(can ? T("Set here, a value is saved in this profile's preferences.json, so switching profile switches it. It wins over the Altium panel's Config tab, which shows only its own choice. A safety switch can only be made stricter here: what the panel turns on always holds.") : T("No profile applies, so nothing can be kept per profile. These are the Altium panel's choices and the defaults."))}</p>
+    ${mode.environment ? `<p class="hint">${esc(T("EDA_AGENT_MODE is set to {0} and decides the mode while it is.", mode.environment))}</p>` : ""}
+    ${st.problems.length ? `<div class="result fail"><ul>${st.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+    ${r ? `<div class="result ${r.ok ? "ok" : "fail"}">${esc(r.ok ? T("Saved in {0}.", r.file) : r.reason)}</div>` : ""}</section>`;
+}
+async function wsSetChange(t) {
+  const key = t.dataset.wsset, v = t.value, changes = {};
+  if (key === "value_format") {
+    if (!v) changes.value_format = null;
+    else { changes.value_format = v === "si_unit" ? "si" : v; changes.value_unit = v === "si_unit" ? "with" : null; }
+  } else changes[key] = v || null;
+  const r = await post("/api/wb/workspace/settings", {changes});
+  S.wsSet = r;
+  say(r.ok ? T("Saved in {0}.", r.file) : r.reason, !r.ok);
+  return loadWorkspace(true);
+}
 function paintWorkspacePane() {
   const pane = $("#pane"); pane.hidden = false;
   const w = S.ws;
@@ -1294,7 +1344,7 @@ function paintWorkspacePane() {
       ${p ? `<div><span>${esc(T("Problems"))}</span><b class="${p.problems.length ? "bad" : "good"}">${p.problems.length}</b></div>` : ""}</div>
       ${p && p.description ? `<p class="hint" style="margin:0">${esc(p.description)}</p>` : ""}</div>
     ${p ? `<p class="m hint" style="margin:-6px 0 12px">${esc(p.directory)}</p>` : ""}
-    ${ladder}<h2 class="wsh">${esc(T("Switch the central profile"))}</h2>${switcher}${viewer}${body}`;
+    ${ladder}<h2 class="wsh">${esc(T("Switch the central profile"))}</h2>${switcher}${wsSettingsCard(w)}${viewer}${body}`;
   if (pane.dataset.html !== html) { pane.innerHTML = html; pane.dataset.html = html; }
 }
 function workspaceSideBlock() {
@@ -1354,7 +1404,7 @@ async function wsPaneClick(e) {
   const t = e.target.closest("button"); if (!t) return;
   if (t.dataset.wsuse != null) {
     const r = await post("/api/wb/workspace/use", {name: t.dataset.wsuse});
-    S.wsUse = r; S.wsPlan = null; S.wsResult = null;
+    S.wsUse = r; S.wsPlan = null; S.wsResult = null; S.wsSet = null;
     say(r.ok ? T("{0} is now the central choice.", r.name) : r.reason, !r.ok);
     return loadWorkspace(true);
   }
@@ -1823,6 +1873,7 @@ $("#pane").addEventListener("input", e => {
   if (e.target.id === "toolq") { S.toolFilter = e.target.value; paintPane(); }
 });
 $("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
+$("#pane").addEventListener("change", e => { if (S.mode === "workspace" && e.target.dataset && e.target.dataset.wsset != null) wsSetChange(e.target); });
 $("#legend").addEventListener("change", e => {
   const n = e.target.dataset.layer; if (!n) return;
   if (e.target.checked) delete S.hidden[n]; else S.hidden[n] = 1;

@@ -16,6 +16,23 @@ maturity classification for every tool.
 
 ### Added
 
+- **Per-profile settings.** A profile may carry `preferences.json` with the
+  Altium panel's Config-tab keys (component value format, keep in view,
+  dialogs, and the edits/deleting/closing/UI-automation safety switches)
+  and `default_mode`, the design mode a run starts in. The profile wins
+  over the panel's one-per-machine file for the value format and workflow
+  settings; for the safety switches the stricter of the two wins, so a
+  profile can add a restriction but never lift one. `default_mode` sits
+  between `EDA_AGENT_MODE` and `eda-agent mode-use`. Refusals and the
+  value-format tool name the profile file when it decided.
+  `profile-validate` checks the file. See docs/PROFILES.md.
+- **Settings card in the dashboard's Workspace mode (key 8).** Shows each
+  of those settings, the value in effect and where it comes from (this
+  profile, the Altium panel, the environment, `mode-use` or the default),
+  and sets or clears it in the profile's `preferences.json`. The panel's
+  own file is read, never written. The Altium panel itself still shows
+  only its own choice; UNVERIFIED on a live Altium.
+
 - **Dashboard Workspace mode.** A top-bar chip names the profile in
   effect and where it comes from; mode 8 shows the resolution order, a
   button per central profile to switch to it, the design-rule targets and

@@ -37,6 +37,12 @@ Two file shapes are genuinely new here (nothing already reads them):
   - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
                                stages this owner runs. Absent means none,
                                and the phase tools are not advertised.
+  - preferences.json        -- the Altium panel's Config-tab keys
+                               (value_format, value_unit, keep_in_view,
+                               dialogs, and the safety switches) plus
+                               default_mode, for this owner. How it combines
+                               with the panel's own file is in
+                               eda_agent.preferences.
   - modes/<name>.json       -- design modes (design.modes): presets for a
                                kind of run, e.g. a company's variant of
                                reference_redraw
@@ -178,6 +184,8 @@ class ActiveProfile:
     #: reports, not an empty dict every caller silently accepts.
     erc_levels: dict = field(default_factory=dict)
     phase_gates: dict = field(default_factory=dict)
+    #: preferences.json -- value format, safety switches, default_mode.
+    preferences: dict = field(default_factory=dict)
     naming_path: Path | None = None
     company_goals_path: Path | None = None
     rules_dir: Path | None = None
@@ -203,6 +211,7 @@ class ActiveProfile:
             "footprint_policy": self.footprint_policy,
             "document_settings": self.document_settings,
             "phase_gates": self.phase_gates,
+            "preferences": self.preferences,
             "has_erc_levels": bool(self.erc_levels),
             "erc_sets": self.erc_sets(),
             "has_naming": self.naming_path is not None,
@@ -293,6 +302,7 @@ def load_profile(directory: Path) -> ActiveProfile:
     design_rules = read("design_rules.json")
     erc_levels = read("erc_levels.json")
     phase_gates = read("phase_gates.json")
+    preferences = read("preferences.json")
 
     naming_path = directory / "naming.json"
     company_goals_path = directory / "company_goals.json"
@@ -309,6 +319,7 @@ def load_profile(directory: Path) -> ActiveProfile:
         design_rules=design_rules,
         erc_levels=erc_levels,
         phase_gates=phase_gates,
+        preferences=preferences,
         naming_path=naming_path if naming_path.exists() else None,
         company_goals_path=company_goals_path if company_goals_path.exists() else None,
         rules_dir=rules_dir if rules_dir.is_dir() else None,
@@ -675,7 +686,11 @@ def validate_profile(directory: Path) -> list[str]:
     errors += check_phase_gates(p.phase_gates)
     errors += check_erc_sets(p.directory)
     from .design.modes import load_modes
-    errors += load_modes(p.directory)[1]
+    modes, mode_problems = load_modes(p.directory)
+    errors += mode_problems
+    if p.preferences:
+        from .preferences import check_profile_preferences
+        errors += check_profile_preferences(p.preferences, set(modes))
 
     if p.naming_path:
         try:

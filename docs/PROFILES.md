@@ -32,6 +32,7 @@ profile/
   erc_levels/                 # named ERC sets, each able to extend another
     strict.json                #   (one policy per file)
   phase_gates.json           # which NPI stages this owner runs (default: none)
+  preferences.json           # value format, safety switches, default design mode
   modes/                      # design modes (see DESIGN_MODES.md)
     nxp_redraw.json            #   (one mode per file)
   templates/                  # plain files, copied as-is
@@ -47,8 +48,8 @@ reuse formats that already existed before profiles did -- see
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
 `document_settings.json`, `design_rules.json`, `erc_levels.json`,
-`erc_levels/`, `phase_gates.json` and `templates/` are new, documented
-below.
+`erc_levels/`, `phase_gates.json`, `preferences.json` and `templates/` are
+new, documented below.
 
 ## How a profile is found
 
@@ -183,8 +184,20 @@ The mode shows:
   asked); rulesets with their rule counts by severity; every ERC set,
   resolved through `extends`; fab profiles' limits; project and document
   templates; naming, document settings, footprint defaults and policy, and
-  phase gates. Any file name opens the file read-only. Nothing in a profile
-  is edited from the page.
+  phase gates. Any file name opens the file read-only. The one profile
+  file the page edits is `preferences.json`, from the Settings card.
+- **Settings.** Every setting of the Config tab on the Altium panel
+  (component value format, edits, deleting, closing documents, menus,
+  dialogs and keys, keep the board in view, dialogs a tool opens) and the
+  design mode a run starts in. Each row shows the value in effect, where it
+  comes from (this profile, the Altium panel, `EDA_AGENT_MODE`,
+  `eda-agent mode-use` or the default) and a menu that sets it in this
+  profile, or "Not set here" to take it out again. Changes are written to
+  the profile's `preferences.json` (see below), so switching profile
+  switches them. The panel's own file is shown but never written from the
+  page: the panel rewrites it whole from what it holds whenever you click
+  there. With no profile in effect the card shows the panel's choices and
+  cannot save.
 - **Hold the open design to it.** Compare (`profile_diff_all`), preview
   (`profile_apply_all`, dry run) and apply (`profile_apply_all`,
   `dry_run=False`). Apply asks for a second click, since it writes to
@@ -448,6 +461,55 @@ disable them.
 
 The tool surface is chosen at startup, so a change takes a restart.
 
+## `preferences.json`
+
+```json
+{
+  "_comment": "Acme: SI values with units, never delete from the AI",
+  "value_format": "si",
+  "value_unit": "with",
+  "deleting": "refused",
+  "default_mode": "reference_redraw"
+}
+```
+
+The same keys as the Config tab on the Altium panel, which keeps its own
+`preferences.json` in the bridge folder (one per machine), plus
+`default_mode`. Every key is optional. Set it from the dashboard's Settings
+card or by hand.
+
+| Key | Values | When both say something |
+|---|---|---|
+| `value_format` | `none`, `rkm` (4K7, 2u2), `si` (4.7k, 2.2u) | the profile wins |
+| `value_unit` | `without`, `with` (only with `si`) | travels with `value_format` |
+| `keep_in_view` | `off`, `on` | the profile wins |
+| `dialogs` | `auto`, `manual` | the profile wins |
+| `edits` | `allowed`, `readonly` | the stricter wins |
+| `deleting` | `allowed`, `refused` | the stricter wins |
+| `closing` | `allowed`, `refused` | the stricter wins |
+| `ui_automation` | `on`, `off` | the stricter wins |
+| `default_mode` | any mode's name | see [DESIGN_MODES.md](DESIGN_MODES.md) |
+
+`value_format` and `value_unit` are one choice: a profile that sets the
+format also decides the unit (`without` unless it says `with`), so a format
+from the profile is never combined with a unit from the panel, and a
+`value_unit` alone does nothing.
+
+The four safety switches can only be made stricter by a profile. A profile
+can switch edits to read-only for a client whose designs the AI must not
+change; it cannot switch back on what you turned off on the panel. A
+refusal names the file that switched it off.
+
+The Altium panel shows only its own file, so with a profile in effect its
+Config tab can differ from what the tools do; the Settings card shows both
+and which one decides. The Pascal side also enforces the panel's own
+safety switches by itself, which is why a profile can add to them but never
+remove them.
+
+`profile-validate` names an unknown key, a value a key cannot take, a
+`value_unit` without `value_format`, and a `default_mode` that is not a
+mode. A broken file is skipped: the panel's choices apply.
+
 ## `templates/<name>/` and `templates/documents/`
 
 Two kinds, kept apart because they are used differently.
@@ -485,7 +547,7 @@ existing destination is refused unless `overwrite=True`, and if the copy
 succeeds but Altium will not open it, the result still reports the file
 that was written rather than losing it.
 
-### Not covered: preferences and Draftsman
+### Not covered: Altium preferences and Draftsman
 
 **Altium preferences** cannot be templated from here. There is no scripting
 API for the Preferences dialog: `app_get_preferences` reads the active

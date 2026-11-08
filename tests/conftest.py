@@ -540,6 +540,23 @@ def _no_bridge_left_pinging():
         f"fake instead of letting it resolve the global bridge")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_profile_preferences(request, monkeypatch):
+    """Hide the profile layer of the preferences from every test that does
+    not ask for it with ``@pytest.mark.profile_preferences``.
+
+    A profile's preferences.json can switch edits to read-only, change the
+    value format and pick the default design mode. A developer's machine
+    usually has a central profile in effect, and an unmarked test (a safety
+    refusal, a value-format reply, a design run that names no mode) would
+    then see that profile's choices instead of the panel file it set up.
+    """
+    if request.node.get_closest_marker("profile_preferences"):
+        return
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, "_profile_layer", lambda: {})
+
+
 def pytest_configure(config):
     # Without pytest-asyncio every async test fails with "async def
     # functions are not natively supported", hundreds of them across
@@ -558,6 +575,12 @@ def pytest_configure(config):
         "network: test genuinely needs the internet; exempt from the "
         "session-wide block. Use sparingly, it makes CI depend on a "
         "third party being reachable.")
+    config.addinivalue_line(
+        "markers",
+        "profile_preferences: test reads the active profile's "
+        "preferences.json (value format, safety switches, default_mode). "
+        "Every other test has that layer hidden, so a profile on the "
+        "developer's machine cannot change what it sees.")
     config.addinivalue_line(
         "markers",
         "kicad_libs: test reads the KiCad symbol/footprint libraries "

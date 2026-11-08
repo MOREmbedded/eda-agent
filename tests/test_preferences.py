@@ -355,3 +355,22 @@ def test_python_refuses_deletes_and_closes_when_the_panel_says_so(monkeypatch, t
     assert safety.refuse_command("pcb.embedded_data", {"action": "write"}) is None
     assert "closing documents" in safety.refuse_command("application.close_document")
     assert safety.refuse_command("pcb.place_tracks") is None
+
+
+def test_a_profile_on_this_machine_is_hidden_from_unmarked_tests(monkeypatch, tmp_path):
+    """conftest hides the profile layer from tests not marked
+    profile_preferences, so a developer's own profile cannot make a safety
+    or value-format test see something else than the panel file it wrote."""
+    from eda_agent import safety
+    monkeypatch.delenv(safety.READONLY_ENV, raising=False)
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    (profile_dir / "preferences.json").write_text(
+        json.dumps({"edits": "readonly", "value_format": "si", "default_mode": "layout_only"}))
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(profile_dir))
+    monkeypatch.setenv("EDA_AGENT_MODE", "")
+    _workspace(monkeypatch, tmp_path, edits="allowed", value_format="rkm")
+    assert preferences.preferences()["edits"] == "allowed"
+    assert preferences.value_format() == "rkm"
+    from eda_agent.design.modes import selected_mode_name
+    assert selected_mode_name()[1] != "profile"
