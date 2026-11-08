@@ -2246,6 +2246,28 @@ Begin
 End;
 { END GENERATED - SDK property probe. }
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness  }
+{ wire, splice or cable has no Name property of its own, so this is the   }
+{ only place its name can be read; GetSchProperty answers Name with it,   }
+{ which is what lets obj_query, obj_modify and obj_delete filter a wire   }
+{ by Name=W2 (matched nothing before, 2026-11-08).                        }
+Function SchHarnessName(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     NoERC : ISch_NoERC;
@@ -2326,8 +2348,9 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
                 Result := '';
+                Try Result := SchHarnessName(Obj.GetState_DescriptionString); Except Result := ''; End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
@@ -7882,19 +7905,8 @@ End;
 { The name a harness object gives in its description: the word after its    }
 { kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
 Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
 Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
+    Result := SchHarnessName(Desc);
 End;
 
 { An Altium colour (blue in the high byte) as #RRGGBB. }
