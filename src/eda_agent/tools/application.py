@@ -1441,7 +1441,11 @@ def register_application_tools(mcp):
         Project members keep their project association because the live
         script uses ``Client.OpenDocument`` rather than the UI open process.
         The document kind is inferred from common Altium extensions, so
-        callers normally only need to provide the absolute path.
+        callers normally only need to provide the absolute path. A .WirDoc
+        always opens through the workspace manager, the one route that
+        leaves a wiring diagram sch_get_harness can read; ``kind`` is
+        ignored for it (``kind_ignored``). ``kind`` in the reply is what
+        Altium gave the document.
 
         Args:
             file_path: Absolute path to an existing document.

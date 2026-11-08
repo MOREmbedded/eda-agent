@@ -417,14 +417,34 @@ Begin
         + ',' + JsonStr('file_path', FilePath)));
 End;
 
+{ A harness wiring diagram (.WirDoc) opens only through the workspace      }
+{ manager. Client.OpenDocument returned Nil for 'HarnessWiringDiagram', the  }
+{ kind the document is CREATED under, and 'HARNESS' returned a document the  }
+{ schematic server could not see, while reporting success (AD 26.11.1.5,     }
+{ 2026-11-08). WorkspaceManager:OpenObject is what sch_place_harness_wires   }
+{ and app_set_active_document already used, and both left a diagram that     }
+{ sch_get_harness reads.                                                     }
+Function OpenThroughWorkspace(FilePath : String) : IServerDocument;
+Begin
+    Result := Nil;
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    Try RunProcess('WorkspaceManager:OpenObject'); Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Result := Client.GetDocumentByPath(FilePath); Except Result := Nil; End;
+End;
+
 Function App_OpenDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, Ext : String;
+    FilePath, DocKind, Ext, AskedKind, ActualKind, Route : String;
     ServerDoc : IServerDocument;
-    AlreadyLoaded : Boolean;
+    AlreadyLoaded, ViaWorkspace : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
+    AskedKind := DocKind;
+    ViaWorkspace := LowerCase(ExtractFileExt(FilePath)) = '.wirdoc';
 
     If FilePath = '' Then
     Begin
@@ -448,6 +468,7 @@ Begin
         Else If Ext = '.pcblib' Then DocKind := 'PCBLIB'
         Else If Ext = '.outjob' Then DocKind := 'OUTPUTJOB'
         Else If Ext = '.bomdoc' Then DocKind := 'BOM'
+        Else If Ext = '.wirdoc' Then DocKind := 'HARNESSWIRINGDIAGRAM'
         Else
         Begin
             Result := BuildErrorResponse(RequestId, 'KIND_REQUIRED',
@@ -460,24 +481,39 @@ Begin
     AlreadyLoaded := False;
     Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
     If ServerDoc <> Nil Then AlreadyLoaded := True;
-    If ServerDoc = Nil Then
+    If (ServerDoc = Nil) And ViaWorkspace Then
+        ServerDoc := OpenThroughWorkspace(FilePath)
+    Else If ServerDoc = Nil Then
     Begin
         Try ServerDoc := Client.OpenDocument(DocKind, FilePath); Except End;
     End;
     If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
-            'Client.OpenDocument returned Nil for kind=' + DocKind +
-            ', path=' + FilePath);
+        If ViaWorkspace Then
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'The workspace manager did not open the wiring diagram ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'Client.OpenDocument returned Nil for kind=' + DocKind +
+                ', path=' + FilePath);
         Exit;
     End;
 
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Application.ProcessMessages; Except End;
+    { The kind Altium gave the document, not the one asked for: a kind that }
+    { opens the file as something else must not read back as success.      }
+    ActualKind := '';
+    Try ActualKind := ServerDoc.Kind; Except ActualKind := ''; End;
+    If ActualKind = '' Then ActualKind := DocKind;
+    Route := 'client';
+    If ViaWorkspace Then Route := 'workspace';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
-        '","kind":"' + EscapeJsonString(DocKind) +
-        '","already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
+        '","kind":"' + EscapeJsonString(ActualKind) +
+        '","opened_through":"' + Route +
+        '","kind_ignored":' + BoolToJsonStr(ViaWorkspace And (AskedKind <> '')) +
+        ',"already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
 End;
 
 Function App_ReloadDocument(Params : String; RequestId : String) : String;
