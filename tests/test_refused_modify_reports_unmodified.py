@@ -59,10 +59,30 @@ def test_both_schematic_replies_use_it():
     assert old not in GENERIC.replace("\r\n", "\n")
 
 
-def nothing_was_written(set_str: str, writes: int, diag: str) -> bool:
+def test_a_set_rejected_up_front_is_counted():
+    """One unsupported name rejects the object's whole set before anything
+    is written, so the other names are neither written nor refused. Live:
+    ShowBorder=False|TextMargin=20 on a note left TextMargin unchanged and
+    still answered modified:true."""
+    body = _body(GENERIC, "Procedure ApplySetProperties(")
+    reject = body[body.index("UnsupportedProp := UnsupportedSchProperty"):]
+    reject = reject[:reject.index("Exit;")]
+    assert "NoteSetRejected(0);" in reject
+
+
+def test_the_coalesced_move_counts_as_a_write():
+    body = _body(GENERIC, "Procedure ApplySetProperties(")
+    move = body[body.index("If HasX Or HasY Then"):body.index("{ Pass 2:")]
+    assert move.index("NotePropertyWritten(0);") < move.index("Except")
+
+
+def nothing_was_written(set_str: str, writes: int, diag: str,
+                        rejected: int = 0) -> bool:
     """NothingWasWritten, line for line."""
     if writes > 0 or not set_str.strip():
         return False
+    if rejected > 0:
+        return True
     bracketed = "|" + diag + "|"
     for pair in set_str.split("|"):
         if "=" not in pair:
@@ -76,6 +96,17 @@ def nothing_was_written(set_str: str, writes: int, diag: str) -> bool:
     return True
 
 
+@pytest.mark.parametrize("set_str, writes, diag, rejected, expected", [
+    # The live mixed case: rejected up front, TextMargin never written.
+    ("ShowBorder=False|TextMargin=20", 0, "unknown:ShowBorder", 1, True),
+    # Rejected on one object, written on another: modified.
+    ("ShowBorder=False", 1, "unknown:ShowBorder", 1, False),
+])
+def test_the_decision_with_a_rejected_set(set_str, writes, diag, rejected,
+                                          expected):
+    assert nothing_was_written(set_str, writes, diag, rejected) is expected
+
+
 @pytest.mark.parametrize("set_str, writes, diag, expected", [
     # The live cases: one refused property, nothing written.
     ("ShowBorder=False", 0, "unknown:ShowBorder", True),
@@ -83,7 +114,8 @@ def nothing_was_written(set_str: str, writes: int, diag: str) -> bool:
     # Something landed: modified.
     ("TextMargin=20", 1, "", False),
     ("ShowBorder=False|TextMargin=20", 1, "unknown:ShowBorder", False),
-    # One refused, one neither counted nor refused: keep modified:true.
+    # One refused, one neither counted nor refused, no set rejected: keep
+    # modified:true.
     ("ShowBorder=False|TextMargin=20", 0, "unknown:ShowBorder", False),
     # A name inside another is not a match.
     ("Font=1", 0, "unknown:FontId", False),

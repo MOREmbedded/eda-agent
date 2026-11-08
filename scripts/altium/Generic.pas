@@ -3545,6 +3545,7 @@ Begin
     If UnsupportedProp <> '' Then
     Begin
         NotePropertyDiag('unknown', UnsupportedProp);
+        NoteSetRejected(0);
         Exit;
     End;
 
@@ -3599,6 +3600,7 @@ Begin
             End
             Else
                 Obj.Location := Loc;
+            NotePropertyWritten(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
