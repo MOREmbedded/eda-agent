@@ -87,6 +87,28 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **What the 2026-11-08 live verification found** (`SCRIPT_VERSION`
+  `2026.11.08.4`). Each was seen on a live Altium 26.11.1.5 against
+  scratch files:
+  - `app_open_document` and `app_reload_document` could not open a
+    harness wiring diagram: `.wirdoc` had no kind, so a reload closed the
+    diagram and failed to reopen it, and `kind=HARNESS` reported success
+    for a document `sch_get_harness` could not see. A .WirDoc now opens
+    through the workspace manager, and the reply's `kind` is what Altium
+    gave the document.
+  - A harness wire, splice or cable answered `Name` with nothing, so
+    `obj_delete filter="Name=W2"` matched nothing. It now answers the
+    name its description carries, the same one `sch_get_harness` shows.
+  - `profile_apply_all` wrote the ERC matrix of whichever project had
+    focus, which with a free board in front was Altium's "Free
+    Documents". Writing it now needs `project_path`, "Free Documents" is
+    refused by the diff, preview and apply and by `proj_erc_apply`, and
+    the dashboard's Workspace view passes the project its Compare read.
+  - A dry run listed its sections under `applied`; they are under
+    `would_apply` now. `design_list_modes` flags a selected mode that
+    does not exist. `obj_modify` answers `modified:false` when every
+    property it asked for was refused.
+
 - **The merged pad-net check read only the first 500 pads.**
   `pcb.get_pad_properties` windows at 500 and reports `truncated`;
   `_after_sync` called it once with no paging and ignored that, so on any
