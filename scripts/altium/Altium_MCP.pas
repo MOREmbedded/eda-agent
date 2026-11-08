@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.08.2';
+    SCRIPT_VERSION = '2026.11.08.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -99051,10 +99051,6 @@ Const
     COLOR_TEXT_BODY     = $00E5E5E5;
     COLOR_TEXT_MUTED    = $00A0A0A0;
     COLOR_TEXT_FAINT    = $00808080;
-    COLOR_SPONSOR_BUTTON = $006E3A8A;  { #8A3A6E in BGR }
-    COLOR_SPONSOR_HOVER  = $008A47A3;  { #A3478A in BGR }
-    SPONSOR_URL          = 'https://github.com/sponsors/salitronic';
-    SPONSOR_CLOSED_FILE  = 'sponsor_note_closed';
     UPDATE_FLAG_FILE     = 'update_available.flag';
 
     MAX_LOG_LINES       = 2000;
@@ -99527,10 +99523,6 @@ Begin
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
         + 'update it; it tells you what is new first.');
-    SetTip(btn_Sponsor, 'Open github.com/sponsors/salitronic in your browser.');
-    SetTip(btn_SponsorHeart, 'Sponsor eda-agent on GitHub.');
-    SetTip(btn_SponsorClose, 'Close this note. It stays closed; the heart '
-        + 'above the log keeps the link.');
 End;
 
 
@@ -99779,9 +99771,7 @@ Begin
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
     OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
     OwnPanelColours(btn_CopyLog);   OwnPanelColours(tab_Config);
-    OwnPanelColours(pnl_Sponsor);   OwnPanelColours(pnl_SponsorEdge);
-    OwnPanelColours(btn_Sponsor);   OwnPanelColours(btn_SponsorClose);
-    OwnPanelColours(btn_SponsorHeart); OwnPanelColours(btn_Update);
+    OwnPanelColours(btn_Update);
     OwnPanelColours(pnl_Config);    OwnPanelColours(opt_FmtNone);
     OwnPanelColours(opt_FmtRkm);    OwnPanelColours(opt_FmtSi);
     OwnPanelColours(opt_FmtSiUnit);
@@ -99937,58 +99927,6 @@ Begin
 End;
 
 
-{ Sponsor note ============================================================= }
-{ A tinted strip under the log asks for sponsorship. Closing it writes a    }
-{ marker file to the workspace so it stays closed on later runs; the heart  }
-{ in the tab bar keeps the link reachable. The browser is opened by the     }
-{ MCP server, through the same sentinel file the Dashboard button uses.     }
-
-Function SponsorNoteClosed(Dummy : Integer) : Boolean;
-Begin
-    Result := False;
-    Try Result := FileExists(WorkspaceDir + SPONSOR_CLOSED_FILE); Except End;
-End;
-
-Procedure UpdateSponsorNote(Dummy : Integer);
-Begin
-    Try
-        pnl_Sponsor.Visible := mmo_Log.Visible And Not SponsorNoteClosed(0);
-    Except End;
-End;
-
-Procedure btn_SponsorClick(Sender : TObject);
-Begin
-    Try
-        WriteFileContent(WorkspaceDir + 'open_dashboard.url', SPONSOR_URL);
-        ShowNotice('');
-    Except End;
-End;
-
-Procedure btn_SponsorEnter(Sender : TObject);
-Begin Try btn_Sponsor.Color := COLOR_SPONSOR_HOVER; Except End; End;
-
-Procedure btn_SponsorLeave(Sender : TObject);
-Begin Try btn_Sponsor.Color := COLOR_SPONSOR_BUTTON; Except End; End;
-
-Procedure btn_SponsorCloseClick(Sender : TObject);
-Begin
-    Try WriteFileContent(WorkspaceDir + SPONSOR_CLOSED_FILE, 'closed'); Except End;
-    Try pnl_Sponsor.Visible := False; Except End;
-End;
-
-Procedure btn_SponsorCloseEnter(Sender : TObject);
-Begin Try btn_SponsorClose.Font.Color := COLOR_TEXT_BODY; Except End; End;
-
-Procedure btn_SponsorCloseLeave(Sender : TObject);
-Begin Try btn_SponsorClose.Font.Color := COLOR_TEXT_FAINT; Except End; End;
-
-Procedure btn_SponsorHeartEnter(Sender : TObject);
-Begin Try btn_SponsorHeart.Color := COLOR_BG_HOVER; Except End; End;
-
-Procedure btn_SponsorHeartLeave(Sender : TObject);
-Begin Try btn_SponsorHeart.Color := COLOR_BG_CARD; Except End; End;
-
-
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -100060,7 +99998,6 @@ Begin
         ShowNotice('');
         { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState(0);
-        UpdateSponsorNote(0);
     Except End;
 End;
 
@@ -100391,7 +100328,6 @@ Begin
         mmo_Perf.Visible := Which = 1;
         pnl_Config.Visible := Which = 2;
         lbl_LogHint.Visible := Which <> 2;
-        UpdateSponsorNote(0);
         btn_CopyLog.Visible := Which <> 2;
         PaintTab(tab_Log, Which = 0);
         PaintTab(tab_Perf, Which = 1);

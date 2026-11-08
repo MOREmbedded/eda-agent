@@ -10,7 +10,6 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 <summary><b>Full contents</b></summary>
 
 - [Demo](#demo)
-- [Support the project](#support-the-project)
 - [Dashboard](#dashboard)
 - [How it works](#how-it-works)
 - [Features](#features)
@@ -53,17 +52,6 @@ Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board 
 Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
 
 [![eda-agent demo: a schematic from a one-line spec in Altium Designer](assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
-
-## Support the project
-
-Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, sponsorship keeps it free and maintained. Questions and bug reports get an answer whether you sponsor or not.
-
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/salitronic)
-<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
-
-### Sponsors
-
-Professional and Company sponsors appear here with their logo, and Backer and Big thanks sponsors by name. Be the first: [github.com/sponsors/salitronic](https://github.com/sponsors/salitronic).
 
 ## Dashboard
 
