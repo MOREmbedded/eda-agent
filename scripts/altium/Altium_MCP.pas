@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.08.4';
+    SCRIPT_VERSION = '2026.11.08.5';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -5738,6 +5738,7 @@ Var
     { modified counted matched objects, not writes.                         }
     _PropertyWrites : Integer;
     _PropCallRefused : Boolean;
+    _SetsRejected : Integer;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -5753,6 +5754,7 @@ Begin
     _DeleteFaultStr := '';
     _PropertyWrites := 0;
     _PropCallRefused := False;
+    _SetsRejected := 0;
 End;
 
 { Why a delete loop stopped early. The objects removed before it stopped are }
@@ -5794,9 +5796,24 @@ Begin
     If (Outcome = 1) And Not _PropCallRefused Then Inc(_PropertyWrites);
 End;
 
-{ True when a modify wrote nothing at all: no write landed and every       }
-{ property it asked for is recorded as unknown or failed. Conservative: a  }
-{ property neither counted nor refused keeps the reply at modified:true.   }
+{ A write made outside SetSchProperty (the coalesced Location move). }
+Procedure NotePropertyWritten(Dummy : Integer);
+Begin
+    Inc(_PropertyWrites);
+End;
+
+{ A whole set refused before anything in it was written: one unsupported }
+{ name rejects the object's list, so the other names in it are neither    }
+{ written nor refused (a note's ShowBorder beside TextMargin, 2026-11-08).}
+Procedure NoteSetRejected(Dummy : Integer);
+Begin
+    Inc(_SetsRejected);
+End;
+
+{ True when a modify wrote nothing at all: no write landed, and either a   }
+{ whole set was rejected before any of it was written or every property    }
+{ it asked for is recorded as unknown or failed. Conservative: a property  }
+{ neither counted nor refused keeps the reply at modified:true.            }
 Function NothingWasWritten(SetStr : String) : Boolean;
 Var
     Remaining, Pair, Nm, Diag : String;
@@ -5805,6 +5822,11 @@ Begin
     Result := False;
     If _PropertyWrites > 0 Then Exit;
     If Trim(SetStr) = '' Then Exit;
+    If _SetsRejected > 0 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
     Diag := '|' + _PropertyDiagStr + '|';
     Remaining := SetStr;
     While Length(Remaining) > 0 Do
@@ -78553,6 +78575,7 @@ Begin
     If UnsupportedProp <> '' Then
     Begin
         NotePropertyDiag('unknown', UnsupportedProp);
+        NoteSetRejected(0);
         Exit;
     End;
 
@@ -78607,6 +78630,7 @@ Begin
             End
             Else
                 Obj.Location := Loc;
+            NotePropertyWritten(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;

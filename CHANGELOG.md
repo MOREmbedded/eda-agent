@@ -88,7 +88,7 @@ maturity classification for every tool.
 ### Fixed
 
 - **What the 2026-11-08 live verification found** (`SCRIPT_VERSION`
-  `2026.11.08.4`). Each was seen on a live Altium 26.11.1.5 against
+  `2026.11.08.5`). Each was seen on a live Altium 26.11.1.5 against
   scratch files:
   - `app_open_document` and `app_reload_document` could not open a
     harness wiring diagram: `.wirdoc` had no kind, so a reload closed the
