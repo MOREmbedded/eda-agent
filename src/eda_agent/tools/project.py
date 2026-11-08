@@ -369,17 +369,21 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Create a new Altium project.
 
+        The file's extension decides what Altium opens it as: .PrjPcb for a
+        PCB project, .PrjHar for a harness project (then add a wiring
+        diagram with app_create_document kind "HarnessWiringDiagram" and a
+        .WirDoc path).
+
         Not idempotent. The stub is written to disk and then opened, so
         calling this for a project Altium already has open rewrites the
         file underneath it; measured, the very next lookup by path then
         failed with "No project found". Check proj_list_open first.
 
         Args:
-            project_path: Full path for the new project file (.PrjPcb, .PrjLib, etc.)
-            project_type: Type of project to create:
-                - "PCB": PCB project (.PrjPcb)
-                - "IntegratedLibrary": Integrated library project
-                - "ScriptProject": Script project
+            project_path: Full path for the new project file (.PrjPcb
+                or .PrjHar)
+            project_type: "PCB" writes a PCB project's default settings;
+                any other value writes a bare project file.
 
         Returns:
             Dictionary with created project information
@@ -3120,10 +3124,17 @@ def register_project_tools(mcp):
             structure: Add how each net is built, from the compiled
                 model: ``sub_wires``, ``lines``, ``all_items``,
                 ``removed_items``, ``scope``, ``signal_type``,
-                ``calculated_name``, ``hidden_name``, ``bus_width`` and
-                the count of ``output_pins``, ``io_pins``, ``power_pins``
-                and ``open_collector_pins`` it joins (two outputs on one
-                net drive against each other).
+                ``calculated_name``, ``hidden_name``, ``bus_width``,
+                ``net_number``, ``non_pin_items`` (labels, ports and other
+                objects on it), ``harness_type`` and the count of
+                ``output_pins``, ``io_pins``, ``power_pins`` and
+                ``open_collector_pins`` it joins (two outputs on one net
+                drive against each other). For buses: ``bus_section``
+                (the bus itself, e.g. D[0..7]) with ``bus_kind``,
+                ``bus_range_from`` / ``bus_range_to`` as written,
+                ``bus_range_value_from`` / ``bus_range_value_to`` and
+                ``bus_range_by_value``; ``bus_element`` (one member) with
+                ``bus_section_parent`` naming its bus.
 
         Returns:
             ``nets_examined``, ``nets_listed``, ``truncated`` and

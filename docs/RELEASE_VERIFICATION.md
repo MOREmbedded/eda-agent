@@ -1,4 +1,4 @@
-# Release verification: 2026.11.06.3
+# Release verification: 2026.11.08.2
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -445,6 +445,12 @@ works elsewhere cannot be an undeclared identifier:
 | 60, generated documents | `DM_AddGeneratedDocument` on a project | no, nowhere | low, lists a file under Generated; ran live on a scratch project, unsaved |
 | 62, label rotation | `RotateBy90` by 90 and back on a part or sheet symbol, to reposition its labels | no, nowhere | low, the object returns to its rotation; ran live, size and entries unchanged, saved and reopened |
 | 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
+| 62, label font | `FontId` on a sheet symbol's name and file name, a part's designator and comment (issue #229) | yes, `Library.pas` (a symbol's labels), `TidyLoadedComponent` (a placed part's designator) | low, a font id below 1 or not a number is refused before the write; ran live on a scratch sheet, saved and reopened |
+| 62, note and text frame text | `TextColor`, `WordWrap`, `ClipToRect`, `TextMargin` on a note or text frame, `ShowBorder` on a text frame, `Author` on a note | yes, `Gen_PlaceTextFrame` (WordWrap, ClipToRect, ShowBorder) | low, one object; ran live on a scratch sheet, saved and reopened |
+| 62, net name display | `ShowNetName` on a power port, off-sheet connector or port | yes, `Gen_PlacePowerPort` (power ports) | low, one object; ran live, saved and reopened |
+| 62, off-sheet connector side | `CrossSheetStyle` on an off-sheet connector, through obj_modify; the placer's side option wrote a sheet entry's member and stopped the loop, and now writes this | yes, `Gen_PlaceCrossSheetConnector` | low, one object; ran live, saved and reopened |
+| 62, port height | `Height` on a port, in mils | yes, `Library.pas` (a footprint's height, not a port) | low, one object; ran live, saved and reopened |
+| 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | no, nowhere | low, one object; ran live, saved and reopened; types that drop them on save are refused |
 | 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
 | 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
@@ -633,7 +639,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.06.3`, `version_match` =
+Expect `altium_script_version` = `2026.11.08.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.1`.
 
 Those are two different versions and they fail differently.
@@ -3749,6 +3755,31 @@ documents:
   right-side entry as they were; 'modify' and 'move' changed nothing.
   `obj_query` / `obj_modify` read and write `SheetName.Location.X/Y`,
   `SheetFileName.Location.X/Y`, `.Autoposition` and `SheetName.Text`.
+* `obj_modify eSheetSymbol set=SheetName.FontId=26|SheetFileName.FontId=27`
+  (issue #229), measured 2026-11-07 on AD 25.8.1 on a scratch copy: both
+  fonts read back, kept after a save and reopen; `Designator.FontId` and
+  `Comment.FontId` on a part the same. `FontId=0`, `abc` and `-3` are
+  refused (listed under `properties.failed`) and the font is unchanged.
+* Same day, notes, text frames and shapes, written one property at a time,
+  saved and reopened: a note's and a frame's `TextColor`, `WordWrap`,
+  `ClipToRect`, `TextMargin` and a note's `Author` kept; a frame's
+  `ShowBorder`, `LineWidth`, `IsSolid` kept; `Transparent` kept on a
+  rectangle and an ellipse, `LineStyle` on a line and a rectangle. Read back
+  and LOST on save, so refused: `Transparent` on a round rectangle, text
+  frame or note, `LineStyle` on a text frame or note; a note's `ShowBorder`
+  written false read back true. A note's `LineWidth` and `IsSolid` (already
+  writable) are lost on save too. `FontId=0` / `abc` on a free text are
+  refused; before, they were written as font 0 and font 1.
+* Same day, net labels, power ports, ports and off-sheet connectors placed
+  on a scratch copy, written, saved and reopened: `ShowNetName` (power
+  port, off-sheet connector, port), `CrossSheetStyle` (connector, also
+  from the placer's side), a port's `Height` (150.5 mils) and a text
+  frame's `TextMargin` (12.5 mils) kept. A port's `Style` read back and
+  came back 0 after reopen, AutoSize on or off; `IsCustomStyle`, listed
+  on ISch_Port, stopped the loop when written, so it is not offered. A net
+  label turned 90 degrees reads a different font id after reopen: the same
+  font with rotation 90. `Text` asked of a round rectangle answers
+  unreadable (it stopped the loop before).
 * A part placed by `sch_place_components` or `sch_draw_template`, rotated:
   its designator and comment sit where Altium puts them for that rotation.
   Not yet measured live.
@@ -4103,6 +4134,28 @@ PCB.pas wrapper, loads.
 Measured 2026-11-05 on AD 26.11.1.5 with this build: with a scratch sheet in
 front, a track with `board_path` naming a scratch board went onto that
 board; a path naming no open board was refused and placed nothing.
+
+## 76. Altium 21: custom pad shapes and filtered label visibility
+
+On AD 21.4 `eCustomShape` is an undeclared identifier, and a pad read that
+reached it stopped the loop (issue #260). Custom pad shapes arrived in
+22.8 (release notes, August 2022), so every pad reader now asks
+`ShapeIsCustom` (Utils.pas), which reads the version first and answers
+false before 22.8. The separate top and bottom mask (AD 15) and the mask
+from the hole edge (AD 15.1) predate 21 and are not gated.
+
+`pcb_set_text_visibility` with designators skipped a component with
+`Continue` from inside a Try; on AD 21 a filtered call left Altium
+unresponsive (issue #262). It now advances once at the end of the loop.
+
+On AD 25 or 26, with a scratch board and library:
+
+1. `lib_get_pad_geometry` and `pcb_get_pad_properties` on a part with a
+   custom pad: the shape reads `custom`.
+2. `pcb_set_text_visibility` with two designators: only those two change.
+
+On AD 21, the same pad reads answer without stopping the loop, and the
+filtered visibility call returns.
 
 ## Still open, and not blocking
 

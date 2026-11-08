@@ -96,6 +96,11 @@ Begin
     Else If N = 'note'            Then Result := eNote
     Else If N = 'probe'           Then Result := eProbe
     Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    { The objects of a harness wiring diagram. }
+    Else If N = 'harnesscomponent' Then Result := eHarnessComponent
+    Else If N = 'harnesspin'      Then Result := eHarnessPin
+    Else If N = 'harnesswire'     Then Result := eHarnessWire
+    Else If N = 'harnesssplice'   Then Result := eHarnessSplice
     Else If N = 'crosssheetconnector' Then Result := eCrossSheetConnector
     Else If N = 'compilemask'     Then Result := eCompileMask
     { A blanket is a polygon that carries its directive to every net it
@@ -128,7 +133,8 @@ Begin
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
-            + 'eDesignator, eRoundRectangle';
+            + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
+            + 'eHarnessWire, eHarnessSplice';
 End;
 
 { True for the objects that carry a vertex array (GetState_VerticesCount,   }
@@ -309,7 +315,10 @@ Begin
     If Obj = Nil Then Exit;
     { None of these has Text in Altium's interface: ports and sheet entries
       (named by Name), parameter-set directives (measured on AD 21 and
-      AD 26), pins, the containers, and wiring and graphics. }
+      AD 26), pins, the containers, and wiring and graphics. The round
+      rectangle, ellipse, polyline, polygon, arcs and bezier were missing:
+      Text asked of a round rectangle raised "Undeclared identifier: Text"
+      on AD 25.8.1 and the polling loop stopped. }
     If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
         Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
         Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
@@ -317,7 +326,11 @@ Begin
         Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
         Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
         Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
-        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage) Then
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage)
+        Or (Obj.ObjectId = eRoundRectangle) Or (Obj.ObjectId = eEllipse)
+        Or (Obj.ObjectId = ePolyline) Or (Obj.ObjectId = ePolygon)
+        Or (Obj.ObjectId = eArc) Or (Obj.ObjectId = eEllipticalArc)
+        Or (Obj.ObjectId = eBezier) Then
         Result := False;
 End;
 
@@ -517,6 +530,47 @@ Begin
     End;
 End;
 
+{ IsSolid belongs to the filled shapes. Asked of a line it raised             }
+{ "Undeclared identifier: IsSolid" on AD 25.8.1, a modal Try/Except cannot  }
+{ contain, and the polling loop stopped (issue #253). An ALLOWLIST of the    }
+{ types this unit already reads or writes IsSolid on (the symbol dump:       }
+{ rectangle, round rectangle, polygon, ellipse; the text frame writer), plus }
+{ the polyline (read live) and the types built on them (a note is a text     }
+{ frame, a blanket a polygon). Anything else answers unreadable.             }
+Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle)
+        Or (Obj.ObjectId = ePolygon) Or (Obj.ObjectId = ePolyline)
+        Or (Obj.ObjectId = eEllipse) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
+End;
+
+{ Transparent and LineStyle, ALLOWLISTS (an absent member halts the       }
+{ script), and only where Altium SAVES the value. MEASURED on AD 25.8.1 on }
+{ a scratch sheet, written, saved and reopened: Transparent kept on the    }
+{ rectangle and ellipse (and the blanket and polygon, read here before);   }
+{ the round rectangle, text frame and note take it, read it back and lose  }
+{ it on save. LineStyle kept on the line and rectangle (and the blanket);  }
+{ the text frame and note lose it, a round rectangle does not save it, an  }
+{ ellipse and a polygon have none.                                         }
+Function SchObjectHasTransparent(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon)
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eEllipse);
+End;
+
+Function SchObjectHasLineStyle(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eLine)
+        Or (Obj.ObjectId = eRectangle);
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -540,7 +594,8 @@ Begin
     Result := False;
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
-        Or (Obj.ObjectId = eHarnessEntry);
+        Or (Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote);
 End;
 
 { FontId belongs to ISch_Label and the types built on it (net labels,
@@ -698,7 +753,14 @@ Begin
        (PropName = 'ValueIsReadOnly') Or (PropName = 'IsRule') Or
        (PropName = 'IsSystemParameter') Or (PropName = 'IsConfigurable') Then Result := 3
     Else If (PropName = 'AutoSize') Or (PropName = 'OverrideDisplayString') Or
-       (PropName = 'HarnessColor') Or (PropName = 'ConnectedEnd') Then Result := 4;
+       (PropName = 'HarnessColor') Or (PropName = 'ConnectedEnd') Then Result := 4
+    Else If (PropName = 'WordWrap') Or (PropName = 'ClipToRect') Or
+       (PropName = 'TextMargin') Then Result := 5
+    Else If PropName = 'Author' Then Result := 6
+    Else If PropName = 'ShowBorder' Then Result := 7
+    Else If PropName = 'ShowNetName' Then Result := 8
+    Else If PropName = 'CrossSheetStyle' Then Result := 9
+    Else If PropName = 'Height' Then Result := 10;
 End;
 
 { True when Obj is the type that carries PropName. }
@@ -710,7 +772,16 @@ Begin
     Result := ((Owner = 1) And (Obj.ObjectId = ePin))
         Or ((Owner = 2) And (Obj.ObjectId = eSchComponent))
         Or ((Owner = 3) And (Obj.ObjectId = eParameter))
-        Or ((Owner = 4) And (Obj.ObjectId = ePort));
+        Or ((Owner = 4) And (Obj.ObjectId = ePort))
+        Or ((Owner = 5) And ((Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote)))
+        Or ((Owner = 6) And (Obj.ObjectId = eNote))
+        { A note is always drawn with its border: ShowBorder written false  }
+        { read back true (AD 25.8.1), so only a text frame takes it.         }
+        Or ((Owner = 7) And (Obj.ObjectId = eTextFrame))
+        Or ((Owner = 8) And ((Obj.ObjectId = ePowerObject)
+            Or (Obj.ObjectId = eCrossSheetConnector) Or (Obj.ObjectId = ePort)))
+        Or ((Owner = 9) And (Obj.ObjectId = eCrossSheetConnector))
+        Or ((Owner = 10) And (Obj.ObjectId = ePort));
 End;
 
 { A whole-number extra (0 or more), a true / false one, or neither (text). }
@@ -728,7 +799,13 @@ Begin
         (PropName = 'Designator_CustomPosition_RotationRelative') Or
         (PropName = 'ReadOnlyState') Or (PropName = 'ParamType') Or
         (PropName = 'HarnessColor') Or (PropName = 'FormalType') Or
-        (PropName = 'ConnectedEnd');
+        (PropName = 'ConnectedEnd') Or (PropName = 'CrossSheetStyle');
+End;
+
+{ A length in mils, decimals kept, not below 0. }
+Function SchExtraIsMils(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'TextMargin') Or (PropName = 'Height');
 End;
 
 Function SchExtraIsBool(PropName : String) : Boolean;
@@ -736,7 +813,66 @@ Begin
     Result := ((SchExtraOwner(PropName) = 2) And (PropName <> 'PinColor')
             And (PropName <> 'LibraryPath') And (PropName <> 'AliasAsText'))
         Or (PropName = 'AllowLibrarySynchronize') Or
-        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize');
+        (PropName = 'AllowDatabaseSynchronize') Or (PropName = 'AutoSize') Or
+        ((SchExtraOwner(PropName) = 5) And (PropName <> 'TextMargin')) Or
+        (PropName = 'ShowBorder') Or (PropName = 'ShowNetName');
+End;
+
+{ PIN FUNCTIONS ON ALTIUM 25. GetDefinedFunctionsCount, GetDefinedFunction, }
+{ ClearDefinedFunctions and AddDefinedFunction are Altium 26 names: none is  }
+{ in Altium 25's script engine, and calling one there stops the polling     }
+{ loop with an "Undeclared identifier" error box that no Try catches        }
+{ (measured on AD 25.8.1: the first read of DefinedFunctions did). So the   }
+{ version is read BEFORE any of them. Altium 25 reads the functions from    }
+{ the pin's own record (ExportToParameters: PINDEFINEDFUNCTIONSCOUNT=n and  }
+{ PINDEFINEDFUNCTION1..n) and writes them the way its Pin Properties do it  }
+{ from a name: the list as the name, SetState_FunctionsFromName, the name   }
+{ put back.                                                                 }
+{ It takes the major version wanted: a routine with no parameters is listed }
+{ in Altium's Run Script window as one a user can run.                      }
+Function AltiumMajorAtLeast(Wanted : Integer) : Boolean;
+Var
+    Ver : String;
+    Major : Integer;
+Begin
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    Result := Major >= Wanted;
+End;
+
+{ The value of KEY in a pin record "K1=V1|K2=V2|...", '' when absent. }
+Function PinRecordValue(Rec : String; Key : String) : String;
+Var
+    P : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    Rest := '|' + Rec + '|';
+    P := Pos('|' + Key + '=', Rest);
+    If P = 0 Then Exit;
+    Rest := Copy(Rest, P + Length(Key) + 2, Length(Rest));
+    Result := Copy(Rest, 1, Pos('|', Rest) - 1);
+End;
+
+{ Altium 25: the functions from the pin's record, ';'-separated. }
+Function PinFunctionsFromRecord(Pin : ISch_Pin) : String;
+Var
+    Rec, Item : String;
+    I, Count : Integer;
+Begin
+    Result := '';
+    Rec := '';
+    Try Rec := Pin.ExportToParameters; Except Rec := ''; End;
+    Count := StrToIntDef(PinRecordValue(Rec, 'PINDEFINEDFUNCTIONSCOUNT'), 0);
+    For I := 1 To Count Do
+    Begin
+        Item := PinRecordValue(Rec, 'PINDEFINEDFUNCTION' + IntToStr(I));
+        If Item = '' Then Continue;
+        If Result <> '' Then Result := Result + ';';
+        Result := Result + Item;
+    End;
 End;
 
 { A pin's functions, ';'-separated. }
@@ -746,6 +882,11 @@ Var
     Item : String;
 Begin
     Result := '';
+    If Not AltiumMajorAtLeast(26) Then
+    Begin
+        Result := PinFunctionsFromRecord(Pin);
+        Exit;
+    End;
     { GetDefinedFunction counts from 1 (measured on AD 26.11: index 0      }
     { answers nothing and the last function is at Count).                  }
     Count := Pin.GetDefinedFunctionsCount;
@@ -766,6 +907,10 @@ Var
     Comp : ISch_Component;
     Par : ISch_Parameter;
     Port : ISch_Port;
+    TF : ISch_TextFrame;
+    NoteObj : ISch_Note;
+    PowerObj : ISch_PowerObject;
+    CSC : ISch_CrossSheetConnector;
 Begin
     Result := '';
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -809,7 +954,38 @@ Begin
         If PropName = 'AutoSize' Then Result := BoolToJsonStr(Port.AutoSize)
         Else If PropName = 'OverrideDisplayString' Then Result := Port.OverrideDisplayString
         Else If PropName = 'HarnessColor' Then Result := IntToStr(Port.HarnessColor)
-        Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd);
+        Else If PropName = 'ConnectedEnd' Then Result := IntToStr(Port.ConnectedEnd)
+        Else If PropName = 'ShowNetName' Then Result := BoolToJsonStr(Port.ShowNetName)
+        Else If PropName = 'Height' Then Result := FloatToJsonStr(CoordToMilsF(Port.Height));
+    End
+    { Power ports and off-sheet connectors: whether the net name is drawn, }
+    { and the connector's left / right (Altium's number).                  }
+    Else If Obj.ObjectId = ePowerObject Then
+    Begin
+        PowerObj := Obj;
+        If PropName = 'ShowNetName' Then Result := BoolToJsonStr(PowerObj.ShowNetName);
+    End
+    Else If Obj.ObjectId = eCrossSheetConnector Then
+    Begin
+        CSC := Obj;
+        If PropName = 'ShowNetName' Then Result := BoolToJsonStr(CSC.ShowNetName)
+        Else If PropName = 'CrossSheetStyle' Then Result := IntToStr(CSC.CrossSheetStyle);
+    End
+    { A note is a text frame: the border switch, word wrap, clip and margin  }
+    { are ISch_TextFrame members (issue: notes and frames had no route to   }
+    { them). TextMargin in mils, decimals kept.                              }
+    Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+    Begin
+        TF := Obj;
+        If PropName = 'ShowBorder' Then Result := BoolToJsonStr(TF.ShowBorder)
+        Else If PropName = 'WordWrap' Then Result := BoolToJsonStr(TF.WordWrap)
+        Else If PropName = 'ClipToRect' Then Result := BoolToJsonStr(TF.ClipToRect)
+        Else If PropName = 'TextMargin' Then Result := FloatToJsonStr(CoordToMilsF(TF.TextMargin))
+        Else If PropName = 'Author' Then
+        Begin
+            NoteObj := Obj;
+            Result := NoteObj.Author;
+        End;
     End
     Else
     Begin
@@ -835,9 +1011,14 @@ Var
     Comp : ISch_Component;
     Par : ISch_Parameter;
     Port : ISch_Port;
-    Rest, Item, Wanted : String;
+    TF : ISch_TextFrame;
+    NoteObj : ISch_Note;
+    PowerObj : ISch_PowerObject;
+    CSC : ISch_CrossSheetConnector;
+    Rest, Item, Wanted, Slashed, OldName : String;
     SemiPos, N : Integer;
-    B, IsBool, IsInt : Boolean;
+    B, IsBool, IsInt, Native : Boolean;
+    Mils : Double;
 Begin
     Result := False;
     If Not SchExtraFits(Obj, PropName) Then Exit;
@@ -862,6 +1043,16 @@ Begin
         If LowerCase(Value) = 'true' Then B := True
         Else If LowerCase(Value) <> 'false' Then Exit;
     End;
+    { A frame's text margin, a port's height: mils, decimals kept, not   }
+    { below 0. CrossSheetStyle is left (0) or right (1).                  }
+    If (PropName = 'CrossSheetStyle') And (N > 1) Then Exit;
+    Mils := 0;
+    If SchExtraIsMils(PropName) Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        Mils := StrToFloatDef(Value, -1);
+        If Mils < 0 Then Exit;
+    End;
     If Obj.ObjectId = ePin Then
     Begin
         Pin := Obj;
@@ -873,8 +1064,10 @@ Begin
         Else If PropName = 'HiddenNetName' Then Pin.HiddenNetName := Value
         Else If PropName = 'DefinedFunctions' Then
         Begin
-            Pin.ClearDefinedFunctions;
+            Native := AltiumMajorAtLeast(26);
+            If Native Then Pin.ClearDefinedFunctions;
             Wanted := '';
+            Slashed := '';
             Rest := Value;
             While Rest <> '' Do
             Begin
@@ -883,9 +1076,26 @@ Begin
                 Else Begin Item := Copy(Rest, 1, SemiPos - 1); Rest := Copy(Rest, SemiPos + 1, Length(Rest)); End;
                 If Trim(Item) <> '' Then
                 Begin
-                    Pin.AddDefinedFunction(Trim(Item));
-                    If Wanted <> '' Then Wanted := Wanted + ';';
+                    If Native Then Pin.AddDefinedFunction(Trim(Item));
+                    If Wanted <> '' Then Begin Wanted := Wanted + ';'; Slashed := Slashed + '/'; End;
                     Wanted := Wanted + Trim(Item);
+                    Slashed := Slashed + Trim(Item);
+                End;
+            End;
+            If Not Native Then
+            Begin
+                { MEASURED on AD 25.8.1: the split leaves the list alone for a  }
+                { name with no '/' ("X1"), so a trailing '/' is added ("X1/"  }
+                { gives X1); and no name clears the list ("/", " " and ""  }
+                { all leave it), so an empty list is refused, as is a '/'     }
+                { inside one function, which would split it in two.          }
+                If (Wanted = '') Or (Pos('/', Wanted) > 0) Then Exit;
+                OldName := Pin.Name;
+                Try
+                    Pin.Name := Slashed + '/';
+                    Pin.SetState_FunctionsFromName;
+                Finally
+                    Pin.Name := OldName;
                 End;
             End;
         End
@@ -913,7 +1123,33 @@ Begin
         Port := Obj;
         If PropName = 'AutoSize' Then Port.AutoSize := B
         Else If PropName = 'OverrideDisplayString' Then Port.OverrideDisplayString := Value
-        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N;
+        Else If PropName = 'HarnessColor' Then Port.HarnessColor := N
+        Else If PropName = 'ShowNetName' Then Port.ShowNetName := B
+        Else If PropName = 'Height' Then Port.Height := MilsToCoordF(Mils);
+    End
+    Else If Obj.ObjectId = ePowerObject Then
+    Begin
+        PowerObj := Obj;
+        If PropName = 'ShowNetName' Then PowerObj.ShowNetName := B;
+    End
+    Else If Obj.ObjectId = eCrossSheetConnector Then
+    Begin
+        CSC := Obj;
+        If PropName = 'ShowNetName' Then CSC.ShowNetName := B
+        Else If PropName = 'CrossSheetStyle' Then CSC.CrossSheetStyle := N;
+    End
+    Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+    Begin
+        TF := Obj;
+        If PropName = 'ShowBorder' Then TF.ShowBorder := B
+        Else If PropName = 'WordWrap' Then TF.WordWrap := B
+        Else If PropName = 'ClipToRect' Then TF.ClipToRect := B
+        Else If PropName = 'TextMargin' Then TF.TextMargin := MilsToCoordF(Mils)
+        Else If PropName = 'Author' Then
+        Begin
+            NoteObj := Obj;
+            NoteObj.Author := Value;
+        End;
     End
     Else
     Begin
@@ -931,6 +1167,7 @@ Begin
     If IsInt Then Result := SchGetExtra(Obj, PropName) = IntToStr(N)
     Else If IsBool Then Result := SchGetExtra(Obj, PropName) = BoolToJsonStr(B)
     Else If PropName = 'DefinedFunctions' Then Result := SchGetExtra(Obj, PropName) = Wanted
+    Else If SchExtraIsMils(PropName) Then Result := SchGetExtra(Obj, PropName) = FloatToJsonStr(Mils)
     Else Result := SchGetExtra(Obj, PropName) = Value;
 End;
 
@@ -1069,7 +1306,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1080,9 +1317,10 @@ Begin
     Result := Copy(PropName, Pos('.', PropName) + 1, 99);
 End;
 
-{ IsHidden, position and Autoposition of a label (see SchLabelOf). Field is }
-{ 'IsHidden', 'Location.X', 'Location.Y' or 'Autoposition'; positions are  }
-{ in mils. Returns '' when the object carries no such label.              }
+{ IsHidden, position, Autoposition and font of a label (see SchLabelOf).    }
+{ Field is 'IsHidden', 'Location.X', 'Location.Y', 'Autoposition' or       }
+{ 'FontId' (issue #229: a sheet symbol's name and file name had no font    }
+{ route); positions are in mils. '' when the object carries no such label. }
 Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
 Var
     Lbl : ISch_GraphicalObject;
@@ -1095,6 +1333,7 @@ Begin
         If Field = 'Location.X' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.X));
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
+        If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1115,10 +1354,14 @@ Begin
     Try
         Lbl := SchLabelOf(Obj, Which);
         If Lbl = Nil Then Exit;
+        { A font id is a positive whole number from the font manager; anything }
+        { else is refused, never written as font 1.                            }
+        If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;
         Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
+        If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
@@ -1831,6 +2074,61 @@ Begin
     SchEndModify(Impl);
 End;
 
+{ DISPLAY MODE NAMES (issue #254). A symbol's display modes are Normal and   }
+{ its alternates; Altium shows a mode's custom name where it would say       }
+{ "Alternate 1". GetState_ / SetState_CustomDisplayModeName(mode, name) on   }
+{ the component, mode counted from 0 (Normal). MEASURED on AD 25.8.1: both   }
+{ work, Normal takes a name too, the names survive save + reopen, and a      }
+{ written name shows in Altium's own UI. ';'-separated, one name per mode.   }
+Function ReadDisplayModeNames(Comp : ISch_Component) : String;
+Var
+    I, N : Integer;
+    Item : String;
+Begin
+    Result := '';
+    N := 0;
+    Try N := Comp.DisplayModeCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Item := '';
+        Try Item := Comp.GetState_CustomDisplayModeName(I); Except Item := ''; End;
+        If I > 0 Then Result := Result + ';';
+        Result := Result + Item;
+    End;
+End;
+
+{ Writes one name per existing mode and reads them back. A list whose count }
+{ differs from DisplayModeCount is refused: modes are added and removed by  }
+{ library.set_symbol_parts, not by naming them.                             }
+Function WriteDisplayModeNames(Comp : ISch_Component; Value : String) : Boolean;
+Var
+    I, N, P : Integer;
+    Rest, Item : String;
+Begin
+    Result := False;
+    N := 0;
+    Try N := Comp.DisplayModeCount; Except N := 0; End;
+    If N < 1 Then Exit;
+    If (Length(Value) - Length(StringReplace(Value, ';', '', MkSet(rfReplaceAll)))) <> N - 1 Then Exit;
+    Rest := Value;
+    For I := 0 To N - 1 Do
+    Begin
+        P := Pos(';', Rest);
+        If P = 0 Then
+        Begin
+            Item := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Item := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End;
+        Try Comp.SetState_CustomDisplayModeName(I, Item); Except NoteWriteFailed('DisplayModeNames'); End;
+    End;
+    Result := ReadDisplayModeNames(Comp) = Value;
+End;
+
 { The current footprint model's pin map, '' when the part has no PCB model. }
 Function ReadFootprintPinMap(Comp : ISch_Component) : String;
 Var
@@ -1957,6 +2255,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     Crn : TLocation;
     Have : Boolean;
@@ -2102,6 +2401,7 @@ Begin
         { as Altium writes it, "(G:1),(D:2),(S:3)", and its Component Type  }
         { by name (ComponentKindName). Components only.                     }
         Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
+             Or (PropName = 'DisplayModeNames')
              Or (PropName = 'FootprintPinMap') Or (PropName = 'ComponentKind') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
@@ -2109,6 +2409,7 @@ Begin
                 Comp := Obj;
                 If PropName = 'DisplayMode' Then Result := IntToStr(Comp.DisplayMode)
                 Else If PropName = 'DisplayModeCount' Then Result := IntToStr(Comp.DisplayModeCount)
+                Else If PropName = 'DisplayModeNames' Then Result := ReadDisplayModeNames(Comp)
                 Else If PropName = 'ComponentKind' Then
                     Result := ComponentKindName(Comp.ComponentKind)
                 Else Result := ReadFootprintPinMap(Comp);
@@ -2253,6 +2554,11 @@ Begin
                     EntryObj := Obj;
                     Result := IntToStr(EntryObj.TextColor);
                 End
+                Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+                Begin
+                    FrameObj := Obj;
+                    Result := IntToStr(FrameObj.TextColor);
+                End
                 Else
                 Begin
                     HarnessEntryObj := Obj;
@@ -2395,7 +2701,13 @@ Begin
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
-        Else If PropName = 'IsSolid'     Then Result := BoolToJsonStr(Obj.IsSolid)
+        Else If PropName = 'IsSolid' Then
+        Begin
+            If SchObjectHasIsSolid(Obj) Then
+                Result := BoolToJsonStr(Obj.IsSolid)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         { Blanket members (ISch_Blanket on ISch_CollapsiblePolygon on
           ISch_Polygon). Each is asked only of the types that carry it:
           an absent member halts the script. }
@@ -2408,14 +2720,14 @@ Begin
         End
         Else If PropName = 'LineStyle' Then
         Begin
-            If Obj.ObjectId = eBlanket Then
+            If SchObjectHasLineStyle(Obj) Then
                 Result := IntToStr(Obj.LineStyle)
             Else
                 NotePropertyDiag('unreadable', PropName);
         End
         Else If PropName = 'Transparent' Then
         Begin
-            If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon) Then
+            If SchObjectHasTransparent(Obj) Then
                 Result := BoolToJsonStr(Obj.Transparent)
             Else
                 NotePropertyDiag('unreadable', PropName);
@@ -2476,6 +2788,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
@@ -2756,10 +3069,15 @@ Begin
         { merges by schematic pin (WriteFootprintPinMap); its Component     }
         { Type by name (ComponentKindOf), read back. Components only.       }
         Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap')
-             Or (PropName = 'ComponentKind') Then
+             Or (PropName = 'ComponentKind') Or (PropName = 'DisplayModeNames') Then
         Begin
             If Obj.ObjectId <> eSchComponent Then
                 Matched := False
+            Else If PropName = 'DisplayModeNames' Then
+            Begin
+                Comp := Obj;
+                If Not WriteDisplayModeNames(Comp, Value) Then WroteOK := False;
+            End
             Else If PropName = 'ComponentKind' Then
             Begin
                 Comp := Obj;
@@ -2791,10 +3109,14 @@ Begin
         End
         Else If PropName = 'FontId' Then
         Begin
-            If SchObjectHasFontId(Obj) Then
-                Obj.FontId := StrToIntDef(Value, 1)
+            { A font id is a positive whole number from the font manager. '0' }
+            { was written as font 0 and 'abc' as font 1; both are refused now. }
+            If Not SchObjectHasFontId(Obj) Then
+                NotePropertyDiag('unknown', PropName)
+            Else If StrToIntDef(Value, 0) < 1 Then
+                WroteOK := False
             Else
-                NotePropertyDiag('unknown', PropName);
+                Obj.FontId := StrToIntDef(Value, 0);
         End
         Else If PropName = 'TextFontId' Then
         Begin
@@ -2846,6 +3168,11 @@ Begin
                     EntryObj := Obj;
                     EntryObj.TextColor := StrToIntDef(Value, 0);
                 End
+                Else If (Obj.ObjectId = eTextFrame) Or (Obj.ObjectId = eNote) Then
+                Begin
+                    FrameObj := Obj;
+                    FrameObj.TextColor := StrToIntDef(Value, 0);
+                End
                 Else
                 Begin
                     HarnessEntryObj := Obj;
@@ -2891,7 +3218,13 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'IsSolid'     Then Obj.IsSolid := StrToBool(Value)
+        Else If PropName = 'IsSolid' Then
+        Begin
+            If SchObjectHasIsSolid(Obj) Then
+                Obj.IsSolid := StrToBool(Value)
+            Else
+                Matched := False;
+        End
         Else If PropName = 'Collapsed' Then
         Begin
             If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eCompileMask) Then
@@ -2901,14 +3234,14 @@ Begin
         End
         Else If PropName = 'LineStyle' Then
         Begin
-            If (Obj.ObjectId = eBlanket) And IsIntStr(Value) Then
+            If SchObjectHasLineStyle(Obj) And IsIntStr(Value) Then
                 Obj.LineStyle := StrToIntDef(Value, 0)
             Else
                 Matched := False;
         End
         Else If PropName = 'Transparent' Then
         Begin
-            If (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = ePolygon) Then
+            If SchObjectHasTransparent(Obj) Then
                 Obj.Transparent := StrToBool(Value)
             Else
                 Matched := False;
@@ -3356,6 +3689,8 @@ Var
     Param, FoundParam : ISch_GraphicalObject;
     Guard, ThisAddr, LastAddr, SameTries : Integer;
     Pending : Boolean;
+    StuckParam : ISch_Parameter;
+    StuckName : String;
 Begin
     If Comp = Nil Then Exit;
     Guard := 10000;
@@ -3397,7 +3732,18 @@ Begin
             Inc(SameTries);
             If (SameTries > 1) Or (Lib = Nil) Then
             Begin
-                NoteDeleteFault('a parameter stayed on the symbol after it was removed');
+                { Name the one that stayed. MEASURED on AD 25.8.1: a symbol's
+                  Comment is never removed (Altium keeps the symbol's own
+                  comment field); the reply only said a parameter stayed. }
+                StuckName := '';
+                StuckParam := FoundParam;
+                Try StuckName := StuckParam.Name; Except StuckName := ''; End;
+                If SameText(StuckName, 'Comment') Then
+                    NoteDeleteFault('the parameter "Comment" stayed on the symbol: Altium '
+                        + 'keeps a symbol''s own Comment; clear its text or hide it instead')
+                Else
+                    NoteDeleteFault('the parameter "' + StuckName
+                        + '" stayed on the symbol after it was removed');
                 Break;
             End;
             Try Lib.RemoveSchObject(FoundParam); Except { the next pass finds it again and reports the fault } End;
@@ -3449,7 +3795,7 @@ Begin
         If ReducedFilter = '' Then Exit;
         Comp := Nil;
         Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
-        If Comp = Nil Then Comp := LastCreatedLibComponent;
+        If Comp = Nil Then Comp := RememberedLibComponent(SchDoc);
         RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter, TotalMatched);
         Exit;
     End;
@@ -3882,9 +4228,15 @@ Begin
     ScopeComp := Nil;
     If IsLibDoc And (LibScopeName <> '') Then
     Begin
+        { A remembered symbol of a closed library is freed: reading its   }
+        { LibReference raises an error box no Try catches. Only the one   }
+        { remembered for THIS document is read.                           }
         ObjRef := '';
-        Try ObjRef := LastCreatedLibComponent.LibReference; Except End;
-        If ObjRef = LibScopeName Then ScopeComp := LastCreatedLibComponent;
+        If RememberedLibComponent(SchDoc) <> Nil Then
+        Begin
+            Try ObjRef := LastCreatedLibComponent.LibReference; Except End;
+        End;
+        If ObjRef = LibScopeName Then ScopeComp := RememberedLibComponent(SchDoc);
     End;
     ParamsOfSymbol := False;
     LibComp := Nil;
@@ -3898,7 +4250,7 @@ Begin
             Begin
                 Try LibComp := SchDoc.CurrentSchComponent; Except End;
             End;
-            If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+            If LibComp = Nil Then LibComp := RememberedLibComponent(SchDoc);
             If LibComp = Nil Then ParamsOfSymbol := False;
         End;
     End;
@@ -5022,6 +5374,15 @@ End;
 { Zoom viewport: fit, selection, or region                                   }
 {..............................................................................}
 
+{ The document kinds the schematic editor draws, so Sch:Zoom serves them:  }
+{ sheets, symbol libraries and harness wiring diagrams. A wiring diagram   }
+{ left to the board fallback zoomed whichever board was open instead.      }
+Function IsSchEditorKind(Kind : String) : Boolean;
+Begin
+    Kind := UpperCase(Kind);
+    Result := (Kind = 'SCH') Or (Kind = 'SCHLIB') Or (Kind = 'HARNESSWIRINGDIAGRAM');
+End;
+
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
     Action, FocusedKind, ZoomProcess : String;
@@ -5049,7 +5410,7 @@ Begin
     End;
 
     ZoomProcess := '';
-    If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then ZoomProcess := 'Sch:Zoom'
+    If IsSchEditorKind(FocusedKind) Then ZoomProcess := 'Sch:Zoom'
     Else If (FocusedKind = 'PCB') Or (FocusedKind = 'PCBLIB') Then ZoomProcess := 'PCB:Zoom';
 
     If ZoomProcess <> '' Then
@@ -5910,7 +6271,7 @@ Begin
         PcbLib := PCBServer.GetCurrentPCBLibrary;
         If PcbLib <> Nil Then Board := PcbLib.Board;
     End
-    Else If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then
+    Else If IsSchEditorKind(FocusedKind) Then
         SchDoc := SchServer.GetCurrentSchDocument
     Else
     Begin
@@ -5944,37 +6305,227 @@ Begin
 End;
 
 {..............................................................................}
-{ Switch between 2D and 3D view for PCB documents                           }
+{ Switch between 2D and 3D view for a board or a footprint library          }
 {..............................................................................}
+
+{ Lets Altium finish a view change before the next one: run back to back, }
+{ a camera turn right after the switch to 3D was dropped.                 }
+Procedure SettleView(Dummy : Integer);
+Var
+    I : Integer;
+Begin
+    For I := 1 To 8 Do
+    Begin
+        Try Application.ProcessMessages; Except End;
+        Sleep(60);
+    End;
+End;
+
+{..............................................................................}
+
+{ A focused PcbLib is switched too: PCB:SwitchTo3D serves the footprint     }
+{ editor (View > 3D Layout Mode there). camera turns the 3D view to one of  }
+{ Altium's camera presets (PCB:ResetCamera To=Top, RotateOrtho or Bottom),  }
+{ and fit zooms the view to everything afterwards. footprint_name puts that }
+{ footprint of the focused PcbLib on screen first: the editor otherwise     }
+{ keeps showing whichever footprint was current, often the empty default.  }
+{ Altium's 3D camera presets (PCB:ResetCamera To=...), by the names the   }
+{ tool takes; '' for a name that is not one of them.                       }
+Function CameraPreset(Name : String) : String;
+Begin
+    Result := '';
+    Name := LowerCase(Trim(Name));
+    If Name = 'top' Then Result := 'Top'
+    Else If Name = 'iso' Then Result := 'RotateOrtho'
+    Else If Name = 'bottom' Then Result := 'Bottom'
+    Else If Name = 'front' Then Result := 'Front'
+    Else If Name = 'back' Then Result := 'Back'
+    Else If Name = 'left' Then Result := 'Left'
+    Else If Name = 'right' Then Result := 'Right';
+End;
+
+Procedure TurnCamera(CameraTo : String);
+Begin
+    ResetParameters;
+    AddStringParameter('To', CameraTo);
+    RunProcess('PCB:ResetCamera');
+    SettleView(0);
+End;
 
 Function Gen_SwitchView(Params : String; RequestId : String) : String;
 Var
-    Mode : String;
+    Mode, Camera, CameraTo, FocusedKind, FpName, Views, One, Bad : String;
+    Hold : Integer;
+    Fit : Boolean;
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint : IPCB_LibComponent;
 Begin
-    Mode := ExtractJsonValue(Params, 'mode');
+    Mode := LowerCase(ExtractJsonValue(Params, 'mode'));
+    FpName := ExtractJsonValue(Params, 'footprint_name');
     If Mode = '' Then Mode := '3d';
-
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
+    Camera := LowerCase(ExtractJsonValue(Params, 'camera'));
+    Fit := LowerCase(ExtractJsonValue(Params, 'fit')) = 'true';
+    If (Mode <> '3d') And (Mode <> '2d') Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No active PCB document');
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'mode is 3d or 2d, not "' + Mode + '"');
+        Exit;
+    End;
+    CameraTo := CameraPreset(Camera);
+    If (Camera <> '') And (CameraTo = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'camera is top, iso, bottom, front, back, left or right, not "' + Camera + '"');
+        Exit;
+    End;
+    { views: cameras to turn through, each held a moment, so the model is }
+    { seen from several sides. Checked whole before anything moves.      }
+    Views := LowerCase(ExtractJsonValue(Params, 'views'));
+    Bad := '';
+    One := Views;
+    While One <> '' Do
+    Begin
+        If Pos(',', One) > 0 Then
+        Begin
+            If CameraPreset(Copy(One, 1, Pos(',', One) - 1)) = '' Then Bad := Copy(One, 1, Pos(',', One) - 1);
+            One := Copy(One, Pos(',', One) + 1, Length(One));
+        End
+        Else
+        Begin
+            If CameraPreset(One) = '' Then Bad := One;
+            One := '';
+        End;
+    End;
+    If Bad <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'views lists cameras from top, iso, bottom, front, back, left, right; not "' + Bad + '"');
         Exit;
     End;
 
-    If (Mode = '3d') Or (Mode = '3D') Then
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
     Begin
-        ResetParameters;
-        RunProcess('PCB:SwitchTo3D');
-    End
-    Else
-    Begin
-        ResetParameters;
-        RunProcess('PCB:SwitchTo2D');
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
     End;
 
+    If (FpName <> '') And (FocusedKind <> 'PCBLIB') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'footprint_name needs a focused .PcbLib; the focused document is ' + FocusedKind);
+        Exit;
+    End;
+    If FpName <> '' Then
+    Begin
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
+        Footprint := Nil;
+        If PcbLib <> Nil Then
+        Begin
+            Iter := PcbLib.LibraryIterator_Create;
+            Try
+                Footprint := Iter.FirstPCBObject;
+                While Footprint <> Nil Do
+                Begin
+                    If Footprint.Name = FpName Then Break;
+                    Footprint := Iter.NextPCBObject;
+                End;
+            Finally
+                PcbLib.LibraryIterator_Destroy(Iter);
+            End;
+        End;
+        If Footprint = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'FOOTPRINT_NOT_FOUND',
+                'Footprint not found in the focused library: ' + FpName);
+            Exit;
+        End;
+        Try PcbLib.SetState_CurrentComponent(Footprint); Except NoteWriteFailed('make footprint current'); End;
+        ResetParameters;
+        AddStringParameter('Action', 'Redraw');
+        RunProcess('PCB:Zoom');
+    End;
+
+    If FocusedKind <> 'PCBLIB' Then
+    Begin
+        Board := GetPCBBoardAnywhere(0);
+        If Board = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'No board or footprint library has focus');
+            Exit;
+        End;
+    End;
+
+    ResetParameters;
+    If Mode = '3d' Then RunProcess('PCB:SwitchTo3D')
+    Else RunProcess('PCB:SwitchTo2D');
+    SettleView(0);
+
+    If Fit Then
+    Begin
+        { In 3D the fit is taken from straight above, then one step out:  }
+        { fitted at an angle, or without the step, the part fills the     }
+        { view and runs off its edges. The camera turn and both zooms go  }
+        { through with no redraw between them: each redraw showed a step  }
+        { on screen, and a large module (LTM8060) gave seconds of black   }
+        { from Zoom All, which in 3D lands inside the body until the step }
+        { out. The 3D view is drawn once after the switch, before the     }
+        { fit: fitted before it exists, the zoom used the last part's     }
+        { close camera and the module filled the screen.                  }
+        If Mode = '3d' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('To', 'Top');
+            RunProcess('PCB:ResetCamera');
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'All');
+        RunProcess('PCB:Zoom');
+        If Mode = '3d' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'Out');
+            RunProcess('PCB:Zoom');
+        End;
+        SettleView(0);
+    End;
+    If (Mode = '3d') And (Views <> '') Then
+    Begin
+        One := Views;
+        While One <> '' Do
+        Begin
+            If Pos(',', One) > 0 Then
+            Begin
+                TurnCamera(CameraPreset(Copy(One, 1, Pos(',', One) - 1)));
+                One := Copy(One, Pos(',', One) + 1, Length(One));
+            End
+            Else
+            Begin
+                TurnCamera(CameraPreset(One));
+                One := '';
+            End;
+            For Hold := 1 To 12 Do
+            Begin
+                Try Application.ProcessMessages; Except End;
+                Sleep(100);
+            End;
+        End;
+    End;
+    If (Mode = '3d') And (CameraTo <> '') Then TurnCamera(CameraTo);
+
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"mode":"' + EscapeJsonString(Mode) + '"}');
+        '{"success":true,"mode":"' + EscapeJsonString(Mode) + '","document_kind":"'
+        + EscapeJsonString(FocusedKind) + '","footprint_name":"' + EscapeJsonString(FpName)
+        + '","camera":"' + EscapeJsonString(Camera) + '","views":"' + EscapeJsonString(Views)
+        + '","fit":' + BoolToJsonStr(Fit) + '}');
 End;
 
 {..............................................................................}
@@ -7302,6 +7853,567 @@ End;
 { ISch_BusEntry inherits ISch_Line, so it accepts Location + Corner.          }
 { Params: x1,y1,x2,y2 in mils                                                 }
 {..............................................................................}
+
+{..............................................................................}
+{ Harness wiring diagrams. Each harness object names itself in its           }
+{ description ("Harness Wire W1", "Harness Pin P1-1 (1) Passive", "Harness   }
+{ Shield (x,y)(x,y)"); a wire names what its ends and groupings touch only   }
+{ by unique id, so the reader maps every id to a kind and a name first.      }
+{..............................................................................}
+Function HarnessKindName(Id : Integer) : String;
+Begin
+    Result := '';
+    If Id = eHarnessWire Then Result := 'wire'
+    Else If Id = eHarnessPin Then Result := 'pin'
+    Else If Id = eHarnessComponent Then Result := 'component'
+    Else If Id = eHarnessGenericComponent Then Result := 'generic_component'
+    Else If Id = eHarnessSplice Then Result := 'splice'
+    Else If Id = eHarnessCable Then Result := 'cable'
+    Else If Id = eHarnessTwist Then Result := 'twist'
+    Else If Id = eHarnessShield Then Result := 'shield'
+    Else If Id = eHarnessWireLabel Then Result := 'wire_label'
+    Else If Id = eHarnessNoConnect Then Result := 'no_connect'
+    Else If Id = eHarnessCavity Then Result := 'cavity'
+    Else If Id = eHarnessWireBreak Then Result := 'wire_break'
+    Else If Id = eHarnessCovering Then Result := 'covering'
+    Else If Id = eHarnessBundle Then Result := 'bundle';
+End;
+
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
+Function HarnessNameFromDescription(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
+{ An Altium colour (blue in the high byte) as #RRGGBB. }
+Function HarnessColourHex(C : Integer) : String;
+Begin
+    Result := '#' + IntToHex(C Mod 256, 2) + IntToHex((C Div 256) Mod 256, 2)
+        + IntToHex((C Div 65536) Mod 256, 2);
+End;
+
+{ "kind:name" for a unique id, from the map built over the document. }
+Function HarnessRef(Names : TStringList; Uid : String) : String;
+Begin
+    Result := '';
+    If Uid = '' Then Exit;
+    Result := Names.Values[Uid];
+    If Result = '' Then Result := 'unknown:' + Uid;
+End;
+
+{ The objects of one grouping kind a harness wire belongs to, as a JSON list. }
+Function HarnessRefList(Names : TStringList; Wire : ISch_GraphicalObject; Kind : String) : String;
+Var
+    I, Count : Integer;
+    Uid : String;
+Begin
+    Result := '';
+    Count := 0;
+    Try
+        If Kind = 'splice' Then Count := Wire.GetState_ConnectedInlineSplicesUniqueIdsCount
+        Else If Kind = 'label' Then Count := Wire.GetState_ConnectedWireLabelsUniqueIdsCount
+        Else If Kind = 'shield' Then Count := Wire.GetState_ConnectedShieldsUniqueIdsCount
+        Else If Kind = 'twist' Then Count := Wire.GetState_ConnectedTwistsUniqueIdsCount
+        Else If Kind = 'cable' Then Count := Wire.GetState_ConnectedCablesUniqueIdsCount;
+    Except Count := 0; End;
+    For I := 0 To Count - 1 Do
+    Begin
+        Uid := '';
+        Try
+            If Kind = 'splice' Then Uid := Wire.GetState_ConnectedInlineSpliceUniqueId(I)
+            Else If Kind = 'label' Then Uid := Wire.GetState_ConnectedWireLabelUniqueId(I)
+            Else If Kind = 'shield' Then Uid := Wire.GetState_ConnectedShieldUniqueId(I)
+            Else If Kind = 'twist' Then Uid := Wire.GetState_ConnectedTwistUniqueId(I)
+            Else If Kind = 'cable' Then Uid := Wire.GetState_ConnectedCableUniqueId(I);
+        Except Uid := ''; End;
+        If Uid = '' Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(HarnessRef(Names, Uid)) + '"';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+{..............................................................................}
+{ Gen_GetHarness - the harness of a wiring diagram: its components, pins,    }
+{ splices, cables, twists, shields and no-connects by name, and each wire    }
+{ with its points, colours, what its two ends meet and the splices, labels,  }
+{ shields, twists and cables it belongs to. Params: path (optional; default  }
+{ the document in front), limit (wires, default 500).                         }
+{..............................................................................}
+Function Gen_GetHarness(Params : String; RequestId : String) : String;
+Var
+    Doc : ISch_Document;
+    It : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Path, Kind, Name, Uid, Desc, Groups, Wires, Pts, Colours, End1, End2 : String;
+    Names : TStringList;
+    I, N, Limit, Listed, WireCount, Unnamed : Integer;
+Begin
+    Path := Trim(ExtractJsonValue(Params, 'path'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    If Limit < 1 Then Limit := 500;
+    Doc := Nil;
+    If Path <> '' Then
+    Begin
+        Try Doc := SchServer.GetSchDocumentByPath(Path); Except Doc := Nil; End;
+    End
+    Else
+    Begin
+        Try Doc := SchServer.GetCurrentSchDocument; Except Doc := Nil; End;
+    End;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No open wiring diagram or schematic ' + Path);
+        Exit;
+    End;
+
+    { Pass 1: every harness object's unique id to kind:name, and the list. }
+    Names := TStringList.Create;
+    Groups := '';
+    Unnamed := 0;
+    WireCount := 0;
+    It := Doc.SchIterator_Create;
+    Try
+        Obj := It.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Kind := HarnessKindName(Obj.ObjectId);
+            If Kind <> '' Then
+            Begin
+                Desc := '';
+                Try Desc := Obj.GetState_DescriptionString; Except End;
+                Name := HarnessNameFromDescription(Desc);
+                If Name = '' Then
+                Begin
+                    Inc(Unnamed);
+                    Name := Kind + IntToStr(Unnamed);
+                End;
+                Uid := '';
+                Try Uid := Obj.UniqueId; Except End;
+                If Uid <> '' Then Names.Add(Uid + '=' + Kind + ':' + Name);
+                If Kind = 'wire' Then Inc(WireCount)
+                Else
+                Begin
+                    If Groups <> '' Then Groups := Groups + ',';
+                    Groups := Groups + JsonObj(JsonStr('kind', Kind) + ',' + JsonStr('name', Name));
+                End;
+            End;
+            Obj := It.NextSchObject;
+        End;
+    Finally
+        Doc.SchIterator_Destroy(It);
+    End;
+
+    { Pass 2: the wires. }
+    Wires := '';
+    Listed := 0;
+    It := Doc.SchIterator_Create;
+    Try
+        It.AddFilter_ObjectSet(MkSet(eHarnessWire));
+        Obj := It.FirstSchObject;
+        While (Obj <> Nil) And (Listed < Limit) Do
+        Begin
+            Desc := '';
+            Try Desc := Obj.GetState_DescriptionString; Except End;
+            Pts := '';
+            N := 0;
+            Try N := Obj.VerticesCount; Except N := 0; End;
+            For I := 1 To N Do
+            Begin
+                If Pts <> '' Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(I).X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(I).Y)) + ']';
+            End;
+            Colours := JsonStr('primary', '');
+            Try Colours := JsonStr('primary', Obj.GetState_PrimaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('secondary', Obj.GetState_SecondaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('tertiary', Obj.GetState_TertiaryColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('border', Obj.GetState_BorderColorName); Except End;
+            Try Colours := Colours + ',' + JsonStr('primary_rgb', HarnessColourHex(Obj.Color)); Except End;
+            Try Colours := Colours + ',' + JsonStr('secondary_rgb', HarnessColourHex(Obj.GetState_SecondaryColor)); Except End;
+            Try Colours := Colours + ',' + JsonStr('tertiary_rgb', HarnessColourHex(Obj.GetState_TertiaryColor)); Except End;
+            Try Colours := Colours + ',' + JsonStr('border_rgb', HarnessColourHex(Obj.GetState_BorderColor)); Except End;
+            End1 := '';
+            End2 := '';
+            Try End1 := HarnessRef(Names, Obj.GetState_EndVertex1ConnectedObjectUniqueId); Except End;
+            Try End2 := HarnessRef(Names, Obj.GetState_EndVertex2ConnectedObjectUniqueId); Except End;
+            If Wires <> '' Then Wires := Wires + ',';
+            Wires := Wires + JsonObj(
+                JsonStr('name', HarnessNameFromDescription(Desc)) + ','
+                + JsonRaw('points', '[' + Pts + ']') + ','
+                + JsonRaw('colours', JsonObj(Colours)) + ','
+                + JsonStr('end1', End1) + ','
+                + JsonStr('end2', End2) + ','
+                + JsonRaw('splices', HarnessRefList(Names, Obj, 'splice')) + ','
+                + JsonRaw('labels', HarnessRefList(Names, Obj, 'label')) + ','
+                + JsonRaw('shields', HarnessRefList(Names, Obj, 'shield')) + ','
+                + JsonRaw('twists', HarnessRefList(Names, Obj, 'twist')) + ','
+                + JsonRaw('cables', HarnessRefList(Names, Obj, 'cable')));
+            Inc(Listed);
+            Obj := It.NextSchObject;
+        End;
+    Finally
+        Doc.SchIterator_Destroy(It);
+    End;
+    Names.Free;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Doc.DocumentName) + ','
+        + JsonInt('wire_count', WireCount) + ','
+        + JsonInt('wires_listed', Listed) + ','
+        + JsonBool('truncated', Listed < WireCount) + ','
+        + JsonRaw('objects', '[' + Groups + ']') + ','
+        + JsonRaw('wires', '[' + Wires + ']')));
+End;
+
+{ The harness wiring diagram at Path, or the document in front. Nil, with  }
+{ Why set, when there is none or it is not a wiring diagram: harness      }
+{ objects on an ordinary sheet are refused rather than drawn.             }
+Function HarnessDiagramFor(Path : String; Var Why : String) : ISch_Document;
+Var
+    SrvDoc : IServerDocument;
+Begin
+    Result := Nil;
+    Why := '';
+    If Path <> '' Then
+    Begin
+        Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+    End
+    Else
+    Begin
+        Try Result := SchServer.GetCurrentSchDocument; Except Result := Nil; End;
+    End;
+    If Result = Nil Then
+    Begin
+        Why := 'No open wiring diagram ' + Path;
+        Exit;
+    End;
+    SrvDoc := Nil;
+    Try SrvDoc := Client.GetDocumentByPath(Result.DocumentName); Except SrvDoc := Nil; End;
+    If (SrvDoc = Nil) Or (UpperCase(SrvDoc.Kind) <> 'HARNESSWIRINGDIAGRAM') Then
+    Begin
+        Why := Result.DocumentName + ' is not a harness wiring diagram (.WirDoc)';
+        Result := Nil;
+    End;
+End;
+
+{ #RRGGBB as an Altium colour (red in the low byte); -1 when it is not one. }
+Function HarnessColourFromHex(S : String) : Integer;
+Var
+    Digits : String;
+    I, V, D : Integer;
+Begin
+    Result := -1;
+    S := UpperCase(Trim(S));
+    If Copy(S, 1, 1) = '#' Then S := Copy(S, 2, Length(S));
+    If Length(S) <> 6 Then Exit;
+    Digits := '0123456789ABCDEF';
+    V := 0;
+    For I := 1 To 6 Do
+    Begin
+        D := Pos(Copy(S, I, 1), Digits) - 1;
+        If D < 0 Then Exit;
+        V := V * 16 + D;
+    End;
+    { V is RRGGBB; Altium keeps BBGGRR. }
+    Result := (V Div 65536) + ((V Div 256) Mod 256) * 256 + (V Mod 256) * 65536;
+End;
+
+{..............................................................................}
+{ Gen_PlaceHarnessConnectors - put library parts on a harness wiring diagram  }
+{ as harness connectors. A part placed the ordinary way lands as a plain      }
+{ schematic component, which harness wires cannot meet, so each part is       }
+{ loaded from its library and copied into a new harness component: its        }
+{ graphics and models as they are, each pin as a harness pin with the same     }
+{ position, orientation, length, number, name and type, and its designator    }
+{ and comment where the library put them.                                     }
+{ Params: path (optional), connectors = 'lib_reference=..;library_path=..;    }
+{ designator=..;x=..;y=..;rotation=0|90|180|270~~...'                         }
+{..............................................................................}
+Function Gen_PlaceHarnessConnectors(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    SrvDoc : IServerDocument;
+    Src, Comp : ISch_Component;
+    It : ISch_Iterator;
+    Child, Dup, Pin : ISch_GraphicalObject;
+    Remaining, Op, LibRef, LibPath, Desig, Why, Problem, Rows, Pins : String;
+    X, Y : Double;
+    Rotation, NPins, Placed, Failed, Total : Integer;
+Begin
+    SchDoc := HarnessDiagramFor(Trim(ExtractJsonValue(Params, 'path')), Why);
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_WIRING_DIAGRAM', Why);
+        Exit;
+    End;
+    Remaining := ExtractJsonValue(Params, 'connectors');
+    Rows := '';
+    Placed := 0;
+    Failed := 0;
+    Total := 0;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        Inc(Total);
+        LibRef := GetBatchField(Op, 'lib_reference');
+        LibPath := SafeSchLibPath(GetBatchField(Op, 'library_path'));
+        Desig := GetBatchField(Op, 'designator');
+        X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+        Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
+        Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+        Problem := '';
+        Pins := '';
+        Src := Nil;
+        If LibPath <> '' Then
+        Begin
+            Try Src := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except Src := Nil; End;
+        End;
+        If (Src = Nil) And (LibPath <> '') Then
+        Begin
+            { A library on disk but not open answers Nil; open it and retry, }
+            { then put the diagram back in front.                            }
+            If FocusSchLib(LibPath) <> Nil Then
+            Begin
+                Try Src := SchServer.LoadComponentFromLibrary(LibRef, LibPath); Except Src := Nil; End;
+            End;
+            Try
+                SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
+                If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
+            Except End;
+        End;
+        Comp := Nil;
+        If LibPath = '' Then Problem := 'library_path is not a .SchLib'
+        Else If Src = Nil Then Problem := 'no part ' + LibRef + ' in ' + LibPath
+        Else
+        Begin
+            Try Comp := SchServer.SchObjectFactory(eHarnessComponent, eCreate_Default); Except Comp := Nil; End;
+            If Comp = Nil Then Problem := 'Altium did not create a harness component';
+        End;
+        If Comp <> Nil Then
+        Begin
+            Try Comp.Location := Src.Location; Except NoteWriteFailed('HarnessComponent.Location'); End;
+            Try Comp.LibReference := Src.LibReference; Except NoteWriteFailed('HarnessComponent.LibReference'); End;
+            Try Comp.SourceLibraryName := Src.SourceLibraryName; Except NoteWriteFailed('HarnessComponent.SourceLibraryName'); End;
+            Try Comp.ComponentDescription := Src.ComponentDescription; Except NoteWriteFailed('HarnessComponent.ComponentDescription'); End;
+            Try Comp.Designator.Text := Desig; Except NoteWriteFailed('HarnessComponent.Designator'); End;
+            Try Comp.Designator.Location := Src.Designator.Location; Except NoteWriteFailed('HarnessComponent.Designator.Location'); End;
+            Try Comp.Comment.Text := Src.Comment.Text; Except NoteWriteFailed('HarnessComponent.Comment'); End;
+            Try Comp.Comment.Location := Src.Comment.Location; Except NoteWriteFailed('HarnessComponent.Comment.Location'); End;
+            NPins := 0;
+            It := Src.SchIterator_Create;
+            Try
+                It.AddFilter_ObjectSet(MkSet(ePin, eRectangle, eLine, ePolyline, eEllipse, eArc, eLabel, eImplementation));
+                Child := It.FirstSchObject;
+                While Child <> Nil Do
+                Begin
+                    If Child.ObjectId = ePin Then
+                    Begin
+                        Pin := Nil;
+                        Try Pin := SchServer.SchObjectFactory(eHarnessPin, eCreate_Default); Except Pin := Nil; End;
+                        If Pin <> Nil Then
+                        Begin
+                            Try
+                                Pin.Location := Child.Location;
+                                Pin.Orientation := Child.Orientation;
+                                Pin.PinLength := Child.PinLength;
+                                Pin.Designator := Child.Designator;
+                                Pin.Name := Child.Name;
+                                Pin.Electrical := Child.Electrical;
+                                Pin.OwnerPartId := Child.OwnerPartId;
+                                Comp.AddSchObject(Pin);
+                                Inc(NPins);
+                            Except Problem := 'a pin could not be copied'; End;
+                        End;
+                    End
+                    Else
+                    Begin
+                        Dup := Nil;
+                        Try Dup := Child.Replicate; Except Dup := Nil; End;
+                        If Dup <> Nil Then
+                        Begin
+                            Try Comp.AddSchObject(Dup); Except NoteWriteFailed('HarnessComponent graphic'); End;
+                        End;
+                    End;
+                    Child := It.NextSchObject;
+                End;
+            Finally
+                Src.SchIterator_Destroy(It);
+            End;
+            SchBeginEdit(SchDoc, '');
+            Try
+                SchDoc.AddSchObject(Comp);
+                Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y));
+                If Rotation = 90 Then Comp.SetState_Orientation(1)
+                Else If Rotation = 180 Then Comp.SetState_Orientation(2)
+                Else If Rotation = 270 Then Comp.SetState_Orientation(3);
+            Except Problem := 'Altium refused the connector on the diagram'; End;
+            SchEndEdit(SchDoc, 'Edit');
+            { Where each pin's wire end must sit, read after the move. }
+            It := Comp.SchIterator_Create;
+            Try
+                It.AddFilter_ObjectSet(MkSet(eHarnessPin));
+                Child := It.FirstSchObject;
+                While Child <> Nil Do
+                Begin
+                    If Pins <> '' Then Pins := Pins + ',';
+                    Pins := Pins + JsonObj(JsonStr('pin', Child.Designator) + ','
+                        + JsonStr('name', Child.Name) + ','
+                        + JsonFloat('x', CoordToMilsF(PinEndX(Child.Location.X, Child.Orientation, Child.PinLength))) + ','
+                        + JsonFloat('y', CoordToMilsF(PinEndY(Child.Location.Y, Child.Orientation, Child.PinLength))));
+                    Child := It.NextSchObject;
+                End;
+            Finally
+                Comp.SchIterator_Destroy(It);
+            End;
+            If NPins = 0 Then Problem := 'the part has no pins';
+        End;
+        If Problem = '' Then Inc(Placed) Else Inc(Failed);
+        If Rows <> '' Then Rows := Rows + ',';
+        Rows := Rows + JsonObj(JsonStr('designator', Desig) + ','
+            + JsonStr('lib_reference', LibRef) + ','
+            + JsonBool('placed', Problem = '') + ','
+            + JsonStr('problem', Problem) + ','
+            + JsonRaw('pin_ends', '[' + Pins + ']'));
+    End;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('placed', Placed) + ','
+        + JsonInt('failed', Failed) + ','
+        + JsonInt('total', Total) + ','
+        + JsonRaw('connectors', '[' + Rows + ']')));
+End;
+
+{..............................................................................}
+{ Gen_PlaceHarnessWires - harness wires and splices on a wiring diagram.     }
+{ A wire runs through its points; a splice sits where wires meet. Altium     }
+{ links a wire's ends to the pins and splices they touch when it loads the   }
+{ diagram, not when the wire is added, so the caller saves and reopens it.   }
+{ Params: path (optional), wires = 'points=x,y,x,y,...;name=W1;colour=#RRGGBB }
+{ ;colour_name=RD~~...', splices = 'x=..;y=..;name=SPL1~~...'.               }
+{..............................................................................}
+Function Gen_PlaceHarnessWires(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Obj : ISch_GraphicalObject;
+    Remaining, Op, Name, Why, Problem, Rows, Colour, ColourName : String;
+    Xs, Ys : TStringList;
+    I, Rgb, Placed, Failed, Total : Integer;
+Begin
+    SchDoc := HarnessDiagramFor(Trim(ExtractJsonValue(Params, 'path')), Why);
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_WIRING_DIAGRAM', Why);
+        Exit;
+    End;
+    Rows := '';
+    Placed := 0;
+    Failed := 0;
+    Total := 0;
+    SchBeginEdit(SchDoc, '');
+    Try
+        Remaining := ExtractJsonValue(Params, 'wires');
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(Total);
+            Name := GetBatchField(Op, 'name');
+            Colour := GetBatchField(Op, 'colour');
+            ColourName := GetBatchField(Op, 'colour_name');
+            Problem := '';
+            Obj := Nil;
+            Xs := TStringList.Create;
+            Ys := TStringList.Create;
+            If Not ParseVertexList(GetBatchField(Op, 'points'), Xs, Ys) Then Problem := 'points are x,y pairs'
+            Else If Xs.Count < 2 Then Problem := 'a wire needs two points or more';
+            Rgb := -1;
+            If (Problem = '') And (Colour <> '') Then
+            Begin
+                Rgb := HarnessColourFromHex(Colour);
+                If Rgb < 0 Then Problem := 'colour is #RRGGBB';
+            End;
+            If Problem = '' Then
+            Begin
+                Try Obj := SchServer.SchObjectFactory(eHarnessWire, eCreate_Default); Except Obj := Nil; End;
+                If Obj = Nil Then Problem := 'Altium did not create a harness wire';
+            End;
+            If Obj <> Nil Then
+            Begin
+                Try
+                    Obj.Location := Point(MilsToCoordF(StrToFloatDef(Xs[0], 0)), MilsToCoordF(StrToFloatDef(Ys[0], 0)));
+                    For I := 0 To Xs.Count - 1 Do
+                    Begin
+                        Obj.InsertVertex := I + 1;
+                        Obj.SetState_Vertex(I + 1, Point(MilsToCoordF(StrToFloatDef(Xs[I], 0)),
+                            MilsToCoordF(StrToFloatDef(Ys[I], 0))));
+                    End;
+                    If Rgb >= 0 Then Obj.Color := Rgb;
+                    If ColourName <> '' Then Obj.SetState_PrimaryColorName(ColourName);
+                    SchDoc.RegisterSchObjectInContainer(Obj);
+                    SchRegisterObject(SchDoc, Obj);
+                    If Name <> '' Then Obj.GetState_SchDesignator.Text := Name;
+                Except Problem := 'Altium refused the wire'; End;
+            End;
+            Xs.Free;
+            Ys.Free;
+            If Problem = '' Then Inc(Placed) Else Inc(Failed);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + JsonObj(JsonStr('kind', 'wire') + ',' + JsonStr('name', Name) + ','
+                + JsonBool('placed', Problem = '') + ',' + JsonStr('problem', Problem));
+        End;
+        Remaining := ExtractJsonValue(Params, 'splices');
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(Total);
+            Name := GetBatchField(Op, 'name');
+            Problem := '';
+            Obj := Nil;
+            Try Obj := SchServer.SchObjectFactory(eHarnessSplice, eCreate_Default); Except Obj := Nil; End;
+            If Obj = Nil Then Problem := 'Altium did not create a splice'
+            Else
+            Begin
+                Try
+                    Obj.Location := Point(MilsToCoordF(StrToFloatDef(GetBatchField(Op, 'x'), 0)),
+                        MilsToCoordF(StrToFloatDef(GetBatchField(Op, 'y'), 0)));
+                    SchDoc.RegisterSchObjectInContainer(Obj);
+                    SchRegisterObject(SchDoc, Obj);
+                    If Name <> '' Then Obj.GetState_SchDesignator.Text := Name;
+                Except Problem := 'Altium refused the splice'; End;
+            End;
+            If Problem = '' Then Inc(Placed) Else Inc(Failed);
+            If Rows <> '' Then Rows := Rows + ',';
+            Rows := Rows + JsonObj(JsonStr('kind', 'splice') + ',' + JsonStr('name', Name) + ','
+                + JsonBool('placed', Problem = '') + ',' + JsonStr('problem', Problem));
+        End;
+    Finally
+        SchEndEdit(SchDoc, 'Edit');
+    End;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', SchDoc.DocumentName) + ','
+        + JsonInt('placed', Placed) + ','
+        + JsonInt('failed', Failed) + ','
+        + JsonInt('total', Total) + ','
+        + JsonRaw('items', '[' + Rows + ']')));
+End;
 
 Function Gen_PlaceBusEntry(Params : String; RequestId : String) : String;
 Var
@@ -11229,6 +12341,7 @@ Var
     NetName, SideStr : String;
     SchDoc : ISch_Document;
     Conn : ISch_GraphicalObject;
+    CSC : ISch_CrossSheetConnector;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
@@ -11255,13 +12368,17 @@ Begin
     Begin
         Try Conn.Text := NetName; Except NoteWriteFailed('CrossSheetConnector.Text'); End;
     End;
+    { The connector's left / right is CrossSheetStyle. It has no Side (a  }
+    { sheet entry's member): writing Side raised "Undeclared identifier:   }
+    { Side" on AD 25.8.1 and stopped the polling loop.                     }
+    CSC := Conn;
     If SideStr = 'left' Then
     Begin
-        Try Conn.Side := 0; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+        Try CSC.CrossSheetStyle := eCrossSheetLeft; Except NoteWriteFailed('CrossSheetConnector.CrossSheetStyle'); End;
     End
     Else If SideStr = 'right' Then
     Begin
-        Try Conn.Side := 1; Except NoteWriteFailed('CrossSheetConnector.Side'); End;
+        Try CSC.CrossSheetStyle := eCrossSheetRight; Except NoteWriteFailed('CrossSheetConnector.CrossSheetStyle'); End;
     End;
 
     SchDoc.RegisterSchObjectInContainer(Conn);
@@ -16117,7 +17234,7 @@ Begin
                     Else If Pad.TopShape = eRectangular Then ShapeStr := 'Rectangular'
                     Else If Pad.TopShape = eOctagonal Then ShapeStr := 'Octagonal'
                     Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'RoundedRect'
-                    Else If Pad.TopShape = eCustomShape Then ShapeStr := 'Custom';
+                    Else If ShapeIsCustom(Pad.TopShape) Then ShapeStr := 'Custom';
                 Except End;
                 { Drill shape: round / square / slot. Slot pads expose a   }
                 { separate hole_width and a hole_rotation; round + square }
@@ -16541,7 +17658,7 @@ Begin
           created earlier that is no longer the one on screen. }
         LibComp := Nil;
         Try LibComp := SchDoc.CurrentSchComponent; Except LibComp := Nil; End;
-        If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+        If LibComp = Nil Then LibComp := RememberedLibComponent(SchDoc);
         If LibComp = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
@@ -18058,6 +19175,9 @@ Begin
         'place_sheet_symbol': Result := Gen_PlaceSheetSymbol(Params, RequestId);
         'place_sheet_entry': Result := Gen_PlaceSheetEntry(Params, RequestId);
         'place_bus_entry':   Result := Gen_PlaceBusEntry(Params, RequestId);
+        'get_harness':       Result := Gen_GetHarness(Params, RequestId);
+        'place_harness_connectors': Result := Gen_PlaceHarnessConnectors(Params, RequestId);
+        'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);

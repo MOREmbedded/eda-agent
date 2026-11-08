@@ -153,7 +153,7 @@ End;
 { created in this session.                                                  }
 Function GetTargetLibComponent(SchLib : ISch_Lib) : ISch_Component;
 Begin
-    Result := LastCreatedLibComponent;
+    Result := RememberedLibComponent(SchLib);
     If Result = Nil Then
     Begin
         If SchLib <> Nil Then
@@ -213,6 +213,10 @@ End;
 { SaveAllDirty flushes the .SchLib to disk at a logical checkpoint. The     }
 { workspace's free-document save sweep already covers standalone libs, so   }
 { no save_all changes are needed.                                            }
+{                                                                            }
+{ The mark does not always hold: after a copy_component into a saved SchLib  }
+{ SetModified(True) here leaves the library reading unmodified until the     }
+{ next save. See the note above Lib_CopyComponent (issue #251).              }
 Procedure MarkLibDirty(SchLib : ISch_Lib);
 Var
     FullPath : String;
@@ -462,6 +466,7 @@ Begin
     { component that no longer exists.                                    }
     LastCreatedLibComponent := Nil;
     LastCreatedLibComponentName := '';
+    LastCreatedLibDocAddr := 0;
 
     ResetParameters;
     AddStringParameter('ObjectKind', 'Document');
@@ -524,7 +529,7 @@ Begin
     { The name is compared against the one recorded at the time, NOT read }
     { back off the interface. See LastCreatedLibComponentName in Main for }
     { what a property read on a freed component does to the session.      }
-    If (LastCreatedLibComponent <> Nil) And
+    If (RememberedLibComponent(SchLib) <> Nil) And
        (LastCreatedLibComponentName = Name) Then
         Result := LastCreatedLibComponent;
 End;
@@ -553,7 +558,7 @@ End;
 
 Function Lib_CreateSymbol(Params : String; RequestId : String) : String;
 Var
-    Name, DesignatorPrefix, Description : String;
+    Name, DesignatorPrefix, Description, LibPath : String;
     SchLib : ISch_Lib;
     Component, Verify : ISch_Component;
     PartCount, ActualParts : Integer;
@@ -573,7 +578,18 @@ Begin
         Exit;
     End;
 
-    SchLib := SchServer.GetCurrentSchDocument;
+    { library_path: the open SchLib by path, left unfocused. The symbol is  }
+    { made current there, so focusing the library afterwards shows the new }
+    { symbol, not the one it showed last.                                  }
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        LibPath := CanonicalPathValue('path', LibPath);
+        SchLib := Nil;
+        Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
+    End
+    Else
+        SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
@@ -627,8 +643,7 @@ Begin
         End;
 
         SchLib.CurrentSchComponent := Component;
-        LastCreatedLibComponent := Component;
-        LastCreatedLibComponentName := Name;
+        RememberLibComponent(SchLib, Component, Name);
 
         // Refresh the library editor view so the new component is visible.
         Try SchLib.GraphicallyInvalidate; Except End;
@@ -1002,8 +1017,7 @@ Begin
     If Component = Nil Then Exit;
 
     SchLib.CurrentSchComponent := Component;
-    LastCreatedLibComponent := Component;
-    LastCreatedLibComponentName := Name;
+    RememberLibComponent(SchLib, Component, Name);
 
     { Reset PartID + DisplayMode so subsequent Lib_AddSymbol* calls write     }
     { their primitives onto a VISIBLE normal-mode part. Without this, after a }
@@ -1457,6 +1471,28 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create line');
 End;
 
+{ The open PcbLib at Path, opened as a document when it is not open yet.     }
+{ Path arrives with backslashes (CanonicalPathValue): a library open as     }
+{ C:\x\y.PcbLib was not found as C:/x/y.PcbLib, and LoadPCBLibraryByPath     }
+{ then loaded a second, hidden copy. A copy into it answered success and    }
+{ never reached the open library or the file. A library that is not open    }
+{ is opened through the client, so the edit is in a document that saves.    }
+{ The hidden load is the last resort and says so in Hidden.                 }
+Function PcbLibAtPath(Var Path : String; Var Hidden : Boolean) : IPCB_Library;
+Begin
+    Result := Nil;
+    Hidden := False;
+    Path := CanonicalPathValue('path', Path);
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    If Not FileExists(Path) Then Exit;
+    Try Client.OpenDocument('PCBLIB', Path); Except End;
+    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
+    If Result <> Nil Then Exit;
+    Try Result := PCBServer.LoadPCBLibraryByPath(Path); Except Result := Nil; End;
+    Hidden := (Result <> Nil);
+End;
+
 { A name the library already has is refused, as rename and copy refuse it   }
 { (NAME_EXISTS): Altium registers the second footprint without complaint,   }
 { and every later lookup by name then reaches the FIRST, so writes meant for }
@@ -1464,11 +1500,11 @@ End;
 { own lookups are.                                                           }
 Function Lib_CreateFootprint(Params : String; RequestId : String) : String;
 Var
-    Name, Description, CurName : String;
+    Name, Description, CurName, LibPath : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Iter : IPCB_LibraryIterator;
-    Clash : Boolean;
+    Clash, Hidden : Boolean;
 Begin
     Name := ExtractJsonValue(Params, 'name');
     Description := ExtractJsonValue(Params, 'description');
@@ -1478,7 +1514,21 @@ Begin
         Exit;
     End;
 
-    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    { library_path: the open PcbLib by path, left unfocused. The footprint  }
+    { is made current there, so focusing the library afterwards shows the  }
+    { new footprint, not the one it showed last.                           }
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    If LibPath <> '' Then
+    Begin
+        PcbLib := PcbLibAtPath(LibPath, Hidden);
+        If PcbLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No open PCB library at ' + LibPath);
+            Exit;
+        End;
+    End
+    Else
+        PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
@@ -4321,7 +4371,7 @@ Begin
                   had just written with
                   SetState_StackShapeOnLayer(..., eRoundedRectangular). }
                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
-                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
+                Else If ShapeIsCustom(Pad.TopShape) Then ShapeStr := 'custom'
                 Else ShapeStr := 'round';
             Except End;
 
@@ -4582,7 +4632,7 @@ Begin
                                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
                                 Else If Pad.TopShape = eOctagonal Then ShapeStr := 'octagonal'
                                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
-                                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
+                                Else If ShapeIsCustom(Pad.TopShape) Then ShapeStr := 'custom'
                                 Else ShapeStr := 'round';
                             Except End;
                             LayerStr := 'top';
@@ -7178,8 +7228,13 @@ Begin
         If Workspace <> Nil Then
         Begin
             WDoc := Workspace.DM_FocusedDocument;
+            { Only a FULL path may be opened. DM_FileName is the bare file  }
+            { name, and OpenObject on a bare name makes a NEW empty library }
+            { of that name; every write then goes into it. With no full     }
+            { path the focused library is already the current one: no open.}
             If WDoc <> Nil Then
-                LibPath := WDoc.DM_FileName;
+                LibPath := DocFullPath(WDoc);
+            If Not LooksAbsolutePath(LibPath) Then LibPath := '';
         End;
     End;
 
@@ -7389,8 +7444,13 @@ Begin
         If Workspace <> Nil Then
         Begin
             Doc := Workspace.DM_FocusedDocument;
+            { Only a FULL path may be opened. DM_FileName is the bare file  }
+            { name, and OpenObject on a bare name makes a NEW empty library }
+            { of that name; every write then goes into it. With no full     }
+            { path the focused library is already the current one: no open.}
             If Doc <> Nil Then
-                LibPath := Doc.DM_FileName;
+                LibPath := DocFullPath(Doc);
+            If Not LooksAbsolutePath(LibPath) Then LibPath := '';
         End;
     End;
 
@@ -8022,6 +8082,20 @@ End;
 { AddSchComponent there. Destination ends focused with the new component     }
 { selected. Save is deferred (MarkLibDirty only) per the project's perf-      }
 { deferred-save pattern.                                                       }
+{                                                                              }
+{ SAVE STATE AFTER A COPY (issue #251). MEASURED on AD 25.8.1: once a copy    }
+{ has gone into a SchLib that was saved, NO later write marks the library    }
+{ modified until the next save -- not this handler's own MarkLibDirty, not   }
+{ a generic modify, not a parameter write. ServerDoc.SetModified(True) is    }
+{ called on the right document without an error and does not hold, so the   }
+{ library reads "saved" while it holds the copy and every edit after it, and }
+{ Altium can close it without asking. A copy does NOT clear a flag that is   }
+{ already set. WORKAROUND, verified (a fresh save, then 17 checks incl. save }
+{ + reopen): mark the library modified BEFORE the copy with a "touch" --     }
+{ read one symbol's description and write the same text straight back --    }
+{ then copy. A touch AFTER the copy does not help; a save clears the flag,   }
+{ so the next copy needs a touch again. Cause not found. This handler does   }
+{ the touch itself, on the destination's current symbol, before the copy.  }
 {..............................................................................}
 
 { Pins on every part of a library symbol, the count lib_get_component_details }
@@ -8054,8 +8128,9 @@ Var
     Workspace : IWorkspace;
     Doc : IDocument;
     SourceLib, DestLib : ISch_Lib;
-    SourceComp, NewComp, Existing, Verify, Shown : ISch_Component;
-    Overwrite, SameLib, Overwrote : Boolean;
+    SourceComp, NewComp, Existing, Verify, Shown, OnScreen, TouchComp : ISch_Component;
+    Overwrite, SameLib, Overwrote, SourceShown : Boolean;
+    OtherName, ShownNote, TouchText : String;
     SourcePins, CopyPins : Integer;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
@@ -8130,6 +8205,28 @@ Begin
     SameLib := (DestLibPath = '') Or (UpperCase(DestLibPath) = UpperCase(SourceLibPath));
     If SameLib Then DestLibPath := SourceLibPath;
 
+    { THE SYMBOL ON SCREEN LOSES ITS SHOWN PART. While a symbol is shown,  }
+    { the objects of the part on screen are held by the LIBRARY, not the    }
+    { component (the same holder as a visible parameter, #239), and         }
+    { Replicate copies the component's own children only. MEASURED on       }
+    { AD 25.8.1, a 5-part symbol with part 3 on screen: the copy's part 3   }
+    { was empty, 11 of 14 pins; with another symbol shown the copy was      }
+    { whole. The pin check above loads a source by SHOWING it, so this     }
+    { comes after it. A library with no other symbol keeps the old path.    }
+    SourceShown := False;
+    OnScreen := Nil;
+    Try OnScreen := SourceLib.CurrentSchComponent; Except OnScreen := Nil; End;
+    If OnScreen <> Nil Then
+        SourceShown := (OnScreen.I_ObjectAddress = SourceComp.I_ObjectAddress);
+    If SourceShown Then
+    Begin
+        OtherName := OtherLibComponentName(SourceLib, SourceName);
+        If OtherName <> '' Then
+        Begin
+            If SelectLibComponentPart(OtherName, 0) <> Nil Then SourceShown := False;
+        End;
+    End;
+
     { Replicate while source is focused. The clone is free-floating until    }
     { AddSchComponent attaches it to the destination library.                 }
     NewComp := SourceComp.Replicate;
@@ -8156,6 +8253,19 @@ Begin
                 'Failed to focus destination library at ' + DestLibPath);
             Exit;
         End;
+    End;
+
+    { THE TOUCH (issue #251): mark the destination modified BEFORE the copy, }
+    { or it reads saved while it holds the copy. See the header above.     }
+    TouchComp := Nil;
+    Try TouchComp := DestLib.CurrentSchComponent; Except TouchComp := Nil; End;
+    If TouchComp <> Nil Then
+    Begin
+        Try
+            TouchText := TouchComp.ComponentDescription;
+            TouchComp.ComponentDescription := TouchText;
+        Except NoteWriteFailed('touch before the copy'); End;
+        MarkLibDirty(DestLib);
     End;
 
     Overwrote := False;
@@ -8212,8 +8322,7 @@ Begin
     Except End;
 
     DestLib.CurrentSchComponent := NewComp;
-    LastCreatedLibComponent := NewComp;
-    LastCreatedLibComponentName := NewName;
+    RememberLibComponent(DestLib, NewComp, NewName);
     Try DestLib.GraphicallyInvalidate; Except End;
     MarkLibDirty(DestLib);
 
@@ -8244,6 +8353,11 @@ Begin
     CopyPins := CountComponentPins(Verify);
     If CopyPins <> SourcePins Then
     Begin
+        ShownNote := '';
+        If SourceShown Then
+            ShownNote := ' The source was the symbol on screen and the library '
+                + 'holds no other symbol to show instead, so its part on screen '
+                + 'was not copied.';
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
                 JsonBool('success', False) + ',' +
@@ -8255,7 +8369,7 @@ Begin
                 JsonInt('copy_pins', CopyPins) + ',' +
                 JsonStr('reason', 'the copy exists under new_name but does not '
                     + 'hold the source''s pins, so it is incomplete. Copy again '
-                    + 'with overwrite=true, which replaces it.')
+                    + 'with overwrite=true, which replaces it.' + ShownNote)
             ));
         Exit;
     End;
@@ -11088,8 +11202,7 @@ Begin
         SchEndEdit(SchLib, 'Rename component');
     End;
     SchLib.GraphicallyInvalidate;
-    LastCreatedLibComponent := Component;
-    LastCreatedLibComponentName := NewName;
+    RememberLibComponent(SchLib, Component, NewName);
     MarkLibDirty(SchLib);
 
     { VERIFY BOTH DIRECTIONS. A rename is only done if the new name       }
@@ -12407,28 +12520,6 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
-{ The open PcbLib at Path, opened as a document when it is not open yet.     }
-{ Path arrives with backslashes (CanonicalPathValue): a library open as     }
-{ C:\x\y.PcbLib was not found as C:/x/y.PcbLib, and LoadPCBLibraryByPath     }
-{ then loaded a second, hidden copy. A copy into it answered success and    }
-{ never reached the open library or the file. A library that is not open    }
-{ is opened through the client, so the edit is in a document that saves.    }
-{ The hidden load is the last resort and says so in Hidden.                 }
-Function PcbLibAtPath(Var Path : String; Var Hidden : Boolean) : IPCB_Library;
-Begin
-    Result := Nil;
-    Hidden := False;
-    Path := CanonicalPathValue('path', Path);
-    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
-    If Result <> Nil Then Exit;
-    If Not FileExists(Path) Then Exit;
-    Try Client.OpenDocument('PCBLIB', Path); Except End;
-    Try Result := PCBServer.GetPCBLibraryByPath(Path); Except Result := Nil; End;
-    If Result <> Nil Then Exit;
-    Try Result := PCBServer.LoadPCBLibraryByPath(Path); Except Result := Nil; End;
-    Hidden := (Result <> Nil);
-End;
-
 { AlignCopiedFootprint - after Footprint.CopyTo, put every primitive of the    }
 { copy where it sat relative to its own footprint. CopyTo keeps ABSOLUTE       }
 { coordinates, and a source open in the editor sits at Altium's library        }
@@ -12924,7 +13015,7 @@ Begin
                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
                 Else If Pad.TopShape = eOctagonal Then ShapeStr := 'octagonal'
                 Else If Pad.TopShape = eRoundedRectangular Then ShapeStr := 'roundrectangle'
-                Else If Pad.TopShape = eCustomShape Then ShapeStr := 'custom'
+                Else If ShapeIsCustom(Pad.TopShape) Then ShapeStr := 'custom'
                 Else ShapeStr := 'round';
             Except End;
 
@@ -13585,7 +13676,7 @@ Begin
                         If Pad.TopShape = eRectangular Then Str := 'rectangular'
                         Else If Pad.TopShape = eOctagonal Then Str := 'octagonal'
                         Else If Pad.TopShape = eRoundedRectangular Then Str := 'roundrect'
-                        Else If Pad.TopShape = eCustomShape Then Str := 'custom';
+                        Else If ShapeIsCustom(Pad.TopShape) Then Str := 'custom';
                     Except End;
                     CornerPct := 0;
                     If Str = 'roundrect' Then
