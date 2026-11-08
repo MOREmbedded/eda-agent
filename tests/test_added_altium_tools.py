@@ -388,6 +388,207 @@ def test_net_items_are_in_mils_and_name_power_ports():
     assert "nets_examined" in listing and "truncated" in listing
 
 
+def test_net_structure_reports_buses_and_reads_each_field_guarded():
+    body = _body("Project.pas", "NetStructureJson")
+    for member, key in (("DM_IsBusElement", "bus_element"),
+                        ("DM_IsBusSection", "bus_section"),
+                        ("DM_BusKind", "bus_kind"),
+                        ("DM_BusRange1", "bus_range_from"),
+                        ("DM_BusRange2", "bus_range_to"),
+                        ("DM_BusRangeValue1", "bus_range_value_from"),
+                        ("DM_BusRangeValue2", "bus_range_value_to"),
+                        ("DM_RangeDefinedByValue", "bus_range_by_value"),
+                        ("DM_CountOfNonPinItems", "non_pin_items"),
+                        ("DM_NetNumber", "net_number"),
+                        ("DM_HarnessType", "harness_type")):
+        # Each read sits in its own Try, so one member Altium refuses
+        # counts as a read error instead of losing the whole net.
+        assert re.search(r"Try \w+ := Net\." + member + r"; Except Inc\(Misses\); End;",
+                         body), member
+        assert f"'{key}'" in body, key
+    # The parent is named, and a net with no parent leaves it empty.
+    assert "ParentNet := Net.DM_BusSectionParent" in body
+    assert "If ParentNet <> Nil Then" in body
+    assert "'bus_section_parent'" in body
+    source = (Path(project.__file__)).read_text(encoding="utf-8")
+    start = source.index("async def proj_get_net_items(")
+    text = source[start:source.index("return await", start)]
+    for key in ("bus_section", "bus_element", "bus_kind", "bus_range_from",
+                "bus_section_parent", "non_pin_items", "net_number", "harness_type"):
+        assert key in text, key
+
+
+def test_object_outline_sends_and_refuses(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                    "pcb_object_outline", expansion=10, layer="BottomLayer")
+    assert sent == [("pcb.object_outline",
+                     {"expansion": "10", "limit": "200", "layer": "BottomLayer"})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_object_outline")
+    assert sent == [("pcb.object_outline", {"expansion": "0", "limit": "200"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                         "pcb_object_outline", limit=0)
+    assert sent == [] and result["ok"] is False
+
+
+def test_object_outline_refuses_before_altium_and_reports_each_failure():
+    body = _body("PCB.pas", "PCB_ObjectOutline")
+    # An unknown layer and an empty selection are refused up front.
+    assert "'UNKNOWN_LAYER'" in body and "'NOTHING_SELECTED'" in body
+    # A through-hole object has no copper on MultiLayer itself.
+    assert "If Lyr = eMultiLayer Then Lyr := eTopLayer;" in body
+    # Altium refusing one object is that object's problem, not the call's.
+    assert re.search(r"Try Shape := Maker\.MakeContour\(Obj, Expansion, Lyr\); "
+                     r"Except Problem := ", body)
+    assert "If (Shape = Nil) And (Problem = '') Then" in body
+    assert "Inc(Failed)" in body and "'truncated'" in body
+
+
+def test_harness_read_sends_and_refuses(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_get_harness", document_path="C:/h/W.WirDoc")
+    assert sent == [("generic.get_harness", {"limit": "500", "path": "C:/h/W.WirDoc"})]
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch, "sch_get_harness")
+    assert sent == [("generic.get_harness", {"limit": "500"})]
+    result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                         "sch_get_harness", limit=0)
+    assert sent == [] and result["ok"] is False
+
+
+def test_harness_names_come_from_descriptions():
+    body = _body("Generic.pas", "HarnessNameFromDescription")
+    # "Harness Pin P1-1 (1) Passive" is P1-1; "Harness Shield (x,y)(x,y)"
+    # gives no name, and the reader numbers it instead.
+    assert "If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;" in body
+    assert "(Copy(Desc, 1, 1) = '(')" in body
+    reader = _body("Generic.pas", "Gen_GetHarness")
+    assert "Name := Kind + IntToStr(Unnamed);" in reader
+    # Each end and grouping is resolved through the id map, and an id the
+    # map does not hold says so instead of passing for a name.
+    assert "HarnessRef(Names, Obj.GetState_EndVertex1ConnectedObjectUniqueId)" in reader
+    assert "HarnessRef(Names, Obj.GetState_EndVertex2ConnectedObjectUniqueId)" in reader
+    assert "'unknown:' + Uid" in _body("Generic.pas", "HarnessRef")
+    for kind in ("splice", "label", "shield", "twist", "cable"):
+        assert f"HarnessRefList(Names, Obj, '{kind}')" in reader
+
+
+def test_harness_colour_hex_swaps_altium_byte_order():
+    body = _body("Generic.pas", "HarnessColourHex")
+    # Altium keeps red in the low byte: 255 is #FF0000.
+    assert body.index("C Mod 256") < body.index("(C Div 256) Mod 256") < body.index(
+        "(C Div 65536) Mod 256")
+
+
+def test_harness_connectors_send_and_refuse(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_place_harness_connectors", document_path="C:/h/W.WirDoc",
+                    connectors=[{"lib_reference": "CONN5", "library_path": "C:/l/A.SchLib",
+                                 "designator": "J1", "x": 2000, "y": 5000, "rotation": 180}])
+    assert sent == [("generic.place_harness_connectors", {
+        "connectors": "lib_reference=CONN5;library_path=C:/l/A.SchLib;designator=J1;"
+                      "x=2000;y=5000;rotation=180",
+        "path": "C:/h/W.WirDoc"})]
+    for bad in ([], [{"lib_reference": "CONN5"}],
+                [{"lib_reference": "CONN5", "library_path": "C:/l/A.SchLib", "rotation": 45}],
+                [{"lib_reference": "A;B", "library_path": "C:/l/A.SchLib"}]):
+        result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                             "sch_place_harness_connectors", connectors=bad)
+        assert sent == [] and result["ok"] is False
+
+
+def test_harness_connectors_are_real_harness_parts_on_a_wiring_diagram():
+    where = _body("Generic.pas", "HarnessDiagramFor")
+    assert "UpperCase(SrvDoc.Kind) <> 'HARNESSWIRINGDIAGRAM'" in where
+    body = _body("Generic.pas", "Gen_PlaceHarnessConnectors")
+    assert "SchObjectFactory(eHarnessComponent, eCreate_Default)" in body
+    assert "SchObjectFactory(eHarnessPin, eCreate_Default)" in body
+    # Every pin keeps what makes it the library's pin.
+    for field in ("Location", "Orientation", "PinLength", "Designator", "Name",
+                  "Electrical", "OwnerPartId"):
+        assert f"Pin.{field} := Child.{field};" in body, field
+    # The pin ends are read after the move and the turn, not before.
+    assert body.index("Comp.MoveToXY") < body.index("MkSet(eHarnessPin)")
+    assert "If NPins = 0 Then Problem := 'the part has no pins';" in body
+
+
+def test_harness_colour_from_hex_is_the_inverse_of_to_hex():
+    body = _body("Generic.pas", "HarnessColourFromHex")
+    assert "(V Div 65536) + ((V Div 256) Mod 256) * 256 + (V Mod 256) * 65536" in body
+
+
+def test_harness_wires_send_and_refuse(monkeypatch):
+    _, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                    "sch_place_harness_wires", document_path="C:/h/W.WirDoc",
+                    wires=[{"points": [[2000, 5000], [4500, 3500]], "name": "W1",
+                            "colour": "#FF0000", "colour_name": "RD"}],
+                    splices=[{"x": 4500, "y": 3500, "name": "SPL1"}], connect=False)
+    assert sent == [("generic.place_harness_wires", {
+        "path": "C:/h/W.WirDoc",
+        "wires": "points=2000,5000,4500,3500;name=W1;colour=#FF0000;colour_name=RD",
+        "splices": "x=4500;y=3500;name=SPL1"})]
+    for kwargs in ({"document_path": "C:/h/S.SchDoc", "splices": [{"x": 1, "y": 1}]},
+                   {"document_path": "C:/h/W.WirDoc"},
+                   {"document_path": "C:/h/W.WirDoc", "wires": [{"points": [[1, 2]]}]},
+                   {"document_path": "C:/h/W.WirDoc", "wires": [{"points": [[1, 2, 3]]}]},
+                   {"document_path": "C:/h/W.WirDoc",
+                    "wires": [{"points": [[1, 2], [3, 4]], "name": "W;1"}]}):
+        result, sent = _sent(generic, "register_generic_tools", monkeypatch,
+                             "sch_place_harness_wires", **kwargs)
+        assert sent == [] and result["ok"] is False, kwargs
+
+
+def test_harness_wires_connect_by_reloading_the_diagram(monkeypatch, tmp_path):
+    diagram = tmp_path / "W.WirDoc"
+    diagram.write_bytes(b"")
+    replies = {
+        "generic.place_harness_wires": {"placed": 2, "failed": 0, "total": 2},
+        "application.save_document": {"saved": True},
+        "application.close_document": {"closed": True},
+        "generic.get_harness": {"wires": [{"name": "W1", "end1": "pin:J1-1",
+                                           "end2": "splice:SPL1"}]},
+    }
+
+    class _Replying(_Bridge):
+        async def send_command_async(self, command, params, **kwargs):
+            self.sent.append((command, params))
+            return replies.get(command, {"success": True})
+
+    bridge = _Replying()
+    monkeypatch.setattr(generic, "get_bridge", lambda: bridge)
+    tools = {}
+
+    class _Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (lambda fn: fn)
+
+    generic.register_generic_tools(_Mcp())
+    out = asyncio.run(tools["sch_place_harness_wires"](
+        document_path=str(diagram), wires=[{"points": [[0, 0], [100, 0]], "name": "W1"}]))
+    commands = [c for c, _ in bridge.sent]
+    # Placed, then saved, closed and reopened before the read: the ends
+    # link only when the diagram loads.
+    assert commands.index("generic.place_harness_wires") < commands.index(
+        "application.save_document") < commands.index("application.close_document") < commands.index(
+        "generic.get_harness")
+    assert out["connections"] == [{"wire": "W1", "end1": "pin:J1-1", "end2": "splice:SPL1"}]
+
+
+def test_harness_wires_reject_a_non_wiring_document_in_pascal():
+    body = _body("Generic.pas", "Gen_PlaceHarnessWires")
+    assert "HarnessDiagramFor(" in body and "'NOT_A_WIRING_DIAGRAM'" in body
+    assert "SchObjectFactory(eHarnessWire, eCreate_Default)" in body
+    assert "SchObjectFactory(eHarnessSplice, eCreate_Default)" in body
+    assert "If Not ParseVertexList(" in body
+    assert "If Rgb < 0 Then Problem := 'colour is #RRGGBB';" in body
+    # TStringList has no usable Clear here: the point lists are made per wire.
+    assert ".Clear" not in body
+
+
 def test_project_setup_sends_only_what_was_asked(monkeypatch):
     _, sent = _sent(project, "register_project_tools", monkeypatch, "proj_project_setup")
     assert sent == [("project.project_setup", {})]

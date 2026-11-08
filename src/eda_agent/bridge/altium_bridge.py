@@ -1944,10 +1944,39 @@ class AltiumBridge:
             return await collector.submit(command, params or {}, timeout)
         # Only the bounded ECO wait sets max_extensions; every other call
         # leaves it out, so a send_command_direct without it still works.
-        if max_extensions is None:
-            return await self.send_command_direct(command, params, timeout)
+        extra = {} if max_extensions is None else {"max_extensions": max_extensions}
+        try:
+            return await self.send_command_direct(command, params, timeout,
+                                                  **extra)
+        except AltiumError as exc:
+            path = await self._library_to_focus(command, exc)
+            if not path:
+                raise
+        # A library command with the other kind of library in front: with
+        # exactly one library of the kind it needs open, that is the one it
+        # meant. The agent otherwise focused libraries by hand, and a
+        # library focused early shows its last part until the next exists.
+        await self.send_command_direct(
+            "application.set_active_document", {"file_path": path})
         return await self.send_command_direct(command, params, timeout,
-                                              max_extensions=max_extensions)
+                                              **extra)
+
+    async def _library_to_focus(self, command: str, exc: Exception) -> str:
+        """The only open library of the kind a refused ``library.*``
+        command needs, else empty."""
+        ext = {"NO_PCBLIB": ".pcblib", "NO_SCHLIB": ".schlib"}.get(
+            str(getattr(exc, "code", "") or ""))
+        if not ext or not command.startswith("library."):
+            return ""
+        try:
+            docs = await self.send_command_direct("application.get_open_documents", {})
+        except AltiumError:
+            return ""
+        docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+        paths = sorted({str(d.get("file_path") or "") for d in docs
+                        if isinstance(d, dict)
+                        and str(d.get("file_path") or "").lower().endswith(ext)})
+        return paths[0] if len(paths) == 1 else ""
 
     async def send_bulk_async(
         self,
