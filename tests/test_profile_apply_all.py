@@ -182,6 +182,24 @@ def test_a_dry_run_writes_nothing(monkeypatch, tmp_path):
     assert bridge.writes == []
 
 
+def test_a_dry_run_says_would_apply_not_applied(monkeypatch, tmp_path):
+    """Seen 2026-11-08: a preview that wrote nothing listed its sections
+    under ``applied``."""
+    bridge = _Bridge(erc=_MATRIX)
+    got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
+        profile_dir=_profile(tmp_path)))
+    assert got["applied"] == []
+    assert sorted(got["would_apply"]) == ["design_rules", "erc_levels"]
+
+
+def test_a_real_run_has_no_would_apply(monkeypatch, tmp_path):
+    bridge = _Bridge(erc=_MATRIX)
+    got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
+        profile_dir=_profile(tmp_path), dry_run=False, project_path=PRJ))
+    assert "would_apply" not in got
+    assert sorted(got["applied"]) == ["design_rules", "erc_levels"]
+
+
 def test_apply_writes_both_sections(monkeypatch, tmp_path):
     bridge = _Bridge(erc=_MATRIX)
     got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](

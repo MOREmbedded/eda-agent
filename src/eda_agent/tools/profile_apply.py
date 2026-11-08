@@ -150,7 +150,9 @@ def register_profile_apply_tools(mcp):
 
         A section that cannot run does not stop the others, so a partial
         apply is a real outcome: ``applied`` names the sections that were
-        written and ``failed`` the ones that were not.
+        written and ``failed`` the ones that were not. A dry run writes
+        nothing, so its ``applied`` is empty and ``would_apply`` names
+        the sections a real run would write.
 
         Args:
             profile_dir: Read the profile from this directory instead.
@@ -164,8 +166,8 @@ def register_profile_apply_tools(mcp):
                 section's ``project``. "Free Documents" is refused.
 
         Returns:
-            ``sections``, ``in_step``, ``applied``, ``failed`` and
-            ``dry_run``.
+            ``sections``, ``in_step``, ``applied``, ``failed``,
+            ``dry_run`` and, on a dry run, ``would_apply``.
         """
         return await _run(profile_dir, erc_set, apply=True, dry_run=dry_run,
                           project_path=project_path)
@@ -250,8 +252,13 @@ def register_profile_apply_tools(mcp):
                 "<name>`; see docs/PROFILES.md.")
         if apply:
             out["dry_run"] = dry_run
-            out["applied"] = [n for n in ran
-                              if sections[n].get("ok") is not False]
+            ready = [n for n in ran if sections[n].get("ok") is not False]
+            # A dry run wrote nothing, so it must not say "applied": the
+            # sections it would write go under would_apply, and applied
+            # stays empty until something was written.
+            out["applied"] = [] if dry_run else ready
+            if dry_run:
+                out["would_apply"] = ready
             out["failed"] = [n for n in ran
                              if sections[n].get("ok") is False]
         return out
