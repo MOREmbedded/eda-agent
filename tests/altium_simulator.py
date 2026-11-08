@@ -1429,6 +1429,23 @@ class AltiumSimulator:
                 '"layers":[],"pads_included":false,"was_current":false}'
             )
 
+        elif action == "set_current_component":
+            # Mirrors Lib_SetCurrentComponent: a blank name is refused, and
+            # a name the active SchLib does not hold (or no SchLib at all,
+            # where SelectLibComponent returns Nil) is NOT_FOUND.
+            name = params.get("name", "")
+            if not name:
+                return _build_error_response(rid, "MISSING_NAME",
+                                             "name is required")
+            if not self.lib_has_schlib or not any(
+                    c.name == name for c in self.lib_components):
+                return _build_error_response(
+                    rid, "NOT_FOUND",
+                    "Component not found in active library: " + name)
+            return _build_success_response(
+                rid, '{"success":true,"name":"' + _escape_json_string(name) + '"}'
+            )
+
         elif action == "get_components":
             items = []
             for comp in self.lib_components:

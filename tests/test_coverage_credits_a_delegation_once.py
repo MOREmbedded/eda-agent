@@ -167,15 +167,34 @@ def test_a_call_passing_a_literal_name_does_not_drag_the_rest_in(owner_pascal):
 def test_the_real_chain_credits_each_delegation_to_its_own_type():
     """Against the shipped Pascal, not a fixture.
 
-    Five type guards, because the chain answers a pin, a port, a
-    parameter and a No-ERC marker through routines of their own as well
-    as a component. A guard added later fails this, which is the point:
-    each one has to be credited to its own type rather than folded into
-    the first. The sixth key is the base chain, which no guard gates.
+    Nine type guards, because the chain answers a pin, a port, a
+    parameter, a No-ERC marker, a note, a text frame, a power port and a
+    cross-sheet connector through routines of their own as well as a
+    component. A guard added later fails this, which is the point: each
+    one has to be credited to its own type rather than folded into the
+    first. The last key is the base chain, which no guard gates.
     """
     delegated = cov.delegated_heads("GetSchProperty")
     assert set(delegated) == {"eSchComponent", "ePin", "ePort",
-                              "eParameter", "eNoERC", cov.ANY_TYPE}
+                              "eParameter", "eNoERC", "eNote",
+                              "eTextFrame", "ePowerObject",
+                              "eCrossSheetConnector", cov.ANY_TYPE}
+    # Owners 5-9 of SchExtraOwner, as SchExtraFits reads them. A note is
+    # always drawn with its border, so ShowBorder is the text frame's
+    # alone; Author is the note's alone; CrossSheetStyle belongs to the
+    # cross-sheet connector, and ShowNetName to it, the power port and
+    # the port.
+    assert {"WordWrap", "ClipToRect", "TextMargin"} <= delegated["eNote"]
+    assert {"WordWrap", "ClipToRect", "TextMargin"} <= delegated["eTextFrame"]
+    assert "Author" in delegated["eNote"]
+    assert "Author" not in delegated["eTextFrame"]
+    assert "ShowBorder" in delegated["eTextFrame"]
+    assert "ShowBorder" not in delegated["eNote"]
+    assert "CrossSheetStyle" in delegated["eCrossSheetConnector"]
+    assert "CrossSheetStyle" not in delegated["ePowerObject"]
+    for kind in ("ePowerObject", "eCrossSheetConnector", "ePort"):
+        assert "ShowNetName" in delegated[kind]
+    assert "ShowNetName" not in delegated["ePin"]
     # AliasAsText is declared on ISch_Component and nothing else, so it
     # must be credited to the component and to no other type.
     assert "AliasAsText" in delegated["eSchComponent"]
