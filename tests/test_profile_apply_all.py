@@ -46,10 +46,14 @@ class _Mcp:
         return deco
 
 
+PRJ = "C:/p/B.PrjPcb"
+
+
 class _Bridge:
     """Answers both managers' reads; records every write."""
 
-    def __init__(self, *, rules=(), erc=(), fail=()):
+    def __init__(self, *, rules=(), erc=(), fail=(), project=PRJ):
+        self.project = project
         self.rules = list(rules)
         self.erc = list(erc)
         self.fail = set(fail)
@@ -62,14 +66,14 @@ class _Bridge:
         if command == "pcb.get_design_rules":
             return {"rules": self.rules, "count": len(self.rules)}
         if command == "project.get_erc_levels":
-            return {"project": "C:/p/B.PrjPcb", "count": len(self.erc),
+            return {"project": self.project, "count": len(self.erc),
                     "type_count": len(self.erc), "beyond_table": 0,
                     "levels": self.erc}
         if command == "application.save_document":
             return {"saved": True}
         if command == "project.set_erc_levels":
             items = [i for i in str(params.get("levels", "")).split("~~") if i]
-            return {"project": "C:/p/B.PrjPcb", "set": len(items),
+            return {"project": self.project, "set": len(items),
                     "failed": 0, "results": []}
         return {"success": True}
 
@@ -181,7 +185,7 @@ def test_a_dry_run_writes_nothing(monkeypatch, tmp_path):
 def test_apply_writes_both_sections(monkeypatch, tmp_path):
     bridge = _Bridge(erc=_MATRIX)
     got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path=PRJ))
     commands = {c for c, _ in bridge.writes}
     assert "pcb.create_design_rule" in commands
     assert "project.set_erc_levels" in commands
@@ -193,7 +197,7 @@ def test_a_partial_apply_names_what_was_written_and_what_was_not(
         monkeypatch, tmp_path):
     bridge = _Bridge(erc=_MATRIX, fail={"pcb.get_design_rules"})
     got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path=PRJ))
     assert got["applied"] == ["erc_levels"]
     assert got["failed"] == ["design_rules"]
 
@@ -203,12 +207,85 @@ def test_applying_twice_writes_nothing_the_second_time(monkeypatch, tmp_path):
     directory = _profile(tmp_path, rules=False)
     tools = _tools(monkeypatch, bridge)
     asyncio.run(tools["profile_apply_all"](profile_dir=directory,
-                                           dry_run=False))
+                                           dry_run=False, project_path=PRJ))
     before = len(bridge.writes)
     again = asyncio.run(tools["profile_apply_all"](profile_dir=directory,
-                                                   dry_run=False))
+                                                   dry_run=False,
+                                                   project_path=PRJ))
     assert again["in_step"] is True
     assert len(bridge.writes) == before
+
+
+# --- which project the ERC matrix is written to -------------------------
+#
+# Seen 2026-11-08: a dashboard Apply with a free board in front would have
+# written the ERC matrix of "Free Documents", Altium's catch-all for files
+# outside any project, because the section took whichever project had
+# focus. A write now names its project, and "Free Documents" is refused.
+
+def test_apply_without_a_project_writes_no_erc_matrix(monkeypatch, tmp_path):
+    bridge = _Bridge(erc=_MATRIX)
+    got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
+        profile_dir=_profile(tmp_path), dry_run=False))
+    commands = [c for c, _ in bridge.writes]
+    assert "project.set_erc_levels" not in commands
+    assert "pcb.create_design_rule" in commands
+    assert got["failed"] == ["erc_levels"]
+    assert "project_path" in got["sections"]["erc_levels"]["reason"]
+
+
+def test_the_write_goes_to_the_named_project(monkeypatch, tmp_path):
+    bridge = _Bridge(erc=_MATRIX)
+    asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
+        profile_dir=_profile(tmp_path, rules=False), dry_run=False,
+        project_path=PRJ))
+    writes = [p for c, p in bridge.writes if c == "project.set_erc_levels"]
+    assert writes and all(p.get("project_path") == PRJ for p in writes)
+
+
+def test_a_preview_reads_the_focused_project_and_names_it(monkeypatch, tmp_path):
+    bridge = _Bridge(erc=_MATRIX)
+    got = asyncio.run(_tools(monkeypatch, bridge)["profile_apply_all"](
+        profile_dir=_profile(tmp_path, rules=False)))
+    assert got["sections"]["erc_levels"]["project"] == PRJ
+    assert bridge.writes == []
+
+
+@pytest.mark.parametrize("call", ["diff", "preview", "apply"])
+def test_free_documents_is_not_a_project(monkeypatch, tmp_path, call):
+    bridge = _Bridge(erc=_MATRIX, project="Free Documents")
+    tools = _tools(monkeypatch, bridge)
+    directory = _profile(tmp_path, rules=False)
+    if call == "diff":
+        got = asyncio.run(tools["profile_diff_all"](profile_dir=directory))
+    else:
+        got = asyncio.run(tools["profile_apply_all"](
+            profile_dir=directory, dry_run=call == "preview",
+            project_path="Free Documents" if call == "apply" else ""))
+    section = got["sections"]["erc_levels"]
+    assert section["ok"] is False
+    assert "not a project" in section["reason"]
+    assert "erc_levels" not in got["compared"]
+    assert bridge.writes == []
+
+
+def test_the_erc_tool_itself_will_not_write_free_documents(monkeypatch):
+    from eda_agent.tools import erc as erc_tools
+    bridge = _Bridge(erc=_MATRIX, project="Free Documents")
+    monkeypatch.setattr(bridge_module, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    erc_tools.register_erc_tools(mcp)
+    got = asyncio.run(mcp.tools["proj_erc_apply"](
+        levels={"Nets with multiple names": "no_report"}, dry_run=False))
+    assert got["ok"] is False and got["written"] == 0
+    assert bridge.writes == []
+
+
+@pytest.mark.parametrize("project, real", [
+    ("C:/p/B.PrjPcb", True), ("D:/x/H.PrjHar", True),
+    ("Free Documents", False), ("", False)])
+def test_what_counts_as_a_project(project, real):
+    assert profile_apply.is_real_project(project) is real
 
 
 # --- document settings ---------------------------------------------------
