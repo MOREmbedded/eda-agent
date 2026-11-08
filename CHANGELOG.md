@@ -48,6 +48,23 @@ maturity classification for every tool.
   pair is skipped. The Python path on the 10 mil benchmark went from 184 s
   to 160 s.
 
+### Removed
+
+- **Upstream's sponsor note is gone from this fork** (`SCRIPT_VERSION`
+  `2026.11.08.3`). The upstream merge in #20 brought in a "Finding
+  eda-agent useful?" strip with a Sponsor button under the status
+  window's log, a heart button above it, a "Support the project" section
+  in the README, and upstream's GitHub Sponsors and Buy Me a Coffee
+  handles in `.github/FUNDING.yml`. All four asked for money for
+  upstream on this fork's behalf, which this fork had already undone
+  once for FUNDING.yml (see the 2026-11-03 entry below). The note, the
+  heart and their handlers are removed and the log hint gets back the
+  width the heart took; FUNDING.yml is the blank template again. The
+  update icon that came in the same upstream commit stays.
+  `test_status_window_update_icon` and
+  `test_fork_identity_points_at_morembedded` keep both from coming back
+  at the next merge.
+
 ### Merged from upstream
 
 - **27 commits, `214f5d3..5e126f6`.** Fifteen files conflicted. Four
