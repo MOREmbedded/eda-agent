@@ -31,3 +31,13 @@ def test_only_a_project_file_is_remembered():
 
 def test_the_page_shows_which_project_that_is():
     assert 'T("Project"))}</dt><dd class="m" title="${esc(S.wsProject' in HTML
+
+
+def test_an_apply_that_wrote_nothing_does_not_say_written():
+    """Live, 2026-11-08: with the ERC section refused and no other section
+    in the profile, Apply wrote nothing and the page still said "Written
+    to Altium."."""
+    body = _ws_do()
+    assert "!r.data.applied.length && (r.data.failed || []).length > 0" in body
+    assert 'if (wroteNothing) what_ = T("{0} failed.", name);' in body
+    assert "r.data.ok !== false && !wroteNothing" in body

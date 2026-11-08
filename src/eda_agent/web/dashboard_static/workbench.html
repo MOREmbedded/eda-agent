@@ -1347,7 +1347,11 @@ async function wsDo(what) {
   S.wsBusy = false;
   let what_ = {diff: T("Compared with what is open in Altium."), preview: T("What applying would change. Nothing was written."), apply: T("Written to Altium.")}[what];
   if (r && r.ok && r.data && Array.isArray(r.data.compared) && !r.data.compared.length && what === "diff") what_ = T("Nothing could be compared. Each section says why.");
-  S.wsResult = r && r.ok ? {ok: r.data && r.data.ok !== false, data: r.data || {}, what: what_, reason: r.data && r.data.reason} : {ok: false, reason: (r && r.reason) || T("The dashboard did not answer.")};
+  // An apply that wrote no section is not "Written to Altium." (seen with
+  // the ERC section refused and nothing else in the profile, 2026-11-08).
+  const wroteNothing = what === "apply" && r && r.ok && r.data && Array.isArray(r.data.applied) && !r.data.applied.length && (r.data.failed || []).length > 0;
+  if (wroteNothing) what_ = T("{0} failed.", name);
+  S.wsResult = r && r.ok ? {ok: r.data && r.data.ok !== false && !wroteNothing, data: r.data || {}, what: what_, reason: r.data && r.data.reason} : {ok: false, reason: (r && r.reason) || T("The dashboard did not answer.")};
   if (what === "diff") { const e = r && r.ok && r.data && r.data.sections && r.data.sections.erc_levels; S.wsProject = e && e.ok !== false && /\.prj[a-z]*$/i.test(e.project || "") ? e.project : ""; }
   say(S.wsResult.ok ? what_ : T("{0} failed.", name), !S.wsResult.ok);
   clearTools(); paintTools();
