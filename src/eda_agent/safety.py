@@ -239,6 +239,12 @@ End;
 {PASCAL_RULES_END}"""
 
 
+def _where(key: str) -> tuple[str, str]:
+    """Where the switch behind a refusal was set (the panel or the profile)."""
+    from . import preferences
+    return preferences.where_set(key)
+
+
 def _panel(check: str) -> bool:
     from . import preferences
     return getattr(preferences, check)()
@@ -256,16 +262,16 @@ def readonly_mode() -> bool:
 def refuse_command(command: str, params: dict | None = None) -> str | None:
     """Why this bridge command must not run, or None if it may."""
     if command_deletes(command, params) and _panel("deleting_refused"):
+        where, undo = _where("deleting")
         return (
-            f"{command!r} is refused: deleting is switched off on the Config "
-            f"tab of the bridge panel in Altium, so nothing was deleted. The "
-            f"user can switch it back to Allowed there."
+            f"{command!r} is refused: deleting is switched off {where}, so "
+            f"nothing was deleted. {undo}"
         )
     if command_closes(command) and _panel("closing_refused"):
+        where, undo = _where("closing")
         return (
-            f"{command!r} is refused: closing documents is switched off on "
-            f"the Config tab of the bridge panel in Altium, so nothing was "
-            f"closed. The user can switch it back to Allowed there."
+            f"{command!r} is refused: closing documents is switched off "
+            f"{where}, so nothing was closed. {undo}"
         )
     if command_is_read_only(command):
         return None
@@ -276,11 +282,10 @@ def refuse_command(command: str, params: dict | None = None) -> str | None:
             f"alone. Unset it to allow writes."
         )
     if _panel_read_only():
+        where, undo = _where("edits")
         return (
-            f"{command!r} is refused: edits are set to read-only on the "
-            f"Config tab of the bridge panel in Altium, so only commands "
-            f"that leave the design alone run. The user can switch it back "
-            f"to Allowed there."
+            f"{command!r} is refused: edits are set to read-only {where}, "
+            f"so only commands that leave the design alone run. {undo}"
         )
     return None
 

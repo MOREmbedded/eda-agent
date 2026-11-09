@@ -25,8 +25,10 @@ Which mode a run uses (first match wins):
 
   1. The ``mode`` argument to ``design_session_start``.
   2. ``EDA_AGENT_MODE`` (also set by the ``--mode`` CLI flag).
-  3. ``~/.eda-agent/active_mode``, written by ``eda-agent mode-use``.
-  4. ``full_design``: the whole pipeline, exactly as before modes existed.
+  3. ``default_mode`` in the active profile's ``preferences.json``, so each
+     company or client starts its runs in its own mode.
+  4. ``~/.eda-agent/active_mode``, written by ``eda-agent mode-use``.
+  5. ``full_design``: the whole pipeline, exactly as before modes existed.
 
 A session records the resolved mode (its whole definition, not just the
 name) in its ``session_start`` event, so editing a mode file later never
@@ -428,11 +430,23 @@ def load_modes(profile_dir: Optional[Path] = None) -> tuple[dict[str, Mode], lis
     return modes, problems
 
 
-def selected_mode_name() -> tuple[str, str]:
+def profile_default_mode(profile_dir: Optional[Path] = None) -> str:
+    """``default_mode`` from the profile's preferences.json, or ""."""
+    from .. import preferences
+    stored = (preferences.read_profile_file(Path(profile_dir)) if profile_dir is not None
+              else preferences._profile_layer())
+    value = stored.get(preferences.DEFAULT_MODE_KEY)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def selected_mode_name(profile_dir: Optional[Path] = None) -> tuple[str, str]:
     """(name, where it came from) for a run that names no mode itself."""
     env = os.environ.get(MODE_ENV, "").strip()
     if env:
         return env, "environment"
+    from_profile = profile_default_mode(profile_dir)
+    if from_profile:
+        return from_profile, "profile"
     pointer = active_mode_pointer()
     try:
         name = pointer.read_text(encoding="utf-8").strip()
@@ -451,7 +465,7 @@ def get_mode(name: str = "", profile_dir: Optional[Path] = None) -> Mode:
     asked for a redraw.
     """
     modes, _problems = load_modes(profile_dir)
-    wanted = (name or "").strip() or selected_mode_name()[0]
+    wanted = (name or "").strip() or selected_mode_name(profile_dir)[0]
     mode = modes.get(wanted)
     if mode is None:
         raise ValueError(f"no design mode named {wanted!r}; the modes are "

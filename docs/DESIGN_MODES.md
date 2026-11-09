@@ -46,8 +46,14 @@ First match wins:
 1. The `mode` argument of `design_session_start`.
 2. `EDA_AGENT_MODE`, also set for one command by the global `--mode`
    flag (`eda-agent --mode layout_only serve`).
-3. `~/.eda-agent/active_mode`, written by `eda-agent mode-use <name>`.
-4. `full_design`.
+3. `default_mode` in the active profile's `preferences.json`, so each
+   company or client starts its runs in its own mode. Set it from the
+   dashboard (Workspace, key `8`, Settings card) or by hand; see
+   [PROFILES.md](PROFILES.md).
+4. `~/.eda-agent/active_mode`, written by `eda-agent mode-use <name>`.
+   One per machine; `mode-use` says so when the profile's `default_mode`
+   overrules it.
+5. `full_design`.
 
 An unknown name is refused with the list of modes there are. A run never
 falls back to the full pipeline when you asked for a redraw.
@@ -86,7 +92,7 @@ lists as unreached only the mode's own stages.
 ## From the CLI
 
 ```
-eda-agent mode-list                          modes, and which is selected
+eda-agent mode-list                          modes, which is selected and why
 eda-agent mode-show [name] [--json]          one mode in full
 eda-agent mode-use <name> | --clear          select the default mode
 eda-agent mode-init <name> [--extends MODE] [--force]
