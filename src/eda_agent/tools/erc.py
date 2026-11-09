@@ -231,6 +231,20 @@ def register_erc_tools(mcp):
             diff["results"] = []
             diff["ok"] = not blocked
             return diff
+        from .profile_apply import is_real_project
+        if not is_real_project(diff.get("project", "")):
+            # "Free Documents" has a matrix of its own that belongs to no
+            # project file: writing it changes what every loose document
+            # is checked against, and saving has nothing to save it to.
+            where = diff.get("project") or "no project"
+            diff["written"] = 0
+            diff["failed"] = 0
+            diff["results"] = []
+            diff["ok"] = False
+            diff["reason"] = (
+                f"'{where}' is not a project file, so its ERC matrix is not "
+                "written. Name the .PrjPcb with project_path.")
+            return diff
 
         bridge = get_bridge()
         written = 0

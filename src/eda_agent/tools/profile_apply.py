@@ -75,6 +75,27 @@ def _declares(directory: Optional[Path], filename: str) -> bool:
     return bool(directory) and (directory / filename).is_file()
 
 
+def is_real_project(path: str) -> bool:
+    """True for a project file, false for Altium's "Free Documents".
+
+    The ERC read reports the project it used by DM_ProjectFullPath, which
+    for documents outside any project is the literal "Free Documents".
+    Its matrix belongs to no project file, so writing it changes what
+    every loose document is checked against (seen 2026-11-08, when a
+    dashboard Apply would have written there because a free board was in
+    front).
+    """
+    return Path(path or "").suffix.lower().startswith(".prj")
+
+
+def _not_a_project(project: str) -> dict[str, Any]:
+    where = project or "no project"
+    return {"ok": False, "project": project, "reason": (
+        f"the ERC matrix would come from '{where}', which is not a project "
+        "file. Name the .PrjPcb with project_path, or focus a document of "
+        "a real project.")}
+
+
 def register_profile_apply_tools(mcp):
     """Register the whole-profile diff and apply tools."""
 
@@ -82,6 +103,7 @@ def register_profile_apply_tools(mcp):
     async def profile_diff_all(
         profile_dir: str = "",
         erc_set: str = "",
+        project_path: str = "",
     ) -> dict[str, Any]:
         """How what is open differs from everything the profile declares.
 
@@ -99,19 +121,24 @@ def register_profile_apply_tools(mcp):
                 the active one.
             erc_set: A named set in the profile's ``erc_levels/``. Omit
                 for its ``erc_levels.json``.
+            project_path: The .PrjPcb whose ERC matrix to compare. Empty:
+                the focused project, named in the section's ``project``.
+                "Free Documents" is not a project and is refused.
 
         Returns:
             ``sections`` keyed by name, ``in_step`` (every section that
             could be compared is in step), ``profile_dir`` and
             ``not_in_step`` naming the sections that are not.
         """
-        return await _run(profile_dir, erc_set, apply=False, dry_run=True)
+        return await _run(profile_dir, erc_set, apply=False, dry_run=True,
+                          project_path=project_path)
 
     @mcp.tool()
     async def profile_apply_all(
         profile_dir: str = "",
         erc_set: str = "",
         dry_run: bool = True,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Bring what is open in step with everything the profile declares.
 
@@ -123,22 +150,30 @@ def register_profile_apply_tools(mcp):
 
         A section that cannot run does not stop the others, so a partial
         apply is a real outcome: ``applied`` names the sections that were
-        written and ``failed`` the ones that were not.
+        written and ``failed`` the ones that were not. A dry run writes
+        nothing, so its ``applied`` is empty and ``would_apply`` names
+        the sections a real run would write.
 
         Args:
             profile_dir: Read the profile from this directory instead.
             erc_set: A named set in the profile's ``erc_levels/``.
             dry_run: True (the default) reports what would change and
                 writes nothing. Pass False to write.
+            project_path: The .PrjPcb whose ERC matrix to write. REQUIRED
+                to write it: the ERC section never writes to whichever
+                project happens to have focus. A preview may leave it
+                empty and reads the focused project, named in the
+                section's ``project``. "Free Documents" is refused.
 
         Returns:
-            ``sections``, ``in_step``, ``applied``, ``failed`` and
-            ``dry_run``.
+            ``sections``, ``in_step``, ``applied``, ``failed``,
+            ``dry_run`` and, on a dry run, ``would_apply``.
         """
-        return await _run(profile_dir, erc_set, apply=True, dry_run=dry_run)
+        return await _run(profile_dir, erc_set, apply=True, dry_run=dry_run,
+                          project_path=project_path)
 
     async def _run(profile_dir: str, erc_set: str, *, apply: bool,
-                   dry_run: bool) -> dict[str, Any]:
+                   dry_run: bool, project_path: str = "") -> dict[str, Any]:
         directory = _profile_directory(profile_dir)
         tools = managed_tools()
         sections: dict[str, Any] = {}
@@ -169,12 +204,26 @@ def register_profile_apply_tools(mcp):
             return await tools["pcb_rules_diff"](profile_dir=profile_dir)
 
         async def erc():
-            if apply:
-                return await tools["proj_erc_apply"](
-                    profile_dir=profile_dir, set_name=erc_set,
-                    dry_run=dry_run)
-            return await tools["proj_erc_diff"](
-                profile_dir=profile_dir, set_name=erc_set)
+            if apply and not dry_run and not project_path:
+                return {"ok": False, "reason": (
+                    "writing the ERC matrix needs project_path: it is never "
+                    "written to whichever project happens to have focus. "
+                    "profile_diff_all names the project it read.")}
+            target = project_path or None
+            # A diff first in every case: it names the project the matrix
+            # comes from, and a write must not start before that is known
+            # to be a project.
+            got = await tools["proj_erc_diff"](
+                profile_dir=profile_dir, set_name=erc_set,
+                project_path=target)
+            if (isinstance(got, dict) and got.get("ok") is not False
+                    and not is_real_project(got.get("project", ""))):
+                return _not_a_project(got.get("project", ""))
+            if not apply or not isinstance(got, dict) or got.get("ok") is False:
+                return got
+            return await tools["proj_erc_apply"](
+                profile_dir=profile_dir, set_name=erc_set,
+                dry_run=dry_run, project_path=target)
 
         await section("design_rules", "design_rules.json", rules)
         await section("erc_levels", "erc_levels.json", erc)
@@ -203,8 +252,13 @@ def register_profile_apply_tools(mcp):
                 "<name>`; see docs/PROFILES.md.")
         if apply:
             out["dry_run"] = dry_run
-            out["applied"] = [n for n in ran
-                              if sections[n].get("ok") is not False]
+            ready = [n for n in ran if sections[n].get("ok") is not False]
+            # A dry run wrote nothing, so it must not say "applied": the
+            # sections it would write go under would_apply, and applied
+            # stays empty until something was written.
+            out["applied"] = [] if dry_run else ready
+            if dry_run:
+                out["would_apply"] = ready
             out["failed"] = [n for n in ran
                              if sections[n].get("ok") is False]
         return out

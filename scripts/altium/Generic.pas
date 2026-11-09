@@ -2246,6 +2246,28 @@ Begin
 End;
 { END GENERATED - SDK property probe. }
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness  }
+{ wire, splice or cable has no Name property of its own, so this is the   }
+{ only place its name can be read; GetSchProperty answers Name with it,   }
+{ which is what lets obj_query, obj_modify and obj_delete filter a wire   }
+{ by Name=W2 (matched nothing before, 2026-11-08).                        }
+Function SchHarnessName(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     NoERC : ISch_NoERC;
@@ -2326,8 +2348,9 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
                 Result := '';
+                Try Result := SchHarnessName(Obj.GetState_DescriptionString); Except Result := ''; End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
@@ -2798,6 +2821,7 @@ Var
       a reader at a spelling mistake that is not there. }
     WroteOK : Boolean;
 Begin
+    BeginPropertyWrite(0);
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
     { with a pipe-combined set like `Location.X=200|Orientation=2` on an ePin }
@@ -3312,6 +3336,7 @@ Begin
 
     If Result = 0 Then NotePropertyDiag('unknown', PropName)
     Else If Result = -1 Then NotePropertyDiag('failed', PropName);
+    EndPropertyWrite(Result);
 End;
 
 {..............................................................................}
@@ -3520,6 +3545,7 @@ Begin
     If UnsupportedProp <> '' Then
     Begin
         NotePropertyDiag('unknown', UnsupportedProp);
+        NoteSetRejected(0);
         Exit;
     End;
 
@@ -3574,6 +3600,7 @@ Begin
             End
             Else
                 Obj.Location := Loc;
+            NotePropertyWritten(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -4529,7 +4556,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4596,7 +4624,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -7882,19 +7911,8 @@ End;
 { The name a harness object gives in its description: the word after its    }
 { kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
 Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
 Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
+    Result := SchHarnessName(Desc);
 End;
 
 { An Altium colour (blue in the high byte) as #RRGGBB. }

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.08.3';
+    SCRIPT_VERSION = '2026.11.08.5';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -5732,6 +5732,13 @@ End;
 Var
     _PropertyDiagStr : String;
     _DeleteFaultStr : String;
+    { Writes that landed, and whether the property write under way was      }
+    { refused. A refused write made obj_modify answer modified:true while   }
+    { nothing changed (a note's ShowBorder, FontId=0; 2026-11-08), because  }
+    { modified counted matched objects, not writes.                         }
+    _PropertyWrites : Integer;
+    _PropCallRefused : Boolean;
+    _SetsRejected : Integer;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -5745,6 +5752,9 @@ Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
+    _PropertyWrites := 0;
+    _PropCallRefused := False;
+    _SetsRejected := 0;
 End;
 
 { Why a delete loop stopped early. The objects removed before it stopped are }
@@ -5760,6 +5770,9 @@ Procedure NotePropertyDiag(Kind : String; PropName : String);
 Var
     Entry : String;
 Begin
+    { Before the dedup exit: the same refusal on a second object is still a }
+    { refusal of THAT write, though it is recorded once.                    }
+    If Kind <> 'unreadable' Then _PropCallRefused := True;
     Entry := Kind + ':' + PropName;
     { Bracket the buffer with '|' on both sides so a Pos check finds an      }
     { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
@@ -5768,6 +5781,75 @@ Begin
         _PropertyDiagStr := Entry
     Else
         _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
+End;
+
+{ Bracket one property write: a write counts only when it reported success }
+{ and nothing in it was refused (a branch can note a refusal and still     }
+{ fall through to success).                                                 }
+Procedure BeginPropertyWrite(Dummy : Integer);
+Begin
+    _PropCallRefused := False;
+End;
+
+Procedure EndPropertyWrite(Outcome : Integer);
+Begin
+    If (Outcome = 1) And Not _PropCallRefused Then Inc(_PropertyWrites);
+End;
+
+{ A write made outside SetSchProperty (the coalesced Location move). }
+Procedure NotePropertyWritten(Dummy : Integer);
+Begin
+    Inc(_PropertyWrites);
+End;
+
+{ A whole set refused before anything in it was written: one unsupported }
+{ name rejects the object's list, so the other names in it are neither    }
+{ written nor refused (a note's ShowBorder beside TextMargin, 2026-11-08).}
+Procedure NoteSetRejected(Dummy : Integer);
+Begin
+    Inc(_SetsRejected);
+End;
+
+{ True when a modify wrote nothing at all: no write landed, and either a   }
+{ whole set was rejected before any of it was written or every property    }
+{ it asked for is recorded as unknown or failed. Conservative: a property  }
+{ neither counted nor refused keeps the reply at modified:true.            }
+Function NothingWasWritten(SetStr : String) : Boolean;
+Var
+    Remaining, Pair, Nm, Diag : String;
+    P : Integer;
+Begin
+    Result := False;
+    If _PropertyWrites > 0 Then Exit;
+    If Trim(SetStr) = '' Then Exit;
+    If _SetsRejected > 0 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    Diag := '|' + _PropertyDiagStr + '|';
+    Remaining := SetStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Pair := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        P := Pos('=', Pair);
+        If P = 0 Then Continue;
+        Nm := Trim(Copy(Pair, 1, P - 1));
+        If Nm = '' Then Continue;
+        If (Pos('|unknown:' + Nm + '|', Diag) = 0)
+            And (Pos('|failed:' + Nm + '|', Diag) = 0) Then Exit;
+    End;
+    Result := True;
 End;
 
 Function RenderPropertyDiagJson(Dummy : Integer): String;
@@ -7108,14 +7190,34 @@ Begin
         + ',' + JsonStr('file_path', FilePath)));
 End;
 
+{ A harness wiring diagram (.WirDoc) opens only through the workspace      }
+{ manager. Client.OpenDocument returned Nil for 'HarnessWiringDiagram', the  }
+{ kind the document is CREATED under, and 'HARNESS' returned a document the  }
+{ schematic server could not see, while reporting success (AD 26.11.1.5,     }
+{ 2026-11-08). WorkspaceManager:OpenObject is what sch_place_harness_wires   }
+{ and app_set_active_document already used, and both left a diagram that     }
+{ sch_get_harness reads.                                                     }
+Function OpenThroughWorkspace(FilePath : String) : IServerDocument;
+Begin
+    Result := Nil;
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    Try RunProcess('WorkspaceManager:OpenObject'); Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Result := Client.GetDocumentByPath(FilePath); Except Result := Nil; End;
+End;
+
 Function App_OpenDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, Ext : String;
+    FilePath, DocKind, Ext, AskedKind, ActualKind, Route : String;
     ServerDoc : IServerDocument;
-    AlreadyLoaded : Boolean;
+    AlreadyLoaded, ViaWorkspace : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
+    AskedKind := DocKind;
+    ViaWorkspace := LowerCase(ExtractFileExt(FilePath)) = '.wirdoc';
 
     If FilePath = '' Then
     Begin
@@ -7139,6 +7241,7 @@ Begin
         Else If Ext = '.pcblib' Then DocKind := 'PCBLIB'
         Else If Ext = '.outjob' Then DocKind := 'OUTPUTJOB'
         Else If Ext = '.bomdoc' Then DocKind := 'BOM'
+        Else If Ext = '.wirdoc' Then DocKind := 'HARNESSWIRINGDIAGRAM'
         Else
         Begin
             Result := BuildErrorResponse(RequestId, 'KIND_REQUIRED',
@@ -7151,24 +7254,39 @@ Begin
     AlreadyLoaded := False;
     Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
     If ServerDoc <> Nil Then AlreadyLoaded := True;
-    If ServerDoc = Nil Then
+    If (ServerDoc = Nil) And ViaWorkspace Then
+        ServerDoc := OpenThroughWorkspace(FilePath)
+    Else If ServerDoc = Nil Then
     Begin
         Try ServerDoc := Client.OpenDocument(DocKind, FilePath); Except End;
     End;
     If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
-            'Client.OpenDocument returned Nil for kind=' + DocKind +
-            ', path=' + FilePath);
+        If ViaWorkspace Then
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'The workspace manager did not open the wiring diagram ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'Client.OpenDocument returned Nil for kind=' + DocKind +
+                ', path=' + FilePath);
         Exit;
     End;
 
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Application.ProcessMessages; Except End;
+    { The kind Altium gave the document, not the one asked for: a kind that }
+    { opens the file as something else must not read back as success.      }
+    ActualKind := '';
+    Try ActualKind := ServerDoc.Kind; Except ActualKind := ''; End;
+    If ActualKind = '' Then ActualKind := DocKind;
+    Route := 'client';
+    If ViaWorkspace Then Route := 'workspace';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
-        '","kind":"' + EscapeJsonString(DocKind) +
-        '","already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
+        '","kind":"' + EscapeJsonString(ActualKind) +
+        '","opened_through":"' + Route +
+        '","kind_ignored":' + BoolToJsonStr(ViaWorkspace And (AskedKind <> '')) +
+        ',"already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
 End;
 
 Function App_ReloadDocument(Params : String; RequestId : String) : String;
@@ -77158,6 +77276,28 @@ Begin
 End;
 { END GENERATED - SDK property probe. }
 
+{ The name a harness object gives in its description: the word after its    }
+{ kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness  }
+{ wire, splice or cable has no Name property of its own, so this is the   }
+{ only place its name can be read; GetSchProperty answers Name with it,   }
+{ which is what lets obj_query, obj_modify and obj_delete filter a wire   }
+{ by Name=W2 (matched nothing before, 2026-11-08).                        }
+Function SchHarnessName(Desc : String) : String;
+Var
+    P : Integer;
+Begin
+    Result := '';
+    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
+    Desc := Copy(Desc, 9, Length(Desc));
+    P := Pos(' ', Desc);
+    If P = 0 Then Exit;
+    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
+    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
+    P := Pos(' ', Desc);
+    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
+    Result := Desc;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     NoERC : ISch_NoERC;
@@ -77238,8 +77378,9 @@ Begin
                 Result := Obj.Name
             Else
             Begin
-                NotePropertyDiag('unreadable', PropName);
                 Result := '';
+                Try Result := SchHarnessName(Obj.GetState_DescriptionString); Except Result := ''; End;
+                If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
@@ -77710,6 +77851,7 @@ Var
       a reader at a spelling mistake that is not there. }
     WroteOK : Boolean;
 Begin
+    BeginPropertyWrite(0);
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
     { with a pipe-combined set like `Location.X=200|Orientation=2` on an ePin }
@@ -78224,6 +78366,7 @@ Begin
 
     If Result = 0 Then NotePropertyDiag('unknown', PropName)
     Else If Result = -1 Then NotePropertyDiag('failed', PropName);
+    EndPropertyWrite(Result);
 End;
 
 {..............................................................................}
@@ -78432,6 +78575,7 @@ Begin
     If UnsupportedProp <> '' Then
     Begin
         NotePropertyDiag('unknown', UnsupportedProp);
+        NoteSetRejected(0);
         Exit;
     End;
 
@@ -78486,6 +78630,7 @@ Begin
             End
             Else
                 Obj.Location := Loc;
+            NotePropertyWritten(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -79441,7 +79586,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -79508,7 +79654,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -82794,19 +82941,8 @@ End;
 { The name a harness object gives in its description: the word after its    }
 { kind ("W1", "P1-1"), or empty when it gives only coordinates.              }
 Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
 Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
+    Result := SchHarnessName(Desc);
 End;
 
 { An Altium colour (blue in the high byte) as #RRGGBB. }
