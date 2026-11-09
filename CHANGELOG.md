@@ -111,8 +111,8 @@ maturity classification for every tool.
   and with each refresh. It is kept out of the config's printed form and
   masked if a reply echoes it. A refused token request now says what Nexar
   said (`invalid_client`, `invalid_grant`, ...) with a likely fix, instead
-  of only the status. UNVERIFIED against a live Nexar account until the
-  login is run again.
+  of only the status. Checked live on 2026-11-09: the login succeeded with
+  a portal app and its secret, and listed the account's workspaces.
 
 - **The login says which workspaces it reaches.** After signing in,
   `eda-agent altium365-login` lists every Altium 365 workspace the account
