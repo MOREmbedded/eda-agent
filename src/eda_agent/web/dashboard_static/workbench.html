@@ -257,9 +257,24 @@ table.grid a { color:var(--blue); }
 .ladder .step b { display:block; font-size:12px; margin-bottom:2px; }
 .ladder .m, #pane p.m, .kv dd.m { font-family:var(--mono); font-size:11px; overflow-wrap:anywhere; }
 h2.wsh { font-size:13px; margin:0 0 6px; }
-.wsset { margin-bottom:var(--s3); }
-.wsset table.grid td { cursor:default; vertical-align:middle; }
-.wsset select { font-size:12px; max-width:100%; }
+.wsset { margin-bottom:var(--s3); container-type:inline-size; }
+/* Fixed layout, so a long option (a mode's title) cannot widen the table past
+   the card: the menus take their column's width and clip their own text. */
+.wsset table.grid { table-layout:fixed; }
+.wsset table.grid th:nth-child(1) { width:30%; } .wsset table.grid th:nth-child(2) { width:22%; }
+.wsset table.grid th:nth-child(3) { width:18%; } .wsset table.grid th:nth-child(4) { width:30%; }
+.wsset table.grid td { cursor:default; vertical-align:middle; overflow-wrap:anywhere; }
+.wsset select { font-size:12px; width:100%; min-width:0; }
+/* A narrow card stacks each row: the setting, then its value and source,
+   then the menu, instead of four columns squeezed side by side. */
+@container (max-width: 520px) {
+  .wsset table.grid, .wsset table.grid tbody, .wsset table.grid tr, .wsset table.grid td { display:block; width:auto; }
+  .wsset table.grid thead { display:none; }
+  .wsset table.grid tr { padding:6px 0; border-bottom:1px solid var(--rule2); }
+  .wsset table.grid td { border:none; padding:2px 8px; }
+  .wsset table.grid td:nth-child(1) { font-weight:600; }
+  .wsset table.grid td:nth-child(2), .wsset table.grid td:nth-child(3) { display:inline-block; }
+}
 .wsset .src-profile { color:var(--green); font-weight:600; } .wsset .src-panel { color:var(--ink); } .wsset .src-default { color:var(--ink3); }
 .chipset button small { opacity:.7; }
 .wsgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:var(--s3); margin-top:var(--s3); }

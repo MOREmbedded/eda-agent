@@ -375,3 +375,15 @@ def test_save_works_beside_a_key_this_version_does_not_know(tmp_path):
     # Moving to RKM drops the unit, which RKM does not have.
     assert preferences.save_profile_preferences(directory, {"value_format": "rkm"})["ok"]
     assert "value_unit" not in json.loads((directory / "preferences.json").read_text(encoding="utf-8"))
+
+
+def test_the_settings_table_cannot_grow_past_its_card():
+    """Measured in Chromium: before these rules the table was 624 px wide in
+    a 332 px card (a mode's long title widened its menu), so the pane
+    scrolled sideways. A fixed layout holds the columns to the card, the
+    menus take their column's width, and a narrow card stacks each row."""
+    page = (pathlib.Path(preferences.__file__).parent / "web" / "dashboard_static"
+            / "workbench.html").read_text(encoding="utf-8")
+    assert ".wsset table.grid { table-layout:fixed; }" in page
+    assert ".wsset select { font-size:12px; width:100%; min-width:0; }" in page
+    assert "container-type:inline-size" in page and "@container (max-width: 520px)" in page
