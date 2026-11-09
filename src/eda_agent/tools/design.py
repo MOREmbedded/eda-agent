@@ -290,7 +290,17 @@ def register_design_tools(mcp) -> None:
         from ..design.modes import load_modes, selected_mode_name
         modes, problems = load_modes()
         name, source = selected_mode_name()
+        # A selection naming no mode is a run that will be refused at
+        # design_session_start; say so here, where the selection is shown
+        # (it was listed as "selected" with no problem, 2026-11-08).
+        known = name in modes
+        if not known:
+            problems = [*problems, (
+                f"the selected mode {name!r} (from {source}) is not a mode; "
+                f"a run that names no mode will be refused. The modes are "
+                f"{sorted(modes)}.")]
         return {"ok": True, "selected": name, "selected_by": source,
+                "selected_known": known,
                 "modes": [{"name": m.name, "title": m.title,
                            "description": m.description,
                            "stages": len(m.stages),

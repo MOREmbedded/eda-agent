@@ -1320,6 +1320,7 @@ function workspaceSideBlock() {
   return `<section class="block"><h2>${esc(T("Workspace"))}</h2>
       <dl class="kv"><dt>${esc(T("Profile"))}</dt><dd>${esc(p ? p.name : T("None"))}</dd>
         <dt>${esc(T("Board in front"))}</dt><dd class="m">${esc(baseName((S.state && S.state.cockpit.front) || "") || "-")}</dd>
+        <dt>${esc(T("Project"))}</dt><dd class="m" title="${esc(S.wsProject || "")}">${esc(baseName(S.wsProject || "") || "-")}</dd>
         <dt>${esc(T("Bridge folder"))}</dt><dd class="m" title="${esc(w ? w.workspace_dir : "")}">${esc(w ? w.workspace_dir : "")}</dd></dl>
       <div class="actions"><button data-ws="reload">${esc(T("Read the profile again"))}</button></div></section>
     <section class="block"><h2>${esc(T("Hold the open design to it"))}</h2>
@@ -1340,13 +1341,18 @@ async function wsDo(what) {
   S.wsArm = 0;
   const sel = $("#wserc"), args = {profile_dir: p.directory, erc_set: sel ? sel.value : ""};
   const name = what === "diff" ? "profile_diff_all" : "profile_apply_all";
-  if (what !== "diff") args.dry_run = what !== "apply";
+  if (what !== "diff") { args.dry_run = what !== "apply"; args.project_path = S.wsProject || ""; }
   S.wsBusy = true; clearTools(); paintTools();
   const r = await post("/api/tool/run", {name, args});
   S.wsBusy = false;
   let what_ = {diff: T("Compared with what is open in Altium."), preview: T("What applying would change. Nothing was written."), apply: T("Written to Altium.")}[what];
   if (r && r.ok && r.data && Array.isArray(r.data.compared) && !r.data.compared.length && what === "diff") what_ = T("Nothing could be compared. Each section says why.");
-  S.wsResult = r && r.ok ? {ok: r.data && r.data.ok !== false, data: r.data || {}, what: what_, reason: r.data && r.data.reason} : {ok: false, reason: (r && r.reason) || T("The dashboard did not answer.")};
+  // An apply that wrote no section is not "Written to Altium." (seen with
+  // the ERC section refused and nothing else in the profile, 2026-11-08).
+  const wroteNothing = what === "apply" && r && r.ok && r.data && Array.isArray(r.data.applied) && !r.data.applied.length && (r.data.failed || []).length > 0;
+  if (wroteNothing) what_ = T("{0} failed.", name);
+  S.wsResult = r && r.ok ? {ok: r.data && r.data.ok !== false && !wroteNothing, data: r.data || {}, what: what_, reason: r.data && r.data.reason} : {ok: false, reason: (r && r.reason) || T("The dashboard did not answer.")};
+  if (what === "diff") { const e = r && r.ok && r.data && r.data.sections && r.data.sections.erc_levels; S.wsProject = e && e.ok !== false && /\.prj[a-z]*$/i.test(e.project || "") ? e.project : ""; }
   say(S.wsResult.ok ? what_ : T("{0} failed.", name), !S.wsResult.ok);
   clearTools(); paintTools();
 }

@@ -455,7 +455,12 @@ def test_harness_read_sends_and_refuses(monkeypatch):
 
 
 def test_harness_names_come_from_descriptions():
-    body = _body("Generic.pas", "HarnessNameFromDescription")
+    # The parse moved into SchHarnessName, above GetSchProperty, so the
+    # generic Name reader can use it too (a harness wire answered Name with
+    # nothing, 2026-11-08); HarnessNameFromDescription delegates to it.
+    assert "Result := SchHarnessName(Desc);" in _body(
+        "Generic.pas", "HarnessNameFromDescription")
+    body = _body("Generic.pas", "SchHarnessName")
     # "Harness Pin P1-1 (1) Passive" is P1-1; "Harness Shield (x,y)(x,y)"
     # gives no name, and the reader numbers it instead.
     assert "If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;" in body

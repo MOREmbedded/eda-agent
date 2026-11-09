@@ -2414,6 +2414,13 @@ End;
 Var
     _PropertyDiagStr : String;
     _DeleteFaultStr : String;
+    { Writes that landed, and whether the property write under way was      }
+    { refused. A refused write made obj_modify answer modified:true while   }
+    { nothing changed (a note's ShowBorder, FontId=0; 2026-11-08), because  }
+    { modified counted matched objects, not writes.                         }
+    _PropertyWrites : Integer;
+    _PropCallRefused : Boolean;
+    _SetsRejected : Integer;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -2427,6 +2434,9 @@ Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
+    _PropertyWrites := 0;
+    _PropCallRefused := False;
+    _SetsRejected := 0;
 End;
 
 { Why a delete loop stopped early. The objects removed before it stopped are }
@@ -2442,6 +2452,9 @@ Procedure NotePropertyDiag(Kind : String; PropName : String);
 Var
     Entry : String;
 Begin
+    { Before the dedup exit: the same refusal on a second object is still a }
+    { refusal of THAT write, though it is recorded once.                    }
+    If Kind <> 'unreadable' Then _PropCallRefused := True;
     Entry := Kind + ':' + PropName;
     { Bracket the buffer with '|' on both sides so a Pos check finds an      }
     { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
@@ -2450,6 +2463,75 @@ Begin
         _PropertyDiagStr := Entry
     Else
         _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
+End;
+
+{ Bracket one property write: a write counts only when it reported success }
+{ and nothing in it was refused (a branch can note a refusal and still     }
+{ fall through to success).                                                 }
+Procedure BeginPropertyWrite(Dummy : Integer);
+Begin
+    _PropCallRefused := False;
+End;
+
+Procedure EndPropertyWrite(Outcome : Integer);
+Begin
+    If (Outcome = 1) And Not _PropCallRefused Then Inc(_PropertyWrites);
+End;
+
+{ A write made outside SetSchProperty (the coalesced Location move). }
+Procedure NotePropertyWritten(Dummy : Integer);
+Begin
+    Inc(_PropertyWrites);
+End;
+
+{ A whole set refused before anything in it was written: one unsupported }
+{ name rejects the object's list, so the other names in it are neither    }
+{ written nor refused (a note's ShowBorder beside TextMargin, 2026-11-08).}
+Procedure NoteSetRejected(Dummy : Integer);
+Begin
+    Inc(_SetsRejected);
+End;
+
+{ True when a modify wrote nothing at all: no write landed, and either a   }
+{ whole set was rejected before any of it was written or every property    }
+{ it asked for is recorded as unknown or failed. Conservative: a property  }
+{ neither counted nor refused keeps the reply at modified:true.            }
+Function NothingWasWritten(SetStr : String) : Boolean;
+Var
+    Remaining, Pair, Nm, Diag : String;
+    P : Integer;
+Begin
+    Result := False;
+    If _PropertyWrites > 0 Then Exit;
+    If Trim(SetStr) = '' Then Exit;
+    If _SetsRejected > 0 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    Diag := '|' + _PropertyDiagStr + '|';
+    Remaining := SetStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Pair := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        P := Pos('=', Pair);
+        If P = 0 Then Continue;
+        Nm := Trim(Copy(Pair, 1, P - 1));
+        If Nm = '' Then Continue;
+        If (Pos('|unknown:' + Nm + '|', Diag) = 0)
+            And (Pos('|failed:' + Nm + '|', Diag) = 0) Then Exit;
+    End;
+    Result := True;
 End;
 
 Function RenderPropertyDiagJson(Dummy : Integer): String;
