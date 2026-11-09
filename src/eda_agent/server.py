@@ -1506,7 +1506,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "altium365-login",
         help=("Sign in to Nexar in the browser for the altium365_ tools "
-              "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
+              "(needs EDA_AGENT_NEXAR_APP_ID, plus EDA_AGENT_NEXAR_CLIENT_SECRET for a "
+              "Nexar portal app). The workspace route needs no "
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
     subparsers.add_parser(
@@ -1785,9 +1786,13 @@ def main() -> int:
             return 1
     if args.command == "altium365-login":
         import webbrowser
-        from .altium365 import Altium365Error, browser_login, read_environment
+        from .altium365 import (Altium365Error, Altium365Session, browser_login,
+                                login_workspaces, read_environment)
         try:
-            print(browser_login(read_environment(), webbrowser.open))
+            config = read_environment()
+            print(browser_login(config, webbrowser.open))
+            for line in login_workspaces(Altium365Session(config)):
+                print(line)
             return 0
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")

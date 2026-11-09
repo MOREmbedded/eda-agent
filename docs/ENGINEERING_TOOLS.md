@@ -191,7 +191,16 @@ again.
 Altium 365 is reached through the `altium365_` tools
 (`src/eda_agent/altium365.py`), by either route: straight to a workspace with
 `EDA_AGENT_ALTIUM365_DOMAIN` and `EDA_AGENT_ALTIUM365_TOKEN`, or through Nexar
-with `EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+with `EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once. The direct
+route needs a workspace token, which only some plans offer; where the admin
+pages have no API token page (Admin > Apps lists only third-party
+integrations), Nexar is the way in. The login prints every workspace the
+account can reach, so with more than one, pass the right workspace URL to
+each tool or list the ones to use in `EDA_AGENT_ALTIUM365_WORKSPACES`. An app made
+in the Nexar portal is a confidential client: set its secret in
+`EDA_AGENT_NEXAR_CLIENT_SECRET` too. It is sent only to Nexar's token endpoint
+and never printed. A refused sign-in names Nexar's reason (`invalid_client`,
+`invalid_grant`, ...) with a hint.
 `eda-agent altium365-logout` forgets the saved login.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it lists.
 

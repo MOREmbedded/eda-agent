@@ -104,6 +104,23 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **Nexar sign-in works with a portal app.** `eda-agent altium365-login`
+  sent the client id and PKCE verifier but no client secret, so an app made
+  in the Nexar portal (a confidential client) was turned down with HTTP 400.
+  `EDA_AGENT_NEXAR_CLIENT_SECRET`, when set, now goes with the code exchange
+  and with each refresh. It is kept out of the config's printed form and
+  masked if a reply echoes it. A refused token request now says what Nexar
+  said (`invalid_client`, `invalid_grant`, ...) with a likely fix, instead
+  of only the status. UNVERIFIED against a live Nexar account until the
+  login is run again.
+
+- **The login says which workspaces it reaches.** After signing in,
+  `eda-agent altium365-login` lists every Altium 365 workspace the account
+  can reach, marks any that `EDA_AGENT_ALTIUM365_WORKSPACES` leaves out, and
+  says how to keep the tools to some of them. The docs no longer send
+  readers to an Admin > Developer token page that many plans lack; there,
+  Nexar is the way in.
+
 - **What the 2026-11-08 live verification found** (`SCRIPT_VERSION`
   `2026.11.08.5`). Each was seen on a live Altium 26.11.1.5 against
   scratch files:

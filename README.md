@@ -813,10 +813,16 @@ The providers, their credentials and their access policies are in
 
 **Altium 365.** The `altium365_` tools read workspaces, projects and the
 managed library, and can publish, release and change parameters (only with
-`confirm=True`). Two routes: the workspace's own API, with
-`EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
-`EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+`confirm=True`). Two routes. Nexar works on every plan: put your Nexar
+app's client id in `EDA_AGENT_NEXAR_APP_ID` (and, for an app made in the
+Nexar portal, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET`), then run
+`eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+The login lists every workspace the account can reach; each tool takes the
+workspace URL it acts on. The workspace's own API, with
+`EDA_AGENT_ALTIUM365_DOMAIN` and a workspace token in
+`EDA_AGENT_ALTIUM365_TOKEN`, needs a plan whose admin pages offer API
+tokens; many plans do not (Admin > Apps lists only third-party
+integrations), and then Nexar is the way in.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
@@ -1341,8 +1347,8 @@ Altium 365 takes one of two routes, and sets no default between them:
 
 | Route | Set | Token from |
 |---|---|---|
-| Workspace, direct | `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN` | the workspace, Admin > Developer (lasts up to a year) |
-| Nexar | `EDA_AGENT_NEXAR_APP_ID` | `eda-agent altium365-login` once; `altium365-logout` forgets it |
+| Workspace, direct | `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN` | the workspace's admin pages, only on plans that offer API tokens (lasts up to a year) |
+| Nexar | `EDA_AGENT_NEXAR_APP_ID`, and `EDA_AGENT_NEXAR_CLIENT_SECRET` for a portal app | `eda-agent altium365-login` once; `altium365-logout` forgets it |
 
 Setting the domain wins. A workspace token has no refresh grant, so an
 expired one is reported and has to be replaced by hand rather than
