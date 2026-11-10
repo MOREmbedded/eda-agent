@@ -1223,6 +1223,7 @@ listings can be read against each other.
 |---|---|
 | `eda-agent` | Start the MCP server on stdio (what the MCP client calls) |
 | `eda-agent serve` | Explicit form of the above |
+| `eda-agent start [--workspace DIR] [--init] [--profile NAME] [--port N] [--altium365-workspace URL] [--no-dashboard] [--no-doctor] [--no-login] [--relogin] [--shortcut]` | Bring a design workspace up from `<workspace>/.eda-agent/workspace.json`: activate its profile, fill the Altium 365 settings in from your user environment, restart its dashboard on its own port (log in `.eda-agent/logs/`), run doctor, check the Nexar login (the browser opens only when it is not valid), and say whether the Altium bridge is up. `--init` writes the file; `--shortcut` makes a desktop shortcut. The file holds no secrets and refuses keys that look like one |
 | `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
 | `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to every folder Altium loads them from, or to PATH |
 | `eda-agent scripts-path` | Print path to bundled DelphiScript sources |

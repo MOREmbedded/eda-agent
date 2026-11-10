@@ -16,6 +16,14 @@ maturity classification for every tool.
 
 ### Added
 
+- **`eda-agent start` brings one design workspace up in one command.**
+  Each workspace keeps its own settings in `.eda-agent/workspace.json`
+  (profile, dashboard port, the Altium 365 workspaces the tools may use)
+  and its dashboard log in `.eda-agent/logs/`, so two workspaces share
+  nothing and no client detail lands in this repository. Secrets stay in
+  the user environment; the file refuses keys that look like one. Only an
+  eda-agent process is stopped to free the dashboard port.
+
 - **An offline copy of an Altium 365 managed library, kept in the profile.**
   `altium365_scan_library` reads every component, symbol, footprint and
   folder into `<profile>/library/<workspace host>/` as JSON and CSV, past
