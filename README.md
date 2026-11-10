@@ -487,7 +487,9 @@ A design run does not have to be the whole spec-to-board pipeline. A
 mode picks the stages, adds the rules for that kind of job and names the
 inputs it needs: `reference_redraw` redraws a vendor dev kit's schematic
 faithfully in your own libraries, `devkit_derivative` builds a new board
-around a dev kit's proven core, `schematic_only` and `layout_only` do
+around a dev kit's proven core, `reusable_block` designs one
+self-contained block with a defined interface and a layout fragment to
+publish as an Altium reuse block, `schematic_only` and `layout_only` do
 half the pipeline each, `full_design` all of it. Start a run with
 `design_session_start(requirement, mode="reference_redraw",
 inputs={...})`, pick one from the client's prompt list (`mode_<name>`),

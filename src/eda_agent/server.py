@@ -1017,7 +1017,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", default=None, metavar="MODE",
         help=("The design mode a run uses when it names none: full_design, "
               "schematic_only, layout_only, reference_redraw, "
-              "devkit_derivative, or one from the profile's modes/. "
+              "devkit_derivative, reusable_block, or one from the "
+              "profile's modes/. "
               "Equivalent to setting EDA_AGENT_MODE; see mode-list."),
     )
     # title= puts the commands in their own section rather than under
