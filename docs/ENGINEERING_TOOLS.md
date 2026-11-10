@@ -191,9 +191,86 @@ again.
 Altium 365 is reached through the `altium365_` tools
 (`src/eda_agent/altium365.py`), by either route: straight to a workspace with
 `EDA_AGENT_ALTIUM365_DOMAIN` and `EDA_AGENT_ALTIUM365_TOKEN`, or through Nexar
-with `EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+with `EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once. The direct
+route needs a workspace token, which only some plans offer; where the admin
+pages have no API token page (Admin > Apps lists only third-party
+integrations), Nexar is the way in. The login prints every workspace the
+account can reach, so with more than one, pass the right workspace URL to
+each tool or list the ones to use in `EDA_AGENT_ALTIUM365_WORKSPACES`. An app made
+in the Nexar portal is a confidential client: set its secret in
+`EDA_AGENT_NEXAR_CLIENT_SECRET` too. It is sent only to Nexar's token endpoint
+and never printed. A refused sign-in names Nexar's reason (`invalid_client`,
+`invalid_grant`, ...) with a hint.
 `eda-agent altium365-logout` forgets the saved login.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it lists.
+
+Set these yourself, in your own terminal, with `setx NAME value`; never
+paste a secret into a chat. A setting missing from the running process is
+read from your saved user environment (`HKCU\Environment`, where `setx`
+writes), so a value set after the server or the shell started works
+without a restart. `EDA_AGENT_ALTIUM365_TIMEOUT_S` (default 60, 5 to 900)
+bounds each request.
+
+### The library database
+
+`altium365_scan_library` reads a workspace's whole managed library into an
+offline database: every component with its folder, lifecycle, parameters,
+manufacturer parts, symbols, footprints and 3D link, and every symbol,
+footprint and folder, as JSON and CSV. It only reads.
+
+The database belongs to a profile, not to eda-agent: it is kept in
+`<profile>/library/<workspace host>/` of the active profile, and the
+profile names its workspace in `profile.json`:
+
+```json
+{ "name": "acme", "altium365_workspaces": ["https://example.365.altium.com/"] }
+```
+
+With one workspace listed, the library tools need no `workspace_url`.
+With no active profile they refuse unless given `database_dir`; nothing is
+kept in the repository or in a folder that profiles share. This is the
+one place Altium 365 data is written to disk, at your request and into
+your own profile.
+
+How it reads. `desLibrary.components` reports a `totalCount` that stops at
+10,000, so the list is read until `hasNextPage` is false. The list is
+sorted by name and its cursors are the base64 of a row index, so several
+readers (`workers`, default 4) read different ranges at once; the scheme
+is checked first, and when a server answers differently one reader
+follows its cursors. Deep pages run into the server's 90-second limit, so
+a page that times out is asked for again at half the size, down to five
+rows. Every page is kept in `scan/` as it arrives: a scan stopped by
+`max_seconds` (default 600), a lost connection or a closed laptop goes on
+from where it stopped on the next call. `eda-agent altium365-scan-library`
+runs one to the end with progress.
+
+`altium365_update_library` refreshes it in a minute or two. Everything
+before the bulk block at the end of the list (by default the trailing run
+of components under one top folder, such as a generic value range) is
+read again, with every symbol, footprint and folder; the row just past
+the last known one is then read, and `full_scan_needed` says when the
+bulk block grew or shrank.
+
+`altium365_search_library` searches it offline (every word of the query
+in the name, comment, description, folder, MPN or parameters), and
+`lib_search` folds the same rows into its answer as `source: "altium365"`.
+
+`altium365_library_report` writes `report.json` and `report.md`:
+components without a symbol, footprint, manufacturer part, 3D link or
+description, unused symbols and footprints, MPNs on several components.
+Given `design_roots`, it reads every `.SchDoc` under them from disk (no
+Altium) and joins each placed managed part to the library on its item id
+without the revision, listing placements of an older revision and parts
+placed but missing from the library.
+
+3D models: the GraphQL schema has no list of 3D model items. A
+component's `model3D` link is all it gives, and a footprint's revision
+only counts its child items without naming them. `altium365_scan_3d_models`
+reads them from Altium's Explorer panel instead (Altium running and signed
+in, Explorer open): it expands and selects each folder under the named
+top folders (default `3D Models`) and reads the item grid, writing
+`models3d.json` and `.csv` next to the database. It selects folder rows
+and nothing else: no clicks, typing or opened items.
 
 Any reading GraphQL query may be run; one containing `mutation` or
 `subscription` is refused. Changes go only through the fixed write tools

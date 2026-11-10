@@ -17,7 +17,8 @@ as it always has -- this is purely additive.
 
 ```
 profile/
-  profile.json              # {"name": "...", "description": "..."}
+  profile.json              # {"name": "...", "description": "...",
+                            #  "altium365_workspaces": ["https://..."]}
   naming.json                # engineering.naming.NamingPolicy's own format
   company_goals.json         # engineering.ipc7351.load_goals's own format
   rules/                     # engineering.rules.RuleStore's own format
@@ -40,7 +41,18 @@ profile/
       ...
     documents/                 #   single sheets/boards (profile_new_document)
       A4_Titleblock.SchDoc
+  library/                    # written by the altium365_ library tools
+    example.365.altium.com/    #   one Altium 365 workspace's library copy
 ```
+
+`library/` is data, not settings: `altium365_scan_library` writes it and
+the search, update and report tools read it. It belongs to the profile
+because a library belongs to the company or client the profile is for.
+`altium365_workspaces` in `profile.json` names the workspace(s) those
+tools use when none is given; see
+[ENGINEERING_TOOLS.md](ENGINEERING_TOOLS.md#the-library-database). If the
+profile lives in a shared repository, decide whether `library/` should
+be committed there or ignored.
 
 `naming.json`, `company_goals.json`, `rules/*.json` and `fab_profiles/*.json`
 reuse formats that already existed before profiles did -- see

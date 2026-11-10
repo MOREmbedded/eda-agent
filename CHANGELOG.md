@@ -16,6 +16,24 @@ maturity classification for every tool.
 
 ### Added
 
+- **An offline copy of an Altium 365 managed library, kept in the profile.**
+  `altium365_scan_library` reads every component, symbol, footprint and
+  folder into `<profile>/library/<workspace host>/` as JSON and CSV, past
+  the 10,000-row `totalCount` cap, with several readers on row ranges and
+  pages halved when they time out; an interrupted scan continues.
+  `altium365_update_library` rereads all but the bulk block at the end of
+  the list and probes the row past it. `altium365_search_library` searches
+  it offline and `lib_search` folds it in as `source: "altium365"`.
+  `altium365_library_report` lists gaps and, given design folders, joins
+  placements from `.SchDoc` files on the item id and flags older
+  revisions. CLI: `altium365-scan-library`, `altium365-update-library`.
+  Live-checked on 2026-11-10 against a 22,561-component workspace: the
+  scan and the counts matched an independent scan, the refresh took
+  1m49s. `profile.json` names the workspace in `altium365_workspaces`.
+- **`altium365_scan_3d_models`** reads the library's 3D model items from
+  Altium's Explorer panel, which the GraphQL API cannot list. UNVERIFIED:
+  the live run was stopped before it finished.
+
 - **Project stages in the dashboard.** The Workspace view's Settings card
   has a switch for the NPI gates (off by default; it writes the profile's
   `phase_gates.json`, as `phases-enable` does). With it on, a *Project
@@ -118,6 +136,33 @@ maturity classification for every tool.
     thing.
 
 ### Fixed
+
+- **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
+  ran on the event loop thread without COM, and 26.11 has no
+  TPopupPanelButton for a docked panel, so they saw 0 panels. They now run
+  on a thread of their own and also find a panel by its caption; live on
+  26.11 they list Projects, Properties and a floating Explorer, and read
+  the Projects grid.
+- **Altium 365 settings set with `setx` work without a restart**: the
+  user's saved environment fills in what the process lacks.
+  `EDA_AGENT_ALTIUM365_TIMEOUT_S` sets the request timeout.
+
+- **Nexar sign-in works with a portal app.** `eda-agent altium365-login`
+  sent the client id and PKCE verifier but no client secret, so an app made
+  in the Nexar portal (a confidential client) was turned down with HTTP 400.
+  `EDA_AGENT_NEXAR_CLIENT_SECRET`, when set, now goes with the code exchange
+  and with each refresh. It is kept out of the config's printed form and
+  masked if a reply echoes it. A refused token request now says what Nexar
+  said (`invalid_client`, `invalid_grant`, ...) with a likely fix, instead
+  of only the status. Checked live on 2026-11-09: the login succeeded with
+  a portal app and its secret, and listed the account's workspaces.
+
+- **The login says which workspaces it reaches.** After signing in,
+  `eda-agent altium365-login` lists every Altium 365 workspace the account
+  can reach, marks any that `EDA_AGENT_ALTIUM365_WORKSPACES` leaves out, and
+  says how to keep the tools to some of them. The docs no longer send
+  readers to an Admin > Developer token page that many plans lack; there,
+  Nexar is the way in.
 
 - **What the 2026-11-08 live verification found** (`SCRIPT_VERSION`
   `2026.11.08.5`). Each was seen on a live Altium 26.11.1.5 against

@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 675 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 700 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -818,13 +818,30 @@ The providers, their credentials and their access policies are in
 
 **Altium 365.** The `altium365_` tools read workspaces, projects and the
 managed library, and can publish, release and change parameters (only with
-`confirm=True`). Two routes: the workspace's own API, with
-`EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
-`EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+`confirm=True`). Two routes. Nexar works on every plan: put your Nexar
+app's client id in `EDA_AGENT_NEXAR_APP_ID` (and, for an app made in the
+Nexar portal, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET`), then run
+`eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+The login lists every workspace the account can reach; each tool takes the
+workspace URL it acts on. The workspace's own API, with
+`EDA_AGENT_ALTIUM365_DOMAIN` and a workspace token in
+`EDA_AGENT_ALTIUM365_TOKEN`, needs a plan whose admin pages offer API
+tokens; many plans do not (Admin > Apps lists only third-party
+integrations), and then Nexar is the way in.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
-lists. Nothing Altium 365 returns is written to disk.
-`altium365_check_setup` says which route is set up.
+lists. Set these with `setx` in your own terminal (never paste a secret
+into a chat); the tools also read your saved user environment, so no
+restart is needed after `setx`. `altium365_check_setup` says which route
+is set up.
+
+`altium365_scan_library` copies a workspace's managed library into the
+active profile (`<profile>/library/<workspace host>/`, JSON and CSV),
+reading past the 10,000-row `totalCount` cap with several readers, and
+continues an interrupted scan. `altium365_update_library` refreshes it in
+a minute or two, `altium365_search_library` and `lib_search` search it
+offline, and `altium365_library_report` reports gaps and, given your
+design folders, placements of an older revision. Apart from this copy,
+which you ask for, nothing Altium 365 returns is written to disk.
 
 **Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
 `naming.json` (a `template` and `pattern` per footprint, symbol and
@@ -1302,6 +1319,8 @@ listings can be read against each other.
 |---|---|
 | `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
 | `eda-agent altium365-logout` | Forget the saved Nexar login |
+| `eda-agent altium365-scan-library` | Copy a workspace's managed library into the active profile, continuing an unfinished scan |
+| `eda-agent altium365-update-library` | Refresh that copy without reading the whole library again |
 
 ### Experimental
 
@@ -1346,8 +1365,8 @@ Altium 365 takes one of two routes, and sets no default between them:
 
 | Route | Set | Token from |
 |---|---|---|
-| Workspace, direct | `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN` | the workspace, Admin > Developer (lasts up to a year) |
-| Nexar | `EDA_AGENT_NEXAR_APP_ID` | `eda-agent altium365-login` once; `altium365-logout` forgets it |
+| Workspace, direct | `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN` | the workspace's admin pages, only on plans that offer API tokens (lasts up to a year) |
+| Nexar | `EDA_AGENT_NEXAR_APP_ID`, and `EDA_AGENT_NEXAR_CLIENT_SECRET` for a portal app | `eda-agent altium365-login` once; `altium365-logout` forgets it |
 
 Setting the domain wins. A workspace token has no refresh grant, so an
 expired one is reported and has to be replaced by hand rather than
