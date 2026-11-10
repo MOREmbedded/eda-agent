@@ -22,7 +22,8 @@ dialogs and keystrokes (default ``on``). ``keep_in_view`` is ``on`` to fit
 the board or sheet in view after each edit (default ``off``).
 ``dialogs`` is ``manual`` to leave the dialogs tools open (the change order,
 the Teardrops options) for the user (default ``auto``: the tool answers
-them). Each also
+them). ``usage_stats`` is ``off`` to stop counting the tokens each tool
+call costs (default ``on``; see eda_agent.diag.usage). Each also
 has an environment variable in the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
 
@@ -30,7 +31,8 @@ The owner profile in effect (see eda_agent.profile) may carry its own
 ``preferences.json`` with any of the same keys, so each company or client
 keeps its own value format. Where both say something:
 
-- ``value_format``/``value_unit``, ``keep_in_view`` and ``dialogs``: the
+- ``value_format``/``value_unit``, ``keep_in_view``, ``dialogs`` and
+  ``usage_stats``: the
   profile wins over the panel's file. ``value_format`` and ``value_unit``
   travel as a pair: a profile that sets the format also decides the unit
   (``without`` unless it says ``with``), so a format from one layer is
@@ -69,6 +71,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "ui_automation": ("on", "off"),
     "keep_in_view": ("off", "on"),
     "dialogs": ("auto", "manual"),
+    "usage_stats": ("on", "off"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -255,6 +258,11 @@ def dialogs_auto(workspace: Optional[Path] = None) -> bool:
     """True when a tool answers the dialog it opens (the change order, the
     Teardrops options) itself."""
     return preferences(workspace)["dialogs"] == "auto"
+
+
+def usage_stats_on(workspace: Optional[Path] = None) -> bool:
+    """True when the token cost of each tool call is counted."""
+    return preferences(workspace)["usage_stats"] == "on"
 
 
 def save_profile_preferences(directory: Path, changes: dict[str, Any],

@@ -70,6 +70,8 @@ Var
     { Open Dashboard button only enables when this is within the last 60s. }
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
+    { FileAge of the Stats tab's file when it was last read; -1 none. }
+    StatsFileStamp   : Integer;
 
     { Altium's own tooltip timeout, put back when the form is hidden. Its  }
     { 2.5 s default hid a tip while the pointer was still on the button.  }
@@ -95,6 +97,8 @@ Const
     COLOR_TEXT_MUTED    = $00A0A0A0;
     COLOR_TEXT_FAINT    = $00808080;
     UPDATE_FLAG_FILE     = 'update_available.flag';
+    { Written by the MCP server after each tool call (diag/usage.py). }
+    USAGE_STATUS_FILE    = 'tool_usage.txt';
 
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
@@ -528,6 +532,8 @@ Begin
         + 'it ran, and its average and longest time in ms.');
     SetTip(tab_Config, 'Your choices for how the bridge works. Kept across '
         + 'restarts.');
+    SetTip(tab_Stats, 'Tokens the AI spent on the EDA tools, estimated: this '
+        + 'session by tool, today and the whole workspace.');
     Tip := 'How a component value is written when it is cleaned up. '
         + 'Kept across restarts.';
     SetTip(lbl_CfgValue, Tip);
@@ -564,10 +570,38 @@ Begin
         + 'it as the tool was asked, then reads the result back. Manual: the '
         + 'dialog waits for you.';
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
+    Tip := 'Count the tokens each tool call costs the AI: the arguments it '
+        + 'writes and the result it reads, estimated from their size. Shown '
+        + 'on the Stats tab and in the dashboard''s Usage view, and kept in '
+        + 'the workspace''s .eda-agent\usage folder. Off: nothing is counted.';
+    SetTip(lbl_CfgStats, Tip);  SetTip(opt_StatsOn, Tip);  SetTip(opt_StatsOff, Tip);
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
         + 'update it; it tells you what is new first.');
 End;
 
+
+{ The Stats tab shows the table the MCP server writes after each tool call }
+{ (eda_agent.diag.usage), as it is. Read only when the file changed:      }
+{ FileAge looks at the directory entry, so the tick never opens a file     }
+{ the server is replacing.                                                 }
+Procedure RefreshStatsPanel(Force : Boolean);
+Var
+    Path : String;
+    Stamp : Integer;
+Begin
+    Try
+        Path := WorkspaceDir + USAGE_STATUS_FILE;
+        Stamp := FileAge(Path);
+        If (Not Force) And (Stamp = StatsFileStamp) Then Exit;
+        StatsFileStamp := Stamp;
+        If Stamp < 0 Then
+            mmo_Stats.Lines.Text := 'No token statistics yet.' + #13#10 + #13#10
+                + 'They appear after the AI''s first tool call, when Token '
+                + 'stats is On (Config tab). Kept per workspace.'
+        Else
+            mmo_Stats.Lines.Text := ReadFileContent(Path);
+    Except End;
+End;
 
 { Open-Dashboard button reflects actual dashboard availability via a         }
 { heartbeat file the Python dashboard process writes every ~3s: a Unix      }
@@ -733,6 +767,9 @@ Begin
     ColorCountdown(IdleSecToShutdown);
     UpdateOpenWebState(0);
     UpdateUpdateBadge(0);
+    Try
+        If mmo_Stats.Visible Then RefreshStatsPanel(False);
+    Except End;
 End;
 
 
@@ -828,6 +865,8 @@ Begin
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
     OwnPanelColours(sep_Cfg6);
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
+    OwnPanelColours(sep_Cfg7);      OwnPanelColours(tab_Stats);
+    OwnPanelColours(opt_StatsOn);   OwnPanelColours(opt_StatsOff);
 End;
 
 
@@ -966,6 +1005,14 @@ Begin
         Else
             lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
                 + 'open: change orders, teardrops.';
+        PaintOption(opt_StatsOn, UsageStatsMode <> 'off');
+        PaintOption(opt_StatsOff, UsageStatsMode = 'off');
+        If UsageStatsMode = 'off' Then
+            lbl_CfgStatsHint.Caption := 'Off: tool calls are not counted and '
+                + 'nothing is written.'
+        Else
+            lbl_CfgStatsHint.Caption := 'Each tool call''s token cost is '
+                + 'estimated and kept per workspace. See the Stats tab.';
     Except End;
 End;
 
@@ -990,6 +1037,7 @@ Begin
         FilterText      := '';
         LastPingMs      := 0;
         OpenWebEnabled  := False;
+        StatsFileStamp  := -2;
 
         OwnAllPanelColours(0);
         Try
@@ -1183,6 +1231,8 @@ Begin
     Try
         If mmo_Perf.Visible Then
             Clipboard.AsText := mmo_Perf.Lines.Text
+        Else If mmo_Stats.Visible Then
+            Clipboard.AsText := mmo_Stats.Lines.Text
         Else
             Clipboard.AsText := mmo_Log.Lines.Text;
         btn_CopyLog.Caption := #59643;
@@ -1346,7 +1396,22 @@ Begin
 End;
 
 
-{ Show one of the three tabs: 0 Log, 1 Perf, 2 Config. }
+Procedure tab_StatsEnter(Sender : TObject);
+Begin
+    Try
+        If Not mmo_Stats.Visible Then tab_Stats.Color := $004A4A4A;
+    Except End;
+End;
+Procedure tab_StatsLeave(Sender : TObject);
+Begin
+    Try
+        If mmo_Stats.Visible Then tab_Stats.Color := COLOR_BG_LOG
+        Else tab_Stats.Color := COLOR_BG_CARD;
+    Except End;
+End;
+
+
+{ Show one of the four tabs: 0 Log, 1 Perf, 2 Config, 3 Stats. }
 Procedure PaintTab(Pnl : TPanel; Open : Boolean);
 Begin
     Try
@@ -1367,14 +1432,17 @@ Procedure ShowTab(Which : Integer);
 Begin
     Try
         If Which = 1 Then RefreshPerfPanel(0);
+        If Which = 3 Then RefreshStatsPanel(True);
         mmo_Log.Visible := Which = 0;
         mmo_Perf.Visible := Which = 1;
         pnl_Config.Visible := Which = 2;
-        lbl_LogHint.Visible := Which <> 2;
+        mmo_Stats.Visible := Which = 3;
+        lbl_LogHint.Visible := Which < 2;
         btn_CopyLog.Visible := Which <> 2;
         PaintTab(tab_Log, Which = 0);
         PaintTab(tab_Perf, Which = 1);
         PaintTab(tab_Config, Which = 2);
+        PaintTab(tab_Stats, Which = 3);
     Except End;
 End;
 
@@ -1386,6 +1454,9 @@ Begin ShowTab(1); End;
 
 Procedure tab_ConfigClick(Sender : TObject);
 Begin ShowTab(2); End;
+
+Procedure tab_StatsClick(Sender : TObject);
+Begin ShowTab(3); End;
 
 Procedure tab_ConfigEnter(Sender : TObject);
 Begin
@@ -1437,7 +1508,8 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
-        Else If Setting = 'dialogs' Then DialogMode := Choice;
+        Else If Setting = 'dialogs' Then DialogMode := Choice
+        Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -1479,6 +1551,12 @@ Begin ChooseAgentSetting('keep_in_view', 'off'); End;
 
 Procedure opt_ViewOnClick(Sender : TObject);
 Begin ChooseAgentSetting('keep_in_view', 'on'); End;
+
+Procedure opt_StatsOnClick(Sender : TObject);
+Begin ChooseAgentSetting('usage_stats', 'on'); End;
+
+Procedure opt_StatsOffClick(Sender : TObject);
+Begin ChooseAgentSetting('usage_stats', 'off'); End;
 
 
 { ============================================================================ }

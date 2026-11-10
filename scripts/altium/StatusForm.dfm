@@ -707,10 +707,31 @@ object StatusForm: TStatusForm
       OnMouseEnter = tab_ConfigEnter
       OnMouseLeave = tab_ConfigLeave
     end
+    object tab_Stats: TPanel
+      Left = 190
+      Top = 2
+      Width = 60
+      Height = 22
+      BevelOuter = bvNone
+      Alignment = taCenter
+      Caption = 'Stats'
+      Color = $00404040
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00A0A0A0
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 4
+      OnClick = tab_StatsClick
+      OnMouseEnter = tab_StatsEnter
+      OnMouseLeave = tab_StatsLeave
+    end
     object lbl_LogHint: TLabel
-      Left = 194
+      Left = 254
       Top = 6
-      Width = 142
+      Width = 82
       Height = 14
       Alignment = taRightJustify
       AutoSize = False
@@ -777,6 +798,25 @@ object StatusForm: TStatusForm
     ReadOnly = True
     ScrollBars = ssVertical
     TabOrder = 1
+    Visible = False
+  end
+  object mmo_Stats: TMemo
+    Left = 0
+    Top = 216
+    Width = 380
+    Height = 360
+    Align = alClient
+    BorderStyle = bsNone
+    Color = $002B2B2B
+    Font.Charset = DEFAULT_CHARSET
+    Font.Color = $00DCDCDC
+    Font.Height = -11
+    Font.Name = 'Consolas'
+    Font.Style = []
+    ParentFont = False
+    ReadOnly = True
+    ScrollBars = ssVertical
+    TabOrder = 3
     Visible = False
   end
   object pnl_Config: TPanel
@@ -1406,6 +1446,96 @@ object StatusForm: TStatusForm
       object lbl_CfgEcoHint: TLabel
         Left = 12
         Top = 588
+        Width = 340
+        Height = 28
+        AutoSize = False
+        WordWrap = True
+        Caption = ''
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00A0A0A0
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+      end
+      object sep_Cfg7: TPanel
+        Left = 12
+        Top = 624
+        Width = 340
+        Height = 1
+        BevelOuter = bvNone
+        Color = $00545454
+        TabOrder = 23
+      end
+      object lbl_CfgGrpStats: TLabel
+        Left = 12
+        Top = 636
+        Width = 340
+        Height = 16
+        AutoSize = False
+        Caption = 'STATISTICS'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00FFB363
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object lbl_CfgStats: TLabel
+        Left = 12
+        Top = 662
+        Width = 150
+        Height = 16
+        AutoSize = False
+        Caption = 'Token stats'
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -12
+        Font.Name = 'Segoe UI'
+        Font.Style = [fsBold]
+        ParentFont = False
+      end
+      object opt_StatsOn: TPanel
+        Left = 166
+        Top = 658
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'On'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 24
+        OnClick = opt_StatsOnClick
+      end
+      object opt_StatsOff: TPanel
+        Left = 262
+        Top = 658
+        Width = 90
+        Height = 24
+        BevelOuter = bvNone
+        Alignment = taCenter
+        Caption = 'Off'
+        Color = $00545454
+        Cursor = crHandPoint
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00E5E5E5
+        Font.Height = -11
+        Font.Name = 'Segoe UI'
+        Font.Style = []
+        ParentFont = False
+        TabOrder = 25
+        OnClick = opt_StatsOffClick
+      end
+      object lbl_CfgStatsHint: TLabel
+        Left = 12
+        Top = 686
         Width = 340
         Height = 28
         AutoSize = False

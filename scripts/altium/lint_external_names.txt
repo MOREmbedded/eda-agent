@@ -398,6 +398,8 @@ lbl_CfgDelete
 lbl_CfgDeleteHint
 lbl_CfgEco
 lbl_CfgEcoHint
+lbl_CfgStats
+lbl_CfgStatsHint
 lbl_CfgEdits
 lbl_CfgEditsHint
 lbl_CfgValue
@@ -422,6 +424,7 @@ MinLayer
 MkSet
 mmo_Log
 mmo_Perf
+mmo_Stats
 Now
 opt_AutoOff
 opt_AutoOn
@@ -431,6 +434,8 @@ opt_DeleteAllowed
 opt_DeleteRefused
 opt_EcoAuto
 opt_EcoManual
+opt_StatsOff
+opt_StatsOn
 opt_EditsAllowed
 opt_EditsReadOnly
 opt_FmtNone
@@ -471,6 +476,7 @@ sep_Cfg3
 sep_Cfg4
 sep_Cfg5
 sep_Cfg6
+sep_Cfg7
 ShowMessage
 SignalLayers
 Sin
@@ -482,6 +488,7 @@ StringReplace
 tab_Config
 tab_Log
 tab_Perf
+tab_Stats
 TADOConnection
 TADOQuery
 Tan
