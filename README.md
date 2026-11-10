@@ -1166,6 +1166,7 @@ The deeper references:
 | --- | --- |
 | [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) | the `eng_*` family, and which parts are unverified against live Altium or Nexar |
 | [`docs/PROFILES.md`](docs/PROFILES.md) | per-workspace house style: naming, rules, fab profiles, templates |
+| [`docs/TOKEN_USAGE.md`](docs/TOKEN_USAGE.md) | tokens the AI spends on each EDA tool: what is counted, where it is shown and kept, how to switch it off |
 | [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) | the part providers, what each one answers, and what none of them do |
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | the Altium, KiCad and EasyEDA Pro backends |
 | [`docs/AUTONOMOUS_DESIGN.md`](docs/AUTONOMOUS_DESIGN.md) | driving a full spec-to-board run from any MCP client |
