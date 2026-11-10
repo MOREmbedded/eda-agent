@@ -504,6 +504,47 @@ def get_phase_stages(start: Path | None = None) -> tuple[str, ...]:
         return DEFAULT_STAGES
 
 
+def write_phase_stages(directory: Path, stages) -> dict:
+    """Record ``stages`` in ``directory``'s phase_gates.json.
+
+    The one writer behind ``eda-agent phases-enable``/``phases-disable``
+    and the dashboard's switch. Other keys in the file are kept (the
+    scaffold writes a ``_comment`` into it). A file that is present but
+    unreadable is left alone rather than overwritten, because overwriting
+    it would throw away whatever else is in it.
+
+    Returns ``{"ok", "path", "stages"}`` or ``{"ok": False, "reason"}``.
+    """
+    from .atomicfile import discard, replace_with_retry
+    from .design.phase_gates import parse_stages
+
+    import tempfile
+
+    try:
+        wanted = parse_stages(list(stages))
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    directory = Path(directory)
+    if not directory.is_dir():
+        return {"ok": False, "reason": f"{directory} is not a profile folder"}
+    path = directory / "phase_gates.json"
+    data, error = _read_json_lenient(path)
+    if error:
+        return {"ok": False, "reason": f"{error}. Fix or delete that file first; "
+                                       f"overwriting it would throw away whatever "
+                                       f"else is in it."}
+    data["stages"] = list(wanted)
+    fd, tmp = tempfile.mkstemp(prefix=".phase_gates.", suffix=".tmp", dir=str(directory))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        replace_with_retry(tmp, path)
+    except OSError as exc:
+        discard(tmp)
+        return {"ok": False, "reason": f"could not write {path}: {exc}"}
+    return {"ok": True, "path": str(path), "stages": list(wanted)}
+
+
 def describe_phase_stages(start: Path | None = None) -> dict:
     """What get_phase_stages resolved, where it came from, and what it ignored.
 

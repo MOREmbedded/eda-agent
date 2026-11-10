@@ -16,6 +16,21 @@ maturity classification for every tool.
 
 ### Added
 
+- **Project stages in the dashboard.** The Workspace view's Settings card
+  has a switch for the NPI gates (off by default; it writes the profile's
+  `phase_gates.json`, as `phases-enable` does). With it on, a *Project
+  stages* card shows each tracked `.PrjPcb` as a stepper from Feasibility
+  to Production, passed, current, ahead or not run, and each stage opens
+  its gate's checklist to mark Met, Unmet, Waived or Open with the
+  evidence. Projects are tracked by path, or picked from those open in
+  Altium; each has a revision, and changing it reopens the gates. The list
+  and the answers live in `<workspace>/phase_gates/`, never in a
+  repository, and the ledger is the one the `design_phase_*` tools write
+  (`product` = the project's file name). See docs/NPI_PHASE_GATES.md.
+- **A Research stage** between Feasibility and Prototype, with five
+  checks: the architecture chosen, risks ranked and owned, the top risks
+  retired on an eval kit or in simulation, reference designs read, and
+  every requirement mapped to a block. 47 checks across six stages.
 - **Per-profile settings.** A profile may carry `preferences.json` with the
   Altium panel's Config-tab keys (component value format, keep in view,
   dialogs, and the edits/deleting/closing/UI-automation safety switches)

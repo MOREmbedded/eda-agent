@@ -297,6 +297,73 @@ ul.notes { color:var(--ink2); font-size:12px; margin:6px 0 0; }
 button.file { font:12px var(--mono); padding:1px 6px; color:var(--blue); background:none; border-color:transparent; text-align:left; }
 button.file:hover { border-color:var(--blue); }
 .src-central { color:var(--green); } .src-project { color:var(--amber); } .src-environment { color:var(--blue); } .src-none { color:var(--ink3); }
+/* Project stages: each tracked .PrjPcb as a stepper from Feasibility to
+   Production. Green is a gate passed, blue the stage the project is in,
+   grey what is ahead, dashed a stage this profile does not run. */
+.stages { margin-bottom:var(--s3); container-type:inline-size; }
+.stages .add { display:flex; gap:6px; margin-bottom:var(--s3); flex-wrap:wrap; }
+.stages .add input { flex:1 1 260px; min-width:0; font:12px var(--mono); }
+.stages .proj { border-top:1px solid var(--rule2); padding:10px 0 6px; }
+.stages .projhead { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; }
+.stages .projhead b { font-size:14px; }
+.stages .projhead .sp { flex:1; }
+.stages .projhead .path { font:11px var(--mono); color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 0 100%; min-width:0; }
+.stages .projhead label { font-size:12px; color:var(--ink2); display:flex; gap:4px; align-items:center; }
+.stages .projhead input { width:70px; font-size:12px; padding:1px 5px; }
+ol.pipe { list-style:none; margin:10px 0 2px; padding:0 0 2px; display:grid; grid-template-columns:repeat(var(--n), minmax(68px, 1fr));
+  overflow-x:auto; }
+ol.pipe li { position:relative; text-align:center; min-width:0; }
+ol.pipe li::before { content:""; position:absolute; top:13px; left:-50%; width:100%; height:2px; background:var(--rule); z-index:0; }
+ol.pipe li:first-child::before { display:none; }
+ol.pipe li.cleared::before, ol.pipe li.current::before, ol.pipe li.done.reached::before { background:var(--green); }
+ol.pipe button { position:relative; z-index:1; background:none; border:none; padding:0 2px; width:100%; display:flex; flex-direction:column;
+  align-items:center; gap:3px; color:var(--ink2); }
+ol.pipe button:hover:not(:disabled) .dot { box-shadow:0 0 0 3px #DCE6F5; }
+ol.pipe button:disabled { background:none; cursor:default; }
+ol.pipe .dot { width:28px; height:28px; border-radius:50%; border:2px solid var(--rule); background:var(--paper); display:grid; place-items:center;
+  font:600 12px var(--f); color:var(--ink3); }
+ol.pipe .name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+ol.pipe .cnt { font-size:11px; color:var(--ink3); }
+ol.pipe li.cleared .dot { background:var(--green); border-color:var(--green); color:var(--paper); }
+ol.pipe li.cleared .name { color:var(--green); }
+ol.pipe li.current .dot { border-color:var(--blue); border-width:3px; color:var(--blue); background:#E6EDF8; box-shadow:0 0 0 3px rgba(36,89,184,.18); }
+ol.pipe li.current .name { color:var(--blue); }
+ol.pipe li.off .dot { border-style:dashed; background:var(--paper2); }
+ol.pipe li.off .name { color:var(--ink3); font-weight:400; text-decoration:line-through; }
+ol.pipe li.done .dot { color:var(--ink3); }
+ol.pipe li.done.reached .dot { background:var(--green); border-color:var(--green); color:var(--paper); }
+ol.pipe li.done.reached .name { color:var(--green); }
+ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; }
+.stages .gate { background:var(--paper2); border:1px solid var(--rule2); border-radius:4px; padding:8px 10px; margin:8px 0 4px; }
+.stages .gate h4 { margin:0 0 6px; display:flex; gap:8px; align-items:baseline; color:var(--ink); font-size:13px; }
+.stages .chk { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:4px 12px; padding:7px 0; border-top:1px solid var(--rule2); }
+.stages .gate h4 + .chk, .stages .gate p + .chk { border-top:none; }
+.stages .chk .q { font-weight:600; }
+.stages .chk .dw, .stages .chk .meta { font-size:12px; color:var(--ink2); }
+.stages .chk .meta .m { font:11px var(--mono); color:var(--ink3); }
+.stages .chk .stale { color:var(--amber); font-size:12px; }
+.stages .chk .ans { display:flex; flex-direction:column; gap:4px; align-items:stretch; width:250px; }
+.stages .chk input { font-size:12px; padding:2px 6px; }
+.outs { display:flex; border:1px solid var(--rule); border-radius:3px; overflow:hidden; }
+.outs button { border:none; border-radius:0; flex:1; font-size:12px; padding:2px 6px; }
+.outs button + button { border-left:1px solid var(--rule); }
+.outs button[aria-pressed="true"].o-met { background:var(--green); color:var(--paper); }
+.outs button[aria-pressed="true"].o-unmet { background:var(--red); color:var(--paper); }
+.outs button[aria-pressed="true"].o-waived { background:var(--amber); color:var(--paper); }
+.outs button[aria-pressed="true"].o-open { background:var(--ink2); color:var(--paper); }
+.stages .hint { overflow-wrap:anywhere; }
+@container (max-width: 560px) { .stages .chk { grid-template-columns:1fr; } .stages .chk .ans { width:auto; } }
+/* A narrow card turns the stepper on its side: one stage per line, the
+   connector running down between the marks, rather than a strip that has
+   to be scrolled to find where the project is. */
+@container (max-width: 480px) {
+  ol.pipe { grid-template-columns:1fr; overflow:visible; gap:2px; }
+  ol.pipe li { text-align:left; }
+  ol.pipe li::before { top:-14px; left:13px; width:2px; height:18px; }
+  ol.pipe button { flex-direction:row; gap:8px; padding:0; }
+  ol.pipe .dot { flex:0 0 auto; }
+  ol.pipe .cnt { margin-left:auto; }
+}
 @media (max-width: 820px) { .ladder { grid-template-columns:1fr; } .wsgrid { grid-template-columns:1fr; } #wsbtn { max-width:120px; } }
 @media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
 </style>
@@ -451,6 +518,7 @@ const S = {
   lib: null, libPick: new Set(), libFilter: "", libOnly: "", libShown: [],
   policy: null, live: null, decisions: [], decSeq: 0, asmAt: 0,
   tools: null, tool: null, toolFilter: "", toolResult: null,
+  stg: null, stgOpen: "", stgChecks: null, stgDraft: {}, stgOpenList: null,
   ws: null, wsKey: "", wsFile: null, wsPlan: null, wsResult: null, wsUse: null, wsArm: 0, wsBusy: false,
 };
 
@@ -1234,11 +1302,12 @@ function toolsSideBlock() {
 const WS_LIMITS = ["min_track_mils", "min_gap_mils", "min_drill_mils", "min_annular_ring_mils", "min_hole_to_hole_mils", "min_mask_sliver_mils", "min_silk_width_mils"];
 const wsSource = src => T({environment: "Set by EDA_AGENT_PROFILE_DIR", project: "This project's own profile", central: "Chosen centrally", none: "No profile"}[src]) || src;
 async function loadWorkspace(force) {
-  const r = await get("/api/wb/workspace");
+  const [r, g] = await Promise.all([get("/api/wb/workspace"), get("/api/wb/stages")]);
   if (!r || !r.ok) return;
+  if (g && g.ok) r.stages = g;
   const key = JSON.stringify(r);
   if (!force && key === S.wsKey) return;
-  S.ws = r; S.wsKey = key; paintWsChip();
+  S.ws = r; S.stg = r.stages || null; S.wsKey = key; paintWsChip();
   if (S.mode === "workspace") { paintPane(); clearTools(); paintTools(); }
 }
 function wsLoop() { loadWorkspace(false).finally(() => setTimeout(wsLoop, S.mode === "workspace" ? 4000 : 15000)); }
@@ -1278,6 +1347,7 @@ function wsSettingsCard(w) {
   const modes = mode.modes.map(m => [m.name, m.name + (m.title ? " (" + m.title + ")" : "")]);
   const rows = row(T("Component value format"), WS_FMT[fmtNow] || fmtNow, it.value_format.source, sel("value_format", fmtProfile, Object.entries(WS_FMT)))
     + row(T("Design mode a run starts in"), mode.selected + (mode.exists ? "" : " ?"), mode.source, sel("default_mode", mode.profile, modes))
+    + stagesRow(w.stages, from)
     + safety("edits", T("Edits")) + safety("deleting", T("Deleting")) + safety("closing", T("Closing documents"))
     + safety("ui_automation", T("Menus, dialogs and keys")) + plain("keep_in_view", T("Keep the board in view")) + plain("dialogs", T("Dialogs a tool opens"));
   const r = S.wsSet;
@@ -1359,7 +1429,7 @@ function paintWorkspacePane() {
       ${p ? `<div><span>${esc(T("Problems"))}</span><b class="${p.problems.length ? "bad" : "good"}">${p.problems.length}</b></div>` : ""}</div>
       ${p && p.description ? `<p class="hint" style="margin:0">${esc(p.description)}</p>` : ""}</div>
     ${p ? `<p class="m hint" style="margin:-6px 0 12px">${esc(p.directory)}</p>` : ""}
-    ${ladder}<h2 class="wsh">${esc(T("Switch the central profile"))}</h2>${switcher}${wsSettingsCard(w)}${viewer}${body}`;
+    ${ladder}<h2 class="wsh">${esc(T("Switch the central profile"))}</h2>${switcher}${wsSettingsCard(w)}${stagesCard()}${viewer}${body}`;
   if (pane.dataset.html !== html) { pane.innerHTML = html; pane.dataset.html = html; }
 }
 function workspaceSideBlock() {
@@ -1423,6 +1493,7 @@ async function wsDo(what) {
 }
 async function wsPaneClick(e) {
   const t = e.target.closest("button"); if (!t) return;
+  if (["stg", "stgopen", "stgadd", "stgrm", "stgans"].some(k => t.dataset[k] != null)) return stagesClick(t);
   if (t.dataset.wsuse != null) {
     const r = await post("/api/wb/workspace/use", {name: t.dataset.wsuse});
     S.wsUse = r; S.wsPlan = null; S.wsResult = null; S.wsSet = null;
@@ -1432,6 +1503,118 @@ async function wsPaneClick(e) {
   if (t.dataset.wsfile != null) { S.wsFile = await get("/api/wb/workspace/file?path=" + encodeURIComponent(t.dataset.wsfile)) || {ok: false, reason: T("The dashboard did not answer.")}; S.wsFile.path = S.wsFile.path || t.dataset.wsfile; paintPane(); $("#pane").scrollTop = 0; return; }
   if (t.dataset.wsclose != null) { S.wsFile = null; return paintPane(); }
   if (t.dataset.wsplan != null) { S.wsPlan = await get("/api/wb/workspace/rules-plan") || {ok: false, reason: T("The dashboard did not answer.")}; return paintPane(); }
+}
+
+/* ================================================================ project stages */
+// Each tracked design project (.PrjPcb) on its way to production, through
+// the NPI gates the profile runs (eda_agent.design.phase_gates). Off until
+// switched on in the Settings card; the switch writes the profile's
+// phase_gates.json, the setting the AI's design_phase_* tools read too.
+function stagesRow(g, from) {
+  if (!g) return "";
+  const all = g.all.map(x => x.stage), run = g.stages_run || [];
+  const cur = !run.length ? "off" : run.length === all.length ? "on" : "custom";
+  const now = cur === "off" ? T("Off") : cur === "on" ? T("On") : run.map(x => x.toUpperCase()).join(", ");
+  const opts = [["off", T("Off")], ["on", T("On, every stage")]].concat(cur === "custom" ? [["custom", now]] : []);
+  const control = `<select data-wsstages ${g.can_switch ? "" : "disabled"} aria-label="${esc(T("Project stages"))}">${opts.map(([v, l]) => `<option value="${v}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  return `<tr><td>${esc(T("Project stages (Feasibility to PVT)"))}</td><td><b>${esc(now)}</b></td><td>${g.source === "environment" ? `<span class="src-environment">${esc(g.env)}</span>` : from(g.source)}</td><td>${control}</td></tr>`;
+}
+async function stagesSwitch(t) {
+  if (t.value === "custom") return;
+  const r = await post("/api/wb/stages/switch", {on: t.value === "on"});
+  say(r.ok ? (t.value === "on" ? T("Project stages are on.") : T("Project stages are off. Recorded answers are kept.")) + " " + (r.note || "") : r.reason, !r.ok);
+  S.stgOpen = ""; S.stgChecks = null;
+  return loadWorkspace(true);
+}
+function stagesCard() {
+  const g = S.stg; if (!g || !g.enabled) return "";
+  const projects = g.projects || [], ol = S.stgOpenList;
+  const offer = ol ? (!ol.ok ? `<div class="result fail">${esc(ol.reason)}</div>`
+      : ol.projects.filter(p => !projects.some(q => q.path.toUpperCase() === p.toUpperCase())).map(p =>
+        `<button data-stgadd="${esc(p)}" title="${esc(p)}">${esc(T("Track {0}", baseName(p)))}</button>`).join(" ") || `<span class="hint">${esc(T("Every open project is tracked already."))}</span>`) : "";
+  const rows = projects.map(stagesProject).join("") || `<p class="hint">${esc(T("No project is tracked yet. Add one by its .PrjPcb path, or from the projects open in Altium."))}</p>`;
+  return `<section class="card stages"><h3>${esc(T("Project stages"))}<small>${esc(T("Projects: {0}", projects.length))}</small><span class="sp"></span><button data-stg="open">${esc(T("Projects open in Altium"))}</button></h3>
+    <div class="add"><input id="stgpath" placeholder="${esc(T("Path of a .PrjPcb file"))}" aria-label="${esc(T("Path of a .PrjPcb file"))}" value="${esc(S.stgDraft.path || "")}"><button data-stg="add">${esc(T("Track"))}</button></div>
+    ${offer ? `<div class="add">${offer}</div>` : ""}${rows}
+    <p class="hint">${esc(T("A stage is passed when every required check in its gate is met or waived with a reason. Answers expire, and stop counting when the revision changes. Kept in {0}, outside any repository.", g.folder))}</p></section>`;
+}
+function stagesProject(p) {
+  const n = p.stages.length + 1;
+  const node = (r, i) => {
+    const key = p.product + "|" + r.stage, picked = S.stgOpen === key;
+    const mark = r.state === "cleared" ? "&#10003;" : String(i + 1);
+    const tip = r.title + ": " + T({cleared: "Passed", current: "The stage this project is in", ahead: "Ahead", off: "Not run by this profile"}[r.state]);
+    return `<li class="${r.state}${picked ? " picked" : ""}"${r.state === "current" ? ` aria-current="step"` : ""}><button data-stgopen="${esc(key)}" title="${esc(tip)}" aria-expanded="${picked}">
+      <span class="dot">${mark}</span><span class="name">${esc(r.short)}</span><span class="cnt">${r.state === "off" ? esc(T("Not run")) : esc(T("{0} of {1}", r.done, r.required))}${r.stale ? " !" : ""}</span></button></li>`;
+  };
+  const done = `<li class="done${p.in_production ? " reached" : ""}"${p.in_production ? ` aria-current="step"` : ""}><button disabled title="${esc(T("Production"))}"><span class="dot">${p.in_production ? "&#10003;" : "&#9873;"}</span><span class="name">${esc(T("Production"))}</span><span class="cnt">&nbsp;</span></button></li>`;
+  const open = S.stgOpen.startsWith(p.product + "|") ? stagesGate() : "";
+  return `<div class="proj"><div class="projhead"><b>${esc(baseName(p.name))}</b>
+      <span class="pill ${p.in_production ? "ok" : ""}">${esc(p.in_production ? T("In production") : T("In {0}", p.title))}</span>
+      <label>${esc(T("Revision"))} <input data-stgrev="${esc(p.product)}" value="${esc(p.revision)}" placeholder="-"></label>
+      <span class="sp"></span><button class="quiet" data-stgrm="${esc(p.product)}" title="${esc(T("Its answers are kept and come back if it is tracked again."))}">${esc(T("Stop tracking"))}</button>
+      <span class="path" title="${esc(p.path)}">${esc(p.path)}${p.exists ? "" : " " + esc(T("(file not found)"))}</span></div>
+    <ol class="pipe" style="--n:${n}" aria-label="${esc(T("Stages of {0}", baseName(p.name)))}">${p.stages.map(node).join("")}${done}</ol>${open}</div>`;
+}
+function stagesGate() {
+  const c = S.stgChecks;
+  if (!c) return `<div class="gate"><span class="spin"></span></div>`;
+  if (!c.ok) return `<div class="result fail">${esc(c.reason)}</div>`;
+  const running = (S.stg.stages_run || []).includes(c.stage);
+  const words = {open: T("Open"), met: T("Met"), unmet: T("Unmet"), waived: T("Waived")};
+  const row = k => {
+    const d = S.stgDraft[c.product + "|" + k.key];
+    const outs = ["met", "unmet", "waived", "open"].map(o => `<button class="o-${o}" data-stgans="${esc(k.key)}" data-out="${o}" aria-pressed="${k.outcome === o}" ${running ? "" : "disabled"}>${esc(words[o])}</button>`).join("");
+    const meta = k.when ? T("{0} by {1}, {2}", words[k.recorded] || k.recorded, k.source || "-", k.when.replace("T", " ")) + (k.revision ? ", " + T("rev {0}", k.revision) : "") : "";
+    return `<div class="chk"><div><div class="q">${esc(k.asks)}${k.required ? "" : ` <span class="pill">${esc(T("Optional"))}</span>`}</div>
+        <div class="dw" title="${esc(k.why_now)}">${esc(T("Done when {0}.", k.done_when))}</div>
+        <div class="meta">${k.tools.length ? `${esc(T("Answered by"))} <span class="m">${esc(k.tools.join(", "))}</span>` : esc(T("Answered by a person"))}</div>
+        ${k.ignored_because ? `<div class="stale">${esc(T("No longer counts: {0}", k.ignored_because))}</div>` : ""}
+        ${meta ? `<div class="meta">${esc(meta)}${k.detail ? ": " + esc(k.detail) : ""}</div>` : ""}</div>
+      <div class="ans"><div class="outs" role="group" aria-label="${esc(T("Outcome"))}">${outs}</div>
+        <input data-stgdetail="${esc(k.key)}" placeholder="${esc(T("Evidence, or why it is waived"))}" aria-label="${esc(T("Evidence, or why it is waived"))}" value="${esc(d != null ? d : "")}" ${running ? "" : "disabled"}></div></div>`;
+  };
+  const req = c.checks.filter(k => k.required), passed = req.filter(k => k.outcome === "met" || k.outcome === "waived").length;
+  return `<div class="gate"><h4>${esc(T("{0} gate", c.title))}<span class="pill ${c.cleared ? "ok" : ""}">${esc(c.cleared ? T("Passed") : T("{0} of {1} required checks", passed, req.length))}</span>
+      <span class="sp" style="flex:1"></span><button class="quiet" data-stgopen="${esc(c.product + "|" + c.stage)}">${esc(T("Close"))}</button></h4>
+    ${running ? "" : `<p class="hint">${esc(T("This profile does not run this stage, so its checks are shown but not recorded."))}</p>`}
+    ${c.checks.map(row).join("")}</div>`;
+}
+async function stagesLoadChecks() {
+  if (!S.stgOpen) { S.stgChecks = null; return; }
+  const [product, stage] = S.stgOpen.split("|");
+  S.stgChecks = await get(`/api/wb/stages/checks?product=${encodeURIComponent(product)}&stage=${encodeURIComponent(stage)}`) || {ok: false, reason: T("The dashboard did not answer.")};
+}
+async function stagesClick(t) {
+  if (t.dataset.stgopen != null) {
+    S.stgOpen = S.stgOpen === t.dataset.stgopen ? "" : t.dataset.stgopen; S.stgChecks = null; paintPane();
+    await stagesLoadChecks(); return paintPane();
+  }
+  if (t.dataset.stg === "open") { S.stgOpenList = await get("/api/wb/stages/open-projects") || {ok: false, reason: T("The dashboard did not answer.")}; return paintPane(); }
+  let r = null, done = "";
+  if (t.dataset.stg === "add" || t.dataset.stgadd != null) {
+    r = await post("/api/wb/stages/project", {action: "add", path: t.dataset.stgadd != null ? t.dataset.stgadd : S.stgDraft.path || ""});
+    if (r.ok && t.dataset.stg === "add") S.stgDraft.path = "";
+    done = r.already ? T("{0} is tracked already.", r.product) : T("{0} is tracked.", r.product);
+  } else if (t.dataset.stgrm != null) {
+    r = await post("/api/wb/stages/project", {action: "remove", product: t.dataset.stgrm});
+    if (r.ok && S.stgOpen.startsWith(t.dataset.stgrm + "|")) { S.stgOpen = ""; S.stgChecks = null; }
+    done = T("{0} is no longer tracked. Its answers are kept.", r.product);
+  } else if (t.dataset.stgans != null && S.stgChecks) {
+    const product = S.stgChecks.product, k = product + "|" + t.dataset.stgans;
+    r = await post("/api/wb/stages/answer", {product, key: t.dataset.stgans, outcome: t.dataset.out, detail: S.stgDraft[k] || ""});
+    if (r.ok) delete S.stgDraft[k];
+    done = T("Recorded.");
+    await stagesLoadChecks();
+  } else return;
+  say(r.ok ? done : r.reason, !r.ok);
+  return loadWorkspace(true);
+}
+async function stagesRevision(t) {
+  const r = await post("/api/wb/stages/project", {action: "revision", product: t.dataset.stgrev, revision: t.value});
+  say(r.ok ? T("Revision of {0} set to {1}.", r.product, r.revision || "-") : r.reason, !r.ok);
+  if (S.stgOpen.startsWith(t.dataset.stgrev + "|")) await stagesLoadChecks();
+  return loadWorkspace(true);
 }
 
 /* ================================================================ activity */
@@ -1892,9 +2075,16 @@ $("#pane").addEventListener("click", e => {
 $("#pane").addEventListener("input", e => {
   if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
   if (e.target.id === "toolq") { S.toolFilter = e.target.value; paintPane(); }
+  if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
+  if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;
 });
 $("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
-$("#pane").addEventListener("change", e => { if (S.mode === "workspace" && e.target.dataset && e.target.dataset.wsset != null) wsSetChange(e.target); });
+$("#pane").addEventListener("change", e => {
+  if (S.mode !== "workspace" || !e.target.dataset) return;
+  if (e.target.dataset.wsset != null) wsSetChange(e.target);
+  else if (e.target.dataset.wsstages != null) stagesSwitch(e.target);
+  else if (e.target.dataset.stgrev != null) stagesRevision(e.target);
+});
 $("#legend").addEventListener("change", e => {
   const n = e.target.dataset.layer; if (!n) return;
   if (e.target.checked) delete S.hidden[n]; else S.hidden[n] = 1;

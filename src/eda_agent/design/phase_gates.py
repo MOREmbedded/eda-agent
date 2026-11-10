@@ -4,6 +4,7 @@
 close each one.
 
     feasibility  Can it be made, for the money, from parts on sale?
+    research     Is the architecture chosen, with its biggest risks retired?
     prototype    Is there a board, and does it power up?
     evt          Does the design meet its electrical specification?
     dvt          Does it meet all of it: environment, safety, supply?
@@ -36,10 +37,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
-STAGES = ("feasibility", "prototype", "evt", "dvt", "pvt")
+STAGES = ("feasibility", "research", "prototype", "evt", "dvt", "pvt")
 DONE = "production"
 TITLES = {
     "feasibility": "Feasibility",
+    "research": "Research",
     "prototype": "Prototype build",
     "evt": "Engineering validation (EVT)",
     "dvt": "Design validation (DVT)",
@@ -48,6 +50,9 @@ TITLES = {
 }
 _OTHER_SPELLINGS = {
     "feasability": "feasibility", "concept": "feasibility",
+    "r&d": "research", "rnd": "research", "r and d": "research",
+    "poc": "research", "proof of concept": "research",
+    "architecture": "research",
     "proto": "prototype", "prototype build": "prototype",
     "engineering validation": "evt", "engineering validation test": "evt",
     "design validation": "dvt", "design validation test": "dvt",
@@ -181,6 +186,34 @@ _ALL: list[Check] = [
          "Creepage, isolation and EMC margin are layout rules that cannot be "
          "added to a finished board.",
          "the standards, insulation class and pollution degree are named"),
+    ),
+    *_checks(
+        "research",
+        ("architecture", "Is the architecture chosen, with the alternatives written down?",
+         "Every later check measures one architecture; changing it once layout "
+         "has started is a new board.",
+         "a block diagram names each function and its key part, and says why it "
+         "beat the alternatives", [], {"good_for_days": None}),
+        ("risks-ranked", "Are the technical risks listed, ranked and owned?",
+         "A risk nobody listed is retired on the first prototype, at the price "
+         "of a build.",
+         "each risk has a likelihood, an impact, an owner and a way to retire it",
+         [], {"good_for_days": None}),
+        ("risks-retired", "Are the top risks retired on an eval kit, a breadboard "
+         "or in simulation?",
+         "An eval kit answers in days what a prototype answers in weeks.",
+         "each high risk has a result that answers it, or a fallback designed in",
+         ["sim_get_readiness", "sim_run", "design_simulate_loops"]),
+        ("reference-designs", "Have the key parts' reference designs and "
+         "application notes been read against the plan?",
+         "Layout and decoupling rules in an application note are cheaper to "
+         "follow than to rediscover.",
+         "each key part's reference design is reviewed and every deviation has "
+         "a reason", ["part_fetch"]),
+        ("requirements-mapped", "Does every requirement map to a block that meets it?",
+         "A requirement no block owns is found missing at EVT.",
+         "each requirement names the block, and the figure, that meets it",
+         ["design_validate_requirement"], {"good_for_days": None}),
     ),
     *_checks(
         "prototype",
@@ -420,7 +453,7 @@ def standing(answers: Iterable[Answer], revision: str = "",
              stages: Optional[Iterable[str]] = None) -> tuple[str, list[StageReview]]:
     """The stage a product is in: the first ENABLED one that does not clear.
 
-    ``stages`` is the subset in force, None meaning all five. A stage that
+    ``stages`` is the subset in force, None meaning all six. A stage that
     is switched off is not reviewed and cannot hold the product, so a
     programme running feasibility and prototype alone reaches production
     by clearing those two.

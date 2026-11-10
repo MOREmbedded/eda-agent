@@ -967,8 +967,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "lib_get_pin_list reads both values back for every pin.",
     },
     {
-        "task": "Stages to production: feasibility, prototype, EVT, DVT, PVT",
-        "keywords": ("evt", "dvt", "pvt", "npi", "gate", "feasibility", "prototype",
+        "task": "Stages to production: feasibility, research, prototype, EVT, DVT, PVT",
+        "keywords": ("evt", "dvt", "pvt", "npi", "gate", "feasibility", "research", "prototype",
                      "production", "phase"),
         "when": (("evt",), ("dvt",), ("pvt",), ("npi",), ("phase", "gate"),
                  ("ready", "production")),

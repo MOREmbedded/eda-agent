@@ -2856,7 +2856,7 @@ def register_design_tools(mcp) -> None:
             ),
         }
 
-    # --- stages to production: feasibility, prototype, EVT, DVT, PVT -------
+    # --- stages to production: feasibility, research, prototype, EVT, DVT, PVT
     #
     # OFF unless a profile, EDA_AGENT_PHASES or --phases names the stages
     # to run (docs/NPI_PHASE_GATES.md). Off means not advertised, rather
@@ -2911,7 +2911,8 @@ def register_design_tools(mcp) -> None:
         """The checks that close one stage on the way to production, and how
         the product stands against them.
 
-        The stages in order: feasibility, prototype, evt, dvt, pvt. Each check
+        The stages in order: feasibility, research, prototype, evt, dvt, pvt.
+        Each check
         says what it asks, why at this stage, what counts as done, which tools
         here answer it, and its outcome from the answers recorded so far. It
         runs nothing: call ``tools_to_run``, then record each result with
@@ -2919,7 +2920,7 @@ def register_design_tools(mcp) -> None:
         can answer.
 
         Args:
-            stage: feasibility, prototype, evt, dvt or pvt (also "design
+            stage: feasibility, research, prototype, evt, dvt or pvt (also "design
                 validation" and similar).
             revision: The board revision in question; answers given for
                 another revision stop counting, and the check says so.
@@ -3002,7 +3003,7 @@ def register_design_tools(mcp) -> None:
 
         Only the stages this profile runs are reviewed, and ``stages_run``
         names them. ``in_production`` means every one of THOSE cleared, so
-        read it against ``stages_run`` rather than against all five.
+        read it against ``stages_run`` rather than against all six.
 
         Returns:
             ``stage``, ``title``, ``in_production`` (every stage run

@@ -1,6 +1,6 @@
 # NPI phase gates
 
-Feasibility, prototype, EVT, DVT, PVT - as a gate the server can hold
+Feasibility, research, prototype, EVT, DVT, PVT - as a gate the server can hold
 you to, rather than a slide nobody opens after kickoff.
 
 ## Switching it on
@@ -15,11 +15,11 @@ eda-agent phases-enable evt dvt pvt
 
 ```
 eda-agent phases-show       which stages are in force, and what decided it
-eda-agent phases-enable     run the named stages, or all five if none named
+eda-agent phases-enable     run the named stages, or all six if none named
 eda-agent phases-disable    stop running them
 ```
 
-Enable the stages you actually run, not all five out of tidiness: a
+Enable the stages you actually run, not all six out of tidiness: a
 stage that is on and never answered holds the product at it forever,
 which is how a gate stops being read.
 
@@ -72,6 +72,7 @@ question:
 | Gate | The question | What failing it costs |
 | --- | --- | --- |
 | **Feasibility** | Can this be built at all, at this cost, from parts that exist? | Nothing yet. That is the point of asking here. |
+| **Research** | Is the architecture chosen, with its biggest risks retired on an eval kit or in simulation? | Days on an eval kit, rather than a build. |
 | **Prototype** | Does a board exist and come up? | A build, and the bring-up days around it. |
 | **EVT** | Does the design meet its electrical specification? | A respin. |
 | **DVT** | Does it meet *every* specification, including environmental, regulatory and sourcing? | A respin plus a chamber booking. |
@@ -132,12 +133,13 @@ forgotten check look identical.
 
 ## What the checks are
 
-42 checks across the five stages, 29 of them answered by tools this
+47 checks across the six stages, 32 of them answered by tools this
 server already has:
 
 | Stage | Checks | Answered by tools |
 | --- | ---: | ---: |
 | Feasibility | 8 | 4 |
+| Research | 5 | 3 |
 | Prototype | 8 | 6 |
 | EVT | 9 | 7 |
 | DVT | 9 | 6 |
@@ -150,6 +152,60 @@ bring-up plan are not things a server can know, and those checks say so.
 
 A check that names a tool names one that exists: a test resolves every
 reference against the registered tools, folded family members included.
+
+## In the dashboard
+
+The Workspace view of `eda-agent dashboard` carries the same switch and
+shows where each board stands.
+
+**The switch** is a row in the Settings card, *Project stages
+(Feasibility to PVT)*: Off, or On for every stage. It writes `stages`
+in the profile's `phase_gates.json`, the same write `phases-enable`
+makes, so the dashboard and the three tools can never disagree about
+whether the gates are on. A subset set from the command line shows as
+itself and is left alone. While `EDA_AGENT_PHASES` is set the row is
+read-only, because the variable decides.
+
+**The pipeline.** With the gates on, a *Project stages* card lists the
+tracked design projects (`.PrjPcb`), each as a stepper from Feasibility
+to Production:
+
+| Mark | Means |
+| --- | --- |
+| green tick | the stage's gate is passed |
+| blue ring | the stage the project is in: the first gate in force that does not pass |
+| grey | ahead |
+| dashed, struck through | a stage this profile does not run |
+
+A later stage whose checks happen to be met still reads *ahead* while an
+earlier one is open: the order is the point of the gates. Each step
+shows its required checks passed (`3 of 8`), and a `!` when an answer
+stopped counting.
+
+Click a step to open its gate: every check with what it asks, what
+counts as done (its *why now* on hover), the tools that answer it, and
+its outcome. Mark a check Met, Unmet, Waived or Open, with the evidence
+in the box beside it; a waiver without a reason is refused, as it is
+from `design_phase_answer`. Answers recorded here carry `source:
+dashboard`, so the ledger says which were ticked by a person.
+
+**Tracking a project.** Add one by its `.PrjPcb` path, or from the
+projects open in Altium. Its ledger is keyed by the file name without
+the extension, so `Widget.PrjPcb` keeps its answers in `Widget.jsonl`
+and `design_phase_answer(product="Widget")` writes to the same ledger
+the dashboard reads. Two tracked projects with one file name would share
+a ledger, so the second is refused. Stopping tracking never touches the
+ledger; tracking again brings every answer back.
+
+**Revision.** Each project has a revision field. Answers are recorded
+against it, and changing it reopens every gate: an answer given for
+another revision stops counting and the check says which revision it
+was for.
+
+Everything lives in the server's workspace folder, never in a
+repository: the list of projects in
+`<workspace>/phase_gates/projects.json`, the answers in
+`<workspace>/phase_gates/<product>.jsonl`.
 
 ## Several products
 

@@ -362,7 +362,7 @@ def test_the_page_has_the_settings_card_wired():
             / "workbench.html").read_text(encoding="utf-8")
     assert "function wsSettingsCard(" in page and "${wsSettingsCard(w)}" in page
     assert '"/api/wb/workspace/settings"' in page and "data-wsset" in page
-    assert 'addEventListener("change", e => { if (S.mode === "workspace"' in page
+    assert "if (e.target.dataset.wsset != null) wsSetChange(e.target);" in page
 
 
 def test_save_works_beside_a_key_this_version_does_not_know(tmp_path):
