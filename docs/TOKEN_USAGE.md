@@ -19,8 +19,8 @@ from what it sends and receives (`eda_agent/diag/usage.py`):
 Expect the estimate to be within a few tens of percent. It is for
 comparing tools and sessions, not for billing.
 
-A call through a family tool (`pcb_calc`, `tool_invoke`) is named
-`family/member`. A call that raised, or answered `"ok": false`, counts
+A call through a family tool is named after the member it reached:
+`pcb_calc/impedance`, `tool_invoke/pcb_get_nets`. A call that raised, or answered `"ok": false`, counts
 as failed.
 
 ## Where it is shown

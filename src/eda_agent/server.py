@@ -439,6 +439,9 @@ def _usage_name(name: str, arguments, call) -> str:
     own name."""
     inner = str((call or {}).get("tool") or "") if isinstance(call, dict) else ""
     if inner and inner != name:
+        # pcb_calc reaching pcb_calc_impedance reads pcb_calc/impedance.
+        if inner.startswith(name + "_"):
+            inner = inner[len(name) + 1:]
         return f"{name}/{inner}"
     return name
 

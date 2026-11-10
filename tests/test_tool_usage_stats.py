@@ -203,7 +203,8 @@ def test_every_tool_call_through_the_server_is_counted(tmp_path, monkeypatch):
 
 def test_a_family_member_is_named_after_the_member():
     from eda_agent.server import _usage_name
-    assert _usage_name("pcb_calc", {"kind": "x"}, {"tool": "pcb_calc_impedance"}) == "pcb_calc/pcb_calc_impedance"
+    assert _usage_name("pcb_calc", {"kind": "x"}, {"tool": "pcb_calc_impedance"}) == "pcb_calc/impedance"
+    assert _usage_name("tool_invoke", {}, {"tool": "pcb_get_nets"}) == "tool_invoke/pcb_get_nets"
     assert _usage_name("pcb_get_nets", {}, {"tool": "pcb_get_nets"}) == "pcb_get_nets"
     assert _usage_name("t", {}, None) == "t"
 
@@ -239,3 +240,20 @@ def test_the_status_window_shows_the_servers_file():
     for name in ("tab_Stats", "mmo_Stats", "opt_StatsOn", "opt_StatsOff", "lbl_CfgStatsHint"):
         assert f"object {name}:" in dfm, name
     assert "If mmo_Stats.Visible Then RefreshStatsPanel(False);" in pas
+
+
+def test_the_view_opens_on_a_workspace_with_records(tmp_path, monkeypatch):
+    """A dashboard started on its own records nothing; its start folder
+    must not push the workspaces that have records out of first place."""
+    from eda_agent.web import usage_view
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    usage.Recorder(tmp_path / "ws", None, session="s", remember=True,
+                   switch=lambda: True).record("t", {}, [])
+    usage.set_recorder(usage.Recorder(tmp_path / "dash", None, session="d",
+                                      remember=False, switch=lambda: True))
+    try:
+        got = usage_view.state()
+    finally:
+        usage.set_recorder(None)
+    assert got["workspace"] == str(tmp_path / "ws")
+    assert str(tmp_path / "dash") not in got["workspaces"]

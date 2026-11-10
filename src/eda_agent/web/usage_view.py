@@ -22,8 +22,12 @@ def state(workspace: str = "", days: int = 0) -> dict[str, Any]:
     known = usage.known_workspaces()
     paths = [str(r["path"]) for r in known]
     live = usage.get_recorder()
-    if live.workspace is not None and str(live.workspace) not in paths:
-        paths.insert(0, str(live.workspace))
+    # This process's own folder only when it has records: a dashboard
+    # started on its own records nothing, and its start folder offered
+    # first hid the workspaces that have them.
+    if (live.workspace is not None and str(live.workspace) not in paths
+            and usage.usage_dir(live.workspace).is_dir()):
+        paths.append(str(live.workspace))
     chosen = workspace if workspace in paths else (paths[0] if paths else "")
     report = usage.workspace_report(Path(chosen), days) if chosen else None
     out: dict[str, Any] = {

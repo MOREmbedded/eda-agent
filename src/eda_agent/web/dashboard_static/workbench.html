@@ -262,9 +262,12 @@ h2.wsh { font-size:13px; margin:0 0 6px; }
 table.grid.usage td:first-child { position:relative; }
 table.grid.usage .ubar { position:absolute; left:0; top:3px; bottom:3px; background:var(--paper2); z-index:0; }
 table.grid.usage .m { position:relative; font:12px var(--mono); overflow-wrap:anywhere; }
+.usagewrap { container-type:inline-size; }
+table.grid.usage td:first-child { min-width:180px; }
+@container (max-width: 760px) { table.grid.usage .opt { display:none; } }
 table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { text-align:right; white-space:nowrap; }
 .uchart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:var(--s2) 0 var(--s3); }
-.uchart div { flex:1 1 0; display:flex; flex-direction:column; justify-content:flex-end; height:100%; min-width:0; }
+.uchart div { flex:0 1 36px; display:flex; flex-direction:column; justify-content:flex-end; height:100%; min-width:0; }
 .uchart i { display:block; background:var(--ink3); border-radius:2px 2px 0 0; }
 .uchart small { font-size:9px; color:var(--ink3); text-align:center; overflow:hidden; }
 /* Fixed layout, so a long option (a mode's title) cannot widen the table past
@@ -1536,8 +1539,8 @@ function usageLoop() { (S.mode === "usage" ? loadUsage() : Promise.resolve()).fi
 function usageTable(rows, key, label) {
   if (!rows || !rows.length) return `<p class="hint">${esc(T("No tool calls recorded yet."))}</p>`;
   const max = Math.max(...rows.map(r => r.tokens), 1);
-  return `<table class="grid usage"><thead><tr><th>${esc(label)}</th><th>${esc(T("Calls"))}</th><th>${esc(T("Tokens"))}</th><th>${esc(T("Arguments"))}</th><th>${esc(T("Results"))}</th><th>${esc(T("Average"))}</th><th>${esc(T("Largest"))}</th><th>${esc(T("Time"))}</th></tr></thead><tbody>${rows.map(r =>
-    `<tr><td><span class="ubar" style="width:${Math.max(2, Math.round(100 * r.tokens / max))}%"></span><span class="m">${esc(r[key])}</span>${r.failed ? ` <span class="bad">${esc(T("{0} failed", r.failed))}</span>` : ""}</td><td>${num(r.calls)}</td><td><b>${tok(r.tokens)}</b></td><td>${tok(r.args_tokens)}</td><td>${tok(r.result_tokens)}${r.images ? ` <small>${esc(T("{0} images", r.images))}</small>` : ""}</td><td>${tok(r.avg_tokens)}</td><td>${tok(r.max_tokens)}</td><td>${msText(r.ms)}</td></tr>`).join("")}</tbody></table>`;
+  return `<table class="grid usage"><thead><tr><th>${esc(label)}</th><th>${esc(T("Calls"))}</th><th>${esc(T("Tokens"))}</th><th class="opt">${esc(T("Arguments"))}</th><th class="opt">${esc(T("Results"))}</th><th>${esc(T("Average"))}</th><th class="opt">${esc(T("Largest"))}</th><th>${esc(T("Time"))}</th></tr></thead><tbody>${rows.map(r =>
+    `<tr><td><span class="ubar" style="width:${Math.max(2, Math.round(100 * r.tokens / max))}%"></span><span class="m">${esc(r[key])}</span>${r.failed ? ` <span class="bad">${esc(T("{0} failed", r.failed))}</span>` : ""}</td><td>${num(r.calls)}</td><td><b>${tok(r.tokens)}</b></td><td class="opt">${tok(r.args_tokens)}</td><td class="opt">${tok(r.result_tokens)}${r.images ? ` <small>${esc(T("{0} images", r.images))}</small>` : ""}</td><td>${tok(r.avg_tokens)}</td><td class="opt">${tok(r.max_tokens)}</td><td>${msText(r.ms)}</td></tr>`).join("")}</tbody></table>`;
 }
 function paintUsagePane() {
   const pane = $("#pane"); pane.hidden = false;
@@ -1552,7 +1555,7 @@ function paintUsagePane() {
   const days = (rep.by_day || []).slice(-30), dmax = Math.max(...days.map(d => d.tokens), 1);
   const chart = days.length ? `<div class="uchart" role="img" aria-label="${esc(T("Tokens per day"))}">${days.map(d => `<div title="${esc(d.day + ": " + tok(d.tokens) + " / " + d.calls)}"><i style="height:${Math.max(2, Math.round(100 * d.tokens / dmax))}%"></i><small>${esc(d.day.slice(5))}</small></div>`).join("")}</div>` : "";
   const sessions = (rep.by_session || []).slice(0, 20).map(s => ({...s, session: s.session + "  " + new Date(s.first * 1000).toLocaleString(LANG) }));
-  pane.innerHTML = `<div class="panehead"><div class="figures">
+  pane.innerHTML = `<div class="usagewrap"><div class="panehead"><div class="figures">
       ${fig(T("Tokens"), tok(t.tokens), T("Arguments the AI wrote plus results it read, estimated"))}
       ${fig(T("Calls"), num(t.calls))}
       ${fig(T("Today"), tok(td.tokens || 0))}
@@ -1565,7 +1568,7 @@ function paintUsagePane() {
     <h2 class="wsh">${esc(T("By tool"))}</h2>${usageTable(rep.by_tool, "tool", T("Tool"))}
     ${ses ? `<h2 class="wsh">${esc(T("This session, by tool"))}</h2>${usageTable(ses.by_tool, "tool", T("Tool"))}` : ""}
     <h2 class="wsh">${esc(T("By session"))}</h2>${usageTable(sessions, "session", T("Session"))}
-    <h2 class="wsh">${esc(T("By profile"))}</h2>${usageTable(rep.by_profile, "profile", T("Profile"))}`;
+    <h2 class="wsh">${esc(T("By profile"))}</h2>${usageTable(rep.by_profile, "profile", T("Profile"))}</div>`;
 }
 function usageSideBlock() {
   return `<section class="block"><h2>${esc(T("Usage"))}</h2><p class="hint">${esc(T("Every tool call the AI makes costs tokens twice: the arguments it writes and the result it reads back. The largest results are where the context goes."))}</p></section>`;
