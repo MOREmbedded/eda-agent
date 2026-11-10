@@ -6751,8 +6751,7 @@ Begin
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
-            ',"error_level":' + IntToStr(ErrorLevel) +
-            ',"suppressed":' + SuppressedText +
+            ',"error_level":' + IntToStr(Level) +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
             '","level":"' + ErcLevelName(Level) +

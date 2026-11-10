@@ -63,6 +63,40 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 End;
 
+{ The net a pad on this board carries under this name, or Nil. Preferred over }
+{ FindNetByName when binding new copper, so the copper joins the net object   }
+{ the pads already belong to. pcb.place_via and pcb.rebind_copper_to_pad_nets }
+{ call it. A merge on 2026-10-10 dropped this definition and kept the calls, }
+{ so each of those lines stopped the script with an undeclared identifier.   }
+Function FindPadNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
+Var
+    Iterator : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    If (Board = Nil) Or (NetName = '') Then Exit;
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Pad := Iterator.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            Try
+                If (Pad.Net <> Nil) And (Pad.Net.Name = NetName) Then
+                Begin
+                    Result := Pad.Net;
+                    Exit;
+                End;
+            Except End;
+            Pad := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+End;
+
 { The refusal for copper asked onto a net the board does not have: placed  }
 { anyway, it would carry no net while the call reported success.           }
 Function NetNotFoundError(RequestId : String; NetName : String) : String;
