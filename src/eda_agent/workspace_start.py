@@ -200,18 +200,16 @@ def start_dashboard(settings: WorkspaceSettings, say: Callable[[str], None],
         time.sleep(0.2)
     settings.logs.mkdir(parents=True, exist_ok=True)
     log_path = settings.logs / f"dashboard-{port}.log"
-    kwargs: dict = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
-                                   | subprocess.CREATE_NEW_PROCESS_GROUP
-                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    else:
-        kwargs["start_new_session"] = True
+    # Detached, no console window, and outliving this command.
+    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+             | getattr(subprocess, "CREATE_NO_WINDOW", 0))
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
             [sys.executable, "-m", "eda_agent.server", "dashboard", "--port", str(port)],
             cwd=str(settings.root), stdin=subprocess.DEVNULL, stdout=log,
-            stderr=subprocess.STDOUT, close_fds=True, **kwargs)
+            stderr=subprocess.STDOUT, close_fds=True, creationflags=flags,
+            start_new_session=sys.platform != "win32")
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         if _listening(port):
@@ -323,6 +321,7 @@ def run_start(settings: WorkspaceSettings, *, dashboard: bool = True,
 
 def create_shortcut(root: Path, say: Callable[[str], None] = print) -> int:
     """A desktop shortcut that opens a console running `start` for ``root``."""
+    from .noconsole import no_window
     if sys.platform != "win32":
         say("Desktop shortcuts are made on Windows only.")
         return 1
@@ -341,7 +340,8 @@ def create_shortcut(root: Path, say: Callable[[str], None] = print) -> int:
     env = {**os.environ, "_EDA_WS_NAME": root.name, "_EDA_WS_CMD": command,
            "_EDA_WS_ROOT": str(root)}
     done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          env=env, capture_output=True, text=True, check=False)
+                          env=env, capture_output=True, text=True, check=False,
+                          **no_window())
     if done.returncode != 0:
         say(f"Could not create the shortcut: {done.stderr.strip()}")
         return 1
