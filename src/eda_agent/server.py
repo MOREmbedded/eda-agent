@@ -1005,7 +1005,7 @@ def build_parser() -> argparse.ArgumentParser:
         # profile directory of its own.
         "--phases", default=None, metavar="STAGES",
         help=("Which NPI stages to run, comma-separated: feasibility, "
-              "prototype, evt, dvt, pvt, or 'all'. Default: none, which "
+              "research, prototype, evt, dvt, pvt, or 'all'. Default: none, which "
               "leaves the three design_phase_* tools unadvertised. 'none' "
               "turns the gate off over a profile that turned it on. "
               "Equivalent to setting EDA_AGENT_PHASES."),
@@ -1326,8 +1326,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phases_enable_p.add_argument(
         "stages", nargs="*", metavar="STAGE",
-        help="feasibility, prototype, evt, dvt, pvt (also 'design "
-             "validation' and the other spellings). None means all five. "
+        help="feasibility, research, prototype, evt, dvt, pvt (also 'design "
+             "validation' and the other spellings). None means all six. "
              "They always run in that order, whatever order you name them.")
 
     subparsers.add_parser(

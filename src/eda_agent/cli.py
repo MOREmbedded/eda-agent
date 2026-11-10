@@ -1239,24 +1239,16 @@ def _write_phase_stages(stages: tuple) -> int:
     ``_comment`` into it, and a settings command that silently dropped an
     owner's note would be the kind of small betrayal nobody reports.
     """
-    import json as _json
-
     from . import profile as profile_mod
 
     directory = _phases_profile_dir()
     if directory is None:
         return 1
-    path = directory / "phase_gates.json"
-    data, error = profile_mod._read_json_lenient(path)
-    if error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        print("  Fix or delete that file first; overwriting it would throw "
-              "away whatever else is in it.", file=sys.stderr)
+    result = profile_mod.write_phase_stages(directory, stages)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
         return 1
-    data["stages"] = list(stages)
-    path.write_text(_json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8")
-    print(f"Stages recorded in {path}")
+    print(f"Stages recorded in {result['path']}")
     _print_phase_stages(label="Now running")
     return 0
 
@@ -1299,7 +1291,7 @@ def cmd_phases_show(*, as_json: bool = False) -> int:
 
 
 def cmd_phases_enable(stages: "list[str]") -> int:
-    """Turn on the named stages, or all five when none are named."""
+    """Turn on the named stages, or all of them when none are named."""
     from .design.phase_gates import STAGES, parse_stages
 
     try:

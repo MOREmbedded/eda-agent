@@ -431,7 +431,7 @@ says so plainly instead of failing obscurely.
 
 ## NPI phase gates
 
-Feasibility, prototype, EVT, DVT and PVT as gates the server holds you
+Feasibility, research, prototype, EVT, DVT and PVT as gates the server holds you
 to, rather than a slide nobody opens after kickoff.
 
 **Off until you ask for them.** Most boards are not run under a formal
@@ -456,7 +456,7 @@ because which gates a programme runs is a house rule rather than a
 property of the board in front of you, and `EDA_AGENT_PHASES` or
 `--phases` overrules it for one run.
 
-42 checks across the five stages, 29 of them answered by tools this
+47 checks across the six stages, 32 of them answered by tools this
 server already has: ERC and DRC results, footprint audits against the
 datasheet, impedance profiles, diff-pair matching, fab-profile DFM,
 part lifecycle, fiducials. The rest need a person, and say so
@@ -467,6 +467,11 @@ and **why it belongs to that stage rather than a later one**.
 The gate reports; it does not run the checks. Each check names the tools
 that answer it, the client runs them and writes the outcome back, so the
 loop stays the client's and nothing happens that you did not ask for.
+
+**In the dashboard**, the Workspace view's Settings card switches the
+gates on, and a *Project stages* card draws every tracked `.PrjPcb` as
+a stepper from Feasibility to Production, with each gate's checklist a
+click away. See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
 
 Three rules make it hard to pass by accident: an answer expires, an
 answer belongs to a board revision and stops counting against another
@@ -1261,7 +1266,7 @@ listings can be read against each other.
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
 | `eda-agent phases-show [--json]` | Which [NPI stages](#npi-phase-gates) are in force, and which setting decided it |
-| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all five when none are named. Off by default |
+| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
 
 ### Design modes

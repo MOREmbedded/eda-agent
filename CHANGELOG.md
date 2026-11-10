@@ -34,18 +34,21 @@ maturity classification for every tool.
   Altium's Explorer panel, which the GraphQL API cannot list. UNVERIFIED:
   the live run was stopped before it finished.
 
-### Fixed
-
-- **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
-  ran on the event loop thread without COM, and 26.11 has no
-  TPopupPanelButton for a docked panel, so they saw 0 panels. They now run
-  on a thread of their own and also find a panel by its caption; live on
-  26.11 they list Projects, Properties and a floating Explorer, and read
-  the Projects grid.
-- **Altium 365 settings set with `setx` work without a restart**: the
-  user's saved environment fills in what the process lacks.
-  `EDA_AGENT_ALTIUM365_TIMEOUT_S` sets the request timeout.
-
+- **Project stages in the dashboard.** The Workspace view's Settings card
+  has a switch for the NPI gates (off by default; it writes the profile's
+  `phase_gates.json`, as `phases-enable` does). With it on, a *Project
+  stages* card shows each tracked `.PrjPcb` as a stepper from Feasibility
+  to Production, passed, current, ahead or not run, and each stage opens
+  its gate's checklist to mark Met, Unmet, Waived or Open with the
+  evidence. Projects are tracked by path, or picked from those open in
+  Altium; each has a revision, and changing it reopens the gates. The list
+  and the answers live in `<workspace>/phase_gates/`, never in a
+  repository, and the ledger is the one the `design_phase_*` tools write
+  (`product` = the project's file name). See docs/NPI_PHASE_GATES.md.
+- **A Research stage** between Feasibility and Prototype, with five
+  checks: the architecture chosen, risks ranked and owned, the top risks
+  retired on an eval kit or in simulation, reference designs read, and
+  every requirement mapped to a block. 47 checks across six stages.
 - **Per-profile settings.** A profile may carry `preferences.json` with the
   Altium panel's Config-tab keys (component value format, keep in view,
   dialogs, and the edits/deleting/closing/UI-automation safety switches)
@@ -133,6 +136,16 @@ maturity classification for every tool.
     thing.
 
 ### Fixed
+
+- **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
+  ran on the event loop thread without COM, and 26.11 has no
+  TPopupPanelButton for a docked panel, so they saw 0 panels. They now run
+  on a thread of their own and also find a panel by its caption; live on
+  26.11 they list Projects, Properties and a floating Explorer, and read
+  the Projects grid.
+- **Altium 365 settings set with `setx` work without a restart**: the
+  user's saved environment fills in what the process lacks.
+  `EDA_AGENT_ALTIUM365_TIMEOUT_S` sets the request timeout.
 
 - **Nexar sign-in works with a portal app.** `eda-agent altium365-login`
   sent the client id and PKCE verifier but no client secret, so an app made

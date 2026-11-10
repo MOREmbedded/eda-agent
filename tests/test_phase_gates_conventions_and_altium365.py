@@ -68,7 +68,7 @@ def test_a_product_is_in_the_first_stage_that_does_not_clear(tmp_path):
     for check in phase_gates.checks_of("feasibility"):
         ledger.add(check.key, phase_gates.MET, source="test", detail="done", revision="A")
     stage, reviews = phase_gates.standing(ledger.answers(), "A")
-    assert stage == "prototype" and reviews[0].cleared
+    assert stage == "research" and reviews[0].cleared
     # Answers given for another revision stop counting.
     stage, reviews = phase_gates.standing(ledger.answers(), "B")
     assert stage == "feasibility"
