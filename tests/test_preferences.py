@@ -40,7 +40,7 @@ def _routine(code: str, name: str) -> str:
 _STUBS = """
 const PREFS_FILE = 'preferences.json';
 var ValueFormat, ValueUnit, EditsMode, DeletingMode, ClosingMode,
-    UiAutomationMode, KeepInViewMode, DialogMode, WorkspaceDir : String;
+    UiAutomationMode, KeepInViewMode, DialogMode, UsageStatsMode, WorkspaceDir : String;
 
 function ExtractJsonValue(Json, Key : String) : String;
 var P, Q : Integer;
@@ -132,7 +132,8 @@ def test_python_reads_the_same_file(tmp_path):
     assert preferences.preferences(tmp_path) == {
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
-        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto"}
+        "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
+        "usage_stats": "on"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -154,7 +155,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                     "opt_ViewOffClick", "opt_ViewOnClick",
                     "opt_DeleteAllowedClick", "opt_DeleteRefusedClick",
                     "opt_CloseAllowedClick", "opt_CloseRefusedClick",
-                    "opt_EcoAutoClick", "opt_EcoManualClick"):
+                    "opt_EcoAutoClick", "opt_EcoManualClick",
+                    "opt_StatsOnClick", "opt_StatsOffClick",
+                    "tab_StatsClick", "tab_StatsEnter", "tab_StatsLeave"):
         assert f"= {handler}" in dfm, handler
         assert handler in form, handler
     for option, call in (("None", "'none', 'without'"), ("Rkm", "'rkm', 'without'"),
@@ -174,7 +177,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
                          ("CloseAllowed", "'closing', 'allowed'"),
                          ("CloseRefused", "'closing', 'refused'"),
                          ("EcoAuto", "'dialogs', 'auto'"),
-                         ("EcoManual", "'dialogs', 'manual'")):
+                         ("EcoManual", "'dialogs', 'manual'"),
+                         ("StatsOn", "'usage_stats', 'on'"),
+                         ("StatsOff", "'usage_stats', 'off'")):
         assert f"ChooseAgentSetting({call})" in form[f"opt_{option}Click"]
     assert "StorePreferences(0)" in form["ChooseAgentSetting"]
     # Loaded before the form is shown, so the first paint is the stored choice.
@@ -185,7 +190,7 @@ def test_the_config_tab_is_wired_and_painted_at_start():
 def test_one_tab_shows_at_a_time():
     show = functions(strip_comments(_code("StatusForm.pas")))["ShowTab"]
     for line in ("mmo_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
-                 "pnl_Config.Visible := Which = 2;"):
+                 "pnl_Config.Visible := Which = 2;", "mmo_Stats.Visible := Which = 3;"):
         assert line in show
 
 
@@ -374,3 +379,19 @@ def test_a_profile_on_this_machine_is_hidden_from_unmarked_tests(monkeypatch, tm
     assert preferences.value_format() == "rkm"
     from eda_agent.design.modes import selected_mode_name
     assert selected_mode_name()[1] != "profile"
+
+
+def test_token_stats_are_kept_and_default_to_on(tmp_path):
+    """The Config tab's Token stats switch round-trips through the panel's
+    file and is the setting the server's usage counter reads."""
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(UsageStatsMode);",
+        "  UsageStatsMode := 'off'; StorePreferences(0);",
+        "  UsageStatsMode := ''; LoadPreferences(0); WriteLn(UsageStatsMode);",
+        "  UsageStatsMode := 'on'; StorePreferences(0);",
+        "  UsageStatsMode := ''; LoadPreferences(0); WriteLn(UsageStatsMode);",
+    ])
+    assert out == ["on", "off", "on"]
+    assert preferences.usage_stats_on(tmp_path)
+    (tmp_path / "preferences.json").write_text('{"usage_stats":"off"}')
+    assert not preferences.usage_stats_on(tmp_path)

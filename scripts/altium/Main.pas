@@ -170,6 +170,9 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageStatsMode 'on' lets the server count the tokens each tool     }
+    { call costs (Stats tab); 'off' stops the counting. Default on.      }
+    UsageStatsMode : String;
     LastCompiledProject : IProject;
     { Sheets a project-wide read asked for in the current request, and how }
     { many were not loaded and so not read. Reset per request by           }
@@ -2650,6 +2653,7 @@ Begin
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
     DialogMode := 'auto';
+    UsageStatsMode := 'on';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
     ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
@@ -2663,6 +2667,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+    If LowerCase(ExtractJsonValue(Content, 'usage_stats')) = 'off' Then UsageStatsMode := 'off';
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2672,7 +2677,8 @@ Begin
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
         + '","keep_in_view":"' + KeepInViewMode
-        + '","dialogs":"' + DialogMode + '"}');
+        + '","dialogs":"' + DialogMode
+        + '","usage_stats":"' + UsageStatsMode + '"}');
 End;
 
 {..............................................................................}

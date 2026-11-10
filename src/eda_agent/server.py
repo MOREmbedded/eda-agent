@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
@@ -402,8 +403,17 @@ class _CompactFastMCP(FastMCP):
         # Its commands to Altium take one turn together (Main.pas
         # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
-        with tool_call(name):
-            result = await super().call_tool(name, arguments)
+        from .diag import usage
+        started = time.monotonic()
+        call: dict = {"tool": name}
+        try:
+            with tool_call(name) as call:
+                result = await super().call_tool(name, arguments)
+        except BaseException as exc:
+            usage.get_recorder().record(
+                _usage_name(name, arguments, call), arguments,
+                ms=int((time.monotonic() - started) * 1000), error=exc)
+            raise
         try:
             from . import updates
             news = updates.notice_once()
@@ -412,10 +422,28 @@ class _CompactFastMCP(FastMCP):
         if news:
             result = add_update_notice(result, news)
         if isinstance(result, tuple):
-            return (compact_text_blocks(result[0]), result[1])
-        if isinstance(result, list):
-            return compact_text_blocks(result)
+            result = (compact_text_blocks(result[0]), result[1])
+        elif isinstance(result, list):
+            result = compact_text_blocks(result)
+        # Counted as sent, after compaction: what the model reads.
+        usage.get_recorder().record(
+            _usage_name(name, arguments, call), arguments, result,
+            ms=int((time.monotonic() - started) * 1000))
         return result
+
+
+def _usage_name(name: str, arguments, call) -> str:
+    """The operation a call ran: the tool, or for a family tool or
+    tool_invoke the member it reached (name_tool_call), as
+    ``family/member``. A call over a list of items keeps the tool's
+    own name."""
+    inner = str((call or {}).get("tool") or "") if isinstance(call, dict) else ""
+    if inner and inner != name:
+        # pcb_calc reaching pcb_calc_impedance reads pcb_calc/impedance.
+        if inner.startswith(name + "_"):
+            inner = inner[len(name) + 1:]
+        return f"{name}/{inner}"
+    return name
 
 
 # Create global FastMCP instance, named for the backend so a client that

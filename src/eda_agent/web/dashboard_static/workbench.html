@@ -258,6 +258,18 @@ table.grid a { color:var(--blue); }
 .ladder .m, #pane p.m, .kv dd.m { font-family:var(--mono); font-size:11px; overflow-wrap:anywhere; }
 h2.wsh { font-size:13px; margin:0 0 6px; }
 .wsset { margin-bottom:var(--s3); container-type:inline-size; }
+/* Usage: a bar behind each name, scaled to the largest row's tokens. */
+table.grid.usage td:first-child { position:relative; }
+table.grid.usage .ubar { position:absolute; left:0; top:3px; bottom:3px; background:var(--paper2); z-index:0; }
+table.grid.usage .m { position:relative; font:12px var(--mono); overflow-wrap:anywhere; }
+.usagewrap { container-type:inline-size; }
+table.grid.usage td:first-child { min-width:180px; }
+@container (max-width: 760px) { table.grid.usage .opt { display:none; } }
+table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { text-align:right; white-space:nowrap; }
+.uchart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:var(--s2) 0 var(--s3); }
+.uchart div { flex:0 1 36px; display:flex; flex-direction:column; justify-content:flex-end; height:100%; min-width:0; }
+.uchart i { display:block; background:var(--ink3); border-radius:2px 2px 0 0; }
+.uchart small { font-size:9px; color:var(--ink3); text-align:center; overflow:hidden; }
 /* Fixed layout, so a long option (a mode's title) cannot widen the table past
    the card: the menus take their column's width and clip their own text. */
 .wsset table.grid { table-layout:fixed; }
@@ -386,6 +398,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
       <button data-mode="engines" title="What the placer and router are doing (6)">Engines</button>
       <button data-mode="tools" title="Run any tool (7)">Tools</button>
       <button data-mode="workspace" title="The profile in effect: its design rules, ERC sets and templates (8)">Workspace</button>
+      <button data-mode="usage" title="Tokens the AI spent on the EDA tools, estimated (9)">Usage</button>
     </nav>
     <div class="end">
       <button id="wsbtn" data-src="none" title="Which profile the tools work under"><span class="dot" aria-hidden="true"></span><span id="wsname">Profile</span></button>
@@ -444,7 +457,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
 <div class="overlay" id="help" hidden><div class="box">
   <h2>Keyboard</h2>
   <dl>
-    <dt><kbd>1</kbd> to <kbd>8</kbd></dt><dd>Change mode</dd>
+    <dt><kbd>1</kbd> to <kbd>9</kbd></dt><dd>Change mode</dd>
     <dt><kbd>Ctrl K</kbd></dt><dd>Find a part, net, problem or command</dd>
     <dt><kbd>/</kbd></dt><dd>Filter the list</dd>
     <dt><kbd>N</kbd> <kbd>Shift N</kbd></dt><dd>Next and previous problem</dd>
@@ -506,7 +519,8 @@ const num = (v, d) => v == null || v === "" ? "-" : Number(v).toLocaleString(LAN
 const store = {get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
 const baseName = p => String(p || "").split(/[\\/]/).pop();
-const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace"];
+const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage"];
+const PANE_MODES = ["library", "tools", "workspace", "usage"];
 
 const S = {
   mode: store.get("wb.mode", "place"), list: store.get("wb.list", "parts"),
@@ -631,7 +645,7 @@ function paintTitle() {
   const loading = ck.loading;
   $("#boardname").textContent = loading ? T("Loading {0}", baseName(loading)) : shown ? baseName(shown) : T("Choose a board");
   $("#boardbtn").title = shown || T("Choose the board to show. It stays here whatever you open in Altium.");
-  if (!st || !S.board || S.mode === "library" || S.mode === "tools" || S.mode === "workspace") { tb.hidden = true; return; }
+  if (!st || !S.board || PANE_MODES.includes(S.mode)) { tb.hidden = true; return; }
   const sm = st.summary || {}, live = liveProblems();
   const errs = live.filter(f => f.severity === "error").length, warns = live.filter(f => f.severity === "warning").length;
   const hiddenN = S.problems.length - live.length;
@@ -664,7 +678,7 @@ function activityText(ck) {
 function paintEmpty() {
   const e = $("#empty"), ck = S.state ? S.state.cockpit : null;
   let html = "";
-  if (S.mode === "library" || S.mode === "tools" || S.mode === "workspace") html = "";
+  if (PANE_MODES.includes(S.mode)) html = "";
   else if (S.mode === "engines" && !S.drawnBoard) html = `<b>${esc(T("No layout published yet"))}</b><span>${esc(T("When the placer or router runs, from this page or the AI, its work shows here as it goes."))}</span>`;
   else if (!S.drawnBoard) {
     if (!S.state) html = `<b>${esc(T("Connecting"))}</b>`;
@@ -841,6 +855,7 @@ function paintTools() {
   else if (S.mode === "engines") html = enginesBlock();
   else if (S.mode === "tools") html = toolsSideBlock();
   else if (S.mode === "workspace") html = workspaceSideBlock();
+  else if (S.mode === "usage") html = usageSideBlock();
   const el = $("#tools");
   if (el.dataset.html === html) return;
   const keep = {};
@@ -1099,10 +1114,11 @@ function issueText(i) {
 }
 function paintPane() {
   const pane = $("#pane");
-  pane.hidden = !(S.mode === "library" || S.mode === "tools" || S.mode === "workspace");
+  pane.hidden = !PANE_MODES.includes(S.mode);
   if (S.mode !== "workspace") pane.dataset.html = "";
   if (S.mode === "tools") return paintToolsPane();
   if (S.mode === "workspace") return paintWorkspacePane();
+  if (S.mode === "usage") return paintUsagePane();
   if (pane.hidden) return;
   const L = S.lib || {};
   if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
@@ -1349,7 +1365,8 @@ function wsSettingsCard(w) {
     + row(T("Design mode a run starts in"), mode.selected + (mode.exists ? "" : " ?"), mode.source, sel("default_mode", mode.profile, modes))
     + stagesRow(w.stages, from)
     + safety("edits", T("Edits")) + safety("deleting", T("Deleting")) + safety("closing", T("Closing documents"))
-    + safety("ui_automation", T("Menus, dialogs and keys")) + plain("keep_in_view", T("Keep the board in view")) + plain("dialogs", T("Dialogs a tool opens"));
+    + safety("ui_automation", T("Menus, dialogs and keys")) + plain("keep_in_view", T("Keep the board in view")) + plain("dialogs", T("Dialogs a tool opens"))
+    + plain("usage_stats", T("Token usage statistics"));
   const r = S.wsSet;
   return `<section class="card wsset"><h3>${esc(T("Settings"))}<small>${esc(can ? T("kept in this profile") : T("No profile"))}</small><span class="sp"></span>${st.profile_file ? wsFile(st.profile_file) : ""}</h3>
     <table class="grid"><thead><tr><th>${esc(T("Setting"))}</th><th>${esc(T("In effect"))}</th><th>${esc(T("Comes from"))}</th><th>${esc(T("This profile"))}</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1503,6 +1520,58 @@ async function wsPaneClick(e) {
   if (t.dataset.wsfile != null) { S.wsFile = await get("/api/wb/workspace/file?path=" + encodeURIComponent(t.dataset.wsfile)) || {ok: false, reason: T("The dashboard did not answer.")}; S.wsFile.path = S.wsFile.path || t.dataset.wsfile; paintPane(); $("#pane").scrollTop = 0; return; }
   if (t.dataset.wsclose != null) { S.wsFile = null; return paintPane(); }
   if (t.dataset.wsplan != null) { S.wsPlan = await get("/api/wb/workspace/rules-plan") || {ok: false, reason: T("The dashboard did not answer.")}; return paintPane(); }
+}
+
+/* ================================================================ usage */
+// The tokens the AI spent on the EDA tools: what each call's arguments and
+// result cost, estimated from their size (eda_agent.diag.usage). Kept per
+// workspace; every workspace with records can be picked.
+const tok = n => n == null ? "-" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n);
+const msText = ms => ms >= 60000 ? Math.floor(ms / 60000) + "m" + String(Math.floor(ms % 60000 / 1000)).padStart(2, "0") + "s" : ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms";
+async function loadUsage() {
+  const q = new URLSearchParams({workspace: S.usageWs || "", days: String(S.usageDays || 0)});
+  const r = await get("/api/wb/usage?" + q);
+  if (!r || !r.ok) return;
+  S.usage = r; if (!S.usageWs) S.usageWs = r.workspace;
+  if (S.mode === "usage") { paintPane(); clearTools(); paintTools(); }
+}
+function usageLoop() { (S.mode === "usage" ? loadUsage() : Promise.resolve()).finally(() => setTimeout(usageLoop, 5000)); }
+function usageTable(rows, key, label) {
+  if (!rows || !rows.length) return `<p class="hint">${esc(T("No tool calls recorded yet."))}</p>`;
+  const max = Math.max(...rows.map(r => r.tokens), 1);
+  return `<table class="grid usage"><thead><tr><th>${esc(label)}</th><th>${esc(T("Calls"))}</th><th>${esc(T("Tokens"))}</th><th class="opt">${esc(T("Arguments"))}</th><th class="opt">${esc(T("Results"))}</th><th>${esc(T("Average"))}</th><th class="opt">${esc(T("Largest"))}</th><th>${esc(T("Time"))}</th></tr></thead><tbody>${rows.map(r =>
+    `<tr><td><span class="ubar" style="width:${Math.max(2, Math.round(100 * r.tokens / max))}%"></span><span class="m">${esc(r[key])}</span>${r.failed ? ` <span class="bad">${esc(T("{0} failed", r.failed))}</span>` : ""}</td><td>${num(r.calls)}</td><td><b>${tok(r.tokens)}</b></td><td class="opt">${tok(r.args_tokens)}</td><td class="opt">${tok(r.result_tokens)}${r.images ? ` <small>${esc(T("{0} images", r.images))}</small>` : ""}</td><td>${tok(r.avg_tokens)}</td><td class="opt">${tok(r.max_tokens)}</td><td>${msText(r.ms)}</td></tr>`).join("")}</tbody></table>`;
+}
+function paintUsagePane() {
+  const pane = $("#pane"); pane.hidden = false;
+  const u = S.usage;
+  if (!u) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  const rep = u.report || {total: {}, by_tool: [], by_day: [], by_session: [], by_profile: []}, t = rep.total || {};
+  const today = new Date().toISOString().slice(0, 10), td = (rep.by_day || []).find(d => d.day === today) || {};
+  const ses = u.session;
+  const fig = (label, v, hint) => `<div title="${esc(hint || "")}"><span>${esc(label)}</span><b>${v}</b></div>`;
+  const picker = `<select data-usagews aria-label="${esc(T("Workspace"))}">${(u.workspaces || []).map(w => `<option value="${esc(w)}"${w === u.workspace ? " selected" : ""}>${esc(w)}</option>`).join("")}</select>`;
+  const span = `<select data-usagedays aria-label="${esc(T("Period"))}">${[[0, T("All time")], [1, T("Last 24 hours")], [7, T("Last 7 days")], [30, T("Last 30 days")]].map(([v, l]) => `<option value="${v}"${v === (u.days || 0) ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  const days = (rep.by_day || []).slice(-30), dmax = Math.max(...days.map(d => d.tokens), 1);
+  const chart = days.length ? `<div class="uchart" role="img" aria-label="${esc(T("Tokens per day"))}">${days.map(d => `<div title="${esc(d.day + ": " + tok(d.tokens) + " / " + d.calls)}"><i style="height:${Math.max(2, Math.round(100 * d.tokens / dmax))}%"></i><small>${esc(d.day.slice(5))}</small></div>`).join("")}</div>` : "";
+  const sessions = (rep.by_session || []).slice(0, 20).map(s => ({...s, session: s.session + "  " + new Date(s.first * 1000).toLocaleString(LANG) }));
+  pane.innerHTML = `<div class="usagewrap"><div class="panehead"><div class="figures">
+      ${fig(T("Tokens"), tok(t.tokens), T("Arguments the AI wrote plus results it read, estimated"))}
+      ${fig(T("Calls"), num(t.calls))}
+      ${fig(T("Today"), tok(td.tokens || 0))}
+      ${ses ? fig(T("This session"), tok(ses.total.tokens)) : ""}
+      ${fig(T("Average per call"), tok(t.avg_tokens))}
+    </div><span class="sp"></span>${span}${picker}</div>
+    ${u.on ? "" : `<div class="result fail">${esc(T("Token usage statistics are off, so no new calls are counted. Switch them on with Token stats on the Config tab in Altium, or in Workspace, Settings."))}</div>`}
+    <p class="hint">${esc(T("Estimated from the size of each call: about {0} characters a token, images by their size. Kept in {1}.", u.chars_per_token, (u.workspace || "") + "/.eda-agent/usage"))}</p>
+    ${chart}
+    <h2 class="wsh">${esc(T("By tool"))}</h2>${usageTable(rep.by_tool, "tool", T("Tool"))}
+    ${ses ? `<h2 class="wsh">${esc(T("This session, by tool"))}</h2>${usageTable(ses.by_tool, "tool", T("Tool"))}` : ""}
+    <h2 class="wsh">${esc(T("By session"))}</h2>${usageTable(sessions, "session", T("Session"))}
+    <h2 class="wsh">${esc(T("By profile"))}</h2>${usageTable(rep.by_profile, "profile", T("Profile"))}</div>`;
+}
+function usageSideBlock() {
+  return `<section class="block"><h2>${esc(T("Usage"))}</h2><p class="hint">${esc(T("Every tool call the AI makes costs tokens twice: the arguments it writes and the result it reads back. The largest results are where the context goes."))}</p></section>`;
 }
 
 /* ================================================================ project stages */
@@ -2001,6 +2070,7 @@ function setMode(m) {
   if (m === "assemble") { if (!S.lib || S.lib.state === "empty") pollLibrary(true); asmLight(); }
   else if (from === "assemble") S.multi = new Set();
   if (m === "library" && !S.lib) pollLibrary(true);
+  if (m === "usage") loadUsage();
   S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
 }
 function repaintAll() { legend(); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); paintEmpty(); paintPane(); lastCall(); if (ACT.open) paintActivity(); draw(); }
@@ -2080,6 +2150,11 @@ $("#pane").addEventListener("input", e => {
 });
 $("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
 $("#pane").addEventListener("change", e => {
+  if (S.mode === "usage" && e.target.dataset) {
+    if (e.target.dataset.usagews != null) { S.usageWs = e.target.value; loadUsage(); }
+    else if (e.target.dataset.usagedays != null) { S.usageDays = +e.target.value; loadUsage(); }
+    return;
+  }
   if (S.mode !== "workspace" || !e.target.dataset) return;
   if (e.target.dataset.wsset != null) wsSetChange(e.target);
   else if (e.target.dataset.wsstages != null) stagesSwitch(e.target);
@@ -2112,7 +2187,7 @@ window.addEventListener("keydown", e => {
   if (e.key === "Escape") { if (!$("#help").hidden) { $("#help").hidden = true; return; } if (ACT.open) return toggleActivity(false); if (!typing) select(null); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
-  if (/^[1-8]$/.test(k)) setMode(MODES[+k - 1]);
+  if (/^[1-9]$/.test(k)) setMode(MODES[+k - 1]);
   else if (k === "/") { e.preventDefault(); $("#q").focus(); }
   else if (k === "f" || k === "F") fit();
   else if (k === "n") nextProblem(1); else if (k === "N") nextProblem(-1);
@@ -2134,7 +2209,7 @@ window.addEventListener("resize", resize);
   $("#lang").options[0].textContent = T("Altium ({0})", (info && (info.name || info.language)) || "English");
   const choice = store.get("wb.lang", "auto"); $("#lang").value = choice; if ($("#lang").selectedIndex < 0) $("#lang").value = "auto";
   await setLanguage($("#lang").value);
-  setList(S.list); setMode(S.mode); resize(); paintInspector(); poll(); startActivity(); pollFault(); wsLoop();
+  setList(S.list); setMode(S.mode); resize(); paintInspector(); poll(); startActivity(); pollFault(); wsLoop(); usageLoop();
 })();
 </script>
 </body>

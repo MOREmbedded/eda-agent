@@ -16,6 +16,18 @@ maturity classification for every tool.
 
 ### Added
 
+- **Token usage of the EDA tools, counted.** Every MCP tool call is
+  measured as the server sends it: the arguments the AI wrote and the
+  result it reads back, turned into an estimated token count (about 4
+  characters a token, images by their size as the model shrinks them),
+  with the time taken. Kept per workspace in `.eda-agent/usage/` (which
+  ignores itself for git), summed per tool, day, session and profile.
+  Shown on a new **Stats** tab in the status window in Altium and a new
+  **Usage** view in the dashboard (key 9). A setting, `usage_stats`
+  (default on): **Token stats** on the Config tab, or per profile in the
+  dashboard's Workspace view; `EDA_AGENT_USAGE_OFF=1` also turns it off.
+  See [`docs/TOKEN_USAGE.md`](docs/TOKEN_USAGE.md).
+
 - **`eda-agent start` brings one design workspace up in one command.**
   Each workspace keeps its own settings in `.eda-agent/workspace.json`
   (profile, dashboard port, the Altium 365 workspaces the tools may use)
