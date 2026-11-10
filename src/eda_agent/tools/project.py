@@ -3617,13 +3617,17 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get all messages from the Messages panel (compile errors, ERC violations, etc.).
 
-        Compiles the project first.
+        Compiles the project first. A short text summary only: each entry
+        has the message and its source document, with no severity, no
+        suppression state and no objects. For ERC triage use
+        proj_get_erc_violations, which gives each violation's level and
+        the pins, nets and parts it is about (cross_probe strings).
 
         Args:
             project_path: Optional project path. If None, uses active project.
 
         Returns:
-            Dictionary with "messages" array (each: message, severity, source) and "count"
+            Dictionary with "messages" array (each: message, source) and "count"
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}

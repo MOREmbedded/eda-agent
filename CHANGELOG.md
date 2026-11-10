@@ -145,6 +145,21 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`proj_run_erc` and `proj_get_erc_violations` stopped the bridge**
+  (`SCRIPT_VERSION` `2026.11.10.1`). `Gen_GetErcViolations` built each
+  violation with `IntToStr(ErrorLevel)` and `SuppressedText`, neither
+  declared anywhere, so Altium 26.11.1.5 halted with "Undeclared
+  identifier" on the first violation. `error_level` now carries the
+  numeric level and the duplicate `suppressed` key is gone. The same scan
+  found `FindPadNetByName`, whose definition a merge on 2026-10-10
+  dropped while the `pcb.place_via` and `pcb.place_track` commands (given
+  a net) and `pcb_rebind_copper_to_pad_nets` kept calling it; it is
+  restored. A new
+  lint rule, `undeclared-read`, fails the build on any bare identifier no
+  unit declares and `scripts/altium/lint_external_names.txt` does not
+  list. UNVERIFIED live: checked by the linter and tests, not yet run in
+  Altium.
+
 - **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
   ran on the event loop thread without COM, and 26.11 has no
   TPopupPanelButton for a docked panel, so they saw 0 panels. They now run

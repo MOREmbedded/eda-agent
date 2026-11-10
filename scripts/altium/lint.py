@@ -1206,6 +1206,9 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
     for f in _scan_undeclared_assignment(targets):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
+    for f in _scan_undeclared_read(targets):
+        by_file.setdefault(f.file, []).append(f)
+        errors += 1
 
     if verbose:
         for fname in sorted(by_file):
@@ -1768,6 +1771,101 @@ def _scan_undeclared_assignment(targets: list) -> list:
                         ))
     return findings
 
+
+
+#: Language words a routine body uses that are never declared names.
+_PASCAL_WORDS = frozenset("""
+and or not xor div mod shl shr in is as begin end if then else while do
+for to downto repeat until case of with try except finally raise exit
+var const function procedure result true false nil break continue array
+string integer boolean double
+""".split())
+
+#: Names Altium, DelphiScript or the status form provide, which no unit
+#: here declares: API constants (eSchComponent), late-bound globals
+#: (PCBServer), RTL routines (StringReplace), form controls (btn_Renew).
+EXTERNAL_NAMES_FILE = os.path.join(SCRIPT_DIR, "lint_external_names.txt")
+
+
+def _load_external_names(path: str = EXTERNAL_NAMES_FILE) -> set:
+    names = set()
+    if not os.path.exists(path):
+        return names
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            word = line.split("#", 1)[0].strip()
+            if word:
+                names.add(word.lower())
+    return names
+
+
+#: A bare identifier READ by a routine that nothing declares.
+#:
+#: DelphiScript resolves names late, so this compiles and then stops the
+#: script with "Undeclared identifier: X" the moment the line runs,
+#: taking the polling loop with it.
+#:
+#: MEASURED (2026-11-10): Gen_GetErcViolations built its JSON with
+#: IntToStr(ErrorLevel) and SuppressedText, neither declared anywhere, so
+#: proj_run_erc and proj_get_erc_violations crashed the bridge on every
+#: call. The same scan found FindPadNetByName, called three times in
+#: PCB.pas after a merge on 2026-10-10 dropped its definition.
+#:
+#: The other two rules could not see either: undeclared-local needs the
+#: name declared in two other routines, undeclared-assignment only looks
+#: at assignment targets. This one checks every bare identifier against
+#: what the units declare plus a reviewed list of external names, so a
+#: genuinely new Altium constant has to be added to that list on purpose.
+#: Names after a '.' are members and are not judged. Routines that nest
+#: another routine are skipped, as by every scope rule here.
+def _scan_undeclared_read(targets: list,
+                          external: Optional[set] = None) -> list:
+    """Bare identifiers that no scope declares and no list allows."""
+    findings: list[Finding] = []
+    if external is None:
+        external = _load_external_names()
+    loaded = []
+    shared = set()
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            lines = _blank_block_comments(f.read().split("\n"))
+        try:
+            rel = os.path.relpath(path, SCRIPT_DIR)
+        except ValueError:
+            rel = os.path.abspath(path)
+        loaded.append((rel, lines))
+        shared |= _file_level_names(lines)
+
+    base = shared | _BUILTIN_NAMES | _PASCAL_WORDS | external
+    word = re.compile(r"[A-Za-z_]\w*")
+    for rel, lines in loaded:
+        for routine, start, begin, stop in _routine_spans(lines):
+            known = base | _declared_names(lines, start, begin)
+            seen = set()
+            for k in range(begin, stop):
+                line = strip_comments_and_strings(lines[k])
+                for m in word.finditer(line):
+                    low = m.group(0).lower()
+                    if low in known or low in seen:
+                        continue
+                    i = m.start()
+                    # `A.B` is a member; `$FF` a hex literal; `#13` a
+                    # character code; `&Type` an escaped reserved word;
+                    # `1e5` an exponent.
+                    if i > 0 and (line[i - 1] in ".$&#"
+                                  or line[i - 1].isdigit()):
+                        continue
+                    seen.add(low)
+                    findings.append(Finding(
+                        file=rel, line=k + 1, col=i + 1,
+                        rule="undeclared-read", severity="error",
+                        snippet=lines[k].rstrip()
+                        + "   [%s never declares %s]" % (routine, m.group(0)),
+                        memory="altium_wrong_api_identifier_family.md",
+                    ))
+    return findings
 
 if __name__ == "__main__":
     sys.exit(1 if run_lint() > 0 else 0)
