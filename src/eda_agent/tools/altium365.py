@@ -42,8 +42,10 @@ def register_altium365_tools(mcp) -> None:
         fields the read tools use, and which changes it offers.
 
         Routes: the workspace's own API (EDA_AGENT_ALTIUM365_DOMAIN, and a
-        token made under Admin > Developer in EDA_AGENT_ALTIUM365_TOKEN), or
-        Nexar (EDA_AGENT_NEXAR_APP_ID, then ``eda-agent altium365-login``).
+        workspace token in EDA_AGENT_ALTIUM365_TOKEN, on plans that offer
+        one), or Nexar (EDA_AGENT_NEXAR_APP_ID, plus
+        EDA_AGENT_NEXAR_CLIENT_SECRET for a portal app, then
+        ``eda-agent altium365-login``).
         """
         return await _answer(lambda: _session().check_setup())
 
