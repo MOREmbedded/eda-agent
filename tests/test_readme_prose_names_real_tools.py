@@ -53,6 +53,7 @@ _FAMILIES = ("easyeda_", "lib_", "pcb_", "sch_", "proj_", "obj_", "app_",
 NOT_TOOLS: dict[str, str] = {
     "kicad_local": "a part provider id, listed in the provider table",
     "part_count": "a parameter of lib_create_symbol",
+    "design_roots": "a parameter of altium365_library_report",
     "part_id": "a parameter of sch_place_dblib_component",
     "part_id_applied": "a reply field of sch_place_dblib_component",
     "pcb_only": "a reply field of the schematic/PCB comparison",

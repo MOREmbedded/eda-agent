@@ -227,6 +227,27 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _no_saved_user_environment(monkeypatch, tmp_path_factory):
+    """Keep this machine's saved Altium 365 settings out of every test.
+
+    ``altium365.read_environment`` fills in what the process lacks from
+    the user's saved environment (HKCU, Environment), so a developer
+    who ran ``setx EDA_AGENT_NEXAR_APP_ID ...`` would otherwise see the
+    tests reach for Nexar. A test that wants it patches it back.
+    """
+    import eda_agent.altium365 as a365
+    monkeypatch.setattr(a365, "saved_user_environment", lambda names=None: {})
+    # A shell that already has them is the same case: take them out of
+    # the process environment too. A test that wants one sets it again.
+    for name in a365.SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    # And a real login from altium365-login stays where it is: a test that
+    # sets an app id must not find it and reach Nexar with it.
+    monkeypatch.setattr(a365, "default_login_path",
+                        lambda: tmp_path_factory.getbasetemp() / "no-nexar-login.bin")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_altium_global_projects(monkeypatch):
     """Keep this machine's Altium registry out of every test.
 

@@ -352,7 +352,10 @@ NOT_APPLICABLE: dict[str, str] = {
         "altium365_list_library_folders", "altium365_list_projects",
         "altium365_list_workspaces", "altium365_publish_library_file",
         "altium365_read_object", "altium365_release_component", "altium365_run_query",
-        "altium365_set_component_parameters", "lib_find_vault_components",
+        "altium365_set_component_parameters", "altium365_scan_library",
+        "altium365_update_library", "altium365_search_library",
+        "altium365_library_report", "altium365_scan_3d_models",
+        "lib_find_vault_components",
         "lib_get_vault_component", "lib_get_vault_name", "sch_place_vault_components")},
     # DbLib / IntLib
     **{name: _DBLIB for name in (

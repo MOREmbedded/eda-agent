@@ -1108,7 +1108,9 @@ _UNSEARCHED_KINDS = {
              "database, which this search does not read",
     "integrated": "an integrated library (IntLib) is a compiled package; this "
                   "search reads only open .SchLib files",
-    "design_items": "workspace components are not in a file this search reads",
+    "design_items": "workspace components are searched only through the copy "
+                    "altium365_scan_library keeps in the profile (see "
+                    "workspace_libraries); lib_find_vault_components asks Altium",
 }
 
 
@@ -1299,6 +1301,27 @@ async def _search_dblibs(bridge, result: dict[str, Any], query: str,
         result.pop("coverage_note", None)
     result["count"] = len(results)
     result["truncated"] = truncated or len(results) >= limit
+
+
+def _search_workspace_libraries(result: dict[str, Any], query: str,
+                                search_type: str, limit: int) -> None:
+    """Fold the profile's scanned Altium 365 libraries into a lib_search
+    reply, within what is left of ``limit``."""
+    from ..altium365_library import known_databases, search_components
+    databases = known_databases()
+    if not databases:
+        result["workspace_libraries"] = []
+        return
+    rows = result.setdefault("results", [])
+    room = max(0, int(limit) - len(rows))
+    fields = {"name": "name", "description": "description",
+              "parameters": "all"}.get(search_type, "mpn")
+    found = search_components(databases, query, fields=fields, limit=room)
+    rows.extend(found["results"])
+    result["count"] = len(rows)
+    if found["truncated"]:
+        result["truncated"] = True
+    result["workspace_libraries"] = found["databases"]
 
 
 async def _search_named_dblib(bridge, library_path: str, query: str,
@@ -4663,14 +4686,18 @@ def register_library_tools(mcp):
         library_path: Optional[str] = None,
         limit: int = 100,
         include_dblibs: bool = True,
+        include_workspace_library: bool = True,
     ) -> dict[str, Any]:
-        """Search open SchLib documents and installed database libraries.
+        """Search open SchLib documents, installed database libraries, and
+        the active profile's scanned Altium 365 library.
 
-        Searched: every .SchLib open (in a project or standalone) and every
-        installed DbLib, case-insensitive substring. NOT searched: IntLibs,
-        query/SVN libraries, workspace components, closed SchLibs, so 0
-        hits is not "no such part"; ``not_searched`` and ``coverage_note``
-        say what was skipped. It reads files ON DISK: a symbol created and
+        Searched: every .SchLib open (in a project or standalone), every
+        installed DbLib, case-insensitive substring, and the workspace
+        library copies altium365_scan_library keeps in the profile (rows
+        marked ``source: "altium365"``, as fresh as ``workspace_libraries``
+        says). NOT searched: IntLibs, query/SVN libraries, closed SchLibs,
+        a workspace never scanned, so 0 hits is not "no such part";
+        ``not_searched`` and ``coverage_note`` say what was skipped. It reads files ON DISK: a symbol created and
         not yet saved is not found (use lib_get_component_details).
         DbLib rows match on every column (MPN, value) and are marked
         ``source: "dblib"``; lib_dblib_search narrows to a table.
@@ -4686,15 +4713,19 @@ def register_library_tools(mcp):
             limit: Cap on matches, SchLib and DbLib together (default 100).
             include_dblibs: Also search installed DbLibs (default True;
                 slower on large databases).
+            include_workspace_library: Also search the profile's scanned
+                Altium 365 libraries (default True; offline, fast).
 
         Returns:
             ``query``, ``search_type``, ``count``, ``limit``,
             ``truncated``, ``results`` [{name, alias_name, description,
             library_path, part_count, source}; DbLib rows add table,
             key_field, symbol_ref, symbol_library, footprints,
-            matched_field], ``_datasheet_guidance``,
+            matched_field; Altium 365 rows add comment, folder, lifecycle,
+            symbols, footprints, manufacturer_parts], ``_datasheet_guidance``,
             ``libraries_searched``, ``not_searched`` [{library_path,
-            library_type, reason}], ``dblib_searches``, ``coverage_note``.
+            library_type, reason}], ``dblib_searches``,
+            ``workspace_libraries``, ``coverage_note``.
         """
         bridge = get_bridge()
         if library_path and is_dblib_path(library_path):
@@ -4723,6 +4754,8 @@ def register_library_tools(mcp):
             result.update(await _search_coverage(bridge, library_path))
             if not library_path:
                 await _search_dblibs(bridge, result, query, limit, include_dblibs)
+                if include_workspace_library:
+                    _search_workspace_libraries(result, query, search_type, limit)
         if isinstance(result, dict):
             synthetic = {"components": (
                 result.get("results") or result.get("components") or []
