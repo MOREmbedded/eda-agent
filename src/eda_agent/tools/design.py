@@ -283,8 +283,9 @@ def register_design_tools(mcp) -> None:
         the rules it adds, what each stage does differently and the inputs
         it needs. Built in: full_design (the whole pipeline), schematic_only,
         layout_only, reference_redraw (redraw a vendor dev kit or reference
-        design's schematic) and devkit_derivative (a new board from a dev
-        kit). The active profile's modes/ folder adds its own or changes
+        design's schematic), devkit_derivative (a new board from a dev
+        kit) and reusable_block (one self-contained block with a defined
+        interface and layout fragment, to publish as an Altium reuse block). The active profile's modes/ folder adds its own or changes
         these. Start a run in one with design_session_start(mode=...).
         """
         from ..design.modes import load_modes, selected_mode_name

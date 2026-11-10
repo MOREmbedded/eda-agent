@@ -89,6 +89,36 @@ def test_reference_redraw_needs_the_reference_and_stops_at_the_schematic():
     assert "sch_to_pcb" not in mode.stages
 
 
+def test_reusable_block_is_a_whole_pipeline_with_an_interface_contract():
+    mode = get_mode("reusable_block")
+    # Schematic and a layout fragment: every stage, so both get drawn.
+    assert mode.stages == STAGES
+    assert [i.name for i in mode.inputs if i.required] == ["block"]
+    assert {i.name for i in mode.inputs} == {"block", "interface", "publish_to"}
+    assert mode.missing_inputs({}) == ["block"]
+    assert mode.resolve_inputs({"block": "buck"})["publish_to"] == "Altium 365 reuse block"
+    rules = " ".join(mode.rules)
+    for must in ("named port", "interface is the contract", "no board outline",
+                 "profile's library", "exit point", "NDA"):
+        assert must in rules, must
+    # The interface is decided in architecture; outputs are no fab package.
+    assert "interface" in mode.stage_notes["architecture"]
+    assert mode.stage_notes["outputs"].startswith("No fab package")
+    assert set(mode.stage_notes) == set(STAGES)
+
+
+def test_reusable_block_run_carries_its_rules_and_is_offered_in_the_prompt(tmp_path):
+    journal = _start(tmp_path, "reusable_block", {"block": "12 V to 3.3 V buck"})
+    action = next_action(journal.state())
+    assert action.mode == "reusable_block" and action.stage == "requirement"
+    assert action.mode_rules == list(get_mode("reusable_block").rules)
+    assert _walk(journal) == list(STAGES)
+    text = modes_mod.prompt_text(get_mode("reusable_block"), {"block": "USB-C sink"})
+    assert "- block: USB-C sink" in text
+    assert "- interface: (not given: ask me)" in text
+    assert "- publish_to: Altium 365 reuse block" in text
+
+
 # ------------------------------------------------------------ the run
 
 def test_a_run_walks_its_modes_stages_and_completes_after_them(tmp_path):

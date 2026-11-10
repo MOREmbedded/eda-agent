@@ -31,9 +31,14 @@ runs on.
 | `layout_only` | sch_to_pcb → outputs | A finished schematic to a routed, checked board. The schematic is not changed; a needed change is a question for the user. |
 | `reference_redraw` | requirement, plan, plan_verification, library_readiness, schematic_emit | Redraw the schematic of a vendor dev kit or reference design (NXP EVK, ST Nucleo/Discovery, TI LaunchPad, Espressif DevKit...) in your own libraries and house style. Faithful copy: every part cites its reference page, DNP parts stay not fitted, net names are kept, substitutions need your yes. Inputs: `vendor`, `board`, `source`, optional `scope`. |
 | `devkit_derivative` | all 13 | A new board from a dev kit: keep the proven core (processor, power, clocks, boot, debug) as drawn, drop what you do not need, add your own blocks. Every deviation from the reference is listed with its reason. Inputs: `vendor`, `board`, `source`, optional `changes`. |
+| `reusable_block` | all 13 | One self-contained circuit block (a regulator, a PHY, a USB-C input, a sensor front end) to publish as an Altium reuse block or managed sheet. The architecture stage defines its interface (ports, rails, limits, what the host must provide); every connection goes through a named port; parts only from the profile's library; a compact routed layout fragment inside a stated area with marked port exits; no board outline, fab package or connectors. Outputs are the block's datasheet; publishing is your step. Inputs: `block`, optional `interface`, optional `publish_to` (default "Altium 365 reuse block"). |
 
 `eda-agent mode-show <name>` prints a mode in full: its stages, the
 stages it skips, inputs, rules and stage notes.
+
+A schematic-only reusable block (no layout fragment) is a profile mode:
+`{"extends": "reusable_block", "stages": ["requirement", "architecture",
+"plan", "plan_verification", "library_readiness", "schematic_emit"]}`.
 
 Both reference modes use only what the vendor publishes for that board.
 The NDA rule of the design discipline still holds: no other client's

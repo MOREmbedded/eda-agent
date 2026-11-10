@@ -256,6 +256,98 @@ BUILT_IN: tuple[Mode, ...] = (
                          "follow it unless the outline says otherwise.",
         },
     ),
+    Mode(
+        name="reusable_block",
+        title="Design a reusable block",
+        description="Design one self-contained circuit block (a regulator, "
+                    "a PHY, a USB-C input, a sensor front end) with a defined "
+                    "interface, its own schematic sheet and a compact, routed "
+                    "layout fragment, ready to publish as an Altium reuse "
+                    "block or managed sheet and place on many boards.",
+        inputs=(
+            ModeInput("block", "What the block is and its key figures, e.g. "
+                               "'12 V to 3.3 V / 2 A buck' or 'USB-C 5 V sink "
+                               "with ESD and 3 A fuse'"),
+            ModeInput("interface", "Its ports and rails if already decided, "
+                                   "e.g. 'VIN, 3V3, GND, EN, PGOOD'. Blank "
+                                   "means the run proposes them.",
+                      required=False),
+            ModeInput("publish_to", "Where the block goes when done, e.g. "
+                                    "'Altium 365 reuse block', 'managed "
+                                    "sheet', 'local snippet folder'",
+                      required=False, default="Altium 365 reuse block"),
+        ),
+        rules=(
+            "One block, self-contained: every connection to the host board "
+            "goes through a named port on the block's sheet. No global net "
+            "labels, and no power ports other than the rails the interface "
+            "declares.",
+            "The interface is the contract. Each port carries its direction, "
+            "voltage domain and current or signal limits, and the block "
+            "states what the host must provide (input capacitance, pull-ups, "
+            "a ground plane under it). Changing it after the interface stage "
+            "needs the user's yes.",
+            "Generic, not tied to one product: no board outline, mounting "
+            "holes, connectors or test points unless the block is that "
+            "connector; designators start fresh in the block because the "
+            "host renumbers them, so documentation names parts by role, not "
+            "designator.",
+            "Parts only from the active profile's library, in a state the "
+            "library allows to be published; a part that is not there is "
+            "logged as blocked, not drawn from a generic symbol.",
+            "The layout fragment keeps every block part inside a stated area, "
+            "brings each port to a marked exit point on its edge, and says "
+            "which layers and stackup it assumes. Nothing outside the area "
+            "is touched.",
+            "The NDA rule holds both ways: a block derived from one client's "
+            "design stays in that client's workspace and library.",
+        ),
+        stage_notes={
+            "requirement": "Record what the block does, its operating "
+                           "ranges (input, output, load, temperature) and "
+                           "where it will be published. List the boards or "
+                           "uses it should fit, if known.",
+            "architecture": "Define the interface: the port list with "
+                            "direction, domain and limits, the rails in and "
+                            "out, and what the host must provide. This "
+                            "stage's result is the block's contract.",
+            "plan": "One sheet for the block (a second only if it is "
+                    "genuinely large). Each part with its role, MPN and "
+                    "value; each port mapped to the net it drives.",
+            "plan_verification": "Check every port is used, every internal "
+                                 "net stays internal, and the block works "
+                                 "at each corner of its stated ranges.",
+            "library_readiness": "Every part must exist in the profile's "
+                                 "library, so the published block resolves "
+                                 "on any board that uses it.",
+            "schematic_emit": "Draw the block on its own sheet with ports at "
+                              "the sheet edge and a short note block (what "
+                              "it is, ranges, host requirements). Compile "
+                              "with ERC clean apart from the open ports, "
+                              "which are expected.",
+            "sch_to_pcb": "Use a scratch board just large enough for the "
+                          "fragment; it carries the layout, not a product.",
+            "rules_stackup": "State the layer count and stackup the fragment "
+                             "assumes and the rules it needs (clearances, "
+                             "widths for its currents, impedance if any); "
+                             "these go in the block's notes.",
+            "placement": "Place compactly, critical loops first (switching "
+                         "loop, decoupling, crystal). Ports go to the edge "
+                         "of the area in the order the host will want them.",
+            "routing": "Route everything inside the area. Port nets end at "
+                       "their exit points; nothing leaves the area.",
+            "pours_tuning": "Only pours that belong to the block (a local "
+                            "ground or a switch node), kept inside the area.",
+            "verification": "DRC the fragment; port nets ending unrouted at "
+                            "their exit points are expected, anything else "
+                            "is not.",
+            "outputs": "No fab package. Produce the block's datasheet: the "
+                       "interface table, host requirements, stackup and "
+                       "rules assumed, BOM and a picture of the fragment. "
+                       "Publishing to the workspace is the user's step; "
+                       "say exactly what to publish and where.",
+        },
+    ),
 )
 
 
