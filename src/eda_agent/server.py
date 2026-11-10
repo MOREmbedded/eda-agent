@@ -834,7 +834,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
 
     return [
         ("Server and setup", (
-            "serve", "install-scripts", "scripts-path", "relaunch",
+            "serve", "start", "install-scripts", "scripts-path", "relaunch",
             "update", "easyeda-extension",
         )),
         ("Diagnostics", (
@@ -1503,6 +1503,33 @@ def build_parser() -> argparse.ArgumentParser:
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
+    # start -- bring one design workspace up from its .eda-agent/workspace.json
+    start_p = subparsers.add_parser(
+        "start",
+        help=("Bring a design workspace up: its profile, dashboard, doctor and "
+              "Altium 365 login, from <workspace>/.eda-agent/workspace.json."),
+        epilog=("Make the file once with --init, run from the workspace folder: "
+                "eda-agent start --init --profile NAME --port 8777 "
+                "--altium365-workspace https://<name>.365.altium.com/. "
+                "Secrets stay in your user environment, never in the file."),
+    )
+    start_p.add_argument("--workspace", default="",
+                         help="Workspace folder (default: found from the current one).")
+    start_p.add_argument("--init", action="store_true",
+                         help="Write or update the workspace's settings file and stop.")
+    start_p.add_argument("--profile", default="", help="Central profile to activate.")
+    start_p.add_argument("--port", type=int, default=0, help="Dashboard port.")
+    start_p.add_argument("--altium365-workspace", action="append", default=[],
+                         dest="altium365_workspace", metavar="URL",
+                         help="Altium 365 workspace the tools may use. Repeatable.")
+    start_p.add_argument("--no-dashboard", action="store_true")
+    start_p.add_argument("--no-doctor", action="store_true")
+    start_p.add_argument("--no-login", action="store_true")
+    start_p.add_argument("--relogin", action="store_true",
+                         help="Sign in to Nexar again even if the saved login is valid.")
+    start_p.add_argument("--shortcut", action="store_true",
+                         help="Make a desktop shortcut that runs start for this workspace.")
+
     # altium365-login -- sign in to Nexar once for the Altium 365 tools
     subparsers.add_parser(
         "altium365-login",
@@ -1770,6 +1797,9 @@ def main() -> int:
             "--port", str(args.port),
             *(["--debug"] if args.debug else []),
         ])
+    if args.command == "start":
+        from .workspace_start import cmd_start
+        return cmd_start(args)
     if args.command == "stop-dashboard":
         # Read the PID written by the dashboard process and SIGTERM it.
         # No PID file = no dashboard running -> success (idempotent stop).
