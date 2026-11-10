@@ -15,9 +15,14 @@ for the current Windows user and refreshed when it expires. An app made in
 the Nexar portal is a confidential client: its secret goes in
 EDA_AGENT_NEXAR_CLIENT_SECRET and is sent only to Nexar's token endpoint.
 
-A domain, when set, selects the workspace route. Nothing Altium 365 sends
-back is written to disk: replies stay in memory for ten minutes, well
-inside Nexar's 24-hour limit on keeping data. EDA_AGENT_ALTIUM365_WORKSPACES
+A domain, when set, selects the workspace route. Replies to the tools here
+are not written to disk: they stay in memory for ten minutes, well inside
+Nexar's 24-hour limit on keeping data. The one exception is the library
+inventory (eda_agent.altium365_library), which the user asks for by name
+and which is written into their own profile. Settings missing from the
+process are read from the user's saved environment, so a value set with
+``setx`` works without a restart. EDA_AGENT_ALTIUM365_TIMEOUT_S (default
+60) bounds each request. EDA_AGENT_ALTIUM365_WORKSPACES
 (comma-separated URLs) limits which workspaces the tools may touch.
 
 Any reading query may be run; one containing ``mutation`` or
@@ -61,6 +66,11 @@ def _workspace_key(url: str) -> str:
     return url.strip().rstrip("/") + "/"
 
 
+def default_login_path() -> Path:
+    """Where altium365-login keeps the encrypted Nexar login."""
+    return Path.home() / ".eda-agent" / "nexar_login.bin"
+
+
 @dataclass(frozen=True)
 class Altium365Config:
     domain: str = ""
@@ -70,8 +80,7 @@ class Altium365Config:
     nexar_client_secret: str = field(default="", repr=False)
     redirect_uri: str = _DEFAULT_REDIRECT
     allowed_workspaces: tuple[str, ...] = ()
-    saved_login: Path = field(
-        default_factory=lambda: Path.home() / ".eda-agent" / "nexar_login.bin")
+    saved_login: Path = field(default_factory=lambda: default_login_path())
     timeout_s: float = 60.0
 
     @property
@@ -90,8 +99,54 @@ class Altium365Config:
         return f"https://{self.domain}/api/files" if self.domain else NEXAR_UPLOAD
 
 
+#: The settings read_environment looks up, also in the user's saved
+#: environment when the process does not have them.
+SETTINGS = ("EDA_AGENT_ALTIUM365_DOMAIN", "EDA_AGENT_ALTIUM365_TOKEN",
+            "EDA_AGENT_ALTIUM365_WORKSPACES", "EDA_AGENT_ALTIUM365_TIMEOUT_S",
+            "EDA_AGENT_NEXAR_APP_ID", "EDA_AGENT_NEXAR_CLIENT_SECRET",
+            "EDA_AGENT_NEXAR_REDIRECT")
+
+
+def saved_user_environment(names=SETTINGS) -> dict[str, str]:
+    """The user's own environment variables as Windows keeps them
+    (HKCU, Environment), for those of ``names`` that are set there.
+
+    ``setx`` writes there, but a process started before it, such as an MCP
+    server or the shell it came from, never sees the change. Reading the
+    registry lets a new setting work without a restart. Empty off Windows.
+    """
+    if sys.platform != "win32":
+        return {}
+    try:
+        import winreg
+        found: dict[str, str] = {}
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            for name in names:
+                try:
+                    value = winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    continue
+                if isinstance(value, str) and value.strip():
+                    found[name] = value
+        return found
+    except OSError:
+        return {}
+
+
+def _timeout(text: str) -> float:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return 60.0
+    return min(max(value, 5.0), 900.0)
+
+
 def read_environment(env: Optional[dict] = None) -> Altium365Config:
-    env = os.environ if env is None else env
+    """The settings from ``env``, or from this process's environment with
+    the user's saved environment filling in what the process lacks."""
+    if env is None:
+        env = {**saved_user_environment(),
+               **{k: v for k, v in os.environ.items() if v.strip()}}
     domain = re.sub(r"^https?://", "", env.get("EDA_AGENT_ALTIUM365_DOMAIN", "").strip())
     allowed = [_workspace_key(u) for u in
                env.get("EDA_AGENT_ALTIUM365_WORKSPACES", "").split(",") if u.strip()]
@@ -101,7 +156,8 @@ def read_environment(env: Optional[dict] = None) -> Altium365Config:
         nexar_app_id=env.get("EDA_AGENT_NEXAR_APP_ID", "").strip(),
         nexar_client_secret=env.get("EDA_AGENT_NEXAR_CLIENT_SECRET", "").strip(),
         redirect_uri=env.get("EDA_AGENT_NEXAR_REDIRECT", _DEFAULT_REDIRECT),
-        allowed_workspaces=tuple(allowed))
+        allowed_workspaces=tuple(allowed),
+        timeout_s=_timeout(env.get("EDA_AGENT_ALTIUM365_TIMEOUT_S", "60")))
 
 
 # --- what is sent -----------------------------------------------------------
@@ -389,6 +445,8 @@ class Altium365Session:
     """Reads and changes against one configured route, replies kept briefly."""
 
     _BACKOFF_S = (1.0, 2.0, 4.0)
+    #: One refresh at a time: parallel readers share the saved login.
+    _token_guard = threading.Lock()
 
     def __init__(self, config: Optional[Altium365Config] = None,
                  urlopen: Callable = urllib.request.urlopen,
@@ -401,6 +459,10 @@ class Altium365Session:
     # credentials and transport
 
     def _access_token(self) -> str:
+        with self._token_guard:
+            return self._current_token()
+
+    def _current_token(self) -> str:
         cfg = self.config
         if cfg.mode == "workspace":
             if cfg.workspace_token:
@@ -455,10 +517,14 @@ class Altium365Session:
                 str(p.get("message", p)) for p in problems[:5]))
         return answer.get("data") or {}
 
-    def read(self, query: str, variables: Optional[dict] = None) -> dict:
+    def read(self, query: str, variables: Optional[dict] = None,
+             remember: bool = True) -> dict:
         """Run a reading query; the same query within ten minutes is answered
-        from memory."""
+        from memory. ``remember=False`` always asks, and keeps nothing: a
+        library scan reads tens of thousands of rows once each."""
         refuse_changes(query)
+        if not remember:
+            return self._send(query, variables)
         key = (query, json.dumps(variables or {}, sort_keys=True))
         moment = self._now()
         with self._guard:
@@ -578,7 +644,11 @@ class Altium365Session:
             except Altium365Error:
                 listed[type_name] = set()
         absent = [f"{t}.{f}" for t, f in READ_FIELDS if f not in listed[t]]
+        saved = sorted(n for n in saved_user_environment()
+                       if not os.environ.get(n, "").strip())
         return {"ok": not absent, "route": self.config.mode,
+                "timeout_s": self.config.timeout_s,
+                "read_from_saved_environment": saved,
                 "endpoint": self.config.graphql_url, "missing_fields": absent,
                 "changes_offered": {name: f in listed[t] for name, (t, f) in CHANGES.items()}}
 

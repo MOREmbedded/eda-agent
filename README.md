@@ -1,6 +1,6 @@
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 675 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 700 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
 > **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
 
@@ -824,8 +824,19 @@ workspace URL it acts on. The workspace's own API, with
 tokens; many plans do not (Admin > Apps lists only third-party
 integrations), and then Nexar is the way in.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
-lists. Nothing Altium 365 returns is written to disk.
-`altium365_check_setup` says which route is set up.
+lists. Set these with `setx` in your own terminal (never paste a secret
+into a chat); the tools also read your saved user environment, so no
+restart is needed after `setx`. `altium365_check_setup` says which route
+is set up.
+
+`altium365_scan_library` copies a workspace's managed library into the
+active profile (`<profile>/library/<workspace host>/`, JSON and CSV),
+reading past the 10,000-row `totalCount` cap with several readers, and
+continues an interrupted scan. `altium365_update_library` refreshes it in
+a minute or two, `altium365_search_library` and `lib_search` search it
+offline, and `altium365_library_report` reports gaps and, given your
+design folders, placements of an older revision. Apart from this copy,
+which you ask for, nothing Altium 365 returns is written to disk.
 
 **Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
 `naming.json` (a `template` and `pattern` per footprint, symbol and
@@ -1303,6 +1314,8 @@ listings can be read against each other.
 |---|---|
 | `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
 | `eda-agent altium365-logout` | Forget the saved Nexar login |
+| `eda-agent altium365-scan-library` | Copy a workspace's managed library into the active profile, continuing an unfinished scan |
+| `eda-agent altium365-update-library` | Refresh that copy without reading the whole library again |
 
 ### Experimental
 

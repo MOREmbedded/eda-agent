@@ -16,6 +16,36 @@ maturity classification for every tool.
 
 ### Added
 
+- **An offline copy of an Altium 365 managed library, kept in the profile.**
+  `altium365_scan_library` reads every component, symbol, footprint and
+  folder into `<profile>/library/<workspace host>/` as JSON and CSV, past
+  the 10,000-row `totalCount` cap, with several readers on row ranges and
+  pages halved when they time out; an interrupted scan continues.
+  `altium365_update_library` rereads all but the bulk block at the end of
+  the list and probes the row past it. `altium365_search_library` searches
+  it offline and `lib_search` folds it in as `source: "altium365"`.
+  `altium365_library_report` lists gaps and, given design folders, joins
+  placements from `.SchDoc` files on the item id and flags older
+  revisions. CLI: `altium365-scan-library`, `altium365-update-library`.
+  Live-checked on 2026-11-10 against a 22,561-component workspace: the
+  scan and the counts matched an independent scan, the refresh took
+  1m49s. `profile.json` names the workspace in `altium365_workspaces`.
+- **`altium365_scan_3d_models`** reads the library's 3D model items from
+  Altium's Explorer panel, which the GraphQL API cannot list. UNVERIFIED:
+  the live run was stopped before it finished.
+
+### Fixed
+
+- **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
+  ran on the event loop thread without COM, and 26.11 has no
+  TPopupPanelButton for a docked panel, so they saw 0 panels. They now run
+  on a thread of their own and also find a panel by its caption; live on
+  26.11 they list Projects, Properties and a floating Explorer, and read
+  the Projects grid.
+- **Altium 365 settings set with `setx` work without a restart**: the
+  user's saved environment fills in what the process lacks.
+  `EDA_AGENT_ALTIUM365_TIMEOUT_S` sets the request timeout.
+
 - **Per-profile settings.** A profile may carry `preferences.json` with the
   Altium panel's Config-tab keys (component value format, keep in view,
   dialogs, and the edits/deleting/closing/UI-automation safety switches)

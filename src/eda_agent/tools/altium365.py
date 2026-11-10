@@ -116,6 +116,172 @@ def register_altium365_tools(mcp) -> None:
         return await _answer(lambda: {"data": _session().read(query, variables)})
 
     @mcp.tool()
+    async def altium365_scan_library(workspace_url: str = "", database_dir: str = "",
+                                     workers: int = 4, max_seconds: int = 600,
+                                     restart: bool = False) -> dict[str, Any]:
+        """Read a workspace's whole managed library into an offline database:
+        every component (folder, lifecycle, parameters, manufacturer parts,
+        symbols, footprints, 3D link), symbol, footprint and folder, as JSON
+        and CSV. Read-only: nothing in the workspace changes.
+
+        The database belongs to the active profile, in
+        ``<profile>/library/<workspace host>/``; ``workspace_url`` may be
+        left out when the profile's profile.json lists one workspace under
+        ``altium365_workspaces``. A large library takes several minutes:
+        the scan stops after ``max_seconds`` with ``complete: false`` and
+        the next call continues from there. Then altium365_update_library
+        keeps it fresh, altium365_search_library and lib_search search it.
+
+        Args:
+            workspace_url: The workspace, or "" for the profile's one.
+            database_dir: Somewhere else to keep it (default: the profile).
+            workers: Readers working on different ranges at once (1-16).
+            max_seconds: Time budget for this call; 0 for none.
+            restart: Drop an unfinished scan and start over.
+        """
+        from ..altium365_library import resolve_target, scan_library
+
+        def scan() -> dict:
+            url, db = resolve_target(workspace_url, database_dir)
+            return scan_library(_session(), url, db, workers=workers,
+                                max_seconds=max_seconds or None, restart=restart)
+        return await _answer(scan)
+
+    @mcp.tool()
+    async def altium365_update_library(workspace_url: str = "", database_dir: str = "",
+                                       stable_prefixes: Optional[list[str]] = None
+                                       ) -> dict[str, Any]:
+        """Refresh a library scanned by altium365_scan_library, in a minute or
+        two instead of a full read.
+
+        The list is sorted by name, so the bulk block at its end (a generic
+        value range, say) is kept, and everything before it is read again,
+        with every symbol, footprint and folder. The row just past the last
+        known one is then read: ``full_scan_needed`` is true when the bulk
+        block grew or shrank. ``added``, ``removed`` and ``revised`` name
+        what changed.
+
+        Args:
+            workspace_url: The workspace, or "" for the profile's one.
+            database_dir: Where the scan was kept (default: the profile).
+            stable_prefixes: Name prefixes of the block to keep (e.g.
+                ["RES-", "CAP-"]); by default the one the last update
+                used, else the run of components at the end of the list
+                under one top folder.
+        """
+        from ..altium365_library import resolve_target, update_library
+
+        def update() -> dict:
+            url, db = resolve_target(workspace_url, database_dir)
+            return update_library(_session(), url, db, stable_prefixes=stable_prefixes)
+        return await _answer(update)
+
+    @mcp.tool()
+    async def altium365_search_library(query: str, workspace_url: str = "",
+                                       fields: str = "all", folder: str = "",
+                                       lifecycle: str = "",
+                                       limit: int = 50) -> dict[str, Any]:
+        """Search the active profile's scanned Altium 365 libraries offline,
+        no Altium and no network needed. Every word of ``query`` must
+        appear in a component's name, comment, description, folder,
+        manufacturer, MPN or parameter values. The answer says when each
+        library was read; refresh with altium365_update_library.
+
+        Args:
+            query: Words to find, e.g. "100nF 0402 X7R".
+            workspace_url: One workspace's library, or "" for all of them.
+            fields: "all", "name" (name and comment), "description", or
+                "mpn" (name, description, folder, manufacturer parts).
+            folder: Only components whose folder path contains this.
+            lifecycle: Only this lifecycle state, e.g. "Released".
+            limit: Most results returned (``matches`` counts them all).
+        """
+        from ..altium365_library import (known_databases, resolve_target,
+                                         search_components)
+
+        def search() -> dict:
+            if workspace_url:
+                databases = [resolve_target(workspace_url)[1]]
+            else:
+                databases = known_databases()
+            if not databases:
+                return {"count": 0, "results": [], "databases": [],
+                        "note": "no scanned library in the active profile: run "
+                                "altium365_scan_library first"}
+            return search_components(databases, query, fields=fields, limit=limit,
+                                     folder=folder, lifecycle=lifecycle)
+        return await _answer(search)
+
+    @mcp.tool()
+    async def altium365_library_report(workspace_url: str = "", database_dir: str = "",
+                                       design_roots: Optional[list[str]] = None
+                                       ) -> dict[str, Any]:
+        """Health report of a scanned Altium 365 library, offline: components
+        without a symbol, footprint, manufacturer part, 3D link or
+        description, symbols and footprints no component uses, MPNs on
+        several components, lifecycle and folder counts.
+
+        Given design_roots (folders holding projects), every .SchDoc under
+        them is read from disk, and each placed managed part is joined to
+        the library on its item id without the revision: placements of an
+        older revision, and parts placed but missing from the library, are
+        listed, and each component gets its projects and placement count.
+        The roots are remembered for the next report. Writes report.json and
+        report.md next to the database.
+        """
+        from ..altium365_library import health_report, read_meta, resolve_target
+
+        def report() -> dict:
+            _url, db = resolve_target(workspace_url, database_dir)
+            roots = design_roots if design_roots is not None else                 read_meta(db).get("design_roots")
+            return health_report(db, [Path(r) for r in roots] if roots else None)
+        return await _answer(report)
+
+    @mcp.tool()
+    async def altium365_scan_3d_models(folders: Optional[list[str]] = None,
+                                       workspace_url: str = "",
+                                       database_dir: str = "") -> dict[str, Any]:
+        """List the 3D model items of the managed library, which the Altium
+        365 API cannot list, by reading Altium's Explorer panel.
+
+        Altium must be running and signed in to the workspace, with
+        Explorer open (View > Panels > Explorer) and not minimised. Each
+        folder under ``folders`` is selected in Explorer's folder tree, and its item grid is read: item id, revision, name,
+        description, state and note per model. Nothing is clicked, typed
+        or opened; selecting a folder row is the only change on screen.
+        Writes models3d.json and models3d.csv next to the library database.
+
+        Args:
+            folders: Folders holding 3D models, by name or path (default
+                ["3D Models"], e.g. ["Models/3D Models"]); every folder
+                under them is read too. To find one, the folders on its
+                path, or those whose name mentions "model", are expanded;
+                whatever was expanded is folded back afterwards.
+            workspace_url: Which database to write to, or "" for the
+                profile's one.
+            database_dir: Somewhere else to keep it (default: the profile).
+        """
+        from ..altium365_library import resolve_target, save_models3d
+        from ..ui import explorer, panels
+        from .uiauto import _altium_pid
+
+        _pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not panels.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        roots = [f for f in (folders or ["3D Models"]) if f.strip()]
+        try:
+            url, db = resolve_target(workspace_url, database_dir)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return {"ok": False, "reason": str(exc)}
+        got = await asyncio.to_thread(panels.on_com_thread,
+                                      lambda: explorer.scan_models(roots))
+        if not got.get("ok"):
+            return got
+        return {"ok": True, **save_models3d(db, url, got)}
+
+    @mcp.tool()
     async def altium365_publish_library_file(kind: str, workspace_url: str, folder_id: str,
                                              name: str, file_path: str,
                                              confirm: bool = False) -> dict[str, Any]:

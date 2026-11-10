@@ -866,6 +866,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         )),
         ("Altium 365", (
             "altium365-login", "altium365-logout",
+            "altium365-scan-library", "altium365-update-library",
         )),
         ("Experimental", (
             "eco-execute",
@@ -1514,6 +1515,22 @@ def build_parser() -> argparse.ArgumentParser:
         "altium365-logout",
         help="Forget the saved Nexar login of altium365-login.",
     )
+    for verb, what in (("altium365-scan-library",
+                        "Read a workspace's whole managed library into the active "
+                        "profile (library/<host>/), continuing an unfinished scan."),
+                       ("altium365-update-library",
+                        "Refresh a scanned library: reread all but its bulk block, and "
+                        "say whether a full scan is needed.")):
+        lib_p = subparsers.add_parser(verb, help=what)
+        lib_p.add_argument("--workspace", default="",
+                           help="Workspace URL (default: the profile's one).")
+        lib_p.add_argument("--database-dir", default="",
+                           help="Keep the database here instead of in the profile.")
+        if verb == "altium365-scan-library":
+            lib_p.add_argument("--workers", type=int, default=4,
+                               help="Readers on different row ranges at once (1-16).")
+            lib_p.add_argument("--restart", action="store_true",
+                               help="Drop an unfinished scan and start over.")
 
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
@@ -1806,6 +1823,24 @@ def main() -> int:
             print(f"Could not remove {path}: {exc}")
             return 1
         print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
+        return 0
+    if args.command in ("altium365-scan-library", "altium365-update-library"):
+        from .altium365 import Altium365Error, Altium365Session
+        from .altium365_library import resolve_target, scan_library, update_library
+        try:
+            url, db = resolve_target(args.workspace, args.database_dir)
+            print(f"{url} -> {db}", flush=True)
+            say = lambda m: print(m, flush=True)  # noqa: E731
+            if args.command == "altium365-scan-library":
+                done = scan_library(Altium365Session(), url, db, workers=args.workers,
+                                    restart=args.restart, progress=say)
+            else:
+                done = update_library(Altium365Session(), url, db, progress=say)
+        except Altium365Error as exc:
+            print(f"Stopped: {exc}")
+            return 1
+        import json as _json
+        print(_json.dumps(done, indent=1, ensure_ascii=False))
         return 0
     if args.command == "review":
         return _run_review(args)

@@ -31,10 +31,13 @@ contents, only for finding the container.
 """
 from __future__ import annotations
 
-from typing import Optional
+import threading
+from typing import Any, Callable, Optional, TypeVar
 
 from . import controls, menu
 from . import windows as win
+
+T = TypeVar("T")
 
 #: The class that actually carries a panel's NAME, measured on a live
 #: AD26 frame rather than guessed.
@@ -68,13 +71,79 @@ def available() -> bool:
     return win.available() and controls.available()
 
 
+def on_com_thread(work: Callable[[], T]) -> T:
+    """Run ``work`` on a new thread that initialises COM first, and wait.
+
+    COM is per thread. The panel tools used to run on the server's event
+    loop thread, which nothing had initialised: on AD 26.11 every
+    accessible call there failed with "CoInitialize has not been called"
+    and app_list_panels reported 0 panels while several were open. A
+    pooled executor worker is no better, because ``ui/menu`` initialises
+    and uninitialises the thread it runs on, which can leave a reused
+    worker without COM. A thread of its own, initialised here and torn
+    down after, was the arrangement that read the panels live.
+    """
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        owned = False
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+            owned = True
+        except Exception:                        # noqa: BLE001 - reported by work()
+            pass
+        try:
+            box["value"] = work()
+        except BaseException as exc:             # noqa: BLE001 - re-raised below
+            box["error"] = exc
+        finally:
+            if owned:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:                # pragma: no cover - guard
+                    pass
+
+    worker = threading.Thread(target=run, name="eda-agent-panels", daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+#: AD 26.11 has no TPopupPanelButton for a panel docked with a header.
+#: MEASURED on a live 26.11 frame: each such panel is a TPanelFrame
+#: holding a TXPPanel caption ("Projects", "Properties") and a
+#: TViewComponent of the same name with the content inside it. Document
+#: views are TViewComponents too, but no caption carries their name, so
+#: a caption matching a view is what marks a panel.
+_PANEL_CAPTION = "txppanel"
+_PANEL_VIEW = "tviewcomponent"
+#: A floating panel is a top-level window of its own, outside the frame.
+_FLOATING_PANEL = "TClientBarControl"
+
+
 def _frame_controls(pid: int) -> list:
-    """Every child of the main frame, captured once."""
+    """Every child of the main frame and of each floating panel window,
+    captured once."""
     frame = menu.frame(pid)
     if frame is None:
         return []
+    every = []
     captured = win.capture(frame.hwnd)
-    return list(captured.controls) if captured is not None else []
+    if captured is not None:
+        every.extend(captured.controls)
+    try:
+        floating = [w for w in win.enumerate_windows(pid=pid)
+                    if w.class_name == _FLOATING_PANEL]
+    except Exception:                            # noqa: BLE001 - floating is extra
+        floating = []
+    for window in floating:
+        held = win.capture(window.hwnd)
+        if held is not None:
+            every.extend(held.controls)
+    return every
 
 
 def list_open(pid: int) -> list:
@@ -86,11 +155,18 @@ def list_open(pid: int) -> list:
     names it.
     """
     every = _frame_controls(pid)
+    views = {c.text for c in every
+             if c.text and c.class_name.lower() == _PANEL_VIEW}
     seen = {}
     for control in every:
-        if _PANEL_BUTTON not in control.class_name.lower():
+        kind = control.class_name.lower()
+        if _PANEL_BUTTON in kind:
+            pass
+        elif kind == _PANEL_CAPTION and control.text in views:
+            pass
+        else:
             continue
-        if not control.text:
+        if not control.text or control.text in seen:
             continue
         x, y, width, height = control.rect
         if x < -10000:                           # parked off screen

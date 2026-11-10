@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The Nexar token request: a confidential app's secret, and a refusal's reason.
 
 All offline. A portal app at Nexar is a confidential client, so the
