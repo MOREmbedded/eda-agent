@@ -862,5 +862,12 @@
  "{0}. Click for its rules and templates.": "{0}。点击查看其规则和模板。",
  "{0}: done in {1} s. Ctrl+Z in Altium undoes it.": "{0}：用时 {1} 秒完成。在 Altium 中按 Ctrl+Z 可撤销。",
  "{0}: {1} footprints, {2} follow the library's own conventions.": "{0}：{1} 个封装，其中 {2} 个符合该库自身的约定。",
- "‹ Prev": "‹ 上一个"
+ "‹ Prev": "‹ 上一个",
+ "Dark": "深色",
+ "Light": "浅色",
+ "Follow the system": "跟随系统",
+ "Dashboard theme": "仪表板主题",
+ "The theme could not be saved.": "无法保存主题。",
+ "Theme kept in this browser: no profile is in effect.": "主题仅保存在此浏览器中：当前没有生效的配置文件。",
+ "Theme": "主题"
 }

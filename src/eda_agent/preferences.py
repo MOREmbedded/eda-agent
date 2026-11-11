@@ -23,7 +23,11 @@ the board or sheet in view after each edit (default ``off``).
 ``dialogs`` is ``manual`` to leave the dialogs tools open (the change order,
 the Teardrops options) for the user (default ``auto``: the tool answers
 them). ``usage_stats`` is ``off`` to stop counting the tokens each tool
-call costs (default ``on``; see eda_agent.diag.usage). Each also
+call costs (default ``on``; see eda_agent.diag.usage). ``theme`` is how
+the web dashboard looks: ``system`` (the default) follows the operating
+system's light or dark mode, ``light`` and ``dark`` fix it. The Altium panel
+has no switch for the theme; it is set in the profile (the dashboard's
+Settings menu or Workspace view write it there). Each of the others also
 has an environment variable in the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
 
@@ -31,8 +35,8 @@ The owner profile in effect (see eda_agent.profile) may carry its own
 ``preferences.json`` with any of the same keys, so each company or client
 keeps its own value format. Where both say something:
 
-- ``value_format``/``value_unit``, ``keep_in_view``, ``dialogs`` and
-  ``usage_stats``: the
+- ``value_format``/``value_unit``, ``keep_in_view``, ``dialogs``,
+  ``usage_stats`` and ``theme``: the
   profile wins over the panel's file. ``value_format`` and ``value_unit``
   travel as a pair: a profile that sets the format also decides the unit
   (``without`` unless it says ``with``), so a format from one layer is
@@ -72,6 +76,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "keep_in_view": ("off", "on"),
     "dialogs": ("auto", "manual"),
     "usage_stats": ("on", "off"),
+    "theme": ("system", "light", "dark"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -263,6 +268,11 @@ def dialogs_auto(workspace: Optional[Path] = None) -> bool:
 def usage_stats_on(workspace: Optional[Path] = None) -> bool:
     """True when the token cost of each tool call is counted."""
     return preferences(workspace)["usage_stats"] == "on"
+
+
+def theme(workspace: Optional[Path] = None) -> str:
+    """'system', 'light' or 'dark': how the web dashboard looks."""
+    return preferences(workspace)["theme"]
 
 
 def save_profile_preferences(directory: Path, changes: dict[str, Any],

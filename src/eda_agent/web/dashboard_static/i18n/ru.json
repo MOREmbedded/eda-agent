@@ -862,5 +862,12 @@
  "{0}. Click for its rules and templates.": "{0}. Нажмите, чтобы увидеть правила и шаблоны.",
  "{0}: done in {1} s. Ctrl+Z in Altium undoes it.": "{0}: готово за {1} с. Ctrl+Z в Altium отменит это.",
  "{0}: {1} footprints, {2} follow the library's own conventions.": "{0}: {1} посадочных мест, {2} соответствуют правилам библиотеки.",
- "‹ Prev": "‹ Назад"
+ "‹ Prev": "‹ Назад",
+ "Dark": "Тёмная",
+ "Light": "Светлая",
+ "Follow the system": "Как в системе",
+ "Dashboard theme": "Тема панели",
+ "The theme could not be saved.": "Не удалось сохранить тему.",
+ "Theme kept in this browser: no profile is in effect.": "Тема сохранена только в этом браузере: профиль не выбран.",
+ "Theme": "Тема"
 }

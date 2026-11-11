@@ -862,5 +862,12 @@
  "{0}. Click for its rules and templates.": "{0}。クリックでルールとテンプレートを表示。",
  "{0}: done in {1} s. Ctrl+Z in Altium undoes it.": "{0}: {1} 秒で完了。Altium で Ctrl+Z で元に戻せます。",
  "{0}: {1} footprints, {2} follow the library's own conventions.": "{0}: フットプリント {1} 個、うち {2} 個がライブラリ自体の規則に従っています。",
- "‹ Prev": "‹ 前へ"
+ "‹ Prev": "‹ 前へ",
+ "Dark": "ダーク",
+ "Light": "ライト",
+ "Follow the system": "システムに合わせる",
+ "Dashboard theme": "ダッシュボードのテーマ",
+ "The theme could not be saved.": "テーマを保存できませんでした。",
+ "Theme kept in this browser: no profile is in effect.": "テーマはこのブラウザーにのみ保存されます。有効なプロファイルがありません。",
+ "Theme": "テーマ"
 }

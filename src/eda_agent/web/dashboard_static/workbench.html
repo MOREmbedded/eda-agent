@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <title>eda-agent workbench</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+/* Theme before the first paint, so a dark page never flashes light. The
+   choice ("system", "light" or "dark") is the profile's, cached here by the
+   last visit; "system" follows the operating system's light or dark mode. */
+(function () {
+  var t = "system";
+  try { t = JSON.parse(localStorage.getItem("wb.theme")) || "system"; } catch (e) {}
+  var dark = t === "dark" || (t !== "light" && !!window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+})();
+</script>
 <style>
 /* The engineering drawing sheet: drafting film, blue-black ink, a red pen
    for problems, a blue pencil for proposals, amber for the assembly line.
@@ -16,6 +27,21 @@
   --f:"Bahnschrift", "DIN Alternate", "Roboto Condensed", "Arial Narrow", sans-serif;
   --mono:"Cascadia Mono", Consolas, monospace;
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+  /* Surfaces named for what they do, so the dark theme can recolour them. */
+  --rail:#1C2A35; --rail-fg:#F5F6F2; --field:#fff; --sel:#DCE6F5; --sel2:#E6EDF8; --hit:#FBF0DA;
+  --glass:rgba(245,246,242,.92); --go-hover:#2C3E4C; --shadow:rgba(28,42,53,.25); --veil:rgba(28,42,53,.35);
+  color-scheme:light;
+}
+/* Dark: the same drawing sheet under a dark lamp. Ink and paper swap, the
+   rail stays the darkest band, the board itself keeps its own colours.
+   Text contrast is WCAG AA (4.5:1 or better) on --paper and --film. */
+:root[data-theme="dark"] {
+  --film:#12171C; --paper:#1A2027; --paper2:#222A33; --ink:#E1E6EA; --ink2:#AEB8C0; --ink3:#8A959E;
+  --rule:#36424D; --rule2:#29323B;
+  --red:#FF7A63; --blue:#7EA6FF; --amber:#EBA845; --green:#62C08A;
+  --rail:#0B0F13; --rail-fg:#E8EBE5; --field:#12171C; --sel:#24364F; --sel2:#1F2E44; --hit:#3A311F;
+  --glass:rgba(26,32,39,.92); --go-hover:#FFFFFF; --shadow:rgba(0,0,0,.55); --veil:rgba(0,0,0,.55);
+  color-scheme:dark;
 }
 * { box-sizing:border-box; }
 html, body { margin:0; height:100%; background:var(--film); color:var(--ink); overflow:hidden;
@@ -26,11 +52,11 @@ button { background:var(--paper); border:1px solid var(--rule); border-radius:3p
 button:hover:not(:disabled) { border-color:var(--ink2); }
 button:disabled { color:var(--ink3); cursor:default; background:var(--paper2); }
 button.go { background:var(--ink); color:var(--paper); border-color:var(--ink); }
-button.go:hover:not(:disabled) { background:#2C3E4C; }
+button.go:hover:not(:disabled) { background:var(--go-hover); border-color:var(--go-hover); }
 button.go:disabled { background:var(--rule); border-color:var(--rule); color:var(--paper); }
 button.quiet { border-color:transparent; background:none; color:var(--ink2); padding:3px 6px; }
 button.quiet:hover:not(:disabled) { color:var(--ink); border-color:var(--rule); }
-input, select, textarea { background:#fff; border:1px solid var(--rule); border-radius:3px; padding:4px 7px; }
+input, select, textarea { background:var(--field); border:1px solid var(--rule); border-radius:3px; padding:4px 7px; }
 :focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
 kbd { font:600 11px var(--f); border:1px solid var(--rule); border-bottom-width:2px; border-radius:3px;
   padding:0 4px; background:var(--paper); color:var(--ink2); }
@@ -40,40 +66,40 @@ kbd { font:600 11px var(--f); border:1px solid var(--rule); border-bottom-width:
 
 /* Rail */
 #rail { grid-area:rail; display:flex; align-items:stretch; gap:var(--s4); padding:0 var(--s3);
-  background:var(--ink); color:var(--paper); }
+  background:var(--rail); color:var(--rail-fg); }
 #rail .mark { display:flex; align-items:center; gap:var(--s2); font-weight:600; font-size:14px;
   font-stretch:semi-condensed; white-space:nowrap; max-width:330px; }
 #rail .mark svg { flex:0 0 auto; }
 #rail .mark span { overflow:hidden; text-overflow:ellipsis; }
 #picker { position:relative; }
-#boardbtn { display:flex; align-items:center; gap:var(--s2); background:none; border:1px solid transparent; color:var(--paper);
+#boardbtn { display:flex; align-items:center; gap:var(--s2); background:none; border:1px solid transparent; color:var(--rail-fg);
   font:600 14px var(--f); font-stretch:semi-condensed; max-width:340px; padding:4px 8px; }
 #boardbtn:hover { border-color:#4B5F6E; }
 #boardbtn span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #boardbtn .caret { color:#AEB8BF; font-size:10px; }
 .menu.boards { position:absolute; left:0; top:40px; z-index:20; background:var(--paper); color:var(--ink);
-  border:1px solid var(--rule); border-radius:4px; width:420px; box-shadow:0 12px 30px rgba(28,42,53,.25); padding:6px 0; }
+  border:1px solid var(--rule); border-radius:4px; width:420px; box-shadow:0 12px 30px var(--shadow); padding:6px 0; }
 .menu.boards[hidden] { display:none; }
 .menu.boards .bh { padding:4px 12px 6px; color:var(--ink3); font-size:12px; }
 .menu.boards .brow { display:flex; align-items:baseline; gap:var(--s2); padding:6px 12px; cursor:pointer; font-weight:400; }
 .menu.boards .brow:hover { background:var(--paper2); }
-.menu.boards .brow[aria-selected="true"] { box-shadow:inset 3px 0 0 var(--blue); background:#E6EDF8; }
+.menu.boards .brow[aria-selected="true"] { box-shadow:inset 3px 0 0 var(--blue); background:var(--sel2); }
 .menu.boards .brow b { font-weight:600; }
 .menu.boards .brow small { color:var(--ink3); margin-left:auto; white-space:nowrap; }
 .menu.boards .path { color:var(--ink3); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #titleblock .last button { margin-left:6px; padding:1px 8px; font-size:12px; }
 #modes { display:flex; align-items:stretch; }
 #modes button { background:none; border:none; border-radius:0; color:#AEB8BF; padding:0 13px; font-size:14px; }
-#modes button:hover { color:var(--paper); }
-#modes button[aria-pressed="true"] { color:var(--paper); box-shadow:inset 0 -3px 0 #9CC3FF; }
+#modes button:hover { color:var(--rail-fg); }
+#modes button[aria-pressed="true"] { color:var(--rail-fg); box-shadow:inset 0 -3px 0 #9CC3FF; }
 #rail .end { margin-left:auto; display:flex; align-items:center; gap:var(--s2); }
 #rail .end button { background:none; color:#C9D2D8; border-color:#3B4D5B; }
-#rail .end button:hover { color:var(--paper); border-color:#7F93A3; }
+#rail .end button:hover { color:var(--rail-fg); border-color:#7F93A3; }
 #rail .end kbd { background:none; color:#C9D2D8; border-color:#4B5F6E; }
 #settings { position:relative; }
 #settings .menu { position:absolute; right:0; top:34px; z-index:20; background:var(--paper); color:var(--ink);
   border:1px solid var(--rule); border-radius:4px; padding:var(--s3); width:280px;
-  box-shadow:0 12px 30px rgba(28,42,53,.25); display:grid; gap:var(--s2); }
+  box-shadow:0 12px 30px var(--shadow); display:grid; gap:var(--s2); }
 #settings .menu[hidden] { display:none; }
 #settings label { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
 
@@ -89,7 +115,7 @@ kbd { font:600 11px var(--f); border:1px solid var(--rule); border-bottom-width:
 .row { display:flex; align-items:baseline; gap:var(--s2); padding:3px var(--s3); cursor:pointer; white-space:nowrap;
   font-stretch:semi-condensed; }
 .row:hover { background:var(--paper2); }
-.row[aria-selected="true"] { background:#DCE6F5; box-shadow:inset 3px 0 0 var(--blue); }
+.row[aria-selected="true"] { background:var(--sel); box-shadow:inset 3px 0 0 var(--blue); }
 .row .k { font-weight:600; min-width:52px; overflow:hidden; text-overflow:ellipsis; }
 .row .v { flex:1; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; }
 .row .z { color:var(--ink3); font-size:12px; min-width:24px; text-align:right; }
@@ -106,13 +132,13 @@ kbd { font:600 11px var(--f); border:1px solid var(--rule); border-bottom-width:
 #sheet { grid-area:sheet; position:relative; min-width:0; min-height:0; }
 #cv { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
 #legend { position:absolute; left:var(--s3); top:var(--s3); display:flex; flex-wrap:wrap; gap:4px; max-width:62%; }
-#legend label { display:flex; align-items:center; gap:5px; background:rgba(245,246,242,.92); border:1px solid var(--rule);
+#legend label { display:flex; align-items:center; gap:5px; background:var(--glass); border:1px solid var(--rule);
   border-radius:3px; padding:1px 7px 1px 5px; font-size:12px; cursor:pointer; user-select:none; }
 #legend label.off { color:var(--ink3); text-decoration:line-through; }
 #legend input { position:absolute; opacity:0; pointer-events:none; }
 #legend i { width:10px; height:10px; border-radius:2px; display:inline-block; }
 #zoom { position:absolute; left:var(--s3); bottom:var(--s3); display:flex; gap:4px; }
-#zoom button { background:rgba(245,246,242,.94); width:30px; padding:3px 0; }
+#zoom button { background:var(--glass); width:30px; padding:3px 0; }
 #coords { position:absolute; left:120px; bottom:calc(var(--s3) + 5px); color:var(--ink2); font-size:12px; pointer-events:none; }
 #titleblock { position:absolute; right:var(--s3); bottom:var(--s3); background:var(--paper); border:1.5px solid var(--ink);
   display:grid; grid-template-columns:auto auto auto auto; font-size:12px; min-width:330px; }
@@ -180,7 +206,7 @@ table.grid th { text-align:left; font-weight:600; color:var(--ink2); padding:6px
   position:sticky; top:calc(-1 * var(--s4)); background:var(--paper); white-space:nowrap; }
 table.grid td { padding:5px 8px; border-bottom:1px solid var(--rule2); vertical-align:top; cursor:pointer; }
 table.grid tr:hover td { background:var(--paper2); }
-table.grid tr[aria-selected="true"] td { background:#FBF0DA; }
+table.grid tr[aria-selected="true"] td { background:var(--hit); }
 table.grid td.n { white-space:nowrap; }
 table.grid td.m { color:var(--ink2); max-width:210px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 table.grid .sub { color:var(--ink3); }
@@ -214,14 +240,14 @@ table.grid a { color:var(--blue); }
 #actlist .ar { display:grid; grid-template-columns:96px 320px 80px 1fr; gap:var(--s3); padding:0 var(--s3); border-bottom:1px solid var(--rule2); }
 #actlist .ar.fail { color:var(--red); } #actlist .ar.slow .d { color:var(--amber); }
 #actlist .d { text-align:right; } #actlist .t { color:var(--ink3); }
-.overlay { position:fixed; inset:0; background:rgba(28,42,53,.35); z-index:30; }
+.overlay { position:fixed; inset:0; background:var(--veil); z-index:30; }
 .overlay[hidden] { display:none; }
 .overlay .box { width:600px; margin:11vh auto 0; background:var(--paper); border:1.5px solid var(--ink); border-radius:4px;
-  box-shadow:0 24px 60px rgba(28,42,53,.35); overflow:hidden; }
+  box-shadow:0 24px 60px var(--shadow); overflow:hidden; }
 #palq { width:100%; border:none; border-bottom:1px solid var(--rule); border-radius:0; padding:12px 14px; font-size:16px; outline:none; }
 #pallist { max-height:52vh; overflow:auto; }
 #pallist .it { display:flex; gap:var(--s3); padding:6px 14px; cursor:pointer; }
-#pallist .it[aria-selected="true"] { background:#DCE6F5; }
+#pallist .it[aria-selected="true"] { background:var(--sel); }
 #pallist .it .t { color:var(--ink3); min-width:70px; }
 #help .box { padding:var(--s4) var(--s5); }
 #help h2 { margin:0 0 var(--s3); font-size:17px; }
@@ -243,7 +269,7 @@ table.grid a { color:var(--blue); }
 }
 /* Workspace: the profile in effect and where it comes from */
 #wsbtn { display:flex; align-items:center; gap:6px; align-self:center; background:none; border:1px solid #4B5F6E;
-  color:var(--paper); font-size:12px; max-width:240px; padding:3px 9px; }
+  color:var(--rail-fg); font-size:12px; max-width:240px; padding:3px 9px; }
 #wsbtn:hover { border-color:#AEB8BF; }
 #wsbtn .dot { width:9px; height:9px; border-radius:50%; background:#7C868D; flex:0 0 auto; }
 #wsbtn[data-src="central"] .dot { background:#8FC79A; } #wsbtn[data-src="project"] .dot { background:#D9B45A; }
@@ -330,7 +356,7 @@ ol.pipe li:first-child::before { display:none; }
 ol.pipe li.cleared::before, ol.pipe li.current::before, ol.pipe li.done.reached::before { background:var(--green); }
 ol.pipe button { position:relative; z-index:1; background:none; border:none; padding:0 2px; width:100%; display:flex; flex-direction:column;
   align-items:center; gap:3px; color:var(--ink2); }
-ol.pipe button:hover:not(:disabled) .dot { box-shadow:0 0 0 3px #DCE6F5; }
+ol.pipe button:hover:not(:disabled) .dot { box-shadow:0 0 0 3px var(--sel); }
 ol.pipe button:disabled { background:none; cursor:default; }
 ol.pipe .dot { width:28px; height:28px; border-radius:50%; border:2px solid var(--rule); background:var(--paper); display:grid; place-items:center;
   font:600 12px var(--f); color:var(--ink3); }
@@ -338,7 +364,7 @@ ol.pipe .name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hi
 ol.pipe .cnt { font-size:11px; color:var(--ink3); }
 ol.pipe li.cleared .dot { background:var(--green); border-color:var(--green); color:var(--paper); }
 ol.pipe li.cleared .name { color:var(--green); }
-ol.pipe li.current .dot { border-color:var(--blue); border-width:3px; color:var(--blue); background:#E6EDF8; box-shadow:0 0 0 3px rgba(36,89,184,.18); }
+ol.pipe li.current .dot { border-color:var(--blue); border-width:3px; color:var(--blue); background:var(--sel2); box-shadow:0 0 0 3px rgba(36,89,184,.18); }
 ol.pipe li.current .name { color:var(--blue); }
 ol.pipe li.off .dot { border-style:dashed; background:var(--paper2); }
 ol.pipe li.off .name { color:var(--ink3); font-weight:400; text-decoration:line-through; }
@@ -409,6 +435,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
         <div class="menu" hidden>
           <label>Language <select id="lang"><option value="auto">Altium</option></select></label>
           <label>Units <select id="units"><option value="mil">mil</option><option value="mm">mm</option></select></label>
+          <label>Theme <select id="theme"><option value="system">Follow the system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
           <label class="check"><input type="checkbox" id="mirror"> Selecting here selects and zooms in Altium too</label>
           <label class="check"><input type="checkbox" id="follow"> Follow the board in front in Altium</label>
         </div>
@@ -510,6 +537,48 @@ async function setLanguage(choice) {
   document.documentElement.lang = LANG;
   translateStatic(document.body);
   repaintAll();
+}
+
+/* ================================================================ theme */
+// "system", "light" or "dark". The profile keeps the choice (the theme key
+// of its preferences.json), so each company's workspace can look its own
+// way; without a profile, this browser keeps it. The page caches it in
+// wb.theme so the next visit paints in the right theme from the start.
+const THEMES = ["system", "light", "dark"];
+const darkOS = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+let THEME = (() => { try { const t = JSON.parse(localStorage.getItem("wb.theme")); return THEMES.includes(t) ? t : "system"; } catch (e) { return "system"; } })();
+function applyTheme(choice) {
+  THEME = THEMES.includes(choice) ? choice : "system";
+  try { localStorage.setItem("wb.theme", JSON.stringify(THEME)); } catch (e) {}
+  const dark = THEME === "dark" || (THEME === "system" && !!darkOS && darkOS.matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  const sel = document.getElementById("theme"); if (sel) sel.value = THEME;
+  // The canvas cannot use CSS variables: read the ones it draws with.
+  if (typeof C !== "undefined") {
+    const css = getComputedStyle(document.documentElement), v = n => css.getPropertyValue(n).trim();
+    C.film = C.hole = v("--film") || C.film; C.tip = v("--paper") || C.tip; C.frame = v("--ink") || C.frame;
+    if (typeof repaintAll === "function" && S.ready) repaintAll();
+  }
+}
+// The profile's choice, when it makes one, wins over this browser's. Read
+// from the Workspace view's data, which the page polls anyway, so switching
+// profile (here or with eda-agent profile-use) switches the theme too.
+function themeFrom(w) {
+  const st = w && w.settings, t = st && st.items && st.items.theme;
+  if (!t) return;
+  S.themeSave = !!st.can_save;
+  if (t.source !== "default" && t.value !== THEME) applyTheme(t.value);
+}
+async function chooseTheme(choice) {
+  applyTheme(choice);
+  if (!S.themeSave) return say(T("Theme kept in this browser: no profile is in effect."));
+  const r = await post("/api/wb/workspace/settings", {changes: {theme: choice}});
+  say(r && r.ok ? T("Saved in {0}.", r.file) : (r && r.reason) || T("The theme could not be saved."), !(r && r.ok));
+  if (S.mode === "workspace") loadWorkspace(true);
+}
+if (darkOS) {
+  const follow = () => { if (THEME === "system") applyTheme("system"); };
+  if (darkOS.addEventListener) darkOS.addEventListener("change", follow); else if (darkOS.addListener) darkOS.addListener(follow);
 }
 
 /* ================================================================ basics */
@@ -1323,7 +1392,7 @@ async function loadWorkspace(force) {
   if (g && g.ok) r.stages = g;
   const key = JSON.stringify(r);
   if (!force && key === S.wsKey) return;
-  S.ws = r; S.stg = r.stages || null; S.wsKey = key; paintWsChip();
+  S.ws = r; S.stg = r.stages || null; S.wsKey = key; paintWsChip(); themeFrom(r);
   if (S.mode === "workspace") { paintPane(); clearTools(); paintTools(); }
 }
 function wsLoop() { loadWorkspace(false).finally(() => setTimeout(wsLoop, S.mode === "workspace" ? 4000 : 15000)); }
@@ -1352,7 +1421,7 @@ function wsSettingsCard(w) {
   const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
   const inherit = T("Not set here");
   const sel = (key, cur, opts) => `<select data-wsset="${esc(key)}" ${can ? "" : "disabled"} aria-label="${esc(T("This profile"))}">${opt("", inherit, cur)}${opts.map(([v, l]) => opt(v, l, cur)).join("")}</select>`;
-  const word = {allowed: T("Allowed"), readonly: T("Read-only"), refused: T("Refused"), on: T("On"), off: T("Off"), auto: T("Answered by the tool"), manual: T("Left to you")};
+  const word = {system: T("Follow the system"), light: T("Light"), dark: T("Dark"), allowed: T("Allowed"), readonly: T("Read-only"), refused: T("Refused"), on: T("On"), off: T("Off"), auto: T("Answered by the tool"), manual: T("Left to you")};
   const fmtNow = wsFmtKey(it.value_format.value, it.value_unit.value);
   const fmtProfile = it.value_format.profile ? wsFmtKey(it.value_format.profile, it.value_unit.profile) : "";
   const row = (label, now, src, control) => `<tr><td>${esc(label)}</td><td><b>${esc(now)}</b></td><td>${from(src)}</td><td>${control}</td></tr>`;
@@ -1366,7 +1435,8 @@ function wsSettingsCard(w) {
     + stagesRow(w.stages, from)
     + safety("edits", T("Edits")) + safety("deleting", T("Deleting")) + safety("closing", T("Closing documents"))
     + safety("ui_automation", T("Menus, dialogs and keys")) + plain("keep_in_view", T("Keep the board in view")) + plain("dialogs", T("Dialogs a tool opens"))
-    + plain("usage_stats", T("Token usage statistics"));
+    + plain("usage_stats", T("Token usage statistics"))
+    + plain("theme", T("Dashboard theme"));
   const r = S.wsSet;
   return `<section class="card wsset"><h3>${esc(T("Settings"))}<small>${esc(can ? T("kept in this profile") : T("No profile"))}</small><span class="sp"></span>${st.profile_file ? wsFile(st.profile_file) : ""}</h3>
     <table class="grid"><thead><tr><th>${esc(T("Setting"))}</th><th>${esc(T("In effect"))}</th><th>${esc(T("Comes from"))}</th><th>${esc(T("This profile"))}</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1384,6 +1454,7 @@ async function wsSetChange(t) {
   const r = await post("/api/wb/workspace/settings", {changes});
   S.wsSet = r;
   say(r.ok ? T("Saved in {0}.", r.file) : r.reason, !r.ok);
+  if (key === "theme" && r.ok) applyTheme(v || "system");
   return loadWorkspace(true);
 }
 function paintWorkspacePane() {
@@ -1725,7 +1796,7 @@ const cv = $("#cv"), ctx = cv.getContext("2d");
 let DPR = 1;
 // The board as it is built: soldermask green, copper under it, ENIG pads,
 // silkscreen; markups in red pen, blue pencil and amber.
-const C = {film: "#E8EBE5", mask: "#1F533A", edge: "#0F2A1D", pad: "#D9B45A", padB: "#B89545", via: "#C6CCCF", hole: "#E8EBE5",
+const C = {film: "#E8EBE5", tip: "#F5F6F2", mask: "#1F533A", edge: "#0F2A1D", pad: "#D9B45A", padB: "#B89545", via: "#C6CCCF", hole: "#E8EBE5",
   silk: "rgba(244,244,236,.8)", silkB: "rgba(170,205,230,.55)", rats: "rgba(244,244,236,.75)", frame: "#1C2A35",
   red: "#E0452C", amber: "#F2A12B", blue: "#5B8CFF", blueInk: "#2459B8", lit: "#FFF6C8"};
 const LAYER = ["#8FC79A", "#7FB3C9", "#C9B26A", "#B79AD0", "#D49A7A", "#9AC0A8", "#C7C27A", "#A7A9D8"];
@@ -1896,7 +1967,7 @@ function render() {
   if (S.hover) {
     ctx.font = "13px Bahnschrift, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
     const w = ctx.measureText(S.hover.text).width + 14;
-    ctx.fillStyle = "#F5F6F2"; ctx.strokeStyle = C.frame; ctx.lineWidth = 1; ctx.fillRect(S.hover.x + 14, S.hover.y + 14, w, 22); ctx.strokeRect(S.hover.x + 14.5, S.hover.y + 14.5, w, 22);
+    ctx.fillStyle = C.tip; ctx.strokeStyle = C.frame; ctx.lineWidth = 1; ctx.fillRect(S.hover.x + 14, S.hover.y + 14, w, 22); ctx.strokeRect(S.hover.x + 14.5, S.hover.y + 14.5, w, 22);
     ctx.fillStyle = C.frame; ctx.fillText(S.hover.text, S.hover.x + 21, S.hover.y + 18);
   }
   const m = S.mouse ? toBoard(S.mouse[0], S.mouse[1]) : null;
@@ -2179,6 +2250,7 @@ document.addEventListener("click", e => { if (!e.target.closest("#settings")) { 
 $("#units").addEventListener("change", e => { S.units = e.target.value; store.set("wb.units", S.units); repaintAll(); });
 $("#mirror").addEventListener("change", e => { S.mirror = e.target.checked; store.set("wb.mirror", S.mirror); });
 $("#lang").addEventListener("change", e => { store.set("wb.lang", e.target.value); setLanguage(e.target.value); });
+$("#theme").addEventListener("change", e => chooseTheme(e.target.value));
 
 window.addEventListener("keydown", e => {
   const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
@@ -2203,12 +2275,14 @@ window.addEventListener("resize", resize);
 
 (async function boot() {
   $("#units").value = S.units; $("#mirror").checked = S.mirror;
+  applyTheme(THEME);
   const info = await get("/api/language");
   S.langInfo = info || {};
   for (const l of (info && info.available) || []) { const o = document.createElement("option"); o.value = l.code; o.textContent = l.name; $("#lang").appendChild(o); }
   $("#lang").options[0].textContent = T("Altium ({0})", (info && (info.name || info.language)) || "English");
   const choice = store.get("wb.lang", "auto"); $("#lang").value = choice; if ($("#lang").selectedIndex < 0) $("#lang").value = "auto";
   await setLanguage($("#lang").value);
+  S.ready = true;
   setList(S.list); setMode(S.mode); resize(); paintInspector(); poll(); startActivity(); pollFault(); wsLoop(); usageLoop();
 })();
 </script>

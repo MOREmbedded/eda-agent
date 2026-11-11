@@ -500,6 +500,8 @@ card or by hand.
 | `deleting` | `allowed`, `refused` | the stricter wins |
 | `closing` | `allowed`, `refused` | the stricter wins |
 | `ui_automation` | `on`, `off` | the stricter wins |
+| `usage_stats` | `on`, `off` | the profile wins |
+| `theme` | `system` (follow the OS light or dark mode), `light`, `dark` | profile only: the panel has no theme switch |
 | `default_mode` | any mode's name | see [DESIGN_MODES.md](DESIGN_MODES.md) |
 
 `value_format` and `value_unit` are one choice: a profile that sets the
@@ -517,6 +519,13 @@ Config tab can differ from what the tools do; the Settings card shows both
 and which one decides. The Pascal side also enforces the panel's own
 safety switches by itself, which is why a profile can add to them but never
 remove them.
+
+`theme` is how the web dashboard looks. Choose it from the dashboard's
+Settings menu (top right) or the Settings card in the Workspace view; with a
+profile in effect the choice is saved in that profile, so each company's
+workspace can keep its own. `system` follows the operating system and
+switches with it while the page is open. With no profile in effect the
+choice is kept by the browser only.
 
 `profile-validate` names an unknown key, a value a key cannot take, a
 `value_unit` without `value_format`, and a `default_mode` that is not a

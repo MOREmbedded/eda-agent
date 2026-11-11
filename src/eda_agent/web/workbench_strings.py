@@ -20,7 +20,10 @@ NOT_WORDS = {"+", "?", "Fit", "mil", "mm", "Ctrl K", "Ctrl Enter", "Shift N", "E
 def strings(page: str | None = None) -> list[str]:
     text = page if page is not None else PAGE.read_text(encoding="utf-8")
     out: set[str] = set()
-    script = text[text.index("<script>"):]
+    # The page's script follows its body; a small one in the head (the
+    # theme, set before the first paint) shows no text.
+    body = text.index("<body>")
+    script = text[text.index("<script>", body):]
     for m in re.finditer(r'\bT\("((?:[^"\\]|\\.)*)"', script):
         out.add(json.loads(f'"{m.group(1)}"'))
     # The T calls built from a table: {place: "Place", ...}[x].
@@ -34,7 +37,7 @@ def strings(page: str | None = None) -> list[str]:
         out.add(m.group(1))
     for m in re.finditer(r'T\([a-z.]+ \? "([^"]+)" : "([^"]+)"\)', script):
         out.update(m.groups())
-    html = text[text.index("<body>"):text.index("<script>")]
+    html = text[body:text.index("<script>", body)]
     for m in re.finditer(r">([^<>]+)<", html):
         t = re.sub(r"\s+", " ", m.group(1)).strip()
         if t and re.search(r"[A-Za-z]{2}", t):
