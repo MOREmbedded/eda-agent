@@ -164,8 +164,8 @@ Read two parts of the response before running anything:
 - **`pin_order_assumptions`** lists every diode, transistor and FET whose
   node order came from pin NUMBER order. SPICE reads terminals
   positionally (`D1 anode cathode`, `Q1 collector base emitter`), so a
-  wrong order produces a deck that simulates cleanly and answers wrongly
-  - the worst failure available. R, L and C are never listed, because
+  wrong order produces a deck that simulates cleanly and answers wrongly,
+  which is the worst failure available. R, L and C are never listed, because
   their order cannot be wrong.
 - **`skipped`** gives a reason per omitted part, and **`net_renames`**
   lists nets whose names SPICE could not accept (a `/` in a bus name,

@@ -93,7 +93,14 @@ def sponsor_leftovers(pas: str, dfm: str, readme: str, funding: str) -> list[str
 
 
 def test_no_sponsor_note_or_handles_come_back():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    # The README is now a front page; the documentation pages and the
+    # website built from them (mkdocs.yml, website/) are where the same
+    # note could come back, so they are read as part of it.
+    paths = [ROOT / "README.md", ROOT / "mkdocs.yml",
+             *sorted((ROOT / "docs").rglob("*.md")),
+             *sorted(p for p in (ROOT / "website").rglob("*") if p.is_file())]
+    readme = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                        for p in paths)
     funding = (ROOT / ".github" / "FUNDING.yml").read_text(encoding="utf-8")
     assert sponsor_leftovers(PAS, DFM, readme, funding) == []
 

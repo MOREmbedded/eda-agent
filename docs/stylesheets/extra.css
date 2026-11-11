@@ -1,0 +1,119 @@
+/* eda-agent website theme. Teal for copper-on-soldermask, amber accent. */
+:root {
+  --md-primary-fg-color: #0a7e8c;
+  --md-primary-fg-color--light: #12a3b4;
+  --md-primary-fg-color--dark: #075e69;
+  --md-accent-fg-color: #e8941a;
+  --ea-hero-bg: linear-gradient(135deg, #062e35 0%, #0a5560 55%, #0a7e8c 100%);
+  --ea-card-border: rgba(10, 126, 140, 0.18);
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #12a3b4;
+  --md-primary-fg-color--light: #3cc1d0;
+  --md-primary-fg-color--dark: #0a7e8c;
+  --md-accent-fg-color: #ffb547;
+  --md-default-bg-color: #0f1417;
+  --md-code-bg-color: #161d21;
+  --ea-hero-bg: linear-gradient(135deg, #031a1f 0%, #06343b 55%, #0a5560 100%);
+  --ea-card-border: rgba(60, 193, 208, 0.22);
+}
+
+.md-header { box-shadow: none; }
+.md-typeset h1 { font-weight: 700; letter-spacing: -0.02em; color: var(--md-default-fg-color); }
+.md-typeset h2 { font-weight: 650; letter-spacing: -0.01em; }
+
+/* ---- Hero ---------------------------------------------------------- */
+.ea-hero {
+  background: var(--ea-hero-bg);
+  color: #fff;
+  padding: 3.2rem 0 3.6rem;
+  overflow: hidden;
+}
+.ea-hero__inner {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 2.4rem;
+  align-items: center;
+}
+.ea-hero .md-typeset h1 {
+  color: #fff;
+  font-size: 2.35rem;
+  line-height: 1.15;
+  margin: 0 0 0.8rem;
+}
+.ea-hero__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #9fe4ec;
+  margin: 0 0 0.6rem;
+}
+.ea-hero .md-typeset .ea-hero__lead { font-size: 0.95rem; color: rgba(255,255,255,0.86); max-width: 34rem; }
+.ea-hero__actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1.4rem 0 1.6rem; }
+.ea-hero .md-typeset .md-button {
+  color: #fff;
+  border-color: rgba(255,255,255,0.55);
+  border-radius: 0.5rem;
+  margin: 0;
+}
+.ea-hero .md-typeset .md-button--primary {
+  background: #ffb547;
+  border-color: #ffb547;
+  color: #1b1b1b;
+}
+.ea-hero .md-typeset .md-button:hover { background: #fff; border-color: #fff; color: #062e35; }
+.ea-hero__ghost svg { height: 1em; width: 1em; fill: currentColor; vertical-align: -0.12em; }
+.ea-hero .md-typeset ul.ea-hero__stats {
+  display: flex; flex-wrap: wrap; gap: 1.6rem;
+  list-style: none; margin: 0; padding: 0;
+}
+.ea-hero .md-typeset ul.ea-hero__stats li { margin: 0; list-style: none; }
+.ea-hero__stats strong { display: block; font-size: 1.35rem; color: #ffb547; line-height: 1.1; }
+.ea-hero__stats span { font-size: 0.68rem; color: rgba(255,255,255,0.75); }
+.ea-hero__video {
+  position: relative; display: block; border-radius: 0.8rem; overflow: hidden;
+  box-shadow: 0 1.2rem 3rem rgba(0,0,0,0.45);
+  transition: transform 0.2s ease;
+}
+.ea-hero__video:hover { transform: translateY(-3px); }
+.ea-hero__video img { display: block; width: 100%; }
+.ea-hero__play {
+  position: absolute; inset: 0; margin: auto; width: 3.4rem; height: 3.4rem;
+  border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff;
+  display: grid; place-items: center; font-size: 1.3rem; padding-left: 0.2rem;
+}
+.ea-hero__caption { font-size: 0.7rem; color: rgba(255,255,255,0.7); text-align: center; margin-top: 0.6rem; }
+@media screen and (max-width: 60em) {
+  .ea-hero__inner { grid-template-columns: 1fr; }
+  .ea-hero .md-typeset h1 { font-size: 1.8rem; }
+}
+
+/* ---- Cards ---------------------------------------------------------- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--ea-card-border);
+  border-radius: 0.7rem;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--md-primary-fg-color);
+  box-shadow: 0 0.4rem 1.2rem rgba(10,126,140,0.15);
+  transform: translateY(-2px);
+}
+.md-typeset .grid.cards .lg { color: var(--md-primary-fg-color); }
+
+.md-typeset .ea-section-title { text-align: center; margin-top: 2.8rem; }
+.md-typeset .ea-section-lead { text-align: center; color: var(--md-default-fg-color--light); max-width: 40rem; margin: 0 auto 1.4rem; }
+
+.ea-shots { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.ea-shots figure { margin: 0; }
+.ea-shots img { border-radius: 0.6rem; box-shadow: 0 0.4rem 1.4rem rgba(0,0,0,0.18); }
+@media screen and (max-width: 45em) { .ea-shots { grid-template-columns: 1fr; } }
+
+.ea-examples { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+@media screen and (max-width: 45em) { .ea-examples { grid-template-columns: 1fr; } }
+
+/* Eight feature cards: four across on wide screens, two rows. */
+.md-typeset .grid.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }

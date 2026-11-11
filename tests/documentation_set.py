@@ -27,6 +27,17 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 README = ROOT / "README.md"
+#: The README was split a second time, into a short front page and the
+#: pages below; each one holds a section the README used to carry.
+GETTING_STARTED = ROOT / "docs" / "GETTING_STARTED.md"
+FEATURES = ROOT / "docs" / "FEATURES.md"
+USING_THE_TOOLS = ROOT / "docs" / "USING_THE_TOOLS.md"
+FAB_AND_CALCULATORS = ROOT / "docs" / "FAB_AND_CALCULATORS.md"
+LIMITATIONS = ROOT / "docs" / "LIMITATIONS.md"
+CLI = ROOT / "docs" / "CLI.md"
+CONFIGURATION = ROOT / "docs" / "CONFIGURATION.md"
+DEVELOPMENT = ROOT / "docs" / "DEVELOPMENT.md"
+SITE_HOME = ROOT / "docs" / "index.md"
 BACKENDS = ROOT / "docs" / "BACKENDS.md"
 PART_SOURCING = ROOT / "docs" / "PART_SOURCING.md"
 TOOL_REFERENCE = ROOT / "docs" / "TOOL_REFERENCE.md"
@@ -35,6 +46,15 @@ TOOL_REFERENCE = ROOT / "docs" / "TOOL_REFERENCE.md"
 #: reading order, not a priority.
 DOC_FILES: tuple[pathlib.Path, ...] = (
     README,
+    SITE_HOME,
+    GETTING_STARTED,
+    FEATURES,
+    USING_THE_TOOLS,
+    FAB_AND_CALCULATORS,
+    LIMITATIONS,
+    CLI,
+    CONFIGURATION,
+    DEVELOPMENT,
     BACKENDS,
     PART_SOURCING,
     TOOL_REFERENCE,
@@ -44,7 +64,10 @@ DOC_FILES: tuple[pathlib.Path, ...] = (
 #: from the code, so a claim in it cannot be wrong about the code, and
 #: including it would let a generated mention satisfy a guard that meant
 #: to check what a human wrote.
-PROSE_FILES: tuple[pathlib.Path, ...] = (README, BACKENDS, PART_SOURCING)
+PROSE_FILES: tuple[pathlib.Path, ...] = (
+    README, SITE_HOME, GETTING_STARTED, FEATURES, USING_THE_TOOLS,
+    FAB_AND_CALCULATORS, LIMITATIONS, CLI, CONFIGURATION, DEVELOPMENT,
+    BACKENDS, PART_SOURCING)
 
 
 def _read(paths) -> str:

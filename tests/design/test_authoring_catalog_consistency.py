@@ -72,13 +72,14 @@ def test_every_block_in_readme_and_tool_docstring():
     It is small and genuinely useful, so it moved to the feature list
     rather than being dropped.
     """
-    readme = _read("README.md")
+    # The feature list moved from the README to docs/FEATURES.md.
+    readme = _read("docs/FEATURES.md")
     row = next(l for l in readme.splitlines()
                if "design_add_circuit_block" in l
                and "Canonical circuit blocks" in l)
     design_py = _read("src/eda_agent/tools/design.py")
     for block in _BLOCKS:
-        assert f"`{block}`" in row, f"{block} missing from README block list"
+        assert f"`{block}`" in row, f"{block} missing from the FEATURES block list"
         assert f"``{block}``" in design_py, \
             f"{block} missing from design.py docstrings"
 

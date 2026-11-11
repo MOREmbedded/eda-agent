@@ -120,6 +120,12 @@ dev = [
 web = [
     "flask>=3.0",
 ]
+# The product website (mkdocs.yml, published to GitHub Pages). Only
+# needed to build or preview the site locally.
+site = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+]
 
 [project.scripts]
 eda-agent = "eda_agent.server:main"

@@ -122,7 +122,7 @@ def test_a_subcommands_own_help_is_untouched():
     assert "Diagnostics:" not in text
 
 
-# ---- and the README says the same thing --------------------------------
+# ---- and docs/CLI.md says the same thing ------------------------------
 # The table there was a flat 40 rows in roughly parser order, five
 # commands short. Grouping it the same way only helps if it stays that
 # way, which is what these two are for.
@@ -130,11 +130,10 @@ def test_a_subcommands_own_help_is_untouched():
 def _cli_section() -> str:
     from pathlib import Path
 
-    text = Path(__file__).resolve().parents[1].joinpath(
-        "README.md").read_text(encoding="utf-8")
-    start = text.index("\n## CLI\n")
-    end = text.index("\n## Configuration\n", start)
-    return text[start:end]
+    # The CLI table moved out of the README into a page of its own,
+    # where each group is a second-level heading.
+    return Path(__file__).resolve().parents[1].joinpath(
+        "docs", "CLI.md").read_text(encoding="utf-8")
 
 
 def test_the_readme_table_lists_every_command():
@@ -143,10 +142,10 @@ def test_the_readme_table_lists_every_command():
     section = _cli_section()
     listed = set(re.findall(r"`eda-agent ([a-z0-9-]+)", section))
     missing = sorted(registered_commands() - listed)
-    assert not missing, f"commands with no row in the README CLI table: {missing}"
+    assert not missing, f"commands with no row in the docs/CLI.md table: {missing}"
 
 
 def test_the_readme_uses_the_same_section_titles():
     section = _cli_section()
     for title, _names in command_groups():
-        assert f"### {title}" in section, title
+        assert f"\n## {title}\n" in section, title

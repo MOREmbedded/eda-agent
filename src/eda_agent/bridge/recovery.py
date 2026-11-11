@@ -82,7 +82,8 @@ _GUIDANCE = {
 }
 
 # Where a human can read the full story.
-_DOCS_HINT = "See README 'Known limitations' > 'Altium DelphiScript engine can crash'."
+_DOCS_HINT = ("See docs/LIMITATIONS.md 'Known limitations' > "
+              "'Altium DelphiScript engine can crash'.")
 
 
 def recovery_guidance(fault: str) -> dict:
