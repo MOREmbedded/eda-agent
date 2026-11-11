@@ -1,0 +1,103 @@
+{
+ "vendor": "Beta LAYOUT",
+ "source": {
+  "url": "https://uk.beta-layout.com/pcb/",
+  "other_urls": [
+   "https://uk.beta-layout.com/pcb/technology/specifications/"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "PCB-POOL. Only the summary table was readable (three columns: German pool from 8 h, overseas from 10 working days, special on request); the per-product specification tabs with track, drill and mask figures did not come through, so every design rule is missing until a refresh reads them. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "pool": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6
+     ],
+     "quote": "1-6"
+    }
+   ],
+   "min_track": [
+    {
+     "unpublished": "On the PCB-POOL specification tab, which was not readable."
+    }
+   ],
+   "min_gap": [
+    {
+     "unpublished": "On the PCB-POOL specification tab, which was not readable."
+    }
+   ],
+   "min_drill": [
+    {
+     "unpublished": "On the PCB-POOL drill chart, which was not readable."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.0 or 1.6 mm FR4",
+     "quote": "FR4: 1,0 mm und 1,6 mm, ALU (IMS): 1,5 mm, Flex: 0,2 mm"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "35 µm",
+     "quote": "35 µm, Flex PCB: 22 µm"
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "430 x 380 mm",
+     "quote": "Max. single size: 430 x 380"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "ENIG, lead-free HAL",
+     "quote": "chem. Ni/Au, Hal (lead-free)"
+    }
+   ]
+  },
+  "overseas": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10
+     ],
+     "quote": "1-10"
+    }
+   ],
+   "min_track": [
+    {
+     "unpublished": "On the PCB-OVERSEAS specification tab, which was not readable."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "0.8-2.4 mm FR4",
+     "quote": "FR4: 0,8 mm bis 2,4 mm, ALU (IMS): 1,5 mm"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "35 or 70 µm",
+     "quote": "35 µm, 70 µm all layers"
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "610 x 510 mm",
+     "quote": "Max. single size: 610 x 510"
+    }
+   ]
+  }
+ }
+}

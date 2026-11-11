@@ -1,0 +1,114 @@
+{
+ "vendor": "Eurocircuits",
+ "source": {
+  "url": "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/",
+  "other_urls": [
+   "https://www.eurocircuits.com/pcb-design-guidelines-classification/",
+   "https://www.eurocircuits.com/services/"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "Eurocircuits grades boards by pattern class (6-9) and drill class; the classification table is an image that was not read, so per-class track, gap and ring are missing. The pool figures come from the services page. Clearances and tolerances below hold for every class. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "standard_pool": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+     ],
+     "quote": "Up to 16 Layers"
+    }
+   ],
+   "min_track": [
+    {
+     "um": 100,
+     "quote": "100µm Track & Gap pooling - 90 µm Non-pooling",
+     "note": "Pooling; 90 µm in non-pooling orders."
+    }
+   ],
+   "min_gap": [
+    {
+     "um": 100,
+     "quote": "100µm Track & Gap pooling - 90 µm Non-pooling"
+    }
+   ],
+   "min_drill": [
+    {
+     "unpublished": "By drill class, which is in the classification image not read."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "unpublished": "By pattern class, which is in the classification image not read."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mm": 0.25,
+     "quote": "The minimum drill hole to drill hole distance is 0.25mm (10mil)"
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The mask page gives 'Green 0.135mm 0.090mm' under design rules, but which of the two is the dam between pads could not be told from the text read."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.1,
+     "quote": "Minimum Legend Line Width: 0.10mm (4mil)"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.0,
+     "quote": "Minimum Text Height (for good readability): 1.00mm (39.5mil)"
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "mm": 0.1,
+     "quote": "Exposed copper (or surface finished copper): 0.100mm"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.25,
+     "quote": "0.25mm (10mil) on outer layers",
+     "note": "Inner layers 0.40 mm."
+    }
+   ],
+   "copper_to_vcut": [
+    {
+     "mm": 0.45,
+     "quote": "0.45mm (18mil) on outer and inner layers"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±0.10 mm up to 4 mm",
+     "quote": "≤4.00 | 0.10 | 0.10 | 0.20"
+    }
+   ],
+   "npth_hole_tolerance": [
+    {
+     "value": "±0.05 mm up to 4 mm",
+     "quote": "≤4.00 | 0.05 | 0.05 | 0.10"
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "A class 3 option is linked but was not read."
+    }
+   ]
+  }
+ }
+}

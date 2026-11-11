@@ -706,6 +706,49 @@ Bundled laminate properties, with BOTH dielectric constants
 |---|---|---|
 | `--json` | switch | Print as JSON. |
 
+#### `eda-agent fab-list`
+
+Fab connectors: which fabs have design-rule data, and its age
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--json` | switch | Print as JSON. |
+
+#### `eda-agent fab-rules`
+
+Every published design rule of one fab build, with quotes
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `vendor` | `VENDOR` | e.g. jlcpcb, technoservice |
+| `--layers` | `LAYERS` | Copper layer count. |
+| `--oz` | `OZ` | Outer copper weight in oz (default 1). |
+| `--tier` | `TIER` | The fab's tier or process (fab-list shows them). |
+| `--ipc-class` | `1`, `2`, `3` | Also apply IPC class floors. |
+| `--json` | switch | Print as JSON. |
+
+#### `eda-agent fab-compare`
+
+All fabs and tiers side by side for one build
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--layers` | `LAYERS` | Copper layer count. |
+| `--oz` | `OZ` | Outer copper weight in oz (default 1). |
+| `--key` | `KEYS` | Rule key to show, e.g. min_track. Repeatable. |
+| `--json` | switch | Print as JSON. |
+
+#### `eda-agent fab-refresh`
+
+Re-read a fab's pages and check every stored quote
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `vendor` | `VENDOR` | Connector key (fab-list). |
+| `--file` | `FILES` | A saved copy of a page. Repeatable. |
+| `--write` | switch | Move the reading date when all quotes match. |
+| `--json` | switch | Print as JSON. |
+
 ### Altium 365
 
 #### `eda-agent altium365-login`

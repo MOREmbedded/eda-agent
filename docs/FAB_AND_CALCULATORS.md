@@ -42,6 +42,79 @@ It requires Python 3.12+, while eda-agent itself supports 3.11, which is
 why it is an extra rather than a core dependency. Without it the tool
 says so plainly instead of failing obscurely.
 
+## Fab design-rule database
+
+Design rules for thirteen PCB fabs, read from each fab's own published
+capability pages. No fab offers an API for this, so every figure is
+stored with the fab's words (`quote`), the page and the date it was
+read, exactly as the JLCPCB and PCBWay data below always has been.
+
+| Fab | Country | Status | Tiers |
+|---|---|---|---|
+| JLCPCB | CN | data | standard |
+| PCBWay | CN | data | standard, advanced_normal |
+| Technoservice (TS PCB) | PL | data | standard |
+| Satland Prototype | PL | pending | robots.txt refuses readers: use `--file` |
+| Eurocircuits | BE | partial | standard_pool (pattern classes are an image) |
+| Würth Elektronik | DE | pending | Basic Design Guide to be read |
+| Multi Circuit Boards | DE | data | standard, special |
+| AISLER | DE/NL | pending | help page moved |
+| Beta LAYOUT (PCB-POOL) | DE/IE | partial | pool, overseas (summary only) |
+| NextPCB | CN | data | standard, advanced_hdi |
+| PCBCart | CN | pending | capability page moved |
+| OSH Park | US | data | two_layer, four_layer, six_layer, after_dark |
+| Advanced Circuits | US | partial | standard, custom |
+
+`data` means the core minimums are stored; `partial` that some are not
+readable yet; `pending` that the pages are known but not read.
+
+```bash
+eda-agent fab-list
+eda-agent fab-rules technoservice --layers 4
+eda-agent fab-compare --layers 4
+eda-agent fab-refresh oshpark
+```
+
+| CLI verb | Tool | Does |
+|---|---|---|
+| `fab-list` | `design_list_fabs` | Every connector, its status, tiers and age |
+| `fab-rules` | `design_fab_rules` | Every published rule of one build (fab, tier, layers, outer oz), each with its quote; missing ones with the reason |
+| `fab-compare` | `design_fab_compare` | All fabs and tiers side by side for one build |
+| `fab-refresh` | - | Re-read a fab's pages and check the stored quotes |
+
+Rules covered, where the fab publishes them: track, gap, mechanical and
+laser drill, non-plated hole, via and component ring, hole to hole,
+inner hole to copper, mask dam and expansion, silkscreen width, height
+and clearance to pads, copper to routed edge and to V-score, aspect
+ratio, BGA pitch, hole and outline tolerances, thickness, copper
+weights, board size, via in pad, impedance tolerance, castellation,
+finishes and the IPC class the fab builds to. Lengths come back in
+mils; the stored figure keeps the fab's own unit (mm, mil or µm).
+
+**IPC class 2 and 3.** `--ipc-class` asks for the class floors on top
+of the fab's minimums, each rule becoming the stricter of the two and
+saying which governs. IPC values are licensed, so none ship
+in the repository: the floors are read per profile from
+`<profile dir>\standards\ipc_class_floors.json`, each citing its
+clause. Without that file a class is **refused**: a class 3 rule set
+built from fab minimums alone would look like one and not be. IPC
+classes mostly set annular rings, hole wall, hole to copper and aspect
+ratio; track, gap, mask and silkscreen stay the fab's.
+
+**Connectors.** `fab_data/fab_sources.json` lists each fab's pages.
+`fab-refresh` fetches them (HTML or PDF), obeying robots.txt, keeps a
+dated plain-text snapshot under `%USERPROFILE%\.eda-agent\fab_snapshots\`
+(never in the repository), and looks for every stored quote in it. A
+quote still on the page confirms its figure; a quote that is gone means
+the fab changed or moved it, and is listed for a person to read again.
+A refresh never rewrites a figure. `--write` moves the reading date on,
+and only when every quote was found. For a site that refuses automated
+readers, save the page from a browser and pass `--file`.
+
+The figures added on 2026-11-11 were read by an automated page reader.
+Run `fab-refresh` for a fab before relying on it for an order: it
+proves each quote against the live page.
+
 ## Fab capabilities, stackups and laminates
 
 Capability figures and stackup templates for JLCPCB and PCBWay ship

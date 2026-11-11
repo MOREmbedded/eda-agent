@@ -1,0 +1,144 @@
+{
+ "note": "One connector per fab: the pages its capabilities are read from. status: data (rules stored), partial (some core rules missing), pending (pages not read yet). `eda-agent fab-refresh <key>` re-reads them.",
+ "fabs": {
+  "jlcpcb": {
+   "vendor": "JLCPCB",
+   "country": "CN",
+   "data_file": "jlcpcb.json",
+   "status": "data",
+   "urls": [
+    "https://jlcpcb.com/capabilities/pcb-capabilities"
+   ]
+  },
+  "pcbway": {
+   "vendor": "PCBWay",
+   "country": "CN",
+   "data_file": "pcbway.json",
+   "status": "data",
+   "urls": [
+    "https://www.pcbway.com/capabilities.html"
+   ]
+  },
+  "technoservice": {
+   "vendor": "Technoservice",
+   "country": "PL",
+   "data_file": "technoservice.json",
+   "status": "data",
+   "urls": [
+    "https://tspcb.pl/mozliwosci-technologiczne/",
+    "https://tspcb.pl/content/uploads/2026/05/Parametry-technologiczne-obwodow-TS-PCB_2026.pdf"
+   ],
+   "note": "TS PCB. The PDF link changes with each yearly update; find it on https://tspcb.pl/pliki-do-pobrania/."
+  },
+  "satland": {
+   "vendor": "Satland Prototype",
+   "country": "PL",
+   "data_file": null,
+   "status": "pending",
+   "urls": [
+    "https://www.satland.com.pl/"
+   ],
+   "note": "The site's robots.txt refuses automated readers: save its technology page from a browser and run fab-refresh satland --file <saved page>."
+  },
+  "eurocircuits": {
+   "vendor": "Eurocircuits",
+   "country": "BE",
+   "data_file": "eurocircuits.json",
+   "status": "partial",
+   "urls": [
+    "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/",
+    "https://www.eurocircuits.com/pcb-design-guidelines-classification/",
+    "https://www.eurocircuits.com/services/"
+   ],
+   "note": "Pattern and drill class minima are in an image on the classification page; transcribe them from the image."
+  },
+  "wurth": {
+   "vendor": "Würth Elektronik",
+   "country": "DE",
+   "data_file": null,
+   "status": "pending",
+   "urls": [
+    "https://www.we-online.com/en/products/pcb"
+   ],
+   "note": "The pages refused the cloud reader; their Basic Design Guide PDF is the source to read."
+  },
+  "multicb": {
+   "vendor": "Multi Circuit Boards",
+   "country": "DE",
+   "data_file": "multicb.json",
+   "status": "data",
+   "urls": [
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/design-parameters.html",
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/drills-throughplating.html",
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/surface/solder-stop.html",
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/surface/legend-marking-print.html",
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/mechanics/milling.html",
+    "https://www.multi-circuit-boards.eu/en/pcb-design-aid/introduction.html"
+   ]
+  },
+  "aisler": {
+   "vendor": "AISLER",
+   "country": "DE/NL",
+   "data_file": null,
+   "status": "pending",
+   "urls": [
+    "https://aisler.net/help/design-rules-and-guidelines"
+   ],
+   "note": "The help page now redirects to the community site; find the design-rules article there."
+  },
+  "beta_layout": {
+   "vendor": "Beta LAYOUT",
+   "country": "DE/IE",
+   "data_file": "beta_layout.json",
+   "status": "partial",
+   "urls": [
+    "https://uk.beta-layout.com/pcb/",
+    "https://uk.beta-layout.com/pcb/technology/specifications/"
+   ],
+   "note": "Only the summary table was read; the specification tabs need a browser-saved copy."
+  },
+  "nextpcb": {
+   "vendor": "NextPCB",
+   "country": "CN",
+   "data_file": "nextpcb.json",
+   "status": "data",
+   "urls": [
+    "https://www.nextpcb.com/pcb-capabilities",
+    "https://www.nextpcb.com/advanced-pcb-manufacturing-capabilities"
+   ]
+  },
+  "pcbcart": {
+   "vendor": "PCBCart",
+   "country": "CN",
+   "data_file": null,
+   "status": "pending",
+   "urls": [
+    "https://www.pcbcart.com/"
+   ],
+   "note": "The old capability URLs return a 404 page; find the current capability page from the home page."
+  },
+  "oshpark": {
+   "vendor": "OSH Park",
+   "country": "US",
+   "data_file": "oshpark.json",
+   "status": "data",
+   "urls": [
+    "https://docs.oshpark.com/services/",
+    "https://docs.oshpark.com/services/two-layer/",
+    "https://docs.oshpark.com/services/four-layer/",
+    "https://docs.oshpark.com/services/afterdark/"
+   ]
+  },
+  "advanced_circuits": {
+   "vendor": "Advanced Circuits",
+   "country": "US",
+   "data_file": "advanced_circuits.json",
+   "status": "partial",
+   "urls": [
+    "https://www.advancedpcb.com/en-us/solutions/standard-pcbs/",
+    "https://www.advancedpcb.com/en-us/solutions/advanced-pcbs/"
+   ],
+   "note": "Annular ring, hole to hole and mask dam are in a facility table that did not keep its alignment when read."
+  }
+ }
+}

@@ -2645,6 +2645,75 @@ def register_design_tools(mcp) -> None:
             vendor or None, copper_layers or None)}
 
     @mcp.tool()
+    async def design_list_fabs() -> dict[str, Any]:
+        """The PCB fabs with a design-rule connector, and what is stored.
+
+        Each fab's capabilities are read from its own published pages
+        (none has an API) and stored with the fab's quote, page and
+        reading date. ``status`` says how complete the reading is: data,
+        partial (some core minimums unreadable) or pending (no data yet).
+
+        Returns:
+            ``{"ok": True, "fabs": [{key, vendor, country, status, urls,
+            tiers?, retrieved?, age_days?, stale?, note?}]}``.
+        """
+        from ..design.fab_connectors import list_connectors
+        return {"ok": True, "fabs": list_connectors()}
+
+    @mcp.tool()
+    async def design_fab_rules(
+        vendor: str, copper_layers: int, outer_oz: float = 1.0,
+        tier: str = "standard", ipc_class: int = 0,
+    ) -> dict[str, Any]:
+        """Every published design rule of one fab build, each with its quote.
+
+        Clearances, widths, drills, rings, mask, silkscreen, board edge,
+        V-score, tolerances, aspect ratio, finishes and the IPC class the
+        fab builds to, for one tier at one layer count and copper weight.
+        A rule the fab does not publish is listed under ``missing`` with
+        the reason: never guessed. ``ipc_class`` 2 or 3 adds the class
+        floors (from the active profile's standards/ipc_class_floors.json;
+        IPC values never ship in the repository) and makes each rule the
+        stricter of the two; REFUSED when the profile has no such file.
+
+        Args:
+            vendor: e.g. "JLCPCB", "Technoservice" (design_list_fabs)
+            copper_layers: copper layer count of the board
+            outer_oz: finished outer copper, oz
+            tier: the fab's tier or process (design_list_fabs lists them)
+            ipc_class: 0 for fab minimums only, else 1, 2 or 3
+
+        Returns:
+            ``{"ok": True, "vendor", "tier", "build", "rules": {key:
+            {label, kind, mils|value|counts, quote, url, altium_rule?}},
+            "missing": [{key, reason}], "age", "source"}``.
+        """
+        from ..design.fab_rules import fab_rules
+        return fab_rules(vendor, copper_layers=copper_layers, outer_oz=outer_oz,
+                         tier=tier, ipc_class=ipc_class or None)
+
+    @mcp.tool()
+    async def design_fab_compare(
+        copper_layers: int, outer_oz: float = 1.0,
+        keys: Optional[list] = None,
+    ) -> dict[str, Any]:
+        """Every fab and tier side by side for one build, in mils.
+
+        Args:
+            copper_layers: copper layer count
+            outer_oz: finished outer copper, oz
+            keys: rule keys to compare (default: track, gap, drill, via
+                ring, hole to hole, mask dam, copper to edge)
+
+        Returns:
+            ``{"ok": True, "keys", "rows": [{vendor, tier, stale,
+            retrieved, cells: {key: {mils|value, quote} or {missing}}}]}``.
+        """
+        from ..design.fab_rules import compare
+        return compare(keys or None, copper_layers=copper_layers,
+                       outer_oz=outer_oz)
+
+    @mcp.tool()
     async def design_get_stackup(
         name: str,
         impedance_targets: Optional[list] = None,

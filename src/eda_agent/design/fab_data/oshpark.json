@@ -1,0 +1,474 @@
+{
+ "vendor": "OSH Park",
+ "source": {
+  "url": "https://docs.oshpark.com/services/",
+  "other_urls": [
+   "https://docs.oshpark.com/services/two-layer/",
+   "https://docs.oshpark.com/services/four-layer/",
+   "https://docs.oshpark.com/services/afterdark/"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "One page per service. Tiers: two_layer (2-layer prototype), four_layer, six_layer (from the services index only; the six-layer page was not read), after_dark (black FR4, clear mask; 1 oz, same rules as two_layer). Blind and buried vias are not offered: 'We do not support blind or buried vias.'"
+ },
+ "tiers": {
+  "two_layer": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      2
+     ],
+     "quote": "Copper Layers | 2"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 6,
+     "quote": "6mil (0.1524mm) trace width"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 6,
+     "quote": "6mil (0.1524mm) trace clearance"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 10,
+     "quote": "Minimum Drill Size | 10mil (0.254mm)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Minimum Annular Ring | 5mil (0.127mm)",
+     "note": "One annular ring row for all plated holes."
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Minimum Annular Ring | 5mil (0.127mm)",
+     "note": "Same row as the via ring; the page gives one figure for every plated hole."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) clearance is recommended between holes.",
+     "note": "A recommendation. Overlapping drills are 'Allowed, but not guaranteed.'"
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Minimum soldermask web | 4 mil (0.1016mm)"
+    }
+   ],
+   "mask_expansion": [
+    {
+     "unpublished": "Not published. The page gives 'Maximum soldermask alignment | 3mil (0.0762mm)', which covers retraction, expansion and shift: a tolerance, not an expansion to design with."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) (recommended minimum)",
+     "note": "3 mil is accepted for short lines, text and graphics: '3 mil (0.0762mm) (short lines, text, graphics)'."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 15,
+     "quote": "Board Edge Keepout | 15mil (0.381) from nominal board edge"
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.6 mm",
+     "quote": "Board Thickness | 63mil (1.6mm) nominal"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 oz",
+     "quote": "Copper Weight | 1oz"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±2.5 mil max, ±1.0 mil typical",
+     "quote": "Max: +/- 2.5mil (0.0635mm)",
+     "note": "Typical +/- 1.0mil (0.0254) is also stated."
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "406.4 x 558.8 mm",
+     "quote": "16in (406.4mm) by 22in (558.8mm)"
+    }
+   ],
+   "via_in_pad": [
+    {
+     "value": "no",
+     "quote": "Filled+Plated Vias (via-in-pad) | No"
+    }
+   ],
+   "castellated_holes": [
+    {
+     "value": "allowed, not guaranteed",
+     "quote": "Castellations | Allowed, but not guaranteed"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "ENIG",
+     "quote": "PCB Finish | ENIG (Gold), compliant with IPC-4552"
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ]
+  },
+  "four_layer": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      4
+     ],
+     "quote": "Copper Layers | 4"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 5,
+     "quote": "Trace Width | 5mil (0.127mm)"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 5,
+     "quote": "Trace Spacing | 5mil (0.127mm)"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 10,
+     "quote": "Minimum Drill Size | 10mil (0.254mm)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "Minimum Annular Ring | 4mil (0.1016mm)"
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "Minimum Annular Ring | 4mil (0.1016mm)",
+     "note": "One figure for every plated hole."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) clearance is recommended between holes.",
+     "note": "A recommendation. Overlapping drills are 'Allowed, but not guaranteed.'"
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Minimum soldermask web | 4 mil (0.1016mm)"
+    }
+   ],
+   "mask_expansion": [
+    {
+     "unpublished": "Not published. The page gives 'Maximum soldermask alignment | 3mil (0.0762mm)', which covers retraction, expansion and shift: a tolerance, not an expansion to design with."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) (recommended minimum)",
+     "note": "3 mil is accepted for short lines, text and graphics: '3 mil (0.0762mm) (short lines, text, graphics)'."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 15,
+     "quote": "Board Edge Keepout | 15mil (0.381) from nominal board edge"
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.6 mm",
+     "quote": "Board Thickness | 63mil (1.6mm) nominal"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 oz outer, 0.5 oz inner",
+     "quote": "Copper Weight | 1oz outer ... 1/2oz inner"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±2.5 mil max, ±1.0 mil typical",
+     "quote": "Max: +/- 2.5mil (0.0635mm)",
+     "note": "Typical +/- 1.0mil (0.0254) is also stated."
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "406.4 x 558.8 mm",
+     "quote": "16in (406.4mm) by 22in (558.8mm)"
+    }
+   ],
+   "via_in_pad": [
+    {
+     "value": "no",
+     "quote": "Filled+Plated Vias (via-in-pad) | No"
+    }
+   ],
+   "castellated_holes": [
+    {
+     "value": "allowed, not guaranteed",
+     "quote": "Castellations | Allowed, but not guaranteed"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "ENIG",
+     "quote": "PCB Finish | ENIG (Gold), compliant with IPC-4552"
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "hole_to_copper_inner": [
+    {
+     "mil": 10,
+     "quote": "Plated Drill to Internal Layer Copper Clearance | 10mil (0.254mm)"
+    }
+   ]
+  },
+  "six_layer": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      6
+     ],
+     "quote": "Six Layer Boards ... All 6 layer boards ship with FR408 substrate"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 5,
+     "quote": "5mil (0.127mm) trace width"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 5,
+     "quote": "5mil (0.127mm) trace clearance"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 8,
+     "quote": "8mil (0.2032mm) drill size"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "4mil (0.1016mm) annular ring"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "The services index gives none for six layers and the six-layer page was not read."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "The services index gives none for six layers and the six-layer page was not read."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "The services index gives none for six layers and the six-layer page was not read."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.6 mm",
+     "quote": "63mil (1.6mm)"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 oz outer, 0.5 oz inner",
+     "quote": "1oz outer ... 0.5oz inner"
+    }
+   ]
+  },
+  "after_dark": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      2
+     ],
+     "quote": "Copper Layers | 2"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 6,
+     "quote": "Trace Width | 6mil (0.1524mm)"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 6,
+     "quote": "Trace Spacing | 6mil (0.1524mm)"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 10,
+     "quote": "Minimum Drill Size | 10mil (0.254mm)"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Minimum Annular Ring | 5mil (0.127mm)",
+     "note": "One annular ring row for all plated holes."
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mil": 5,
+     "quote": "Minimum Annular Ring | 5mil (0.127mm)",
+     "note": "Same row as the via ring; the page gives one figure for every plated hole."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) clearance is recommended between holes.",
+     "note": "A recommendation. Overlapping drills are 'Allowed, but not guaranteed.'"
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 4,
+     "quote": "Minimum soldermask web | 4 mil (0.1016mm)"
+    }
+   ],
+   "mask_expansion": [
+    {
+     "unpublished": "Not published. The page gives 'Maximum soldermask alignment | 3mil (0.0762mm)', which covers retraction, expansion and shift: a tolerance, not an expansion to design with."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "5 mil (0.127mm) (recommended minimum)",
+     "note": "3 mil is accepted for short lines, text and graphics: '3 mil (0.0762mm) (short lines, text, graphics)'."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 15,
+     "quote": "Board Edge Keepout | 15mil (0.381) from nominal board edge"
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.6 mm",
+     "quote": "Board Thickness | 63mil (1.6mm) nominal"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 oz",
+     "quote": "Copper Weight | 1oz"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±2.5 mil max, ±1.0 mil typical",
+     "quote": "Max: +/- 2.5mil (0.0635mm)",
+     "note": "Typical +/- 1.0mil (0.0254) is also stated."
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "406.4 x 558.8 mm",
+     "quote": "16in (406.4mm) by 22in (558.8mm)"
+    }
+   ],
+   "via_in_pad": [
+    {
+     "value": "no",
+     "quote": "Filled+Plated Vias (via-in-pad) | No"
+    }
+   ],
+   "castellated_holes": [
+    {
+     "value": "allowed, not guaranteed",
+     "quote": "Castellations | Allowed, but not guaranteed"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "ENIG",
+     "quote": "PCB Finish | ENIG (Gold), compliant with IPC-4552"
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "Not on the page."
+    }
+   ]
+  }
+ }
+}

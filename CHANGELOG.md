@@ -16,6 +16,23 @@ maturity classification for every tool.
 
 ### Added
 
+- **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
+  Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
+  Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced
+  Circuits, each with its published pages registered as a connector.
+  Nine have rules stored so far, every figure with the fab's quote, page
+  and date; four are pending because their pages refused the reader.
+  New `fab-list`, `fab-rules`, `fab-compare` and `fab-refresh` commands
+  and `design_list_fabs`, `design_fab_rules`, `design_fab_compare`
+  tools give every rule of one build (board edge, V-score, mask,
+  silkscreen, tolerances, aspect ratio and more, not only the seven
+  minimums a fab profile carries). `fab-refresh` re-reads a fab's pages,
+  obeying robots.txt, snapshots them outside the repository and checks
+  every stored quote is still there; it never rewrites a figure. IPC
+  class 2/3 floors come from the active profile (IPC values are
+  licensed and never ship in the repository) and are refused without them.
+  See [`docs/FAB_AND_CALCULATORS.md`](docs/FAB_AND_CALCULATORS.md).
+
 - **Token usage of the EDA tools, counted.** Every MCP tool call is
   measured as the server sends it: the arguments the AI wrote and the
   result it reads back, turned into an estimated token count (about 4

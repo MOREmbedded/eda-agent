@@ -890,7 +890,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         )),
         ("Fab capabilities and materials", (
             "stackup-vendors", "stackup-show", "stackup-profile",
-            "laminates",
+            "laminates", "fab-list", "fab-rules", "fab-compare", "fab-refresh",
         )),
         ("Altium 365", (
             "altium365-login", "altium365-logout",
@@ -1519,6 +1519,59 @@ def build_parser() -> argparse.ArgumentParser:
     ).add_argument("--json", dest="json_out", action="store_true",
                    help="Print as JSON.")
 
+    subparsers.add_parser(
+        "fab-list",
+        help="Fab connectors: which fabs have design-rule data, and its age",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+    fab_rules_p = subparsers.add_parser(
+        "fab-rules",
+        help="Every published design rule of one fab build, with quotes",
+        epilog=("A rule the fab does not publish is listed as missing with "
+                "the reason; nothing is guessed. --ipc-class reads the "
+                "class floors from the active profile's "
+                "standards/ipc_class_floors.json and is refused without it."),
+    )
+    fab_rules_p.add_argument("vendor", help="e.g. jlcpcb, technoservice")
+    fab_rules_p.add_argument("--layers", type=int, required=True,
+                             help="Copper layer count.")
+    fab_rules_p.add_argument("--oz", type=float, default=1.0,
+                             help="Outer copper weight in oz (default 1).")
+    fab_rules_p.add_argument("--tier", default="standard",
+                             help="The fab's tier or process (fab-list shows them).")
+    fab_rules_p.add_argument("--ipc-class", type=int, choices=(1, 2, 3),
+                             help="Also apply IPC class floors.")
+    fab_rules_p.add_argument("--json", dest="json_out", action="store_true",
+                             help="Print as JSON.")
+    fab_cmp_p = subparsers.add_parser(
+        "fab-compare",
+        help="All fabs and tiers side by side for one build",
+    )
+    fab_cmp_p.add_argument("--layers", type=int, required=True,
+                           help="Copper layer count.")
+    fab_cmp_p.add_argument("--oz", type=float, default=1.0,
+                           help="Outer copper weight in oz (default 1).")
+    fab_cmp_p.add_argument("--key", action="append", dest="keys",
+                           help="Rule key to show, e.g. min_track. Repeatable.")
+    fab_cmp_p.add_argument("--json", dest="json_out", action="store_true",
+                           help="Print as JSON.")
+    fab_ref_p = subparsers.add_parser(
+        "fab-refresh",
+        help="Re-read a fab's pages and check every stored quote",
+        epilog=("Obeys robots.txt. For a site that refuses, save the page "
+                "from a browser and pass it with --file. Snapshots go to "
+                "%%USERPROFILE%%/.eda-agent/fab_snapshots/. Never rewrites "
+                "a figure; --write only moves the reading date, and only "
+                "when every quote was found again."),
+    )
+    fab_ref_p.add_argument("vendor", help="Connector key (fab-list).")
+    fab_ref_p.add_argument("--file", action="append", dest="files",
+                           help="A saved copy of a page. Repeatable.")
+    fab_ref_p.add_argument("--write", action="store_true",
+                           help="Move the reading date when all quotes match.")
+    fab_ref_p.add_argument("--json", dest="json_out", action="store_true",
+                           help="Print as JSON.")
+
     dash_p = subparsers.add_parser(
         "dashboard",
         help="Launch the local web dashboard (http://127.0.0.1:8766).",
@@ -2019,6 +2072,18 @@ def main() -> int:
         return cli.cmd_stackup_profile(args.vendor, fill=args.fill)
     if args.command == "laminates":
         return cli.cmd_laminates(as_json=args.json_out)
+    if args.command == "fab-list":
+        return cli.cmd_fab_list(as_json=args.json_out)
+    if args.command == "fab-rules":
+        return cli.cmd_fab_rules(args.vendor, layers=args.layers, oz=args.oz,
+                                 tier=args.tier, ipc_class=args.ipc_class,
+                                 as_json=args.json_out)
+    if args.command == "fab-compare":
+        return cli.cmd_fab_compare(layers=args.layers, oz=args.oz,
+                                   keys=args.keys, as_json=args.json_out)
+    if args.command == "fab-refresh":
+        return cli.cmd_fab_refresh(args.vendor, files=args.files,
+                                   write=args.write, as_json=args.json_out)
 
     if args.command in cli.CALC_COMMANDS:
         _, _, params = cli.CALC_COMMANDS[args.command]
