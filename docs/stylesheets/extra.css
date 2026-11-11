@@ -116,4 +116,4 @@
 @media screen and (max-width: 45em) { .ea-examples { grid-template-columns: 1fr; } }
 
 /* Eight feature cards: four across on wide screens, two rows. */
-.md-typeset .grid.cards > ul { grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
+.md-typeset .grid.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
