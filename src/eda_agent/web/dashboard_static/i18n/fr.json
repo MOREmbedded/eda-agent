@@ -862,5 +862,12 @@
  "{0}. Click for its rules and templates.": "{0}. Cliquez pour ses règles et modèles.",
  "{0}: done in {1} s. Ctrl+Z in Altium undoes it.": "{0} : terminé en {1} s. Ctrl+Z dans Altium l'annule.",
  "{0}: {1} footprints, {2} follow the library's own conventions.": "{0} : {1} empreintes, {2} suivent les conventions de la bibliothèque.",
- "‹ Prev": "‹ Préc."
+ "‹ Prev": "‹ Préc.",
+ "Dark": "Sombre",
+ "Light": "Clair",
+ "Follow the system": "Suivre le système",
+ "Dashboard theme": "Thème du tableau de bord",
+ "The theme could not be saved.": "Le thème n'a pas pu être enregistré.",
+ "Theme kept in this browser: no profile is in effect.": "Thème conservé dans ce navigateur : aucun profil n'est actif.",
+ "Theme": "Thème"
 }

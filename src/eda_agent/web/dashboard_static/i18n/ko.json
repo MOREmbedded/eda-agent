@@ -862,5 +862,12 @@
  "{0}. Click for its rules and templates.": "{0}. 클릭하면 규칙과 템플릿을 봅니다.",
  "{0}: done in {1} s. Ctrl+Z in Altium undoes it.": "{0}: {1}초 만에 완료. Altium에서 Ctrl+Z로 되돌릴 수 있습니다.",
  "{0}: {1} footprints, {2} follow the library's own conventions.": "{0}: 풋프린트 {1}개 중 {2}개가 라이브러리 자체 규칙을 따릅니다.",
- "‹ Prev": "‹ 이전"
+ "‹ Prev": "‹ 이전",
+ "Dark": "다크",
+ "Light": "라이트",
+ "Follow the system": "시스템 설정 따르기",
+ "Dashboard theme": "대시보드 테마",
+ "The theme could not be saved.": "테마를 저장하지 못했습니다.",
+ "Theme kept in this browser: no profile is in effect.": "테마는 이 브라우저에만 저장됩니다. 적용 중인 프로필이 없습니다.",
+ "Theme": "테마"
 }

@@ -133,7 +133,7 @@ def test_python_reads_the_same_file(tmp_path):
         "value_format": "none", "value_unit": "without", "edits": "allowed",
         "deleting": "allowed", "closing": "allowed",
         "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
-        "usage_stats": "on"}
+        "usage_stats": "on", "theme": "system"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
