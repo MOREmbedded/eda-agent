@@ -1,0 +1,45 @@
+{#- Landing page: a hero above the normal page content (docs/index.md). -#}
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="ea-hero">
+    <div class="md-grid md-typeset ea-hero__inner">
+      <div class="ea-hero__text">
+        <p class="ea-hero__eyebrow">MCP server for Altium Designer · KiCad · EasyEDA Pro</p>
+        <h1>Let an AI work inside your live Altium session</h1>
+        <p class="ea-hero__lead">
+          Around 700 tools for schematic, PCB, library and project work, over a
+          live bridge into the design you have open. Ask it to review,
+          check, fix or draw, and watch every change happen in Altium.
+        </p>
+        <div class="ea-hero__actions">
+          <a href="GETTING_STARTED/" class="md-button md-button--primary">Get started</a>
+          <a href="FEATURES/" class="md-button">See what it does</a>
+          <a href="{{ config.repo_url }}" class="md-button ea-hero__ghost">
+            {% include ".icons/fontawesome/brands/github.svg" %} GitHub
+          </a>
+        </div>
+        <ul class="ea-hero__stats">
+          <li><strong>~700</strong><span>Altium tools</span></li>
+          <li><strong>31</strong><span>lint checks in one call</span></li>
+          <li><strong>3</strong><span>EDA backends</span></li>
+          <li><strong>1</strong><span>undo per batch</span></li>
+        </ul>
+      </div>
+      <div class="ea-hero__media">
+        <a href="https://youtu.be/JnQsJlrpzBM" class="ea-hero__video" title="Watch the demo">
+          <img src="assets/demo_round_led.jpg" alt="Demo: a round RGB LED board designed in Altium from a written spec">
+          <span class="ea-hero__play" aria-hidden="true">▶</span>
+        </a>
+        <p class="ea-hero__caption">From a written spec to Gerbers, live in Altium</p>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block styles %}
+  {{ super() }}
+  {#- The hero carries the page title, so the plain one is hidden. -#}
+  <style>.md-content__inner > h1 { display: none; }</style>
+{% endblock %}

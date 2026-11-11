@@ -117,3 +117,6 @@ extensions/easyeda/*.eext
 
 # Rust build output of the optional compute wheel
 rust/*/target/
+
+# Built product website (python -m mkdocs build)
+/site/

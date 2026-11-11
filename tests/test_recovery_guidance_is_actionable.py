@@ -16,7 +16,7 @@ Two claims are checkable and both are checked here:
 
 * the relaunch step names ``Dispatcher.pas > StartMCPServer``, so that
   file must exist and must declare that procedure
-* the docs hint names ``README 'Known limitations' >
+* the docs hint names ``docs/LIMITATIONS.md 'Known limitations' >
   'Altium DelphiScript engine can crash'``, so both must be headings
 
 This is the mirror of ``test_release_verification_claims.py``. That one
@@ -34,11 +34,12 @@ from eda_agent.bridge import recovery
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _PAS_DIR = _ROOT / "scripts" / "altium"
-_README = _ROOT / "README.md"
+# The limitations moved out of the README into their own page.
+_LIMITATIONS = _ROOT / "docs" / "LIMITATIONS.md"
 
 # "Dispatcher.pas > StartMCPServer"
 _PAS_REF = re.compile(r"(\w+\.pas)\s*>\s*(\w+)")
-# "README 'Known limitations' > 'Altium DelphiScript engine can crash'"
+# "docs/LIMITATIONS.md 'Known limitations' > 'Altium DelphiScript engine can crash'"
 _QUOTED = re.compile(r"'([^']+)'")
 
 _FAULTS = (recovery.STUCK_HANDLER, recovery.DEAD_LOOP,
@@ -59,7 +60,7 @@ def _all_docs_hints() -> list[str]:
 def _headings() -> set[str]:
     return {
         line.lstrip("#").strip()
-        for line in _README.read_text(encoding="utf-8").splitlines()
+        for line in _LIMITATIONS.read_text(encoding="utf-8").splitlines()
         if line.startswith("#")
     }
 
@@ -98,13 +99,13 @@ def test_the_docs_hint_points_at_real_readme_sections():
         for section in sections:
             checked += 1
             assert section in headings, (
-                f"recovery points the user at README section {section!r}, "
-                "which is not a heading in README.md. Closest headings: "
+                f"recovery points the user at docs section {section!r}, "
+                "which is not a heading in docs/LIMITATIONS.md. Closest headings: "
                 + ", ".join(sorted(
                     h for h in headings
                     if h and section.split()[0].lower() in h.lower())[:3]))
     assert checked >= 2, (
-        f"only {checked} README section(s) checked; the hint format "
+        f"only {checked} docs section(s) checked; the hint format "
         "changed and this test is reading less than it thinks")
 
 

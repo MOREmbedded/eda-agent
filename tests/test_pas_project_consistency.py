@@ -357,6 +357,9 @@ def test_prjscr_entry_point_is_a_parameterless_proc_in_that_file():
 # procedure without naming a file is fine and is not checked.
 ENTRY_POINT_DOCS = (
     "README.md",
+    "docs/index.md",
+    "docs/GETTING_STARTED.md",
+    "docs/LIMITATIONS.md",
     "docs/RELEASE_VERIFICATION.md",
     "src/eda_agent/cli.py",
     "src/eda_agent/diag/doctor.py",

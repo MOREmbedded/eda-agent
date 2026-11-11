@@ -1,0 +1,148 @@
+# The product website, published to GitHub Pages by
+# .github/workflows/docs.yml. Build it locally with:
+#   python -m pip install -e ".[site]"
+#   python -m mkdocs serve
+site_name: eda-agent
+site_description: Let an AI work inside your live Altium Designer session. An MCP server with around 700 tools for schematic, PCB, library and design review.
+site_url: https://morembedded.github.io/eda-agent/
+repo_url: https://github.com/MOREmbedded/eda-agent
+repo_name: MOREmbedded/eda-agent
+edit_uri: edit/main/docs/
+copyright: Apache-2.0 · Maintained by MOREmbedded · Not affiliated with Altium Limited
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: website/overrides
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - search.share
+    - toc.follow
+    - content.code.copy
+    - content.tabs.link
+    - content.action.edit
+    - announce.dismiss
+
+extra_css:
+  - stylesheets/extra.css
+
+hooks:
+  - website/hooks.py
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+# Links that leave docs/ (CHANGELOG, LICENSE, source files) are rewritten
+# to GitHub by website/hooks.py, so they are not reported here.
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: info
+    unrecognized_links: info
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MOREmbedded/eda-agent
+      name: eda-agent on GitHub
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install and set up: GETTING_STARTED.md
+      - Profiles: PROFILES.md
+      - Known limitations: LIMITATIONS.md
+  - Features:
+      - Overview: FEATURES.md
+      - Using the tools: USING_THE_TOOLS.md
+      - Fab output and calculators: FAB_AND_CALCULATORS.md
+      - Design modes: DESIGN_MODES.md
+      - Autonomous design: AUTONOMOUS_DESIGN.md
+      - NPI phase gates: NPI_PHASE_GATES.md
+      - Part sourcing: PART_SOURCING.md
+      - EDA backends: BACKENDS.md
+      - Engineering tools: ENGINEERING_TOOLS.md
+      - Token usage: TOKEN_USAGE.md
+      - Hardware CI: HARDWARE_CI.md
+      - Rust compute: RUST_COMPUTE.md
+      - UI automation: ui-automation.md
+  - Reference:
+      - Tool reference: TOOL_REFERENCE.md
+      - CLI: CLI.md
+      - Configuration: CONFIGURATION.md
+      - Tool naming: TOOL_NAMING.md
+      - SDK coverage: SDK_COVERAGE.md
+      - Altium scripting coverage: ALTIUM_SCRIPTING_COVERAGE.md
+      - DelphiScript API notes:
+          - altium-delphiscript/README.md
+          - Servers: altium-delphiscript/01-servers.md
+          - Schematic interfaces: altium-delphiscript/02-schematic-interfaces.md
+          - PCB interfaces: altium-delphiscript/03-pcb-interfaces.md
+          - Workspace, projects, documents: altium-delphiscript/04-workspace-project-documents.md
+          - Enums: altium-delphiscript/05-enums.md
+          - Types and coordinates: altium-delphiscript/06-types-and-coordinates.md
+  - Development:
+      - Development: DEVELOPMENT.md
+      - Release verification: RELEASE_VERIFICATION.md
+      - AI field notes on Altium: AI_ALTIUM_FIELD_NOTES.md
+      - Altium autonomy runbook: ALTIUM_AUTONOMY_RUNBOOK.md
+      - Changelog: https://github.com/MOREmbedded/eda-agent/blob/main/CHANGELOG.md
