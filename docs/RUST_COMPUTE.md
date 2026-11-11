@@ -24,6 +24,53 @@ eda-agent compute-status     # what is installed, what is requested, what runs
 clients that start the server with no arguments. The setting is read on
 every call, so a child process inherits it.
 
+## The idea
+
+Almost all of an eda-agent session is spent waiting on Altium, and
+compiled code on the Python side cannot make Altium answer sooner. A few
+loops are different: they run entirely in Python, on data already in
+memory, and the grid router's search was one of them, at minutes per
+board. The rules this work follows:
+
+1. **Measure first.** Only a loop that a profile shows is CPU-bound is a
+   candidate. The measurements are below, including the ones that said no.
+2. **Port the loop, not the program.** The kernel is one function. Problem
+   setup, results and everything that talks to Altium stay in Python.
+3. **Python stays the reference.** It is the default, it is what the
+   tests describe, and the Rust port must give byte-identical results.
+4. **Rust is never required.** Installing eda-agent never builds or needs
+   Rust. The wheel is an optional extra you add when you want the speed.
+
+## Options considered
+
+| Option | Verdict | Why |
+|---|---|---|
+| Make the Python faster | **Done first, and still the default** | The solution check got a bounding-box pre-test (184 s → 160 s on the 10 mil board). The placer's next fix is the same kind: score only what a move changed. |
+| **Rust extension with PyO3** | **Chosen** | Memory-safe, releases the GIL while it searches, reads the obstacle maps through the buffer protocol with no numpy. One `abi3` wheel serves every CPython from 3.11. PyO3 and maturin are Apache-2.0 / MIT. |
+| Cython or a C/C++ extension | Not chosen | The same need for a compiler on the user's machine, or a prebuilt wheel, as Rust, without Rust's memory safety. |
+| Numba | Not chosen | It needs numpy and LLVM (a large install), and it suits array loops better than a heap- and dict-driven graph search. JIT warm-up also adds to the first call. |
+| PyPy | Not chosen | It swaps the whole interpreter for every user to speed up one loop, and not every dependency supports it. |
+| A separate compute process | Not chosen | Another program to install and keep running, plus a serialisation cost on each call. |
+
+How the wheel reaches a machine is a second choice:
+
+| Option | Status |
+|---|---|
+| Built by CI for every PR and push (`eda-agent-compute-wheel` artifact) | **Available now**, no Rust needed on your machine |
+| Built from source (`pip install ./rust/eda_agent_compute`) | Available; needs Rust and the MSVC build tools |
+| Published as a release asset or on PyPI, installed with one `pip install` | Possible next step, not done yet |
+| Prebuilt wheel committed to the repository | Rejected: binaries do not belong in git history |
+
+## Settings
+
+| Setting | Values | Effect |
+|---|---|---|
+| `--compute` / `EDA_AGENT_COMPUTE` | `python` (default), `auto`, `rust` | `auto` uses the wheel when a matching one is installed. `rust` refuses to start without it. |
+| `eda-agent compute-status` | | What is installed, its API version, what is requested and what will run. Exits 1 when `rust` is requested and unavailable. |
+| `API_VERSION` (`lib.rs`) / `EXPECTED_API` (`compute.py`) | integer | Must match. A wheel with another version counts as not installed. |
+
+Every option eda-agent has, Rust or not, is listed in [All options](OPTIONS.md).
+
 ## What runs in Rust today
 
 | Part | Why | Measured (1090-pad board from `tests/route/test_scale.py`) |
@@ -57,10 +104,12 @@ Measured, not guessed:
   DelphiScript loop that polls every 10-30 ms and runs interpreted script.
   Rust on the Python side cannot make Altium answer sooner.
 
-The next candidate is the annealing placer (`design/pcb_placement.py`). It
-re-scores the whole board on every move. The first fix there is to score
-only what the move changed, in Python. Port it to Rust only if that is not
-enough.
+## Next candidates
+
+| Candidate | Measured | Plan |
+|---|---|---|
+| Annealing placer (`design/pcb_placement.py`) | 4-5 s per test; it re-scores the whole board on every move | Score only what the move changed, in Python. Port to Rust only if that is not enough. |
+| Test suite | 11.7 min serially on 4 cores, no single hot spot | `pytest -n auto` (pytest-xdist). About 5 minutes on a Windows workstation instead of about 20. |
 
 ## Same answer, enforced
 

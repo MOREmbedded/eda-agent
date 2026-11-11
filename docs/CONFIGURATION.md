@@ -1,6 +1,6 @@
 # Configuration
 
-Environment variables and paths that change how eda-agent behaves.
+Environment variables and paths that change how eda-agent behaves. This page covers the ones most people change; [All options](OPTIONS.md) lists every one, generated from the code.
 
 Workspace (used for IPC files between Python and Altium):
 

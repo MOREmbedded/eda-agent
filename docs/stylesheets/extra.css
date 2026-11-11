@@ -117,3 +117,6 @@
 
 /* Eight feature cards: four across on wide screens, two rows. */
 .md-typeset .grid.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
+
+/* Setting and flag names stay on one line in reference tables. */
+.md-typeset td:first-child code { white-space: nowrap; }

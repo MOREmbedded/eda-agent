@@ -1,6 +1,6 @@
 # CLI
 
-Grouped the same way `eda-agent --help` groups them, so the two
+Every flag of every command is in [All options](OPTIONS.md#command-line). This page is the overview, grouped the same way `eda-agent --help` groups them, so the two
 listings can be read against each other.
 
 ## Server and setup

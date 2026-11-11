@@ -133,7 +133,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Engineering tools](docs/ENGINEERING_TOOLS.md) | The `eng_*` family, Altium 365, and what is unverified live |
 | [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
 | [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
-| [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core |
+| [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 
 </details>
@@ -144,6 +144,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | Document | What it covers |
 |---|---|
 | [Tool reference](docs/TOOL_REFERENCE.md) | Every tool with its arguments, maturity and interaction badge (generated) |
+| [All options](docs/OPTIONS.md) | Every setting in one generated list: flags, environment variables, Config tab, `workspace.json`, profile keys |
 | [CLI](docs/CLI.md) | Every `eda-agent` command, grouped as `--help` groups them |
 | [Configuration](docs/CONFIGURATION.md) | Environment variables, paths and logs |
 | [Tool naming](docs/TOOL_NAMING.md) | The `ns_verb_object` convention every tool name follows |
