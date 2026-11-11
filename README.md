@@ -101,8 +101,8 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
 
 <p align="center">
-<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer" width="45%">
-<img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with AI permission switches" width="45%">
+<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer" width="300">
+<img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with AI permission switches" width="300">
 </p>
 
 ## Documentation
