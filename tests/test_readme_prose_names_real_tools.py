@@ -57,6 +57,7 @@ NOT_TOOLS: dict[str, str] = {
     "part_id": "a parameter of sch_place_dblib_component",
     "part_id_applied": "a reply field of sch_place_dblib_component",
     "pcb_only": "a reply field of the schematic/PCB comparison",
+    "pcb_units": "a key of a profile's document_settings.json (docs/OPTIONS.md)",
     "sch_only": "a reply field of the schematic/PCB comparison",
     # The namespace PREFIXES, which the readme names when explaining
     # that a tool's prefix tells you which document it acts on. They

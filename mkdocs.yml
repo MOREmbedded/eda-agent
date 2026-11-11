@@ -127,6 +127,7 @@ nav:
       - UI automation: ui-automation.md
   - Reference:
       - Tool reference: TOOL_REFERENCE.md
+      - All options: OPTIONS.md
       - CLI: CLI.md
       - Configuration: CONFIGURATION.md
       - Tool naming: TOOL_NAMING.md
