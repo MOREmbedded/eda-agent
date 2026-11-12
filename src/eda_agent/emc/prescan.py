@@ -37,9 +37,10 @@ from ..layout.audit import (
 )
 from ..layout.model import LayoutBoard
 from .emission import DEFAULT_LIMIT, LIMITS, Drive, spectrum
+from ..units import MM_PER_MIL
 from .stack import Stack, assumed_stack
 
-MIL_M = 25.4e-6
+MIL_M = MM_PER_MIL / 1000.0  # metres per mil
 
 #: Sample spacing along a track for the reference and edge checks, mils.
 STEP_MILS = 10.0

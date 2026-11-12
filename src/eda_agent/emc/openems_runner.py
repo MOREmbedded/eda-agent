@@ -25,10 +25,22 @@ import traceback
 EPS0 = 8.8541878128e-12
 
 
+#: Waits before each retry of the final rename. Same window as
+#: eda_agent.atomicfile, which this program cannot import: a Windows
+#: scanner may hold the freshly written target for a few milliseconds.
+_BACKOFF = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
 def _write(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
+    for wait in _BACKOFF:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(wait)
     os.replace(tmp, path)
 
 

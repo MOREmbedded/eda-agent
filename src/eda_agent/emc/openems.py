@@ -47,9 +47,9 @@ from typing import Any, Optional
 from ..layout import geom
 from ..layout.audit import return_nets
 from ..layout.model import LayoutBoard
+from ..units import MM_PER_MIL
 from .stack import Stack, assumed_stack
 
-MM_PER_MIL = 0.0254
 C0 = 299_792_458.0
 
 RUNNER = Path(__file__).with_name("openems_runner.py")

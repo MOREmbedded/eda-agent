@@ -34,6 +34,10 @@ LOCAL = {"build"}
 # Python without it. Declaring it would make every install try to fetch a
 # package that is not published.
 IN_REPO_OPTIONAL = {"eda_agent_compute"}
+# Imported only by emc/openems_runner.py, a separate program that runs in
+# the Python of the user's openEMS install (GPL-3, never a dependency of
+# this package). Nothing in eda_agent imports that file.
+FOREIGN_INTERPRETER = {"openEMS", "CSXCAD"}
 
 
 def _declared() -> set[str]:
@@ -66,7 +70,7 @@ def test_every_third_party_import_is_declared():
     missing = []
     for name, where in sorted(_imported().items()):
         if (name in sys.stdlib_module_names or name == "eda_agent" or name in LOCAL
-                or name in IN_REPO_OPTIONAL):
+                or name in IN_REPO_OPTIONAL or name in FOREIGN_INTERPRETER):
             continue
         dist = TRANSITIVE.get(name) or DISTRIBUTION.get(name, name).lower()
         if dist not in declared:

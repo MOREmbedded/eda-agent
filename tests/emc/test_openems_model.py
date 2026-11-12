@@ -193,3 +193,25 @@ def test_start_run_runs_in_the_background(tmp_path, monkeypatch):
             break
         time.sleep(0.2)
     assert em.run_status(folder)["state"] == "done"
+
+
+def test_runner_retries_a_rename_a_scanner_blocks(tmp_path, monkeypatch):
+    """The runner carries its own copy of atomicfile's retry."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runner", em.RUNNER)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    real = os.replace
+    state = {"n": 0}
+
+    def flaky(a, b):
+        state["n"] += 1
+        if state["n"] <= 2:
+            raise PermissionError(32, "held by a scanner")
+        return real(a, b)
+
+    monkeypatch.setattr(runner.os, "replace", flaky)
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    runner._write(str(tmp_path / "status.json"), {"x": 1})
+    assert json.loads((tmp_path / "status.json").read_text()) == {"x": 1}
+    assert state["n"] == 3
