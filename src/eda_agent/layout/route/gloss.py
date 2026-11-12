@@ -33,6 +33,7 @@ from ..drc import BIG_POLY, Item, conductive_items, net_ties, _tied
 from ..model import LayoutBoard, Pad, Track
 from ..rules import RuleSet
 from .exact import CopperIndex
+from .grid import KEEPOUT_LAYER
 
 #: Two track ends closer than this, in mils, are one point.
 SNAP = 0.01
@@ -345,7 +346,8 @@ class _Gloss:
             if need > 0 and self.copper.gap(s, k, need) < need - 1e-3:
                 self.blocker = f"{it.kind} of {it.net or 'no net'}"
                 return False
-        for ko in self.copper.keepouts.get(layer, []):
+        # A keep-out on the Keep-Out layer bars every copper layer.
+        for ko in self.copper.keepouts.get(layer, []) + self.copper.keepouts.get(KEEPOUT_LAYER, []):
             if geom.clearance(s, ko) < 0.0:
                 self.blocker = "keep-out"
                 return False

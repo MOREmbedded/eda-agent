@@ -356,10 +356,15 @@ class StageContext:
                 if geom.bboxes_near(disc, s, self.web) and \
                         geom.clearance(disc, s) < self.web - EPS:
                     return False
-        # Its solder mask opening leaves the board's web to every other.
-        if not r.options.legacy() and r.via_leaves_web(via, via.x, via.y,
-                                                       pad if in_pad else None):
-            return False
+        if not r.options.legacy():
+            # What the grid does not show: copper on layers no route uses
+            # (a pour taken as a plane, an excluded layer) and the holes
+            # already drilled.
+            if not r.via_clear_of_hidden(via, via.x, via.y, via.net, span):
+                return False
+            # Its solder mask opening leaves the board's web to every other.
+            if r.via_leaves_web(via, via.x, via.y, pad if in_pad else None):
+                return False
         return True
 
     # -- laying copper -------------------------------------------------------

@@ -262,6 +262,16 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **Fan-out vias keep off copper the router does not see.** A BGA's
+  fan-out and the plane fan-out laid their vias outside the search, so
+  they skipped its hole-to-hole and hidden-copper guards: a fan-out via
+  could land on another net's copper on an excluded layer or a plane
+  layer (a short), or too near a drilled hole. Both now check what the
+  search checks.
+- **The gloss keeps out of keep-outs drawn on the Keep-Out layer.** It
+  honoured keep-outs on the routed layer only, so it could straighten a
+  route through a keep-out drawn as Keep-Out layer tracks, which bar
+  every copper layer.
 - **The `eng_ltspice_*` tools now find LTspice XVII.** They looked for
   LTspice 24 only, while the `sim_*` tools found either; a wrong
   `EDA_AGENT_LTSPICE_EXE` is now reported instead of being ignored.

@@ -691,6 +691,11 @@ class Router:
         return [np.unique(np.concatenate(o), axis=0) if o else np.zeros((0, 2), dtype=np.int64)
                 for o in out]
 
+    def _hole_gap(self) -> float:
+        """The board's hole to hole clearance, 0 where it sets none."""
+        return max((rr.values.get("gap", 0.0) for rr in self.rules.of_type("hole_to_hole")),
+                   default=0.0)
+
     def _near_holes(self, hole: float) -> np.ndarray:
         """The cells (y, x) where a via with a hole of this size would come
         within the board's hole to hole clearance of a hole already drilled
@@ -700,8 +705,7 @@ class Router:
         if key in cache:
             return cache[key]
         from ..drc import drill_holes
-        gap = max((rr.values.get("gap", 0.0) for rr in self.rules.of_type("hole_to_hole")),
-                  default=0.0)
+        gap = self._hole_gap()
         spec = self.grid.spec
         out = []
         for it in drill_holes(self.board):
@@ -811,22 +815,28 @@ class Router:
         return max((reach for it, _m, reach, _t in self._web_rings(v)
                     if it.kind == "pad" and it.idx == pad), default=0.0)
 
+    def _hidden_items(self) -> list:
+        """Other copper on the signal layers no route uses (a pour taken as
+        a plane, an excluded layer): the grid holds none of it."""
+        if not hasattr(self, "_off_items"):
+            from ..drc import conductive_items
+            off = [l for l in self.board.signal_layers() if l not in self.grid.layer_index]
+            self._off_items = [it for it in conductive_items(self.board)
+                               if it.layer in off and it.kind != "plane"] if off else []
+        return self._off_items
+
     def _off_grid_copper(self, job: NetJob, radius: float) -> np.ndarray:
         """The cells (y, x) where a via of this radius would come within
         the clearance of another net's copper on a signal layer it passes
         through but the router does not route on (a pour turned plane, an
         excluded layer): the grid knows nothing of that copper, and a via
         was laid 1.1 mil from such a track where 5 were required."""
-        from ..drc import Item, conductive_items
-        off = [l for l in self.board.signal_layers() if l not in self.grid.layer_index]
-        if not off:
+        from ..drc import Item
+        if not self._hidden_items():
             return np.zeros((0, 2), dtype=np.int64)
-        if not hasattr(self, "_off_items"):
-            self._off_items = [it for it in conductive_items(self.board)
-                               if it.layer in off and it.kind != "plane"]
         spec = self.grid.spec
         out = []
-        for it in self._off_items:
+        for it in self._hidden_items():
             if it.net and it.net == job.name:
                 continue
             via = Item("via", -1, job.name, it.layer, geom.circle(0.0, 0.0, 2 * radius))
@@ -840,6 +850,35 @@ class Router:
             ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
         return np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+
+    def via_clear_of_hidden(self, v, x: float, y: float, net: str, span=None) -> bool:
+        """A via of style ``v`` and ``net`` at (x, y) clears what the grid
+        does not show: _off_grid_copper and _near_holes at one point, for
+        the vias the fan-out and the stages lay outside the search. ``span``
+        is the copper layers it passes, all of them when None."""
+        from ..drc import Item, drill_holes
+        at_x, at_y = np.array([[x]]), np.array([[y]])
+        r = v.diameter / 2
+        for it in self._hidden_items():
+            if (it.net and it.net == net) or (span is not None and it.layer not in span):
+                continue
+            via = Item("via", -1, net, it.layer, geom.circle(0.0, 0.0, 2 * r))
+            reach = r + self.rules.clearance(via, it, self.board)
+            x0, y0, x1, y1 = it.shape.bbox
+            if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
+                continue
+            if float(shape_distance(it.shape, at_x, at_y)[0, 0]) < reach - EPS:
+                return False
+        if not hasattr(self, "_holes"):
+            self._holes = drill_holes(self.board)
+        reach = v.hole / 2 + self._hole_gap()
+        for it in self._holes:
+            x0, y0, x1, y1 = it.shape.bbox
+            if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
+                continue
+            if float(shape_distance(it.shape, at_x, at_y)[0, 0]) < reach - EPS:
+                return False
+        return True
 
     def _reuse_cells(self, net: str) -> set:
         """With reuse_vias, the cells (y, x) a through via of ``net`` already

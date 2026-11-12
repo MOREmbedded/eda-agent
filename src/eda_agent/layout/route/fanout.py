@@ -164,6 +164,10 @@ def _choose(router, job, bga: BGA, pad, placed):
                 continue
             if router.via_leaves_web(style, x, y):
                 continue
+            # Copper the grid does not show and the holes already drilled.
+            if not router.options.legacy() and \
+                    not router.via_clear_of_hidden(style, x, y, job.name):
+                continue
             if not stub or _stub_clear(router, job, pad, x, y):
                 return x, y, style, stub
     return None
