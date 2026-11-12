@@ -38,6 +38,7 @@ from .review import register_review_tools
 from .sim import register_sim_tools
 from .spice_models import register_spice_model_tools
 from .emc import register_emc_tools
+from .pdn import register_pdn_tools
 from .design import register_design_tools
 from .render import register_render_tools
 from .audit import register_audit_tools
@@ -245,6 +246,7 @@ def register_all_tools(mcp):
     register_sim_tools(mcp)
     register_spice_model_tools(mcp)
     register_emc_tools(mcp)
+    register_pdn_tools(mcp)
     register_design_tools(mcp)
     register_render_tools(mcp)
     register_audit_tools(mcp)
@@ -473,6 +475,7 @@ __all__ = [
     "register_sim_tools",
     "register_spice_model_tools",
     "register_emc_tools",
+    "register_pdn_tools",
     "register_design_tools",
     "register_render_tools",
     "register_audit_tools",

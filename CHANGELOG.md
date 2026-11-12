@@ -16,6 +16,18 @@ maturity classification for every tool.
 
 ### Added
 
+- **PDN analysis.** `sim_pdn_ir_drop` solves a power net and its return
+  as a sparse resistor network of the board's real copper (pours and
+  planes on a grid, tracks as exact resistors, via barrels from the
+  stackup) and reports the voltage at every load pin, current density,
+  loss per layer, overloaded tracks and vias, and a grid-convergence
+  error estimate. `sim_pdn_impedance` finds a rail's decoupling
+  capacitors, works out each one's mounting inductance from its vias and
+  fan-out, solves the power/ground plane pair as a field cavity (FDFD,
+  exact skin-effect surface impedance, Djordjevic-Sarkar laminate) and
+  reports where |Z| at the load exceeds the target. Both are checked
+  against closed-form references. The IR-drop heat map feeds the thermal
+  solver. UNVERIFIED live. See [`docs/PDN.md`](docs/PDN.md).
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design

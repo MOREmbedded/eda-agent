@@ -117,6 +117,7 @@ nav:
       - Fab output and calculators: FAB_AND_CALCULATORS.md
       - IPC standards and rule values: IPC_STANDARDS.md
       - EMI/EMC and RF field solving: EMC_RF.md
+      - PDN analysis: PDN.md
       - Design modes: DESIGN_MODES.md
       - Autonomous design: AUTONOMOUS_DESIGN.md
       - NPI phase gates: NPI_PHASE_GATES.md
