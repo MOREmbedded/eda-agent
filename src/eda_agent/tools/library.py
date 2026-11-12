@@ -3317,7 +3317,8 @@ def register_library_tools(mcp):
                 through-hole (MultiLayer); a hole-less one is SMD on
                 ``layer``.
             shape: "round", "rectangular", "octagonal" or "roundrect".
-                An oval is "round" with x_size != y_size.
+                An oval is "round" with x_size != y_size. Another word
+                (e.g. "rectangle") is refused and no pad is added.
             layer: SMD pad layer ("TopLayer"/"BottomLayer").
             rotation: Pad rotation in degrees
             corner_radius: Corner radius percentage for shape="roundrect"
@@ -3835,6 +3836,7 @@ def register_library_tools(mcp):
                 - shape      (str, default "rectangular"), one of
                   round / rectangular / octagonal / roundrect (modern IPC
                   rounded-rectangle SMD). Oval = round with x_size!=y_size.
+                  Another word refuses the whole call, no pad added.
                 - corner_radius (int %, default: the active profile's
                   footprint_defaults.json pad_corner_radius_pct if one
                   applies, else 25) for shape="roundrect"
