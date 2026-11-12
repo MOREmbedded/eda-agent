@@ -45,7 +45,7 @@ board. The rules this work follows:
 
 | Option | Verdict | Why |
 |---|---|---|
-| Make the Python faster | **Done first, and still the default** | The solution check got a bounding-box pre-test (184 s → 160 s on the 10 mil board). The placer's next fix is the same kind: score only what a move changed. |
+| Make the Python faster | **Done first, and still the default** | The solution check got a bounding-box pre-test (184 s → 160 s on the 10 mil board). The placer got the same kind of fix: it scores only what a move changed. |
 | **Rust extension with PyO3** | **Chosen** | Memory-safe, releases the GIL while it searches, reads the obstacle maps through the buffer protocol with no numpy. One `abi3` wheel serves every CPython from 3.11. PyO3 and maturin are Apache-2.0 / MIT. |
 | Cython or a C/C++ extension | Not chosen | The same need for a compiler on the user's machine, or a prebuilt wheel, as Rust, without Rust's memory safety. |
 | Numba | Not chosen | It needs numpy and LLVM (a large install), and it suits array loops better than a heap- and dict-driven graph search. JIT warm-up also adds to the first call. |
@@ -108,7 +108,7 @@ Measured, not guessed:
 
 | Candidate | Measured | Plan |
 |---|---|---|
-| Annealing placer (`design/pcb_placement.py`) | 4-5 s per test; it re-scores the whole board on every move | Score only what the move changed, in Python. Port to Rust only if that is not enough. |
+| Annealing placer (`design/pcb_placement.py`) | **Done in Python.** It re-scored the whole board on every move; it now scores only what the move changed (`_IncrementalObjective`, bit-identical). 45 parts: 37 s → 2.8 s; 124 parts: 82 s → 15 s. | Scoring is no longer the hot spot; the rest is spread over move generation and legalisation. Rust is not needed for now. |
 | Test suite | 11.7 min serially on 4 cores, no single hot spot | `pytest -n auto` (pytest-xdist). About 5 minutes on a Windows workstation instead of about 20. |
 
 ## Same answer, enforced

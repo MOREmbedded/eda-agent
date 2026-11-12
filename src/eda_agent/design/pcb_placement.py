@@ -231,6 +231,10 @@ class ConstructOptions:
     # across the board (every intermediate position overlaps something) can
     # coalesce into its cluster in one step. Only active when match groups exist.
     move_match: float = 0.10
+    # Score polish moves incrementally (only the nets / parts a move touches).
+    # Bit-identical to full rescoring, just faster; False forces the old
+    # full-board rescoring (kept for the equivalence tests).
+    incremental_score: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -2000,6 +2004,408 @@ def _default_cong_bins(comps: list[PlaceComp]) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Incremental objective (used by the SA polish)
+# --------------------------------------------------------------------------- #
+
+def _seq_sum(values) -> float:
+    """Left-to-right ``total += v`` sum, starting at 0.0.
+
+    The full-board terms accumulate this way. ``builtins.sum`` uses
+    compensated summation on floats (Python >= 3.12), which would round
+    differently, so the incremental scorer sums its cached per-item values
+    with this to stay bit-identical to :func:`score`.
+    """
+    total = 0.0
+    for v in values:
+        total += v
+    return total
+
+
+class _IncrementalObjective:
+    """Bit-exact incremental evaluation of :func:`score`'s weighted total.
+
+    The SA polish moves one or two parts per step, but :func:`score`
+    rebuilds every net's pin points, every courtyard pair and the whole
+    congestion grid each time. This keeps each term's per-item
+    contribution (per net, per part, per overlapping pair, per decap)
+    cached against the current state and, for a candidate move,
+    recomputes only the items that touch a part whose position, rotation
+    or side changed.
+
+    Each term is then re-summed from the cached items in the SAME order
+    and with the SAME left-to-right float additions as the full-board
+    functions, so :meth:`evaluate` returns exactly
+    ``score(...).weighted_total`` -- not just a close value. That keeps a
+    seeded run's accept / reject sequence, and so the final placement,
+    identical to the full rescoring it replaces.
+
+    Usage: :meth:`evaluate` the state after a move (the caller has already
+    mutated ``pos`` / ``rotations`` / ``sides``); then :meth:`commit` if the
+    move is kept, or restore the state and call nothing if it is rejected.
+    """
+
+    def __init__(
+        self,
+        comps: list[PlaceComp],
+        pos: dict[str, list[float]],
+        rotations: dict[str, float],
+        sides: dict[str, int],
+        nets: list[PlaceNet],
+        region: BoardRegion,
+        rules: DesignRules,
+        weights: ObjectiveWeights,
+        decap_pairs: dict[str, list[tuple[str, float, float]]],
+    ) -> None:
+        self.comps = comps
+        self.pos = pos
+        self.rotations = rotations
+        self.sides = sides
+        self.nets = nets
+        self.region = region
+        self.rules = rules
+        self.weights = weights
+        self.decap_pairs = decap_pairs
+        self.by_ref = {c.ref: c for c in comps}
+        self.index = {c.ref: i for i, c in enumerate(comps)}
+
+        # ---- static structure (position independent) ----------------------
+        self.pin_index: dict[tuple[str, str], list[PlacePin]] = {}
+        for c in comps:
+            for p in c.pins:
+                self.pin_index.setdefault((c.ref, p.net), []).append(p)
+        self.weight = {n.name: n.weight for n in nets}
+        # Nets whose world point list has >= 2 points: membership depends
+        # only on which refs are placed, which the polish never changes.
+        self.world_nets: list[int] = []
+        for k, net in enumerate(nets):
+            if sum(1 for _ in self._net_points(net)) >= 2:
+                self.world_nets.append(k)
+        self.ref_nets: dict[str, list[int]] = {}
+        for k, net in enumerate(nets):
+            for ref in dict.fromkeys(net.refs):
+                self.ref_nets.setdefault(ref, []).append(k)
+        self.ref_decaps: dict[str, list[str]] = {}
+        for d, cands in decap_pairs.items():
+            self.ref_decaps.setdefault(d, []).append(d)
+            for ic_ref, _, _ in cands:
+                lst = self.ref_decaps.setdefault(ic_ref, [])
+                if not lst or lst[-1] != d:
+                    lst.append(d)
+        self.hot = {c.ref for c in comps if _power_w(c) > 0.0}
+        self.sep_tagged = {c.ref for c in comps if _keepout_group(c)}
+        self.match_tagged = {c.ref for c in comps if _match_group(c)}
+        self.connectors = [c for c in comps if _is_connector(c)]
+        self.bins = max(1, _default_cong_bins(comps))
+        r = region
+        self.rx_lo = min(r.x1, r.x2)
+        self.rx_hi = max(r.x1, r.x2)
+        self.ry_lo = min(r.y1, r.y2)
+        self.ry_hi = max(r.y1, r.y2)
+        self.bw = region.width / self.bins
+        self.bh = region.height / self.bins
+
+        # ---- cached state --------------------------------------------------
+        self.state = {c.ref: self._key(c.ref) for c in comps}
+        self.net_items = {k: self._net_item(k) for k in self.world_nets}
+        self.net_via = {k: self._via_one(k) for k in range(len(nets))}
+        self.geom = [self._geom(c) for c in comps]
+        self.overlaps: dict[tuple[int, int], float] = {}
+        n = len(comps)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = self._pair_area(self.geom[i], self.geom[j])
+                if a:
+                    self.overlaps[(i, j)] = a
+        self.edge = [self._edge_one(c) for c in comps]
+        self.conn = {c.ref: self._conn_one(c) for c in self.connectors}
+        self.decap = {d: self._decap_one(d) for d in decap_pairs}
+        self.therm = _therm_term(comps, pos)
+        self.sep = _separation_term(comps, pos, region)
+        self.match = _match_term(comps, pos, region)
+        self.match_axis = _match_axis_term(comps, rotations)
+        self.match_centroid = _match_centroid_term(comps, pos, region)
+        self._pending: dict | None = None
+
+    # ---- per-item helpers (each mirrors one full-board loop body) ---------
+
+    def _key(self, ref: str) -> tuple:
+        c = self.by_ref[ref]
+        p = self.pos[ref]
+        return (p[0], p[1], self.rotations.get(ref, c.rotation),
+                self.sides.get(ref, 1))
+
+    def _net_points(self, net: PlaceNet):
+        pos = self.pos
+        for ref in dict.fromkeys(net.refs):
+            if ref not in pos:
+                continue
+            c = self.by_ref.get(ref)
+            p = (pos[ref][0], pos[ref][1])
+            pins = self.pin_index.get((ref, net.name)) if c else None
+            if pins and c:
+                rot = self.rotations.get(ref, c.rotation)
+                side = self.sides.get(ref, 1)
+                for pin in pins:
+                    yield _pin_world(c, p, rot, side, pin)
+            else:
+                yield p
+
+    def _via_one(self, k: int) -> float | None:
+        net = self.nets[k]
+        members = [r for r in dict.fromkeys(net.refs) if r in self.by_ref]
+        if len(members) < 2:
+            return None
+        top = sum(1 for r in members if self.sides.get(r, 1) >= 0)
+        bot = len(members) - top
+        q = self.weight.get(net.name, 1.0) / max(1, len(members) - 1)
+        return q * min(top, bot)
+
+    def _geom(self, c: PlaceComp) -> tuple:
+        x, y = self.pos[c.ref]
+        w, h = _eff_wh(c, self.rotations.get(c.ref, c.rotation))
+        return (x, y, w / 2.0, h / 2.0, self.sides.get(c.ref, 1))
+
+    def _pair_area(self, a: tuple, b: tuple) -> float:
+        # ``a`` must be the lower comp index (same operand order as
+        # _clear_term's inner loop).
+        if b[4] != a[4]:
+            return 0.0
+        cc = self.rules.courtyard_clr
+        ox = a[2] + b[2] + cc - abs(a[0] - b[0])
+        if ox <= 0.0:
+            return 0.0
+        oy = a[3] + b[3] + cc - abs(a[1] - b[1])
+        if oy <= 0.0:
+            return 0.0
+        area = ox * oy
+        return area if area > 1e-3 else 0.0
+
+    def _edge_one(self, c: PlaceComp) -> float:
+        x, y = self.pos[c.ref]
+        w, h = _eff_wh(c, self.rotations.get(c.ref, c.rotation))
+        dx = min(x - w / 2.0 - self.rx_lo, self.rx_hi - (x + w / 2.0))
+        dy = min(y - h / 2.0 - self.ry_lo, self.ry_hi - (y + h / 2.0))
+        edge = self.rules.edge_clr
+        gx = max(0.0, edge - dx)
+        gy = max(0.0, edge - dy)
+        return gx * gx + gy * gy
+
+    def _conn_one(self, c: PlaceComp) -> float:
+        x, y = self.pos[c.ref]
+        band = _assigned_edge(c)
+        if band == "L":
+            d = x - (self.rx_lo + c.w / 2.0)
+        elif band == "R":
+            d = (self.rx_hi - c.w / 2.0) - x
+        elif band == "B":
+            d = y - (self.ry_lo + c.h / 2.0)
+        elif band == "T":
+            d = (self.ry_hi - c.h / 2.0) - y
+        else:
+            d = min(x - self.rx_lo, self.rx_hi - x,
+                    y - self.ry_lo, self.ry_hi - y)
+        return d * d
+
+    def _decap_one(self, d: str) -> float | None:
+        nearest = _nearest_ic_power_pin(
+            d, self.decap_pairs[d], self.by_ref, self.pos, self.rotations,
+            self.sides)
+        if nearest is None:
+            return None
+        _, px, py = nearest
+        return math.hypot(self.pos[d][0] - px, self.pos[d][1] - py)
+
+    def _net_item(self, k: int) -> tuple:
+        """Per-net cache: (points, HPWL contribution, congestion bin
+        indices, congestion loads) -- the bodies of _hpwl_term's and
+        _cong_term's per-net loops."""
+        pts = list(self._net_points(self.nets[k]))
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x_lo, x_hi, y_lo, y_hi = min(xs), max(xs), min(ys), max(ys)
+        q = self.weight.get(self.nets[k].name, 1.0) / max(1, len(pts) - 1)
+        hpwl = q * ((x_hi - x_lo) + (y_hi - y_lo))
+        bins = self.bins
+        bw, bh = self.bw, self.bh
+        if bw <= 0 or bh <= 0:
+            return pts, hpwl, None, None
+        hp = (x_hi - x_lo) + (y_hi - y_lo)
+        i0 = int(_clamp((x_lo - self.rx_lo) / bw, 0, bins - 1))
+        i1 = int(_clamp((x_hi - self.rx_lo) / bw, 0, bins - 1))
+        j0 = int(_clamp((y_lo - self.ry_lo) / bh, 0, bins - 1))
+        j1 = int(_clamp((y_hi - self.ry_lo) / bh, 0, bins - 1))
+        covered = (i1 - i0 + 1) * (j1 - j0 + 1)
+        load = hp / max(1, covered)
+        ii = np.arange(i0, i1 + 1)
+        jj = np.arange(j0, j1 + 1)
+        # Flat (i, j) bin indices. A net adds at most once to a bin, so each
+        # bin's sum depends only on the NET order; _cong keeps that order and
+        # np.add.at (unbuffered, in sequence) repeats _cong_term's additions.
+        idx = (ii[:, None] * bins + jj[None, :]).ravel()
+        return pts, hpwl, idx, np.full(covered, load)
+
+    def _cong(self, net_items: dict[int, tuple]) -> float:
+        bins = self.bins
+        bw, bh = self.bw, self.bh
+        if bw <= 0 or bh <= 0:
+            return 0.0
+        density = np.zeros(bins * bins, dtype=float)
+        if self.world_nets:
+            items = [net_items[k] for k in self.world_nets]
+            np.add.at(density, np.concatenate([it[2] for it in items]),
+                      np.concatenate([it[3] for it in items]))
+        density = density.reshape(bins, bins)
+        capacity = float(density.mean()) if density.size else 0.0
+        over = np.maximum(0.0, density - capacity)
+        scale = 1.0 / max(1e-6, bw * bh)
+        return float(np.sum(over * over)) * scale
+
+    # ---- public API --------------------------------------------------------
+
+    def changed_refs(self) -> list[str]:
+        """Refs whose (x, y, rotation, side) differ from the cached state."""
+        return [r for r, k in self.state.items() if self._key(r) != k]
+
+    def evaluate(self) -> float:
+        """Weighted total of the CURRENT state (== score().weighted_total)."""
+        changed = self.changed_refs()
+        comps = self.comps
+        pos = self.pos
+        nets = self.nets
+
+        net_items = self.net_items
+        net_via = self.net_via
+        overlaps = self.overlaps
+        geom = self.geom
+        edge = self.edge
+        conn = self.conn
+        decap = self.decap
+        therm, sep, match = self.therm, self.sep, self.match
+        match_axis, match_centroid = self.match_axis, self.match_centroid
+
+        if changed:
+            touched_nets: dict[int, None] = {}
+            touched_decaps: dict[str, None] = {}
+            side_changed = False
+            for r in changed:
+                for k in self.ref_nets.get(r, ()):
+                    touched_nets[k] = None
+                for d in self.ref_decaps.get(r, ()):
+                    touched_decaps[d] = None
+                if self.state[r][3] != self.sides.get(r, 1):
+                    side_changed = True
+            net_items = dict(net_items)
+            for k in touched_nets:
+                if k in net_items:
+                    net_items[k] = self._net_item(k)
+            if side_changed:
+                net_via = dict(net_via)
+                for k in touched_nets:
+                    net_via[k] = self._via_one(k)
+            geom = list(geom)
+            edge = list(edge)
+            idxs = sorted(self.index[r] for r in changed)
+            idx_set = set(idxs)
+            for i in idxs:
+                geom[i] = self._geom(comps[i])
+                edge[i] = self._edge_one(comps[i])
+            overlaps = {pq: a for pq, a in overlaps.items()
+                        if pq[0] not in idx_set and pq[1] not in idx_set}
+            n = len(comps)
+            for i in idxs:
+                gi = geom[i]
+                for j in range(n):
+                    if j == i:
+                        continue
+                    lo, hi = (i, j) if i < j else (j, i)
+                    if (lo, hi) in overlaps:
+                        continue
+                    a = self._pair_area(geom[lo], geom[hi])
+                    if a:
+                        overlaps[(lo, hi)] = a
+            changed_set = set(changed)
+            if any(c.ref in changed_set for c in self.connectors):
+                conn = dict(conn)
+                for c in self.connectors:
+                    if c.ref in changed_set:
+                        conn[c.ref] = self._conn_one(c)
+            if touched_decaps:
+                decap = dict(decap)
+                for d in touched_decaps:
+                    decap[d] = self._decap_one(d)
+            if changed_set & self.hot:
+                therm = _therm_term(comps, pos)
+            if changed_set & self.sep_tagged:
+                sep = _separation_term(comps, pos, self.region)
+            if changed_set & self.match_tagged:
+                match = _match_term(comps, pos, self.region)
+                match_axis = _match_axis_term(comps, self.rotations)
+                match_centroid = _match_centroid_term(comps, pos, self.region)
+
+        # ---- re-sum each term in the full-board order ----------------------
+        hpwl_v = _seq_sum(net_items[k][1] for k in self.world_nets)
+        via_v = _seq_sum(v for k in range(len(nets))
+                         if (v := net_via[k]) is not None)
+        cong_v = self._cong(net_items)
+        clear_v = _seq_sum(overlaps[pq] for pq in sorted(overlaps))
+        edge_v = _seq_sum(edge)
+        decap_v = _seq_sum(v for d in self.decap_pairs
+                           if (v := decap[d]) is not None)
+        conn_v = _seq_sum(conn[c.ref] for c in self.connectors)
+
+        w = self.weights
+        total = (
+            w.hpwl * hpwl_v
+            + w.via * via_v
+            + w.cong * cong_v
+            + w.clear * clear_v
+            + w.edge * edge_v
+            + w.decap * decap_v
+            + w.conn * conn_v
+            + w.therm * therm
+            + w.sep * sep
+            + w.match * match
+            + w.match_axis * match_axis
+            + w.match_centroid * match_centroid
+        )
+        # The unweighted terms, named as in ObjectiveReport (for tests and
+        # debugging: each must equal score()'s own value exactly).
+        self.last_terms = dict(
+            hpwl=hpwl_v, via=via_v, cong=cong_v, clear=clear_v, edge=edge_v,
+            decap=decap_v, conn=conn_v, therm=therm, sep=sep, match=match,
+            match_axis=match_axis, match_centroid=match_centroid,
+        )
+        self._pending = dict(
+            changed=changed, net_items=net_items, net_via=net_via, geom=geom,
+            overlaps=overlaps, edge=edge, conn=conn, decap=decap,
+            therm=therm, sep=sep, match=match, match_axis=match_axis,
+            match_centroid=match_centroid,
+        )
+        return total
+
+    def commit(self) -> None:
+        """Adopt the state last passed to :meth:`evaluate` as the base."""
+        p = self._pending
+        if p is None:
+            return
+        for r in p["changed"]:
+            self.state[r] = self._key(r)
+        self.net_items = p["net_items"]
+        self.net_via = p["net_via"]
+        self.geom = p["geom"]
+        self.overlaps = p["overlaps"]
+        self.edge = p["edge"]
+        self.conn = p["conn"]
+        self.decap = p["decap"]
+        self.therm = p["therm"]
+        self.sep = p["sep"]
+        self.match = p["match"]
+        self.match_axis = p["match_axis"]
+        self.match_centroid = p["match_centroid"]
+        self._pending = None
+
+
+# --------------------------------------------------------------------------- #
 # Simulated-annealing polish
 # --------------------------------------------------------------------------- #
 
@@ -2081,11 +2487,26 @@ def sa_polish(
     member_to_group = {r: g for g, refs in match_groups.items() for r in refs
                        if r in movable_refs}
 
+    # Incremental scoring re-scores only what a move touched and returns the
+    # bit-identical total, so it changes speed, never the result. Duplicate
+    # net names (which score() collapses by name) fall back to full scoring.
+    names = [nt.name for nt in nets]
+    inc = None
+    if opts.incremental_score and len(set(names)) == len(names):
+        inc = _IncrementalObjective(comps, pos, rotations, sides, nets,
+                                    region, rules, weights, decap_pairs)
+
     def full_cost() -> float:
+        if inc is not None:
+            return inc.evaluate()
         # Pass the once-computed structural decap pairing so score() does not
         # rebuild it on every probe/move (it is position-independent).
         return score(comps, pos, rotations, sides, nets, region,
                      rules, weights, decap_pairs=decap_pairs).weighted_total
+
+    def keep() -> None:
+        if inc is not None:
+            inc.commit()
 
     cur_cost = full_cost()
 
@@ -2133,6 +2554,7 @@ def sa_polish(
         new_cost = full_cost()
         delta = new_cost - cur_cost
         if _metropolis_accept(delta, temp, rng):
+            keep()
             cur_cost = new_cost
             accepted += 1
             epoch_accept += 1
