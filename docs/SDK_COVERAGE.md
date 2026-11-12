@@ -175,7 +175,12 @@ The two the chains know best, for contrast:
    declares for it. Most are mechanical (`eRectangle` to
    `ISch_Rectangle`); the rest are in two small override tables in
    `src/eda_agent/sdk/coverage.py`, because Altium's own naming is not
-   uniform.
+   uniform. A type the SDK declares no interface for at all, such as
+   the signal harness (AD26 has no `ISch_SignalHarness`; a script
+   reaches it through `ISch_GraphicalObject` and `ISch_Polygon`), is
+   listed apart in `SCH_NOT_IN_SDK` and not measured, rather than
+   counted against a stand-in. A test against the real reflection
+   fails once Altium declares one, so the listing cannot go stale.
 4. The SDK's inheritance is resolved transitively, so a component is
    measured against everything `ISch_GraphicalObject` and
    `ISch_BasicContainer` give it too, not only its own 46 properties.
