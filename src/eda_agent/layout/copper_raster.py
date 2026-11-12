@@ -52,6 +52,12 @@ DEFAULT_PLANE_CLEARANCE_MILS = 10.0
 MAX_CELLS = 4_000_000
 
 
+#: Region kinds that are not copper: a polygon cutout, a keepout, and a
+#: polygon pour's OUTLINE (``read_altium`` keeps it beside the copper the
+#: pour actually made, kind "pour"; painted, it would fill every clearance
+#: void, neck and removed island of the pour solid).
+_NOT_COPPER = ("cutout", "keepout", "pour_boundary")
+
 #: Object kinds ``rasterize`` can paint.
 KINDS = ("tracks", "arcs", "pads", "vias", "regions", "planes")
 
@@ -89,6 +95,12 @@ class CopperRaster:
     supersample: int = 4
     kinds: list[str] = field(default_factory=lambda: list(KINDS))
     notes: list[str] = field(default_factory=list)
+    #: Only with ``rasterize(links=True)``: per layer, how much of the way
+    #: from one cell centre to the next is continuous copper. ``link_x`` is
+    #: ``(ny, nx - 1)`` (cell ``ix`` to ``ix + 1``), ``link_y`` is
+    #: ``(ny - 1, nx)``; values 0..1.
+    link_x: dict[str, np.ndarray] = field(default_factory=dict)
+    link_y: dict[str, np.ndarray] = field(default_factory=dict)
 
     def cell_of(self, x: float, y: float) -> tuple[int, int]:
         """(ix, iy) of the cell holding the point, clamped to the grid."""
@@ -163,6 +175,30 @@ class _Canvas:
     def cells(self, s: int, nx: int, ny: int) -> np.ndarray:
         """Area fraction per coarse cell (each s x s block averaged)."""
         return self.a.reshape(ny, s, nx, s).mean(axis=(1, 3))
+
+    def links(self, s: int, nx: int, ny: int) -> tuple[np.ndarray, np.ndarray]:
+        """Continuity of the copper between neighbouring cell centres.
+
+        Each of the ``s`` subsample rows of a cell is a strip running to
+        the next cell's centre, ``s`` subsamples long; it conducts when
+        every subsample along it is copper. The link is the fraction of
+        strips that conduct: 1 through solid copper, the covered fraction
+        of the face where copper only partly fills it, and 0 across any
+        gap the subsamples resolve, however narrow against the cell.
+        """
+        a = self.a
+        h0 = s // 2
+        csx = np.zeros((ny * s, nx * s + 1), dtype=np.int32)
+        np.cumsum(a, axis=1, out=csx[:, 1:])
+        starts = np.arange(nx - 1) * s + h0
+        runs = csx[:, starts + s] - csx[:, starts]
+        link_x = (runs == s).reshape(ny, s, nx - 1).mean(axis=1) if nx > 1 else np.zeros((ny, 0))
+        csy = np.zeros((ny * s + 1, nx * s), dtype=np.int32)
+        np.cumsum(a, axis=0, out=csy[1:, :])
+        starts = np.arange(ny - 1) * s + h0
+        runs = csy[starts + s, :] - csy[starts, :]
+        link_y = (runs == s).reshape(ny - 1, nx, s).mean(axis=2) if ny > 1 else np.zeros((0, nx))
+        return link_x, link_y
 
 
 def _seg_dist2(X, Y, ax, ay, bx, by):
@@ -305,7 +341,8 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
               supersample: int = 4,
               plane_clearance_mils: Optional[float] = None,
               margin_cells: int = 0,
-              kinds: Optional[Iterable[str]] = None) -> CopperRaster:
+              kinds: Optional[Iterable[str]] = None,
+              links: bool = False) -> CopperRaster:
     """The board's copper as fill fractions on a ``cell_mils`` grid.
 
     ``nets``: only copper of these nets. ``layers``: only these copper
@@ -313,7 +350,10 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     side (4 gives 16 samples, area within ~6 % of a cell). ``kinds``:
     paint only these object kinds, a subset of ``KINDS`` (default all);
     an IR-drop model that treats tracks as exact 1D resistors leaves
-    ``tracks`` and ``arcs`` out. Drill holes are always cut."""
+    ``tracks`` and ``arcs`` out. Drill holes are always cut. ``links``
+    also fills ``link_x`` / ``link_y``, the copper's continuity between
+    neighbouring cells (see ``_Canvas.links``): a conduction model built
+    on them does not bridge a gap narrower than a cell."""
     kind_set = set(KINDS) if kinds is None else set(kinds)
     unknown = kind_set - set(KINDS)
     if unknown:
@@ -367,6 +407,8 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     holes = _barrels(board, order)
     kinds = {l.name: l for l in board.layers}
     fill: dict[str, np.ndarray] = {}
+    link_x: dict[str, np.ndarray] = {}
+    link_y: dict[str, np.ndarray] = {}
     for layer in want:
         lk = kinds.get(layer)
         is_plane = lk is not None and lk.kind == "plane"
@@ -375,7 +417,7 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
             # one mask per plane net, antipads cut for other-net holes
             per_net: dict[str, list[geom.Shape]] = {}
             for r in board.regions:
-                if r.layer != layer or r.keepout or r.kind in ("cutout", "keepout"):
+                if r.layer != layer or r.keepout or r.kind in _NOT_COPPER:
                     continue
                 if len(r.outline) >= 3:
                     per_net.setdefault(r.net, []).append(r.shape())
@@ -393,7 +435,7 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
                 c.a |= pc.a
         elif not is_plane and "regions" in kind_set:
             for r in board.regions:
-                if (r.layer == layer and not r.keepout and r.kind not in ("cutout", "keepout")
+                if (r.layer == layer and not r.keepout and r.kind not in _NOT_COPPER
                         and len(r.outline) >= 3 and keep(r.net)):
                     c.paint(r.shape())
         # discrete copper (on plane layers too: pads and vias keep their land)
@@ -424,11 +466,14 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
                 c.paint(geom.circle(hx, hy, hole), value=False)
         f = c.cells(s, nx, ny)
         fill[layer] = np.minimum(f, mask)
+        if links:
+            c.a &= cm.a
+            link_x[layer], link_y[layer] = c.links(s, nx, ny)
 
     raster = CopperRaster(x0, y0, cell_mils, nx, ny, want, mask, fill,
                           nets=sorted(net_set) if net_set is not None else None,
                           plane_clearance_mils=clear, supersample=s, notes=notes,
-                          kinds=sorted(kind_set))
+                          kinds=sorted(kind_set), link_x=link_x, link_y=link_y)
     for (hx, hy, hole, span, hnet, kind, comp, pin, land) in holes:
         if not keep(hnet):
             continue
