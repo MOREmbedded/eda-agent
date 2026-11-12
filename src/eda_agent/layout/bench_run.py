@@ -14,6 +14,10 @@ result with the same exact DRC:
 * ``place``: strip the routing, scramble the movable parts, place them.
 * ``place_route``: place as above, then route the engine's placement.
 
+``--router euan`` routes with the opt-in router from Euan's fork
+(layout/route_euan) instead of the default one, so the two can be
+compared on the same boards; the record names the engine that ran.
+
 Every board runs in a process of its own, ``--jobs`` at a time, and one
 that runs past ``--timeout`` is stopped and recorded as such. The output
 holds the code version (``git describe``, whether the tree was dirty, a
@@ -65,6 +69,10 @@ class BenchOptions:
     # of StageOptions fields.
     planes: bool = True
     stages: Any = None
+    # The routing engine: "default", or "euan" for the opt-in router from
+    # Euan's fork (layout/route_euan). Named here, never taken from the
+    # user's setting, so a result always says which router it measured.
+    router: str = "default"
     # Placement.
     strategy: str | None = None       # None: the placer's DEFAULT_STRATEGY
     fallback: float | None = None     # None: floorplan.FALLBACK_SHARE
@@ -84,7 +92,17 @@ def resolved_options(opts: BenchOptions) -> dict:
 
     out = asdict(opts)
     if opts.mode != "place":
-        out["stages_resolved"] = asdict(StageOptions.coerce(opts.stages))
+        if opts.router == "euan":
+            from .route.job import euan_kwargs
+            from .route_euan.stages import StageOptions as EuanStageOptions
+
+            kwargs, _ = euan_kwargs(opts.stages)
+            stages = kwargs.pop("stages")
+            out["stages_resolved"] = asdict(EuanStageOptions.coerce(stages))
+            out["router_arguments"] = {k: sorted(v) if isinstance(v, frozenset) else v
+                                       for k, v in kwargs.items()}
+        else:
+            out["stages_resolved"] = asdict(StageOptions.coerce(opts.stages))
     if opts.mode != "route":
         out["strategy_resolved"] = opts.strategy or DEFAULT_STRATEGY
         out["fallback_resolved"] = FALLBACK_SHARE if opts.fallback is None else opts.fallback
@@ -185,14 +203,22 @@ def _place(stripped: LayoutBoard, opts: BenchOptions, rec: dict) -> LayoutBoard:
 
 
 def _route(unrouted: LayoutBoard, opts: BenchOptions, rec: dict) -> None:
-    from .route.router import route_adaptive
-
     t0 = time.perf_counter()
-    r = route_adaptive(copy_board(unrouted), planes=opts.planes, stages=opts.stages)
+    if opts.router == "euan":
+        from .route.job import euan_kwargs
+        from .route_euan.router import route_adaptive as euan_adaptive
+
+        # No gloss, as for the default engine here: the same copper is scored.
+        kwargs, _ = euan_kwargs(opts.stages)
+        r = euan_adaptive(copy_board(unrouted), planes=opts.planes, **kwargs)
+    else:
+        from .route.router import route_adaptive
+
+        r = route_adaptive(copy_board(unrouted), planes=opts.planes, stages=opts.stages)
     routed = r.apply()
     seconds = time.perf_counter() - t0
     rec["engine"] = {**_routed(routed), "seconds": round(seconds, 2)}
-    rec["router"] = {"iterations": r.report.iterations,
+    rec["router"] = {"engine": opts.router, "iterations": r.report.iterations,
                      "released_planes": len(r.released),
                      "stage_fallback": bool(r.stage_report.fallback)}
     rec["vias_vs_human"] = _ratio(rec["engine"]["vias"], rec["human"]["vias"])
@@ -542,6 +568,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--finished", action="store_true",
                     help="score only boards the person finished (complete, no violations)")
     ap.add_argument("--mode", choices=MODES, default="route")
+    ap.add_argument("--router", choices=("default", "euan"), default="default",
+                    help="routing engine: default, or euan (the opt-in router "
+                         "from Euan's fork), to compare the two on the same boards")
     ap.add_argument("--legacy-router", action="store_true",
                     help="route with the router before the planned stages")
     ap.add_argument("--stage", action="append", default=[], metavar="NAME=VALUE",
@@ -584,6 +613,7 @@ def options_from(args: argparse.Namespace) -> BenchOptions:
                 raise SystemExit(f"--stage takes NAME=VALUE, got {item!r}")
             stages[name.strip()] = _value(text.strip())
     return BenchOptions(mode=args.mode, planes=not args.no_planes, stages=stages,
+                        router=args.router,
                         strategy=args.strategy, fallback=args.fallback,
                         decap_pull=args.decap_pull, spread_density=args.spread_density,
                         grid_mm=args.grid_mm, seed=args.seed, finished_only=args.finished)

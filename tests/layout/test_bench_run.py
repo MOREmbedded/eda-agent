@@ -262,3 +262,27 @@ def test_the_output_records_the_code_the_options_and_the_summary(tmp_path, capsy
     assert list(data["boards"]) == ["one.json.gz"]
     assert data["summary"]["routing"]["fully_routed"] == 1
     assert "fully routed 1/1" in capsys.readouterr().out
+
+
+def test_the_euan_router_is_benchmarked_only_when_named(tmp_path, monkeypatch):
+    import eda_agent.layout.route_euan.router as euan
+    ran = []
+    real = euan.route_adaptive
+    monkeypatch.setattr(euan, "route_adaptive",
+                        lambda *a, **k: ran.append(k) or real(*a, **k))
+    base = ["--fixtures", str(tmp_path)]
+    assert options_from(parse_args(base)).router == "default"
+    opts = options_from(parse_args(base + ["--router", "euan", "--stage", "neck_pads=true"]))
+    assert opts.router == "euan"
+    resolved = bench_run.resolved_options(opts)
+    assert resolved["router"] == "euan"
+    assert resolved["router_arguments"] == {"neck_pads": True}
+    assert "neck_pads" not in resolved["stages_resolved"]
+    rec = run_board(_routed_board(), opts)
+    assert rec["ok"] and rec["router"]["engine"] == "euan"
+    assert len(ran) == 1 and ran[0]["neck_pads"] is True, "Euan's router did the routing"
+    assert rec["engine"]["fully_routed"] and rec["engine"]["violations"] == 0
+    assert run_board(_routed_board(), BenchOptions(mode="route"))["router"]["engine"] == "default"
+    assert len(ran) == 1, "the default engine stays the default"
+    with pytest.raises(SystemExit):
+        parse_args(base + ["--router", "fast"])

@@ -76,6 +76,10 @@ def current(override: Optional[str] = None) -> str:
         if name not in ENGINES:
             raise ValueError(f"router engine {override!r} is not one of {list(ENGINES)}")
         return name
+    # The variable decides without a look for the profile.
+    raw = os.environ.get(ENV, "").strip().lower()
+    if raw in ENGINES:
+        return raw
     return describe()["engine"]
 
 

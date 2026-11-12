@@ -578,6 +578,19 @@ def _no_real_profile_preferences(request, monkeypatch):
     monkeypatch.setattr(preferences, "_profile_layer", lambda: {})
 
 
+@pytest.fixture(autouse=True)
+def _usual_router_engine(monkeypatch):
+    """Route with the default engine in every test that does not pick one.
+
+    A developer who ran ``eda-agent router-use euan`` (the active profile's
+    router.json) or set EDA_AGENT_ROUTER would otherwise have every routing
+    test run Euan's router. The variable wins over the profile file, so
+    setting it is enough, and it imports nothing. A test of the choice
+    itself deletes it or sets it again.
+    """
+    monkeypatch.setenv("EDA_AGENT_ROUTER", "default")
+
+
 def pytest_configure(config):
     # Without pytest-asyncio every async test fails with "async def
     # functions are not natively supported", hundreds of them across
