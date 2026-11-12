@@ -205,7 +205,7 @@ _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
 # substring rule above assumes a calc tool is pure maths; these query
 # Altium first, so reporting them as offline sends anyone filtering for
 # "works without Altium" straight into a bridge error.
-_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
+_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area", "pcb_calc_toolkit_board"})
 
 # design_* tools that are pure Python (per the design-agent surface: plan
 # authoring, analysis, and derivation all run offline). The bridge-backed
