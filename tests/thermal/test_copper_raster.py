@@ -130,6 +130,72 @@ def test_kinds_filter_leaves_tracks_out():
         rasterize(b, kinds={"bogus"})
 
 
+def test_link_conductivity_is_directional():
+    # a 20 mil track along x through the middle of a row of 50 mil cells
+    t = Track("TopLayer", 0, 225, 1000, 225, 20, "N1")
+    r = rasterize(_board(tracks=[t]), cell_mils=50, supersample=10, links=True)
+    kx, ky = r.link_conductivity("TopLayer", 385.0, 0.3)
+    assert kx.shape == (10, 19) and ky.shape == (9, 20)
+    # along the track: copper over 20/50 of the width, in parallel with resin
+    assert kx[4, 5] == pytest.approx(385 * 0.4 + 0.3 * 0.6, rel=1e-6)
+    # across the track (row 4 to row 5): one centre sits on the track, the
+    # other in bare resin, so the heat must cross resin: far below the area rule
+    area_rule = 385 * r.fill["TopLayer"][4, 5] + 0.3 * (1 - r.fill["TopLayer"][4, 5])
+    assert ky[4, 5] < 0.02 * area_rule
+    assert ky[4, 5] > 0.3
+    # a link with no copper at all is the resin
+    assert kx[0, 0] == pytest.approx(0.3)
+
+
+def test_link_conductivity_gap_opens_an_electrical_link():
+    # two pours with a 10 mil gap across x at x = 500 (between cells 9 and 10)
+    regs = [Region("TopLayer", [(0, 0), (495, 0), (495, 500), (0, 500)], net="A"),
+            Region("TopLayer", [(505, 0), (1000, 0), (1000, 500), (505, 500)], net="A")]
+    r = rasterize(_board(regions=regs), cell_mils=50, supersample=10, links=True)
+    kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[3, 9] == 0.0            # the gap opens the link
+    assert kx[3, 5] == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        rasterize(_board(regions=regs), cell_mils=50).link_conductivity("TopLayer", 1.0, 0.0)
+
+
+def test_bounds_window_grids_a_part_of_the_board():
+    t = Track("TopLayer", 100, 250, 900, 250, 20, "N1")
+    vias = [Via(150, 250, 24, 12, "TopLayer", "BottomLayer", "N1"),
+            Via(850, 250, 24, 12, "TopLayer", "BottomLayer", "N1")]
+    r = rasterize(_board(tracks=[t], vias=vias), cell_mils=5, bounds=(100, 200, 300, 300))
+    assert (r.x0, r.y0, r.nx, r.ny) == (100, 200, 40, 20)
+    assert len(r.barrels) == 1 and r.barrels[0].x == 150
+    assert r.mask.min() == pytest.approx(1.0)
+
+
+def test_shape_area_by_cell_splits_a_pad_over_its_cells():
+    from eda_agent.layout import geom
+    r = rasterize(_board(), cell_mils=50)
+    # a 60 x 20 rectangle centred on a cell corner at (500, 250)
+    cells = r.shape_area_by_cell(geom.pad_shape(500, 250, 60, 20, "rect"), samples=10)
+    assert set(cells) == {(9, 4), (10, 4), (9, 5), (10, 5)}
+    assert sum(cells.values()) == pytest.approx(1200, rel=1e-6)
+    assert cells[(9, 4)] == pytest.approx(300, rel=1e-6)
+    # a pad too small to catch a sample still lands in its cell
+    tiny = r.shape_area_by_cell(geom.pad_shape(512, 262, 0.5, 0.5, "rect"), samples=2)
+    assert list(tiny) == [(10, 5)]
+    # off the grid: nothing
+    assert r.shape_area_by_cell(geom.circle(5000, 5000, 10)) == {}
+
+
+def test_edge_length_per_cell():
+    # a 100 x 100 pad whose edges cut through the middle of 50 mil cells
+    pad = Pad("U1", "1", 525, 275, net="N", copper=[PadCopper("TopLayer", "rect", 100, 100)])
+    r = rasterize(_board(pads=[pad]), cell_mils=50, supersample=10, links=True)
+    e = r.edge_mils["TopLayer"]
+    assert e.sum() == pytest.approx(400, rel=0.02)          # the pad's perimeter
+    assert e[5, 9] == pytest.approx(50, rel=1e-6)           # its left edge crosses this cell
+    assert e[5, 10] == 0 and r.fill["TopLayer"][5, 10] == 1  # inside the pad
+    assert e[0, 0] == 0
+    assert rasterize(_board(pads=[pad]), cell_mils=50).edge_mils == {}
+
+
 def test_a_pour_outline_is_not_copper():
     # read_altium keeps a polygon's outline (kind "pour_boundary") beside
     # the copper it poured (kind "pour"): only the poured copper counts.
@@ -167,3 +233,102 @@ def test_links_follow_the_copper_not_the_cell():
     r = rasterize(b, 20.0, nets=["P"], supersample=8, links=True)
     assert np.allclose(r.link_x["TopLayer"][5, :], 0.5)
     assert not rasterize(b, 20.0, nets=["P"]).link_x          # off by default
+
+
+# -- exact areas ---------------------------------------------------------------
+
+@pytest.mark.parametrize("cell", [10.0, 25.0, 50.0, 100.0])
+def test_areas_are_exact_whatever_the_cell(cell):
+    """A track, a round pad, a rectangle and a rounded rectangle, all off
+    the grid lines: each keeps its true area on any grid (centre sampling
+    gave a 30 mil track 25 mil of width on 50 mil cells)."""
+    def area(**kw) -> float:
+        return rasterize(_board(**kw), cell_mils=cell).copper_area_mils2("TopLayer")
+
+    w, length = 30.0, 600.0
+    capsule = w * length + math.pi * (w / 2) ** 2
+    assert area(tracks=[Track("TopLayer", 203, 151, 803, 151, w, "N")]) \
+        == pytest.approx(capsule, rel=1e-6)                       # along x
+    assert area(tracks=[Track("TopLayer", 403, 51, 403, 451, w, "N")]) \
+        == pytest.approx(w * 400 + math.pi * (w / 2) ** 2, rel=1e-6)   # along y
+    assert area(pads=[Pad("U1", "1", 333.3, 222.2, net="N",
+                          copper=[PadCopper("TopLayer", "round", 61, 61)])]) \
+        == pytest.approx(math.pi * 30.5 ** 2, rel=1e-6)
+    assert area(pads=[Pad("U1", "1", 333.3, 222.2, net="N",
+                          copper=[PadCopper("TopLayer", "rect", 87, 43)])]) \
+        == pytest.approx(87 * 43, rel=1e-6)
+    cr = 0.5 * 43 / 2                                             # 50 % of half the short side
+    rounded = 87 * 43 - (4 - math.pi) * cr ** 2
+    assert area(pads=[Pad("U1", "1", 333.3, 222.2, net="N",
+                          copper=[PadCopper("TopLayer", "roundrect", 87, 43, corner_pct=50)])]) \
+        == pytest.approx(rounded, rel=1e-6)
+
+
+@pytest.mark.parametrize("angle", [17.0, 45.0, 73.0, 120.0])
+def test_a_slanted_track_keeps_its_width(angle):
+    w, length = 12.0, 400.0
+    dx, dy = math.cos(math.radians(angle)) * length, math.sin(math.radians(angle)) * length
+    t = Track("TopLayer", 500 - dx / 2, 250 - dy / 2, 500 + dx / 2, 250 + dy / 2, w, "N")
+    for cell in (20.0, 50.0):
+        got = rasterize(_board(tracks=[t]), cell_mils=cell).copper_area_mils2("TopLayer")
+        assert got == pytest.approx(w * length + math.pi * (w / 2) ** 2, rel=0.01)
+
+
+def test_a_drill_hole_takes_its_exact_area_out_of_a_pad():
+    pad = Pad("J1", "1", 407, 263, net="N", hole=37.0,
+              copper=[PadCopper("TopLayer", "rect", 90, 90), PadCopper("BottomLayer", "rect", 90, 90)])
+    r = rasterize(_board(pads=[pad]), cell_mils=50)
+    assert r.copper_area_mils2("TopLayer") == pytest.approx(90 * 90 - math.pi * 18.5 ** 2, rel=1e-6)
+
+
+def test_overlapping_copper_is_counted_once():
+    pads = [Pad("U1", "1", 400, 250, net="N", copper=[PadCopper("TopLayer", "rect", 100, 100)])]
+    tracks = [Track("TopLayer", 400, 250, 430, 250, 20, "N")]     # wholly inside the pad
+    r = rasterize(_board(pads=pads, tracks=tracks), cell_mils=30)
+    assert r.copper_area_mils2("TopLayer") == pytest.approx(100 * 100, rel=1e-6)
+
+
+def test_a_polygon_cutout_is_not_a_hole_in_the_board():
+    """Region kind "cutout" is a no-pour area on one copper layer
+    (read_altium: copper False). It is not copper, and the board under it
+    is still board: tracks cross it and the mask stays whole."""
+    b = _board(tracks=[Track("TopLayer", 100, 250, 900, 250, 40, "N")],
+               regions=[Region("TopLayer", [(400, 100), (600, 100), (600, 400), (400, 400)],
+                               [], "", "cutout")])
+    r = rasterize(b, cell_mils=50)
+    assert r.mask.min() == 1.0
+    assert r.fill["TopLayer"][5, 10] > 0.3                  # the track inside the cutout
+    assert r.copper_area_mils2("TopLayer") == pytest.approx(800 * 40 + math.pi * 20 ** 2, rel=1e-6)
+
+
+def test_an_unpoured_polygon_is_reported():
+    ring = [(100, 100), (900, 100), (900, 400), (100, 400)]
+    b = _board(regions=[Region("TopLayer", ring, [], "GND", "pour_boundary", False, "",
+                               "polygon:GND_L1")])
+    r = rasterize(b, cell_mils=50)
+    assert r.copper_area_mils2("TopLayer") == 0.0
+    assert any("no poured copper" in n and "GND_L1 on TopLayer" in n for n in r.notes)
+    b.regions.append(Region("TopLayer", [(150, 150), (850, 150), (850, 350), (150, 350)], [],
+                            "GND", "pour", False, "", "polygon:GND_L1"))
+    assert not any("no poured copper" in n for n in rasterize(b, cell_mils=50).notes)
+
+
+def test_edge_length_of_round_and_slanted_copper():
+    pad = Pad("U1", "1", 503, 251, net="N", copper=[PadCopper("TopLayer", "round", 200, 200)])
+    r = rasterize(_board(pads=[pad]), cell_mils=25, supersample=8, links=True)
+    assert r.edge_mils["TopLayer"].sum() == pytest.approx(math.pi * 200, rel=0.05)
+
+
+def test_a_gap_narrower_than_a_sample_is_open_and_an_edge_row_conducts():
+    # two pours 4 mil apart on 50 mil cells (samples of 12.5 mil), and a
+    # track whose edge falls inside a sample row
+    b = _board(regions=[Region("TopLayer", [(100, 100), (498, 100), (498, 200), (100, 200)], [], "A"),
+                        Region("TopLayer", [(502, 100), (900, 100), (900, 200), (100 + 800, 200)], [], "B")],
+               tracks=[Track("TopLayer", 100, 353, 900, 353, 30, "C")])
+    r = rasterize(b, cell_mils=50, links=True)
+    kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[2, 9] == 0.0                      # across the gap at x = 500, row y = 100..150
+    assert kx[2, 5] == pytest.approx(1.0)       # solid pour
+    # the track spans y = 338..368: 12 mil in row 6 (300..350), 18 in row 7
+    assert kx[6, 8] == pytest.approx(12 / 50, rel=1e-6)
+    assert kx[7, 8] == pytest.approx(18 / 50, rel=1e-6)
