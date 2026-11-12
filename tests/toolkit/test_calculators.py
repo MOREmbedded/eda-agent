@@ -453,6 +453,41 @@ def test_prefill_reads_each_layer_from_the_stack():
     assert not prefill.from_stackup({"layers": []})["ok"]
 
 
+#: BoosterTest.PcbDoc as the bridge really reports it (read live on
+#: 2026-11-12): two copper layers and no dielectric at all.
+BARE_STACK = {"board_name": "BoosterTest.PcbDoc", "layer_count": 2, "layers": [
+    {"name": "Top Layer", "order": 1, "layer_id": 1, "copper_thickness_mils": 1.4,
+     "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0},
+    {"name": "Bottom Layer", "order": 2, "layer_id": 32, "copper_thickness_mils": 1.4,
+     "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0},
+]}
+
+
+def test_a_stack_without_dielectrics_fills_copper_only_and_says_so():
+    """Copper added up is not a board thickness: 2.8 mil was offered."""
+    p = prefill.from_stackup(BARE_STACK)
+    assert p["ok"] and p["layer_count"] == 2
+    assert p["thickness_mils"] is None
+    assert len(p["notes"]) == 1 and "no dielectric" in p["notes"][0]
+    for layer in p["layers"]:
+        assert set(layer["values"]) == {"stackup.copper", "board.planes"}
+        assert layer["values"]["stackup.copper"] == {"value": 1.4, "unit": "mil"}
+    # A complete stack carries no note, and its thickness is the whole board.
+    full = prefill.from_stackup(STACK)
+    assert full["notes"] == []
+    assert full["layers"][0]["values"]["board.thickness"]["value"] == pytest.approx(60.2)
+
+
+def test_a_dielectric_without_er_is_named():
+    rows = [dict(r) for r in STACK["layers"]]
+    rows[0]["dielectric_constant"] = 0
+    p = prefill.from_stackup({"layers": rows})
+    assert len(p["notes"]) == 1 and "no Er" in p["notes"][0]
+    assert "stackup.er" not in p["layers"][0]["values"]
+    assert p["layers"][0]["values"]["stackup.dielectric_height"]["value"] == 4.0
+    assert p["thickness_mils"] == pytest.approx(60.2)
+
+
 def test_prefill_keys_exist_on_the_calculators_that_name_them():
     known = {"stackup.copper", "stackup.dielectric_height", "stackup.h_below", "stackup.h_above",
              "stackup.er", "stackup.plane_gap", "board.thickness", "board.planes"}

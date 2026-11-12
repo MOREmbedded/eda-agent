@@ -82,8 +82,10 @@ def register_toolkit_tools(mcp, *, altium: bool = False) -> None:
         h2, t, er, board_thickness).
 
         Returns:
-            {ok, board_name, layer_count, thickness_mils, layers: [{name,
-             kind, structure, values: {prefill_key: {value, unit}}}]}
+            {ok, board_name, layer_count, thickness_mils, notes, layers:
+             [{name, kind, structure, values: {prefill_key: {value,
+             unit}}}]}. notes says what the stack does not carry (a
+             board with no dielectric set gives copper only).
         """
         from ..bridge import get_bridge
         from ..engineering.toolkit.prefill import from_stackup

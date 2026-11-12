@@ -2421,7 +2421,8 @@ function tkFill() {
     all[i.key] = {v: got.value, u: got.unit || i.unit || ""}; TK.filled[c.name + "." + i.key] = true; n++;
   }
   store.set("wb.tk.vals", TK.vals); tkRepaintForm(); calcRun(0);
-  say(n ? T("Filled {0} values from {1}.", n, L.name) : T("Nothing on this calculator comes from the layer stack."), !n);
+  const note = (B.notes || []).join(" ");
+  say((n ? T("Filled {0} values from {1}.", n, L.name) : T("Nothing on this calculator comes from the layer stack.")) + (note ? " " + note : ""), !n || !!note);
 }
 async function calcClick(e) {
   const t = e.target.closest("button"); if (!t) return;

@@ -22,15 +22,29 @@ def _num(v: Any) -> float:
 def from_stackup(live: dict[str, Any]) -> dict[str, Any]:
     """Per-layer prefill values from a ``pcb_get_layer_stackup`` reply.
 
-    Returns ``{ok, board_name, layers: [{name, kind, structure, values}]}``
-    where ``values`` maps a prefill key to ``{"value", "unit"}``.
+    Returns ``{ok, board_name, layer_count, thickness_mils, notes, layers:
+    [{name, kind, structure, values}]}`` where ``values`` maps a prefill
+    key to ``{"value", "unit"}``. ``notes`` says what the stack did not
+    carry; ``thickness_mils`` is None when it carries no dielectric.
     """
     rows = [r for r in (live or {}).get("layers") or [] if isinstance(r, dict)]
     if not rows:
         return {"ok": False, "reason": "the board's layer stack could not be read"}
     n = len(rows)
-    thickness = sum(_num(r.get("copper_thickness_mils")) + _num(r.get("dielectric_height_mils"))
-                    for r in rows)
+    dielectric = sum(_num(r.get("dielectric_height_mils")) for r in rows)
+    # Copper alone is not a board thickness: a stack that carries no
+    # dielectric gives none, and says so, rather than a 2.8 mil board.
+    thickness = (sum(_num(r.get("copper_thickness_mils")) for r in rows) + dielectric
+                 if dielectric > 0 else 0.0)
+    notes = []
+    if dielectric <= 0:
+        notes.append("The board's layer stack carries no dielectric height or Er, so only "
+                     "the copper thickness is filled. Set the dielectrics in the Layer "
+                     "Stack Manager, or type them here.")
+    elif any(_num(r.get("dielectric_height_mils")) > 0
+             and _num(r.get("dielectric_constant")) <= 0 for r in rows):
+        notes.append("Some dielectrics in the layer stack carry no Er; Er is left as typed "
+                     "for those layers.")
     is_plane = [int(_num(r.get("layer_id"))) in _PLANE_IDS for r in rows]
     planes = sum(is_plane)
     gaps = [_num(rows[i].get("dielectric_height_mils")) for i in range(n - 1)
@@ -69,4 +83,5 @@ def from_stackup(live: dict[str, Any]) -> dict[str, Any]:
             "values": vals,
         })
     return {"ok": True, "board_name": str(live.get("board_name", "")),
-            "layer_count": n, "thickness_mils": round(thickness, 3), "layers": out}
+            "layer_count": n, "thickness_mils": round(thickness, 3) if thickness > 0 else None,
+            "notes": notes, "layers": out}

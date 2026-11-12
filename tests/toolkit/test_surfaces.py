@@ -12,7 +12,7 @@ from eda_agent.engineering import toolkit
 from eda_agent.tools.toolkit import register_toolkit_tools
 from eda_agent.web import toolkit_view
 
-from test_calculators import STACK
+from test_calculators import BARE_STACK, STACK
 
 PAGE = (Path(toolkit_view.__file__).parent / "dashboard_static" / "workbench.html").read_text(
     encoding="utf-8")
@@ -182,6 +182,16 @@ def test_board_values_reads_and_reports_failure():
     assert not got["ok"] and "no answer" in got["reason"]
     assert not toolkit_view.board_values("")["ok"]
     assert not toolkit_view.board_values("D:/x/demo.PcbDoc", read=lambda b: None)["ok"]
+
+
+def test_a_board_without_dielectrics_reaches_the_page_with_its_note():
+    got = toolkit_view.board_values("D:/x/BoosterTest.PcbDoc", read=lambda b: BARE_STACK)
+    assert got["ok"] and got["thickness_mils"] is None
+    assert got["notes"] and "no dielectric" in got["notes"][0]
+    assert all("board.thickness" not in l["values"] for l in got["layers"])
+    # The page shows the note beside the fill message, as a warning.
+    assert 'const note = (B.notes || []).join(" ");' in PAGE
+    assert '(note ? " " + note : ""), !n || !!note);' in PAGE
 
 
 def test_the_page_has_the_calculators_mode():
