@@ -16,6 +16,19 @@ maturity classification for every tool.
 
 ### Added
 
+- **Fab and IPC class floors on a board's design rules, on demand.**
+  New `pcb_rules_fab_floors` tool holds the board's existing rules up
+  against one fab build's published minimums (the cited fab rules
+  database) and, with `ipc_class`, the profile's IPC class floors
+  (`std-floors`), and says rule by rule which ones sit below the floor
+  and why, with the fab quote or IPC clause behind each floor. It reports
+  by default; with `apply=True` it raises board-wide rules that are below
+  the floor and nothing else. Rules already stricter are never loosened,
+  scoped rules below the floor are left for the user to name, rules DRC
+  does not check and kinds with no writer (annular ring) are reported,
+  and nothing is created or deleted. Writes go into the board's rule log.
+  Never runs on its own. UNVERIFIED against a live board.
+
 - **EMI/EMC pre-scan and openEMS field solving.** `sim_emc_prescan`
   checks a routed board's fast nets with no external program. It finds
   tracks that cross a split or slot in their reference plane or have no
@@ -27,9 +40,12 @@ maturity classification for every tool.
   stackup out of the board and solve them in openEMS, which runs as a
   separate process. Results come back as a Touchstone file and a summary:
   return loss, S21, and for antennas directivity, efficiency and pattern.
-  `sim_read_touchstone` summarises any `.sNp` file. UNVERIFIED against a
-  real openEMS install: the runner is tested on a stand-in that records
-  its calls. See [`docs/EMC_RF.md`](docs/EMC_RF.md).
+  `sim_read_touchstone` summarises any `.sNp` file. Checked against
+  openEMS 0.37 on Windows: a 50 ohm microstrip's effective permittivity
+  from two line lengths is within 1 % of Hammerstad-Jensen, |S21| 0.986,
+  |S11| -33 dB (`tests/emc/test_openems_real_solver.py`, skipped where
+  openEMS is not set up). The live board read is UNVERIFIED.
+  See [`docs/EMC_RF.md`](docs/EMC_RF.md).
 
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit

@@ -31,6 +31,7 @@ from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
 from .pcb import register_pcb_tools
 from .rules import register_rule_tools
+from .rule_floors import register_rule_floor_tools
 from .erc import register_erc_tools
 from .profile_apply import register_profile_apply_tools
 from .review import register_review_tools
@@ -236,6 +237,7 @@ def register_all_tools(mcp):
     register_generic_tools(mcp)
     register_pcb_tools(mcp)
     register_rule_tools(mcp)
+    register_rule_floor_tools(mcp)
     register_erc_tools(mcp)
     register_profile_apply_tools(mcp)
     register_review_tools(mcp)
@@ -462,6 +464,7 @@ __all__ = [
     "register_generic_tools",
     "register_pcb_tools",
     "register_rule_tools",
+    "register_rule_floor_tools",
     "register_erc_tools",
     "register_profile_apply_tools",
     "register_review_tools",
