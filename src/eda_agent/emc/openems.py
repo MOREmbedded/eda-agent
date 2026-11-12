@@ -369,6 +369,34 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
                     "xy1": [-half_w, -half_h], "xy2": [half_w, half_h]}
                    for d in stack.dielectrics]
     thick = stack.thickness_mils * MM_PER_MIL
+
+    # -- fine mesh across the signal copper ---------------------------------
+    # The field of a trace lives within a few dielectric heights of it, so
+    # across each trace (not along it) the mesh is fine: cells of a third
+    # of the width or half the thinnest dielectric, the edge by the
+    # thirds rule (a third of a cell inside, two thirds outside), and
+    # graded out to three heights. Along the trace the wavelength rule
+    # is enough.
+    h_min = min([d.height_mils for d in stack.dielectrics] or [8.0]) * MM_PER_MIL
+    track_w = [t.width for t in board.tracks if t.net in chosen] + \
+        [a.width for a in board.arcs if a.net in chosen]
+    w_min = (min(track_w) if track_w else 10.0) * MM_PER_MIL
+    fine = max(min(w_min / 3, h_min / 2, res_mm / 4), 0.01)
+    for t in board.tracks:
+        if t.net not in chosen or t.keepout:
+            continue
+        (ax, ay), (bx, by) = mm(t.x1, t.y1), mm(t.x2, t.y2)
+        half = t.width / 2 * MM_PER_MIL
+        if abs(ay - by) < 1e-6:                  # runs along x: refine y
+            edges_y.update(_across(ay - half, ay + half, fine, 3 * h_min))
+        elif abs(ax - bx) < 1e-6:                # runs along y: refine x
+            edges_x.update(_across(ax - half, ax + half, fine, 3 * h_min))
+        else:                                    # diagonal: both, at its ends
+            edges_x.update(_across(min(ax, bx) - half, max(ax, bx) + half, fine, 3 * h_min))
+            edges_y.update(_across(min(ay, by) - half, max(ay, by) + half, fine, 3 * h_min))
+    edges_x = {v for v in edges_x if -half_w <= v <= half_w}
+    edges_y = {v for v in edges_y if -half_h <= v <= half_h}
+
     if mode == "antenna":
         f_low = f_min_hz if f_min_hz > 0 else f_c / 2
         air = C0 / f_low * 1e3 / 4
@@ -380,9 +408,6 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
     z_lines = sorted({round(l.z_mils * MM_PER_MIL, 5) for l in stack.layers}
                      | {sim_box["z"][0], sim_box["z"][1]})
 
-    widths = [t.width for t in board.tracks if t.net in chosen] + \
-        [a.width for a in board.arcs if a.net in chosen]
-    min_feature_mm = (min(widths) if widths else 10.0) * MM_PER_MIL
     cells = _cell_estimate(sim_box, res_mm, len(edges_x), len(edges_y), len(z_lines),
                            thick, er_max, lam_max_mm)
     if cells > max_cells:
@@ -404,7 +429,7 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
         "boundary": ["PML_8"] * 6 if mode == "antenna" else ["MUR"] * 6,
         "sim_box": sim_box,
         "mesh": {"res_mm": round(res_mm, 5), "ratio": MESH_RATIO,
-                 "min_gap_mm": round(max(min(res_mm / 10, min_feature_mm / 3), 0.005), 5),
+                 "min_gap_mm": round(max(fine / 4, 0.002), 5),
                  "x": sorted(edges_x | set(sim_box["x"])),
                  "y": sorted(edges_y | set(sim_box["y"])),
                  "z": z_lines,
@@ -420,6 +445,22 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
         "notes": ([f"plane layer(s) {solid_planes} modelled solid over the board outline"]
                   if solid_planes else []) + list(stack.notes),
     }
+
+
+def _across(lo: float, hi: float, fine: float, reach: float) -> set[float]:
+    """Mesh lines across one trace from ``lo`` to ``hi`` (mm): ``fine``
+    cells inside, its edges by the thirds rule, graded 1.4x outwards for
+    ``reach`` beyond each edge."""
+    lines = set()
+    a, b = lo + fine / 3, hi - fine / 3
+    n = max(1, int(round((b - a) / fine)))
+    lines.update(round(a + (b - a) * k / n, 5) for k in range(n + 1))
+    step, out = fine, 2 * fine / 3
+    while out <= reach:
+        lines.update({round(lo - out, 5), round(hi + out, 5)})
+        step *= MESH_RATIO
+        out += step
+    return lines
 
 
 def _hole_inside(hole, outer) -> bool:
@@ -499,7 +540,10 @@ def write_model(model: dict, runs_dir: Optional[str | Path] = None, name: str = 
 def _python_can_import(python: str) -> bool:
     try:
         from ..noconsole import no_window
-        proc = subprocess.run([python, "-c", "import openEMS, CSXCAD"],
+        probe = ("import openEMS, CSXCAD; "
+                 "assert openEMS.__file__ and CSXCAD.__file__; "
+                 "from openEMS import openEMS as _o; from CSXCAD import ContinuousStructure as _c")
+        proc = subprocess.run([python, "-c", probe],
                               capture_output=True, timeout=60, env=_run_env(), **no_window())
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -514,9 +558,9 @@ def _run_env() -> dict:
         # The CSXCAD and openEMS bindings find their DLLs through these.
         env.setdefault("CSXCAD_INSTALL_PATH", home)
         env.setdefault("OPENEMS_INSTALL_PATH", home)
-        py = Path(home) / "python"
-        if py.is_dir():
-            env["PYTHONPATH"] = str(py) + os.pathsep + env.get("PYTHONPATH", "")
+        # Not its "python" folder on PYTHONPATH: in the Windows build that
+        # holds .pxd sources with no __init__.py, which shadow the real
+        # bindings (an import of them hangs, or finds an empty namespace).
     return env
 
 
