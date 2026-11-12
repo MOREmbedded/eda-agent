@@ -67,6 +67,9 @@ class DeckResult:
     pin_order_assumptions: list[dict[str, Any]] = field(default_factory=list)
     net_renames: dict[str, str] = field(default_factory=dict)
     missing_models: list[str] = field(default_factory=list)
+    model_files: list[dict[str, str]] = field(default_factory=list)
+    pin_maps: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pin_map_problems: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +82,9 @@ class DeckResult:
             "pin_order_assumptions": self.pin_order_assumptions,
             "net_renames": self.net_renames,
             "missing_models": self.missing_models,
+            "model_files": self.model_files,
+            "pin_maps": self.pin_maps,
+            "pin_map_problems": self.pin_map_problems,
         }
 
 
@@ -144,7 +150,8 @@ def build_deck(components: list[dict[str, Any]],
                title: str = "eda-agent generated deck",
                extra_directives: tuple[str, ...] = (),
                missing_models: tuple[str, ...] = (),
-               on_missing_model: str = "refuse") -> DeckResult:
+               on_missing_model: str = "refuse",
+               models: dict[str, dict[str, Any]] | None = None) -> DeckResult:
     """Emit an LTspice deck.
 
     ``components`` are readiness entries (designator + spice/suggested
@@ -153,7 +160,22 @@ def build_deck(components: list[dict[str, Any]],
     (``pin_number``, ``net``). ``missing_models`` names parts the caller
     already knows need a vendor model, and ``on_missing_model`` decides
     whether that is fatal.
+
+    ``models`` maps a designator to the vendor model linked to it:
+    ``{"name": "LT3080", "file": "C:/.../LT3080.sub", "nodes": [...model
+    node names in order...], "override": [...saved pin numbers...]}``.
+    For a subcircuit (X) the nodes are then emitted in the MODEL's order,
+    matched to the symbol's pins by name (see sim/pin_map.py), the model
+    name replaces the Comment, and the file is listed in ``model_files``
+    and included by its base name. A part whose pins cannot be matched is
+    left out and reported in ``pin_map_problems`` rather than guessed.
+    For D/Q/M/J the model name is used and, when the pin names say which
+    terminal is which (A/K, C/B/E, D/G/S), that order replaces the
+    pin-number assumption.
     """
+    from ..sim import pin_map as _pin_map
+
+    models = {str(k): v for k, v in (models or {}).items()}
     problem = validate_analysis(analysis)
     if problem:
         return DeckResult(ok=False, reason=problem)
@@ -177,7 +199,27 @@ def build_deck(components: list[dict[str, Any]],
     emitted: list[str] = []
     skipped: list[dict[str, str]] = []
     assumptions: list[dict[str, Any]] = []
+    model_files: list[dict[str, str]] = []
+    include_names: dict[str, str] = {}
+    used_maps: dict[str, dict[str, Any]] = {}
+    map_problems: list[dict[str, Any]] = []
     ground_seen = False
+
+    def include(path: str) -> None:
+        if not path or path in include_names:
+            return
+        import ntpath
+        base = ntpath.basename(path.replace("/", "\\")) or "model.lib"
+        stem, dot, ext = base.rpartition(".")
+        if not dot:
+            stem, ext = base, "lib"
+        name, n = base, 2
+        taken = set(include_names.values())
+        while name.lower() in {t.lower() for t in taken}:
+            name = f"{stem}_{n}.{ext}"
+            n += 1
+        include_names[path] = name
+        model_files.append({"path": path, "include_as": name})
     ground_key = ground_net.strip().upper()
 
     for component in sorted(components, key=lambda c: str(c.get("designator", ""))):
@@ -201,8 +243,47 @@ def build_deck(components: list[dict[str, Any]],
                             "why": "no connectivity returned for it"})
             continue
 
+        model = models.get(designator) or {}
+        mapping = None
+        if prefix == "X" and model.get("nodes"):
+            mapping = _pin_map.propose(list(model["nodes"]), pins,
+                                       override=model.get("override"))
+            if not mapping.get("ok"):
+                map_problems.append({"designator": designator,
+                                     "model": model.get("name", ""),
+                                     "reason": mapping.get("reason", ""),
+                                     "nodes": mapping.get("nodes", [])})
+                skipped.append({"designator": designator,
+                                "why": "its pins could not be matched to the model's "
+                                       "nodes; see pin_map_problems"})
+                continue
+        elif prefix in _pin_map.STANDARD_ORDERS:
+            mapping = _pin_map.standard_order(prefix, pins)
+
+        if mapping is not None:
+            by_number = {str(p.get("pin_number", "")).strip(): p for p in pins}
+            ordered = []
+            for node in mapping["nodes"]:
+                nets = {str((by_number.get(n) or {}).get("net") or "").strip()
+                        for n in node["pins"]}
+                nets.discard("")
+                if len(nets) > 1:
+                    map_problems.append({
+                        "designator": designator, "node": node["node"],
+                        "reason": f"pins {node['pins']} of one model node sit on "
+                                  f"different nets {sorted(nets)}; the first was used"})
+                first = next((by_number.get(n) for n in node["pins"]
+                              if (by_number.get(n) or {}).get("net")), None)
+                ordered.append(first or {"pin_number": ",".join(node["pins"]), "net": ""})
+            pins_for_nodes = ordered
+            used_maps[designator] = {"method": mapping["method"],
+                                     "nodes": mapping["nodes"],
+                                     "unused_pins": mapping.get("unused_pins", [])}
+        else:
+            pins_for_nodes = pins
+
         nodes = []
-        for pin in pins:
+        for pin in pins_for_nodes:
             net = str(pin.get("net") or "").strip()
             if not net:
                 nodes = []
@@ -218,21 +299,40 @@ def build_deck(components: list[dict[str, Any]],
             continue
 
         expected = _EXPECTED_NODES.get(prefix, None)
+        if prefix == "M" and mapping is not None and len(nodes) == 3:
+            expected = 3     # LTspice's VDMOS power FETs take D G S
         if expected is not None and len(nodes) != expected:
             skipped.append({"designator": designator,
                             "why": f"{prefix} needs {expected} nodes, "
                                    f"connectivity gave {len(nodes)}"})
             continue
 
-        value = _value_of(component)
+        value = str(model.get("name") or "").strip() or _value_of(component)
         if not value:
             skipped.append({"designator": designator, "why": "no value"})
             continue
+        if model.get("file"):
+            include(str(model["file"]))
 
         name = designator if designator[0].upper() == prefix else prefix + designator
         lines.append(" ".join([name, *nodes, value]))
         emitted.append(designator)
 
+        if mapping is not None and not mapping.get("needs_review"):
+            continue
+        if mapping is not None:
+            assumptions.append({
+                "designator": designator, "prefix": prefix, "nodes": nodes,
+                "method": mapping["method"],
+                "mapping": [{"node": n["node"], "pins": n["pins"], "how": n["how"]}
+                            for n in mapping["nodes"]],
+                "why": ("node order came from pin-number order because no model "
+                        "node name matched a pin name" if mapping["method"] ==
+                        "pin_number_order" else
+                        "some nodes were matched through an alias (e.g. VIN=IN); "
+                        "confirm the mapping"),
+            })
+            continue
         if prefix not in _ORDER_SAFE:
             assumptions.append({
                 "designator": designator,
@@ -259,8 +359,11 @@ def build_deck(components: list[dict[str, Any]],
                               f"different circuit. Pass ground_net to name the net "
                               f"this schematic actually uses."))
 
-    body = [f"* {title}", *lines, *extra_directives,
+    includes = [f'.include "{m["include_as"]}"' for m in model_files]
+    body = [f"* {title}", *lines, *includes, *extra_directives,
             "." + str(analysis).strip().lstrip("."), ".end", ""]
     return DeckResult(ok=True, deck="\n".join(body), emitted=emitted,
                       skipped=skipped, pin_order_assumptions=assumptions,
-                      net_renames=renames, missing_models=missing)
+                      net_renames=renames, missing_models=missing,
+                      model_files=model_files, pin_maps=used_maps,
+                      pin_map_problems=map_problems)

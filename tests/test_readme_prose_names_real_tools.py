@@ -52,6 +52,7 @@ _FAMILIES = ("easyeda_", "lib_", "pcb_", "sch_", "proj_", "obj_", "app_",
 #: mistake.
 NOT_TOOLS: dict[str, str] = {
     "kicad_local": "a part provider id, listed in the provider table",
+    "lib_ref": "a parameter of sim_set_pin_map and sim_get_pin_map",
     "part_count": "a parameter of lib_create_symbol",
     "design_roots": "a parameter of altium365_library_report",
     "part_id": "a parameter of sch_place_dblib_component",

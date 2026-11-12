@@ -16,6 +16,22 @@ maturity classification for every tool.
 
 ### Added
 
+- **SPICE model library and LTspice round trip.** `sim_scan_models`
+  indexes vendor model files and LTspice symbols (including LTspice's own
+  library, encrypted models through their symbols) into the design
+  workspace; `sim_find_models` and `sim_find_schematic_models` find models
+  by MPN; `sim_get_pin_map` and `sim_set_pin_map` match symbol pins to
+  model nodes by name, never silently by pin number; and
+  `sim_attach_library_model` links a model only after its pins check out.
+  `eng_ltspice_deck_from_schematic` now emits subcircuits with the model's
+  name and node order and includes their files (it used the Comment and
+  pin-number order before, and dropped parts that had SpicePrefix but no
+  SIM link). `eng_ltspice_run` copies model files into the run folder,
+  `eng_ltspice_export` writes a deck with its models for the LTspice GUI,
+  and `eng_ltspice_compare_schematic` checks an LTspice `.asc`/`.net`
+  against the Altium schematic (parts, values, wiring). See
+  [`docs/SPICE_MODELS.md`](docs/SPICE_MODELS.md). UNVERIFIED against live
+  Altium and a real LTspice install.
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced

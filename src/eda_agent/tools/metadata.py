@@ -173,6 +173,9 @@ _OFFLINE_TOOLS = frozenset({
     "lib_read_pcblib_headers", "lib_extract_step_models", "lib_write_libpkg",
     "lib_backup_library", "lib_list_library_backups",
     "lib_restore_library_backup",
+    # The SPICE model library: index files on disk, search the index,
+    # save a pin map. None of them reaches Altium.
+    "sim_scan_models", "sim_find_models", "sim_set_pin_map",
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
@@ -181,6 +184,8 @@ _ENGINEERING_EXTERNAL = frozenset({
     # emit anything, unlike the rest of the eng_ltspice_* family, which
     # parses text it was handed.
     "eng_ltspice_deck_from_schematic",
+    # Reads the live schematic to compare it with an LTspice circuit.
+    "eng_ltspice_compare_schematic",
 })
 # pcb / audit / simulation -> live_only; design is mixed (mostly offline,
 # handled by the offline classifier below).

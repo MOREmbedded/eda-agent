@@ -132,6 +132,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Part sourcing](docs/PART_SOURCING.md) | The part providers, what each one answers, and what none of them do |
 | [EDA backends](docs/BACKENDS.md) | The Altium, KiCad and EasyEDA Pro backends |
 | [Engineering tools](docs/ENGINEERING_TOOLS.md) | The `eng_*` family, Altium 365, and what is unverified live |
+| [SPICE models and LTspice](docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
 | [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
 | [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
 | [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |

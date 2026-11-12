@@ -43,6 +43,42 @@ _FILE_DIRECTIVES = re.compile(r"^\s*\.(savebias|loadbias|wave|backanno)\b(.*)$",
 _FERRET = re.compile(r"^\s*\.ferret\b", re.I)
 RUN_ID = re.compile(r"run_[0-9a-f]{16}")
 
+#: Files beside an .asc that LTspice may need to netlist it: local symbols
+#: and the models they point at.
+_SIBLING_EXTS = frozenset({".asc", ".asy", ".lib", ".sub", ".mod", ".inc", ".cir",
+                           ".ckt", ".mdl", ".sp", ".txt", ".bjt", ".dio", ".mos"})
+_MODEL_FILE_EXTS = frozenset({".lib", ".sub", ".mod", ".inc", ".cir", ".ckt", ".mdl",
+                              ".sp", ".spi", ".spice", ".txt", ".bjt", ".dio", ".jft",
+                              ".mos", ".ind", ".cap", ".res"})
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_\-. ]{1,80}")
+
+
+def copy_model_files(model_files: list[dict], dest: Path) -> list[str]:
+    """Copy vendor model files into a run or export folder.
+
+    Each entry is ``{"path": <absolute source>, "include_as": <file name>}``
+    as spice_netlist.build_deck lists them. The deck includes them by that
+    plain name, so they must land in the same folder; a name with a path
+    in it, a missing file, a non-model extension or a 20 MB+ file is
+    refused rather than copied.
+    """
+    copied = []
+    for m in model_files:
+        src = Path(str(m.get("path", "")))
+        name = str(m.get("include_as") or src.name)
+        if not _PLAIN_NAME.fullmatch(name) or name in (".", "..") or "/" in name \
+                or "\\" in name:
+            raise ValidationFailed(f"model file name {name!r} must be a plain file name")
+        if Path(name).suffix.lower() not in _MODEL_FILE_EXTS:
+            raise ValidationFailed(f"{name}: not a SPICE model file extension")
+        if not src.is_absolute() or not src.is_file():
+            raise NotFound(f"model file not found: {src}")
+        if src.stat().st_size > 20 * 1024 * 1024:
+            raise ValidationFailed(f"{src} is larger than 20 MB")
+        shutil.copy2(src, dest / name)
+        copied.append(name)
+    return copied
+
 
 # ---------------------------------------------------------------- netlist safety
 def _strip_quotes(s: str) -> str:
@@ -298,12 +334,14 @@ class LTspiceRunner:
         return [*self.cfg.exe_prefix, self.cfg.exe, *args, str(deck)]
 
     def run(self, project: str, netlist_text: str | None = None, source_file: Path | None = None,
-            deck_name: str = "deck.cir", timeout_s: float | None = None) -> dict:
+            deck_name: str = "deck.cir", timeout_s: float | None = None,
+            model_files: list[dict] | None = None) -> dict:
         if (netlist_text is None) == (source_file is None):
             raise ValidationFailed("provide exactly one of netlist_text or source_file")
         run_id = "run_" + secrets.token_hex(8)
         d = self.run_dir(project, run_id)
         d.mkdir(parents=True)
+        copied = copy_model_files(model_files or [], d)
         if source_file is not None:
             if source_file.suffix.lower() not in (".cir", ".net", ".sp", ".asc"):
                 raise ValidationFailed("source must be .cir, .net, .sp or .asc")
@@ -333,7 +371,51 @@ class LTspiceRunner:
             elapsed = self._clock() - start
         finally:
             self._slots.release()
-        return self.collect(project, run_id, deck.stem, rc=rc, wall_s=elapsed, includes=refs)
+        extra = {"model_files_copied": copied} if copied else {}
+        return self.collect(project, run_id, deck.stem, rc=rc, wall_s=elapsed, includes=refs,
+                            **extra)
+
+    def netlist_from_schematic(self, project: str, asc: Path,
+                               timeout_s: float | None = None) -> dict:
+        """Have LTspice turn an .asc schematic into its netlist (``-netlist``).
+
+        The .asc and any symbol/model files beside it are copied into a
+        fresh run folder first, so LTspice writes nothing next to the
+        caller's file. Returns ``run_id`` and the netlist ``text``.
+        """
+        asc = Path(asc)
+        if asc.suffix.lower() != ".asc" or not asc.is_file():
+            raise ValidationFailed("give the full path of an existing .asc schematic")
+        run_id = "run_" + secrets.token_hex(8)
+        d = self.run_dir(project, run_id)
+        d.mkdir(parents=True)
+        for sib in asc.parent.iterdir():
+            if sib.is_file() and sib.suffix.lower() in _SIBLING_EXTS \
+                    and sib.stat().st_size <= 20 * 1024 * 1024:
+                shutil.copy2(sib, d / sib.name)
+        target = d / asc.name
+        t = timeout_s or self.cfg.timeout_s
+        if not self._slots.acquire(timeout=t):
+            raise ExecutionTimeout("no free LTspice slot")
+        try:
+            proc = self._popen([*self.cfg.exe_prefix, self.cfg.exe, "-netlist", str(target)],
+                               cwd=str(d), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, **hidden_window_kwargs())
+            try:
+                rc = proc.wait(timeout=t)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+                raise ExecutionTimeout(f"LTspice exceeded {t}s; process killed",
+                                       details={"run_id": run_id})
+        finally:
+            self._slots.release()
+        net = target.with_suffix(".net")
+        if not net.is_file():
+            raise NotFound(f"LTspice wrote no netlist (exit code {rc}); open the .asc in "
+                           "LTspice to see the error", details={"run_id": run_id})
+        return {"run_id": run_id, "rc": rc, "netlist_file": str(net),
+                "text": read_text_auto(net)}
 
     def collect(self, project: str, run_id: str, stem: str | None = None, **extra) -> dict:
         d = self.run_dir(project, run_id)

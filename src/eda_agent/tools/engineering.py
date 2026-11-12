@@ -253,10 +253,34 @@ def _ltspice_runner() -> ltspice.LTspiceRunner:
     return ltspice.LTspiceRunner(LTspicePolicy(str(exe), root, model_roots=models))
 
 
-def _run_ltspice(project: str, netlist: str, timeout_s: float) -> dict:
+def _run_ltspice(project: str, netlist: str, timeout_s: float,
+                 model_files: list[dict] | None = None) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", project):
         raise ValueError("project must be a short name without path separators")
-    return _ltspice_runner().run(project, netlist_text=netlist, timeout_s=timeout_s)
+    return _ltspice_runner().run(project, netlist_text=netlist, timeout_s=timeout_s,
+                                 model_files=model_files)
+
+
+def _export_ltspice(folder: str, deck: str, model_files: list[dict] | None,
+                    name: str, overwrite: bool) -> dict:
+    """Write a deck and its model files into a folder LTspice can open."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,60}", name):
+        raise ValueError("name must be a plain file name without extension")
+    target = Path(folder)
+    if not target.is_absolute():
+        raise ValueError("folder must be a full path")
+    deck_path = target / f"{name}.cir"
+    if deck_path.exists() and not overwrite:
+        raise ValueError(f"{deck_path} exists; pass overwrite=True to replace it")
+    text = (deck or "").replace("\r\n", "\n")
+    if not text.strip():
+        raise ValueError("the deck is empty")
+    ltspice.check_netlist(text, target, ())   # .FERRET and escaping paths refused
+    target.mkdir(parents=True, exist_ok=True)
+    copied = ltspice.copy_model_files(model_files or [], target)
+    deck_path.write_text(text, encoding="utf-8")
+    return {"deck_file": str(deck_path), "folder": str(target), "model_files": copied,
+            "open_with": "LTspice: File > Open, choose the .cir, then Run"}
 
 
 def _trace_ltspice(project: str, run_id: str, trace_name: str) -> dict:
@@ -441,12 +465,28 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
         return _result(parse)
 
     @mcp.tool()
-    def eng_ltspice_run(project: str, netlist: str, timeout_s: float = 300.0) -> dict:
+    def eng_ltspice_run(project: str, netlist: str, timeout_s: float = 300.0,
+                        model_files: list[dict] | None = None) -> dict:
         """Run a netlist in a sandboxed folder using an installed LTspice.
 
-        Set EDA_AGENT_LTSPICE_EXE if LTspice is outside standard locations.
+        ``model_files`` is the list eng_ltspice_deck_from_schematic returns
+        ([{path, include_as}]): each file is copied into the run folder
+        under the name the deck includes. Set EDA_AGENT_LTSPICE_EXE if
+        LTspice is outside standard locations.
         """
-        return _result(_run_ltspice, project, netlist, timeout_s)
+        return _result(_run_ltspice, project, netlist, timeout_s, model_files)
+
+    @mcp.tool()
+    def eng_ltspice_export(folder: str, deck: str, model_files: list[dict] | None = None,
+                           name: str = "deck", overwrite: bool = False) -> dict:
+        """Write a deck and its vendor model files into a folder for LTspice.
+
+        The hand-over to a person: open ``<folder>/<name>.cir`` in the
+        LTspice GUI and it runs, with every included model beside it.
+        ``model_files`` is the list eng_ltspice_deck_from_schematic
+        returns. An existing deck is kept unless ``overwrite``.
+        """
+        return _result(_export_ltspice, folder, deck, model_files, name, overwrite)
 
     @mcp.tool()
     def eng_ltspice_trace(project: str, run_id: str, trace_name: str) -> dict:
@@ -604,7 +644,10 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                 ready = list(readiness.get("ready") or [])
                 needs_primitive = list(readiness.get("needs_primitive") or [])
                 needs_file = list(readiness.get("needs_file") or [])
-                components = ready + needs_primitive + needs_file
+                # SpicePrefix written but no Altium SIM link: Altium's own
+                # netlister refuses these, LTspice does not need the link.
+                no_link = list(readiness.get("no_sim_model") or [])
+                components = ready + no_link + needs_primitive + needs_file
                 if not components:
                     return {"ok": False, "reason":
                             "no components on the active schematic, or no "
@@ -623,8 +666,12 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                     for c in (conn.get("components") or [])
                 } if isinstance(conn, dict) else {}
 
+                from .spice_models import collect_models
+                models, model_notes = await collect_models(bridge, ready + no_link)
+
                 result = spice_netlist.build_deck(
                     components, by_designator,
+                    models=models,
                     analysis=analysis,
                     ground_net=ground_net,
                     title=title or "eda-agent generated deck",
@@ -634,10 +681,92 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                     on_missing_model=on_missing_model,
                 )
                 payload = result.to_dict()
+                if model_notes:
+                    payload["model_notes"] = model_notes
                 if payload.get("ok"):
                     payload["next_step"] = (
-                        "review pin_order_assumptions, then pass `deck` to "
-                        "eng_ltspice_run(project, netlist=deck)")
+                        "review pin_order_assumptions and pin_map_problems, then "
+                        "pass `deck` and `model_files` to eng_ltspice_run(project, "
+                        "netlist=deck, model_files=model_files), or to "
+                        "eng_ltspice_export to open it in LTspice")
                 return payload
+            except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
+                return {"ok": False, "reason": str(exc)}
+
+        @mcp.tool()
+        async def eng_ltspice_compare_schematic(
+            ltspice_file: str,
+            ground_net: str = "GND",
+            designator_map: dict[str, str] | None = None,
+            pin_maps: dict[str, list[str]] | None = None,
+        ) -> dict:
+            """Compare an LTspice circuit with the schematic open in Altium.
+
+            For a circuit designed or proven in LTspice (a vendor reference
+            design, a tuned filter) that the board must reproduce. Reports
+            parts on one side only, R/L/C values that differ as numbers
+            (``4K7`` = ``4.7k``), and wiring differences. Nets are paired by
+            the terminals they join, since names rarely agree (``N003``
+            against ``VOUT``). Read-only on both sides.
+
+            Args:
+                ltspice_file: full path of an LTspice .asc (netlisted by
+                    the installed LTspice in a sandbox folder), or a
+                    .net/.cir netlist.
+                ground_net: the Altium net that is SPICE node 0.
+                designator_map: LTspice designator -> Altium designator,
+                    when the two are numbered differently.
+                pin_maps: per Altium designator, the Altium pin number(s)
+                    for each LTspice node of a subcircuit, in node order
+                    (``{"U1": ["3", "1", "2"]}``). D/Q/M parts with A/K,
+                    C/B/E or D/G/S pin names need none.
+
+            Returns:
+                match, parts_compared, only_in_ltspice, only_in_altium,
+                value_differences, wiring_differences,
+                nets_merged_in_altium, net_map, unchecked.
+            """
+            from ..bridge import get_bridge
+            from ..sim import ltspice_compare
+
+            try:
+                path = Path(ltspice_file)
+                if not path.is_absolute() or not path.is_file():
+                    return {"ok": False, "reason": "ltspice_file must be the full path "
+                                                   "of an existing file"}
+                source: dict = {"file": str(path)}
+                if path.suffix.lower() == ".asc":
+                    made = _ltspice_runner().netlist_from_schematic("compare", path)
+                    text = made["text"]
+                    source.update(netlisted_by_ltspice=True, run_id=made["run_id"])
+                elif path.suffix.lower() in (".net", ".cir", ".sp", ".spi", ".txt"):
+                    text = ltspice.read_text_auto(path)
+                else:
+                    return {"ok": False, "reason": "give an .asc, .net or .cir file"}
+                parsed = ltspice_compare.parse_netlist(text)
+                if not parsed["parts"]:
+                    return {"ok": False, "reason": "no circuit elements found in the file"}
+
+                bridge = get_bridge()
+                readiness = await bridge.send_command_async(
+                    "generic.get_simulation_readiness", {})
+                comps = [c for k in ("ready", "no_sim_model", "needs_primitive", "needs_file")
+                         for c in (readiness or {}).get(k) or []]
+                designators = [str(c.get("designator", "")) for c in comps
+                               if c.get("designator")]
+                if not designators:
+                    return {"ok": False, "reason": "no components on the active schematic"}
+                conn = await bridge.send_command_async(
+                    "project.get_connectivity_batch", {"designators": "~~".join(designators)})
+                pins = {str(c.get("designator", "")): list(c.get("pins") or [])
+                        for c in (conn or {}).get("components") or []}
+                altium = [{"designator": str(c.get("designator")),
+                           "value": c.get("value") or c.get("suggested_value")
+                           or c.get("comment") or "",
+                           "pins": pins.get(str(c.get("designator")), [])} for c in comps]
+                report = ltspice_compare.compare(parsed, altium, ground_net=ground_net,
+                                                 designator_map=designator_map,
+                                                 pin_maps=pin_maps)
+                return {"ok": True, "source": source, **report}
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}
