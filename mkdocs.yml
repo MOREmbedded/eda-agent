@@ -115,6 +115,7 @@ nav:
       - Overview: FEATURES.md
       - Using the tools: USING_THE_TOOLS.md
       - Fab output and calculators: FAB_AND_CALCULATORS.md
+      - IPC standards and rule values: IPC_STANDARDS.md
       - Design modes: DESIGN_MODES.md
       - Autonomous design: AUTONOMOUS_DESIGN.md
       - NPI phase gates: NPI_PHASE_GATES.md
