@@ -212,6 +212,11 @@ def test_no_module_renames_a_temp_file_without_the_retry():
     for path in sorted(_SRC.rglob("*.py")):
         if path.name == "atomicfile.py":
             continue          # the helper is where os.replace belongs
+        if path.name == "openems_runner.py":
+            # A separate program run by openEMS's own Python; it cannot
+            # import eda_agent, so it carries its own copy of the retry
+            # (checked by tests/emc/test_openems_model.py).
+            continue
         checked += 1
         offenders.extend(_rename_calls(path))
 
