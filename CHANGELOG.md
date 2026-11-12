@@ -174,6 +174,18 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`rotation_audit` no longer lets a part on the other side block a
+  turn.** A turned part's courtyard was checked against every other
+  part's, so a bottom-side part under a top-side part was never offered
+  a turn (and the other way round), though courtyards on opposite sides
+  never meet. It now checks the same side only, the rule
+  `placement_audit` already uses. Checked live on 2026-11-12 (Altium
+  26.11.1.5) on a copy of BoosterTest: a backwards bottom-side
+  WE-PMI 1008 under the same footprint on top got turn 180, saving
+  173.2 mils; applied and read back, the pads swapped as predicted and
+  the connection shortened by exactly 173.2 mils. Main suggested nothing
+  there. With both parts on the bottom, every turn is still blocked.
+
 - **`proj_run_erc` and `proj_get_erc_violations` stopped the bridge**
   (`SCRIPT_VERSION` `2026.11.10.1`). `Gen_GetErcViolations` built each
   violation with `IntToStr(ErrorLevel)` and `SuppressedText`, neither
