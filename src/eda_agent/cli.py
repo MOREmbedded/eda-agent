@@ -1361,7 +1361,9 @@ def cmd_router_use(name: str) -> int:
     if os.environ.get(engine.ENV):
         print(f"  Note: {engine.ENV}={os.environ[engine.ENV]} is set and "
               "overrules it.")
-    print("  The next routing run uses it; no restart needed.")
+    print("  Routing runs that use this profile take it on their next run; no restart "
+          "needed. 'eda-agent router-show' in the design workspace says what is in force "
+          "there.")
     return 0
 
 

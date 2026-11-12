@@ -16,6 +16,15 @@ maturity classification for every tool.
 
 ### Added
 
+- **Euan Mutch's router as an opt-in autorouter engine.** `eda-agent
+  router-use euan` (or `EDA_AGENT_ROUTER=euan`) routes `pcb_autoroute`
+  jobs with the router from his fork (TechAUmNu/eda-agent, Apache-2.0);
+  `eda-agent router-show` says which engine is in force and why. The
+  default engine is unchanged and stays the default. Both engines' results
+  go through the same verdict and our gloss, and the default router's via
+  guards were ported into his. `python -m eda_agent.layout.bench_run
+  --router euan` benchmarks it. See [Autorouter engines](docs/ROUTER_ENGINES.md).
+
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design

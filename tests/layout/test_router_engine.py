@@ -86,13 +86,32 @@ def test_a_bad_setting_falls_back_to_the_default(tmp_path, monkeypatch):
 def test_our_stage_switches_become_euans_router_arguments():
     kwargs, notes = euan_kwargs({"diff_pairs": True, "axis_entry": True,
                                  "neck_pads": True, "join_existing": True,
-                                 "exclude_layers": ("Mid1",), "made_up": 1})
+                                 "exclude_layers": ("Mid1",)})
     assert kwargs["pad_entry"] == "axis"
     assert kwargs["neck_pads"] is True and kwargs["join_existing"] is True
     assert kwargs["exclude_layers"] == frozenset({"Mid1"})
     assert kwargs["stages"] == {"diff_pairs": True}
-    assert any("made_up" in n for n in notes)
+    assert any("neck_pads" in n for n in notes)
     assert euan_kwargs(False)[0] == {"stages": False}
+    # One layer named as a string is that layer, not its letters.
+    assert euan_kwargs({"exclude_layers": "MidLayer1"})[0]["exclude_layers"] == \
+        frozenset({"MidLayer1"})
+    # Our StageOptions object, as the default engine takes it.
+    from eda_agent.layout.route.stages import StageOptions
+    assert euan_kwargs(StageOptions(neck_pads=True))[0]["neck_pads"] is True
+    # Euan's own job params reach his router.
+    kw = euan_kwargs(None, params={"pitch": "5", "layer_dirs": {"TopLayer": "h"}})[0]
+    assert kw["pitch"] == 5.0 and kw["layer_dirs"] == {"TopLayer": "h"}
+
+
+def test_a_bad_stage_switch_fails_as_it_does_with_the_default_engine():
+    with pytest.raises(ValueError, match="unknown stage options: bus_lane"):
+        euan_kwargs({"bus_lane": True})
+    b = _board()
+    with pytest.raises(ValueError, match="names no copper layer"):
+        euan_kwargs({"exclude_layers": ["Nope"]}, b)
+    with pytest.raises(ValueError, match="surface pad"):
+        euan_kwargs({"exclude_layers": ["TopLayer"]}, b)
 
 
 def test_the_cli_commands_exist(tmp_path, monkeypatch, capsys):
@@ -105,3 +124,12 @@ def test_the_cli_commands_exist(tmp_path, monkeypatch, capsys):
     assert "euan" in capsys.readouterr().out
     assert cli.cmd_router_use("default") == 0
     assert engine.describe()["engine"] == "default"
+
+
+def test_the_cli_offers_exactly_the_engines():
+    from eda_agent import server
+    parser = server.build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    use = sub.choices["router-use"]
+    arg = next(a for a in use._actions if a.dest == "engine")
+    assert tuple(arg.choices) == engine.ENGINES

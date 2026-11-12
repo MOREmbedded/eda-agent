@@ -1512,7 +1512,7 @@ def build_parser() -> argparse.ArgumentParser:
              "alternative router from Euan's fork (off by default). Writes "
              "the active profile's router.json.",
     )
-    router_use_p.add_argument("engine", choices=("default", "euan"),
+    router_use_p.add_argument("engine", choices=("default", "euan"),  # = engine.ENGINES
                               help="default (the usual router) or euan.")
 
     # mode-* -- design modes: presets for the kind of run (design/modes.py)

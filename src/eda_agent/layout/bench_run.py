@@ -568,7 +568,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--finished", action="store_true",
                     help="score only boards the person finished (complete, no violations)")
     ap.add_argument("--mode", choices=MODES, default="route")
-    ap.add_argument("--router", choices=("default", "euan"), default="default",
+    from .route.engine import ENGINES
+
+    ap.add_argument("--router", choices=ENGINES, default="default",
                     help="routing engine: default, or euan (the opt-in router "
                          "from Euan's fork), to compare the two on the same boards")
     ap.add_argument("--legacy-router", action="store_true",

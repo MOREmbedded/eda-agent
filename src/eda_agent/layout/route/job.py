@@ -28,24 +28,43 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(board, LayoutBoard):
         raise ValueError("layout_route job requires a 'board' (LayoutBoard or its dict)")
     nets = params.get("nets")
-    board, old_pours = _without_old_pours(board)
+    # The engine is the user's setting (route/engine.py: EDA_AGENT_ROUTER,
+    # then the profile's router.json), never the call's: `eda-agent
+    # router-use euan` turns Euan's router on, nothing else does.
+    setting = _engine.describe()
+    which = setting["engine"]
+    engine_notes: list[str] = []
+    if setting["problem"]:
+        engine_notes.append(f"The router setting was ignored ({setting['problem']}), so the "
+                            "default engine routed.")
+    euan_args: dict[str, Any] = {}
+    if which == "euan":
+        # Before anything runs: a bad switch fails the job as it does with
+        # the default engine, rather than routing without it.
+        euan_args, notes = euan_kwargs(params.get("stages"), board, params)
+        engine_notes += notes
+    else:
+        ignored = sorted(k for k in EUAN_ONLY_PARAMS if params.get(k) is not None)
+        if ignored:
+            engine_notes.append(", ".join(ignored) + " only steer the euan engine; the "
+                                "default engine ignored them.")
+    # Euan's job matched old pours by net as well (route_euan, 2026-10-18).
+    board, old_pours = _without_old_pours(board, by_net=which == "euan")
     # The live view (design/live.py): the board before, progress while
     # routing (throttled), the routed board after.
     from ...design import live
     live.publish_safe(board, f"Routing {len(nets) if nets else 'all'} nets.", "route")
     t0 = time.perf_counter()
-    which = _engine.current(params.get("engine"))
-    engine_notes: list[str] = []
     if which == "euan":
-        # The alternative router (route_euan), switched on with
-        # `eda-agent router-use euan` or EDA_AGENT_ROUTER=euan.
+        # The alternative router (route_euan). Its own gloss stays off, as
+        # in Euan's job: it judges re-laid tracks by one clearance and
+        # never sees keep-outs, cutouts or the outline. Ours runs below,
+        # for both engines.
         from ..route_euan.router import route_adaptive as euan_adaptive
         from ..route_euan.stages import finish_report as euan_finish
-        kwargs, engine_notes = euan_kwargs(params.get("stages"))
         r = euan_adaptive(board, nets=frozenset(nets) if nets else None,
-                          planes=bool(params.get("planes", True)),
-                          gloss=bool(params.get("gloss", True)),
-                          log=live.progress_logger("route"), **kwargs)
+                          planes=bool(params.get("planes", True)), gloss=False,
+                          log=live.progress_logger("route"), **euan_args)
         report_of = euan_finish
     else:
         r = route_adaptive(board, nets=frozenset(nets) if nets else None,
@@ -55,18 +74,22 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         report_of = finish_report
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
-    # the board's tracks before it stay as they are (gloss.py). The euan
-    # engine glosses its own copper inside apply().
+    # the board's tracks before it stay as they are (gloss.py).
     glossed = None
-    if params.get("gloss", True) and which != "euan":
+    if params.get("gloss", True):
         from .gloss import gloss
-        glossed = gloss(out, tracks=out.tracks[len(board.tracks):]).as_dict()
-    new_tracks = out.tracks[len(board.tracks):]
-    new_vias = _unique_vias(board.vias, out.vias[len(board.vias):])
-    mask_note = _mask_like_board(board, out.vias[len(board.vias):])
+        glossed = gloss(out, tracks=_added(board.tracks, out.tracks)).as_dict()
+    new_tracks = _added(board.tracks, out.tracks)
+    added_vias = _added(board.vias, out.vias)
+    new_vias = _unique_vias(board.vias, added_vias)
+    mask_note = _mask_like_board(board, added_vias)
     # Judged as written: a via on one already there is never sent, and
-    # counted it is a hole drilled twice that no board will have.
-    out.vias = out.vias[:len(board.vias)] + new_vias
+    # counted it is a hole drilled twice that no board will have. And what
+    # is sent is the board's copper and these: a track of the board the
+    # router took up would not be taken up on the board.
+    lost = _lost(board, out)
+    out.tracks = list(board.tracks) + new_tracks
+    out.vias = list(board.vias) + new_vias
     v = verdict(out)
     drc = v["report"]
     stages = report_of(r, out)
@@ -124,42 +147,119 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": engine_notes + _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
+        "notes": (engine_notes + _notes(r) + _stage_notes(stages) + v["notes"] + mask_note
+                  + lost),
     }
 
 
 #: Stage switches that are Router arguments in the euan engine.
 _EUAN_ROUTER_ARGS = ("neck_pads", "join_existing", "exclude_layers", "reuse_vias")
 
+#: Job params only Euan's router takes (as his own job did): the grid
+#: pitch in mils, a preferred direction per layer and its strength, and
+#: the cost of the outer layers.
+EUAN_ONLY_PARAMS = ("pitch", "layer_dirs", "dir_strength", "outer_cost")
 
-def euan_kwargs(stages: Any) -> tuple[dict[str, Any], list[str]]:
-    """Our ``stages`` value as the euan engine's arguments, and notes.
+
+def euan_kwargs(stages: Any, board: LayoutBoard | None = None,
+                params: dict | None = None) -> tuple[dict[str, Any], list[str]]:
+    """Our ``stages`` value (and the job's own euan-only params) as the
+    euan engine's arguments, and notes.
 
     That router takes neck_pads, join_existing, exclude_layers and
     reuse_vias as Router arguments rather than stage options, and
-    axis_entry as ``pad_entry="axis"``. Anything it does not know is
-    dropped and named in the notes rather than failing the run.
+    axis_entry as ``pad_entry="axis"``. A stage option neither router
+    knows fails as it does with the default engine; with ``board``, so
+    does an exclude_layers entry that names no copper layer or one a
+    net's surface pad is on.
     """
-    from ..route_euan.stages import StageOptions
+    from dataclasses import asdict, is_dataclass
 
-    if not isinstance(stages, dict):
-        return {"stages": stages}, ["Routed with the euan engine."]
-    stages = dict(stages)
+    from ..route_euan.stages import StageOptions as EuanStageOptions
+    from .stages import StageOptions
+
+    notes = ["Routed with the euan engine."]
+    if is_dataclass(stages) and not isinstance(stages, type):
+        stages = asdict(stages)
     kwargs: dict[str, Any] = {}
+    for key in EUAN_ONLY_PARAMS:
+        value = (params or {}).get(key)
+        if value is not None:
+            kwargs[key] = dict(value) if key == "layer_dirs" else float(value)
+    if not isinstance(stages, dict):
+        kwargs["stages"] = stages
+        return kwargs, notes
+    stages = dict(stages)
+    unknown = set(stages) - set(StageOptions.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"unknown stage options: {', '.join(sorted(unknown))}")
     for key in _EUAN_ROUTER_ARGS:
         if key in stages:
             value = stages.pop(key)
-            kwargs[key] = frozenset(value) if key == "exclude_layers" else bool(value)
+            if key == "exclude_layers":
+                value = frozenset((value,) if isinstance(value, str) else value or ())
+                if board is not None:
+                    _check_excluded(board, value)
+            kwargs[key] = value if key == "exclude_layers" else bool(value)
     if stages.pop("axis_entry", False):
         kwargs["pad_entry"] = "axis"
-    known = set(StageOptions.__dataclass_fields__)
-    dropped = sorted(set(stages) - known)
-    kwargs["stages"] = {k: v for k, v in stages.items() if k in known}
-    notes = ["Routed with the euan engine."]
-    if dropped:
-        notes.append("The euan engine has no " + ", ".join(dropped)
-                     + " option, so it was left out.")
+    left = set(stages) - set(EuanStageOptions.__dataclass_fields__)
+    if left:                      # every other option of ours is one of his
+        raise ValueError(f"the euan engine has no stage option {', '.join(sorted(left))}")
+    kwargs["stages"] = stages
+    if kwargs.get("neck_pads"):
+        notes.append("neck_pads in the euan engine ends the net's full-width track on "
+                     "the narrow pad's copper and necks down only for the last mils; "
+                     "the default engine stops it clear of the pad.")
     return kwargs, notes
+
+
+def _check_excluded(board: LayoutBoard, excluded: frozenset) -> None:
+    """The default router's own check (route/router.py) for the euan one."""
+    unknown = excluded - set(board.copper_layers())
+    if unknown:
+        raise ValueError(f"exclude_layers names no copper layer: {sorted(unknown)}")
+    padded = {c.layer for p in board.pads if p.net and p.is_smd for c in p.copper}
+    if excluded & padded:
+        raise ValueError("exclude_layers takes a layer no net's surface pad is on; "
+                         f"these carry some: {sorted(excluded & padded)}")
+
+
+def _key(x) -> tuple:
+    """What a track or via is, for telling the board's own from new ones."""
+    if hasattr(x, "x1"):
+        return ("t", x.layer, round(x.x1, 4), round(x.y1, 4), round(x.x2, 4), round(x.y2, 4),
+                round(x.width, 4), x.net)
+    return ("v", round(x.x, 4), round(x.y, 4), round(x.diameter, 4), x.net)
+
+
+def _added(before: list, after: list) -> list:
+    """The items of ``after`` that ``before`` does not hold, counted: the
+    board's own list as a prefix in the usual case, matched by what each
+    item is when a pass took one of them up."""
+    n = len(before)
+    if len(after) >= n and all(a is b or _key(a) == _key(b) for a, b in zip(before, after)):
+        return list(after[n:])
+    from collections import Counter
+    left = Counter(_key(x) for x in before)
+    out = []
+    for x in after:
+        k = _key(x)
+        if left[k]:
+            left[k] -= 1
+        else:
+            out.append(x)
+    return out
+
+
+def _lost(board: LayoutBoard, out: LayoutBoard) -> list[str]:
+    """A note when the routed board lacks tracks or vias the board had:
+    nothing is ever taken up on the board, so it is judged with them."""
+    gone = len(_added(out.tracks, board.tracks)) + len(_added(out.vias, board.vias))
+    if not gone:
+        return []
+    return [f"The router took up {gone} of the board's own tracks or vias; nothing on the "
+            "board is removed, so the result was judged with them in place."]
 
 
 def _stage_notes(stages: dict) -> list[str]:
@@ -219,7 +319,8 @@ def _unique_vias(existing, new) -> list:
     return out
 
 
-def _without_old_pours(board: LayoutBoard) -> tuple[LayoutBoard, list[str]]:
+def _without_old_pours(board: LayoutBoard,
+                       by_net: bool = False) -> tuple[LayoutBoard, list[str]]:
     """The board without its polygons' poured copper.
 
     A polygon's copper is where its last pour left it, round routing that
@@ -231,7 +332,12 @@ def _without_old_pours(board: LayoutBoard) -> tuple[LayoutBoard, list[str]]:
     board routed in 8 s with none.
     """
     outlines = {(r.layer, r.source) for r in board.regions if r.kind == "pour_boundary"}
-    old = [r for r in board.regions if r.kind == "pour" and (r.layer, r.source) in outlines]
+    # ``by_net`` (the euan engine, as Euan's job did): also a pour whose
+    # source differs from its boundary's, on the boundary's layer and net.
+    nets = {(r.layer, r.net) for r in board.regions
+            if by_net and r.kind == "pour_boundary" and r.net}
+    old = [r for r in board.regions if r.kind == "pour"
+           and ((r.layer, r.source) in outlines or (r.layer, r.net) in nets)]
     if not old:
         return board, []
     out = copy_board(board)

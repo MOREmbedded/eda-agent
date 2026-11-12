@@ -33,18 +33,32 @@ def _profile_dir() -> Optional[Path]:
         return None
 
 
+def _read(path: Path) -> Any:
+    """The JSON in ``path``: UTF-8 with or without a byte order mark, or
+    UTF-16 as Windows PowerShell 5.1 writes it with ``>``."""
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return json.loads(raw.decode("utf-16"))
+    return json.loads(raw.decode("utf-8-sig"))
+
+
 def _from_file(directory: Optional[Path]) -> tuple[str, str]:
-    """The engine the profile's router.json names, and a problem if any."""
+    """The engine the profile's router.json names ("" when it names
+    none), and a problem if any."""
     if directory is None:
         return "", ""
     path = Path(directory) / FILE
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = _read(path)
     except FileNotFoundError:
         return "", ""
     except (OSError, ValueError) as exc:
         return "", f"{path} is unreadable: {exc}"
-    raw = data.get("engine", "") if isinstance(data, dict) else ""
+    if not isinstance(data, dict):
+        return "", f"{path} holds no JSON object"
+    raw = data.get("engine")
+    if raw is None or str(raw).strip() == "":
+        return "", ""                       # a file of notes only sets nothing
     name = str(raw).strip().lower()
     if name not in ENGINES:
         return "", f"{path} names engine {raw!r}, not one of {list(ENGINES)}"
@@ -59,14 +73,14 @@ def describe(directory: Optional[Path] = None) -> dict[str, Any]:
     if raw:
         if raw in ENGINES:
             return {"engine": raw, "source": "environment", "path": path, "problem": ""}
-        problem = f"{ENV}={raw!r} is not one of {list(ENGINES)}; ignored"
+        problem = f"{ENV}={raw!r} is not one of {list(ENGINES)}"
     else:
         problem = ""
     name, file_problem = _from_file(directory)
+    problem = "; ".join(p for p in (problem, file_problem) if p)
     if name:
         return {"engine": name, "source": "profile", "path": path, "problem": problem}
-    return {"engine": DEFAULT, "source": "default", "path": path,
-            "problem": problem or file_problem}
+    return {"engine": DEFAULT, "source": "default", "path": path, "problem": problem}
 
 
 def current(override: Optional[str] = None) -> str:
@@ -91,7 +105,7 @@ def write(directory: Path, engine: str) -> dict[str, Any]:
     path = Path(directory) / FILE
     data: dict[str, Any] = {}
     try:
-        stored = json.loads(path.read_text(encoding="utf-8-sig"))
+        stored = _read(path)
         if isinstance(stored, dict):
             data = stored
     except (OSError, ValueError):

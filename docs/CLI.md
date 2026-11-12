@@ -55,8 +55,8 @@ listings can be read against each other.
 | `eda-agent phases-show [--json]` | Which [NPI stages](USING_THE_TOOLS.md#npi-phase-gates) are in force, and which setting decided it |
 | `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
-| `eda-agent router-show [--json]` | Which autorouter engine routing runs use (`default` or `euan`), and which setting decided it |
-| `eda-agent router-use default\|euan` | Choose the engine for the active profile. `euan` is the alternative router from Euan's fork (TechAUmNu); off by default. `EDA_AGENT_ROUTER` overrules it |
+| `eda-agent router-show [--json]` | Which autorouter engine routing runs use (`default` or `euan`), and which setting decided it. See [Autorouter engines](ROUTER_ENGINES.md) |
+| `eda-agent router-use default\|euan` | Choose the engine for the active profile. `euan` is the alternative router from Euan's fork (TechAUmNu); off by default. `EDA_AGENT_ROUTER` overrules it. See [Autorouter engines](ROUTER_ENGINES.md) |
 
 ## Design modes
 
