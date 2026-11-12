@@ -25,6 +25,9 @@ profile/
     company.json              #   (one ruleset per file)
   fab_profiles/               # design.fab_profile.load_fab_profile's own format
     jlcpcb_4layer.json         #   (one stackup per file)
+  standards/                  # IPC rule values from your licensed copies
+    values.json                #   (see IPC_STANDARDS.md)
+    ipc_class_floors.json      #   generated: class floors for the fab rules
   footprint_defaults.json    # {"pad_corner_radius_pct": 1}
   footprint_policy.json      # design.footprint_policy's explicit policy dict
   document_settings.json     # schematic units/grid (see below)

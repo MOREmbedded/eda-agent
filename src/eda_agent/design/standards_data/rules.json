@@ -1,0 +1,27 @@
+{
+ "schema": 1,
+ "note": "Rule definitions only. No IPC values ship here: values come from the user's licensed copy, per profile, in <profile dir>/standards/values.json.",
+ "rules": [
+  {"rule_id": "ipc.annular_ring.via.external.min", "title": "Via annular ring, external layers", "category": "annular_ring", "kind": "min", "unit": "mils", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-2221"], "fab_key": "min_annular_ring", "check": "fab_rules"},
+  {"rule_id": "ipc.annular_ring.via.internal.min", "title": "Via annular ring, internal layers", "category": "annular_ring", "kind": "min", "unit": "mils", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-2221"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.annular_ring.pth.external.min", "title": "Component hole annular ring, external layers", "category": "annular_ring", "kind": "min", "unit": "mils", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-2221", "IPC-2222"], "fab_key": "pth_annular_ring", "check": "fab_rules"},
+  {"rule_id": "ipc.annular_ring.breakout.allowed", "title": "Annular ring breakout tolerated", "category": "annular_ring", "kind": "enum", "unit": "enum", "keyed_by": ["class", "layer"], "standards": ["IPC-6012", "IPC-A-600"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.hole_to_copper.inner.min", "title": "Hole to copper, inner layers", "category": "hole", "kind": "min", "unit": "mils", "keyed_by": ["class"], "standards": ["IPC-2221", "IPC-6012"], "fab_key": "hole_to_copper_inner", "check": "fab_rules"},
+  {"rule_id": "ipc.hole.aspect_ratio.max", "title": "Plated hole aspect ratio (board thickness to drill)", "category": "hole", "kind": "max", "unit": "ratio", "keyed_by": ["class", "producibility_level"], "standards": ["IPC-2221"], "fab_key": "max_aspect_ratio", "check": "fab_rules"},
+  {"rule_id": "ipc.hole.wall_copper.avg.min", "title": "Hole wall copper, average thickness", "category": "plating", "kind": "min", "unit": "um", "keyed_by": ["class"], "standards": ["IPC-6012"], "fab_key": null, "check": "fab_notes"},
+  {"rule_id": "ipc.hole.wall_copper.thin_area.min", "title": "Hole wall copper, thinnest area", "category": "plating", "kind": "min", "unit": "um", "keyed_by": ["class"], "standards": ["IPC-6012"], "fab_key": null, "check": "fab_notes"},
+  {"rule_id": "ipc.hole.wrap_plating.min", "title": "Wrap plating over filled vias", "category": "plating", "kind": "min", "unit": "um", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-4761"], "fab_key": null, "check": "fab_notes"},
+  {"rule_id": "ipc.hole.lead_clearance.min", "title": "Plated hole diameter over maximum lead", "category": "hole", "kind": "min", "unit": "mils", "keyed_by": ["producibility_level"], "standards": ["IPC-2222"], "fab_key": null, "check": "landpattern.tht"},
+  {"rule_id": "ipc.spacing.voltage.min", "title": "Conductor spacing for a voltage and environment", "category": "spacing", "kind": "min", "unit": "mils", "keyed_by": ["voltage_band", "environment"], "standards": ["IPC-2221"], "fab_key": null, "check": "pcb_calc.conductor_spacing"},
+  {"rule_id": "ipc.dielectric.spacing.min", "title": "Minimum dielectric thickness between layers", "category": "stackup", "kind": "min", "unit": "um", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-2221"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.conductor.width_reduction.max", "title": "Allowed conductor width reduction from defects", "category": "conductor", "kind": "max", "unit": "percent", "keyed_by": ["class"], "standards": ["IPC-6012", "IPC-A-600"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.conductor.current.model", "title": "Current carrying capacity model", "category": "conductor", "kind": "enum", "unit": "enum", "keyed_by": [], "standards": ["IPC-2152", "IPC-2221"], "fab_key": null, "check": "trace_sizing"},
+  {"rule_id": "ipc.via_protection.type", "title": "Via protection type", "category": "via_protection", "kind": "enum", "unit": "enum", "keyed_by": ["class", "via_use"], "standards": ["IPC-4761"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.bow_twist.max", "title": "Bow and twist", "category": "board", "kind": "max", "unit": "percent", "keyed_by": ["class", "smt_present"], "standards": ["IPC-6012"], "fab_key": null, "check": "fab_notes"},
+  {"rule_id": "ipc.solder_mask.class", "title": "Solder mask qualification class", "category": "solder_mask", "kind": "enum", "unit": "enum", "keyed_by": ["class"], "standards": ["IPC-SM-840"], "fab_key": null, "check": "fab_notes"},
+  {"rule_id": "ipc.land_pattern.density_level", "title": "Land pattern density level", "category": "land_pattern", "kind": "enum", "unit": "enum", "keyed_by": [], "standards": ["IPC-7351", "IPC-7352"], "fab_key": null, "check": "landpattern"},
+  {"rule_id": "ipc.assembly.pth_vertical_fill.min", "title": "Vertical solder fill of plated through holes", "category": "assembly", "kind": "min", "unit": "percent", "keyed_by": ["class"], "standards": ["IPC-A-610", "J-STD-001"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.assembly.lead_protrusion", "title": "Lead protrusion through the board", "category": "assembly", "kind": "info", "unit": "mils", "keyed_by": ["class"], "standards": ["IPC-A-610", "J-STD-001"], "fab_key": null, "check": null},
+  {"rule_id": "ipc.data.class_in_fab_data", "title": "Product class stated in the fabrication data", "category": "documentation", "kind": "enum", "unit": "enum", "keyed_by": [], "standards": ["IPC-2581", "IPC-6011"], "fab_key": null, "check": null}
+ ]
+}
