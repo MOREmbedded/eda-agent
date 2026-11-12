@@ -50,6 +50,24 @@ maturity classification for every tool.
   and nothing is created or deleted. Writes go into the board's rule log.
   Never runs on its own. UNVERIFIED against a live board.
 
+- **EMI/EMC pre-scan and openEMS field solving.** `sim_emc_prescan`
+  checks a routed board's fast nets with no external program. It finds
+  tracks that cross a split or slot in their reference plane or have no
+  plane beside them, fast tracks near the board edge, and layer changes
+  with no return via. It also estimates differential-mode radiated
+  emission per net (Ott's small-loop formula) against CISPR 32 or
+  FCC Part 15 limit lines. `sim_em_build_model`, `sim_em_run` and
+  `sim_em_results` cut a few nets with their return copper and the real
+  stackup out of the board and solve them in openEMS, which runs as a
+  separate process. Results come back as a Touchstone file and a summary:
+  return loss, S21, and for antennas directivity, efficiency and pattern.
+  `sim_read_touchstone` summarises any `.sNp` file. Checked against
+  openEMS 0.37 on Windows: a 50 ohm microstrip's effective permittivity
+  from two line lengths is within 1 % of Hammerstad-Jensen, |S21| 0.986,
+  |S11| -33 dB (`tests/emc/test_openems_real_solver.py`, skipped where
+  openEMS is not set up). The live board read is UNVERIFIED.
+  See [`docs/EMC_RF.md`](docs/EMC_RF.md).
+
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced
@@ -207,6 +225,18 @@ maturity classification for every tool.
     thing.
 
 ### Fixed
+
+- **`rotation_audit` no longer lets a part on the other side block a
+  turn.** A turned part's courtyard was checked against every other
+  part's, so a bottom-side part under a top-side part was never offered
+  a turn (and the other way round), though courtyards on opposite sides
+  never meet. It now checks the same side only, the rule
+  `placement_audit` already uses. Checked live on 2026-11-12 (Altium
+  26.11.1.5) on a copy of BoosterTest: a backwards bottom-side
+  WE-PMI 1008 under the same footprint on top got turn 180, saving
+  173.2 mils; applied and read back, the pads swapped as predicted and
+  the connection shortened by exactly 173.2 mils. Main suggested nothing
+  there. With both parts on the bottom, every turn is still blocked.
 
 - **`proj_run_erc` and `proj_get_erc_violations` stopped the bridge**
   (`SCRIPT_VERSION` `2026.11.10.1`). `Gen_GetErcViolations` built each
