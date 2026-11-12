@@ -234,6 +234,7 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    "lib_preview_part": READONLY,
     # Who edits which document: reading it, or handing one over, writes
     # nothing to a design.
     "app_document_owners": READONLY,
