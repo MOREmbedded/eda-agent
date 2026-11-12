@@ -299,7 +299,7 @@ NOT_APPLICABLE: dict[str, str] = {
     # The profile managers read a profile (EDA-agnostic, and registered on
     # every backend) but write through Altium-only handlers.
     **{name: _PROFILE for name in (
-        "pcb_rules_plan", "pcb_rules_diff", "pcb_rules_apply",
+        "pcb_rules_plan", "pcb_rules_diff", "pcb_rules_apply", "pcb_rules_fab_floors",
         "proj_erc_plan", "proj_erc_diff", "proj_erc_apply",
         "profile_apply_all", "profile_diff_all",
         "profile_apply_document_settings", "profile_new_document")},
