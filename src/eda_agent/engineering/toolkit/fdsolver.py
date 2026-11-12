@@ -54,10 +54,13 @@ import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import splu
 
-#: Grid growth ratio away from edges. 1.12 measured as the best
-#: accuracy per node; see tests/toolkit/test_fdsolver.py.
-RATIO = 1.12
-FAR_RATIO = 1.3
+#: Grid growth per unit distance from the nearest edge, at the reference
+#: resolution; it scales down with the resolution so that a refinement
+#: refines the whole grid, not only the edges. Without that the answer
+#: converges to a value offset by the fixed coarse grid (measured: 0.2 %).
+GROWTH = 0.12
+FAR_GROWTH = 0.30
+REF_RESOLUTION = 60.0
 EPS0 = 8.8541878128e-12
 MU0 = 1.25663706212e-6
 C0 = 299_792_458.0
@@ -163,13 +166,13 @@ class Solution:
 
 
 def _axis(keys: Sequence[float], lo: float, hi: float, h0: float,
-          hmax: float, near: tuple[float, float]) -> np.ndarray:
+          hmax: float, near: tuple[float, float], scale: float = 1.0) -> np.ndarray:
     """Grid lines on [lo, hi] through every key, from a size field.
 
     The local cell size is h0 at each key line and grows linearly with
-    the distance to the nearest key (geometric growth at RATIO). Outside
-    the near zone it grows at FAR_RATIO, so far boundaries cost few
-    lines. Each interval between keys is marched with that size and
+    the distance to the nearest key (GROWTH per unit distance, times
+    ``scale``). Outside the near zone it grows faster (FAR_GROWTH), so
+    far boundaries cost few lines. Each interval between keys is marched with that size and
     then stretched to land exactly on the next key.
     """
     pts = np.array(sorted({float(k) for k in keys if lo <= k <= hi} | {lo, hi}))
@@ -178,9 +181,9 @@ def _axis(keys: Sequence[float], lo: float, hi: float, h0: float,
 
     def size(x: float) -> float:
         d = float(np.min(np.abs(pts - x)))
-        hs = h0 + (RATIO - 1.0) * d
+        hs = h0 + GROWTH * scale * d
         out = max(nlo - x, x - nhi, 0.0)
-        hs += (FAR_RATIO - RATIO) * out
+        hs += (FAR_GROWTH - GROWTH) * scale * out
         return min(hs, hmax)
 
     out = [pts[0]]
@@ -244,11 +247,12 @@ def _mesh(xs: CrossSection, resolution: float):
         for c in xs.coatings:
             xkeys += [min(m.x0, t0) - c.thickness, max(m.x1, t1) + c.thickness]
     ykeys = ys + [ylo, yhi]
-    hmax = 4.0 * height
+    scale = min(REF_RESOLUTION / resolution, 2.5)
+    hmax = 4.0 * height * scale
     X = _axis(xkeys, xmin - side, xmax + side, h0, hmax,
-              (xmin - 2.0 * height, xmax + 2.0 * height))
+              (xmin - 2.0 * height, xmax + 2.0 * height), scale)
     Y = _axis(ykeys, ylo, yhi, h0, hmax,
-              (struct_lo - 2.0 * height, struct_hi + 2.0 * height))
+              (struct_lo - 2.0 * height, struct_hi + 2.0 * height), scale)
     return X, Y
 
 

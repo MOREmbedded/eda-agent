@@ -98,8 +98,8 @@ def _values(text: str, kind: str, unit: str) -> list[float]:
            help="Engineering suffixes allowed: 4k7, 2.2k, 100n, 10u.")])
 def series_parallel(a):
     kind = a["kind"]
-    vals = _values(a["values"], kind, {"resistance": "ohm", "inductance": "h",
-                                       "capacitance": "f"}[kind])
+    vals = _values(a["values"], kind, {"resistance": "ohm", "inductance": "H",
+                                       "capacitance": "F"}[kind])
     need(all(v > 0 for v in vals), "every value must be greater than zero")
     ssum = sum(vals)
     psum = 1.0 / sum(1.0 / v for v in vals)
@@ -263,7 +263,7 @@ def planar_inductor(a):
         if d.get("ok"):
             r.add("l_wheeler", "Inductance (modified Wheeler)", d["inductance_nh"] * 1e-9,
                   "inductance")
-            r.check("L", l_cs, d["inductance_nh"] * 1e-9, "Modified Wheeler")
+            r.check("L", l_cs, d["inductance_nh"] * 1e-9, "Modified Wheeler", "inductance")
     r.add("fill", "Fill ratio", rho, "ratio")
     r.accuracy = ("Mohan et al. report 2-3 % typical error against field solvers "
                   "for spirals with no ground plane close beneath.")

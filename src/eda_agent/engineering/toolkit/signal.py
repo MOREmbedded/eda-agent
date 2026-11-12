@@ -103,12 +103,12 @@ def crosstalk(a):
         args["h1"], args["h2"] = a["h"], a["h2"]
     res = calc.fn(args)
     kb = res.value("next_coeff")
-    kf_ps_in = res.value("fext_coeff")
+    kf_per_in = res.value("fext_coeff")
     td = a["length"] * math.sqrt(res.value("er_eff_even") * 0.5 + res.value("er_eff_odd") * 0.5) / C0
     sat = min(1.0, 2.0 * td / a["t_rise"])
     v = a["voltage"]
     next_v = kb * v * sat
-    fext_v = kf_ps_in * (a["length"] / 0.0254) / (a["t_rise"] * 1e12) * v
+    fext_v = kf_per_in * (a["length"] / 0.0254) / a["t_rise"] * v
     r = Result(model="Field-solver L/C matrices, weak-coupling crosstalk", status="solver")
     r.add("next", "Near-end crosstalk (NEXT)", next_v, "voltage", primary=True)
     r.add("next_pct", "NEXT, % of swing", 100 * next_v / v if v else 0.0, "percent")

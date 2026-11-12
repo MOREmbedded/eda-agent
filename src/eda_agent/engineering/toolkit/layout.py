@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from .. import pcb_calc
-from .core import DISPLAY, UNITS, Input, Result, calculator, from_si, need, to_si
+from .core import UNIT_CHOICES, UNITS, Input, Result, calculator, from_si, need, to_si
 
 
 @calculator(
@@ -173,16 +173,10 @@ def drill_chart(a):
 def unit_convert(a):
     kind = a["kind"]
     text = str(a["value"]).strip()
-    unit_default = DISPLAY.get(kind, "")
-    si = to_si(text, kind, unit_default if unit_default in UNITS[kind] else next(iter(UNITS[kind])))
+    si = to_si(text, kind, next(iter(UNITS[kind])))
     r = Result(model="Exact unit definitions", status="exact")
-    seen = set()
-    for u, f in UNITS[kind].items():
-        if f in seen and kind != "temperature":
-            continue
-        seen.add(f)
-        if u in ("µm", "µs", "µf", "µh", "Ω", "mΩ", "kΩ", "MΩ", "°c", "degc", "mils", "thou",
-                 "inch", "c/w", "w/m/k"):
+    for u in UNIT_CHOICES.get(kind) or list(UNITS[kind]):
+        if u in ("°F", "K") and kind == "temperature":
             continue
         r.add(f"in_{u}", u, from_si(si, kind, u), "ratio", digits=6)
     if kind == "temperature":

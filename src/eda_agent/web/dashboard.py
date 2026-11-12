@@ -891,6 +891,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     _register_stages(app)
     from .usage_view import register as _register_usage
     _register_usage(app)
+    from .toolkit_view import register as _register_toolkit
+    _register_toolkit(app)
 
     @app.route("/")
     def workbench_page() -> Response:

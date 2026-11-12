@@ -26,40 +26,56 @@ from typing import Any, Callable, Optional
 OZ_M = 1.378 * 25.4e-6
 
 UNITS: dict[str, dict[str, float]] = {
-    "length": {"m": 1.0, "cm": 1e-2, "mm": 1e-3, "um": 1e-6, "µm": 1e-6,
-               "nm": 1e-9, "mil": 25.4e-6, "mils": 25.4e-6, "thou": 25.4e-6,
-               "in": 0.0254, "inch": 0.0254, "ft": 0.3048, "oz": OZ_M},
-    "frequency": {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9, "thz": 1e12},
-    "time": {"s": 1.0, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9,
-             "ps": 1e-12, "fs": 1e-15},
-    "current": {"a": 1.0, "ma": 1e-3, "ua": 1e-6, "ka": 1e3},
-    "voltage": {"v": 1.0, "mv": 1e-3, "uv": 1e-6, "kv": 1e3},
-    "resistance": {"ohm": 1.0, "Ω": 1.0, "mohm": 1e-3, "mΩ": 1e-3,
-                   "kohm": 1e3, "kΩ": 1e3, "megohm": 1e6, "MΩ": 1e6},
-    "capacitance": {"f": 1.0, "mf": 1e-3, "uf": 1e-6, "µf": 1e-6, "nf": 1e-9,
-                    "pf": 1e-12, "ff": 1e-15},
-    "inductance": {"h": 1.0, "mh": 1e-3, "uh": 1e-6, "µh": 1e-6, "nh": 1e-9,
-                   "ph": 1e-12},
-    "power": {"w": 1.0, "mw": 1e-3, "uw": 1e-6, "kw": 1e3},
-    "temperature": {"c": 1.0, "°c": 1.0, "degc": 1.0},
-    "delta_t": {"c": 1.0, "°c": 1.0, "k": 1.0},
-    "thermal_resistance": {"c/w": 1.0, "°c/w": 1.0, "k/w": 1.0},
-    "thermal_conductivity": {"w/mk": 1.0, "w/m/k": 1.0},
-    "h_coeff": {"w/m2k": 1.0},
-    "velocity": {"m/s": 1.0, "lfm": 0.00508, "ft/min": 0.00508},
-    "conductivity": {"s/m": 1.0, "ms/m": 1e6},
+    "length": {"mil": 25.4e-6, "mm": 1e-3, "um": 1e-6, "in": 0.0254, "cm": 1e-2,
+               "m": 1.0, "oz": OZ_M, "µm": 1e-6, "nm": 1e-9, "mils": 25.4e-6,
+               "thou": 25.4e-6, "inch": 0.0254, "ft": 0.3048},
+    "frequency": {"Hz": 1.0, "kHz": 1e3, "MHz": 1e6, "GHz": 1e9, "THz": 1e12},
+    "time": {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9, "ps": 1e-12,
+             "fs": 1e-15, "µs": 1e-6},
+    "current": {"A": 1.0, "mA": 1e-3, "uA": 1e-6, "kA": 1e3, "µA": 1e-6},
+    "voltage": {"V": 1.0, "mV": 1e-3, "uV": 1e-6, "kV": 1e3, "µV": 1e-6},
+    "resistance": {"ohm": 1.0, "mohm": 1e-3, "kohm": 1e3, "Mohm": 1e6,
+                   "Ω": 1.0, "mΩ": 1e-3, "kΩ": 1e3, "MΩ": 1e6, "megohm": 1e6},
+    "capacitance": {"F": 1.0, "mF": 1e-3, "uF": 1e-6, "nF": 1e-9, "pF": 1e-12,
+                    "fF": 1e-15, "µF": 1e-6},
+    "inductance": {"H": 1.0, "mH": 1e-3, "uH": 1e-6, "nH": 1e-9, "pH": 1e-12,
+                   "µH": 1e-6},
+    "power": {"W": 1.0, "mW": 1e-3, "uW": 1e-6, "kW": 1e3, "µW": 1e-6},
+    "temperature": {"°C": 1.0, "C": 1.0, "degC": 1.0},
+    "delta_t": {"°C": 1.0, "C": 1.0, "K": 1.0},
+    "thermal_resistance": {"°C/W": 1.0, "C/W": 1.0, "K/W": 1.0},
+    "thermal_conductivity": {"W/mK": 1.0, "W/m/K": 1.0},
+    "h_coeff": {"W/m2K": 1.0},
+    "velocity": {"m/s": 1.0, "LFM": 0.00508, "ft/min": 0.00508},
+    "conductivity": {"S/m": 1.0},
     "resistivity": {"ohm.m": 1.0, "ohm.cm": 1e-2, "uohm.cm": 1e-8},
-    "area": {"m2": 1.0, "mm2": 1e-6, "mil2": (25.4e-6) ** 2, "in2": 0.0254 ** 2},
-    "ratio": {"": 1.0, "x": 1.0},
+    "area": {"mm2": 1e-6, "mil2": (25.4e-6) ** 2, "in2": 0.0254 ** 2, "m2": 1.0},
+    "ratio": {"": 1.0},
     "percent": {"%": 1.0},
     "ppm": {"ppm": 1.0},
-    "db": {"db": 1.0},
-    "dbm": {"dbm": 1.0},
+    "db": {"dB": 1.0},
+    "dbm": {"dBm": 1.0},
     "count": {"": 1.0},
     "angle": {"deg": 1.0},
     "choice": {},
     "choice_text": {},
     "bool": {},
+}
+
+#: The units a form offers for a kind, in order. The tables above also
+#: accept the spellings left out here (µm, Ω, mils, ...).
+UNIT_CHOICES: dict[str, list[str]] = {
+    "length": ["mil", "mm", "um", "in", "cm", "m", "oz"],
+    "frequency": ["Hz", "kHz", "MHz", "GHz"],
+    "time": ["s", "ms", "us", "ns", "ps"],
+    "current": ["A", "mA", "uA", "kA"],
+    "voltage": ["V", "mV", "uV", "kV"],
+    "resistance": ["ohm", "mohm", "kohm", "Mohm"],
+    "capacitance": ["F", "uF", "nF", "pF", "fF"],
+    "inductance": ["H", "mH", "uH", "nH", "pH"],
+    "power": ["W", "mW", "uW", "kW"],
+    "temperature": ["°C", "°F", "K"],
+    "velocity": ["m/s", "LFM"],
 }
 
 #: The unit a kind is shown in when the caller has no preference.
@@ -83,14 +99,17 @@ _NUM = re.compile(r"^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*(.*?)\s*$"
 
 def _unit_factor(kind: str, unit: str) -> float:
     table = UNITS.get(kind, {})
+    unit = unit.strip()
     if unit in table:
         return table[unit]
-    low = unit.lower().replace(" ", "")
-    for k, v in table.items():
-        if k.lower() == low:
-            return v
-    if kind == "temperature" and low in ("f", "°f", "degf"):
-        return float("nan")  # handled by the caller
+    # Case-insensitive only where it cannot change the meaning: "MW" must
+    # never be read as "mW". A unit that differs from a known one only by
+    # the case of an m/M prefix is refused.
+    low = unit.lower()
+    hits = [k for k in table if k.lower() == low]
+    if len(hits) == 1 and not (unit[:1] in "mM" and len(unit) > 1 and hits[0][:1] in "mM"
+                               and hits[0][:1] != unit[:1]):
+        return table[hits[0]]
     raise InputError(f"unit '{unit}' is not a {kind} unit; use one of "
                      + ", ".join(k for k in table if k))
 
@@ -114,9 +133,9 @@ def to_si(value: Any, kind: str, unit: str) -> float:
     value = float(value)
     if not math.isfinite(value):
         raise InputError("the number must be finite")
-    if kind == "temperature" and unit.lower().replace("°", "") in ("f", "degf"):
+    if kind == "temperature" and unit.strip().lower().replace("°", "") in ("f", "degf"):
         return (value - 32.0) * 5.0 / 9.0
-    if kind == "temperature" and unit.lower() == "k":
+    if kind == "temperature" and unit.strip().lower() == "k":
         return value - 273.15
     if kind in ("choice", "bool"):
         return value
@@ -130,7 +149,8 @@ def from_si(value: float, kind: str, unit: str) -> float:
 
 
 _PREFIX = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""),
-           (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"), (1e-15, "f")]
+           (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"), (1e-15, "f"),
+           (1e-18, "a")]
 _SI_SYMBOL = {"frequency": "Hz", "time": "s", "current": "A", "voltage": "V",
               "resistance": "Ω", "capacitance": "F", "inductance": "H",
               "power": "W"}
@@ -192,8 +212,8 @@ class Input:
         d = {"key": self.key, "label": self.label, "kind": self.kind,
              "default": self.default, "unit": self.unit, "help": self.help,
              "optional": self.optional}
-        if self.kind in UNITS and UNITS[self.kind]:
-            d["units"] = [u for u in UNITS[self.kind] if u not in ("µm", "µs", "µf", "µh", "Ω", "mΩ", "kΩ", "MΩ", "°c", "degc", "mils", "thou", "inch")]
+        if self.kind in UNIT_CHOICES:
+            d["units"] = list(UNIT_CHOICES[self.kind])
         for k in ("min", "max", "prefill", "show_if"):
             v = getattr(self, k)
             if v not in (None, ""):
@@ -229,11 +249,12 @@ class Result:
                 return o["value"]
         raise KeyError(key)
 
-    def check(self, label: str, ours: float, other: float, model: str) -> None:
+    def check(self, label: str, ours: float, other: float, model: str,
+              kind: str = "resistance") -> None:
         """Record a cross-check of a primary output against another model."""
         if ours and other and math.isfinite(ours) and math.isfinite(other):
             self.checks.append({"label": label, "model": model,
-                                "value": other,
+                                "value": other, "display": fmt(other, kind),
                                 "difference_percent": round((other / ours - 1) * 100, 3)})
 
     def to_dict(self) -> dict[str, Any]:
@@ -336,7 +357,11 @@ def calculator(name: str, title: str, group: str, summary: str,
     def deco(fn: Callable[[dict[str, Any]], Result]):
         if name in REGISTRY:
             raise RuntimeError(f"calculator {name} declared twice")
-        REGISTRY[name] = Calculator(name, title, group, summary, inputs, fn, status)
+        calc = Calculator(name, title, group, summary, inputs, fn, status)
+        REGISTRY[name] = calc
+        # fn(fn.__wrapped_parse__({"w": "5 mil"})) runs the bare function
+        # on parsed inputs: what the tests and other calculators use.
+        fn.__wrapped_parse__ = calc.parse
         return fn
     return deco
 

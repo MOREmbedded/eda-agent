@@ -95,25 +95,29 @@ def _metal(xc, w, y0, t, etch, net):
 
 
 def _solve(build: Callable[[float], fd.CrossSection], f: float, materials, fast=False):
-    """Solve at two grid densities and extrapolate C, C0, G.
+    """Solve on two grids, the second twice as fine everywhere, and
+    extrapolate C, C0 and G to zero cell size.
 
-    ``materials`` maps (er, tand) pairs used in the geometry to their
-    value at ``f`` via the causal model; ``build`` takes nothing and
-    returns the cross-section at those values.
+    The error is set by the field singularity at the conductor edges. At
+    the knife edge of a zero-thickness strip the capacitance error falls
+    as h; at the 90 degree corner of a real trace as h^(4/3). Both
+    orders were measured (tests/toolkit/test_fdsolver.py); extrapolating
+    with them brings a 0.5 % grid error under 0.05 %.
     """
     xs = build(f)
-    res = (40.0, 80.0) if fast else (60.0, 120.0)
+    res = (30.0, 60.0) if fast else (40.0, 80.0)
     s1 = fd.solve(xs, res[0])
     s2 = fd.solve(xs, res[1])
-    # Edge-singularity error falls as h^0.5; extrapolate to h -> 0.
-    k = 1.0 / (math.sqrt(2.0) - 1.0)
-    C = s2.C + (s2.C - s1.C) * k
-    Cv = s2.C0 + (s2.C0 - s1.C0) * k
-    G = s2.G + (s2.G - s1.G) * k
-    s2.C, s2.C0, s2.G = C, Cv, G
-    s2.L = fd.MU0 * fd.EPS0 * np.linalg.inv(Cv)
-    s2.extrapolation = float(np.max(np.abs((s2.C - s1.C) / s2.C)))
+    thin = any(m.net >= 0 and m.y1 - m.y0 <= 0 for m in xs.metals)
+    k = 1.0 / (2.0 ** (1.0 if thin else 4.0 / 3.0) - 1.0)
+    raw = s2.C.copy()
+    s2.C = s2.C + (s2.C - s1.C) * k
+    s2.G = s2.G + (s2.G - s1.G) * k
+    s2.C0 = s2.C0 + (s2.C0 - s1.C0) * k
+    s2.L = fd.MU0 * fd.EPS0 * np.linalg.inv(s2.C0)
+    s2.extrapolation = float(np.max(np.abs(np.diag(s2.C - raw) / np.diag(s2.C))))
     s2.coarse = s1
+    s2.xs = xs
     return s2
 
 
@@ -176,11 +180,11 @@ def _report_line(r: Result, m: dict, prefix: str = "", label: str = "",
     r.add(prefix + "z0", label or "Characteristic impedance Z0", m["z"], "resistance",
           primary=primary_z)
     r.add(prefix + "er_eff", "Effective Er", m["ee"], "ratio")
-    r.add(prefix + "delay_per_m", "Propagation delay", m["delay"] * 0.0254, "time",
+    r.add(prefix + "delay_per_in", "Propagation delay", m["delay"] * 0.0254, "time",
           note="per inch")
     r.add(prefix + "delay_per_mm", "Propagation delay per mm", m["delay"] * 1e-3, "time")
-    r.add(prefix + "c_per_m", "Capacitance per inch", m["c"] * 0.0254, "capacitance")
-    r.add(prefix + "l_per_m", "Inductance per inch", m["l"] * 0.0254, "inductance")
+    r.add(prefix + "c_per_in", "Capacitance per inch", m["c"] * 0.0254, "capacitance")
+    r.add(prefix + "l_per_in", "Inductance per inch", m["l"] * 0.0254, "inductance")
     if m.get("ac") is not None:
         r.add(prefix + "loss_conductor", "Conductor loss", m["ac"] * NP_TO_DB * 0.0254,
               "db", note="dB per inch")
@@ -192,13 +196,29 @@ def _report_line(r: Result, m: dict, prefix: str = "", label: str = "",
 
 def _solver_note(r: Result, sol) -> None:
     r.status = "solver"
-    r.accuracy = ("Field solver: Z0 within 0.5 % of exact solutions in the "
-                  "tests (Cohn stripline, Hammerstad-Jensen microstrip); grid "
-                  f"change between refinements {sol.extrapolation * 100:.2f} %. "
-                  "Loss: conductor within ~5 % below 20 GHz for the stated "
-                  "roughness; the roughness parameters dominate the error.")
+    r.accuracy = ("Field solver: Z0 within 0.1 % of the exact conformal-mapping "
+                  "results (Cohn stripline and coupled stripline) and within "
+                  "0.3 % of Hammerstad-Jensen microstrip in the tests; the "
+                  f"extrapolation to zero cell size moved C by {sol.extrapolation * 100:.2f} %. "
+                  "Conductor loss within 2 % of Wheeler's stripline "
+                  "result for smooth copper; with roughness, the roughness "
+                  "parameters dominate the error.")
     r.references = list(REFS_SOLVER)
     r.extra["solver_nodes"] = sol.nodes
+    r.extra["section"] = _section(sol.xs)
+
+
+def _section(xs: fd.CrossSection) -> dict[str, Any]:
+    """The solved cross-section as plain shapes, for a drawing."""
+    metals = []
+    for m in xs.metals:
+        t0, t1 = m.top()
+        metals.append({"x0": m.x0, "x1": m.x1, "xt0": t0, "xt1": t1,
+                       "y0": m.y0, "y1": m.y1, "net": m.net})
+    return {"metals": metals,
+            "dielectrics": [{"y0": d.y0, "y1": d.y1, "er": d.er} for d in xs.dielectrics],
+            "coatings": [{"y": c.surface_y, "t": c.thickness, "er": c.er} for c in xs.coatings],
+            "ground_bottom": xs.ground_bottom, "ground_top": xs.ground_top}
 
 
 def _single(a: dict[str, Any], build, closed: Callable[[], tuple[float, float]] | None,
@@ -429,9 +449,9 @@ def _pair_report(a, sol, r: Result) -> None:
     l11, l12 = sol.L[0, 0], sol.L[0, 1]
     kb = 0.25 * (-c12 / c11 + l12 / l11)
     r.add("next_coeff", "Backward (NEXT) coefficient Kb", kb, "ratio")
-    r.add("fext_coeff", "Forward (FEXT) coefficient", 0.5 * (-c12 / c11 - l12 / l11)
-          * math.sqrt(sol.C[0, 0] * sol.L[0, 0]) * 0.0254 * 1e12, "ratio",
-          note="ps of rise time per inch: V_fext = this * length[in] / t_rise[ps]")
+    kf = 0.5 * (-c12 / c11 - l12 / l11) * math.sqrt(c11 * l11)      # s/m
+    r.add("fext_coeff", "Forward (FEXT) coefficient", kf * 0.0254, "time",
+          note="per inch: V_fext / V = this x length / rise time")
     f = a["frequency"]
     if f > 0:
         r.add("loss_diff", "Differential loss",

@@ -142,7 +142,7 @@ def trace_current(a):
     r.add("density", "Current density", I / (w * t) * 1e-6, "ratio", note="A/mm²")
     i2221 = _ipc2221_current(w, t, max(res.rise, 0.1), a["layer"] == "internal")
     r.add("ipc2221_current", "IPC-2221 current for the same rise (legacy)", i2221, "current")
-    r.check("current", I, i2221, "IPC-2221 chart (1950s data, no board effects)")
+    r.check("current", I, i2221, "IPC-2221 chart (1950s data, no board effects)", "current")
     if res.runaway:
         r.warnings.append("Thermal runaway: the trace heats faster than it can shed "
                           "heat at this current. It will fuse.")
