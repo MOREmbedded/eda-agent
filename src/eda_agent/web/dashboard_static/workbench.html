@@ -212,6 +212,25 @@ table.grid td.m { color:var(--ink2); max-width:210px; overflow:hidden; text-over
 table.grid .sub { color:var(--ink3); }
 table.grid a { color:var(--blue); }
 .issue { white-space:nowrap; }
+.libtabs { margin-bottom:var(--s4); }
+.pfgrid { display:grid; grid-template-columns:minmax(320px, 1fr) minmax(360px, 1.2fr); gap:var(--s5); align-items:start; }
+@media (max-width: 900px) { .pfgrid { grid-template-columns:1fr; } }
+.pfgrid > div { min-width:0; }
+.pflist { overflow-x:auto; }
+.pflist table.grid { table-layout:fixed; }
+.pflist table.grid td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pflist th:nth-child(2) { width:80px; } .pflist th:nth-child(3) { width:96px; } .pflist th:nth-child(4) { width:72px; }
+.pfgrid table.grid td.m { max-width:180px; }
+.pffile { margin-top:var(--s4); }
+.pffile input { display:block; width:100%; margin:6px 0; }
+.pvpane { position:sticky; top:0; }
+.pvhead { margin:0 0 4px; }
+.pvhead small { color:var(--ink2); font-weight:400; margin-left:6px; }
+.pvgrid { display:grid; grid-template-columns:1fr 1fr; gap:var(--s3); margin:var(--s3) 0; }
+.pvfig { margin:0; border:1px solid var(--rule); background:var(--paper); display:flex; flex-direction:column; }
+.pvfig figcaption { font-size:12px; color:var(--ink2); padding:4px 8px; border-bottom:1px solid var(--rule2); }
+.pvsvg { padding:6px; background:#fff; flex:1; display:flex; align-items:center; }
+.pvsvg svg { display:block; width:100%; height:auto; max-height:420px; }
 .tools { display:grid; grid-template-columns:300px 1fr; gap:var(--s4); height:100%; }
 .tools .list { overflow:auto; background:var(--paper); border:1px solid var(--rule); }
 .tools .list .row { padding:4px var(--s3); }
@@ -599,6 +618,7 @@ const S = {
   sel: null, multi: new Set(), view: null, hover: null, mouse: null,
   preview: null, previewKind: null, previewFor: null, lastResult: null,
   lib: null, libPick: new Set(), libFilter: "", libOnly: "", libShown: [],
+  libView: store.get("wb.libView", "design"), pf: {q: "", rows: null, note: "", vault: store.get("wb.vault", "")}, pv: null, pvTimer: 0,
   policy: null, live: null, decisions: [], decSeq: 0, asmAt: 0,
   tools: null, tool: null, toolFilter: "", toolResult: null,
   stg: null, stgOpen: "", stgChecks: null, stgDraft: {}, stgOpenList: null,
@@ -1189,13 +1209,14 @@ function paintPane() {
   if (S.mode === "workspace") return paintWorkspacePane();
   if (S.mode === "usage") return paintUsagePane();
   if (pane.hidden) return;
+  if (S.libView === "find") return paintFindPane();
   const L = S.lib || {};
-  if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
-  if (L.state === "failed") { pane.innerHTML = `<div style="padding:30px"><p class="bad">${esc(L.error)}</p><button data-lib="read">${esc(T("Try again"))}</button></div>`; return; }
+  if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = libTabs() + `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
+  if (L.state === "failed") { pane.innerHTML = libTabs() + `<div style="padding:30px"><p class="bad">${esc(L.error)}</p><button data-lib="read">${esc(T("Try again"))}</button></div>`; return; }
   const rows = libRows(), pct = (a, b) => b ? Math.round(100 * a / b) + "%" : "-";
   const focus = document.activeElement && document.activeElement.id === "libq";
   const allOn = rows.length && rows.every(r => r.designators.every(d => S.libPick.has(d)));
-  pane.innerHTML = `<div class="panehead"><div class="figures">
+  pane.innerHTML = libTabs() + `<div class="panehead"><div class="figures">
       <div><span>${esc(T("Parts"))}</span><b>${num(L.parts)}</b></div><div><span>${esc(T("Different parts"))}</span><b>${num(L.kinds)}</b></div>
       <div><span>${esc(T("With an MPN"))}</span><b class="${L.with_mpn === L.parts ? "good" : ""}">${pct(L.with_mpn, L.parts)}</b></div>
       <div><span>${esc(T("With a datasheet"))}</span><b class="${L.with_datasheet === L.parts ? "good" : ""}">${pct(L.with_datasheet, L.parts)}</b></div>
@@ -1221,6 +1242,88 @@ function paintPane() {
     <p class="hint">${esc(T("Read at {0}, in {1} s. Pick lines to light their parts on the board and to update them from their library.", L.read_at ? new Date(L.read_at * 1000).toLocaleTimeString(LANG) : "", num(L.seconds, 1)))}</p>`;
   S.libShown = rows;
   if (focus) { const q = $("#libq"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+}
+/* ---------------------------------------------------- part lookup and preview */
+function libTabs() {
+  return `<div class="chipset libtabs"><button data-libview="design" aria-pressed="${S.libView !== "find"}">${esc(T("Parts in the design"))}</button><button data-libview="find" aria-pressed="${S.libView === "find"}">${esc(T("Look up a part"))}</button></div>`;
+}
+let pfTimer = 0;
+function pfSearch(q) {
+  S.pf.q = q; clearTimeout(pfTimer);
+  pfTimer = setTimeout(async () => {
+    const r = await get("/api/wb/parts/find?q=" + encodeURIComponent(q));
+    if (!r || S.pf.q !== q) return;
+    S.pf.rows = r.results || []; S.pf.note = r.ok === false ? r.reason : (r.note || ""); S.pf.databases = r.databases; S.pf.matches = r.matches;
+    paintPane();
+  }, 250);
+}
+async function pvAsk(spec) {
+  if (S.pf.vault && spec.design_item_id) spec.vault = S.pf.vault;
+  const r = await post("/api/wb/parts/preview", spec);
+  if (!r || !r.ok) { S.pv = {state: "failed", reason: (r && r.reason) || T("No answer from the dashboard")}; return paintPane(); }
+  S.pv = {state: "reading", spec}; paintPane(); pvPoll();
+}
+async function pvPoll() {
+  clearTimeout(S.pvTimer);
+  const r = await get("/api/wb/parts/preview"); if (!r) return;
+  S.pv = r; paintPane();
+  if (r.state === "reading") S.pvTimer = setTimeout(pvPoll, 700);
+}
+function pvPicture(title, body) { return `<figure class="pvfig"><figcaption>${esc(title)}</figcaption>${body}</figure>`; }
+function previewBlock() {
+  const v = S.pv;
+  if (!v) return `<p class="hint">${esc(T("Pick a part to see its symbol and footprint as they are in the library, before you place it."))}</p>`;
+  if (v.state === "reading") return `<div class="result run"><span class="spin"></span> ${esc(T("Reading the part in Altium"))}</div>`;
+  if (v.state === "failed" || v.ok === false) {
+    const ws = /Workspace name/.test(v.reason || "");
+    return `<div class="result fail">${esc(v.reason || T("The part did not read"))}</div>${ws ? `<p class="hint">${esc(T("Type the Workspace name as Altium shows it, then pick the part again."))}</p><input id="pfvault" value="${esc(S.pf.vault)}" placeholder="${esc(T("Workspace name"))}" aria-label="${esc(T("Workspace name"))}">` : ""}`;
+  }
+  if (v.state !== "ready") return "";
+  const s = v.symbol || {}, f = v.footprint || {};
+  const fpBody = f.ok ? `<div class="pvsvg">${f.svg}</div>` : `<p class="hint">${esc(f.reason || T("No footprint"))}</p>`;
+  const parts = v.part_count > 1 ? `<div class="chipset">${Array.from({length: Math.min(v.part_count, 26)}, (_, i) => `<button data-pvpart="${i + 1}" aria-pressed="${v.part === i + 1}">${esc(T("Part {0}", i + 1))}</button>`).join("")}</div>` : "";
+  return `<h2 class="pvhead">${esc(v.lib_ref || v.design_item_id)} <small>${esc(v.comment || "")}</small></h2>
+    <p class="hint">${esc(v.description || "")}</p>${parts}
+    <div class="pvgrid">${pvPicture(T("Symbol"), `<div class="pvsvg">${s.svg || ""}</div>`)}${pvPicture(f.name ? T("Footprint {0}", f.name) : T("Footprint"), fpBody)}</div>
+    <dl class="kv"><dt>${esc(T("Pins"))}</dt><dd>${num(s.pins)}${s.hidden_pins ? " " + esc(T("({0} hidden)", s.hidden_pins)) : ""}</dd>
+      ${f.ok ? `<dt>${esc(T("Pads"))}</dt><dd>${num(f.pads)}</dd>` : ""}
+      <dt>${esc(T("From"))}</dt><dd class="m">${esc(v.source || "")}</dd>${f.library ? `<dt>${esc(T("Footprint library"))}</dt><dd class="m">${esc(f.library)}</dd>` : ""}</dl>
+    ${(v.notes || []).concat(f.notes || []).map(n => `<p class="hint">${esc(n)}</p>`).join("")}
+    <p class="hint">${esc(T("Read at {0}, in {1} s.", v.read_at ? new Date(v.read_at * 1000).toLocaleTimeString(LANG) : "", num(v.seconds, 1)))} <button class="quiet" data-pvagain="1">${esc(T("Read it again"))}</button></p>`;
+}
+function paintFindPane() {
+  const pane = $("#pane"), P = S.pf, active = document.activeElement && document.activeElement.id;
+  const rows = P.rows || [];
+  const list = P.rows == null ? `<p class="hint">${esc(T("Search your scanned Altium 365 library by name, value, description or MPN."))}</p>`
+    : !rows.length ? `<p class="hint">${esc(P.note || (P.q.trim().length < 2 ? T("Type two letters or more.") : T("No part matches.")))}</p>`
+    : `<div class="pflist"><table class="grid"><thead><tr><th>${esc(T("Part"))}</th><th>${esc(T("Comment"))}</th><th>${esc(T("Footprint"))}</th><th>${esc(T("State"))}</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr data-pfrow="${i}" aria-selected="${!!(S.pv && S.pv.spec && S.pv.spec.design_item_id === r.name)}"><td class="n" title="${esc(r.description)}">${esc(r.name)}<div class="sub">${esc(r.description)}</div></td><td>${esc(r.comment)}</td>
+        <td class="m">${esc((r.footprints || []).join(", "))}</td><td>${esc(r.lifecycle)}</td></tr>`).join("")}</tbody></table></div>
+      ${P.matches > rows.length ? `<p class="hint">${esc(T("{0} of {1} matches shown. Narrow the search.", rows.length, P.matches))}</p>` : ""}`;
+  pane.innerHTML = libTabs() + `<div class="pfgrid"><div>
+      <div class="panehead"><input id="pfq" placeholder="${esc(T("Search parts: name, value, MPN"))}" value="${esc(P.q)}" aria-label="${esc(T("Search parts"))}" style="margin-left:0;width:100%"></div>
+      ${list}
+      <details class="pffile"><summary>${esc(T("From a library file"))}</summary>
+        <input id="pflib" placeholder="${esc(T("Path of the .SchLib or .IntLib"))}" aria-label="${esc(T("Library file"))}" value="${esc(P.lib || "")}">
+        <input id="pfname" placeholder="${esc(T("Symbol name"))}" aria-label="${esc(T("Symbol name"))}" value="${esc(P.name || "")}">
+        <button data-pvfile="1">${esc(T("Preview"))}</button></details>
+    </div><div class="pvpane">${previewBlock()}</div></div>`;
+  if (active && ["pfq", "pfvault", "pflib", "pfname"].includes(active)) { const q = $("#" + active); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+}
+function pfClick(e) {
+  const tab = e.target.closest("[data-libview]");
+  if (tab) { S.libView = tab.dataset.libview; store.set("wb.libView", S.libView); if (S.libView === "design" && !S.lib) pollLibrary(true); paintPane(); return true; }
+  if (S.libView !== "find") return false;
+  const row = e.target.closest("[data-pfrow]");
+  if (row) { const r = S.pf.rows[+row.dataset.pfrow]; pvAsk({design_item_id: r.name}); return true; }
+  const part = e.target.closest("[data-pvpart]");
+  if (part && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {part: +part.dataset.pvpart})); return true; }
+  if (e.target.closest("[data-pvagain]") && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {again: true})); return true; }
+  if (e.target.closest("[data-pvfile]")) {
+    if (!S.pf.lib || !S.pf.name) { say(T("Give the library file and the symbol name."), true); return true; }
+    pvAsk({library_path: S.pf.lib, component_name: S.pf.name}); return true;
+  }
+  return true;
 }
 function libraryBlock() {
   const n = S.libPick.size, pol = S.policy, running = S.state.action && S.state.action.state === "running";
@@ -2140,7 +2243,7 @@ function setMode(m) {
   if (m === "engines") pollLive(true); else if (from === "engines" || S.drawnBoard !== S.board) useDrawn(false);
   if (m === "assemble") { if (!S.lib || S.lib.state === "empty") pollLibrary(true); asmLight(); }
   else if (from === "assemble") S.multi = new Set();
-  if (m === "library" && !S.lib) pollLibrary(true);
+  if (m === "library" && !S.lib && S.libView !== "find") pollLibrary(true);
   if (m === "usage") loadUsage();
   S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
 }
@@ -2200,6 +2303,7 @@ $("#pane").addEventListener("click", e => {
     const r = e.target.closest("[data-tool]"); if (r) { S.tool = r.dataset.tool; S.toolResult = null; paintPane(); }
     return;
   }
+  if (pfClick(e)) return;
   if (e.target.closest("[data-lib]")) return libDo(e.target.closest("[data-lib]").dataset.lib);
   const only = e.target.closest("[data-libonly]"); if (only) { S.libOnly = only.dataset.libonly; return paintPane(); }
   if (e.target.closest("a") || e.target.id === "libq") return;
@@ -2215,6 +2319,10 @@ $("#pane").addEventListener("click", e => {
 });
 $("#pane").addEventListener("input", e => {
   if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
+  if (e.target.id === "pfq") pfSearch(e.target.value);
+  if (e.target.id === "pflib") S.pf.lib = e.target.value;
+  if (e.target.id === "pfname") S.pf.name = e.target.value;
+  if (e.target.id === "pfvault") { S.pf.vault = e.target.value.trim(); store.set("wb.vault", S.pf.vault); }
   if (e.target.id === "toolq") { S.toolFilter = e.target.value; paintPane(); }
   if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
   if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;

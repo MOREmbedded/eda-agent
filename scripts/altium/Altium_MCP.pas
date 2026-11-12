@@ -27408,6 +27408,411 @@ Begin
 End;
 
 {..............................................................................}
+{ Symbol preview: one library symbol's drawing, read without placing it.      }
+{                                                                              }
+{ The shape matches a component in Gen_GetSchGeometry (primitives in mils,    }
+{ Altium colours, pins as body-side root plus length and rotation), so the    }
+{ Python side draws it with the schematic renderer. Coordinates are the       }
+{ symbol's own, around its library origin.                                    }
+{..............................................................................}
+
+{ One graphic of a symbol as JSON, or '' for a kind not drawn. FLAT Ifs on    }
+{ the ObjectId with typed locals: a member asked of the wrong interface       }
+{ raises a modal Try/Except cannot catch (see Gen_MirrorSchComponent), and    }
+{ DelphiScript mis-binds long Else If chains.                                 }
+Function SymbolPrimJson(Prim : ISch_GraphicalObject) : String;
+Var
+    Kind, VtxN, V : Integer;
+    Rect : ISch_Rectangle;
+    RoundRect : ISch_RoundRectangle;
+    Line : ISch_Line;
+    Arc : ISch_Arc;
+    EllipArc : ISch_EllipticalArc;
+    Poly : ISch_Polyline;
+    Ellipse : ISch_Ellipse;
+    Bezier : ISch_Bezier;
+    Lbl : ISch_Label;
+    Vert : TLocation;
+    Pts : String;
+Begin
+    Result := '';
+    Kind := Prim.ObjectId;
+    If Kind = eRectangle Then
+    Begin
+        Rect := Prim;
+        Result := '{"kind":"rect"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(Rect.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(Rect.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(Rect.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(Rect.Corner.Y))
+            + ',"color":' + IntToStr(Rect.Color)
+            + ',"line_width":' + IntToStr(Rect.LineWidth)
+            + ',"area_color":' + IntToStr(Rect.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(Rect.IsSolid) + '}';
+    End;
+    If Kind = eRoundRectangle Then
+    Begin
+        RoundRect := Prim;
+        Result := '{"kind":"roundrect"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(RoundRect.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(RoundRect.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(RoundRect.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(RoundRect.Corner.Y))
+            + ',"rx":' + FloatToJsonStr(CoordToMilsF(RoundRect.CornerXRadius))
+            + ',"ry":' + FloatToJsonStr(CoordToMilsF(RoundRect.CornerYRadius))
+            + ',"color":' + IntToStr(RoundRect.Color)
+            + ',"line_width":' + IntToStr(RoundRect.LineWidth)
+            + ',"area_color":' + IntToStr(RoundRect.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(RoundRect.IsSolid) + '}';
+    End;
+    If Kind = eLine Then
+    Begin
+        Line := Prim;
+        Result := '{"kind":"line"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(Line.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(Line.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(Line.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(Line.Corner.Y))
+            + ',"color":' + IntToStr(Line.Color)
+            + ',"line_width":' + IntToStr(Line.LineWidth) + '}';
+    End;
+    If Kind = eArc Then
+    Begin
+        Arc := Prim;
+        Result := '{"kind":"arc"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(Arc.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Arc.Location.Y))
+            + ',"r":' + FloatToJsonStr(CoordToMilsF(Arc.Radius))
+            + ',"start":' + FloatToJsonStr(Arc.StartAngle)
+            + ',"end":' + FloatToJsonStr(Arc.EndAngle)
+            + ',"color":' + IntToStr(Arc.Color)
+            + ',"line_width":' + IntToStr(Arc.LineWidth) + '}';
+    End;
+    If Kind = eEllipticalArc Then
+    Begin
+        EllipArc := Prim;
+        Result := '{"kind":"arc"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(EllipArc.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(EllipArc.Location.Y))
+            + ',"r":' + FloatToJsonStr(CoordToMilsF(EllipArc.Radius))
+            + ',"r2":' + FloatToJsonStr(CoordToMilsF(EllipArc.SecondaryRadius))
+            + ',"start":' + FloatToJsonStr(EllipArc.StartAngle)
+            + ',"end":' + FloatToJsonStr(EllipArc.EndAngle)
+            + ',"color":' + IntToStr(EllipArc.Color)
+            + ',"line_width":' + IntToStr(EllipArc.LineWidth) + '}';
+    End;
+    If (Kind = ePolyline) Or (Kind = ePolygon) Then
+    Begin
+        Poly := Prim;
+        VtxN := 0;
+        Try VtxN := Poly.GetState_VerticesCount; Except End;
+        If VtxN >= 2 Then
+        Begin
+            Pts := '';
+            For V := 1 To VtxN Do
+            Begin
+                Vert := Poly.GetState_Vertex(V);
+                If V > 1 Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Vert.X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Vert.Y)) + ']';
+            End;
+            If Kind = ePolyline Then Result := '{"kind":"polyline"'
+            Else Result := '{"kind":"polygon"';
+            Result := Result + ',"pts":[' + Pts + ']'
+                + ',"color":' + IntToStr(Poly.Color)
+                + ',"line_width":' + IntToStr(Poly.LineWidth)
+                + ',"area_color":' + IntToStr(Poly.AreaColor)
+                + ',"is_solid":' + BoolToJsonStr(Poly.IsSolid) + '}';
+        End;
+    End;
+    If Kind = eEllipse Then
+    Begin
+        Ellipse := Prim;
+        Result := '{"kind":"ellipse"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(Ellipse.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Ellipse.Location.Y))
+            + ',"rx":' + FloatToJsonStr(CoordToMilsF(Ellipse.Radius))
+            + ',"ry":' + FloatToJsonStr(CoordToMilsF(Ellipse.SecondaryRadius))
+            + ',"color":' + IntToStr(Ellipse.Color)
+            + ',"line_width":' + IntToStr(Ellipse.LineWidth)
+            + ',"area_color":' + IntToStr(Ellipse.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(Ellipse.IsSolid) + '}';
+    End;
+    If Kind = eBezier Then
+    Begin
+        Bezier := Prim;
+        VtxN := 0;
+        Try VtxN := Bezier.GetState_VerticesCount; Except End;
+        If VtxN >= 4 Then
+        Begin
+            Pts := '';
+            For V := 1 To VtxN Do
+            Begin
+                Vert := Bezier.GetState_Vertex(V);
+                If V > 1 Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Vert.X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Vert.Y)) + ']';
+            End;
+            Result := '{"kind":"bezier","pts":[' + Pts + ']'
+                + ',"color":' + IntToStr(Bezier.Color)
+                + ',"line_width":' + IntToStr(Bezier.LineWidth) + '}';
+        End;
+    End;
+    If Kind = eLabel Then
+    Begin
+        Lbl := Prim;
+        Result := '{"kind":"text"'
+            + ',"text":"' + EscapeJsonString(Lbl.Text) + '"'
+            + ',"x":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.X))
+            + ',"y":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.Y))
+            + ',"rot":' + IntToStr(Lbl.Orientation * 90)
+            + ',"color":' + IntToStr(Lbl.Color) + '}';
+    End;
+End;
+
+{ True when a symbol's object belongs to the part shown: shared (part 0) or   }
+{ the part asked for, and the normal display mode. Alternate display modes    }
+{ repeat a part's graphics at other places and would draw on top.             }
+Function OnSymbolPart(Obj : ISch_GraphicalObject; Part : Integer) : Boolean;
+Var
+    Owner, Mode : Integer;
+Begin
+    Owner := 0;
+    Mode := 0;
+    Try Owner := Obj.OwnerPartId; Except End;
+    Try Mode := Obj.OwnerPartDisplayMode; Except End;
+    Result := ((Owner = 0) Or (Owner = Part)) And (Mode = 0);
+End;
+
+{..............................................................................}
+{ Lib_GetSymbolGeometry - one symbol's drawing, pins and models, to preview a  }
+{ part before it is placed. Reads only; a part loaded from a Workspace or an   }
+{ IntLib belongs to no document and is destroyed again.                        }
+{                                                                              }
+{ Params: either design_item_id (+ vault, lib_identifier_kind) for a managed   }
+{ part, loaded with SchServer.LoadComponent the way placement loads it; or     }
+{ component_name + library_path for a library file, looked up in the open    }
+{ .SchLib (opened when it is not; an .IntLib is read from its extracted     }
+{ .SchLib, never handed to Altium).                                          }
+{ part: which part of a multi-part symbol (default 1).                         }
+{..............................................................................}
+Function Lib_GetSymbolGeometry(Params : String; RequestId : String) : String;
+Var
+    DesignItemId, VaultName, Note, CompName, LibPath, Source, Probe : String;
+    PrimJson, PinsJson, One, ElecStr, ParamName, PartsSeen, Desig, Descr : String;
+    LibRef, Comment, Resolved, Reason : String;
+    Asked, Kind, Slot, Part, PartCount, NumPrim, NumPins, Owner, Skipped : Integer;
+    Owned, Raised : Boolean;
+    Comp : ISch_Component;
+    SchLib : ISch_Lib;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Pin : ISch_Pin;
+    ParamObj : ISch_Parameter;
+Begin
+    DesignItemId := Trim(ExtractJsonValue(Params, 'design_item_id'));
+    CompName := Trim(ExtractJsonValue(Params, 'component_name'));
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Part := StrToIntDef(ExtractJsonValue(Params, 'part'), 1);
+    If Part < 1 Then Part := 1;
+    Comp := Nil;
+    Owned := False;
+    Note := '';
+    Probe := '';
+
+    If DesignItemId <> '' Then
+    Begin
+        If Not ResolveVaultName(ExtractJsonValue(Params, 'vault'), VaultName, Note) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'VAULT_NOT_RESOLVED',
+                VaultNotResolvedMessage(0));
+            Exit;
+        End;
+        Asked := StrToIntDef(ExtractJsonValue(Params, 'lib_identifier_kind'),
+            LIB_IDENT_KIND_VAULT_NAME);
+        { The kind asked for first, then the others, as Lib_GetVaultComponent. }
+        For Slot := 0 To LIB_IDENT_KIND_VAULT_NAME + 1 Do
+        Begin
+            If Comp <> Nil Then Break;
+            If Slot = 0 Then Kind := Asked
+            Else
+            Begin
+                Kind := Slot - 1;
+                If Kind = Asked Then Continue;
+            End;
+            If (Kind < 0) Or (Kind > LIB_IDENT_KIND_VAULT_NAME) Then Continue;
+            Raised := True;
+            Try
+                Comp := SchServer.LoadComponent(Kind, VaultName, DesignItemId);
+                Raised := False;
+            Except End;
+            If Probe <> '' Then Probe := Probe + ',';
+            If Raised Then Probe := Probe + IntToStr(Kind) + ':raised'
+            Else If Comp = Nil Then Probe := Probe + IntToStr(Kind) + ':nil'
+            Else Probe := Probe + IntToStr(Kind) + ':loaded';
+        End;
+        Owned := True;
+        Source := 'workspace ' + VaultName;
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND_IN_VAULT',
+                'Nothing loaded for ' + DesignItemId + ' from Workspace "'
+                + VaultName + '" (tried kinds ' + Probe + ').');
+            Exit;
+        End;
+    End
+    Else
+    Begin
+        If CompName = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'design_item_id, or component_name with library_path, is required');
+            Exit;
+        End;
+        If LibPath <> '' Then LibPath := CanonicalPathValue('path', LibPath);
+        { NEVER an .IntLib to Altium: LoadComponentFromLibrary and an open of  }
+        { one raise the "Open Integrated Library" modal, which no Try/Except   }
+        { catches. ResolveSchLibForLoad finds its extracted .SchLib on disk.   }
+        If LibPath <> '' Then
+        Begin
+            Resolved := ResolveSchLibForLoad(LibPath, Reason);
+            If Resolved = '' Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+                    'No .SchLib to read for ' + LibPath + ': ' + Reason);
+                Exit;
+            End;
+            LibPath := Resolved;
+        End;
+        SchLib := Nil;
+        If LibPath <> '' Then
+            Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
+        If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+            SchLib := FocusSchLib(LibPath);
+        If SchLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+                'No schematic library at ' + LibPath);
+            Exit;
+        End;
+        Comp := LookupLibComponent(SchLib, CompName);
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+                'Component not found in library: ' + CompName);
+            Exit;
+        End;
+        Source := LibPath;
+    End;
+
+    PrimJson := '';
+    PinsJson := '';
+    PartsSeen := ',';
+    NumPrim := 0;
+    NumPins := 0;
+    Skipped := 0;
+    LibRef := '';
+    Desig := '';
+    Descr := '';
+    Comment := '';
+    PartCount := 1;
+    Try
+        Try LibRef := Comp.LibReference; Except End;
+        Try Desig := Comp.Designator.Text; Except End;
+        Try Comment := Comp.Comment.Text; Except End;
+        Try Descr := Comp.ComponentDescription; Except End;
+        Try PartCount := Comp.PartCount; Except End;
+
+        Iter := Comp.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eRectangle, eRoundRectangle, eLine,
+                eArc, eEllipticalArc, ePolyline, ePolygon, eEllipse, eBezier,
+                eLabel, ePin, eParameter));
+            Obj := Iter.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                Owner := 0;
+                Try Owner := Obj.OwnerPartId; Except End;
+                If (Owner > 0) And (Pos(',' + IntToStr(Owner) + ',', PartsSeen) = 0) Then
+                    PartsSeen := PartsSeen + IntToStr(Owner) + ',';
+                If Not OnSymbolPart(Obj, Part) Then
+                    Inc(Skipped)
+                Else If Obj.ObjectId = ePin Then
+                Begin
+                    Pin := Obj;
+                    ElecStr := 'passive';
+                    Try ElecStr := PinElectricalToStr(Pin.Electrical); Except End;
+                    If NumPins > 0 Then PinsJson := PinsJson + ',';
+                    PinsJson := PinsJson
+                        + '{"des":"' + EscapeJsonString(Pin.Designator) + '"'
+                        + ',"name":"' + EscapeJsonString(Pin.Name) + '"'
+                        + ',"x":' + FloatToJsonStr(CoordToMilsF(Pin.Location.X))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Pin.Location.Y))
+                        + ',"rot":' + IntToStr(Pin.Orientation * 90)
+                        + ',"len":' + FloatToJsonStr(CoordToMilsF(Pin.PinLength))
+                        + ',"electrical":"' + EscapeJsonString(ElecStr) + '"'
+                        + ',"hidden":' + BoolToJsonStr(Pin.IsHidden)
+                        + ',"part":' + IntToStr(Owner) + '}';
+                    Inc(NumPins);
+                End
+                Else If Obj.ObjectId = eParameter Then
+                Begin
+                    ParamObj := Obj;
+                    ParamName := '';
+                    Try ParamName := ParamObj.Name; Except End;
+                    If (Not ParamObj.IsHidden) And (ParamName <> 'Designator')
+                        And (ParamName <> 'Comment') And (ParamObj.Text <> '') Then
+                    Begin
+                        If NumPrim > 0 Then PrimJson := PrimJson + ',';
+                        PrimJson := PrimJson + '{"kind":"text"'
+                            + ',"name":"' + EscapeJsonString(ParamName) + '"'
+                            + ',"text":"' + EscapeJsonString(ParamObj.Text) + '"'
+                            + ',"x":' + FloatToJsonStr(CoordToMilsF(ParamObj.Location.X))
+                            + ',"y":' + FloatToJsonStr(CoordToMilsF(ParamObj.Location.Y))
+                            + ',"rot":' + IntToStr(ParamObj.Orientation * 90)
+                            + ',"color":' + IntToStr(ParamObj.Color) + '}';
+                        Inc(NumPrim);
+                    End;
+                End
+                Else
+                Begin
+                    One := SymbolPrimJson(Obj);
+                    If One <> '' Then
+                    Begin
+                        If NumPrim > 0 Then PrimJson := PrimJson + ',';
+                        PrimJson := PrimJson + One;
+                        Inc(NumPrim);
+                    End;
+                End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            Comp.SchIterator_Destroy(Iter);
+        End;
+
+        Result := BuildSuccessResponse(RequestId,
+            '{"lib_ref":"' + EscapeJsonString(LibRef) + '"'
+            + ',"designator":"' + EscapeJsonString(Desig) + '"'
+            + ',"comment":"' + EscapeJsonString(Comment) + '"'
+            + ',"description":"' + EscapeJsonString(Descr) + '"'
+            + ',"source":"' + EscapeJsonString(Source) + '"'
+            + ',"design_item_id":"' + EscapeJsonString(DesignItemId) + '"'
+            + ',"load_probe":"' + EscapeJsonString(Probe) + '"'
+            + ',"note":"' + EscapeJsonString(Note) + '"'
+            + ',"part":' + IntToStr(Part)
+            + ',"part_count":' + IntToStr(PartCount)
+            + ',"parts_seen":"' + EscapeJsonString(PartsSeen) + '"'
+            + ',"other_parts_skipped":' + IntToStr(Skipped)
+            + ',"primitives":[' + PrimJson + ']'
+            + ',"pins":[' + PinsJson + ']'
+            + ',"models":' + BuildImplementationsJson(Comp) + '}');
+    Finally
+        If Owned Then
+            Try SchServer.DestroySchObject(Comp); Except End;
+    End;
+End;
+
+{..............................................................................}
 { Lib_FindVaultComponents - managed parts on the open sheets whose comment,  }
 { library reference or Design Item ID is exactly Name (case ignored).        }
 {                                                                              }
@@ -37812,6 +38217,7 @@ Begin
            Or (Action = 'get_component_details')
            Or (Action = 'get_pad_geometry')
            Or (Action = 'get_footprint_primitives')
+           Or (Action = 'get_symbol_geometry')
            Or (Action = 'probe_footprint')
            Or (Action = 'probe_designator')
            Or (Action = 'audit_styles')
@@ -38069,6 +38475,7 @@ Begin
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'get_vault_name':       Result := Lib_GetVaultName(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
+        'get_symbol_geometry':  Result := Lib_GetSymbolGeometry(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);

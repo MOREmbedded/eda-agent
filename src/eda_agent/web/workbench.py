@@ -544,6 +544,31 @@ def register(app: Flask) -> None:
         c = cockpit()
         return jsonify(get_library_view().read(c.memo.file if c.memo else ""))
 
+    @app.route("/api/wb/parts/find")
+    def wb_parts_find() -> Response:
+        """``q``: parts in the profile's scanned Altium 365 library, read
+        offline, to pick one to preview."""
+        from ..library_preview import find_parts
+        try:
+            return jsonify(find_parts(request.args.get("q", ""), limit=40))
+        except Exception as e:                            # noqa: BLE001
+            return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}", "results": []})
+
+    @app.route("/api/wb/parts/preview")
+    def wb_parts_preview() -> Response:
+        """The part preview being read, or the last one read."""
+        from ..library_preview import get_preview_view
+        return jsonify({"ok": True, **get_preview_view().snapshot()})
+
+    @app.route("/api/wb/parts/preview", methods=["POST"])
+    def wb_parts_preview_ask() -> Response:
+        """Read one part's symbol and footprint in Altium: ``design_item_id``
+        (+ ``vault``) for a Workspace part, or ``library_path`` +
+        ``component_name`` for a library file; ``part`` for a multi-part
+        symbol; ``again`` to read past the kept copy."""
+        from ..library_preview import get_preview_view
+        return jsonify(get_preview_view().ask(request.get_json(silent=True) or {}))
+
     @app.route("/api/wb/library/update", methods=["POST"])
     def wb_library_update() -> Response:
         """``designators``: refresh those placed parts from their PcbLib on
