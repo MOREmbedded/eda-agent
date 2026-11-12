@@ -416,6 +416,16 @@ def test_list_components_stops_at_the_limit_and_says_so():
         f"CMP-0024{i}" for i in range(10)]
 
 
+def test_a_publish_asks_for_the_id_field_its_payload_has():
+    """Measured 2026-11-12: DesCreateFootprintPayload has footprintId, not
+    id, and the server refused the whole footprint publish over it."""
+    field, operation = altium365.publish_operation("footprint")
+    assert field == "desCreateFootprint"
+    assert operation.rstrip().endswith("{ errors { message } footprintId } }")
+    field, operation = altium365.publish_operation("symbol")
+    assert operation.rstrip().endswith("{ errors { message } id } }")
+
+
 def test_reading_queries_refuse_changes_and_changes_are_built_safely():
     with pytest.raises(altium365.Altium365Error):
         altium365.refuse_changes("query { a } mutation { b }")

@@ -221,14 +221,22 @@ def gql_value(value: Any) -> str:
     raise Altium365Error(f"a {type(value).__name__} cannot be sent")
 
 
+#: The payload field naming what a publish created. Not the same for both:
+#: measured live 2026-11-12, DesCreateSymbolPayload has ``id`` and
+#: DesCreateFootprintPayload has ``footprintId``, and asking a footprint
+#: publish for ``id`` is refused whole (HTTP 400) before anything is made.
+PUBLISHED_ID = {"desCreateSymbol": "id", "desCreateFootprint": "footprintId"}
+
+
 def publish_operation(kind: str) -> tuple[str, str]:
-    """(schema field, operation) creating a symbol or footprint from a file."""
+    """(schema field, operation) creating a symbol or footprint from a file;
+    the created item's id is under PUBLISHED_ID[schema field]."""
     name = {"symbol": "desCreateSymbol", "footprint": "desCreateFootprint"}[kind]
     return name, (
         "mutation($fileId: String!, $relativePath: String!, $folderId: ID!, "
         "$ws: String!, $name: String!) { " + name + "(input: { files: { fileId: "
         "$fileId, relativePath: $relativePath }, folderId: $folderId, name: $name, "
-        "workspaceUrl: $ws }) { errors { message } id } }")
+        "workspaceUrl: $ws }) { errors { message } " + PUBLISHED_ID[name] + " } }")
 
 
 def release_operation(spec: dict) -> str:

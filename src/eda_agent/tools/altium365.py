@@ -299,7 +299,8 @@ def register_altium365_tools(mcp) -> None:
         Without ``confirm`` this shows what would be sent. With it the file
         is uploaded and the item created, and its ``id`` comes back.
         """
-        from ..altium365 import Altium365Error, publish_operation, reported_errors
+        from ..altium365 import (PUBLISHED_ID, Altium365Error, publish_operation,
+                                 reported_errors)
         if kind not in ("symbol", "footprint"):
             return {"ok": False, "reason": "kind is symbol or footprint"}
         source = Path(file_path)
@@ -317,7 +318,7 @@ def register_altium365_tools(mcp) -> None:
             values["ws"] = session.permitted(workspace_url)
             values["fileId"] = session.upload_file(source)
             data = session.run_change(operation, values)
-            made = (data.get(field_name) or {}).get("id")
+            made = (data.get(field_name) or {}).get(PUBLISHED_ID[field_name])
             problems = reported_errors(data, field_name)
             if problems or not made:
                 raise Altium365Error(f"{field_name} created nothing: "
