@@ -264,6 +264,11 @@ def build_deck(components: list[dict[str, Any]],
             by_number = {str(p.get("pin_number", "")).strip(): p for p in pins}
             ordered = []
             for node in mapping["nodes"]:
+                if node.get("how") == "unused":
+                    # A model port no pin reaches: its own floating node,
+                    # which is what LTspice does for an unconnected port.
+                    ordered.append({"pin_number": "", "net": f"NC_{designator}_{node['index']}"})
+                    continue
                 nets = {str((by_number.get(n) or {}).get("net") or "").strip()
                         for n in node["pins"]}
                 nets.discard("")

@@ -110,3 +110,10 @@ def test_without_models_the_old_behaviour_is_kept():
     assert "XU1 GND VOUT VIN NSET GND LT3080EDD".replace("GND", "0") in r.deck
     assert r.model_files == []
     assert [a["designator"] for a in r.pin_order_assumptions] == ["U1"]
+
+
+def test_an_unused_model_port_gets_its_own_floating_node():
+    from eda_agent.sim.model_library import unused_node
+    model = {**MODEL, "nodes": [unused_node(1), "IN", "OUT", "SET", "GND"]}
+    r = build_deck(BASE, CONN, analysis="op", models={"U1": model})
+    assert "XU1 NC_U1_1 VIN VOUT NSET 0 LT3080" in r.deck

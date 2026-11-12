@@ -86,8 +86,15 @@ manufacturer part number, then Comment, then library reference.
 Several pins with one name (two GND pins, four drain pins) all join that
 node. Two nodes claiming one pin is refused.
 
+A model port that no symbol pin reaches is kept as an unused node. LTspice
+symbols can skip `SpiceOrder` numbers (ADI's `LT3080.asy` starts at 2 for a
+five-port model), and dropping the gap would shift every later pin. In the
+deck, an unused port gets its own floating node (`NC_U1_1`), which is how
+LTspice treats an unconnected port.
+
 `sim_set_pin_map(model_name, pins)` saves a map: one entry per model node
-in `.SUBCKT` order, `"4+9"` to join two pins to one node. The map is kept
+in `.SUBCKT` order, `"4+9"` to join two pins to one node, `"-"` for a port
+left unconnected. The map is kept
 next to the index (`pin_maps.json`); with `lib_ref` it applies to one
 symbol only. A map whose length differs from the model's node count is
 refused.
@@ -163,6 +170,13 @@ The report gives:
 
 ## Status
 
-Covered by offline tests with a fake bridge and a fake LTspice. Not yet
-checked against a live Altium session or a real LTspice install. The
-LTspice `-netlist` flag is taken from the ADI command-line reference.
+Covered by offline tests with a fake bridge and a fake LTspice. Checked
+live against LTspice XVII on Windows: the library scan indexed 11,703
+files, `find("LT3080")` and `resolve` found the encrypted model through its
+symbol, `-netlist` turned an example `.asc` into a netlist that parsed, and
+a deck with the copied `LT3080.sub` ran and gave the expected output
+voltage. Not yet checked against a live Altium session.
+
+All LTspice tools find LTspice 24 or XVII the same way, or use
+`EDA_AGENT_LTSPICE_EXE`. Batch runs go under `%USERPROFILE%\EDA Agent\ltspice`
+unless `EDA_AGENT_LTSPICE_RUNS` names another folder.

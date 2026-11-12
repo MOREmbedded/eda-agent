@@ -148,8 +148,8 @@ def read_text_auto(path: Path) -> str:
 
 
 # ---------------------------------------------------------------- log parsing
-_MEAS_SINGLE = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*:\s*(.*?)=\s*([-+0-9.eEinfINFnaN()]+)(?:\s+(?:FROM|AT)\s+(\S+)(?:\s+TO\s+(\S+))?)?\s*$")
-_MEAS_EQ = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*=\s*([-+0-9.eEinfINF]+)(?:\s+(?:FROM|AT)\s+(\S+)(?:\s+TO\s+(\S+))?)?\s*$")
+_MEAS_SINGLE = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*:\s*(.*?)=\s*([-+0-9.eEinfINFnaN()]+)(?:\s+(?i:FROM|AT)\s+(\S+)(?:\s+(?i:TO)\s+(\S+))?)?\s*$")
+_MEAS_EQ = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*=\s*([-+0-9.eEinfINF]+)(?:\s+(?i:FROM|AT)\s+(\S+)(?:\s+(?i:TO)\s+(\S+))?)?\s*$")
 _ERR = re.compile(r"(error|singular matrix|time ?step too small|failed|could not|unknown (?:subcircuit|model|parameter)|can't find)", re.I)
 _WARN = re.compile(r"\bwarning\b", re.I)
 _ELAPSED = re.compile(r"Total elapsed time:\s*([0-9.]+)\s*seconds", re.I)

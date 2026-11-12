@@ -26,6 +26,11 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from .model_library import is_unused_node
+
+#: Override entries that leave a model port unconnected.
+_NO_PIN = frozenset({"", "-", "NC"})
+
 #: Groups of names that mean the same terminal on an IC. Deliberately
 #: short: a wrong alias is worse than an unmatched pin, because an
 #: unmatched pin is reported and a wrong alias is not.
@@ -132,6 +137,9 @@ def propose(model_nodes: list[str], symbol_pins: list[dict[str, Any]],
                     "unused_pins": [], "needs_review": True}
         out, used, missing = [], set(), []
         for i, (node, entry) in enumerate(zip(model_nodes, override)):
+            if str(entry).strip().upper() in _NO_PIN:
+                out.append({"index": i + 1, "node": node, "pins": [], "how": "unused"})
+                continue
             group = [x.strip() for x in str(entry).split("+") if x.strip()]
             bad = [x for x in group if x not in numbers]
             missing += bad
@@ -159,6 +167,10 @@ def propose(model_nodes: list[str], symbol_pins: list[dict[str, Any]],
 
     out, unmatched, used = [], [], set()
     for i, node in enumerate(model_nodes):
+        if is_unused_node(node):
+            # A port the vendor's symbol leaves unconnected (SpiceOrder gap).
+            out.append({"index": i + 1, "node": node, "pins": [], "how": "unused"})
+            continue
         hit = by_exact.get(canonical(node))
         how = "exact"
         if not hit:
@@ -187,12 +199,19 @@ def propose(model_nodes: list[str], symbol_pins: list[dict[str, Any]],
                 "unmatched_nodes": [], "unused_pins": unused,
                 "needs_review": any(n["how"] == "alias" for n in out)}
 
-    matched_any = len(unmatched) < len(model_nodes)
-    if not matched_any and len(model_nodes) == len(pins):
-        order = [{"index": i + 1, "node": node,
-                  "pins": [str(p.get("pin_number", "")).strip()],
-                  "how": "pin_number_order"}
-                 for i, (node, p) in enumerate(zip(model_nodes, pins))]
+    real = [n for n in model_nodes if not is_unused_node(n)]
+    matched_any = len(unmatched) < len(real)
+    if not matched_any and len(real) == len(pins):
+        next_pin = iter(pins)
+        order = []
+        for i, node in enumerate(model_nodes):
+            if is_unused_node(node):
+                order.append({"index": i + 1, "node": node, "pins": [], "how": "unused"})
+            else:
+                p = next(next_pin)
+                order.append({"index": i + 1, "node": node,
+                              "pins": [str(p.get("pin_number", "")).strip()],
+                              "how": "pin_number_order"})
         return {"ok": True, "method": "pin_number_order", "nodes": order,
                 "unmatched_nodes": [], "unused_pins": [], "needs_review": True,
                 "warning": "no model node name matched a symbol pin name; pins were "

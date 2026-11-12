@@ -240,14 +240,18 @@ def _live_pads_to_um(raw: dict) -> dict:
 
 
 def _ltspice_runner() -> ltspice.LTspiceRunner:
+    # One search for every LTspice tool: LTspice 24 (ADI) or XVII (LTC),
+    # per-user or system install, or EDA_AGENT_LTSPICE_EXE. This used to
+    # look for LTspice 24 only, so a PC with XVII had sim_* find LTspice
+    # and eng_ltspice_* report it missing.
+    from ..sim.ngspice import find_ltspice
     configured = os.environ.get("EDA_AGENT_LTSPICE_EXE", "")
-    candidates = [Path(configured)] if configured else [
-        Path(r"C:\Program Files\ADI\LTspice\LTspice.exe"),
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ADI" / "LTspice" / "LTspice.exe",
-    ]
-    exe = next((p for p in candidates if p.is_file()), None)
+    if configured and not Path(configured).is_file():
+        raise FileNotFoundError(f"EDA_AGENT_LTSPICE_EXE names {configured}, which does not exist")
+    found = find_ltspice()
+    exe = Path(found) if found else None
     if exe is None:
-        raise FileNotFoundError("LTspice.exe not found; set EDA_AGENT_LTSPICE_EXE")
+        raise FileNotFoundError("LTspice not found (LTspice 24 or XVII); set EDA_AGENT_LTSPICE_EXE")
     root = Path(os.environ.get("EDA_AGENT_LTSPICE_RUNS") or Path.home() / "EDA Agent" / "ltspice")
     models = tuple(Path(p) for p in os.environ.get("EDA_AGENT_LTSPICE_MODEL_ROOTS", "").split(os.pathsep) if p)
     return ltspice.LTspiceRunner(LTspicePolicy(str(exe), root, model_roots=models))

@@ -175,6 +175,18 @@ def parse_model_text(text: str, file: str = "") -> list[ModelEntry]:
     return found
 
 
+UNUSED_PREFIX = "<unused:"
+
+
+def unused_node(position: int) -> str:
+    """Name of a model port no symbol pin connects to (a SpiceOrder gap)."""
+    return f"{UNUSED_PREFIX}{position}>"
+
+
+def is_unused_node(name: str) -> bool:
+    return str(name).startswith(UNUSED_PREFIX)
+
+
 def parse_asy(text: str, file: str = "") -> Optional[ModelEntry]:
     """An LTspice symbol's model attributes and pins (in SpiceOrder)."""
     attrs: dict[str, str] = {}
@@ -204,6 +216,14 @@ def parse_asy(text: str, file: str = "") -> Optional[ModelEntry]:
         return None
     ordered = sorted((p for p in pins if p["order"] is not None),
                      key=lambda p: p["order"])
+    # SpiceOrder may skip numbers (ADI's LT3080.asy uses 2..5 for a
+    # five-port subcircuit). Every missing position is still a port of the
+    # model, so it is kept as an UNUSED node; dropping it shifts every
+    # later pin by one and LTspice refuses the instance.
+    if ordered:
+        by_order = {p["order"]: p for p in ordered}
+        ordered = [by_order.get(n, {"name": unused_node(n), "order": n})
+                   for n in range(1, max(by_order) + 1)]
     spice_model = attrs.get("SpiceModel", "")
     value = attrs.get("Value", "")
     model_file = attrs.get("ModelFile", "")

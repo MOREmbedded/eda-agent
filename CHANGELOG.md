@@ -30,8 +30,9 @@ maturity classification for every tool.
   `eng_ltspice_export` writes a deck with its models for the LTspice GUI,
   and `eng_ltspice_compare_schematic` checks an LTspice `.asc`/`.net`
   against the Altium schematic (parts, values, wiring). See
-  [`docs/SPICE_MODELS.md`](docs/SPICE_MODELS.md). UNVERIFIED against live
-  Altium and a real LTspice install.
+  [`docs/SPICE_MODELS.md`](docs/SPICE_MODELS.md). Checked live against
+  LTspice XVII; UNVERIFIED against live Altium.
+
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced
@@ -189,6 +190,12 @@ maturity classification for every tool.
     thing.
 
 ### Fixed
+
+- **The `eng_ltspice_*` tools now find LTspice XVII.** They looked for
+  LTspice 24 only, while the `sim_*` tools found either; a wrong
+  `EDA_AGENT_LTSPICE_EXE` is now reported instead of being ignored.
+- **`.MEAS` results with a lower-case `at`/`from`/`to`** (as LTspice XVII
+  writes them) are read; they were dropped from `measurements`.
 
 - **`proj_run_erc` and `proj_get_erc_violations` stopped the bridge**
   (`SCRIPT_VERSION` `2026.11.10.1`). `Gen_GetErcViolations` built each

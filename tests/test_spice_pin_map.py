@@ -87,3 +87,20 @@ def test_standard_orders_for_discretes():
                                             ("4", "G"), ("5", "D"), ("6", "D")))
     assert [n["pins"] for n in fet["nodes"]] == [["5", "6"], ["4"], ["1", "2", "3"]]
     assert pin_map.standard_order("Q", _pins(("1", "1"), ("2", "2"), ("3", "3"))) is None
+
+
+def test_unused_model_ports_need_no_pin():
+    from eda_agent.sim.model_library import unused_node
+    nodes = [unused_node(1), "IN", "OUT", "SET"]
+    m = pin_map.propose(nodes, _pins(("1", "IN"), ("2", "OUT"), ("3", "SET")))
+    assert m["ok"] and m["method"] == "names"
+    assert m["nodes"][0] == {"index": 1, "node": unused_node(1), "pins": [], "how": "unused"}
+    # pin-number fallback skips the unused port too
+    n = pin_map.propose([unused_node(1), "a", "b"], _pins(("1", "X"), ("2", "Y")))
+    assert n["method"] == "pin_number_order"
+    assert [x["pins"] for x in n["nodes"]] == [[], ["1"], ["2"]]
+
+
+def test_override_can_leave_a_port_unconnected():
+    m = pin_map.propose(["a", "b", "c"], LDO, override=["-", "3", "2"])
+    assert m["ok"] and m["nodes"][0]["how"] == "unused" and m["nodes"][0]["pins"] == []

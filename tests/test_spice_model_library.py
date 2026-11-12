@@ -171,3 +171,30 @@ def test_a_very_short_model_name_does_not_claim_every_part():
         {"name": "D", "kind": "model", "file": "x.lib"}]}}}
     assert lib.find(index, "LT3080") == []
     assert lib.find(index, "DMG2305") == []
+
+
+GAPPED_SYMBOL = """\
+Version 4
+SymbolType CELL
+SYMATTR Value LT3080
+SYMATTR Prefix X
+SYMATTR SpiceModel LT3080.sub
+PIN 0 0 LEFT 8
+PINATTR PinName IN
+PINATTR SpiceOrder 2
+PIN 0 32 LEFT 8
+PINATTR PinName OUT
+PINATTR SpiceOrder 3
+PIN 0 64 LEFT 8
+PINATTR PinName SET
+PINATTR SpiceOrder 5
+"""
+
+
+def test_spiceorder_gaps_stay_as_unused_ports():
+    """ADI's LT3080.asy numbers its pins from 2 for a five-port model.
+    Dropping the gaps shifts every pin and LTspice refuses the instance
+    ("Port(pin) count mismatch"), which is what the live check found."""
+    sym = lib.parse_asy(GAPPED_SYMBOL, "LT3080.asy")
+    assert sym.nodes == [lib.unused_node(1), "IN", "OUT", lib.unused_node(4), "SET"]
+    assert lib.is_unused_node(sym.nodes[0]) and not lib.is_unused_node("IN")

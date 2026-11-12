@@ -315,3 +315,35 @@ def test_copy_refuses_names_that_are_not_plain(tmp_path, bad):
     dest.mkdir()
     with pytest.raises(ValidationFailed):
         ltspice.copy_model_files([{"path": str(model), "include_as": bad}], dest)
+
+
+def test_measurements_are_read_whatever_the_case_of_at():
+    """LTspice XVII writes 'at' in lower case; it was matched upper case only."""
+    log = ltspice.parse_log("vout_final: v(out)=3.29983 at 0.001\n"
+                            "vmax: MAX(v(out))=3.3 FROM 0 TO 0.001\n"
+                            "trise: v(out)=1 from 1e-4 to 2e-4\n")
+    m = log["measurements"]
+    assert m["vout_final"]["value"] == pytest.approx(3.29983)
+    assert m["vout_final"]["from"] == "0.001"
+    assert m["trise"]["to"] == "2e-4" and m["vmax"]["value"] == 3.3
+
+
+def test_the_ltspice_tools_find_ltspice_xvii(tmp_path, monkeypatch):
+    exe = tmp_path / "XVIIx64.exe"
+    exe.write_text("")
+    monkeypatch.delenv("EDA_AGENT_LTSPICE_EXE", raising=False)
+    import eda_agent.sim.ngspice as ng
+    monkeypatch.setattr(ng, "find_ltspice", lambda: str(exe))
+    runner = eng_module._ltspice_runner()
+    assert runner.cfg.exe == str(exe)
+
+
+def test_a_wrong_ltspice_override_is_reported(tmp_path, monkeypatch):
+    """A typo in the override must not quietly fall back to another LTspice."""
+    other = tmp_path / "XVIIx64.exe"
+    other.write_text("")
+    import eda_agent.sim.ngspice as ng
+    monkeypatch.setattr(ng, "find_ltspice", lambda: str(other))
+    monkeypatch.setenv("EDA_AGENT_LTSPICE_EXE", str(tmp_path / "missing.exe"))
+    with pytest.raises(FileNotFoundError, match="missing.exe"):
+        eng_module._ltspice_runner()
