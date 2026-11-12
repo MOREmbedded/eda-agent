@@ -109,6 +109,8 @@ def test_a_pass_needs_every_limit_met():
     assert not any("no theta_jb" in n for n in rep["notes"])
     rep, _ = analyze(board, stack, powers={"U1": 0.2}, cell_mils=50.0)
     assert any("no theta_jb" in n for n in rep["notes"])
+    # Nothing to judge against is not a pass.
+    assert rep["pass"] is None and any("no verdict" in n for n in rep["notes"])
 
 
 def test_nothing_to_dissipate_is_an_error():

@@ -34,7 +34,7 @@ The reply:
 | Key | What it holds |
 |---|---|
 | `t_max_c`, `t_max_layer`, `t_max_at_mils`, `rise_max_k` | The peak and where it is |
-| `pass`, `over_tj_max`, `over_limit` | False when a junction is over its `tj_max_c`, or a part's board temperature is over `limit_c` |
+| `pass`, `over_tj_max`, `over_limit` | False when a junction is over its `tj_max_c`, or a part's board temperature is over `limit_c`. Null when neither was given: there is nothing to judge against |
 | `parts` | Each powered part: pad, junction and case temperature, margin to `tj_max_c`, hottest first |
 | `hotspots` | Local maxima of the two outer layers, each with the nearest part |
 | `hottest_components` | The warmest parts that dissipate nothing themselves: the electrolytic next to the regulator |

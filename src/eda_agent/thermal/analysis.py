@@ -367,6 +367,10 @@ def analyze(board: LayoutBoard, stack: Stack,
     hot_board = []
     if limit_c is not None:
         hot_board = [c["ref"] for c in comps if c["t_c"] > limit_c]
+    judged = limit_c is not None or any(p.get("margin_k") is not None for p in parts)
+    if not judged:
+        notes.append("no verdict: nothing to judge against. Give tj_max_c for the parts "
+                     "(packages) or limit_c for the board")
     layers = _layer_rows(result)
     peak = max(layers, key=lambda r: r["t_max_c"])
     report: dict[str, Any] = {
@@ -377,7 +381,7 @@ def analyze(board: LayoutBoard, stack: Stack,
         "t_max_layer": peak["name"],
         "t_max_at_mils": peak["max_at_mils"],
         "rise_max_k": round(peak["t_max_c"] - setup.ambient_c, 2),
-        "pass": not over and not hot_board,
+        "pass": (not over and not hot_board) if judged else None,
         "over_tj_max": over,
         "layers": layers,
         "hotspots": find_hotspots(result, board, limit=top_n),
