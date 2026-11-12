@@ -159,8 +159,8 @@ def junction_temperature_calc(a):
     if tj > a["tj_max"]:
         r.warnings.append("The junction exceeds its maximum.")
     r.accuracy = ("Exact for the theta values given. Data-sheet theta-JA is measured on "
-                  "a JEDEC JESD51 test board and rarely matches yours; the board thermal "
-                  "analysis gives the real figure.")
+                  "a JEDEC JESD51 test board and rarely matches yours; a board-level "
+                  "thermal analysis gives the real figure.")
     r.references = ["JEDEC JESD51-2A, JESD51-12"]
     return r
 

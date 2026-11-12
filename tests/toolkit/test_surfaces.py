@@ -183,3 +183,18 @@ def test_the_page_escapes_what_the_server_sends():
                  PAGE.index('$("#boardbtn").addEventListener')]
     for raw in re.findall(r"\$\{((?:c|i|o|r|k|g|L|l|B)\.[a-z_.]+)\}", block):
         raise AssertionError(f"unescaped ${{{raw}}} in the calculators block")
+
+
+# ------------------------------------------------------------ documentation
+
+def test_the_toolkit_page_lists_every_calculator_and_the_right_count():
+    root = Path(__file__).resolve().parents[2]
+    doc = (root / "docs" / "PCB_TOOLKIT.md").read_text(encoding="utf-8")
+    missing = [n for n in toolkit.REGISTRY if f"`{n}`" not in doc]
+    assert not missing, f"docs/PCB_TOOLKIT.md does not list: {missing}"
+    listed = set(re.findall(r"^\| [^|]+ \| `([a-z0-9_]+)` \|", doc, re.M))
+    assert listed == set(toolkit.REGISTRY), listed ^ set(toolkit.REGISTRY)
+    n = len(toolkit.REGISTRY)
+    assert f"carry {n} calculators" in doc
+    assert f"PCB toolkit of {n} calculators" in (root / "README.md").read_text(encoding="utf-8")
+    assert "PCB_TOOLKIT.md" in (root / "mkdocs.yml").read_text(encoding="utf-8")
