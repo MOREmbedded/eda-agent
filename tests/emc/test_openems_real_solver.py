@@ -54,6 +54,7 @@ def test_microstrip_matches_closed_form(tmp_path):
     assert status["state"] == "done", status
     out = em.collect_results(folder, plot=True)
     assert out["ok"]
+    assert out["settled"], out.get("port_decay_db")
     from eda_agent.emc.touchstone import read_touchstone
     ts = read_touchstone(out["touchstone"])
     k = min(range(len(ts["freq_hz"])), key=lambda i: abs(ts["freq_hz"][i] - 1e9))

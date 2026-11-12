@@ -68,6 +68,10 @@ class openEMS:
 
     def Run(self, sim_path, cleanup=False, verbose=0, numThreads=0):
         os.makedirs(sim_path, exist_ok=True)
+        for p in self.ports:  # probe files that have died down 60 dB
+            with open(os.path.join(sim_path, f"port_ut{p.number}"), "w") as fh:
+                fh.write("% time voltage\n0 0\n1 1\n" + "".join(
+                    f"{k} 1e-3\n" for k in range(2, 30)))
         lines = self.csx.GetGrid().lines
         with open(os.path.join(os.path.dirname(sim_path), "calls.json"), "w") as fh:
             json.dump({"calls": CALLS, "lines": lines}, fh)

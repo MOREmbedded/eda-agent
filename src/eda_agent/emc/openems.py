@@ -333,6 +333,8 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
 
     # -- ports --------------------------------------------------------------
     port_rows = []
+    keep_x: set[float] = set()
+    keep_y: set[float] = set()
     ref_cover = _Cover(sheets)
     for k, name in enumerate(ports, start=1):
         pad = _find_pad(board, name)
@@ -345,17 +347,17 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
             raise ModelError(
                 f"port {name}: no return copper under or over the pad on any "
                 "layer; pour ground under it or widen the box")
-        s = pad.shape_on(layer)
-        x0, y0, x1, y1 = s.bbox if s else (pad.x - 10, pad.y - 10, pad.x + 10, pad.y + 10)
-        half = max(4.0, min(x1 - x0, y1 - y0) / 2)
-        half_mm = round(half * MM_PER_MIL, 5)
+        # A vertical line from the return copper to the pad's centre, on
+        # mesh lines through that point. A port box the width of the pad
+        # put its current probe where the excited port read no current
+        # (checked on openEMS 0.37: |S11| = 1); the line port measures
+        # cleanly.
         za, zb = zmm(ref_layer), zmm(layer)
         port_rows.append({"number": k, "name": name, "net": pad.net, "layer": layer,
                           "reference_layer": ref_layer, "ohms": port_ohms,
-                          "start": [xy[0] - half_mm, xy[1] - half_mm, za],
-                          "stop": [xy[0] + half_mm, xy[1] + half_mm, zb]})
-        edges_x.update({round(xy[0] - half_mm, 4), round(xy[0] + half_mm, 4)})
-        edges_y.update({round(xy[1] - half_mm, 4), round(xy[1] + half_mm, 4)})
+                          "start": [xy[0], xy[1], za], "stop": [xy[0], xy[1], zb]})
+        keep_x.add(xy[0])
+        keep_y.add(xy[1])
 
     # -- dielectrics and the air round them ----------------------------------
     half_w, half_h = (bx1 - bx0) / 2 * MM_PER_MIL, (by1 - by0) / 2 * MM_PER_MIL
@@ -426,12 +428,14 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
         "f_min_hz": f_min_hz, "f_max_hz": f_max_hz, "points": int(points),
         "excitation": {"f0_hz": f_c, "fc_hz": (f_max_hz - f_min_hz) / 2},
         "end_criteria": 10 ** (end_criteria_db / 10),
+        "max_steps": _max_steps(sim_box, fine, dielectrics, f_max_hz, er_max),
         "boundary": ["PML_8"] * 6 if mode == "antenna" else ["MUR"] * 6,
         "sim_box": sim_box,
         "mesh": {"res_mm": round(res_mm, 5), "ratio": MESH_RATIO,
                  "min_gap_mm": round(max(fine / 4, 0.002), 5),
-                 "x": sorted(edges_x | set(sim_box["x"])),
-                 "y": sorted(edges_y | set(sim_box["y"])),
+                 "x": sorted(edges_x | set(sim_box["x"]) | keep_x),
+                 "y": sorted(edges_y | set(sim_box["y"]) | keep_y),
+                 "keep_x": sorted(keep_x), "keep_y": sorted(keep_y),
                  "z": z_lines,
                  "z_res_mm": round(max(min([d["z2"] - d["z1"] for d in dielectrics] or [res_mm]) / 3,
                                        1e-3), 5)},
@@ -445,6 +449,24 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
         "notes": ([f"plane layer(s) {solid_planes} modelled solid over the board outline"]
                   if solid_planes else []) + list(stack.notes),
     }
+
+
+def _max_steps(box: dict, fine: float, dielectrics: list, f_max_hz: float,
+               er: float) -> int:
+    """A step cap from physics rather than a guess: 30 periods of the band
+    plus 20 transits of the box, at the time step the smallest cell sets.
+
+    The end criterion (energy down 40 dB) is often not reached in an open
+    board model: a little energy rides the absorbing boundary for a long
+    time after the ports have gone quiet. The runner judges a run by its
+    port signals instead (``settled``), so this only bounds the cost."""
+    dz = min([(d["z2"] - d["z1"]) / 3 for d in dielectrics] or [fine])
+    d = min(fine, dz) * 1e-3
+    dt = 0.95 / (C0 * math.sqrt(3) / d)
+    span = math.dist((box["x"][0], box["y"][0], box["z"][0]),
+                     (box["x"][1], box["y"][1], box["z"][1])) * 1e-3
+    t = 30 / f_max_hz + 20 * span * math.sqrt(er) / C0
+    return int(min(max(t / dt, 20_000), 2_000_000))
 
 
 def _across(lo: float, hi: float, fine: float, reach: float) -> set[float]:
@@ -680,7 +702,11 @@ def collect_results(folder: str | Path, plot: bool = True) -> dict:
     data = {"ports": n, "z0": res["ports"][0]["ohms"], "freq_hz": freqs, "s": s}
     out = {"ok": True, "folder": str(folder), "touchstone": str(ts),
            "ports": [{"number": p["number"], "name": p["name"]} for p in res["ports"]],
-           "summary": summarize(data), "elapsed_s": res.get("elapsed_s")}
+           "summary": summarize(data), "elapsed_s": res.get("elapsed_s"),
+           "settled": res.get("settled"), "port_decay_db": res.get("port_decay_db")}
+    if res.get("settled") is False:
+        out["warning"] = ("the port signals had not died down 40 dB when the run "
+                          "stopped: treat these S-parameters as unconverged")
     if res.get("antenna"):
         out["antenna"] = res["antenna"]
     if plot:

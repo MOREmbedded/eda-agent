@@ -96,6 +96,14 @@ which is how a PCB antenna is usually drawn.
 - The mesh is 20 cells per wavelength at `f_max` in the densest dielectric,
   graded at a ratio of 1.4, with lines on the signal copper's edges and the
   ports.
+- Each port is a 50 ohm lumped port on a vertical line from the pad's
+  centre to the return copper under it, with mesh lines through that point.
+- A run is judged by its port signals. When every port's voltage has died
+  down 40 dB from its peak, the result is marked `settled`. An open board
+  model often leaves a little energy riding the absorbing boundary long
+  after that, so the solver's own energy criterion is not the test. The
+  step cap is set from the band and the box size. An unsettled run returns
+  a warning with its S-parameters.
 - Nets other than the chosen ones and the return nets are left out. If a
   neighbour couples strongly (a diff-pair partner, a guard trace), name it
   in `nets`.

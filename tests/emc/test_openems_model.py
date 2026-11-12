@@ -73,7 +73,10 @@ def test_microstrip_model_geometry():
     # port spans the 8 mil prepreg, from the GND layer up to the pad
     assert p1["start"][2] == pytest.approx(48 * 0.0254)
     assert p1["stop"][2] == pytest.approx(56 * 0.0254)
-    assert p1["start"][0] == pytest.approx(-500 * 0.0254 - 7 * 0.0254)
+    # a vertical line at the pad centre, with mesh lines through it
+    assert p1["start"][:2] == p1["stop"][:2] == pytest.approx([-500 * 0.0254, 0.0])
+    assert p1["start"][0] in m["mesh"]["keep_x"] and 0.0 in m["mesh"]["keep_y"]
+    assert 20_000 <= m["max_steps"] <= 2_000_000
     # dielectrics fill the box, er from the stackup
     assert [d["er"] for d in m["dielectrics"]] == [4.2, 4.6, 4.2]
     assert m["boundary"] == ["MUR"] * 6 and not m["nf2ff"]
@@ -143,7 +146,8 @@ def test_runner_end_to_end_on_the_stand_in(tmp_path):
     assert [(c[1], c[6]) for c in ports] == [(1, 1.0), (2, 0.0), (1, 0.0), (2, 1.0)]
     assert sum(c[0] == "polygon" for c in calls) == 2 * len(m["sheets"])
     out = em.collect_results(folder, plot=False)
-    assert out["ok"]
+    assert out["ok"] and out["settled"] is True and "warning" not in out
+    assert out["port_decay_db"] == [pytest.approx(-60.0)] * 2
     ts = read_touchstone(out["touchstone"])
     assert ts["ports"] == 2 and len(ts["freq_hz"]) == 11
     assert abs(ts["s"][0][0][0]) == pytest.approx(0.1)
@@ -224,5 +228,38 @@ def test_near_duplicate_mesh_lines_are_merged():
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)
     assert runner.merge_lines([0.17780, 0.1778049, -1.0, 0.5, 0.17781], 0.01) == [-1.0, 0.1778, 0.5]
+    # a port's line always stays; the neighbour that crowds it goes
+    assert runner.merge_lines([0.0, 0.004, 1.0], 0.01, keep=[0.005]) == [0.005, 1.0]
     m = _model()
     assert 0.005 <= m["mesh"]["min_gap_mm"] <= 14 * 0.0254 / 3 + 1e-9
+
+
+def _runner_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runner3", em.RUNNER)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    return runner
+
+
+def test_port_decay_reads_the_probe_files(tmp_path):
+    runner = _runner_module()
+    (tmp_path / "port_ut1").write_text("% time voltage\n0 0\n1 1.0\n2 0.5\n"
+                                       + "".join(f"{k} 1e-4\n" for k in range(3, 23)))
+    (tmp_path / "port_ut2").write_text("% t u\n0 2\n1 1e-3\n" + "".join(
+        f"{k} 2e-6\n" for k in range(2, 22)))
+    assert runner.port_decay(str(tmp_path), 2) == pytest.approx(-80.0)
+    (tmp_path / "port_ut2").write_text("% t u\n0 2\n" + "".join(f"{k} 0.2\n" for k in range(1, 21)))
+    assert runner.port_decay(str(tmp_path), 2) == pytest.approx(-20.0)
+    assert runner.port_decay(str(tmp_path), 3) is None
+
+
+def test_an_unsettled_run_is_flagged(tmp_path):
+    m = dict(_model(), points=5)
+    folder = em.write_model(m, tmp_path)
+    assert _run(folder).returncode == 0
+    res = json.loads((folder / "results.json").read_text())
+    res["settled"], res["port_decay_db"] = False, [-12.0, -15.0]
+    (folder / "results.json").write_text(json.dumps(res))
+    out = em.collect_results(folder, plot=False)
+    assert out["settled"] is False and "unconverged" in out["warning"]

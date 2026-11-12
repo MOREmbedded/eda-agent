@@ -44,16 +44,42 @@ def _write(path, data):
     os.replace(tmp, path)
 
 
-def merge_lines(values, min_gap):
+def merge_lines(values, min_gap, keep=()):
     """Sorted mesh lines with near-duplicates merged. Two lines a hair
     apart make one tiny cell, and the FDTD time step follows the smallest
-    cell: the solve then crawls and never reaches its end criterion."""
-    out = []
+    cell. Lines in ``keep`` (a port's line) always stay; the others near
+    them go."""
+    keep = sorted(float(k) for k in keep)
+    out = list(keep)
     for v in sorted(float(x) for x in values):
-        if out and v - out[-1] < min_gap:
-            continue
-        out.append(v)
-    return out
+        if all(abs(v - o) >= min_gap for o in out):
+            out.append(v)
+    return sorted(out)
+
+
+def port_decay(sim_path, n_ports):
+    """How far the port voltages have died down by the end of the run, in
+    dB below their peak (worst port), or None if the probes cannot be read.
+    Below -40 dB the S-parameters are settled whatever the energy says."""
+    worst = None
+    for k in range(1, n_ports + 1):
+        path = os.path.join(sim_path, f"port_ut{k}")
+        try:
+            rows = []
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("%") or not line.strip():
+                        continue
+                    rows.append(abs(float(line.split()[1])))
+        except (OSError, ValueError, IndexError):
+            return None
+        if not rows:
+            return None
+        peak = max(rows) or 1e-30
+        tail = max(rows[-max(1, len(rows) // 10):])
+        db = 20 * math.log10(max(tail / peak, 1e-15))
+        worst = db if worst is None else max(worst, db)
+    return worst
 
 
 def build(model, excite, np, ContinuousStructure, openEMS):
@@ -95,8 +121,8 @@ def build(model, excite, np, ContinuousStructure, openEMS):
     via_xy = [v["xy"] for v in model["vias"] if v.get("role") == "signal"]
     xs = list(m["x"]) + [v[0] for v in via_xy]
     ys = list(m["y"]) + [v[1] for v in via_xy]
-    mesh.AddLine("x", merge_lines(xs, gap))
-    mesh.AddLine("y", merge_lines(ys, gap))
+    mesh.AddLine("x", merge_lines(xs, gap, m.get("keep_x", ())))
+    mesh.AddLine("y", merge_lines(ys, gap, m.get("keep_y", ())))
     zs = list(m["z"])
     for d in model["dielectrics"]:
         zs += [float(z) for z in np.linspace(d["z1"], d["z2"], 4)]
@@ -132,6 +158,7 @@ def main(argv):
         n = len(model["ports"])
         s = [[None] * n for _ in range(n)]
         antenna = None
+        decay = []
         for exc in range(1, n + 1):
             _write(status_path, {"excitation": exc, "of": n,
                                  "elapsed_s": round(time.time() - t0)})
@@ -140,6 +167,7 @@ def main(argv):
             fdtd.Run(sim_path, cleanup=True, verbose=0, numThreads=threads)
             for p, row in zip(ports, model["ports"]):
                 p.CalcPort(sim_path, freq, ref_impedance=row["ohms"])
+            decay.append(port_decay(sim_path, n))
             inc = ports[exc - 1].uf_inc
             for i, p in enumerate(ports):
                 val = p.uf_ref / inc
@@ -150,7 +178,10 @@ def main(argv):
                   "ports": [{"number": p["number"], "name": p["name"], "ohms": p["ohms"]}
                             for p in model["ports"]],
                   "s": s,  # s[i][j][k] = [re, im] of S(i+1)(j+1) at freq[k]
-                  "elapsed_s": round(time.time() - t0, 1)}
+                  "elapsed_s": round(time.time() - t0, 1),
+                  "port_decay_db": decay,
+                  "settled": (None if any(d is None for d in decay)
+                              else all(d <= -40 for d in decay))}
         if antenna:
             result["antenna"] = antenna
         _write(os.path.join(folder, "results.json"), result)
