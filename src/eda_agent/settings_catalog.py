@@ -55,6 +55,11 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "`python`, `rust` or `auto`: which implementation runs the "
            "CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as "
            "`--compute`."),
+    EnvVar("EDA_AGENT_ROUTER", "Server and tool surface",
+           "the profile's `router.json`, else `default`",
+           "Which autorouter engine routing runs use: `default`, or `euan` "
+           "for the alternative router from Euan's fork (off unless set). "
+           "Overrules `eda-agent router-use`."),
     EnvVar("EDA_AGENT_REMINDER_EVERY", "Server and tool surface", "10",
            "How often `app_ping` / `app_attach` repeat the datasheet-first "
            "reminder: on the first call, then every Nth. `1` sends it every "

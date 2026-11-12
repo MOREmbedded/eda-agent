@@ -270,6 +270,10 @@ def register_route_tools(mcp):
             exclude_layers: Copper layers no route may use (not one a
                 net's surface pad is on).
 
+        The engine is the user's choice, not the call's: ``default``, or
+        ``euan`` (Euan's router) after ``eda-agent router-use euan``. The
+        job result's ``router`` says which one ran.
+
         Returns:
             {"job_id", "board", "read": {pads, components, nets, layers}}
             or {"error"}. The job result adds ``via_in_pad`` (for fab

@@ -18,6 +18,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_BACKEND` | altium | Which EDA tool to drive: `altium`, `kicad`, `easyeda`, or `both` (Altium and KiCad together). Same as `--backend`. |
 | `EDA_AGENT_TOOLSET` | full | `minimal` advertises only `tool_catalog` and `tool_invoke`, for MCP clients that cap the tool count. Every tool stays reachable. Same as `--toolset`. |
 | `EDA_AGENT_COMPUTE` | python | `python`, `rust` or `auto`: which implementation runs the CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as `--compute`. |
+| `EDA_AGENT_ROUTER` | the profile's `router.json`, else `default` | Which autorouter engine routing runs use: `default`, or `euan` for the alternative router from Euan's fork (off unless set). Overrules `eda-agent router-use`. |
 | `EDA_AGENT_REMINDER_EVERY` | 10 | How often `app_ping` / `app_attach` repeat the datasheet-first reminder: on the first call, then every Nth. `1` sends it every time. |
 | `EDA_AGENT_HEADLESS_REVIEW` | off | `1` enables the offline review, BOM and netlist commands and tools that read `.SchDoc`/`.PrjPcb` files with no Altium running. Same as `--offline` on those commands. |
 
@@ -465,6 +466,22 @@ Run the named NPI stages, or all five when none are named. Writes the active pro
 Stop running NPI stages. Answers already recorded are kept and come back if the stages do.
 
 No arguments.
+
+#### `eda-agent router-show`
+
+Which autorouter engine routing runs use (default or euan), and which setting decided it.
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--json` | switch | Emit machine-readable JSON. |
+
+#### `eda-agent router-use`
+
+Choose the autorouter engine: 'default', or 'euan' for the alternative router from Euan's fork (off by default). Writes the active profile's router.json.
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `engine` | `default`, `euan` | default (the usual router) or euan. |
 
 ### Design modes
 

@@ -3,3 +3,7 @@ Copyright 2026 George Saliba <george.saliba@salitronic.com>
 
 This product includes software developed by George Saliba
 (https://github.com/salitronic/eda-agent).
+
+The optional "euan" autorouter engine (src/eda_agent/layout/route_euan/)
+is taken from Euan Mutch's fork (https://github.com/TechAUmNu/eda-agent,
+branch carrier-local), Apache-2.0.

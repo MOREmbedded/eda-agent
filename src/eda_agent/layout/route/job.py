@@ -16,6 +16,7 @@ from typing import Any
 from ..bench import copy_board
 from ..drc import usual_via_mask, verdict
 from ..model import LayoutBoard
+from . import engine as _engine
 from .router import route_adaptive
 from .stages import finish_report
 
@@ -33,15 +34,31 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     from ...design import live
     live.publish_safe(board, f"Routing {len(nets) if nets else 'all'} nets.", "route")
     t0 = time.perf_counter()
-    r = route_adaptive(board, nets=frozenset(nets) if nets else None,
-                       planes=bool(params.get("planes", True)),
-                       stages=params.get("stages"),
-                       log=live.progress_logger("route"))
+    which = _engine.current(params.get("engine"))
+    engine_notes: list[str] = []
+    if which == "euan":
+        # The alternative router (route_euan), switched on with
+        # `eda-agent router-use euan` or EDA_AGENT_ROUTER=euan.
+        from ..route_euan.router import route_adaptive as euan_adaptive
+        from ..route_euan.stages import finish_report as euan_finish
+        kwargs, engine_notes = euan_kwargs(params.get("stages"))
+        r = euan_adaptive(board, nets=frozenset(nets) if nets else None,
+                          planes=bool(params.get("planes", True)),
+                          gloss=bool(params.get("gloss", True)),
+                          log=live.progress_logger("route"), **kwargs)
+        report_of = euan_finish
+    else:
+        r = route_adaptive(board, nets=frozenset(nets) if nets else None,
+                           planes=bool(params.get("planes", True)),
+                           stages=params.get("stages"),
+                           log=live.progress_logger("route"))
+        report_of = finish_report
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
-    # the board's tracks before it stay as they are (gloss.py).
+    # the board's tracks before it stay as they are (gloss.py). The euan
+    # engine glosses its own copper inside apply().
     glossed = None
-    if params.get("gloss", True):
+    if params.get("gloss", True) and which != "euan":
         from .gloss import gloss
         glossed = gloss(out, tracks=out.tracks[len(board.tracks):]).as_dict()
     new_tracks = out.tracks[len(board.tracks):]
@@ -52,7 +69,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     out.vias = out.vias[:len(board.vias)] + new_vias
     v = verdict(out)
     drc = v["report"]
-    stages = finish_report(r, out)
+    stages = report_of(r, out)
     pub = live.publish_safe(out, f"Routed: {len(drc.unrouted)} nets still open, "
                       f"{len(drc.violations)} clearance violations, "
                       f"{v['counts']['mask_sliver']} mask slivers.", "route")
@@ -61,6 +78,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     unrouted = {n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
     return {
         "board": board.name,
+        "router": which,
         # pcb_autoroute_apply republishes this version once it is written.
         "live_version": (pub or {}).get("version"),
         "summary": {
@@ -106,8 +124,42 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
+        "notes": engine_notes + _notes(r) + _stage_notes(stages) + v["notes"] + mask_note,
     }
+
+
+#: Stage switches that are Router arguments in the euan engine.
+_EUAN_ROUTER_ARGS = ("neck_pads", "join_existing", "exclude_layers", "reuse_vias")
+
+
+def euan_kwargs(stages: Any) -> tuple[dict[str, Any], list[str]]:
+    """Our ``stages`` value as the euan engine's arguments, and notes.
+
+    That router takes neck_pads, join_existing, exclude_layers and
+    reuse_vias as Router arguments rather than stage options, and
+    axis_entry as ``pad_entry="axis"``. Anything it does not know is
+    dropped and named in the notes rather than failing the run.
+    """
+    from ..route_euan.stages import StageOptions
+
+    if not isinstance(stages, dict):
+        return {"stages": stages}, ["Routed with the euan engine."]
+    stages = dict(stages)
+    kwargs: dict[str, Any] = {}
+    for key in _EUAN_ROUTER_ARGS:
+        if key in stages:
+            value = stages.pop(key)
+            kwargs[key] = frozenset(value) if key == "exclude_layers" else bool(value)
+    if stages.pop("axis_entry", False):
+        kwargs["pad_entry"] = "axis"
+    known = set(StageOptions.__dataclass_fields__)
+    dropped = sorted(set(stages) - known)
+    kwargs["stages"] = {k: v for k, v in stages.items() if k in known}
+    notes = ["Routed with the euan engine."]
+    if dropped:
+        notes.append("The euan engine has no " + ", ".join(dropped)
+                     + " option, so it was left out.")
+    return kwargs, notes
 
 
 def _stage_notes(stages: dict) -> list[str]:
