@@ -16,6 +16,21 @@ maturity classification for every tool.
 
 ### Added
 
+- **Thermal analysis.** `sim_thermal_analysis` solves a board's steady
+  temperature field in three dimensions from the power each part
+  dissipates: the real copper of every layer (pours, planes with their
+  antipads, tracks and pads with their exact areas), every plated hole,
+  the laminate's anisotropic conduction, natural or forced convection
+  and radiation from both faces, the edges and part cases. It reports
+  the peak, hotspots with the nearest part, each powered part's pad,
+  junction and case temperature against `tj_max_c`, the hottest
+  unpowered parts, a heat balance and, with `refine`, a grid-convergence
+  error estimate, and writes a heat map per layer. It takes the Joule
+  heat map of an IR-drop run as an extra source. Checked against exact
+  solutions (series slab, Bessel fin, Fourier spreading series,
+  convection and radiation balance, via arrays). See
+  [`docs/THERMAL.md`](docs/THERMAL.md). UNVERIFIED live.
+
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design
