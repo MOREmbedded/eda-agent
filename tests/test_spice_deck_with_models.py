@@ -52,12 +52,25 @@ def test_exact_names_are_not_flagged():
     assert r.ok and r.pin_order_assumptions == []
 
 
-def test_unmatched_pins_skip_the_part_and_say_why():
-    model = {**MODEL, "nodes": ["IN", "OUT", "VCONTROL", "GND"]}
+def test_unmatched_pins_refuse_the_deck_by_default():
+    """Leaving the modelled part out simulates a different circuit: the
+    live check read 0 V at the output of such a deck. So it is refused,
+    like a missing model, unless a placeholder deck is asked for."""
+    model = {**MODEL, "nodes": ["IN", "OUT", "ADJ2", "GND"]}
     r = build_deck(BASE, CONN, analysis="op", models={"U1": model})
-    assert "XU1" not in r.deck
+    assert r.ok is False and "U1" in r.reason and r.deck == ""
     assert r.pin_map_problems and r.pin_map_problems[0]["designator"] == "U1"
-    assert "VCONTROL" in r.pin_map_problems[0]["reason"]
+    assert "ADJ2" in r.pin_map_problems[0]["reason"]
+    p = build_deck(BASE, CONN, analysis="op", models={"U1": model},
+                   on_missing_model="placeholder")
+    assert p.ok and "XU1" not in p.deck and "* U1 (LT3080) left out" in p.deck
+
+
+def test_adi_vcntrl_matches_an_altium_vcontrol_pin():
+    pins = LDO_PINS[:4] + [{"pin_number": "5", "pin_name": "VCONTROL", "net": "VIN"}]
+    model = {**MODEL, "nodes": ["SET", "OUT", "Vcntrl", "IN"]}
+    r = build_deck(BASE, {**CONN, "U1": pins}, analysis="op", models={"U1": model})
+    assert r.ok and "XU1 NSET VOUT VIN VIN LT3080" in r.deck
 
 
 def test_saved_override_is_used():

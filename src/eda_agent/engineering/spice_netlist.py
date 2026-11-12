@@ -251,8 +251,11 @@ def build_deck(components: list[dict[str, Any]],
             if not mapping.get("ok"):
                 map_problems.append({"designator": designator,
                                      "model": model.get("name", ""),
+                                     "left_out": True,
                                      "reason": mapping.get("reason", ""),
                                      "nodes": mapping.get("nodes", [])})
+                lines.append(f"* {designator} ({model.get('name', '')}) left out: its pins "
+                             f"could not be matched to the model's nodes")
                 skipped.append({"designator": designator,
                                 "why": "its pins could not be matched to the model's "
                                        "nodes; see pin_map_problems"})
@@ -354,6 +357,19 @@ def build_deck(components: list[dict[str, Any]],
                           net_renames=renames, reason=(
                               "nothing could be emitted; see skipped for why "
                               "each component was left out"))
+
+    left_out = [p["designator"] for p in map_problems if p.get("left_out")]
+    if left_out and on_missing_model == "refuse":
+        # A deck without the part that has the model runs and answers for
+        # a different circuit (the live check read 0 V at the output), so
+        # this is a refusal, exactly like a missing model.
+        return DeckResult(ok=False, skipped=skipped, missing_models=missing,
+                          net_renames=renames, pin_map_problems=map_problems,
+                          reason=(f"{', '.join(left_out)}: pins could not be matched "
+                                  f"to the model's nodes, so the deck would simulate "
+                                  f"a different circuit. Save the map with "
+                                  f"sim_set_pin_map, or pass on_missing_model="
+                                  f"'placeholder' to get the rest as a starting point."))
 
     if not ground_seen:
         return DeckResult(ok=False, skipped=skipped, missing_models=missing,

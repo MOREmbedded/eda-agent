@@ -50,6 +50,8 @@ _ALIAS_GROUPS = (
     {"IN+", "INP", "+IN", "NONINV", "NI"},
     {"IN-", "INN", "-IN", "INV"},
     {"SET", "ISET"},
+    # ADI's LT3080 model calls it Vcntrl; Altium libraries write VCONTROL.
+    {"VCONTROL", "VCNTRL", "VCTRL", "VCONT"},
 )
 
 #: Terminal order SPICE gives the semiconductor primitives, with the names

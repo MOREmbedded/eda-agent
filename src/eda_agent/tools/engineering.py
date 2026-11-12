@@ -626,7 +626,9 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                     manufacturer model. "refuse" (default) emits nothing
                     and names them; "placeholder" emits everything else
                     and leaves them as comments, so the deck is a
-                    starting point rather than something that runs.
+                    starting point rather than something that runs. The
+                    same applies to a part whose model pins could not be
+                    matched (see pin_map_problems).
                 title: first-line comment.
                 extra_directives: lines placed before the analysis, e.g.
                     [".include mymodels.lib"].

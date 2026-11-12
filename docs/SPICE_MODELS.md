@@ -125,10 +125,13 @@ and this tool does not set it.
 - adds `.include "<file>"` for each model file and returns `model_files`
   (`[{path, include_as}]`). Two files with the same base name get distinct
   names;
-- reports `pin_maps` (what was used), `pin_map_problems` (parts left out
-  because their pins could not be matched, or a node whose pins sit on
-  different nets) and `model_notes` (for example, a model missing from the
-  index).
+- reports `pin_maps` (what was used), `pin_map_problems` (parts whose pins
+  could not be matched, or a node whose pins sit on different nets) and
+  `model_notes` (for example, a model missing from the index);
+- refuses the deck when a part with a model has pins that could not be
+  matched, because a deck without that part simulates a different circuit.
+  `on_missing_model="placeholder"` returns the rest as a starting point,
+  with the part left as a comment.
 
 Pass `model_files` to `eng_ltspice_run` and each file is copied into the
 sandboxed run folder. `eng_ltspice_export(folder, deck, model_files)`
