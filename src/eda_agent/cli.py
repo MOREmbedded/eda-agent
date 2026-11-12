@@ -2077,6 +2077,92 @@ def cmd_fab_rules(vendor: str, *, layers: int, oz: float = 1.0,
     return 0
 
 
+def _std_profile_values():
+    from .design.standards import load_values
+    from .profile import resolve_profile_dir
+
+    prof = resolve_profile_dir()
+    return prof, load_values(prof)
+
+
+def cmd_std_list(*, domain: Optional[str] = None, priority: Optional[int] = None,
+                 as_json: bool = False) -> int:
+    """The IPC standards catalogue: number, current revision, scope."""
+    import json as _json
+
+    from .design.standards import load_catalogue
+
+    cat = load_catalogue()
+    rows = [s for s in cat.standards
+            if (domain is None or s.domain == domain)
+            and (priority is None or s.priority == priority)]
+    if as_json:
+        print(_json.dumps({"checked_on": cat.checked_on,
+                           "standards": [s.model_dump() for s in rows]},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for s in rows:
+        mark = "" if s.revision_confirmed else " (revision unconfirmed)"
+        print(f"P{s.priority} {s.domain:12} {s.label:22} {s.title[:60]}{mark}")
+    print(f"\n{len(rows)} standard(s); revisions checked {cat.checked_on}.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_std_rules(*, category: Optional[str] = None, as_json: bool = False) -> int:
+    """IPC rule definitions, with how many values the active profile holds."""
+    import json as _json
+
+    from .design.standards import coverage
+
+    prof, loaded = _std_profile_values()
+    if not loaded["ok"]:
+        print(loaded["reason"], file=sys.stderr)
+        for e in loaded.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+        return 1
+    rows = [r for r in coverage(loaded["values"])
+            if category is None or r["category"] == category]
+    if as_json:
+        print(_json.dumps({"profile": str(prof) if prof else None,
+                           "values_file": loaded["path"],
+                           "warnings": loaded["warnings"], "rules": rows},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        state = f"{r['values']} value(s)" if r["values"] else "not configured"
+        print(f"{r['rule_id']:42} {state:16} {', '.join(r['standards'])}")
+    where = loaded["path"] or (f"{prof}/standards/values.json (absent)" if prof
+                               else "no active profile")
+    print(f"\nValues: {where}", file=sys.stderr)
+    for w in loaded["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
+    return 0
+
+
+def cmd_std_floors(*, as_json: bool = False) -> int:
+    """Write the fab rules' IPC class floor file from the profile's values."""
+    import json as _json
+
+    from .design.standards import write_class_floors
+
+    prof, _ = _std_profile_values()
+    if prof is None:
+        got = {"ok": False, "reason": "no active profile; class floors live in "
+               "<profile dir>/standards/ (see docs/PROFILES.md)"}
+    else:
+        got = write_class_floors(prof)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+    elif got["ok"]:
+        print(f"wrote {got['path']} (classes {', '.join(got['classes'])})")
+    else:
+        print(got["reason"], file=sys.stderr)
+        for e in got.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+    return 0 if got["ok"] else 1
+
+
 def cmd_fab_compare(*, layers: int, oz: float = 1.0,
                     keys: Optional[list] = None, as_json: bool = False) -> int:
     """Every fab and tier side by side for one build."""

@@ -749,6 +749,35 @@ Re-read a fab's pages and check every stored quote
 | `--write` | switch | Move the reading date when all quotes match. |
 | `--json` | switch | Print as JSON. |
 
+### IPC standards
+
+#### `eda-agent std-list`
+
+The IPC standards catalogue: current revisions and scope
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--domain` | `design`, `fabrication`, `materials`, `assembly`, `data` | Only standards of this domain. |
+| `--priority` | `1`, `2`, `3` | Only this priority (1 drives rules now). |
+| `--json` | switch | Print as JSON. |
+
+#### `eda-agent std-rules`
+
+IPC rule definitions and which have values in the profile
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--category` | `CATEGORY` | Only rules of this category, e.g. annular_ring. |
+| `--json` | switch | Print as JSON. |
+
+#### `eda-agent std-floors`
+
+Write the IPC class floors the fab rules read, from profile values
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--json` | switch | Print as JSON. |
+
 ### Altium 365
 
 #### `eda-agent altium365-login`

@@ -46,7 +46,7 @@ def test_catalogue_revisions_confirmed_where_checked():
     assert cat.get("IPC-2221").revision_confirmed
     assert cat.get("IPC-A-610").label == "IPC-A-610J-2024"
     # Not confirmed on a page: must say so, not pass as checked.
-    assert not cat.get("IPC-4761").revision_confirmed
+    assert not cat.get("IPC-7352").revision_confirmed
 
 
 def test_catalogue_rejects_duplicates():
@@ -91,7 +91,7 @@ def test_no_values_or_floor_files_in_src():
 def test_rules_cite_catalogued_standards():
     book = st.load_rules()
     cat = st.load_catalogue()
-    assert len(book.rules) == 21
+    assert len(book.rules) == 47
     for r in book.rules:
         assert all(cat.get(s) for s in r.standards), r.rule_id
 
@@ -113,7 +113,8 @@ def test_fab_floor_must_be_mils_or_ratio():
 # --- profile values -------------------------------------------------------------
 
 def test_absent_values_file_is_empty_and_valid(tmp_path):
-    assert st.load_values(tmp_path) == {"ok": True, "values": [], "path": None}
+    assert st.load_values(tmp_path) == {"ok": True, "values": [], "path": None,
+                                        "warnings": []}
     assert st.load_values(None)["ok"]
 
 
@@ -218,3 +219,84 @@ def test_coverage_lists_every_rule():
     rows = st.coverage([])
     assert len(rows) == len(st.load_rules().rules)
     assert all(r["values"] == 0 for r in rows)
+
+
+# --- revisions -------------------------------------------------------------------
+
+def test_current_revision_cites_cleanly(tmp_path):
+    got = st.load_values(_write_values(tmp_path, [
+        {"rule_id": "ipc.annular_ring.pth.external.min", "key": {"class": "2"},
+         "value": 1, "provenance": _LICENSED}]))
+    assert got["ok"] and got["warnings"] == []
+
+
+@pytest.mark.parametrize("document, why", [
+    ("IPC-6012E", "current revision is IPC-6012F"),
+    ("IPC-6012", "current revision is IPC-6012F"),
+    ("IPC-9999A", "not in the catalogue"),
+])
+def test_other_revisions_warn(tmp_path, document, why):
+    prov = dict(_LICENSED, document=document)
+    got = st.load_values(_write_values(tmp_path, [
+        {"rule_id": "ipc.annular_ring.pth.external.min", "key": {"class": "2"},
+         "value": 1, "provenance": prov}]))
+    assert got["ok"]
+    assert len(got["warnings"]) == 1 and why in got["warnings"][0]
+
+
+def test_longest_catalogue_id_wins(monkeypatch):
+    # A catalogue id that prefixes another (IPC-A-6 / IPC-A-600) must not
+    # capture the longer one's documents.
+    cat = st.load_catalogue().model_copy(deep=True)
+    short = cat.get("IPC-A-600").model_copy(update={"id": "IPC-A-6", "revision": "Z"})
+    cat.standards.append(short)
+    monkeypatch.setattr(st, "load_catalogue", lambda: cat)
+    rv = st.RuleValue.model_validate(
+        {"rule_id": "ipc.annular_ring.breakout.allowed",
+         "key": {"class": "2", "layer": "external"}, "value": "none",
+         "provenance": dict(_LICENSED, document="IPC-A-600M")})
+    assert st.revision_warnings([rv]) == []
+
+
+# --- CLI ----------------------------------------------------------------------------
+
+def _cli(monkeypatch, tmp_path, argv):
+    from eda_agent import server
+    if tmp_path is not None:
+        monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["eda-agent", *argv])
+    return server.main()
+
+
+def test_cli_std_list(monkeypatch, capsys):
+    assert _cli(monkeypatch, None, ["std-list", "--priority", "1", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert len(data["standards"]) == 11
+
+
+def test_cli_std_rules_counts_profile_values(monkeypatch, tmp_path, capsys):
+    _write_values(tmp_path, [
+        {"rule_id": "ipc.annular_ring.via.external.min", "key": {"class": "3"},
+         "value": 1.0, "provenance": dict(_LICENSED, document="IPC-6012E")}])
+    assert _cli(monkeypatch, tmp_path, ["std-rules", "--category", "annular_ring",
+                                        "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    rows = {r["rule_id"]: r for r in data["rules"]}
+    assert rows["ipc.annular_ring.via.external.min"]["values"] == 1
+    assert all(r["category"] == "annular_ring" for r in data["rules"])
+    assert data["warnings"], "an old revision must be reported"
+
+
+def test_cli_std_rules_refuses_a_bad_values_file(monkeypatch, tmp_path):
+    _write_values(tmp_path, [{"rule_id": "ipc.nope", "key": {}, "value": 1,
+                              "provenance": _LICENSED}])
+    assert _cli(monkeypatch, tmp_path, ["std-rules"]) == 1
+
+
+def test_cli_std_floors_writes_the_file(monkeypatch, tmp_path):
+    assert _cli(monkeypatch, tmp_path, ["std-floors"]) == 1  # nothing configured
+    _write_values(tmp_path, [
+        {"rule_id": "ipc.annular_ring.via.external.min", "key": {"class": "2"},
+         "value": 1.0, "provenance": _LICENSED}])
+    assert _cli(monkeypatch, tmp_path, ["std-floors"]) == 0
+    assert (tmp_path / st.CLASS_FLOORS_FILE).is_file()

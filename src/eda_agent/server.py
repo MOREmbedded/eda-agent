@@ -892,6 +892,9 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "stackup-vendors", "stackup-show", "stackup-profile",
             "laminates", "fab-list", "fab-rules", "fab-compare", "fab-refresh",
         )),
+        ("IPC standards", (
+            "std-list", "std-rules", "std-floors",
+        )),
         ("Altium 365", (
             "altium365-login", "altium365-logout",
             "altium365-scan-library", "altium365-update-library",
@@ -1519,6 +1522,34 @@ def build_parser() -> argparse.ArgumentParser:
     ).add_argument("--json", dest="json_out", action="store_true",
                    help="Print as JSON.")
 
+    std_list_p = subparsers.add_parser(
+        "std-list",
+        help="The IPC standards catalogue: current revisions and scope",
+    )
+    std_list_p.add_argument("--domain", choices=("design", "fabrication",
+                            "materials", "assembly", "data"),
+                            help="Only standards of this domain.")
+    std_list_p.add_argument("--priority", type=int, choices=(1, 2, 3),
+                            help="Only this priority (1 drives rules now).")
+    std_list_p.add_argument("--json", dest="json_out", action="store_true",
+                            help="Print as JSON.")
+    std_rules_p = subparsers.add_parser(
+        "std-rules",
+        help="IPC rule definitions and which have values in the profile",
+        epilog=("Values come from your licensed copy, in the active "
+                "profile's standards/values.json; the repository ships none. "
+                "See docs/IPC_STANDARDS.md."),
+    )
+    std_rules_p.add_argument("--category",
+                             help="Only rules of this category, e.g. annular_ring.")
+    std_rules_p.add_argument("--json", dest="json_out", action="store_true",
+                             help="Print as JSON.")
+    subparsers.add_parser(
+        "std-floors",
+        help="Write the IPC class floors the fab rules read, from profile values",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+
     subparsers.add_parser(
         "fab-list",
         help="Fab connectors: which fabs have design-rule data, and its age",
@@ -2072,6 +2103,13 @@ def main() -> int:
         return cli.cmd_stackup_profile(args.vendor, fill=args.fill)
     if args.command == "laminates":
         return cli.cmd_laminates(as_json=args.json_out)
+    if args.command == "std-list":
+        return cli.cmd_std_list(domain=args.domain, priority=args.priority,
+                                as_json=args.json_out)
+    if args.command == "std-rules":
+        return cli.cmd_std_rules(category=args.category, as_json=args.json_out)
+    if args.command == "std-floors":
+        return cli.cmd_std_floors(as_json=args.json_out)
     if args.command == "fab-list":
         return cli.cmd_fab_list(as_json=args.json_out)
     if args.command == "fab-rules":

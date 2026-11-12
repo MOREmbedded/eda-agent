@@ -1,12 +1,16 @@
 {
  "schema": 1,
- "checked_on": "2026-11-11",
+ "checked_on": "2026-11-12",
  "checked_against": [
   "https://www.electronics.org/recently-released-ipc-standards-and-documents",
   "https://www.electronics.org/ipc-standards-suites-design",
   "https://webstore.ansi.org/sdo/ipc",
   "https://shop.ipc.org/ipc-2221/ipc-2221-standard-only/Revision-c/english",
-  "https://www.electronics.org/news-release/ipc-releases-j-revisions-two-leading-standards-electronics-assembly"
+  "https://www.electronics.org/news-release/ipc-releases-j-revisions-two-leading-standards-electronics-assembly",
+  "https://shop.electronics.org/ipc-7351/ipc-7351-standard-only/Revision-b/english",
+  "https://shop.electronics.org/ipc-4761/ipc-4761-standard-only/Revision-0/english",
+  "https://document-center.com/standards/show/IPC-2581",
+  "https://shop.electronics.org/ipc-2222/ipc-2222-standard-only/Revision-b/english"
  ],
  "standards": [
   {
@@ -112,7 +116,7 @@
    "id": "IPC-7351",
    "revision": "B",
    "year": null,
-   "revision_confirmed": false,
+   "revision_confirmed": true,
    "title": "Generic Requirements for Surface Mount Design and Land Pattern Standard",
    "domain": "design",
    "priority": 1,
@@ -167,7 +171,7 @@
    "id": "IPC-4761",
    "revision": null,
    "year": 2006,
-   "revision_confirmed": false,
+   "revision_confirmed": true,
    "title": "Design Guide for Protection of Printed Board Via Structures",
    "domain": "design",
    "priority": 1,
@@ -539,9 +543,9 @@
   },
   {
    "id": "IPC-2581",
-   "revision": null,
-   "year": null,
-   "revision_confirmed": false,
+   "revision": "C",
+   "year": 2020,
+   "revision_confirmed": true,
    "title": "Generic Requirements for Printed Board Assembly Products Manufacturing Description Data",
    "domain": "data",
    "priority": 1,
