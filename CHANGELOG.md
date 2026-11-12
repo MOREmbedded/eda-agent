@@ -129,6 +129,16 @@ maturity classification for every tool.
 
 ### Changed
 
+- **The placer's annealing polish scores each move incrementally.** It
+  used to re-score the whole board (every net's pins, every courtyard
+  pair, the whole congestion grid) on every move; it now re-scores only
+  the nets and parts the move touched. Same seed, same placement: every
+  term is re-summed in the original order, so the score is bit-identical,
+  and tests check that term by term over thousands of random moves.
+  `construct_placement` on a 45-part board went from 37 s to 2.8 s, a
+  124-part board from 82 s to 15 s (cloud Linux).
+  `ConstructOptions(incremental_score=False)` restores full re-scoring.
+
 - **The routing solution check rejects far-apart pairs by their bounding
   boxes before measuring.** Same violations, same order, same `checked`
   count. A box gap is never larger than the true distance, so no reported
