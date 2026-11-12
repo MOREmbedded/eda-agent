@@ -74,6 +74,38 @@ def test_microstrip_matches_closed_form(tmp_path):
     z_ref, e_ref = hammerstad(14 / 8, 4.2)
     print(f"f={f/1e6:.0f} MHz Z0={z0:.1f} (ref {z_ref:.1f}) eeff={eeff:.3f} (ref {e_ref:.3f}) "
           f"|S21|={abs(s21):.3f} folder={folder}")
+    # Z0 through lumped ports carries the ports' own parasitics: 10 %.
     assert z0 == pytest.approx(z_ref, rel=0.10)
     assert eeff == pytest.approx(e_ref, rel=0.10)
     assert abs(s21) > 0.85
+    assert abs(s11) < 0.2
+
+
+def _s21_phase(length_mils: float, runs: str, f_hz: float) -> float:
+    model = em.build_model(microstrip_board(length=length_mils), ["RF"], ["J1.1", "J2.1"],
+                           stack_from_stackup(STACKUP, LAYERS), f_max_hz=3e9, points=31)
+    folder = em.write_model(model, runs, name=f"verify_line_{int(length_mils)}")
+    assert em.start_run(folder, python=os.environ["EDA_AGENT_OPENEMS_PYTHON"])["ok"]
+    deadline = time.time() + 1800
+    while em.run_status(folder)["state"] == "running" and time.time() < deadline:
+        time.sleep(3)
+    out = em.collect_results(folder, plot=False)
+    assert out["ok"] and out["settled"], out
+    from eda_agent.emc.touchstone import read_touchstone
+    ts = read_touchstone(out["touchstone"])
+    k = min(range(len(ts["freq_hz"])), key=lambda i: abs(ts["freq_hz"][i] - f_hz))
+    return ts["freq_hz"][k], cmath.phase(ts["s"][k][1][0])
+
+
+def test_two_lengths_give_the_effective_permittivity(tmp_path):
+    """The phase difference of two line lengths cancels the ports, so the
+    effective permittivity is held to 5 %."""
+    runs = os.environ.get("EDA_AGENT_EM_RUNS") or str(tmp_path)
+    f, p1 = _s21_phase(1000, runs, 1e9)
+    _, p2 = _s21_phase(1500, runs, 1e9)
+    dphi = (p1 - p2) % (2 * math.pi)
+    beta = dphi / (500 * 25.4e-6)
+    eeff = (beta * 299792458 / (2 * math.pi * f)) ** 2
+    _, e_ref = hammerstad(14 / 8, 4.2)
+    print(f"two-length eeff={eeff:.3f} (ref {e_ref:.3f})")
+    assert eeff == pytest.approx(e_ref, rel=0.05)

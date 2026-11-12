@@ -63,7 +63,10 @@ def port_decay(sim_path, n_ports):
     Below -40 dB the S-parameters are settled whatever the energy says."""
     worst = None
     for k in range(1, n_ports + 1):
-        path = os.path.join(sim_path, f"port_ut{k}")
+        # openEMS 0.37 writes port_ut_1; older builds wrote port_ut1.
+        path = os.path.join(sim_path, f"port_ut_{k}")
+        if not os.path.isfile(path):
+            path = os.path.join(sim_path, f"port_ut{k}")
         try:
             rows = []
             with open(path, encoding="utf-8") as fh:

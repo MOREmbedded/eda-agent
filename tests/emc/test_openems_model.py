@@ -249,7 +249,8 @@ def test_port_decay_reads_the_probe_files(tmp_path):
     (tmp_path / "port_ut2").write_text("% t u\n0 2\n1 1e-3\n" + "".join(
         f"{k} 2e-6\n" for k in range(2, 22)))
     assert runner.port_decay(str(tmp_path), 2) == pytest.approx(-80.0)
-    (tmp_path / "port_ut2").write_text("% t u\n0 2\n" + "".join(f"{k} 0.2\n" for k in range(1, 21)))
+    # the name openEMS 0.37 uses wins over the old one
+    (tmp_path / "port_ut_2").write_text("% t u\n0 2\n" + "".join(f"{k} 0.2\n" for k in range(1, 21)))
     assert runner.port_decay(str(tmp_path), 2) == pytest.approx(-20.0)
     assert runner.port_decay(str(tmp_path), 3) is None
 
