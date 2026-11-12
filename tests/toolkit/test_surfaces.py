@@ -85,6 +85,34 @@ def test_board_tool_reads_the_stack_through_the_bridge(monkeypatch):
     assert not got["ok"] and "Altium is not running" in got["reason"]
 
 
+def test_the_family_tool_reaches_the_toolkit():
+    """An agent sees pcb_calc, not the members: the toolkit must run
+    through it, with its nested inputs dict intact."""
+    from eda_agent.tools.folds import FoldingServer, call_form
+
+    class Server:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *a, **k):
+            def deco(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return deco
+    server = Server()
+    folding = FoldingServer(server)
+    register_toolkit_tools(folding, altium=False)
+    folding.finish()
+    assert call_form("pcb_calc_toolkit") == "pcb_calc kind=toolkit"
+    assert "pcb_calc_toolkit" not in server.tools and "pcb_calc" in server.tools
+    got = asyncio.run(server.tools["pcb_calc"](
+        kind="toolkit", args={"calculator": "voltage_divider",
+                              "inputs": {"vin": "12 V", "r1": "9 kohm", "r2": 3000}}))
+    assert got["ok"] and got["outputs"][0]["value"] == pytest.approx(3.0)
+    listed = asyncio.run(server.tools["pcb_calc"](kind="toolkit_list", args={"group": "via"}))
+    assert [c["name"] for c in listed["groups"][0]["calculators"]] == ["via_properties", "via_pair"]
+
+
 # ------------------------------------------------------------ dashboard
 
 @pytest.fixture()
