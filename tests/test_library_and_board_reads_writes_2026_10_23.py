@@ -48,12 +48,30 @@ def _tools(module_name: str):
 # -- #100: a board read with a library in front --------------------------------
 
 def test_a_library_in_front_with_several_boards_gives_no_board():
+    # A PcbLib's project holds no board, so it falls to the open-wide
+    # rule, which refuses when more than one board is open.
     body = _fn("Main.pas", "GetPCBBoardAnywhere")
-    lib = body.index("If FocusKind = 'PCBLIB' Then")
-    assert "If Found > 1 Then" in body[lib:]
-    assert "BoardMissWhy :=" in body[lib:]
-    # decided before the walk that opens the first board it meets
-    assert lib < body.index("Client.OpenDocument('PCB', Path)")
+    miss = body.index("If Picked = '' Then")
+    assert "If Found > 1 Then" in body[miss:]
+    assert "BoardMissWhy :=" in body[miss:]
+    # decided before anything is opened
+    assert miss < body.index("Client.OpenDocument('PCB', Path)")
+
+
+def test_a_sheet_in_front_reads_its_own_projects_board():
+    # A schematic in front with several projects open once read the first
+    # board of the first project (an unrelated design) and the reply
+    # looked exactly like the one the caller meant.
+    body = _fn("Main.pas", "GetPCBBoardAnywhere")
+    owner = body.index("Owner := ProjectOwningPath(Workspace, FocusPath);")
+    across = body.index("For P := 0 To Workspace.DM_ProjectCount - 1 Do")
+    assert owner < across
+    # the owner's single board is taken without looking further
+    assert "Candidates := ProjectBoardPaths(Owner);" in body[owner:across]
+    assert "Picked := Candidates" in body[owner:across]
+    # nothing opens a board picked by walk order
+    assert body.count("Client.OpenDocument('PCB',") == 1
+    assert "Path := Picked;" in body
 
 
 def test_a_board_found_by_walking_is_named_on_the_reply():
@@ -207,7 +225,7 @@ def test_each_kind_of_the_footprint_read_can_be_left_out():
 # -- #110 / #111: pad and via writers -------------------------------------------
 
 def test_handing_a_mask_back_to_the_rule_uses_eCacheInvalid():
-    for unit, func in (("Library.pas", "Lib_SetPadProperties"),
+    for unit, func in (("Library.pas", "ApplyPadEdit"),
                        ("Library.pas", "Lib_SetViaProperties"),
                        ("PCBGeneric.pas", "PCBSetMask")):
         body = _fn(unit, func)
@@ -216,7 +234,7 @@ def test_handing_a_mask_back_to_the_rule_uses_eCacheInvalid():
 
 
 def test_the_pad_writer_sets_the_stack_before_the_sizes():
-    body = _fn("Library.pas", "Lib_SetPadProperties")
+    body = _fn("Library.pas", "ApplyPadEdit")
     assert body.index("Pad.Mode := ePadMode_Simple") < body.index("Pad.TopXSize :=")
     assert "SetPadRoundRect(Pad, CornerPct)" in body
 

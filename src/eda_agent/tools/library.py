@@ -3,12 +3,14 @@
 """Library management tools for Altium Designer MCP Server."""
 
 import asyncio
+import os
 import json
 import math
 import re
 from pathlib import Path
 from typing import Any, Optional
 from ..bridge import get_bridge
+from ..preferences import if_the_user_insists
 from ..bridge.payload import payload_safe
 from ..fileio import pcblib_models
 from ..libimport import extract_cse_zip, inspect_cse_zip
@@ -16,6 +18,7 @@ from ..library_db import (
     dblib_path_refusal, is_dblib_path, redact_connection_text, redact_reply,
     search_hit_as_result,
 )
+from .bulk import bulk_items_by
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
@@ -491,6 +494,18 @@ def _payload_safe(value: object) -> str:
     return payload_safe(value)
 
 
+#: What ``lib_set_pad_properties`` passes on when it names its pad by
+#: id: the id, its position guard and every field the id writer takes.
+_PAD_CALL_FIELDS = (
+    "footprint_name", "library_path", "units", "id", "x_mm", "y_mm",
+    "x_size", "y_size", "bottom_x_size", "bottom_y_size", "shape",
+    "corner_radius_pct", "stack_mode", "rotation", "hole_type", "hole_size",
+    "hole_width", "hole_rotation", "plated", "paste_expansion",
+    "paste_manual", "mask_expansion", "mask_bottom_expansion",
+    "mask_separate", "mask_manual", "mask_from_hole_edge",
+    "paste_top_enabled", "x", "y", "new_name", "clear_name")
+
+
 def _units_refusal(units: str) -> dict[str, Any] | None:
     """The reply for a unit the authoring tools do not take, or None."""
     if normalise_units(units) is None:
@@ -549,6 +564,11 @@ def _grouped_designators(items: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+#: The symbol lib_create_symbol made last, while it is the current one: pins
+#: added to it are a symbol built pin by pin, and are checked against the
+#: datasheet pin table as lib_create_ic_symbol checks its pins.
+_NEW_SYMBOL: list[str] = []
+
 #: Footprints made empty by lib_create_footprint in this server, lower
 #: case, until their lands are checked; and the last one made, which is
 #: the current footprint a pad call without a name writes into.
@@ -562,14 +582,16 @@ def _unchecked_lands(footprint_name: str, count: int,
     they were compared with the datasheet figure: a footprint drawn pad by
     pad passes none of the checks the package route makes."""
     from ..design.landpattern.compare_figure import ISSUED
+    from ..preferences import check_on
 
     name = (footprint_name or (_LAST_NEW[-1] if _LAST_NEW else "")).lower()
-    if name not in _NEW_FOOTPRINTS:
+    if name not in _NEW_FOOTPRINTS or not check_on("footprint_drawing"):
         return None
     if compared and ISSUED.get(compared, 0) >= count:
         _NEW_FOOTPRINTS.discard(name)
         return None
-    return {"ok": False, "added": 0, "reason": (
+    return {"ok": False, "added": 0, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
+            "reason": (
         f"{footprint_name or name} is a new footprint without lands: build "
         "them with lib_create_footprint_from_package, which checks them "
         "against the datasheet, or give compared, the id "
@@ -578,6 +600,48 @@ def _unchecked_lands(footprint_name: str, count: int,
            if compared else "")
         + ". If the comparison cannot run, stop and report why; do not "
           "build the lands another way.")}
+
+
+async def _footprint_pads(bridge, footprint_name: str, near: str = ""
+                          ) -> tuple[Optional[list[dict[str, Any]]], str]:
+    """The pads of ``footprint_name`` from the first open .PcbLib that
+    holds it, and that library; ``(None, "")`` when none does. Libraries
+    in the folder of ``near`` (the symbol's SchLib) are tried first, so
+    other open libraries are only read when the footprint is not there."""
+    from ..bridge.exceptions import AltiumError
+
+    try:
+        docs = await bridge.send_command_async("application.get_open_documents", {})
+    except AltiumError:
+        return None, ""
+    docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+    folder = os.path.dirname(near).lower() if near else ""
+    libs = sorted({str(d.get("file_path") or "") for d in docs
+                   if isinstance(d, dict)
+                   and str(d.get("file_path") or "").lower().endswith(".pcblib")},
+                  key=lambda f: (os.path.dirname(f).lower() != folder, f.lower()))
+    for lib in libs:
+        try:
+            got = await bridge.send_command_async(
+                "library.get_pad_geometry",
+                {"footprint_name": footprint_name, "library_path": lib})
+        except AltiumError:
+            continue
+        if isinstance(got, dict) and isinstance(got.get("pads"), list) and (
+                str(got.get("name") or footprint_name).lower() == footprint_name.lower()):
+            return got["pads"], lib
+    return None, ""
+
+
+def _lands_skipped(footprint_name: str) -> Optional[dict[str, str]]:
+    """The note a result carries when lands go into a new footprint with
+    the drawing check switched off on the Config tab."""
+    from ..preferences import check_on, check_skipped
+
+    name = (footprint_name or (_LAST_NEW[-1] if _LAST_NEW else "")).lower()
+    if name in _NEW_FOOTPRINTS and not check_on("footprint_drawing"):
+        return check_skipped("footprint_drawing")
+    return None
 
 
 def _pads_payload(pads: list[dict[str, Any]],
@@ -687,19 +751,27 @@ def _slot_rotation(p: dict[str, Any], units: str) -> Optional[float]:
     return 90.0 if ys > xs else 0.0
 
 
-def _tracks_payload(tracks: list[dict[str, Any]],
-                    units: str = "mil") -> tuple[str, int]:
+def _tracks_payload(tracks: list[dict[str, Any]], units: str = "mil",
+                    problems: list[str] | None = None) -> tuple[str, int]:
     """The ``tracks`` batch payload, and how many entries were dropped.
 
     Shared by lib_add_footprint_tracks and the package footprint tool so
     the two cannot format a track differently. A track missing an
-    endpoint is dropped and counted.
+    endpoint is dropped and counted. A track whose keepout cannot be
+    meant (see _keepout_restrictions) is dropped, counted, and its
+    reason added to ``problems`` when a list is given.
     """
     op_strs: list[str] = []
     skipped_invalid = 0
-    for t in tracks:
+    for i, t in enumerate(tracks):
         if not all(k in t for k in ("x1", "y1", "x2", "y2")):
             skipped_invalid += 1
+            continue
+        keep = _keepout_op(t)
+        if keep.startswith("!"):
+            skipped_invalid += 1
+            if problems is not None:
+                problems.append(f"track {i}: {keep[1:]}")
             continue
         fields = [
             f"x1={format_length(t.get('x1', 0))}",
@@ -709,7 +781,7 @@ def _tracks_payload(tracks: list[dict[str, Any]],
             f"width={format_length(t.get('width', length_in(units, 10)))}",
             f"layer={_payload_safe(t.get('layer', 'TopOverlay'))}",
         ]
-        op_strs.append(";".join(fields))
+        op_strs.append(";".join(fields) + keep)
     return "~~".join(op_strs), skipped_invalid
 
 
@@ -808,8 +880,59 @@ def _regions_payload(regions: list[dict[str, Any]]) -> tuple[str, list[str]]:
         op = f"layer={_payload_safe(layer)};points={points}"
         if arcs:
             op += ";arcs=" + "/".join(arcs)
-        ops.append(op)
+        keep = _keepout_op(region)
+        if keep.startswith("!"):
+            problems.append(f"region {i}: {keep[1:]}")
+            continue
+        ops.append(op + keep)
     return "~~".join(ops), problems
+
+
+#: What a keepout track, arc, fill or region can keep out, in the words the
+#: lib_add_footprint_* tools take and lib_get_footprint_primitives reports:
+#: Altium's Keepout Restrictions (Copper, Track, Via, SMD Pad, TH Pad).
+KEEPOUT_RESTRICTIONS = ("copper", "track", "via", "smd_pad", "th_pad")
+
+
+def _keepout_restrictions(item: dict[str, Any]) -> list[str] | str:
+    """An item's keepout restrictions to send, ``[]`` for a plain one.
+
+    For a track, arc, fill or region. ``keepout`` true makes it a
+    keepout; ``keepout_for`` lists what
+    it keeps out, all five restrictions when it is left out. Restrictions
+    without ``keepout`` true, an unknown or empty restriction list, or a
+    ``keepout`` that is not a boolean are refused with the reason, never
+    sent as a plain region.
+    """
+    keep = item.get("keepout", False)
+    wanted = item.get("keepout_for")
+    if not isinstance(keep, bool):
+        return "keepout must be true or false"
+    if not keep:
+        if wanted:
+            return "keepout_for needs keepout true"
+        return []
+    if wanted is None:
+        return list(KEEPOUT_RESTRICTIONS)
+    if isinstance(wanted, str) or not isinstance(wanted, (list, tuple)):
+        return "keepout_for must be a list"
+    words = [str(w).strip().lower() for w in wanted]
+    unknown = [w for w in words if w not in KEEPOUT_RESTRICTIONS]
+    if unknown or not words:
+        return ("keepout_for must name one or more of "
+                + ", ".join(KEEPOUT_RESTRICTIONS))
+    # Altium's order, each once.
+    return [w for w in KEEPOUT_RESTRICTIONS if w in words]
+
+
+def _keepout_op(item: dict[str, Any]) -> str:
+    """The batch fields that make ``item`` a keepout: ``""`` for a plain
+    item, ``";keepout=1;keepout_for=..."`` for a keepout, or the reason
+    it is refused prefixed with ``"!"``."""
+    keep = _keepout_restrictions(item)
+    if isinstance(keep, str):
+        return "!" + keep
+    return f";keepout=1;keepout_for={','.join(keep)}" if keep else ""
 
 
 def _edge_arc(x1: float, y1: float, x2: float, y2: float,
@@ -892,7 +1015,11 @@ def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
               f"y2={format_length(y2)}")
         if rotation:
             op += f";rotation={format_length(rotation)}"
-        ops.append(op)
+        keep = _keepout_op(fill)
+        if keep.startswith("!"):
+            problems.append(f"fill {i}: {keep[1:]}")
+            continue
+        ops.append(op + keep)
     return "~~".join(ops), problems
 
 
@@ -1036,6 +1163,79 @@ def _safe_filename(name: str, fallback: str = "part") -> str:
     from ..libimport._names import safe_filename
 
     return safe_filename(name, fallback)
+
+
+#: Symbols asked for in one pin-list request. An IC runs to hundreds of
+#: pins, so a whole library in one reply would grow without bound.
+PIN_LIST_CHUNK = 25
+
+
+async def read_pin_lists(bridge, names: list[str]) -> dict[str, dict]:
+    """The pins of several symbols of the library in front, in one request
+    per PIN_LIST_CHUNK of them.
+
+    Each name maps to what a single read answers ({"count", "component",
+    "pins"}) or to {"success": False, "error": ...}. A name holding the
+    list's separator, and every name when Altium's scripts predate the
+    list read, is read on its own.
+    """
+    from ..bridge.exceptions import AltiumError
+
+    async def one(name: str) -> dict:
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_pin_list", {"component_name": name})
+        except AltiumError as exc:
+            return {"success": False, "error": str(exc)}
+        return reply if isinstance(reply, dict) else {
+            "success": False, "error": f"unexpected reply: {reply!r}"}
+
+    wanted = list(dict.fromkeys(n for n in names if n))
+    out: dict[str, dict] = {}
+    listed = [n for n in wanted if "|" not in n]
+    for start in range(0, len(listed), PIN_LIST_CHUNK):
+        chunk = listed[start:start + PIN_LIST_CHUNK]
+        if len(chunk) == 1:
+            out[chunk[0]] = await one(chunk[0])
+            continue
+        try:
+            reply = await bridge.send_command_async(
+                "library.get_pin_list", {"component_names": "|".join(chunk)})
+        except AltiumError as exc:
+            for n in chunk:
+                out[n] = {"success": False, "error": str(exc)}
+            continue
+        entries = reply.get("components") if isinstance(reply, dict) else None
+        if not isinstance(entries, list) or len(entries) != len(chunk):
+            for n in chunk:                      # scripts without the list read
+                out[n] = await one(n)
+            continue
+        for n, entry in zip(chunk, entries):
+            if not isinstance(entry, dict) or entry.get("error"):
+                err = entry.get("error") if isinstance(entry, dict) else entry
+                out[n] = {"success": False, "error": str(err)}
+            else:
+                out[n] = entry
+    for n in wanted:
+        if n not in out:
+            out[n] = await one(n)
+    return out
+
+
+def _pin_list_reply(result: Any, output_path: str, inline_limit: int) -> Any:
+    """A pin-list read as lib_get_pin_list answers it: spilled to a file
+    when long, and tagged with the datasheet reminder."""
+    if not isinstance(result, dict) or result.get("success") is False:
+        return result
+    comp = str(result.get("component") or "").strip()
+    pins = result.get("pins")
+    if isinstance(pins, list) and (
+            output_path or (inline_limit and len(pins) > inline_limit)):
+        result = _spill_pin_list(result, pins, comp, output_path)
+    explicit = ([{"manufacturer": "", "part_number": comp, "designators": ""}]
+                if comp else [])
+    return tag_response(result, explicit_parts=explicit,
+                        context="lib_get_pin_list")
 
 
 def _spill_pin_list(result, pins, comp, output_path):
@@ -1418,8 +1618,10 @@ async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
             res["marks"] = await bridge.send_command_async(
                 "library.add_symbol_text", {"texts": "~~".join(ops)})
         steps.append(res)
+    check = await _pin_check(
+        bridge, name, [p for part in amp.parts for p in part["pins"]])
     return {"symbol": name, "body": "amplifier", "parts": amp.part_count,
-            "pins": total_pins, "create": created, "steps": steps}
+            "pins": total_pins, "create": created, "steps": steps, **check}
 
 
 #: Line-size code for symbol glyph lines: Altium's TSize, 0 smallest,
@@ -1622,6 +1824,33 @@ async def _bring_schlib_forward(bridge: Any) -> None:
         await _focus_document(bridge, path)
 
 
+async def _pin_table_gate(datasheet: Any, pins: list[dict[str, Any]]
+                          ) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+    """``(refusal, note)`` for a symbol's pins against the datasheet pin
+    table: the refusal when they differ or cannot be checked, else the
+    note the result carries (the check, or why it did not run)."""
+    from ..design.pin_table import check_pin_table, numbered_only
+    from ..preferences import check_on, check_skipped
+
+    if not check_on("symbol_pins"):
+        return None, {"unchecked": check_skipped("symbol_pins")}
+    if not pins or numbered_only(pins):
+        return None, {"pin_table": {"ok": True, "note": (
+            "pins named by number only: nothing to compare")}}
+    from ..design.pin_table import IMPORTED
+    imported = str((datasheet or {}).get("imported", "")) if isinstance(
+        datasheet, dict) else ""
+    if imported and IMPORTED.get(imported, 0) >= len(pins):
+        return None, {"pin_table": {"ok": True, "note": (
+            "pins read from the library being imported")}}
+    table = await asyncio.to_thread(check_pin_table, datasheet, pins)
+    if not table["ok"]:
+        return {"ok": False, "check": "symbol_pins",
+                    "if_the_user_insists": if_the_user_insists("symbol_pins"), "pin_table": table,
+                "reason": table["reason"]}, {}
+    return None, {"pin_table": {k: table[k] for k in ("ok", "pages", "found")}}
+
+
 async def _create_symbol(bridge: Any, params: dict[str, Any]) -> Any:
     """create_symbol, made in the only open SchLib while it is still behind
     and that library then brought forward on it: focused first, it showed
@@ -1633,6 +1862,35 @@ async def _create_symbol(bridge: Any, params: dict[str, Any]) -> Any:
         "library.create_symbol", {**params, "library_path": path})
     await _focus_document(bridge, path)
     return created
+
+
+async def _pin_check(bridge: Any, name: str,
+                     pins: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read the named symbol's pins back and compare their designators
+    with the ones sent, so a reply says the pins are on THIS symbol, not
+    only that the symbol exists (#263)."""
+    want = sorted(str(p.get("designator", "")) for p in pins if p)
+    try:
+        reply = await bridge.send_command_async(
+            "library.get_pin_list", {"component_name": name})
+    except Exception as exc:  # the check reports, it never fails the tool
+        return {"pins_verified": None, "pins_check": f"not read: {exc}"}
+    listed = reply.get("pins") if isinstance(reply, dict) else None
+    if not isinstance(listed, list):
+        return {"pins_verified": None, "pins_check": "no pin list came back"}
+    got = sorted(str(p.get("designator", "")) for p in listed
+                 if isinstance(p, dict))
+    out: dict[str, Any] = {"pins_expected": len(want), "pins_found": len(got),
+                           "pins_verified": got == want}
+    if got != want:
+        missing, extra = list(want), []
+        for d in got:
+            if d in missing:
+                missing.remove(d)
+            else:
+                extra.append(d)
+        out.update(ok=False, missing_pins=missing, extra_pins=extra)
+    return out
 
 
 async def _show_new_symbol(bridge: Any) -> str:
@@ -1742,6 +2000,25 @@ async def _show_one_part(bridge: Any, name: str) -> Optional[int]:
         return None
 
 
+async def _courtyard_layer(bridge) -> tuple[str, str]:
+    """The focused library's courtyard layer, by kind or name, and a note
+    when there is none and Mechanical1 is used."""
+    from ..design.landpattern.emit import LayerRoleError, resolve_altium_layers
+    try:
+        mech = await bridge.send_command_async("library.get_mech_layers", {})
+        # Only the courtyard is wanted here; the assembly role is named so
+        # its lookup cannot refuse the call.
+        layers = resolve_altium_layers((mech or {}).get("layers") or [],
+                                       assembly_layer="-")
+        return str(layers["courtyard"]["layer"]), ""
+    except LayerRoleError as e:
+        return "", (f"{e} The courtyard went on Mechanical1; pass "
+                    "courtyard_layer to choose.")
+    except Exception as e:  # noqa: BLE001 - the footprint is still made
+        return "", (f"the library's mechanical layers could not be read "
+                    f"({e}); the courtyard went on Mechanical1")
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -1757,6 +2034,10 @@ def register_library_tools(mcp):
         part_count: int = 1,
     ) -> dict[str, Any]:
         """Create a new schematic symbol in the open symbol library.
+
+        It becomes the symbol lib_add_pins and lib_add_symbol_* write into,
+        so add its pins before creating the next one. ``verified`` in the
+        reply means the symbol exists, not that it has pins.
 
         Args:
             name: Component name
@@ -1782,6 +2063,8 @@ def register_library_tools(mcp):
                 "part_count": str(max(1, int(part_count))),
             },
         )
+        _NEW_SYMBOL[:] = [name] if not (
+            isinstance(result, dict) and result.get("success") is False) else []
         return result
 
     @mcp.tool()
@@ -1793,6 +2076,7 @@ def register_library_tools(mcp):
         description: str = "",
         body: str = "auto",
         invert_on_top: bool = False,
+        datasheet: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Create a complete IC symbol (body plus every pin) in one call.
         It brings the open SchLib forward itself and fits the new symbol.
@@ -1823,10 +2107,13 @@ def register_library_tools(mcp):
             body: "auto" (triangle for amplifiers, else rectangle),
                 "amplifier" or "rectangle".
             invert_on_top: triangle only; put IN- above IN+.
+            datasheet: ``{path, page}`` of the pin table. Every pin's
+                number and name must be printed together in it, or the
+                symbol is not built; pins named only by number skip it.
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
-            extent, and the per-step bridge results.
+            extent, ``pin_table``, and the per-step bridge results.
         """
         from eda_agent.design.symbol_gen import (
             generate_amplifier_symbol, generate_ic_symbol,
@@ -1837,6 +2124,9 @@ def register_library_tools(mcp):
             return {"ok": False, "reason":
                     "body must be 'auto', 'amplifier' or 'rectangle'"}
         all_pins = [p for p in (*left_pins, *right_pins) if p is not None]
+        refusal, table = await _pin_table_gate(datasheet, all_pins)
+        if refusal:
+            return refusal
         if wanted == "amplifier" or (
                 wanted == "auto" and looks_like_amplifier(all_pins,
                                                           description)):
@@ -1848,8 +2138,9 @@ def register_library_tools(mcp):
                     return {"ok": False, "reason": str(e)}
                 amp = None
             if amp is not None:
-                return await _emit_amplifier_symbol(
+                made = await _emit_amplifier_symbol(
                     name, amp, designator_prefix, description)
+                return {**made, **table} if isinstance(made, dict) else made
 
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
@@ -1892,9 +2183,11 @@ def register_library_tools(mcp):
         pins_payload, _ = _pins_payload(geom.pins)
         pins_res = await bridge.send_command_async(
             "library.add_pins", {"pins": pins_payload})
+        check = await _pin_check(bridge, name, geom.pins)
 
         shown = await _show_new_symbol(bridge)
         return {
+            **check,
             "symbol": name,
             "shown": shown,
             "pins": len(geom.pins),
@@ -1905,6 +2198,7 @@ def register_library_tools(mcp):
             "create": created,
             "pins_result": pins_res,
             "rectangle_result": rect_res,
+            **table,
         }
 
     @mcp.tool()
@@ -1916,6 +2210,7 @@ def register_library_tools(mcp):
         pin_length: int = 200,
         pin_pitch: int = 100,
         shared_pins: Optional[dict[str, Any]] = None,
+        datasheet: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Create a multi-part IC symbol, each part with its own body, in ONE call.
         It brings the open SchLib forward itself and fits the new symbol.
@@ -1941,6 +2236,8 @@ def register_library_tools(mcp):
                 pins of a quad op-amp. They sit below every part's own
                 pins, at the same place on each, and every body is made
                 as wide and tall as needed to hold them.
+            datasheet: ``{path, page}`` of the pin table, checked as
+                lib_create_ic_symbol checks it.
 
         Returns:
             ``symbol``, ``part_count``, ``parts`` (pins and body per part),
@@ -1962,6 +2259,13 @@ def register_library_tools(mcp):
         twice = sorted({d for d in shared_ids if shared_ids.count(d) > 1})
         if twice:
             return {"ok": False, "reason": "shared pin given twice: " + ", ".join(twice)}
+        from ..design.pin_table import pins_from
+        refusal, table = await _pin_table_gate(datasheet, pins_from(
+            [shared_left, shared_right]
+            + [part.get(side) for part in parts if isinstance(part, dict)
+               for side in ("left_pins", "right_pins")]))
+        if refusal:
+            return refusal
 
         def lay_out(min_inner: Optional[int]) -> list:
             # Shared rows go under the tallest part's pins on every part,
@@ -2027,7 +2331,9 @@ def register_library_tools(mcp):
         pins_reply = await bridge.send_command_async(
             "library.add_pins", {"pins": _pins_payload(placed)[0]})
         done = isinstance(pins_reply, dict) and pins_reply.get("added") == len(placed)
-        result = {"ok": done, "symbol": name, "part_count": len(parts),
+        check = await _pin_check(bridge, name, placed)
+        done = done and check.get("pins_verified") is not False
+        result = {**check, "ok": done, "symbol": name, "part_count": len(parts),
                   "parts": [{"part": number, "pins": len(pins), "body": geom.body,
                              "width_mils": geom.width_mils, "height_mils": geom.height_mils}
                             for number, (geom, pins) in enumerate(zip(geoms, geom_pins), 1)],
@@ -2036,6 +2342,7 @@ def register_library_tools(mcp):
         if done:
             result["shown_part"] = await _show_one_part(bridge, name)
         result = {**result, "shown": await _show_new_symbol(bridge)}
+        result = {**result, **table}
         return result if done else {**result, "stage": "add_pins"}
 
     @mcp.tool()
@@ -2152,8 +2459,10 @@ def register_library_tools(mcp):
                  "radius": arc["radius"], "start_angle": arc["start"],
                  "end_angle": arc["end"], "width": 1})
 
+        check = await _pin_check(bridge, name, geom.pins)
         shown = await _show_new_symbol(bridge)
         return {
+            **check,
             "symbol": name, "kind": kind, "designator_prefix": prefix,
             "shown": shown,
             "pins": len(geom.pins), "create": created,
@@ -2181,6 +2490,8 @@ def register_library_tools(mcp):
             is active or the component name isn't found in it.
         """
         bridge = get_bridge()
+        if _NEW_SYMBOL and _NEW_SYMBOL[0].lower() != str(component_name).lower():
+            _NEW_SYMBOL.clear()
         return await bridge.send_command_async(
             "library.set_current_component",
             {"name": component_name},
@@ -2204,9 +2515,15 @@ def register_library_tools(mcp):
     async def lib_add_pins(
         pins: list[dict[str, Any]],
         pins_on_part: Optional[int] = None,
+        datasheet: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Add MANY pins to the current symbol in ONE call (there is no
         single-pin variant).
+
+        The current symbol is the one created LAST: make a symbol and add
+        its pins before making the next. A batch of lib_create_symbol
+        followed by lib_add_pins puts every pin on the last symbol;
+        lib_create_ic_symbol makes the symbol and its pins together.
 
         Args:
             pins: List of pin dicts, each with:
@@ -2232,6 +2549,9 @@ def register_library_tools(mcp):
             pins_on_part: The part a pin without its own owner_part_id
                 goes on (0 puts it on every part). Left out, such pins
                 go on the symbol's current part.
+            datasheet: ``{path, page}`` of the pin table. Needed for pins
+                going into a symbol lib_create_symbol has just made: they
+                are checked as lib_create_ic_symbol checks its pins.
 
         Returns:
             Dict with added, failed, total counts.
@@ -2243,6 +2563,12 @@ def register_library_tools(mcp):
         if grouped:
             return {"ok": False, "reason": "one pin per designator; split these: "
                     + ", ".join(grouped), "added": 0, "total": len(pins)}
+        table: dict[str, Any] = {}
+        if _NEW_SYMBOL:
+            refusal, table = await _pin_table_gate(datasheet, list(pins))
+            if refusal:
+                return {**refusal, "added": 0, "total": len(pins),
+                        "symbol": _NEW_SYMBOL[0]}
         payload, skipped_invalid = _pins_payload(pins, pins_on_part)
 
         if not payload:
@@ -2265,6 +2591,8 @@ def register_library_tools(mcp):
             # Altium allows it, but stacked pins hide how many share the net
             # and print their numbers over one another.
             result["stacked"] = stacked
+        if isinstance(result, dict) and table:
+            result.update(table)
         return result
 
     @mcp.tool()
@@ -2472,6 +2800,7 @@ def register_library_tools(mcp):
         tab_w: float = 0.0,
         tab_h: float = 0.0,
         description: str = "",
+        courtyard_layer: str = "",
     ) -> dict[str, Any]:
         """Create a COMPLETE standard footprint in ONE call from the land
         dimensions you give (pads, silk outline, courtyard). For a package
@@ -2480,40 +2809,36 @@ def register_library_tools(mcp):
 
         Args:
             name: Footprint name (e.g. "SOIC-8_3.9x4.9").
-            family: "chip" (2-pin passive) | "sip" (single-row header) |
-                "dual" (SOIC/SOP/SON/SOT/DIP) | "header" (2-row pin/box
-                header, IDC, SWD/JTAG -- column-major odd/even numbering) |
-                "tab" (power/tab package: SOT-223, DPAK/D2PAK, TO-220 --
-                signal pins one side + a large tab pad opposite, pass
-                tab_w & tab_h) | "quad" (QFP/QFN) | "bga" (ball grid --
-                pass rows & cols). SOT-23 is "dual" with pin_count=3.
-                Through-hole (DIP/header/TO-220) = any family with hole > 0.
-            pin_count: total pads (2 for chip; even for header; n signal
-                pins for tab; divisible by 4 for quad; ignored for bga).
-            rows, cols: BGA ball grid dimensions (bga family only).
-            exposed_pad: centre thermal/exposed pad size (mils) for QFN/QFP
-                (quad family); 0 = none. Gets designator pin_count+1.
-            tab_w, tab_h: tab pad size (mils) for the "tab" family; the tab
-                gets designator pin_count+1 (tie it to a signal pin in the
-                schematic).
-            skip: BGA ball designators to omit (depopulation), e.g.
-                ["A1","E5"] (bga family only).
-            pitch: pad centre-to-centre within a row (mils).
-            pad_w, pad_h: pad size (mils).
-            row_span: centre-to-centre between the two rows / opposite
-                sides (mils). Required for dual and quad.
-            shape: pad shape (default "roundrect"); corner_radius is its %.
-            corner_radius: roundrect corner radius percentage. Default:
-                the active profile's footprint_defaults.json
-                pad_corner_radius_pct if one applies (see docs/PROFILES.md),
-                else 25 (Altium's own typical value).
-            silk: draw a silkscreen body outline (TopOverlay).
-            courtyard: clearance (mils) past the extent for the courtyard
-                rectangle (Mechanical1); 0 disables it.
-            body_w, body_h: package body for the silk outline; default to
-                the pad extent.
-            hole: drill size (mils). >0 makes through-hole pads (DIP /
-                header / axial): pin 1 rectangular, the rest round.
+            family: "chip" | "sip" | "dual" (SOIC/SOP/SON/SOT/DIP; SOT-23
+                is dual with 3 pins) | "header" (2-row, odd/even) | "tab"
+                (SOT-223, DPAK, TO-220; give tab_w, tab_h) | "quad"
+                (QFP/QFN) | "bga" (give rows, cols). hole > 0 makes any
+                family through-hole.
+            pin_count: Total pads (2 chip, even header, signal pins for
+                tab, multiple of 4 quad; ignored for bga).
+            rows, cols: BGA grid.
+            exposed_pad: QFN/QFP centre pad size, mils (0 = none); it is
+                pin_count+1.
+            tab_w, tab_h: Tab pad size, mils; it is pin_count+1.
+            skip: BGA balls to leave out, e.g. ["A1"].
+            pitch: Pad pitch within a row, mils.
+            pad_w, pad_h: Pad size, mils. pad_w is the X size (across the
+                row for chip and dual, along it for sip, header and tab);
+                for quad it runs along each row.
+            row_span: Centre-to-centre between rows (dual, quad), mils.
+            shape: Pad shape (default "roundrect", corner_radius in %).
+            corner_radius: Roundrect corner radius, %. Default: the active
+                profile's footprint_defaults.json pad_corner_radius_pct if one
+                applies (see docs/PROFILES.md), else 25.
+            silk: Draw the body outline on TopOverlay, cut clear of the
+                pads, with a pin 1 mark where the part needs one.
+            courtyard: Courtyard margin past pads, body and silk, mils
+                (0 = none).
+            courtyard_layer: Its layer; empty takes the library's
+                Courtyard Top layer, else Mechanical1.
+            body_w, body_h: Body size for the silk (default pad extent).
+            hole: Drill, mils; > 0 gives through-hole pads, pin 1 square.
+            description: Footprint description.
 
         Returns:
             Footprint name, pad and track counts, extent, step results.
@@ -2534,6 +2859,9 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": str(e)}
 
         bridge = get_bridge()
+        cy_layer, cy_note = courtyard_layer, ""
+        if courtyard > 0 and not cy_layer:
+            cy_layer, cy_note = await _courtyard_layer(bridge)
         created = await bridge.send_command_async(
             "library.create_footprint",
             {"name": name, "description": description},
@@ -2547,10 +2875,15 @@ def register_library_tools(mcp):
              "layer": "TopLayer"}
             for pad in geom.pads
         ])
+        # Named, not "the current footprint": in a batch every item's
+        # create ran before any item's pads, which then all went to the
+        # last footprint made (#263).
         pads_res = await bridge.send_command_async(
-            "library.add_footprint_pads", {"pads": pads_payload})
+            "library.add_footprint_pads",
+            {"pads": pads_payload, "footprint_name": name})
 
-        tracks = geom.all_tracks()
+        tracks = list(geom.silk_tracks) + [
+            {**t, "layer": cy_layer or t["layer"]} for t in geom.courtyard_tracks]
         tracks_res: dict[str, Any] = {}
         if tracks:
             # Unrounded, like the pads: round() moved every fractional mil,
@@ -2565,7 +2898,8 @@ def register_library_tools(mcp):
                 for t in tracks
             ]
             tracks_res = await bridge.send_command_async(
-                "library.add_footprint_tracks", {"tracks": "~~".join(track_ops)})
+                "library.add_footprint_tracks",
+                {"tracks": "~~".join(track_ops), "footprint_name": name})
 
         return {
             "footprint": name,
@@ -2573,6 +2907,9 @@ def register_library_tools(mcp):
             "pin_count": pin_count,
             "pads": len(geom.pads),
             "tracks": len(tracks),
+            **({"courtyard_layer": cy_layer or "Mechanical1"}
+               if geom.courtyard_tracks else {}),
+            **({"courtyard_note": cy_note} if cy_note else {}),
             "width_mils": geom.width_mils,
             "height_mils": geom.height_mils,
             "create": created,
@@ -2679,27 +3016,34 @@ def register_library_tools(mcp):
             numbers = read_numbers(raw_numbers)
         except SpecError as e:
             return {"ok": False, "reason": str(e), "created": False}
+        from ..preferences import check_on, check_skipped
+        checking = check_on("footprint_drawing")
         from ..design.landpattern.land_source import check_land_source
-        land = await asyncio.to_thread(check_land_source, spec.source)
+        land = (await asyncio.to_thread(check_land_source, spec.source)
+                if checking else None)
         if land and not land["ok"]:
-            return {"ok": False, "created": False, "reason": land["reason"],
+            return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
+                    "reason": land["reason"],
                     "land_pattern_pages": land.get("land_pattern_pages")}
-        why = drawing_refusal(bool(spec.custom_pads), dims, numbers)
+        why = drawing_refusal(bool(spec.custom_pads), dims, numbers) if checking else None
         if why:
-            return {"ok": False, "created": False, "reason": why}
+            return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
+                    "reason": why}
         dim_rows = check_dims(dims, model.pads) if dims else []
-        if any(not r["ok"] for r in dim_rows):
+        if checking and any(not r["ok"] for r in dim_rows):
             return {"ok": False, "created": False, "drawing_dims": dim_rows,
+                    "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
                     "reason": "the pads do not match the drawing: " + "; ".join(
                         f"{r['from']}" + ("" if r["to"] == r["from"] else f" to {r['to']}")
                         + f": {r['why']}"
                         for r in dim_rows if not r["ok"])}
-        if spec.custom_pads:
+        if checking and spec.custom_pads:
             from ..design.landpattern.compare_figure import compared_id, land_outlines
             looked = {compared_id(model.pads, v, land_outlines(model))
                       for v in ("top", "bottom")}
             if compared not in looked:
-                return {"ok": False, "created": False, "reason": (
+                return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
+                    "reason": (
                     "custom_pads are drawn only after they are set beside the "
                     "datasheet figure: call footprint_compare_drawing with this "
                     "package, read the image, correct any land, gap, size or "
@@ -2940,6 +3284,7 @@ def register_library_tools(mcp):
             "notes": notes,
             "ipc": model.ipc.get("calcs", {}),
             "steps": steps,
+            **({} if checking else {"unchecked": check_skipped("footprint_drawing")}),
         }
 
     @mcp.tool()
@@ -2996,6 +3341,7 @@ def register_library_tools(mcp):
         unchecked = _unchecked_lands(footprint_name, 1, compared)
         if unchecked:
             return unchecked
+        skipped = _lands_skipped(footprint_name)
         refusal = _units_refusal(units)
         if refusal:
             return refusal
@@ -3028,6 +3374,8 @@ def register_library_tools(mcp):
         hint = BulkHintTracker.record_and_hint("lib_add_footprint_pad")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
+        if skipped and isinstance(result, dict):
+            result["unchecked"] = skipped
         return result
 
     @mcp.tool()
@@ -3137,13 +3485,10 @@ def register_library_tools(mcp):
         output_dir: str = "",
         replace_existing: bool = True,
         terminals: Optional[dict[str, Any]] = None,
+        drawing: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Build a STEP model from the datasheet drawing and link it to a
         footprint in the open .PcbLib (brought forward itself).
-
-        The footprint's existing 3D bodies are removed first
-        (``replace_existing``, reported as ``replaced_bodies``), so a
-        rebuilt model does not sit beside the old box.
 
         For a part no package family covers (a connector, a LED with a
         lens, a header, a switch): read each feature off the mechanical
@@ -3151,10 +3496,9 @@ def register_library_tools(mcp):
         already models the standard families; an extruded body
         (lib_add_footprint_bodies) is only the fallback.
 
-        Written with CadQuery, or FreeCAD first when EDA_AGENT_STEP_WRITER
-        is "freecad"; each solid's role sets its colour in the STEP. Show it
-        afterwards with obj_switch_view (mode 3d, footprint_name, fit,
-        views "iso,bottom,front").
+        Written with CadQuery (FreeCAD when EDA_AGENT_STEP_WRITER is
+        "freecad"); a solid's role sets its colour. Show it with
+        obj_switch_view (mode 3d, footprint_name, fit).
 
         Terminals come from the footprint: ``terminals`` puts one on every
         land, where the land is. A flat gold, metal or ball box at the
@@ -3178,17 +3522,22 @@ def register_library_tools(mcp):
                 from guesses.
             output_dir: folder for the .step; empty puts it in a ``3D``
                 folder beside the active library.
-            replace_existing: remove the footprint's 3D bodies before
-                linking (default True); False adds this one beside them.
+            replace_existing: remove the footprint's 3D bodies first
+                (default True, reported as ``replaced_bodies``).
             terminals: ``{"kind": "plate", "height": mm}`` for a plate the
                 shape of each land (LGA, LCC, QFN), or ``{"kind": "ball",
                 "height": mm, "diameter": mm}`` for a seated solder ball
                 whose top is ``height`` above the board (BGA).
+            drawing: the outline drawing's totals as printed, in mm, each a
+                number or [min, max]: ``body_x``, ``body_y`` (the body
+                solids), ``height`` (the top; a maximum only is [0, max]) and, where
+                printed, ``span_x`` / ``span_y`` across the leads. The
+                model is refused when its extents differ.
 
         Returns:
-            ``ok``, ``path``, ``writer``, ``height_mm``, ``linked`` (the
-            link reply), ``replaced_bodies`` and ``terminals`` (how many
-            were placed), or ``ok: false`` with ``problems`` or ``reason``.
+            ``ok``, ``path``, ``writer``, ``height_mm``, ``drawing_dims``,
+            ``linked``, ``replaced_bodies``, ``terminals`` (count), or
+            ``ok: false`` with ``problems`` or ``reason``.
         """
         from ..design import models3d
 
@@ -3221,6 +3570,15 @@ def register_library_tools(mcp):
         strips = models3d.strip_terminals(plan.solids, lands)
         if strips:
             return {"ok": False, "problems": strips}
+        from ..preferences import check_on, check_skipped
+        dims: Optional[dict[str, Any]] = None
+        if check_on("model_body"):
+            from ..design.model_drawing import check_model_dims
+            dims = check_model_dims(plan.solids, drawing or {})
+            if not dims["ok"]:
+                return {"ok": False, "check": "model_body",
+                    "if_the_user_insists": if_the_user_insists("model_body"),
+                        "drawing_dims": dims["rows"], "reason": dims["reason"]}
         folder = Path(output_dir) if output_dir else None
         if folder is None:
             active = await bridge.send_command_async(
@@ -3247,7 +3605,9 @@ def register_library_tools(mcp):
         return {"ok": ok, "path": wrote["path"], "writer": wrote["writer"],
                 "height_mm": plan.height, "solids": len(plan.solids),
                 "source": source, "linked": linked,
-                "replaced_bodies": replaced, "terminals": placed}
+                "replaced_bodies": replaced, "terminals": placed,
+                **({"drawing_dims": dims["rows"]} if dims is not None
+                   else {"unchecked": check_skipped("model_body")})}
 
     @mcp.tool()
     async def lib_add_footprint_bodies(
@@ -3519,6 +3879,7 @@ def register_library_tools(mcp):
         unchecked = _unchecked_lands(footprint_name, len(pads), compared)
         if unchecked:
             return {**unchecked, "total": len(pads)}
+        skipped = _lands_skipped(footprint_name)
         payload, skipped_invalid = _pads_payload(pads, units)
 
         if not payload:
@@ -3537,6 +3898,8 @@ def register_library_tools(mcp):
             "library.add_footprint_pads", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
+        if skipped and isinstance(result, dict):
+            result["unchecked"] = skipped
         return result
 
     @mcp.tool()
@@ -3605,19 +3968,22 @@ def register_library_tools(mcp):
         Args:
             tracks: ``{x1, y1, x2, y2, width (default 10), layer
                 (default "TopOverlay")}`` each; any layer name, e.g.
-                "Mechanical13" for an assembly outline.
+                "Mechanical13" for an assembly outline. ``keepout`` and
+                ``keepout_for`` as in lib_add_footprint_regions.
 
         ``footprint_name`` picks the footprint; empty uses the current
         one, and a name that cannot be made current is refused.
         ``units`` is "mil" (default) or "mm", kept exact.
 
         Returns:
-            Dict with added, failed, total counts.
+            Dict with added, failed, total counts, and keepouts,
+            keepout_failures, bad_keepouts as for regions.
         """
         refusal = _units_refusal(units)
         if refusal:
             return refusal
-        payload, skipped_invalid = _tracks_payload(tracks, units)
+        refused: list[str] = []
+        payload, skipped_invalid = _tracks_payload(tracks, units, refused)
         op_strs = [op for op in payload.split("~~") if op]
 
         if not op_strs:
@@ -3626,6 +3992,7 @@ def register_library_tools(mcp):
                 "added": 0,
                 "total": len(tracks),
                 "skipped_invalid": skipped_invalid,
+                **({"refused": refused} if refused else {}),
             }
 
         bridge = get_bridge()
@@ -3636,6 +4003,8 @@ def register_library_tools(mcp):
             "library.add_footprint_tracks", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
+        if isinstance(result, dict) and refused:
+            result["refused"] = refused
         return result
 
     @mcp.tool()
@@ -3658,7 +4027,13 @@ def register_library_tools(mcp):
                 A point ``[x, y, sweep]`` makes the edge to the next point
                 a true arc of ``sweep`` degrees, counterclockwise when
                 positive (a slot's round end is 180 or -180); other edges
-                are straight.
+                are straight. ``"keepout": true`` makes the region a
+                keepout on its own layer, and ``"keepout_for"`` lists
+                what it keeps out ("copper", "track", "via", "smd_pad",
+                "th_pad"; all five when left out). ``["copper"]`` on a
+                signal layer keeps pours off that layer alone while
+                tracks may cross; KeepOutLayer acts on every layer, and
+                a region there is always made a keepout.
             footprint_name: footprint to write into; empty uses the
                 current one, and a name that cannot be made current is
                 refused.
@@ -3667,7 +4042,9 @@ def register_library_tools(mcp):
         Returns:
             Dict with added, failed, bad_points, unknown_layers, total,
             and arc_edges: the arc edges the created regions read back
-            as holding. A region refused here before sending is listed
+            as holding; keepouts (made keepouts whose flags read back as
+            asked), keepout_failures and bad_keepouts. A region refused
+            here before sending is listed
             in ``refused`` with the reason.
         """
         refusal = _units_refusal(units)
@@ -3706,14 +4083,16 @@ def register_library_tools(mcp):
                 origin, with an optional ``"rotation"`` in degrees about
                 the fill's centre. The layer is REQUIRED: there is no
                 default, because a solid shape defaulted onto copper is a
-                short. A fill with no area is refused.
+                short. A fill with no area is refused. ``keepout`` and
+                ``keepout_for`` as in lib_add_footprint_regions.
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.
             units: "mil" (default) or "mm", for every corner, kept exact.
 
         Returns:
-            Dict with added, failed, bad_extent, unknown_layers, total. A
+            Dict with added, failed, bad_extent, unknown_layers, total,
+            keepouts, keepout_failures, bad_keepouts. A
             fill refused here before sending is listed in ``refused`` with
             the reason.
         """
@@ -3745,6 +4124,8 @@ def register_library_tools(mcp):
         layer: str = "TopOverlay",
         footprint_name: str = "",
         units: str = "mil",
+        keepout: bool = False,
+        keepout_for: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Add an arc to the current footprint.
 
@@ -3764,14 +4145,22 @@ def register_library_tools(mcp):
             units: "mil" (default) or "mm", for every length and
                 coordinate here, kept exact rather than rounded to
                 whole mils.
+            keepout, keepout_for: make the arc a keepout, as in
+                lib_add_footprint_regions.
 
         Returns:
-            Dictionary confirming arc addition
+            Dictionary confirming arc addition; for a keepout also
+            keepout_verified, keepout and keepout_for as read back.
         """
         bridge = get_bridge()
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        keep = _keepout_restrictions(
+            {"keepout": keepout, "keepout_for": keepout_for})
+        if isinstance(keep, str):
+            return {"success": False, "error": keep,
+                    "error_code": "BAD_KEEPOUT"}
         params: dict[str, Any] = {
             "x_center": format_length(x_center),
             "y_center": format_length(y_center),
@@ -3782,6 +4171,9 @@ def register_library_tools(mcp):
                 length_in(units, 10) if width is None else width),
             "layer": layer,
         }
+        if keep:
+            params["keepout"] = "1"
+            params["keepout_for"] = ",".join(keep)
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
@@ -4455,6 +4847,11 @@ def register_library_tools(mcp):
         With replace=True (default) existing footprint models are removed
         first; False adds another.
 
+        The symbol's pin numbers are compared with the footprint's pad
+        names first (its .PcbLib must be open): a pin with no pad or a
+        named plated pad with no pin refuses the link. Unnamed pads and
+        unplated holes are left out.
+
         Args:
             component_name: Name of the schematic component, made current
                 first. Empty uses the current component.
@@ -4464,12 +4861,49 @@ def register_library_tools(mcp):
             replace: remove existing footprint models before adding (default True)
 
         Returns:
-            {success, footprint, replaced, footprints}: ``footprints``
-            is read back from the component. Altium's Models pane is
+            {success, footprint, replaced, footprints, pin_pad_parity}:
+            ``footprints`` is read back from the component. Altium's Models pane is
             not redrawn after a scripted link and can show the previous
             part; this list is the link as stored.
         """
+        from ..preferences import check_on, check_skipped
         bridge = get_bridge()
+        checking = check_on("pins_pads")
+        parity = None
+        if checking:
+            # Pads first: reading them brings their PcbLib forward, so the
+            # SchLib in front is put back afterwards.
+            from ..bridge.exceptions import AltiumError
+            try:
+                front = await bridge.send_command_async(
+                    "application.get_active_document", {}) or {}
+            except AltiumError:
+                front = {}
+            schlib = str(front.get("file_path") or "") if isinstance(front, dict) else ""
+            if not schlib.lower().endswith(".schlib"):
+                schlib = ""
+            pads, where = await _footprint_pads(bridge, footprint_name, schlib)
+            if schlib:
+                await _focus_document(bridge, schlib)
+            if pads is None:
+                return {"success": False, "check": "pins_pads",
+                    "if_the_user_insists": if_the_user_insists("pins_pads"), "reason": (
+                    f"no open .PcbLib holds {footprint_name!r}, so its pads "
+                    "cannot be compared with the symbol's pins: open the "
+                    "library that holds it and link again")}
+            await _bring_schlib_forward(bridge)
+            pins = await bridge.send_command_async(
+                "library.get_pin_list",
+                {"component_name": component_name} if str(component_name).strip() else {})
+            from ..design.pin_pad_parity import parity_reason, pin_pad_parity
+            parity = pin_pad_parity(
+                (pins or {}).get("pins") or [] if isinstance(pins, dict) else [], pads)
+            parity["footprint_library"] = where
+            if not parity["ok"]:
+                return {"success": False, "check": "pins_pads",
+                    "if_the_user_insists": if_the_user_insists("pins_pads"),
+                        "pin_pad_parity": parity,
+                        "reason": parity_reason(parity, footprint_name)}
         await _bring_schlib_forward(bridge)
         result = await bridge.send_command_async(
             "library.link_footprint",
@@ -4496,6 +4930,11 @@ def register_library_tools(mcp):
                     m.get("model_name") for m in models
                     if isinstance(m, dict)
                     and str(m.get("model_type", "")).upper() == "PCBLIB"]}
+        if isinstance(result, dict):
+            if parity is not None:
+                result = {**result, "pin_pad_parity": parity}
+            elif not checking:
+                result = {**result, "unchecked": check_skipped("pins_pads")}
         return result
 
     @mcp.tool()
@@ -5780,7 +6219,53 @@ def register_library_tools(mcp):
         )
         return result
 
+    async def _pin_lists_by_library(items, shared):
+        """A list of named symbols, read one library at a time: each
+        library is brought forward once and all of its symbols are read in
+        one request. None leaves anything else to the item-by-item run."""
+        allowed = {"component_name", "library_path", "output_path",
+                   "inline_limit"}
+        merged = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                return None
+            m = {**shared, **item}
+            if set(m) - allowed or not str(m.get("component_name") or "").strip() \
+                    or not isinstance(m.get("inline_limit", 150), int):
+                return None
+            merged.append(m)
+        if len(merged) < 2:
+            return None
+        groups: dict[str, list[int]] = {}
+        for i, m in enumerate(merged):
+            groups.setdefault(str(m.get("library_path") or "").strip(), []).append(i)
+        # The library in front first, before any other is brought forward.
+        order = sorted(groups, key=lambda lib: lib != "")
+        bridge = get_bridge()
+        out: list[Any] = [None] * len(merged)
+        for lib in order:
+            idx = groups[lib]
+            if lib:
+                problem = await _open_document(bridge, lib)
+                if problem:
+                    for i in idx:
+                        out[i] = {"success": False, "error": problem}
+                    continue
+            replies = await read_pin_lists(
+                bridge, [str(merged[i]["component_name"]).strip() for i in idx])
+            for i in idx:
+                m = merged[i]
+                out[i] = _pin_list_reply(
+                    dict(replies[str(m["component_name"]).strip()]),
+                    str(m.get("output_path") or ""), m.get("inline_limit", 150))
+        failed = sum(1 for r in out
+                     if isinstance(r, dict) and r.get("success") is False)
+        return {"bulk": True, "count": len(merged),
+                "succeeded": len(merged) - failed, "failed": failed,
+                "libraries": len(groups), "items": out}
+
     @mcp.tool()
+    @bulk_items_by(_pin_lists_by_library)
     async def lib_get_pin_list(
         component_name: str = "",
         output_path: str = "",
@@ -5823,22 +6308,7 @@ def register_library_tools(mcp):
         result = await bridge.send_command_async(
             "library.get_pin_list", params
         )
-        if isinstance(result, dict):
-            comp = str(result.get("component") or "").strip()
-            pins = result.get("pins")
-            if isinstance(pins, list) and (
-                output_path or (inline_limit and len(pins) > inline_limit)
-            ):
-                result = _spill_pin_list(result, pins, comp, output_path)
-            explicit = (
-                [{"manufacturer": "", "part_number": comp, "designators": ""}]
-                if comp
-                else []
-            )
-            return tag_response(
-                result, explicit_parts=explicit, context="lib_get_pin_list"
-            )
-        return result
+        return _pin_list_reply(result, output_path, inline_limit)
 
     @mcp.tool()
     async def lib_set_pin_owner_part(
@@ -7317,12 +7787,14 @@ def register_library_tools(mcp):
 
         Args:
             footprint_name: The footprint.
-            out_path: Full path of the new .PcbLib.
+            out_path: Full path of the .PcbLib to write; never the source.
+                On Altium 25 and later an existing file is written over; on
+                older versions it must be a new file.
             library_path: The source library. Defaults to the focused one.
 
         Returns:
             ``written`` (a new file is at out_path) and ``reported``
-            (what Altium said).
+            (whether the new destination was saved).
         """
         import os
         if not footprint_name.strip():
@@ -7852,7 +8324,7 @@ def register_library_tools(mcp):
 
         Returns:
             {name, description, library_path, pad_count, pads: [{
-             name, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
+             name, id, x_mm, y_mm, copper_x_mm, copper_y_mm, w_mm, h_mm,
              shape, corner_pct, rotation, hole_rotation, hole_mm,
              hole_w_mm, hole_type, slot_aligned (slots only), plated,
              layer, selected, mode, paste_expansion_mm,
@@ -7862,7 +8334,8 @@ def register_library_tools(mcp):
             selected is whether the pad is selected in the editor (what
             lib_set_pad_properties selected=True acts on); mode is the
             stack mode, 0 simple, 1 top-middle-bottom, 2 full stack.
-            x/y is the pad origin, copper_x/y the copper centre (differs
+            id names the pad for lib_set_pad_properties (stable while the
+            library is open). x/y is the pad origin, copper_x/y the copper centre (differs
             on a custom pad). hole_rotation is relative to the pad.
             mask_expansion_mm is the top side when mask_separate, else
             both; mask_bottom_expansion_mm is the stored bottom value.
@@ -7875,11 +8348,56 @@ def register_library_tools(mcp):
             {"footprint_name": footprint_name, "library_path": library_path},
         )
 
+    async def _pad_rows_by_id(items: list, shared: dict):
+        """Items that name their pads by ``id`` go to the id writer as
+        one call: every row checked first, one walk, all or nothing.
+        Items by ``pad_name`` / ``selected`` return None and run one
+        by one as before."""
+        if not isinstance(items, list) or not items \
+                or not all(isinstance(i, dict) for i in items):
+            return None
+        by_id = [bool(str({**shared, **i}.get("id") or "").strip())
+                 for i in items]
+        if not any(by_id):
+            return None
+        if not all(by_id):
+            return {"success": False,
+                    "error": "give every item an id, or none: pads named "
+                             "by id are written together, all or nothing"}
+        calls = [{k: v for k, v in {**shared, **i}.items() if v is not None}
+                 for i in items]
+        for key in ("footprint_name", "library_path", "units"):
+            if len({str(c.get(key, "")) for c in calls}) > 1:
+                return {"success": False,
+                        "error": f"items by id write one footprint in one "
+                                 f"call; {key} differs between items"}
+        first = calls[0]
+        if not first.get("footprint_name"):
+            return {"success": False, "error": "footprint_name is required"}
+        rows = []
+        for c in calls:
+            if c.get("pad_name") or c.get("selected"):
+                return {"success": False,
+                        "error": "an item names its pad by id, or by "
+                                 "pad_name / selected, not both"}
+            rows.append({k: v for k, v in c.items()
+                         if k not in ("footprint_name", "library_path", "units",
+                                      "pad_name", "selected")
+                         and not (k == "new_name" and v == "")})
+        return await lib_set_pad_geometry(
+            footprint_name=first["footprint_name"], rows=rows,
+            library_path=first.get("library_path", ""),
+            units=first.get("units", "mil"))
+
     @mcp.tool()
+    @bulk_items_by(_pad_rows_by_id)
     async def lib_set_pad_properties(
         footprint_name: str,
         pad_name: str = "",
         selected: bool = False,
+        id: str = "",
+        x_mm: Optional[float] = None,
+        y_mm: Optional[float] = None,
         library_path: str = "",
         units: str = "mil",
         x_size: Optional[float] = None,
@@ -7906,77 +8424,84 @@ def register_library_tools(mcp):
         x: Optional[float] = None,
         y: Optional[float] = None,
         new_name: str = "",
+        clear_name: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Change existing pads in a PcbLib footprint: every pad named
-        ``pad_name``, or with ``selected=True`` every pad selected in the
-        editor, only the fields given, each read back. A written
-        expansion is made manual, without which Altium ignores it;
-        ``mask_manual`` / ``paste_manual`` False hands one back to the
-        design rule. On a per-layer pad stack ``x_size`` / ``y_size`` are
-        the top size (``note``); ``stack_mode`` and the bottom size
-        change the rest.
+        """Change existing pads in a PcbLib footprint, only the fields
+        given, each read back. Pick pads by ``pad_name`` (every pad of
+        that name), ``selected=True`` (the editor's selection) or ``id``
+        (from ``lib_get_pad_geometry``).
+
+        Many pads, different values: ``items``, one dict per pad. Items
+        that all carry ``id`` are ONE walk, every item checked first and
+        one bad item refusing the call, so a renumbering (3 -> 5,
+        5 -> 7) needs no temporary names (about 6 s for 200 pads).
+
+        A written expansion is made manual (Altium ignores it otherwise);
+        ``mask_manual`` / ``paste_manual`` False hands it back to the
+        rule. On a per-layer stack ``x_size`` / ``y_size`` are the top
+        size (``note``). Undo takes back one pad at a time.
 
         Args:
             footprint_name: The footprint holding the pad.
-            pad_name: The pad's designator. Names need not be unique (an
-                SMD pad "1" beside a thru-hole "1"): use ``selected``
-                to say which.
-            selected: Change the pads selected in the editor instead of
-                those named ``pad_name``.
-            library_path: Optional .PcbLib path; defaults to the focused
-                library.
-            units: "mil" (default) or "mm", for every length here.
-            x_size, y_size: Copper size (the top size on a stacked pad).
-            bottom_x_size, bottom_y_size: Bottom copper size; makes a
-                simple pad top-middle-bottom.
+            pad_name: The designator; names need not be unique, so
+                ``selected`` or ``id`` say which.
+            selected: The pads selected in the editor.
+            id: The pad's id (stable while the library is open).
+            x_mm, y_mm: With ``id``, the position the read gave; a pad
+                moved since refuses the call.
+            library_path: .PcbLib path; default the focused library.
+            units: "mil" (default) or "mm", for every length.
+            x_size, y_size: Copper size (top size on a stacked pad).
+            bottom_x_size, bottom_y_size: Bottom size; makes the pad
+                top-middle-bottom.
             shape: "round", "rectangular", "octagonal" or "roundrect".
-            corner_radius_pct: Rounded-rectangle corner, 0 to 100, as a
-                percentage of half the shorter side (how Altium stores
-                it); 25 when ``shape`` is roundrect and this is not given.
-            stack_mode: "simple" (the top size serves every layer) or
-                "top-middle-bottom", written before the sizes.
-            rotation: Pad rotation in degrees.
+            corner_radius_pct: Roundrect corner, 0 to 100 % of half the
+                shorter side; 25 when roundrect and not given.
+            stack_mode: "simple" or "top-middle-bottom", written first.
+            rotation: Degrees.
             hole_type: "round", "square" or "slot", written before the
-                hole sizes, so a slot can be made round again.
-            hole_size: Hole diameter, 0 for a surface-mount pad.
-            hole_width: Slot length; makes the hole a slot (so it is
-                refused beside ``hole_type`` round or square).
-            hole_rotation: Slot rotation relative to the pad, degrees.
+                hole sizes.
+            hole_size: Diameter, 0 for surface mount.
+            hole_width: Slot length; makes a slot.
+            hole_rotation: Slot rotation relative to the pad.
             plated: Whether the hole is plated.
-            paste_expansion: Paste expansion.
-            paste_manual: True keeps the paste value as written; False
-                hands the paste back to the design rule.
-            mask_expansion: Mask expansion, both sides unless
-                ``mask_bottom_expansion`` is also given.
-            mask_bottom_expansion: Bottom mask expansion; unlinks sides.
-            mask_separate: Link (False) or unlink (True) the mask sides
-                (the bottom value takes effect once unlinked).
-            mask_manual: As ``paste_manual``, for the solder mask.
-            mask_from_hole_edge: Measure the mask from the drill edge,
-                not the copper (mechanical holes and slots).
-            paste_top_enabled: Switch the top paste opening on or off
-                (not its size). It holds only on a manual paste expansion,
-                so a rule-driven one is made manual first (``note``).
-                Before Altium Designer 25 the flag does not exist.
-            x, y: Move the pad, from the footprint origin. One pad only:
-                when several match, the first moves and the rest fail.
-            new_name: Renumber the pad (its designator).
+            paste_expansion, mask_expansion: Expansions (mask: both
+                sides unless ``mask_bottom_expansion`` is given).
+            mask_bottom_expansion: Bottom mask; unlinks the sides.
+            paste_manual, mask_manual: True keeps the value written,
+                False hands it to the rule.
+            mask_separate: Unlink (True) or link the mask sides.
+            mask_from_hole_edge: Measure the mask from the drill edge.
+            paste_top_enabled: The top paste opening on or off; holds
+                only on a manual paste expansion (made manual first).
+                Not before Altium Designer 25.
+            x, y: Move the pad from the footprint origin; one pad only.
+            new_name: Renumber the pad.
+            clear_name: True leaves the pad without a name: a pad the part
+                does not use (an unused ball of a standard BGA), which
+                lib_link_footprint leaves out of its pin and pad check.
 
         Returns:
-            ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
-            ``pads`` as read back (top and bottom size, shape,
-            ``corner_radius_pct``, ``stack_mode``, rotation, hole, slot,
-            plating, expansions and their state, ``mask_separate``,
-            ``mask_from_hole_edge``, ``paste_top_enabled``,
-            ``all_writes_ran``).
+            ``pads_changed``, ``pads_with_a_failed_write``, ``note`` and
+            ``pads`` as read back (sizes, shape, corner, stack, rotation,
+            hole, plating, expansions and their state, flags,
+            ``all_writes_ran``); by id also ``rows`` and ``repeats``.
         """
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        if id.strip():
+            given = locals()
+            return await _pad_rows_by_id(
+                [{k: given[k] for k in _PAD_CALL_FIELDS}], {})
         if not pad_name and not selected:
             return {"success": False,
-                    "error": "give pad_name, or selected=True for the "
-                             "pads selected in the editor"}
+                    "error": "give pad_name, selected=True for the pads "
+                             "selected in the editor, or id"}
+        if x_mm is not None or y_mm is not None:
+            return {"success": False,
+                    "error": "x_mm / y_mm guard a pad named by id; to move "
+                             "a pad give x / y"}
         if hole_type is not None and hole_type not in ("round", "square", "slot"):
             return {"success": False,
                     "error": "hole_type must be round, square or slot"}
@@ -8000,6 +8525,10 @@ def register_library_tools(mcp):
             return {"success": False,
                     "error": "paste_manual=False hands the paste to the rule; "
                              "a paste value with it would be ignored"}
+        if clear_name and new_name.strip():
+            return {"success": False,
+                    "error": "clear_name leaves the pad without a name, new_name "
+                             "gives it one: give one of them"}
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "pad_name": pad_name,
                                   "library_path": library_path}
@@ -8020,6 +8549,8 @@ def register_library_tools(mcp):
                 params[key] = format_length(value)
         if new_name.strip():
             params["new_name"] = new_name.strip()
+        if clear_name:
+            params["clear_name"] = "true"
         for key, value in (("rotation", rotation),
                            ("hole_rotation", hole_rotation)):
             if value is not None:
@@ -8047,6 +8578,86 @@ def register_library_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.set_pad_properties", _with_units(params, units))
+
+    @mcp.tool()
+    async def lib_set_pad_geometry(
+        footprint_name: str,
+        rows: list[dict[str, Any]],
+        library_path: str = "",
+        units: str = "mil",
+    ) -> dict[str, Any]:
+        """Change many pads of one PcbLib footprint in ONE call.
+
+        Each row names its pad by ``id`` (from ``lib_get_pad_geometry``)
+        and carries the fields to write, under the names
+        ``lib_set_pad_properties`` uses: x_size, y_size, bottom_x_size,
+        bottom_y_size, shape, corner_radius_pct, stack_mode, rotation,
+        hole_type, hole_size, hole_width, hole_rotation, plated,
+        paste_expansion, paste_manual, mask_expansion,
+        mask_bottom_expansion, mask_separate, mask_manual,
+        mask_from_hole_edge, paste_top_enabled, x, y (a move, from the
+        footprint origin), new_name and clear_name (True: no name). ``x_mm`` / ``y_mm`` as the read
+        gave them guard a row: a pad that has moved refuses the call.
+        Every row is checked before anything is written. Pads are
+        matched by id, never by name, so renumbering (3 -> 5, 5 -> 7)
+        needs no temporary names. About 6 s for 200 pads. The same
+        writer runs for ``lib_set_pad_properties`` given ``items`` that
+        carry ``id``. In a library Undo takes back one pad at a time.
+
+        Args:
+            footprint_name: The footprint holding the pads.
+            rows: One dict per pad: ``id`` (required), optional
+                ``x_mm`` / ``y_mm`` guard, then the fields to change.
+            library_path: Optional .PcbLib path; defaults to the
+                focused library.
+            units: "mil" (default) or "mm", for every length in rows.
+
+        Returns:
+            ``rows``, ``pads_changed``, ``pads_with_a_failed_write``,
+            ``repeats`` (pads the walk handed out twice, expected 0),
+            ``note``, and ``pads`` as read back, each with its ``id``.
+        """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        if not rows:
+            return {"success": False, "error": "rows is empty"}
+        lengths = {"x_size", "y_size", "bottom_x_size", "bottom_y_size",
+                   "hole_size", "hole_width", "paste_expansion",
+                   "mask_expansion", "mask_bottom_expansion", "x", "y"}
+        numbers = {"rotation", "hole_rotation", "corner_radius_pct",
+                   "x_mm", "y_mm"}
+        flags = {"plated", "paste_manual", "mask_separate", "mask_manual",
+                 "mask_from_hole_edge", "paste_top_enabled", "clear_name"}
+        words = {"id", "shape", "stack_mode", "hole_type", "new_name"}
+        known = lengths | numbers | flags | words
+        ops = []
+        for i, row in enumerate(rows):
+            unknown = sorted(set(row) - known)
+            if unknown:
+                return {"success": False,
+                        "error": f"row {i}: unknown field(s) {unknown}"}
+            if not str(row.get("id") or "").strip():
+                return {"success": False, "error": f"row {i}: id is required"}
+            fields = []
+            for key, value in row.items():
+                if value is None:
+                    continue
+                if key in lengths:
+                    text = format_length(value)
+                elif key in numbers:
+                    text = format_length(value)
+                elif key in flags:
+                    text = "true" if value else "false"
+                else:
+                    text = _payload_safe(str(value).strip())
+                fields.append(f"{key}={text}")
+            ops.append(";".join(fields))
+        params = {"footprint_name": footprint_name, "rows": "~~".join(ops),
+                  "library_path": library_path}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_pad_geometry", _with_units(params, units))
 
     @mcp.tool()
     async def lib_get_footprint_primitives(
@@ -8093,8 +8704,10 @@ def register_library_tools(mcp):
             [{layer, layer_id, x1, y1, x2, y2, area and arc_edges
             (regions)}], texts
             [{text, layer, layer_id, x, y, size, rotation, x1, y1, x2,
-            y2}], vias [{x, y, diameter, hole}]}. A text's box is
-            Altium's cached one and can lag an edit made this session.
+            y2}], vias [{x, y, diameter, hole}]}. Tracks, arcs, regions
+            and fills also carry keepout, and keepout_for where the
+            restrictions act (a keepout, or KeepOutLayer). A text's box
+            is Altium's cached one and can lag an edit made this session.
         """
         params: dict[str, Any] = {"footprint_name": footprint_name,
                                   "library_path": library_path}
@@ -8519,8 +9132,7 @@ def register_library_tools(mcp):
         if created:
             os.makedirs(os.path.dirname(package_path) or ".", exist_ok=True)
             steps["create"] = await bridge.send_command_async(
-                "project.create", {"project_path": package_path,
-                                   "project_type": "IntegratedLibrary"})
+                "project.create", {"project_path": package_path})
         else:
             steps["open"] = await bridge.send_command_async(
                 "project.open", {"project_path": package_path})

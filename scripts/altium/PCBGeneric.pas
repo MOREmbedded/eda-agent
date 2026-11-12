@@ -626,9 +626,16 @@ Begin
         End
         Else If Oid = eComponentBodyObject Then
         Begin
-            Body := Obj;
-            If WantY Then Result := Body.y Else Result := Body.x;
-            Found := True;
+            { IPCB_ComponentBody has no x/y on AD21: even a read inside Try
+              halts the script. Read on 25 and later, where it was measured;
+              elsewhere Bounds* give the extent. The version is asked in an
+              If of its own, before the member is reached. }
+            If AltiumVersionCode(0) >= 2500 Then
+            Begin
+                Body := Obj;
+                If WantY Then Result := Body.y Else Result := Body.x;
+                Found := True;
+            End;
         End
         Else If Oid = eTextObject Then
         Begin
@@ -1924,7 +1931,20 @@ Begin
             Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
             { A free text, or a component's designator / comment text: the   }
             { same member PCB_PlaceText and the layout copy already write.    }
-            Else If Oid = eTextObject Then Begin Txt := Obj; Txt.Rotation := StrToFloatDef(Value, 0); End
+            { A designator turns about its CENTRE, so its anchor (XLocation, }
+            { which X / Y read and move from) shifts, but Altium updates the }
+            { anchor only at the next geometry operation. MEASURED: in one   }
+            { set Rotation|X|Y the X write read the anchor from before the   }
+            { turn and landed off by the whole shift (up to ~110 mil), while }
+            { the Y after it was exact. The zero move brings the anchor up   }
+            { to date for the next property; a free text turns about its     }
+            { anchor and is not moved by it (issue #305).                    }
+            Else If Oid = eTextObject Then
+            Begin
+                Txt := Obj;
+                Txt.Rotation := StrToFloatDef(Value, 0);
+                Txt.MoveByXY(0, 0);
+            End
             Else Matched := False;
         End
         { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }

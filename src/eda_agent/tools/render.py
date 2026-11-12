@@ -46,6 +46,34 @@ def _renders_dir() -> Path:
     return d
 
 
+#: What pcb_render_3d's picture is judged against, as a photo of the
+#: assembled board would be.
+REALISM_CHECKS = [
+    "every pad under a fitted part is covered in bright solder with a fillet up its "
+    "terminal; only unfitted pads show gold or copper finish",
+    "the solder mask reads as the board's real colour and gloss, not too bright or dull",
+    "traces show through the mask lighter than the clearance around them",
+    "plated holes have copper barrels, unplated ones bare laminate",
+    "the edge reads as laminate: plies, the mask lip, rounded corners",
+    "each part looks like the real part: body colour, markings, leads, lens or window",
+    "silkscreen is crisp and legible",
+    "light, shadows and backdrop look like a photo, not CAD",
+]
+
+
+#: What pcb_render_3d offers when no backdrop was chosen.
+BACKDROP_CHOICES = {
+    "studio": "a seamless white studio sweep",
+    "charcoal": "the dark grey fibre mat of a photo bench, lit from above",
+    "desk": "an office worktop in grey-beige oak melamine",
+    "esd_mat": "the blue-grey anti-static mat of an electronics bench",
+    "black": "matte black, as black velvet or paper",
+    "<path of an image>": "the user's own photo of a surface, with backdrop_width_mm",
+    "transparent": "no background, for placing the board on a page",
+    "#rrggbb": "a flat colour of the user's choosing",
+}
+
+
 def register_render_tools(mcp):
     """Register rendering tools with the MCP server."""
 
@@ -215,6 +243,195 @@ def register_render_tools(mcp):
             "bbox": geometry.get("bbox") or {},
             "bytes": len(svg),
         }
+
+    @mcp.tool()
+    async def pcb_render_3d(
+        view: str = "iso",
+        output_path: str = "",
+        width: int = 1600,
+        height: int = 1000,
+        quality: str = "normal",
+        azimuth: Optional[float] = None,
+        elevation: Optional[float] = None,
+        zoom: float = 1.0,
+        mask_color: str = "green",
+        finish: str = "enig",
+        silk_color: str = "white",
+        background: str = "",
+        backdrop_width_mm: float = 300.0,
+        show_components: bool = True,
+        depth_of_field: float = 0.15,
+    ) -> dict[str, Any]:
+        """A photographic picture of the active board, raytraced: solder
+        mask over raised copper, finish, silkscreen, drills, edges, the
+        parts with their solder joints, studio light, shadows and a lens.
+
+        This is eda-agent's 3D picture; flat 2D pictures of the board
+        are pcb_render_png and pcb_render_svg. Ask the user which backdrop
+        they want before the first render: called without ``background``
+        it reads nothing and returns ``choices`` to put to them.
+
+        Read-only. The parts come from Altium's STEP export of the board,
+        written to the renders folder and read with CadQuery's kernel
+        (``pip install eda-agent[models3d]``). Angled views need the path
+        tracer (``pip install eda-agent[render3d]``); top and bottom work
+        without it, flat-shaded.
+
+        Args:
+            view: top, bottom, iso, iso_back, iso_bottom, front, back,
+                left or right.
+            output_path: PNG path; default the workspace renders folder.
+            width, height: Pixels.
+            quality: draft (fast), normal or high (smooth shadows).
+            azimuth, elevation: Degrees, overriding the view's camera:
+                azimuth 0 looks along +Y, elevation 90 straight down.
+            zoom: Above 1 frames closer.
+            mask_color: green, black, blue, red, white, purple, yellow,
+                matte_black or matte_green.
+            finish: enig, hasl, osp or bare.
+            silk_color: white, black or yellow.
+            background: The backdrop, the user's choice: studio (a white
+                sweep), charcoal (the dark fibre mat of a photo bench),
+                desk (an oak-melamine worktop), esd_mat (a blue-grey bench
+                mat), black (matte), transparent, a colour like
+                "#202428", or the path of the user's own photo of a
+                surface, seen from above.
+            backdrop_width_mm: How wide the area in that photo is, so it
+                is laid at its real size.
+            show_components: Draw the fitted parts and their solder.
+            depth_of_field: 0 all sharp; 0.15 (default) as a phone
+                camera sees a board, and up to 2 blur what
+                is nearer or farther than the board's middle, more as
+                ``zoom`` comes closer, as a macro lens does.
+
+        Returns:
+            ``ok``, ``path``, ``renderer``, ``seconds``, ``board_mm``,
+            ``thickness_mm``, ``parts`` (how many were drawn), ``notes``,
+            and for the review: ``realism_checks``, ``models``
+            (``parts_without_a_model``, ``placeholder_models``) and
+            ``next_step``. Look at the picture against the checks and
+            propose what would make it more real; ask the user before
+            changing any 3D model.
+        """
+        import asyncio
+        import time
+
+        from .. import render3d
+
+        look = render3d.Look(mask=mask_color, finish=finish, silk=silk_color)
+        problem = look.problem()
+        if problem:
+            return {"ok": False, "reason": problem}
+        if quality not in render3d.QUALITY:
+            return {"ok": False, "reason": f"quality is one of {', '.join(render3d.QUALITY)}"}
+        if view not in render3d.VIEWS:
+            return {"ok": False, "reason": f"view is one of {', '.join(render3d.VIEWS)}"}
+        if not (16 <= width <= 8000 and 16 <= height <= 8000):
+            return {"ok": False, "reason": "width and height are 16 to 8000 pixels"}
+        if not 0 <= depth_of_field <= 2:
+            return {"ok": False, "reason": "depth_of_field is 0 to 2"}
+        if not background.strip():
+            return {"ok": False, "needs_choice": "background", "choices": BACKDROP_CHOICES,
+                    "reason": "ask the user which backdrop they want, then call again "
+                              "with background set to their choice"}
+        try:
+            render3d.engine.background_settings(background, backdrop_width_mm)
+        except ValueError as e:
+            return {"ok": False, "reason": str(e)}
+        started = time.monotonic()
+        bridge = get_bridge()
+        geometry = await bridge.send_command_async("generic.get_pcb_geometry", {}, timeout=180.0)
+        if not isinstance(geometry, dict) or not geometry.get("outline"):
+            return {"ok": False, "reason": "the active board gave no outline"}
+        stackup = await bridge.send_command_async("pcb.get_layer_stackup", {}, timeout=60.0)
+        polygons = await bridge.send_command_async("pcb.get_polygons", {}, timeout=60.0)
+        pours = []
+        for p in (polygons or {}).get("polygons") or []:
+            if p.get("layer") in ("TopLayer", "BottomLayer") and p.get("poured"):
+                pours.append(await bridge.send_command_async(
+                    "pcb.pour_copper", {"index": str(p["index"])}, timeout=120.0))
+        notes: list[str] = []
+        step_path: Optional[Path] = None
+        if show_components:
+            step_path, why = await _export_parts(bridge)
+            if why:
+                notes.append(why)
+
+        def work():
+            parts = None
+            if step_path is not None:
+                parts = render3d.parts.load(str(step_path))
+                _prune_part_caches(step_path)
+            scene = render3d.build(geometry, stackup, pours, look,
+                                   soldered=parts.designators if parts else ())
+            scene.parts = parts
+            img, info = render3d.render(
+                scene, render3d.view_for(view, azimuth, elevation, zoom, depth_of_field),
+                width, height, quality, background, backdrop_width_mm=backdrop_width_mm)
+            return scene, img, info
+
+        try:
+            scene, img, info = await asyncio.to_thread(work)
+        except (RuntimeError, ValueError) as e:
+            return {"ok": False, "reason": str(e)}
+        target = Path(output_path) if output_path else _renders_dir() / f"board_{view}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        img.save(target)
+        return {
+            "ok": True, "path": str(target), **info,
+            "seconds": round(time.monotonic() - started, 1),
+            "board_mm": [round(v, 2) for v in scene.size_mm],
+            "thickness_mm": round(scene.thickness_mm, 3),
+            "parts": len(scene.parts.designators) if scene.parts is not None else 0,
+            "notes": notes + scene.notes + ([info["note"]] if info.get("note") else []),
+            "realism_checks": REALISM_CHECKS,
+            "models": render3d.parts.model_findings(
+                scene.parts, [c.get("des") for c in geometry.get("components") or []])
+            if show_components else {},
+            "next_step": (f"Read {target} and judge it against realism_checks as a photo "
+                          "of the assembled board. Propose what would make it more real: "
+                          "render options, and better 3D models for the parts in models. "
+                          "Ask the user before changing any 3D model."),
+        }
+
+    async def _export_parts(bridge) -> tuple[Optional[Path], str]:
+        """The board's parts as STEP, from Altium's exporter, or why not."""
+        from .. import render3d
+        from ..bridge.exceptions import AltiumError
+
+        if not render3d.parts.available():
+            return None, "parts not drawn: reading the STEP needs pip install eda-agent[models3d]"
+        front = await bridge.send_command_async(
+            "application.get_active_document", {"front": "true"})
+        if not str((front or {}).get("file_path") or "").lower().endswith(".pcbdoc"):
+            return None, "parts not drawn: the document in front is not a board"
+        target = _renders_dir() / "parts" / "board.step"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            try:
+                target.unlink()
+            except OSError as e:
+                return None, f"parts not drawn: the last export could not be replaced: {e}"
+        try:
+            api = await bridge.send_command_async(
+                "project.export_step_api", {"output_path": str(target)}, timeout=600.0) or {}
+        except AltiumError as e:
+            return None, f"parts not drawn: the STEP export failed: {e}"
+        if not api.get("generated") or not target.exists():
+            return None, f"parts not drawn: the STEP export wrote nothing ({api.get('reason') or 'no file'})"
+        return target, ""
+
+    def _prune_part_caches(step_path: Path) -> None:
+        """Keep only the cache of the board just exported."""
+        from .. import render3d
+
+        keep = render3d.parts.cache_path(step_path).name
+        for old in step_path.parent.glob(step_path.stem + ".*.mesh.npz"):
+            if old.name != keep:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
 
     @mcp.tool()
     async def design_visual_review(

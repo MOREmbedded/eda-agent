@@ -22,10 +22,11 @@ DISTRIBUTION = {
     "PIL": "pillow", "win32api": "pywin32",
     "win32com": "pywin32", "win32con": "pywin32", "win32gui": "pywin32",
     "win32process": "pywin32", "win32ui": "pywin32", "pythoncom": "pywin32",
-    "pywintypes": "pywin32", "win32clipboard": "pywin32",
+    "pywintypes": "pywin32", "win32clipboard": "pywin32", "win32gui_struct": "pywin32",
+    "eda_agent_render": "eda-agent-render",
 }
 # Provided by a declared distribution rather than declared themselves.
-TRANSITIVE = {"werkzeug": "flask"}
+TRANSITIVE = {"werkzeug": "flask", "OCP": "cadquery"}
 # Not packages: modules a running server loads from a directory it puts on
 # sys.path itself (the EasyEDA extension's build.py).
 LOCAL = {"build"}
@@ -38,6 +39,9 @@ IN_REPO_OPTIONAL = {"eda_agent_compute"}
 # the Python of the user's openEMS install (GPL-3, never a dependency of
 # this package). Nothing in eda_agent imports that file.
 FOREIGN_INTERPRETER = {"openEMS", "CSXCAD"}
+# KiCad's own module, imported only by a script KiCad's bundled Python runs
+# (convert/altium_kicad/board_pass.py), never by the server.
+KICAD_PYTHON = {"pcbnew"}
 
 
 def _declared() -> set[str]:
@@ -70,7 +74,8 @@ def test_every_third_party_import_is_declared():
     missing = []
     for name, where in sorted(_imported().items()):
         if (name in sys.stdlib_module_names or name == "eda_agent" or name in LOCAL
-                or name in IN_REPO_OPTIONAL or name in FOREIGN_INTERPRETER):
+                or name in IN_REPO_OPTIONAL or name in FOREIGN_INTERPRETER
+                or name in KICAD_PYTHON):
             continue
         dist = TRANSITIVE.get(name) or DISTRIBUTION.get(name, name).lower()
         if dist not in declared:

@@ -18,7 +18,7 @@ schematic, PCB, library, project and review. You watch every change happen in Al
 [Documentation](#documentation) ·
 [Changelog](CHANGELOG.md)
 
-[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
+[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](https://raw.githubusercontent.com/MOREmbedded/eda-agent/main/assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
 
 *From a written spec to Gerbers: a 4-layer round LED board designed live in Altium ([watch the video](https://youtu.be/JnQsJlrpzBM)).*
 
@@ -172,7 +172,9 @@ The same documents, with search and navigation, are on the [website](https://mor
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0. See [LICENSE](https://github.com/MOREmbedded/eda-agent/blob/main/LICENSE) and [NOTICE](https://github.com/MOREmbedded/eda-agent/blob/main/NOTICE).
+
+<!-- mcp-name: io.github.morembedded/eda-agent -->
 
 ## Disclaimer
 
