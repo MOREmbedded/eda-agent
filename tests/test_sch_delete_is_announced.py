@@ -24,7 +24,11 @@ def _delete_branch() -> str:
     fns = functions(strip_comments(_PAS.read_text(encoding="utf-8")))
     body = next(b for b in fns.values()
                 if "If Mode = 'delete' Then" in b and "RemoveFromComponents(SchDoc, FoundObj);" in b)
-    return body.split("If Mode = 'delete' Then", 1)[1].split("If Mode = 'modify' Then", 1)[0]
+    # This fork's lib_component scope has its own delete branch earlier in
+    # the function; the sheet's is the one that takes parts off components.
+    branches = [b.split("If Mode = 'modify' Then", 1)[0]
+                for b in body.split("If Mode = 'delete' Then")[1:]]
+    return next(b for b in branches if "RemoveFromComponents(SchDoc, FoundObj);" in b)
 
 
 def test_each_removal_from_the_sheet_is_announced():

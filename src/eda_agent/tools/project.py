@@ -2200,6 +2200,17 @@ def register_project_tools(mcp):
         import os as _os
         import time as _time
 
+        # MEASURED: Altium opens a path that is not there as a NEW, empty
+        # OutJob and focuses it, so the run failed and left a phantom
+        # document active that every later tool then refused to work on.
+        # Checked first, while the path is still a string and before the
+        # fab check asks Altium anything about it.
+        if outjob_path and not _os.path.isfile(outjob_path):
+            return {"success": False, "container_name": container_name,
+                    "outjob_path": outjob_path, "reason": (
+                        f"{outjob_path} is not a file; Altium would open "
+                        "a new empty OutJob at that path and focus it. "
+                        "Nothing was run.")}
         bridge = get_bridge()
         refusal, checked = await _fab_gate(bridge, outjob_path, [container_name],
                                            fab, fab_tier, outer_oz, fab_limits)
@@ -2207,16 +2218,6 @@ def register_project_tools(mcp):
             return {"success": False, "container_name": container_name, **refusal}
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
-            # MEASURED: Altium opens a path that is not there as a NEW,
-            # empty OutJob and focuses it, so the run failed and left a
-            # phantom document active that every later tool then refused
-            # to work on. Checked here, where the path is still a string.
-            if not _os.path.isfile(outjob_path):
-                return {"success": False, "container_name": container_name,
-                        "outjob_path": outjob_path, "reason": (
-                            f"{outjob_path} is not a file; Altium would open "
-                            "a new empty OutJob at that path and focus it. "
-                            "Nothing was run.")}
             params["outjob_path"] = outjob_path
             busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
             if busy:

@@ -178,7 +178,8 @@ def test_converted_numbers_have_no_float_noise():
 
 #: Plain argument names that are not lengths on any tool.
 NOT_LENGTH_NAMES = re.compile(
-    r"count|index|indices|^n_|_n$|number|^rows?$|^cols?$|columns|angle|rotat|degree|"
+    # workers, ipc_class, part (a part number), length_m (metres): this fork's tools.
+    r"^workers$|^ipc_class$|^part$|_m$|count|index|indices|^n_|_n$|number|^rows?$|^cols?$|columns|angle|rotat|degree|"
     r"_deg$|ratio|factor|scale|pct|percent|fraction|weight|priority|limit|max_|"
     r"min_|timeout|seconds|_s$|_ms$|interval|retries|iterations|rounds|steps?$|"
     r"turns|_hz$|_khz$|_ghz$|freq|_ohms?$|impedance|^z0|_v$|^v_|volt|_a$|^i_|amps|"

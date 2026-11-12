@@ -66,4 +66,5 @@ def test_no_radius_is_asked_of_the_base_interface():
 def test_an_unknown_name_is_recorded_not_left_blank():
     body = _units()["GetSchProperty"]
     tail = body[body.index("PropName = 'Selection'"):]
-    assert re.search(r"Else\s+NotePropertyDiag\('unknown', PropName\);", tail)
+    # This fork tries the generated property chains first, then records it.
+    assert re.search(r"NotePropertyDiag\('unknown', PropName\);", tail)

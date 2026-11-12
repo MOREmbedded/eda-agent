@@ -160,6 +160,9 @@ ADDED: dict[str, frozenset[str]] = {
     "easyeda_emit_template_connections": frozenset({"pin_positions"}),
     "pcb_calc_length_match": frozenset({"lengths"}),
     "kicad_set_design_rules": frozenset({"constraints"}),
+    # This fork's tools: a board box {x1, y1, x2, y2}; a polyline of points.
+    "pcb_audit_placement_plan": frozenset({"board"}),
+    "pcb_route_diff_pair": frozenset({"centerline"}),
 }
 
 #: Tools whose ``value`` arguments are a length for some kinds only.

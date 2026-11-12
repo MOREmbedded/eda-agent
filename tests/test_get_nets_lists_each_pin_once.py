@@ -47,7 +47,9 @@ def test_a_pin_is_listed_once_and_an_unnamed_copy_gives_way(fns):
 def test_skipped_nils_are_counted_on_one_pass_only(fns):
     body = fns["Proj_GetNets"]
     assert "Begin Inc(Skipped); Continue; End;" not in body
-    assert body.count("If Pass = 2 Then Inc(Skipped);") == 3
+    # A nil document, component, sub-part (this fork walks every part of a
+    # multi-part component) or pin.
+    assert body.count("If Pass = 2 Then Inc(Skipped);") == 4
 
 
 def test_the_bom_lists_a_designator_once(fns):

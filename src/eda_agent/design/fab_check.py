@@ -118,10 +118,12 @@ def check_board(stats: dict[str, Any], rules: list[dict[str, Any]], vendor: str,
             f"no published limits for {vendor!r} here; the fabs with data are "
             + ", ".join(sorted(got.get("vendors") or []))
             + ", or fab 'custom' with your own fab_limits"), "vendors": got.get("vendors")}
+    layers = int(stats.get("num_copper_layers") or 0)
+    if not custom:
+        tier = fab_library.pick_tier(got, tier, layers)
     if tier not in got["tiers"]:
         return {"ok": False, "reason": f"{got['vendor']} has no tier {tier!r}",
                 "tiers": sorted(got["tiers"])}
-    layers = int(stats.get("num_copper_layers") or 0)
     rows: list[dict[str, Any]] = []
     figs = got["tiers"][tier]
     counts = (figs.get("copper_layer_counts") or [{}])[0].get("counts")

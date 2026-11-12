@@ -43,9 +43,12 @@ def test_a_track_below_the_fab_floor_is_refused_and_named():
 
 
 def test_a_layer_count_or_a_blind_via_the_fab_does_not_build_is_refused():
+    # This fork's OSH Park data (read 2026-11-11) lists 2, 4 and 6 layers.
+    eight = check_board({**_STATS, "num_copper_layers": 8}, _RULES, "OSH Park")
+    assert not eight["ok"] and "8 copper layers" in eight["reason"]
     six = check_board({**_STATS, "num_copper_layers": 6}, _RULES, "OSH Park")
-    assert not six["ok"] and "6 copper layers" in six["reason"]
-    blind = check_board({**_STATS, "vias_blind": 3}, _RULES, "OSH Park")
+    assert six["tier"] == "six_layer"
+    blind = check_board({**_STATS, "vias_blind": 3}, _RULES, "Bay Area Circuits")
     assert not blind["ok"] and "builds none" in blind["reason"]
 
 
@@ -77,7 +80,12 @@ _CONTAINERS = [
 
 
 @pytest.fixture
-def project():
+def project(monkeypatch):
+    # proj_run_outjob refuses an OutJob path that is not a file (this
+    # fork's guard); the fake project's OutJob is taken as one.
+    import os.path
+    real = os.path.isfile
+    monkeypatch.setattr(os.path, "isfile", lambda p: p == _JOB or real(p))
     return _JOB
 
 
