@@ -35,9 +35,8 @@ import math
 import re
 from typing import Any, Iterable, Optional
 
+from ..units import MM_PER_MIL
 from .rule_manager import board_rule_state
-
-MM_PER_MIL = 0.0254
 
 #: One Altium rule kind the check can read, recognised by how its
 #: descriptor starts (``rule_kind`` is an enum ordinal that differs between

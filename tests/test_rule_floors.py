@@ -13,7 +13,7 @@ import json
 import pytest
 
 from eda_agent.design.rule_floors import check_rules, floors_from_fab_rules
-from eda_agent.tools import rules as rule_tools
+from eda_agent.tools import rule_floors as floor_tools
 
 
 def _src(q="fixture"):
@@ -188,7 +188,7 @@ def _tool(monkeypatch, bridge):
     from eda_agent.tools import pcb as pcb_tools
     monkeypatch.setattr(pcb_tools, "get_bridge", lambda: bridge)
     mcp = _Mcp()
-    rule_tools.register_rule_tools(mcp)
+    floor_tools.register_rule_floor_tools(mcp)
     return mcp.tools["pcb_rules_fab_floors"]
 
 
