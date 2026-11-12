@@ -2008,6 +2008,141 @@ def cmd_laminates(*, as_json: bool = False) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# Fab design-rule database and connectors
+# --------------------------------------------------------------------------
+
+def cmd_fab_list(*, as_json: bool = False) -> int:
+    """Every fab connector: status, tiers and how old its reading is."""
+    import json as _json
+
+    from .design.fab_connectors import list_connectors
+
+    rows = list_connectors()
+    if as_json:
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        age = (f"read {r['retrieved']}" + ("  STALE" if r.get("stale") else "")
+               if "retrieved" in r else "no data yet")
+        print(f"{r['key']:18} {r['vendor']:22} {r['country']:6} "
+              f"{r['status']:8} {age}")
+        if r.get("tiers"):
+            print(f"{'':18} tiers: {', '.join(r['tiers'])}")
+        if r.get("note"):
+            print(f"{'':18} {r['note']}")
+    return 0
+
+
+def _fmt_rule(rule: dict) -> str:
+    from .units import MM_PER_MIL
+
+    if "mils" in rule:
+        return f"{rule['mils']:g} mil ({rule['mils'] * MM_PER_MIL:.3f} mm)"
+    if "counts" in rule:
+        return ", ".join(str(c) for c in rule["counts"])
+    return str(rule.get("value", ""))
+
+
+def cmd_fab_rules(vendor: str, *, layers: int, oz: float = 1.0,
+                  tier: str = "standard", ipc_class: Optional[int] = None,
+                  as_json: bool = False) -> int:
+    """All published design rules of one fab build, each with its quote."""
+    import json as _json
+
+    from .design.fab_rules import fab_rules
+
+    got = fab_rules(vendor, copper_layers=layers, outer_oz=oz, tier=tier,
+                    ipc_class=ipc_class)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False, default=str))
+        return 0 if got["ok"] else 1
+    if not got["ok"]:
+        print(got["reason"], file=sys.stderr)
+        for k in ("tiers", "vendors", "copper_layer_counts"):
+            if k in got:
+                print(f"  {k}: {got[k]}", file=sys.stderr)
+        return 1
+    print(f"{got['vendor']} {got['tier']}, {layers} layers, {oz:g} oz outer "
+          f"(read {got['source']['retrieved']}, {got['source']['url']})")
+    for key, rule in got["rules"].items():
+        print(f"  {rule['label'][:38]:38} {_fmt_rule(rule)}")
+        print(f"  {'':38} \"{rule['quote'][:100]}\"")
+    if got["missing"]:
+        print("\nNot published (refused, not guessed):")
+        for m in got["missing"]:
+            print(f"  {m['key']:22} {m['reason']}")
+    if got["age"].get("stale"):
+        print(f"\n{got['age']['stale_note']}", file=sys.stderr)
+    return 0
+
+
+def cmd_fab_compare(*, layers: int, oz: float = 1.0,
+                    keys: Optional[list] = None, as_json: bool = False) -> int:
+    """Every fab and tier side by side for one build."""
+    import json as _json
+
+    from .design.fab_rules import compare
+
+    got = compare(keys or None, copper_layers=layers, outer_oz=oz)
+    if as_json or not got["ok"]:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    short = [k.replace("min_", "")[:10] for k in got["keys"]]
+    print(f"{'fab / tier':34}" + "".join(f"{s:>11}" for s in short) + "   (mil)")
+    for row in got["rows"]:
+        cells = "".join(f"{row['cells'][k].get('mils', '-'):>11}"
+                        if not isinstance(row['cells'][k].get('mils'), float)
+                        else f"{row['cells'][k]['mils']:>11.2f}"
+                        for k in got["keys"])
+        print(f"{(row['vendor'] + ' / ' + row['tier'])[:34]:34}{cells}")
+    print("\n'-' = the fab does not publish it for this build (or it was not "
+          "readable);\nrun fab-rules <fab> for the reason and the quote.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_fab_refresh(vendor: str, *, files: Optional[list] = None,
+                    write: bool = False, as_json: bool = False) -> int:
+    """Re-read a fab's pages and check every stored quote is still there."""
+    import json as _json
+
+    from .design.fab_connectors import refresh, write_retrieved
+
+    got = refresh(vendor, files=files)
+    if write and got.get("check"):
+        got["write"] = write_retrieved(vendor, got)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    if "reason" in got and not got.get("read"):
+        print(got["reason"], file=sys.stderr)
+    for r in got.get("read", []):
+        print(f"read     {r}")
+    for f in got.get("failed", []):
+        print(f"FAILED   {f['url']}: {f['reason']}")
+        if f.get("hint"):
+            print(f"         {f['hint']}")
+    if got.get("snapshot"):
+        print(f"snapshot {got['snapshot']}")
+    if got.get("note"):
+        print(got["note"])
+    chk = got.get("check")
+    if chk:
+        print(f"\n{chk['confirmed']} quote(s) still on the pages, "
+              f"{len(chk['not_found'])} not found.")
+        for row in chk["not_found"]:
+            print(f"  {row['tier']}/{row['key']}: \"{row['quote'][:90]}\"")
+        if chk["not_found"]:
+            print("\nA quote that is gone means the fab changed or moved it: "
+                  "read the page and update the data by hand.", file=sys.stderr)
+    if got.get("write"):
+        w = got["write"]
+        print("reading date moved " + (f"{w['from']} -> {w['to']}" if w["ok"]
+                                       else f"refused: {w['reason']}"))
+    return 0 if got["ok"] else 1
+
+
 def cmd_calc_cross_check(calculator: str, values: list,
                          *, as_json: bool = False) -> int:
     """Compare one calculator against a locally built pcb-toolkit."""

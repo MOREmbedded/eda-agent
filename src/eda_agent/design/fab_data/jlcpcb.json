@@ -3,7 +3,8 @@
  "source": {
   "url": "https://jlcpcb.com/capabilities/pcb-capabilities",
   "retrieved": "2026-10-22",
-  "note": "Rigid FR-4 capabilities. The page carries no revision date."
+  "note": "Rigid FR-4 capabilities. The page carries no revision date.",
+  "second_reading": {"retrieved": "2026-11-11", "note": "Tolerances, outline, silkscreen-to-pad, finishes, impedance and castellation keys added from a second reading of the same page. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."}
  },
  "tiers": {
   "standard": {
@@ -94,6 +95,51 @@
    ],
    "copper_to_edge": [
     {"mm": 0.2, "quote": "Routed 0.2mm ① Copper clearance from routed board edges: ≧0.2 mm"}
+   ],
+   "silk_to_pad": [
+    {"mm": 0.15, "quote": "The Minimum Distance Between Pad and Silkscreen is 0.15mm."}
+   ],
+   "copper_to_vcut": [
+    {"mm": 0.4, "quote": "Copper clearance from V-cut board edges: ≥0.4 mm"}
+   ],
+   "min_npth_drill": [
+    {"mm": 0.5, "quote": "Min. Non-plated holes | 0.50mm"}
+   ],
+   "mask_expansion": [
+    {"value": "1:1 allowed", "quote": "Pad size:soldermask opening can be 1:1", "note": "Keep 0.09 mm from mask openings to neighbouring traces."}
+   ],
+   "board_thickness": [
+    {"value": "0.4-4.5 mm", "quote": "0.4 - 4.5 mm"}
+   ],
+   "copper_weights": [
+    {"value": "1/2/2.5/3.5/4.5 oz (2 layers), 1/2 oz (multilayer)", "quote": "2-layer: 1 oz / 2 oz / 2.5 oz / 3.5 oz / 4.5oz ... Multi-layer: 1 oz / 2 oz"}
+   ],
+   "pth_hole_tolerance": [
+    {"value": "+0.13/-0.08 mm", "quote": "Through-holes: +0.13 / -0.08 mm"}
+   ],
+   "outline_tolerance": [
+    {"mm": 0.2, "quote": "Dimension tolerance for routed board edges: ±0.2 mm (regular precision); ±0.1 mm (high precision)"}
+   ],
+   "max_board_size": [
+    {"value": "670 x 600 mm (2 layers)", "quote": "FR4(2-layer): 670 × 600 mm"}
+   ],
+   "via_in_pad": [
+    {"value": "filled and plated over, default from 6 layers", "quote": "Vias can be placed within BGA pads using filled and plated-over vias"}
+   ],
+   "impedance_tolerance": [
+    {"value": "±10%", "quote": "Impedance Tolerance ±10%"}
+   ],
+   "castellated_holes": [
+    {"mm": 0.5, "quote": "Hole diameter (Φ): ≥ 0.5 mm"}
+   ],
+   "surface_finishes": [
+    {"value": "HASL, lead-free HASL, ENIG, OSP", "quote": "HASL (leaded / lead-free), ENlG, OSP"}
+   ],
+   "ipc_class": [
+    {"unpublished": "No IPC class stated on the rigid capability page."}
+   ],
+   "max_aspect_ratio": [
+    {"unpublished": "No aspect ratio on the page."}
    ]
   }
  }

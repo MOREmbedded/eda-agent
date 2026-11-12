@@ -1,0 +1,190 @@
+{
+ "vendor": "Advanced Circuits",
+ "source": {
+  "url": "https://www.advancedpcb.com/en-us/solutions/standard-pcbs/",
+  "other_urls": [
+   "https://www.advancedpcb.com/en-us/solutions/advanced-pcbs/",
+   "https://www.advancedpcb.com/en-us/resources/manufacturing-capabilities/"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "AdvancedPCB (formerly 4pcb.com). Spec tables with Standard and Custom columns; the facility capability tables lost their alignment when read and are not used. The two pages disagree on the standard layer count (0-12 vs 0-10). Inches on the page. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10
+     ],
+     "quote": "0 - 10 Layers",
+     "note": "The smaller of the two pages' figures (0-12 elsewhere)."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 5,
+     "quote": "Trace / Space | 5 / 5 Mils"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 5,
+     "quote": "Trace / Space | 5 / 5 Mils"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 10,
+     "quote": "Min. Hole Size | 0.010\"",
+     "derived": "0.010 inch = 10 mil"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "unpublished": "Not in the text read."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "Not in the text read."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "Not in the text read."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "Only a summary of the page mentions 0.005 inch; not verified verbatim."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "0.031/0.062/0.093/0.125 inch",
+     "quote": ".031\" / .062\" / .093\" / .125\""
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 oz inner, up to 2 oz outer",
+     "quote": "1 oz. Inner / Up to 2 oz. Outer"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±0.005 inch",
+     "quote": "Hole Tolerance | +/- 0.005\""
+    }
+   ],
+   "outline_tolerance": [
+    {
+     "value": "±0.010 inch",
+     "quote": "Rout Tolerance | +/- 0.010\""
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "16 x 22 inch",
+     "quote": "Max board size | 16\" x 22\""
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "lead-free HAL",
+     "quote": "Plate Finish | Lead-Free HAL*"
+    }
+   ],
+   "ipc_class": [
+    {
+     "value": "IPC class 2",
+     "quote": "standard PCBs are inspected according to IPC Class 2 Standards."
+    }
+   ]
+  },
+  "custom": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40
+     ],
+     "quote": "0 - 40 Layers"
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 2.75,
+     "quote": "Down to 2.75 / 3 Mils"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3,
+     "quote": "Down to 2.75 / 3 Mils"
+    }
+   ],
+   "min_drill": [
+    {
+     "mil": 4,
+     "quote": "Min. Hole Size ... 0.004\"",
+     "derived": "0.004 inch = 4 mil"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "0.5-4 oz inner, 1-20 oz outer",
+     "quote": "Copper Weight ... 0.5 - 4 oz. Inner / 1 - 20 oz. Outer"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "±0.003 inch on request",
+     "quote": "Hole Tolerance ... +/- 0.003\" (Upon Request)"
+    }
+   ],
+   "via_in_pad": [
+    {
+     "value": "yes, VIPPO",
+     "quote": "Via-in-Pad ... Yes"
+    }
+   ],
+   "castellated_holes": [
+    {
+     "value": "yes",
+     "quote": "Castellated Holes ... Yes"
+    }
+   ],
+   "ipc_class": [
+    {
+     "value": "IPC-6012 class 2 to 3A",
+     "quote": "IPC6012 Class 2-3A / IPC6018 Class 3"
+    }
+   ]
+  }
+ }
+}

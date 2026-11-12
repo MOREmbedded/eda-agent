@@ -1,0 +1,274 @@
+{
+ "vendor": "NextPCB",
+ "source": {
+  "url": "https://www.nextpcb.com/pcb-capabilities",
+  "other_urls": [
+   "https://www.nextpcb.com/advanced-pcb-manufacturing-capabilities"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "Two pages: standard capabilities (Items | Capabilities | Notes tables) and advanced (per-technology tables: HDI, RF, high speed, heavy copper, flex, metal core). The standard page says 1-32 layers, its own comparison table says 1-20. Track/gap by copper weight; inner 0.5 oz 2.5/3 mil is not used for the board rule. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20
+     ],
+     "quote": "1-20 layers",
+     "note": "The comparison table's 1-20; the standard page itself says '1 - 32 layers'. The smaller is stored."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 3,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "3mil (3mil≈0.08mm)",
+     "note": "Row '1 oz(Outer layer)'."
+    },
+    {
+     "mil": 5.5,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "5.5mil (5.5mil≈0.14mm)",
+     "note": "Row '2 oz(Outer layer)'."
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "3mil (3mil≈0.08mm)"
+    },
+    {
+     "mil": 5.5,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "5.5mil (5.5mil≈0.14mm)"
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.15,
+     "quote": "Minimum drill hole size is 0.15 mm (available for PCB thickness ≤ 1.2 mm)",
+     "note": "Only on boards up to 1.2 mm thick."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 3.5,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "3.5mil (single side) (3.5mil≈0.09mm)"
+    },
+    {
+     "mil": 4.5,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "4.5mil (single side) (4.5mil≈0.11mm)"
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "unpublished": "The annular ring table does not separate component holes from vias."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 12,
+     "quote": "≥12mil(Avoid conductive anodic filament)(12mil≈0.30mm)",
+     "note": "Holes on different nets; same-net via to via is 8 mil."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "mil": 3.5,
+     "quote": "Green: 3.5mil",
+     "note": "Row 'Solder bridge'; black/white 5 mil, other colours 4 mil."
+    }
+   ],
+   "mask_expansion": [
+    {
+     "mil": 1.5,
+     "quote": "≥1.5mil (1.5mil≈0.04mm)",
+     "note": "Row 'Solder mask opening/expansion'."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "Silkscreen printing≥5mil (5mil≈0.12mm)",
+     "note": "Inkjet printing accepts 3 mil."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mil": 30,
+     "quote": "Silkscreen printing≥30mil (30mil≈0.76mm)",
+     "note": "Inkjet printing accepts 24 mil."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "mil": 6,
+     "quote": ">6mil (6mil≈0.15mm)",
+     "note": "Row 'Pad to silkscreen'."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.2,
+     "quote": "≥0.2mm",
+     "note": "Row 'Trace to outline'."
+    }
+   ],
+   "copper_to_vcut": [
+    {
+     "mm": 0.4,
+     "quote": "≥0.4mm",
+     "note": "Row 'Trace to V-cut line'."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "0.6-3.2 mm",
+     "quote": "0.6/0.8/1.0/1.2/1.6/2.0/2.5/3.0/3.2mm"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "1 or 2 oz outer",
+     "quote": "Finished copper weight of outer layer could be 1 oz/2 oz"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "mm": 0.075,
+     "quote": "±0.075mm"
+    }
+   ],
+   "npth_hole_tolerance": [
+    {
+     "mm": 0.05,
+     "quote": "±0.05mm"
+    }
+   ],
+   "outline_tolerance": [
+    {
+     "mm": 0.15,
+     "quote": "CNC: ±0.15mm, V-CUT: ±0.2mm"
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "1500 x 600 mm (1-2 layers)",
+     "quote": "1-2 layers: 1500*600mm",
+     "note": "4 layers 1500*500 mm, 6+ layers 500*400 mm."
+    }
+   ],
+   "impedance_tolerance": [
+    {
+     "value": "±10%",
+     "quote": "Impedance tolerance | ±10%"
+    }
+   ],
+   "castellated_holes": [
+    {
+     "mm": 0.5,
+     "quote": "Min. castellated holes | ≥0.5mm"
+    }
+   ],
+   "ipc_class": [
+    {
+     "value": "IPC-A-600, no class stated",
+     "quote": "IPC-A-600 Standard | Printed Circuit Board Acceptance Standard"
+    }
+   ],
+   "min_npth_drill": [
+    {
+     "mm": 0.4,
+     "quote": "Min. non-plated holes | ≥0.4mm"
+    }
+   ]
+  },
+  "advanced_hdi": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32
+     ],
+     "quote": "32 layers",
+     "note": "The FAQ gives HDI up to 32 layers; the page lists 1- to 3-step and any-layer HDI."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 2.0,
+     "quote": "Down to 2.0 mil / 2.0 mil (0.05mm)"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 2.0,
+     "quote": "Down to 2.0 mil / 2.0 mil (0.05mm)"
+    }
+   ],
+   "min_laser_drill": [
+    {
+     "mm": 0.075,
+     "quote": "Min Laser Drill (Microvia) | 0.075 mm (3 mil)"
+    }
+   ],
+   "max_aspect_ratio": [
+    {
+     "value": "0.8:1 to 1:1 (microvia)",
+     "quote": "Microvia Aspect Ratio | Max 0.8:1 to 1:1"
+    }
+   ],
+   "impedance_tolerance": [
+    {
+     "value": "±10% above 50 Ω, ±5 Ω at or below",
+     "quote": "±10% (>50Ω); ±5Ω (≤50Ω)"
+    }
+   ],
+   "ipc_class": [
+    {
+     "value": "IPC-6012 class 3",
+     "quote": "IPC Class 3 & IATF16949 certified manufacturing"
+    }
+   ]
+  }
+ }
+}
