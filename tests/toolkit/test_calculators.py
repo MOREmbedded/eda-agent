@@ -501,3 +501,31 @@ def test_prefill_keys_exist_on_the_calculators_that_name_them():
     r = toolkit.run("microstrip", {"h": top["stackup.dielectric_height"],
                                    "t": top["stackup.copper"], "er": top["stackup.er"]["value"]})
     assert r["ok"]
+
+
+def test_a_value_outside_its_limits_is_refused_by_name():
+    low = toolkit.run("padstack", {"hole": "0.1 mil"})
+    assert not low["ok"] and "Finished hole must be at least 0.5 mil" in low["reason"]
+    high = toolkit.run("bga_land", {"traces": 9})
+    assert not high["ok"] and "must be at most 4" in high["reason"]
+    # The limit is compared in SI, whatever unit the value arrives in.
+    assert not toolkit.run("padstack", {"hole": "0.01 mm"})["ok"]       # 0.39 mil
+    assert toolkit.run("padstack", {"hole": "0.02 mm"})["ok"]           # 0.79 mil
+
+
+def test_cavity_matches_the_open_ended_line_it_becomes():
+    """A port across the full width leaves a parallel-plate line, open at
+    both ends, whose input impedance is known in closed form:
+    Z = -j Z0 / (tan(k x) + tan(k (a - x))), Z0 = eta d / b. It depends on
+    every mode's weight, not only on where the resonances are."""
+    from eda_agent.engineering.toolkit import plane
+    from eda_agent.engineering.toolkit.fdsolver import C0, EPS0, MU0
+    a, b, d, er, x0 = 0.10, 0.02, 0.2e-3, 4.0, 0.03
+    z0 = math.sqrt(MU0 / (EPS0 * er)) * d / b
+    for f in (50e6, 200e6, 400e6, 600e6):
+        k = 2 * math.pi * f * math.sqrt(er) / C0
+        exact = -z0 / (math.tan(k * x0) + math.tan(k * (a - x0)))
+        got = plane.cavity_impedance(a, b, d, er, 0.0, [f], [(x0, b / 2, 1e-5, b)],
+                                     sigma=1e40, m_max=4000, n_max=2)[0, 0, 0]
+        assert abs(got.real) < 1e-6 * abs(got.imag)
+        assert got.imag == pytest.approx(exact, rel=0.01)

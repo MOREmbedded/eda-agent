@@ -125,3 +125,31 @@ def test_ac_resistance_factor_limits():
     f = 10e9
     d = tline.skin_depth(f)
     assert tline.ac_resistance_factor(f, w, t) == pytest.approx(w * t / (2 * (w + t) * d), rel=0.01)
+
+
+def _kobayashi(eeff0, er, w, h, f):
+    """Er_eff(f) by Kobayashi (IEEE Trans. MTT 36(8), 1988): a second,
+    independently derived dispersion model."""
+    u = w / h
+    fk = C0 * math.atan(er * math.sqrt((eeff0 - 1.0) / (er - eeff0))) / (
+        2.0 * math.pi * h * math.sqrt(er - eeff0))
+    f50 = fk / (0.75 + (0.75 - 0.332 / er ** 1.73) * u)
+    m0 = 1.0 + 1.0 / (1.0 + math.sqrt(u)) + 0.32 * (1.0 / (1.0 + math.sqrt(u))) ** 3
+    mc = (1.0 + 1.4 / (1.0 + u) * (0.15 - 0.235 * math.exp(-0.45 * f / f50))
+          if u <= 0.7 else 1.0)
+    return er - (er - eeff0) / (1.0 + (f / f50) ** min(m0 * mc, 2.32))
+
+
+@pytest.mark.parametrize("er,w,h", [
+    (9.8, 0.6e-3, 0.635e-3), (9.8, 0.2e-3, 0.635e-3), (4.3, 3e-3, 1.5e-3),
+    (2.2, 2.4e-3, 0.787e-3), (10.2, 1.2e-3, 1.27e-3), (3.66, 0.5e-3, 0.254e-3),
+    (4.3, 0.3e-3, 0.2e-3)])
+def test_dispersion_agrees_with_kobayashi(er, w, h):
+    """Two published dispersion models, derived separately, within 1 %."""
+    ee0 = tline.microstrip_hj(w, h, 0.0, er)[1]
+    moved = 0.0
+    for f in (1e9, 5e9, 10e9, 20e9, 40e9):
+        kj = tline.microstrip_dispersion(ee0, er, w, h, f)
+        assert kj == pytest.approx(_kobayashi(ee0, er, w, h, f), rel=0.01)
+        moved = max(moved, kj / ee0 - 1.0)
+    assert moved > 0.03          # the band is wide enough for dispersion to matter

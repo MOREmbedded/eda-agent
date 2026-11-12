@@ -180,7 +180,9 @@ def test_board_values_reads_and_reports_failure():
         raise RuntimeError("no answer")
     got = toolkit_view.board_values("D:/x/demo.PcbDoc", read=boom)
     assert not got["ok"] and "no answer" in got["reason"]
-    assert not toolkit_view.board_values("")["ok"]
+    asked = []
+    none = toolkit_view.board_values("", read=lambda b: asked.append(b) or STACK)
+    assert none == {"ok": False, "reason": "no board is shown"} and not asked
     assert not toolkit_view.board_values("D:/x/demo.PcbDoc", read=lambda b: None)["ok"]
 
 

@@ -61,6 +61,11 @@ from scipy.sparse.linalg import splu
 GROWTH = 0.12
 FAR_GROWTH = 0.30
 REF_RESOLUTION = 60.0
+#: Largest grid a solve is attempted on. The widest and thinnest
+#: geometries the calculators accept need under 200 000 nodes; ten times
+#: that is a mistake in the geometry, and a direct factorisation of it
+#: would hold the caller for minutes.
+MAX_NODES = 2_000_000
 EPS0 = 8.8541878128e-12
 MU0 = 1.25663706212e-6
 C0 = 299_792_458.0
@@ -184,7 +189,9 @@ def _axis(keys: Sequence[float], lo: float, hi: float, h0: float,
         hs = h0 + GROWTH * scale * d
         out = max(nlo - x, x - nhi, 0.0)
         hs += (FAR_GROWTH - GROWTH) * scale * out
-        return min(hs, hmax)
+        # Never below h0: the march below advances by this size, so a
+        # size that could reach zero would never arrive.
+        return max(min(hs, hmax), h0)
 
     out = [pts[0]]
     for a, b in zip(pts, pts[1:]):
@@ -194,6 +201,9 @@ def _axis(keys: Sequence[float], lo: float, hi: float, h0: float,
             if x >= b - 0.3 * size(b):
                 break
             xs.append(x)
+            if len(xs) > 200_000:
+                raise ValueError("the mesh could not be built: a cell size of "
+                                 f"{h0:.3g} m does not cross {b - a:.3g} m")
         if xs:
             # Stretch so the march ends on b with the last step sized
             # like its neighbour.
@@ -336,6 +346,9 @@ def solve(xs: CrossSection, resolution: float = 10.0) -> Solution:
     """Solve the cross-section. ``resolution`` is cells per smallest feature."""
     X, Y = _mesh(xs, resolution)
     nx, ny = len(X), len(Y)
+    if nx * ny > MAX_NODES:
+        raise ValueError(f"the cross-section needs a grid of {nx} x {ny} nodes, more than "
+                         f"the {MAX_NODES} this solver takes on; check the dimensions")
     er, td = _materials(xs, X, Y)
     PX, PY = np.meshgrid(X, Y, indexing="ij")
     tol = 1e-9 * (X[-1] - X[0])

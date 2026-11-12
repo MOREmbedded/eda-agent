@@ -175,3 +175,43 @@ def test_grid_refinement_converges_monotonically():
     for coarse, fine in zip(errs, errs[1:]):
         assert 1.7 < coarse / fine < 2.4
     assert errs[-1] < 0.004
+
+
+def test_the_mesh_march_always_arrives(monkeypatch):
+    """The size field can never reach zero, whatever the growth rates.
+
+    With the near growth above the far growth the size used to fall with
+    distance and the march stalled; found by a seeded break that hung
+    the suite instead of failing it.
+    """
+    monkeypatch.setattr(fd, "GROWTH", 0.4)
+    monkeypatch.setattr(fd, "FAR_GROWTH", 0.05)
+    line = fd._axis([0.0, 1e-4], -5e-3, 5e-3, 1e-6, 5e-4, (0.0, 1e-4))
+    assert line[0] == -5e-3 and line[-1] == 5e-3
+    steps = np.diff(line)
+    assert steps.min() > 0 and len(line) < 20000
+    assert {0.0, 1e-4} <= set(line.tolist())
+
+
+def test_a_mesh_that_cannot_be_built_is_refused_not_marched_forever():
+    """300 000 cells across one interval is a geometry no solve should
+    be attempted on; the march stops and says what it could not cross."""
+    with pytest.raises(ValueError, match="mesh could not be built"):
+        fd._axis([0.0], 0.0, 0.3, 1e-6, 1e-6, (0.0, 0.3))
+    # An ordinary interval of the same size field is untouched by the cap.
+    assert len(fd._axis([0.0], 0.0, 0.01, 1e-6, 1e-6, (0.0, 0.01))) == pytest.approx(10001, abs=3)
+
+
+def test_a_grid_too_large_to_solve_is_refused_with_its_size(monkeypatch):
+    from eda_agent.engineering import toolkit
+    assert toolkit.run("microstrip", {})["ok"]
+    monkeypatch.setattr(fd, "MAX_NODES", 5000)
+    got = toolkit.run("microstrip", {})
+    assert not got["ok"] and "nodes" in got["reason"] and "5000" in got["reason"]
+    # The widest and thinnest geometry stays far inside the real limit.
+    monkeypatch.undo()
+    sizes = []
+    mesh = fd._mesh
+    monkeypatch.setattr(fd, "_mesh", lambda xs, res: sizes.append(mesh(xs, res)) or sizes[-1])
+    assert toolkit.run("microstrip", {"w": "500 mil", "h": "0.5 mil", "t": "0.1 mil"})["ok"]
+    assert max(len(x) * len(y) for x, y in sizes) < fd.MAX_NODES / 5
