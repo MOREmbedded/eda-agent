@@ -98,11 +98,69 @@ def via_pair_loop_inductance(height_mils: float, spacing_mils: float,
     return MU0 * height_mils * MIL / math.pi * math.acosh(s / (2.0 * radius_mils))
 
 
+#: exp(-gamma) / 2^(3/2): the lattice Green's function of the square
+#: five-point Laplacian tends to (1 / 2 pi) ln(r / (PEACEMAN * h)) far from
+#: its source (gamma is Euler's constant).
+PEACEMAN = math.exp(-0.5772156649015329) / 2.0 ** 1.5      # 0.19851
+
+
 def peaceman_radius(cell_mils: float) -> float:
-    """Equivalent radius of a node of a square five-point grid: a well of
-    this radius in a continuous sheet sees the same potential as the grid
-    node (Peaceman 1978, r_eq = 0.198 h for an isotropic square grid)."""
-    return 0.198 * cell_mils
+    """Equivalent radius of a node of a square five-point grid: a round
+    conductor of this radius in a continuous sheet sees the same potential
+    as the grid node (Peaceman 1978; 0.1985 h for a square grid)."""
+    return PEACEMAN * cell_mils
+
+
+_LATTICE: dict[tuple[int, int], float] = {}
+
+
+def lattice_potential(m: int, n: int) -> float:
+    """G(0,0) - G(m,n) of the square five-point Laplacian with unit links:
+    the potential drop from a node carrying 1 A out of an infinite grid of
+    1 ohm links to the node (m, n) away. Half the two-point resistance
+    (Cserti 2000): (1 / 2 pi) int_0^pi (1 - exp(-|m| s) cos(n t)) / sinh(s) dt,
+    cosh(s) = 2 - cos(t). 1/4 at (1, 0), 1/pi at (1, 1), and
+    (1 / 2 pi) ln(r / PEACEMAN) far away."""
+    m, n = abs(int(m)), abs(int(n))
+    if m < n:
+        m, n = n, m
+    key = (m, n)
+    if key not in _LATTICE:
+        if m == 0:
+            _LATTICE[key] = 0.0
+        else:
+            import numpy as np
+            x, w = np.polynomial.legendre.leggauss(400)
+            t = (x + 1.0) * (math.pi / 2.0)
+            s = np.arccosh(2.0 - np.cos(t))
+            f = (1.0 - np.exp(-m * s) * np.cos(n * t)) / np.sinh(s)
+            _LATTICE[key] = float((w * f).sum() * (math.pi / 2.0) / (2.0 * math.pi))
+    return _LATTICE[key]
+
+
+def lattice_capacity_radius(cells) -> float:
+    """Radius, in cells, of the round conductor in a continuous sheet that
+    an equipotential set of grid nodes stands for: far from it the grid
+    potential is that of a disc of this radius (the set's logarithmic
+    capacity on the lattice). ``cells`` are (i, j) offsets. One node gives
+    PEACEMAN; a large round set of radius R about R - 0.2."""
+    import numpy as np
+    pts = sorted({(int(i), int(j)) for i, j in cells})
+    k = len(pts)
+    if k == 0:
+        raise ValueError("no cells")
+    if k == 1:
+        return PEACEMAN
+    a = np.zeros((k + 1, k + 1))
+    for u in range(k):
+        for v in range(u + 1, k):
+            a[u, v] = a[v, u] = lattice_potential(pts[u][0] - pts[v][0], pts[u][1] - pts[v][1])
+    a[:k, k] = -1.0
+    a[k, :k] = 1.0
+    rhs = np.zeros(k + 1)
+    rhs[k] = 1.0
+    u0 = float(np.linalg.solve(a, rhs)[k])
+    return PEACEMAN * math.exp(2.0 * math.pi * u0)
 
 
 def cavity_port_inductance(cavity_mils: float, via_radius_mils: float,

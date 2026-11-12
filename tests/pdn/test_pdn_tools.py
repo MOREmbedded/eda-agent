@@ -77,6 +77,15 @@ def test_impedance_tool(tools, saved):
     assert rows[0].startswith("freq_hz,") and len(rows) == 122
 
 
+def test_impedance_tool_takes_the_target_in_milliohms(tools, saved):
+    out = _call(tools, "sim_pdn_impedance", {
+        **saved, "net": "+1V0", "load": {"ref": "U2"}, "target_mohm": 15.0,
+        "mode": "lumped", "points": 61, "write_files": False})
+    assert out["ok"] and out["target"] == {"target_mohm": 15.0, "from": "given"}
+    assert out["model"] == "lumped" and "files" not in out
+    assert out["worst"]["over_target_x"] == pytest.approx(out["worst"]["mohm"] / 15.0, rel=1e-3)
+
+
 def test_impedance_tool_errors(tools, saved):
     out = _call(tools, "sim_pdn_impedance", {**saved, "net": "+1V0", "load": {"ref": "U2"}})
     assert not out["ok"] and "target" in out["error"]

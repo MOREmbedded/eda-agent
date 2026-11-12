@@ -209,6 +209,21 @@ def test_grid_node_is_a_via_of_the_peaceman_radius():
     assert ph.cavity_port_inductance(4, 40.0, 50.0) == 0.0
 
 
+def test_a_grid_node_has_the_peaceman_radius_absolutely():
+    # Self minus transfer inductance to a node r away, deep inside a large
+    # plane pair, is mu0 d / (2 pi) ln(r / r_eq): read r_eq back.
+    cav = im.rectangular_cavity(12100, 12100, 4, 4.3, 0.0, cell_mils=100)
+    f = np.array([1e5])
+    c = int(cav.ids[60, 60])
+    zs = im.solve_cavity(cav, f, [], [c], rho=1e-14)
+    for k in (5, 8):
+        zt = im.solve_cavity(cav, f, [], [c], rho=1e-14, observe_nodes=[int(cav.ids[60, 60 + k])])
+        L = float(((zs - zt).imag / (2 * np.pi * f))[0])
+        req = k * 100 / math.exp(L * 2 * math.pi / (ph.MU0 * 4 * ph.MIL))
+        assert req == pytest.approx(ph.peaceman_radius(100.0), rel=0.01)
+    assert ph.peaceman_radius(1.0) == pytest.approx(0.1985, abs=1e-4)
+
+
 def test_cavity_resonances_are_where_the_cavity_has_them():
     a, b, d = 4000.0, 3000.0, 4.0
     cav = im.rectangular_cavity(a, b, d, 4.3, 0.02, cell_mils=50)
@@ -299,6 +314,33 @@ def test_analysis_reports_bands_peaks_and_files(result):
     assert "csv" in names and "cir" in names
     cir = open([f for f in r["files"] if f.endswith(".cir")][0]).read()
     assert "I1 0 load AC 1" in cir and cir.count("\nC") == 6   # 5 parts + plane
+
+
+def test_bands_are_exactly_where_the_curve_is_over_the_target(result):
+    r, b, st = result
+    rows = open([f for f in r["files"] if f.endswith(".csv")][0]).read().splitlines()[1:]
+    cols = [list(map(float, row.split(","))) for row in rows]
+    target = r["target"]["target_mohm"] / 1e3
+    assert all(c[5] == pytest.approx(target) for c in cols)
+    for fhz, _re, _im, mag, _lump, _t in cols:
+        inside = any(v["from_mhz"] * 1e6 * 0.9999 <= fhz <= v["to_mhz"] * 1e6 * 1.0001
+                     for v in r["violations"])
+        assert inside == (mag > target), fhz
+    # some of the curve sits between 1x and 3x the target: a band there counts
+    assert any(target < c[3] < 3 * target for c in cols)
+
+
+def test_the_cavity_curve_carries_the_plane_resonance_the_lumped_one_lacks(result):
+    r, b, st = result
+    rows = open([f for f in r["files"] if f.endswith(".csv")][0]).read().splitlines()[1:]
+    cols = np.array([list(map(float, row.split(","))) for row in rows])
+    f, mag, lump = cols[:, 0], cols[:, 3], cols[:, 4]
+    low = f < 1e5
+    assert np.allclose(mag[low], lump[low], rtol=0.35)
+    # the first plane mode (about 711 MHz) is a peak of the cavity curve only
+    assert any(650 < p["mhz"] < 800 for p in r["anti_resonances"])
+    band = (f > 600e6) & (f < 900e6)
+    assert np.max(np.abs(mag[band] - lump[band]) / lump[band]) > 0.5
 
 
 def test_cavity_and_lumped_agree_below_the_plane_effects(result):

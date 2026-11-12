@@ -79,7 +79,7 @@ def test_pour_strip_is_squares_times_sheet_resistance():
     r, res = _r(b, cell_mils=10, sink_model="equipotential")
     # between the pads' inner edges: a soldered pad is an equipotential
     exact = RS * 2120 / 200
-    assert r == pytest.approx(exact, rel=0.01)
+    assert r == pytest.approx(exact, rel=1e-3)
     # uniform flow: J = I / (w t) everywhere in the middle of the strip
     J = res["_maps"]["J"]["TopLayer"]
     mid = J[15:25, 100:140]
@@ -209,3 +209,322 @@ def test_bad_inputs_are_errors():
         ir.analyse_net(b, "P", None, [{"ref": "J9", "volts": 1}], SNK)
     with pytest.raises(ir.IRDropError, match="sink_model"):
         ir.analyse_net(b, "P", None, SRC, SNK, sink_model="x")
+
+
+# --- contacts: a pad's edge, a barrel's wall, on any grid ---------------------
+
+def test_lattice_green_function_and_the_radius_of_a_cell_set():
+    assert ph.lattice_potential(0, 0) == 0.0
+    assert ph.lattice_potential(1, 0) == pytest.approx(0.25, abs=1e-12)
+    assert ph.lattice_potential(0, -1) == pytest.approx(0.25, abs=1e-12)
+    assert ph.lattice_potential(1, 1) == pytest.approx(1 / math.pi, abs=1e-12)
+    assert ph.lattice_potential(2, 0) == pytest.approx(1 - 2 / math.pi, abs=1e-12)
+    far = math.log(40 / ph.PEACEMAN) / (2 * math.pi)
+    assert ph.lattice_potential(40, 0) == pytest.approx(far, abs=2e-5)
+    assert ph.lattice_potential(24, 32) == pytest.approx(far, abs=2e-5)
+    assert ph.lattice_capacity_radius([(3, 7)]) == pytest.approx(ph.PEACEMAN)
+    # two nodes: exp(2 pi U(1,0) / 2) times one node, by symmetry
+    assert ph.lattice_capacity_radius([(0, 0), (1, 0)]) == pytest.approx(
+        ph.PEACEMAN * math.exp(math.pi / 4), rel=1e-9)
+    disc = [(i, j) for i in range(-9, 10) for j in range(-9, 10) if i * i + j * j <= 64]
+    assert ph.lattice_capacity_radius(disc) == pytest.approx(8 - 0.39, abs=0.05)
+    with pytest.raises(ValueError):
+        ph.lattice_capacity_radius([])
+
+
+def _pair(cell, shift=0.0, *, d=0.0, hole=0.0, sep=500.0):
+    """Ohms between two round contacts ``sep`` apart on a 2000 x 1600 sheet:
+    surface pads of diameter ``d`` on a pour, or through-hole pins of drill
+    ``hole`` on a plane."""
+    w, h = 2000.0, 1600.0
+    if hole:
+        b = LayoutBoard(outline=[(0, 0), (w, 0), (w, h), (0, h)],
+                        layers=[Layer("TopLayer", "signal", 0),
+                                Layer("InternalPlane1", "plane", 1, plane_net="P"),
+                                Layer("BottomLayer", "signal", 2)])
+        cu = [PadCopper("TopLayer", "round", hole + 24, hole + 24),
+              PadCopper("BottomLayer", "round", hole + 24, hole + 24)]
+    else:
+        b = _board(w, h)
+        b.regions.append(Region("TopLayer", list(b.outline), [], "P", "pour"))
+        cu = [PadCopper("TopLayer", "round", d, d)]
+    for ref, x in (("J1", w / 2 - sep / 2 + shift), ("U1", w / 2 + sep / 2 + shift)):
+        b.pads.append(Pad(ref, "1", x, h / 2 + 0.6 * shift, 0, "P", list(cu), hole=hole))
+    return _r(b, cell_mils=cell)[0]
+
+
+def test_round_pad_on_a_pour_reads_the_same_on_any_grid():
+    # 13.58 mil pad: from five cells across down to two thirds of a cell
+    got = [_pair(c, s, d=13.58) for c, s in ((2.5, 0), (5, 0), (5, 1.85), (10, 0),
+                                             (10, 3.7), (20, 0), (20, 10))]
+    assert max(got) / min(got) - 1 < 0.004
+    # and two pad sizes differ by Rs / pi ln(a2 / a1), whatever the sheet
+    small, big = _pair(5, 1.85, d=13.58), _pair(5, 1.85, d=37.58)
+    exact = RS / math.pi * (math.acosh(500 / 13.58) - math.acosh(500 / 37.58))
+    assert small - big == pytest.approx(exact, rel=0.01)
+
+
+@pytest.mark.parametrize("hole", [8.0, 12.0, 36.0, 60.0])
+def test_through_hole_pin_meets_the_plane_at_its_hole_wall(hole):
+    # the wall is hole / 2 + plating; a surface pad of that radius on a
+    # pour of the same sheet is the reference (same finite-sheet term)
+    ref = _pair(2.5, d=hole + 2 * 0.79)
+    for cell, shift in ((5, 0), (5, 1.85), (10, 3.7), (10, 5), (20, 0), (20, 7.4), (20, 10)):
+        assert _pair(cell, shift, hole=hole) == pytest.approx(ref, rel=0.004), (cell, shift)
+
+
+def test_a_barrel_wall_is_narrower_than_its_land_into_a_pour():
+    # A via's land is the same sheet of copper as the pour round it: the
+    # current reaches the barrel at the hole wall, not at the land's edge.
+    def run(land):
+        b = _board(2000, 1600)
+        b.layers = [Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)]
+        for layer in ("TopLayer", "BottomLayer"):
+            b.regions.append(Region(layer, list(b.outline), [], "P", "pour"))
+        b.pads += [smd("J1", "1", 400, 800, "P", 40, 400),
+                   Pad("U1", "1", 1600, 800, 0, "P", [PadCopper("BottomLayer", "rect", 40, 400)])]
+        # the pours are joined only by this via: cut the top pour right of it
+        b.regions[0] = Region("TopLayer", [(0, 0), (1100, 0), (1100, 1600), (0, 1600)], [], "P", "pour")
+        b.regions[1] = Region("BottomLayer", [(900, 0), (2000, 0), (2000, 1600), (900, 1600)], [], "P", "pour")
+        b.vias.append(Via(1000, 800, land, 10, "TopLayer", "BottomLayer", "P"))
+        return _r(b, cell_mils=5)[0]
+    assert run(20) == pytest.approx(run(40), rel=1e-3)
+
+
+def test_pad_edge_sets_the_strip_length_off_the_grid():
+    # pads whose edges fall between cell centres: the strip between them
+    # is as long as the copper between their edges
+    for x_src, x_snk in ((120, 2280), (123, 2277), (127.5, 2271)):
+        b = _board(2400, 400)
+        b.regions.append(Region("TopLayer", [(100, 100), (2300, 100), (2300, 300), (100, 300)],
+                                [], "P", "pour"))
+        b.pads += [smd("J1", "1", x_src, 200, "P", 40, 200), smd("U1", "1", x_snk, 200, "P", 40, 200)]
+        r, _ = _r(b, cell_mils=10, sink_model="equipotential")
+        assert r == pytest.approx(RS * (x_snk - x_src - 40) / 200, rel=1e-3)
+
+
+def test_through_hole_sink_pin_is_one_conductor_on_every_layer():
+    b = _board(1400, 400)
+    for layer in ("TopLayer", "BottomLayer"):
+        b.regions.append(Region(layer, [(100, 100), (1300, 100), (1300, 300), (100, 300)],
+                                [], "P", "pour"))
+    cu = [PadCopper("TopLayer", "rect", 60, 200), PadCopper("BottomLayer", "rect", 60, 200)]
+    b.pads += [Pad("J1", "1", 150, 200, 0, "P", list(cu), hole=30),
+               Pad("U1", "1", 1250, 200, 0, "P", list(cu), hole=30)]
+    r_pin, _ = _r(b, cell_mils=10)
+    r_eq, _ = _r(b, cell_mils=10, sink_model="equipotential")
+    assert r_pin == pytest.approx(r_eq, rel=1e-6)
+    # two layers in parallel between the pad edges, no barrel in the way
+    assert r_pin == pytest.approx(RS * (1100 - 60) / 200 / 2, rel=2e-3)
+
+
+# --- connectivity follows the copper ------------------------------------------
+
+def _strip_with(regions):
+    b = _board(2400, 400)
+    b.regions += regions
+    b.pads += [smd("J1", "1", 120, 200, "P", 40, 100), smd("U1", "1", 2280, 200, "P", 40, 100)]
+    return b
+
+
+def test_a_polygon_outline_is_not_copper():
+    outline = [(100, 100), (2300, 100), (2300, 300), (100, 300)]
+    poured = [(100, 150), (2300, 150), (2300, 250), (100, 250)]
+    # outline alone (an unpoured polygon): nothing joins the pads
+    b = _strip_with([Region("TopLayer", outline, [], "P", "pour_boundary", source="polygon:A")])
+    with pytest.raises(ir.IRDropError, match="not connected"):
+        _r(b, cell_mils=10)
+    # outline and its poured copper: the poured copper alone carries it
+    b = _strip_with([Region("TopLayer", outline, [], "P", "pour_boundary", source="polygon:A"),
+                     Region("TopLayer", poured, [], "P", "pour", source="polygon:A"),
+                     Region("TopLayer", outline, [], "P", "pour_boundary", source="polygon:B")])
+    r, res = _r(b, cell_mils=10, sink_model="equipotential")
+    assert r == pytest.approx(RS * 2120 / 100, rel=1e-3)
+    note = [n for n in res["notes"] if "no poured copper" in n]
+    assert len(note) == 1 and "polygon:B" in note[0] and "polygon:A" not in note[0]
+    assert not any("plane clearance" in n for n in res["notes"])   # no plane on this board
+
+
+@pytest.mark.parametrize("cell", [5, 10, 25])
+def test_a_gap_narrower_than_a_cell_is_still_a_gap(cell):
+    b = _strip_with([Region("TopLayer", [(100, 100), (1196, 100), (1196, 300), (100, 300)], [], "P", "pour"),
+                     Region("TopLayer", [(1204, 100), (2300, 100), (2300, 300), (1204, 300)], [], "P", "pour")])
+    with pytest.raises(ir.IRDropError, match="not connected"):
+        _r(b, cell_mils=cell)
+
+
+@pytest.mark.parametrize("rad,w", [(50, 12), (30, 10), (20, 12)])
+def test_tight_arc_is_a_bent_strip_between_the_pad_edges(rad, w):
+    from eda_agent.layout.model import Arc
+    b = _board(600, 600)
+    b.pads += [smd("J1", "1", 300 + rad, 300, "P", 8, 8), smd("U1", "1", 300, 300 + rad, "P", 8, 8)]
+    b.arcs.append(Arc("TopLayer", 300, 300, rad, 0, 90, w, "P"))
+    r, res = _r(b, cell_mils=2)
+    theta = math.pi / 2 - 2 * math.asin(4 / rad)
+    exact = RHO * theta / (1.4 * ph.MIL * math.log((rad + w / 2) / (rad - w / 2)))
+    assert r == pytest.approx(exact, rel=0.004)
+    assert res["tracks"][0]["length_mils"] == pytest.approx(rad * theta, abs=0.15)
+    assert res["network"]["open_track_ends"] == 0
+
+
+def test_tracks_that_cross_are_joined():
+    b = _board(1400, 800)
+    b.pads += [smd("J1", "1", 200, 400, "P", 40, 40), smd("U1", "1", 700, 700, "P", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 400, 1200, 400, 10, "P"),
+                 Track("TopLayer", 700, 100, 700, 700, 10, "P")]
+    r, res = _r(b, cell_mils=5)
+    per_mil = RHO / (10 * 1.4 * ph.MIL)
+    assert r == pytest.approx(per_mil * (480 + 280), rel=1e-3)
+    assert res["network"]["open_track_ends"] == 2          # the two far ends
+    assert res["network"]["track_parts_inside_pours"] == 0
+
+
+def test_via_on_an_unbroken_track_taps_it():
+    b = _board()
+    b.pads += [smd("J1", "1", 200, 200, "P", 40, 40),
+               Pad("U1", "1", 700, 200, 0, "P", [PadCopper("BottomLayer", "rect", 40, 40)])]
+    b.tracks.append(Track("TopLayer", 200, 200, 1200, 200, 10, "P"))
+    b.vias.append(Via(700, 200, 24, 12, "TopLayer", "BottomLayer", "P"))
+    r, _ = _r(b, cell_mils=3)
+    barrel = ph.via_barrel_resistance(62.99, 12, 0.79, RHO)
+    assert r == pytest.approx(RHO / (10 * 1.4 * ph.MIL) * (500 - 20 - 12) + barrel, rel=2e-3)
+
+
+@pytest.mark.parametrize("gap", [0.0, 3.0, 8.0])
+def test_track_ends_whose_copper_overlaps_are_joined(gap):
+    b = _board()
+    b.pads += [smd("J1", "1", 200, 200, "P", 40, 40), smd("U1", "1", 1200, 200, "P", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 200, 700, 200, 10, "P"),
+                 Track("TopLayer", 700 + gap, 200, 1200, 200, 10, "P")]
+    r, _ = _r(b, cell_mils=5)
+    assert r == pytest.approx(RHO / (10 * 1.4 * ph.MIL) * (960 - gap), rel=1e-3)
+
+
+def test_track_ends_apart_by_more_than_their_width_are_not_joined():
+    b = _board()
+    b.pads += [smd("J1", "1", 200, 200, "P", 40, 40), smd("U1", "1", 1200, 200, "P", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 200, 700, 200, 10, "P"),
+                 Track("TopLayer", 712, 200, 1200, 200, 10, "P")]
+    with pytest.raises(ir.IRDropError, match="not connected"):
+        _r(b, cell_mils=5)
+
+
+def test_stub_ending_inside_a_wide_trunk_is_joined_at_the_trunk():
+    b = _board(1400, 800)
+    b.pads += [smd("J1", "1", 200, 200, "P", 40, 100), smd("U1", "1", 700, 600, "P", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 200, 1200, 200, 100, "P"),
+                 Track("TopLayer", 700, 240, 700, 600, 10, "P")]      # ends 40 mil off the centreline
+    r, _ = _r(b, cell_mils=5)
+    exact = RHO / (1.4 * ph.MIL) * (340 / 10 + 480 / 100)
+    assert r == pytest.approx(exact, rel=1e-3)
+
+
+def test_track_into_a_pour_reads_the_same_on_any_grid():
+    got = []
+    for cell in (10, 5, 4, 2.5):
+        b = _board(2400, 400)
+        b.regions.append(Region("TopLayer", [(100, 100), (1000, 100), (1000, 300), (100, 300)],
+                                [], "P", "pour"))
+        b.pads += [smd("J1", "1", 120, 200, "P", 40, 200), smd("U1", "1", 2000, 200, "P", 40, 40)]
+        b.tracks.append(Track("TopLayer", 900, 200, 2000, 200, 10, "P"))
+        got.append(_r(b, cell_mils=cell)[0])
+    assert max(got) / min(got) - 1 < 0.005
+    assert min(got) > RHO / (10 * 1.4 * ph.MIL) * 980      # the track outside the pour, and more
+
+
+# --- cell size, inputs, reply ---------------------------------------------------
+
+def test_auto_cell_follows_the_rail_not_the_board():
+    b = _board(20000, 15000)
+    b.pads += [smd("J1", "1", 200, 200, "P", 40, 40), smd("U1", "1", 1200, 200, "P", 40, 40)]
+    b.tracks.append(Track("TopLayer", 200, 200, 1200, 200, 10, "P"))
+    r, res = _r(b)
+    assert res["cell_mils"] == 10.0                       # a quarter of the pad
+    assert r == pytest.approx(RHO / (10 * 1.4 * ph.MIL) * 960, rel=1e-3)
+    assert not any("coarser" in n for n in res["notes"])
+
+
+def test_auto_cell_says_when_the_board_forces_a_coarser_grid():
+    b = LayoutBoard(outline=[(0, 0), (20000, 0), (20000, 15000), (0, 15000)],
+                    layers=[Layer("TopLayer", "signal", 0),
+                            Layer("InternalPlane1", "plane", 1, plane_net="P"),
+                            Layer("BottomLayer", "signal", 2)])
+    for ref, x in (("J1", 9000), ("U1", 11000)):
+        b.pads.append(Pad(ref, "1", x, 7500, 0, "P", [PadCopper("TopLayer", "round", 30, 30),
+                                                      PadCopper("BottomLayer", "round", 30, 30)], hole=12))
+    r, res = _r(b)
+    assert res["cell_mils"] > 30 / 4
+    assert any("coarser than a quarter of the smallest pad" in n for n in res["notes"])
+    # and the answer holds on that coarse grid: wall to wall on the plane
+    a = 6 + 0.79
+    assert r == pytest.approx(RS / math.pi * math.acosh(2000 / (2 * a)), rel=0.03)
+
+
+def test_sources_and_sinks_must_say_volts_and_amps():
+    b = _board()
+    b.pads += [smd("J1", "1", 200, 200, "P"), smd("U1", "1", 1200, 200, "P")]
+    b.tracks.append(Track("TopLayer", 200, 200, 1200, 200, 10, "P"))
+    bad = [
+        ([{"ref": "J1"}], SNK, "needs volts"),
+        (SRC, [{"ref": "U1"}], "needs amps"),
+        ([{"ref": "J1", "voltage": 1.0}], SNK, "unknown key"),
+        (SRC, [{"ref": "U1", "amps": 1.0, "current": 2}], "unknown key"),
+        (SRC, [{"ref": "U1", "amps": 0}], "above 0"),
+        ([{"ref": "J1", "volts": -1}], SNK, "above 0"),
+        ([{"ref": "J1", "volts": "x"}], SNK, "needs volts"),
+        ([{"volts": 1.0}], SNK, "needs ref or pads"),
+        ([], SNK, "at least one source"),
+        (SRC, [], "at least one sink"),
+        (SRC, ["U1"], "is a dict"),
+    ]
+    for sources, sinks, msg in bad:
+        with pytest.raises(ir.IRDropError, match=msg):
+            ir.analyse_net(b, "P", None, sources, sinks)
+    with pytest.raises(ir.IRDropError, match="not on the board"):
+        ir.analyse_net(b, "Q", None, SRC, SNK)
+    with pytest.raises(ir.IRDropError, match="plating"):
+        ir.analyse_net(b, "P", None, SRC, SNK, plating_mils=0)
+
+
+def _two_rail_board():
+    b = _board()
+    b.pads += [smd("", "TP1", 200, 150, "P", 40, 40), smd("", "TP2", 200, 250, "G", 40, 40),
+               smd("U1", "1", 1200, 150, "P", 40, 40), smd("U1", "2", 1200, 250, "G", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 150, 1200, 150, 10, "P"),
+                 Track("TopLayer", 200, 250, 1200, 250, 20, "G")]
+    return b
+
+
+def test_return_pads_name_the_return_of_a_source_given_by_pads():
+    b = _two_rail_board()
+    src = [{"pads": [".TP1"], "volts": 1.0, "return_pads": [".TP2"]}]
+    out = ir.analyse(b, "P", None, src, SNK, return_net="G", cell_mils=5, check_convergence=False)
+    per_mil = RHO / (1.4 * ph.MIL)
+    assert out["supply"]["sinks"][0]["drop_mv"] / 1e3 == pytest.approx(per_mil * 960 / 10, rel=1e-3)
+    assert out["return"]["sinks"][0]["drop_mv"] / 1e3 == pytest.approx(per_mil * 960 / 20, rel=1e-3)
+    assert out["rails"][0]["total_drop_mv"] / 1e3 == pytest.approx(per_mil * 960 * 0.15, rel=1e-3)
+    # without them a free pad has no component to find its return by
+    with pytest.raises(ir.IRDropError, match="return_pads"):
+        ir.analyse(b, "P", None, [{"pads": [".TP1"], "volts": 1.0}], SNK, return_net="G", cell_mils=5)
+    with pytest.raises(ir.IRDropError, match="supply net itself"):
+        ir.analyse(b, "P", None, src, SNK, return_net="P")
+    with pytest.raises(ir.IRDropError, match="not on the board"):
+        ir.analyse(b, "P", None, src, SNK, return_net="AGND")
+
+
+def test_reply_is_plain_json_with_no_nan_and_lists_the_worst_pins_only():
+    import json
+    b = plane_board()
+    # an island of the net nothing reaches, on the top layer
+    b.regions.append(Region("TopLayer", [(100, 100), (300, 100), (300, 300), (100, 300)],
+                            [], "+1V0", "pour"))
+    res = ir.analyse_net(b, "+1V0", stack_from_stackup(STACKUP),
+                         [{"ref": "U1", "volts": 1.0}], [{"ref": "U2", "amps": 2.0}],
+                         cell_mils=10, check_convergence=False, limit=2)
+    text = json.dumps(ir.public(res), allow_nan=False)
+    assert "_pins" not in text and "NaN" not in text
+    s = res["sinks"][0]
+    assert s["pin_count"] == 4 and len(s["pins"]) == 2 and len(s["_pins"]) == 4
+    assert s["pins"][0]["pad"] == s["worst_pin"]
+    assert s["worst_pin_volts"] <= s["best_pin_volts"]
+    assert any("not connected to any source" in n for n in res["notes"])
