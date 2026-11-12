@@ -78,8 +78,9 @@ def register_thermal_tools(mcp) -> None:
                 spread over a rectangle of a copper layer.
             clamps: [{x0, y0, x1, y1, temp_c, side, h_contact}] a
                 rectangle of a face held to a chassis at temp_c.
-            heat_map_npz: .npz files from sim_pdn_ir_drop; their Joule
-                heat (W_<layer>) is added.
+            heat_map_npz: .npz files of an IR-drop run; their Joule heat
+                (W_<layer>, watts per cell, with x0, y0, cell_mils) is
+                added.
             inputs_json_path: a JSON file with powers, packages,
                 heat_areas, clamps, options; arguments here win.
             options: emissivity, dielectric (fr4, high_tg_fr4, polyimide,

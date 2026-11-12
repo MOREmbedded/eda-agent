@@ -44,8 +44,8 @@ HOTSPOT_WINDOW_MILS = 200.0
 @dataclass
 class HeatMap:
     """Heat per cell on a grid of its own, W: the Joule heating an IR-drop
-    solution found (``sim_pdn_ir_drop`` writes it as ``W_<layer>`` in its
-    .npz). ``on`` moves it to the thermal grid, keeping every watt."""
+    solution found (an .npz with one ``W_<layer>`` array per copper layer
+    and ``x0``, ``y0``, ``cell_mils``). ``on`` moves it to the thermal grid, keeping every watt."""
 
     x0: float
     y0: float

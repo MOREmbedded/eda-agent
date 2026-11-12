@@ -55,7 +55,7 @@ The reply:
 | `altitude_m` | Thinner air convects less: about 12 % less at 3000 m |
 | `clamps` | A rectangle of a face held to a chassis at a temperature, through a contact conductance: a mounting rail, a gap pad to the case |
 | `heat_areas` | Heat spread over a rectangle of a copper layer |
-| `heat_map_npz` | The Joule heat an IR-drop run found (`sim_pdn_ir_drop` writes it), added to the part powers |
+| `heat_map_npz` | The Joule heat an IR-drop run found, added to the part powers: `.npz` files with one `W_<layer>` array of watts per cell for each copper layer, and `x0`, `y0`, `cell_mils` of their grid. The grid need not match |
 | `options` | `emissivity`, `dielectric` (`fr4`, `high_tg_fr4`, `polyimide`, `rogers_4350b`, `rogers_4003c`, `ptfe`, `imsl`) or `k_xy` / `k_z`, `via_fill` (`none`, `epoxy`, `conductive`, `silver`, `copper`), `plating_um`, `solder_mask`, `radiation`, `convection` (`local` or `mean`), fixed `h_top` / `h_bottom`, `up_deg` |
 
 All of it can live in a JSON file (`inputs_json_path`) with the keys `powers`,
