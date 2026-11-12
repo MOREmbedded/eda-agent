@@ -37,6 +37,19 @@ maturity classification for every tool.
   Not done yet: a Workspace part's footprint, which has no file to read;
   the preview says so and shows the symbol.
 
+- **Fab and IPC class floors on a board's design rules, on demand.**
+  New `pcb_rules_fab_floors` tool holds the board's existing rules up
+  against one fab build's published minimums (the cited fab rules
+  database) and, with `ipc_class`, the profile's IPC class floors
+  (`std-floors`), and says rule by rule which ones sit below the floor
+  and why, with the fab quote or IPC clause behind each floor. It reports
+  by default; with `apply=True` it raises board-wide rules that are below
+  the floor and nothing else. Rules already stricter are never loosened,
+  scoped rules below the floor are left for the user to name, rules DRC
+  does not check and kinds with no writer (annular ring) are reported,
+  and nothing is created or deleted. Writes go into the board's rule log.
+  Never runs on its own. UNVERIFIED against a live board.
+
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced

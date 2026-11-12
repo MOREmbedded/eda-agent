@@ -153,10 +153,14 @@ ENV_VARS: tuple[EnvVar, ...] = (
     # ---- Altium 365 -----------------------------------------------------
     EnvVar("EDA_AGENT_NEXAR_APP_ID", "Altium 365 and Nexar", "unset",
            "Your Nexar app's client id. Turns on the Nexar route; sign in "
-           "once with `eda-agent altium365-login`."),
+           "once with `eda-agent altium365-login`. With the secret below it "
+           "also serves the `nexar` part search when `NEXAR_CLIENT_ID` is "
+           "unset."),
     EnvVar("EDA_AGENT_NEXAR_CLIENT_SECRET", "Altium 365 and Nexar", "unset",
            "The client secret of an app made in the Nexar portal. Sent only "
-           "to Nexar's token endpoint. Set it with `setx`, never in a chat."),
+           "to Nexar's token endpoint. Set it with `setx`, never in a chat. "
+           "The `nexar` part search uses it with the app id above when "
+           "`NEXAR_CLIENT_SECRET` is unset."),
     EnvVar("EDA_AGENT_NEXAR_REDIRECT", "Altium 365 and Nexar",
            "`http://localhost:3000/login`",
            "The redirect URL registered on your Nexar app, if it differs."),

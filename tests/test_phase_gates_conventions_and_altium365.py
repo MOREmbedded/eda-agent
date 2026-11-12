@@ -381,6 +381,51 @@ def test_busy_answers_are_retried_and_then_given_up_on():
     assert len(requests) == 4           # three retries after the first
 
 
+def _paged_components(rows: int, size: int = 10):
+    """A components connection that, like the live one, answers ``size``
+    rows when not asked for more and follows ``after`` cursors."""
+    def answer(body):
+        variables = body.get("variables") or {}
+        start = int(variables.get("after") or 0)
+        step = variables.get("first") or size
+        names = [f"CMP-{i:05d}" for i in range(start, min(rows, start + step))]
+        end = start + len(names)
+        return {"data": {"desLibrary": {"components": {
+            "pageInfo": {"hasNextPage": end < rows, "endCursor": str(end)},
+            "nodes": [{"id": n, "name": n} for n in names]}}}}
+    return answer
+
+
+def test_list_components_pages_through_the_whole_library():
+    """Measured 2026-11-12: unpaged, the live server answered 10 of a
+    library of thousands, and the tool reported those 10 as all."""
+    session, requests = _session(_paged_components(250))
+    result = session.list_components("https://workspace.example.com/", limit=0)
+    assert len(result["components"]) == 250
+    assert result["components"][-1]["name"] == "CMP-00249"
+    assert result["cut_short"] is False and result["pages_read"] == len(requests) > 1
+
+
+def test_list_components_stops_at_the_limit_and_says_so():
+    session, _ = _session(_paged_components(250))
+    result = session.list_components("https://workspace.example.com/", limit=120)
+    assert len(result["components"]) == 120 and result["cut_short"] is True
+    filtered = session.list_components("https://workspace.example.com/",
+                                       name_contains="cmp-0024", limit=0)
+    assert [c["name"] for c in filtered["components"]] == [
+        f"CMP-0024{i}" for i in range(10)]
+
+
+def test_a_publish_asks_for_the_id_field_its_payload_has():
+    """Measured 2026-11-12: DesCreateFootprintPayload has footprintId, not
+    id, and the server refused the whole footprint publish over it."""
+    field, operation = altium365.publish_operation("footprint")
+    assert field == "desCreateFootprint"
+    assert operation.rstrip().endswith("{ errors { message } footprintId } }")
+    field, operation = altium365.publish_operation("symbol")
+    assert operation.rstrip().endswith("{ errors { message } id } }")
+
+
 def test_reading_queries_refuse_changes_and_changes_are_built_safely():
     with pytest.raises(altium365.Altium365Error):
         altium365.refuse_changes("query { a } mutation { b }")

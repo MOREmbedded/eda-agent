@@ -68,6 +68,7 @@ be what a customer contract names, and it should never pass silently.
 | `eda-agent std-rules [--category C]` | Every rule definition and how many values your profile holds for it |
 | `eda-agent std-floors` | Regenerates `standards/ipc_class_floors.json` from `values.json` |
 | `eda-agent fab-rules <fab> --layers N --ipc-class 2` | A fab's rules with your class floors applied |
+| `pcb_rules_fab_floors` (tool) | The open board's rules against those floors; see below |
 
 ## Class floors for the fab rules
 
@@ -79,6 +80,51 @@ minimum and says which one governs.
 
 IPC classes mostly set rings, hole wall copper, hole to copper and aspect
 ratio. Track, gap, solder mask and silkscreen limits stay the fab's.
+
+## Floors on a board's design rules (on demand)
+
+`pcb_rules_fab_floors` checks the open board's design rules against one
+fab build and, optionally, an IPC class. It never runs on its own: ask for
+it ("check this board's rules against JLCPCB 4 layers, class 3").
+
+```
+pcb_rules_fab_floors(fab="jlcpcb", copper_layers=4, ipc_class=3)              # report
+pcb_rules_fab_floors(fab="jlcpcb", copper_layers=4, ipc_class=3, apply=True)  # raise
+```
+
+Each floor is the fab's published minimum for the build, or the class
+floor from `ipc_class_floors.json` where that is stricter; the reply
+cites the fab quote or the IPC clause for every one. With `ipc_class` and
+no class floor file, the call is refused.
+
+| Board rule | Floor | Written with |
+| --- | --- | --- |
+| Clearance | `min_gap` | gap (mm) |
+| Width | `min_track` | min width, and preferred if it would sit under the new min |
+| Hole Size | `min_drill` | min hole |
+| Routing Via | `min_drill`, and min drill + 2 x via ring for the diameter | min hole and min diameter (and preferred) |
+| Hole To Hole Clearance | `min_hole_to_hole` | gap (mm) |
+| Board Outline Clearance | `copper_to_edge` | gap (mm) |
+| Minimum Solder Mask Sliver | `min_mask_sliver` | gap (mm) |
+| Silk To Solder Mask | `silk_to_pad` | gap (mm) |
+| Minimum Annular Ring | `min_annular_ring` | reported only (no writer) |
+
+What it will and will not do:
+
+- A rule stricter than its floor is left alone. A fab minimum is what the
+  fab can make, not the value to design at.
+- A board-wide rule (scope `All`) below its floor is raised to the floor
+  with `apply=True`. Values are rounded up, never down.
+- A scoped rule below its floor (a waiver for one part, a BGA neck-down)
+  is listed under `to_decide` and raised only when named in
+  `raise_rules`.
+- A rule DRC does not check, a rule from the schematic, or a rule whose
+  maximum is below the floor is reported, not written.
+- Nothing is created or deleted. A floor with no rule of its kind on the
+  board is listed under `no_rule_on_board`; floors no Altium rule holds
+  (PTH annular ring, aspect ratio, inner hole to copper, silkscreen line
+  and text) come back under `report_only`.
+- Every write is logged in the board's rule log, so the next DRC names it.
 
 ## Not covered
 

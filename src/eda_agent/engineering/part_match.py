@@ -312,6 +312,12 @@ _ATTRIBUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # does the same to every better inductor. Grouping by direction is
     # a reading aid; specificity decides the order, and the guard test
     # in tests/test_part_match.py enforces it.
+    #
+    # Insulation resistance first of all: "insulationresistance"
+    # contains "onresistance", so the on-resistance row claimed it and
+    # compared it AT_MOST, blocking every capacitor that insulates
+    # BETTER (measured 2026-11-12 on GRM188R71H104KA93D's replacements).
+    ("insulation_resistance", AT_LEAST, ("insulationresistance",)),
     ("esr", AT_MOST, ("esr", "equivalentseriesresistance")),
     ("dc_resistance", AT_MOST, ("dcresistance", "dcr")),
     ("on_resistance", AT_MOST, ("rdson", "onresistance", "resistanceon")),
@@ -322,9 +328,17 @@ _ATTRIBUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("turns_ratio", CLOSE, ("turnsratio",)),
 
     # -- categorical: a different value is a different component ------
+    # Nexar states both "dielectricmaterial" (Ceramic) and "dielectric"
+    # (X7R) for one MLCC: two attributes, not two spellings of one, so
+    # the material has its own row ahead of the class it contains.
+    ("dielectric_material", EQUAL, ("dielectricmaterial",)),
     ("dielectric", EQUAL, ("dielectric", "temperaturecoefficient",
                            "tempco")),
     ("mounting_type", EQUAL, ("mountingtype", "mounting")),
+    # The metric case code (1608) names the same size as the imperial
+    # 0603 in another system; paired with an imperial package it read
+    # as a mismatch on every candidate. Its own row, ahead of "casecode".
+    ("package_metric", EQUAL, ("casecodemetric", "metriccasecode")),
     ("package", EQUAL, ("packagecase", "casepackage",
                         "supplierdevicepackage", "package", "casecode",
                         "case")),
@@ -522,9 +536,10 @@ def compare_parameters(
     as every provider in ``libimport.providers.distributors`` now
     publishes under ``PartHit.extra["parameters"]``.
 
-    The two are paired by CANONICAL attribute where the table knows one
-    (so Nexar's ``voltagerating_dc`` meets Digi-Key's ``Voltage -
-    Rated``) and by normalised key otherwise. Where a candidate spells
+    The two are paired by normalised key when the candidate states the
+    very same attribute, and otherwise by CANONICAL attribute where the
+    table knows one (so Nexar's ``voltagerating_dc`` meets Digi-Key's
+    ``Voltage - Rated``). Where a candidate spells
     one canonical attribute twice, the first spelling wins and the
     other falls through to ``candidate_only`` rather than being picked
     between.
@@ -575,7 +590,12 @@ def compare_parameters(
             "rule": rule or "",
             "original": "" if value is None else str(value),
         }
-        match = (by_canonical.get(canonical) if canonical else None)             or by_key.get(normalised)
+        # The candidate's own spelling of the SAME attribute first, and
+        # only then the shared category: a catalogue that states both
+        # "height" and "thickness" must have each compared with its
+        # namesake, not both with whichever spelling came first.
+        match = by_key.get(normalised) or (
+            by_canonical.get(canonical) if canonical else None)
         if match is None:
             record.update(candidate="", verdict="missing",
                           note="the candidate does not publish this "
