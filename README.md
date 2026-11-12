@@ -33,7 +33,7 @@ schematic, PCB, library, project and review. You watch every change happen in Al
 - **Live, not batch.** Altium stays open and in charge. The AI reads the design you have open, answers questions about it, and edits it in place.
 - **Built for real review work.** One call gives a design snapshot. A 31-check lint sweep, schematic and PCB netlist cross-checks, and fab package verification come with it.
 - **Datasheet first.** The tools tell the AI to fetch the vendor datasheet, and never to make values up.
-- **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step.
+- **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step. The auto-placer scores only what each move changed (6 to 13 times faster), and an optional Rust core speeds up routing.
 - **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
 - **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface. 773+ with both backends registered.
 
@@ -91,14 +91,17 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 
 | | |
 |---|---|
-| 🔍 **Design review** | Snapshot, lint, ERC and DRC, schematic and PCB cross-checks. See [Features](docs/FEATURES.md) |
+| 🔍 **Design review** | Snapshot, lint, ERC and DRC, schematic and PCB cross-checks, rotation suggestions for top and bottom parts. See [Features](docs/FEATURES.md) |
 | ✏️ **Edit schematics and boards** | Place, wire, route, move and set parameters, in bulk with one undo. See [Tool reference](docs/TOOL_REFERENCE.md) |
-| 📚 **Libraries and parts** | Symbols, footprints, 3D models, and part search across distributors. See [Part sourcing](docs/PART_SOURCING.md) |
-| 🏭 **Fab output** | Read the Gerbers back and check them against the board, plus JLCPCB and PCBWay stackups. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md) |
+| 📚 **Libraries and parts** | Symbols, footprints, 3D models, and part search across distributors. Preview a part's symbol and footprint before placing it (`lib_preview_part`, or the dashboard's Library pane). See [Part sourcing](docs/PART_SOURCING.md) |
+| 🏭 **Fab output** | Read the Gerbers back and check them against the board, plus JLCPCB and PCBWay stackups and a cited rules database for 13 fabs. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md) |
+| 📏 **Fab and IPC rule floors** | On demand, check the board's design rules against a fab's minimums and your IPC class floors, and raise the ones below them (`pcb_rules_fab_floors`). See [IPC standards](docs/IPC_STANDARDS.md) |
 | 🧮 **Calculators** | Spacing, fusing, vias, impedance and PDN, also on the command line. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md#calculators) |
+| 📈 **Simulation** | SPICE model library and LTspice round trip: find models by MPN, check pin maps, export and compare decks. See [SPICE models](docs/SPICE_MODELS.md) |
+| 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
 | 🤖 **Guided design runs** | Spec to board, reference redraw, dev-kit derivative. See [Design modes](docs/DESIGN_MODES.md) and [Autonomous design](docs/AUTONOMOUS_DESIGN.md) |
 | 🚦 **NPI phase gates** | EVT, DVT and PVT checklists, answered by tools where possible. See [NPI phase gates](docs/NPI_PHASE_GATES.md) |
-| ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
+| ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly, plus an offline copy of the managed library. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
 
 <p align="center">
 <img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer" width="300">
