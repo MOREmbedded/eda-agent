@@ -153,10 +153,14 @@ ENV_VARS: tuple[EnvVar, ...] = (
     # ---- Altium 365 -----------------------------------------------------
     EnvVar("EDA_AGENT_NEXAR_APP_ID", "Altium 365 and Nexar", "unset",
            "Your Nexar app's client id. Turns on the Nexar route; sign in "
-           "once with `eda-agent altium365-login`."),
+           "once with `eda-agent altium365-login`. With the secret below it "
+           "also serves the `nexar` part search when `NEXAR_CLIENT_ID` is "
+           "unset."),
     EnvVar("EDA_AGENT_NEXAR_CLIENT_SECRET", "Altium 365 and Nexar", "unset",
            "The client secret of an app made in the Nexar portal. Sent only "
-           "to Nexar's token endpoint. Set it with `setx`, never in a chat."),
+           "to Nexar's token endpoint. Set it with `setx`, never in a chat. "
+           "The `nexar` part search uses it with the app id above when "
+           "`NEXAR_CLIENT_SECRET` is unset."),
     EnvVar("EDA_AGENT_NEXAR_REDIRECT", "Altium 365 and Nexar",
            "`http://localhost:3000/login`",
            "The redirect URL registered on your Nexar app, if it differs."),
@@ -208,6 +212,14 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_SPICE_MODEL_DIRS", "Simulation", "none",
            "Extra folders of SPICE models `design_simulate_deck` may "
            "include, separated by `;` on Windows."),
+    EnvVar("EDA_AGENT_EM_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\em`",
+           "Where each openEMS field-solver run (`sim_em_build_model`) gets "
+           "its own folder. Runs can be large: point it at a drive with room."),
+    EnvVar("EDA_AGENT_OPENEMS_DIR", "Simulation", "none",
+           "The unzipped openEMS folder (Windows build). Added to `PATH` and "
+           "`PYTHONPATH` for the solver run."),
+    EnvVar("EDA_AGENT_OPENEMS_PYTHON", "Simulation", "this Python, then `python` on PATH",
+           "A Python that can `import openEMS`, used to run the solver."),
     # ---- 3D and SDK -----------------------------------------------------
     EnvVar("EDA_AGENT_STEP_WRITER", "3D models and Altium SDK", "cadquery",
            "`freecad` tries FreeCAD before CadQuery when building a STEP "

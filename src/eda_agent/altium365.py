@@ -170,8 +170,12 @@ _READS = {
     "project": "query($id: ID!) { desProjectById(id: $id) { id name description } }",
     "folders": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
                 "{ folders { id name path } } }"),
-    "components": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
-                   "{ components { nodes { id name%s } } } }"),
+    # Paged: without first/after the server answers its first page only
+    # (10 rows, measured 2026-11-12 on a library of thousands).
+    "components": ("query($ws: String!, $after: String, $first: Int) { "
+                   "desLibrary(workspaceUrl: $ws) { components(first: $first, "
+                   "after: $after) { pageInfo { hasNextPage endCursor } "
+                   "nodes { id name%s } } } }"),
     "component": ("query($id: ID!) { desComponentById(id: $id) { id name details "
                   "{ parameters { type name value } } } }"),
     "type": ("query($n: String!) { __type(name: $n) { name kind description fields "
@@ -217,14 +221,22 @@ def gql_value(value: Any) -> str:
     raise Altium365Error(f"a {type(value).__name__} cannot be sent")
 
 
+#: The payload field naming what a publish created. Not the same for both:
+#: measured live 2026-11-12, DesCreateSymbolPayload has ``id`` and
+#: DesCreateFootprintPayload has ``footprintId``, and asking a footprint
+#: publish for ``id`` is refused whole (HTTP 400) before anything is made.
+PUBLISHED_ID = {"desCreateSymbol": "id", "desCreateFootprint": "footprintId"}
+
+
 def publish_operation(kind: str) -> tuple[str, str]:
-    """(schema field, operation) creating a symbol or footprint from a file."""
+    """(schema field, operation) creating a symbol or footprint from a file;
+    the created item's id is under PUBLISHED_ID[schema field]."""
     name = {"symbol": "desCreateSymbol", "footprint": "desCreateFootprint"}[kind]
     return name, (
         "mutation($fileId: String!, $relativePath: String!, $folderId: ID!, "
         "$ws: String!, $name: String!) { " + name + "(input: { files: { fileId: "
         "$fileId, relativePath: $relativePath }, folderId: $folderId, name: $name, "
-        "workspaceUrl: $ws }) { errors { message } id } }")
+        "workspaceUrl: $ws }) { errors { message } " + PUBLISHED_ID[name] + " } }")
 
 
 def release_operation(spec: dict) -> str:
@@ -582,13 +594,40 @@ class Altium365Session:
         library = self.read(_READS["folders"], {"ws": self.permitted(workspace_url)})
         return (library.get("desLibrary") or {}).get("folders") or []
 
+    #: Rows asked for per page of components: 100 measured to answer
+    #: promptly for names; parameters make each row heavier.
+    COMPONENT_PAGE = 100
+    COMPONENT_PAGE_WITH_PARAMETERS = 50
+    #: A cursor that never ends must not loop forever.
+    MOST_COMPONENT_PAGES = 2000
+
     def list_components(self, workspace_url: str, name_contains: str = "",
-                        with_parameters: bool = False) -> list[dict]:
+                        with_parameters: bool = False, limit: int = 0) -> dict:
+        """Components page by page until ``limit`` matches (0: no limit)
+        or the library ends. ``cut_short`` says more matches were left."""
         query = _READS["components"] % (_PARAMETERS if with_parameters else "")
-        library = self.read(query, {"ws": self.permitted(workspace_url)}).get("desLibrary")
-        nodes = ((library or {}).get("components") or {}).get("nodes") or []
+        first = (self.COMPONENT_PAGE_WITH_PARAMETERS if with_parameters
+                 else self.COMPONENT_PAGE)
+        ws = self.permitted(workspace_url)
         needle = name_contains.lower()
-        return [n for n in nodes if needle in (n.get("name") or "").lower()]
+        kept: list[dict] = []
+        cursor, pages, more = None, 0, False
+        while pages < self.MOST_COMPONENT_PAGES:
+            library = self.read(query, {"ws": ws, "after": cursor,
+                                        "first": first}).get("desLibrary")
+            page = (library or {}).get("components") or {}
+            pages += 1
+            kept.extend(n for n in page.get("nodes") or []
+                        if needle in (n.get("name") or "").lower())
+            info = page.get("pageInfo") or {}
+            more = bool(info.get("hasNextPage")) and bool(info.get("endCursor"))
+            if not more or (limit and len(kept) >= limit):
+                break
+            cursor = info["endCursor"]
+        cut_short = bool(limit) and (len(kept) > limit or (len(kept) >= limit and more))
+        return {"components": kept[:limit] if limit else kept,
+                "pages_read": pages, "cut_short": cut_short or (
+                    more and pages >= self.MOST_COMPONENT_PAGES)}
 
     def get_component(self, component_id: str) -> dict:
         part = self.read(_READS["component"], {"id": component_id}).get("desComponentById")

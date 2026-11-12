@@ -126,6 +126,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Profiles](docs/PROFILES.md) | Per-workspace house style: naming, rules, fab profiles, templates |
 | [Fab output, stackups and calculators](docs/FAB_AND_CALCULATORS.md) | Checking the fab package, bundled fab data, laminates, calculators |
 | [IPC standards and rule values](docs/IPC_STANDARDS.md) | Catalogue of IPC standards, rule definitions, your licensed values per profile |
+| [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
 | [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |
 | [Autonomous design](docs/AUTONOMOUS_DESIGN.md) | Driving a full spec-to-board run from any MCP client |
 | [NPI phase gates](docs/NPI_PHASE_GATES.md) | The stage checks, and which ones a tool can answer |

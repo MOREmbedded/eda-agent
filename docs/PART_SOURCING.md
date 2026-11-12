@@ -27,7 +27,7 @@ tells you whether you can draw it.
 | `element14` | catalogue | element14 (Farnell, Newark): MPN, datasheet, stock and attributes. No lifecycle: its product-status vocabulary does not map onto the others, so it is left out rather than guessed at. Needs `ELEMENT14_API_KEY`; `ELEMENT14_STORE` picks the regional storefront, which changes the catalogue you see | yes | yes |
 | `kicad_local` | library | The libraries KiCad installed on this machine. A fetch resolves the symbol's footprint reference against the installed `.pretty` libraries and the footprint's model reference against the `3dmodels` tree, so a hit can be a whole part with a 3D body (18003 of the 22728 symbols shipped with KiCad 10.0.1 name a footprint). No MPN or datasheet for most entries | no | no |
 | `mouser` | catalogue | Mouser's catalogue: MPN, datasheet, lifecycle, stock and product attributes. Stock arrives as prose ("1,234 In Stock"), so the digits are lifted and the original string kept beside them. Needs `MOUSER_API_KEY` | yes | yes |
-| `nexar` | catalogue | Nexar, the API behind Octopart: aggregates offers across many distributors at once. A hit's `extra` carries total stock, median 1000-piece price, best single-unit price and seller, lifecycle status, the full parametric map and similar parts, per Nexar's published Supply query examples. Needs `NEXAR_CLIENT_ID` and `NEXAR_CLIENT_SECRET` | yes | yes |
+| `nexar` | catalogue | Nexar, the API behind Octopart: aggregates offers across many distributors at once. A hit's `extra` carries total stock, median 1000-piece price, best single-unit price and seller, lifecycle status, the full parametric map and similar parts, per Nexar's published Supply query examples. Needs `NEXAR_CLIENT_ID` and `NEXAR_CLIENT_SECRET`, or else uses the Altium 365 pair `EDA_AGENT_NEXAR_APP_ID` and `EDA_AGENT_NEXAR_CLIENT_SECRET` (the same portal app works for both when it has the Supply scope); either pair is also read from the saved user environment, so `setx` works without a restart | yes | yes |
 | `partreel` | library | An open registry of verified KiCad parts, no login and no key: `/api/v1/parts.json` serves 21,657 parts. Yields KiCad files, usable in Altium through `lib_kicad_import`. Points at PartReel the way the Digi-Key client points at Digi-Key; `PARTS_REGISTRY_URL` redirects it at any API-compatible registry, since the API shape is the contract rather than the host. Run by a third party, proposed in issue #12 by its operator | yes | no |
 | `public_libraries` | library | Openly published KiCad libraries, no login and no key: KiCad's own 12,011 footprints, Digi-Key's 936, and JLCPCB's 20 symbol libraries plus footprints. Mostly **land patterns rather than symbols**, which is what you want once the part is chosen but its geometry is not. Indexed through GitHub's documented API, one request per repository, cached on disk for a week. `EDA_AGENT_CACHE_DIR` relocates the cache | yes | no |
 | `tme` | catalogue | TME: MPN and product page, strongest on European availability. **No stock figure**: `Search.json` does not return one, it comes from `Products/GetPrices`, which this client does not call. Requests are HMAC signed; needs `TME_TOKEN` and `TME_SECRET`, and `TME_COUNTRY` selects the market | yes | yes |
@@ -76,7 +76,10 @@ establish, without a paid credential, is the request and response shapes. So
 every catalogue publishes `verified_live: false`, and the parsers are written
 to degrade a single hit on a renamed field rather than assume a shape and lose
 the whole search. The flag flips only when a client has actually run against
-the live API.
+the live API. Nexar has: on 2026-11-12 its search answered `LM317` and
+`GRM188R71H104KA93D` with every requested field (stock, prices, lifecycle,
+parameters, similar parts) and no schema error, so `nexar` publishes
+`verified_live: true`.
 
 **Access policy of the hosts, checked rather than assumed.** Every host these
 providers reach was checked for a `robots.txt` before anything was built

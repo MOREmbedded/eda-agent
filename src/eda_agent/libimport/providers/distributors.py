@@ -30,8 +30,9 @@ shipped as plausible guesses.
 WHAT IS AND IS NOT VERIFIED HERE. The endpoints exist: measured. The
 auth mechanisms follow each vendor's published scheme. The response
 parsing has NOT been exercised against a live credentialed reply by this
-project, which every class states through ``verified_live = False`` and
-which the provider catalogue reports. The parsers are written to survive
+project, which each such class states through ``verified_live = False``
+and which the provider catalogue reports. Nexar is the exception: run
+live on 2026-11-12, so it says ``verified_live = True``. The parsers are written to survive
 a renamed field rather than assume one, so a shape drift degrades a hit
 instead of losing the whole search.
 """
@@ -281,17 +282,33 @@ class NexarProvider(DistributorProvider):
     description = (
         "Nexar (Octopart) aggregator: MPN, datasheet and offers across "
         "many distributors at once. Identity only, no symbol or "
-        "footprint. Needs NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET.")
+        "footprint. Needs NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET, or "
+        "the Altium 365 pair EDA_AGENT_NEXAR_APP_ID and "
+        "EDA_AGENT_NEXAR_CLIENT_SECRET.")
     env_vars = ("NEXAR_CLIENT_ID", "NEXAR_CLIENT_SECRET")
+    #: The same Nexar app is often already set up for the altium365_
+    #: tools under these names. Used only as a whole pair, and only when
+    #: env_vars are not both set: a client id from one app with the
+    #: secret of another is refused by the token endpoint with nothing
+    #: to say which half was wrong.
+    fallback_env_vars = ("EDA_AGENT_NEXAR_APP_ID",
+                         "EDA_AGENT_NEXAR_CLIENT_SECRET")
+
+    #: Measured 2026-11-12 with a Nexar portal app's client_credentials
+    #: token: supSearchMpn answered "LM317" (20 hits) and
+    #: "GRM188R71H104KA93D" (6 hits) with every field in _PART_FIELDS
+    #: populated and no GraphQL error, so the query shape and the
+    #: parsing below are confirmed against the live API.
+    verified_live = True
 
     _TOKEN_URL = "https://identity.nexar.com/connect/token"
     _API_URL = "https://api.nexar.com/graphql"
 
     #: Pricing, stock and lifecycle fields per Nexar's published Supply
-    #: query examples (support.nexar.com); not yet exercised against the
-    #: live schema with a real credential (verified_live stays False), so
-    #: a renamed or absent field degrades that one hit's extra data
-    #: rather than failing the search (see _pricing_extra).
+    #: query examples (support.nexar.com), all accepted by the live
+    #: schema on 2026-11-12 (see verified_live). Still read defensively:
+    #: a field renamed later degrades that one hit's extra data rather
+    #: than failing the search (see _pricing_extra).
     _PART_FIELDS = """
       mpn
       manufacturer { name }
@@ -318,6 +335,38 @@ class NexarProvider(DistributorProvider):
       }
     }
     """ % _PART_FIELDS
+
+    def _credentials(self) -> dict[str, str]:
+        """NEXAR_CLIENT_ID/SECRET, else the Altium 365 pair, as one pair.
+
+        Each name is looked up in the process first and then in the
+        user's saved environment (what ``setx`` writes), as
+        altium365.read_environment does, so a key set while the server
+        was running works without a restart. Returned under the
+        env_vars names whichever pair answered.
+        """
+        import os
+
+        from eda_agent import altium365
+        from eda_agent.libimport.providers.base import ProviderUnavailable
+
+        saved = altium365.saved_user_environment(
+            self.env_vars + self.fallback_env_vars)
+
+        def value(name: str) -> str:
+            return (os.environ.get(name, "").strip()
+                    or str(saved.get(name, "")).strip())
+
+        for pair in (self.env_vars, self.fallback_env_vars):
+            found = [value(n) for n in pair]
+            if all(found):
+                return dict(zip(self.env_vars, found))
+        raise ProviderUnavailable(
+            f"{self.name} needs NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET, "
+            f"or EDA_AGENT_NEXAR_APP_ID and EDA_AGENT_NEXAR_CLIENT_SECRET "
+            f"(the Altium 365 pair; the app needs the Supply scope). Set "
+            f"one whole pair to enable this source. No credential ships "
+            f"with this project.")
 
     def _token(self) -> str:
         creds = self._credentials()

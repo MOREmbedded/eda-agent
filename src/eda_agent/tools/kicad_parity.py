@@ -283,6 +283,7 @@ COVERED: dict[str, str] = {
     "lib_create_footprint_from_package": "kicad_create_footprint_from_package",
     "lib_create_standard_footprint": "kicad_create_footprint_from_package",
     "lib_render_footprint": "kicad_export_footprint_svg",
+    "lib_preview_part": "kicad_export_symbol_svg",
     # design family members registered on the Altium backend only
     "design_validate": "design_validate_plan",
     "design_lint_report": "kicad_full_review",
@@ -301,7 +302,7 @@ NOT_APPLICABLE: dict[str, str] = {
     # The profile managers read a profile (EDA-agnostic, and registered on
     # every backend) but write through Altium-only handlers.
     **{name: _PROFILE for name in (
-        "pcb_rules_plan", "pcb_rules_diff", "pcb_rules_apply",
+        "pcb_rules_plan", "pcb_rules_diff", "pcb_rules_apply", "pcb_rules_fab_floors",
         "proj_erc_plan", "proj_erc_diff", "proj_erc_apply",
         "profile_apply_all", "profile_diff_all",
         "profile_apply_document_settings", "profile_new_document")},
@@ -563,6 +564,11 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "sim_emc_prescan": "reads the board through Altium's layout model; a KiCad board reader for it is not written",
+    "sim_em_build_model": "as sim_emc_prescan",
+    "sim_em_run": "runs models from sim_em_build_model, which has no KiCad reader yet",
+    "sim_em_results": "as sim_em_run",
+    "sim_read_touchstone": "reads a file only; registered with the Altium suite, not yet on the KiCad surface",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",
     "pcb_audit_placement_plan": "not ported",
