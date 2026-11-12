@@ -1,0 +1,233 @@
+{
+ "vendor": "Technoservice",
+ "source": {
+  "url": "https://tspcb.pl/mozliwosci-technologiczne/",
+  "other_urls": [
+   "https://tspcb.pl/content/uploads/2026/05/Parametry-technologiczne-obwodow-TS-PCB_2026.pdf",
+   "https://tspcb.pl/pliki-do-pobrania/"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "TS PCB (Techno-Service S.A., Gdańsk). One parameter page plus the PDF 'Parametry technologiczne obwodów TS PCB' updated 2026-05-29; quotes are Polish, verbatim, decimal commas kept. Track/gap tables are by base copper (Tab. 6 outer, Tab. 7 inner); the 18 µm base column is used for 1 oz finished outer copper. Product lines (TSka prototype, 5LT, series) have their own pages, not read. technoservice.pl refuses automated readers. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12
+     ],
+     "quote": "0 (laminat bez miedzi) / 12",
+     "note": "Minimum / maximum conductive layers; the PDF: 'wielowarstwowe do 12 warstw na laminacie FR4'. Listed as 1, 2 and even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "mil": 4,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "D Minimalna ścieżka [mils] 3 4 5 8 10 14 17 25",
+     "note": "PDF Tab. 6, outer layers, by base copper 12/18/35/70/105/140/170/210 µm. 18 µm base (plated to 35 µm, 1 oz finished) gives 4 mil."
+    },
+    {
+     "mil": 8,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "D Minimalna ścieżka [mils] 3 4 5 8 10 14 17 25",
+     "note": "PDF Tab. 6, 70 µm base column."
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "C Ścieżka/Ścieżka [mils] 3 4 5 8 11 15 19 27",
+     "note": "PDF Tab. 6, outer, 18 µm base column."
+    },
+    {
+     "mil": 8,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "C Ścieżka/Ścieżka [mils] 3 4 5 8 11 15 19 27",
+     "note": "PDF Tab. 6, 70 µm base column."
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.25,
+     "quote": "minimalna średnica wiertła: 0,25 mm"
+    }
+   ],
+   "min_laser_drill": [
+    {
+     "unpublished": "No laser drilling appears on the page or in the PDF."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mil": 4,
+     "when": {
+      "layers": [
+       1,
+       4
+      ]
+     },
+     "quote": "typ. 5 min. 4",
+     "note": "PDF Tab. 8, outer layers, holes up to 5 mm; typical 5 mil. Inner rings need tear drops."
+    },
+    {
+     "mil": 5,
+     "when": {
+      "layers": [
+       6,
+       12
+      ]
+     },
+     "quote": "typ. 6 min. 5*",
+     "note": "PDF Tab. 8, inner rings at 6 layers (8-12 layers: 'typ. 7 min. 5*'); * = tear drops required. The stricter inner figure governs the via."
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mil": 4,
+     "quote": "typ. 5 min. 4",
+     "note": "The tables do not separate component rings from via rings. Holes over 5 mm: 10 mil."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "mil": 8,
+     "quote": "Minimalna odległość otwór / otwór [mils] 8"
+    }
+   ],
+   "hole_to_copper_inner": [
+    {
+     "mil": 8,
+     "quote": "Minimalna odległość otwór / pad [mils] 8 9 9",
+     "note": "PDF Tab. 8; how the three values map to layer counts is not clear from the extracted text, the smallest is stored."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "No solder mask bridge figure on the page or in the PDF."
+    }
+   ],
+   "mask_expansion": [
+    {
+     "unpublished": "No solder mask expansion figure on the page or in the PDF."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 4,
+     "quote": "Minimalna szerokość linii opisowej wynosi 4 mils (ok. 0,1 mm)",
+     "note": "White legend accepts 3 mil: 'Dla opisu białego dopuszcza się linie o szerokości 3 mils'."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "unpublished": "No legend character height on the page or in the PDF."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "unpublished": "No figure; legend on solder pads is always removed: 'Elementy opisu wchodzące na pady lutownicze ... są zawsze usuwane'."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "unpublished": "No copper to routed edge clearance; only the routing tolerance."
+    }
+   ],
+   "copper_to_vcut": [
+    {
+     "mm": 0.4,
+     "quote": "Minimalna odległość [mm] 0,15 0,21 0,26 0,31 0,4 0,52 0,62",
+     "note": "PDF Tab. 5, copper and mask to score line by laminate 0,55/0,80/1,00/1,20/1,55/2,00/2,40 mm; 0.4 mm is the 1.55 mm column."
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "0.2-3.2 mm (1-2 layers), 0.45-3.2 mm (multilayer)",
+     "quote": "0,20 / 3,20 ... 0,45 / 3,20"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "35-240 µm finished outer",
+     "quote": "na warstwach zewnętrznych (grubość końcowa) [µm]: 35; 70; 105; 140; 170; 210; 240;"
+    }
+   ],
+   "max_aspect_ratio": [
+    {
+     "unpublished": "No aspect ratio; only a blind via depth formula."
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "value": "+0.1/-0.05 mm",
+     "quote": "standardowa tolerancja średnicy otworów metalizowanych: +0,1 mm / -0,05 mm"
+    }
+   ],
+   "npth_hole_tolerance": [
+    {
+     "value": "+0.1/-0.05 mm",
+     "quote": "standardowa tolerancja średnicy otworów niemetalizowanych: +0,1 mm / -0,05 mm"
+    }
+   ],
+   "outline_tolerance": [
+    {
+     "mm": 0.1,
+     "quote": "standardowa tolerancja frezowania: ... ±0,1 mm",
+     "note": "The PDF prints the ± with a Symbol-font glyph (U+F0B1). ±0,05 mm on order."
+    }
+   ],
+   "max_board_size": [
+    {
+     "unpublished": "No maximum board size on the page or in the PDF."
+    }
+   ],
+   "via_in_pad": [
+    {
+     "value": "plugged and mask-covered, up to 0.6 mm, also in pads",
+     "quote": "Metoda pozwala zatykać otwory o maksymalnej średnicy 0,6 mm, w tym również otwory w padach",
+     "note": "Resin/ink plugging, not copper filled."
+    }
+   ],
+   "impedance_tolerance": [
+    {
+     "unpublished": "No impedance tolerance on the page or in the PDF."
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "lead-free HAL, ENIG",
+     "quote": "HAL bezołowiowy złocenie chemiczne (ENIG)"
+    }
+   ],
+   "ipc_class": [
+    {
+     "value": "class 2 or class 3",
+     "quote": "KLASA IPC klasa II klasa III",
+     "note": "Both are offered; the page does not say which is the default."
+    }
+   ],
+   "min_npth_drill": [
+    {
+     "mm": 0.25,
+     "quote": "FINALNA ŚREDNICA OTWORÓW NIEMETALIZOWANYCH [MM] minimalna 0,25"
+    }
+   ]
+  }
+ }
+}

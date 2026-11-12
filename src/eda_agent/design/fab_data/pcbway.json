@@ -3,7 +3,8 @@
  "source": {
   "url": "https://www.pcbway.com/capabilities.html",
   "retrieved": "2026-10-22",
-  "note": "Two tables: 'Standard PCB' and 'Advanced PCB', the second graded Normal process / Medium difficulty / High difficulty. Tier standard is the first table; tier advanced_normal is the second table's Normal process column. Medium and high difficulty cost more and are not offered as tiers."
+  "note": "Two tables: 'Standard PCB' and 'Advanced PCB', the second graded Normal process / Medium difficulty / High difficulty. Tier standard is the first table; tier advanced_normal is the second table's Normal process column. Medium and high difficulty cost more and are not offered as tiers.",
+  "second_reading": {"retrieved": "2026-11-11", "note": "Tolerances, outline, silkscreen-to-pad, finishes, impedance and castellation keys added from a second reading of the same page. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."}
  },
  "tiers": {
   "standard": {
@@ -36,6 +37,33 @@
    ],
    "min_silk_height": [
     {"mm": 0.8, "quote": "Minimum Character Height (Legend) - 0.8mm Characters of less than 0.8mm high will be too small to be recognizable."}
+   ],
+   "board_thickness": [
+    {"value": "0.2-3.2 mm", "quote": "0.2-3.2mm"}
+   ],
+   "copper_weights": [
+    {"value": "1-8 oz outer", "quote": "1oz/2oz/3oz/4oz/5oz/6oz/7oz/8oz (35um/70um/105um/140um/175um/210um/245um/280um)"}
+   ],
+   "pth_hole_tolerance": [
+    {"mm": 0.08, "quote": "PTH: +/-0.08mm, NPTH: +/-0.05mm"}
+   ],
+   "npth_hole_tolerance": [
+    {"mm": 0.05, "quote": "PTH: +/-0.08mm, NPTH: +/-0.05mm"}
+   ],
+   "outline_tolerance": [
+    {"mm": 0.2, "quote": "±0.2mm for CNC routing, and ±0.5mm for V-scoring."}
+   ],
+   "max_board_size": [
+    {"value": "600 x 1200 mm (1-2 layers), 560 x 1150 mm (multilayer)", "quote": "Single-sided PCB and double-sided PCB: 600*1200mm Multilayer PCB: 560*1150mm"}
+   ],
+   "castellated_holes": [
+    {"mm": 0.4, "quote": "Minimum Diameter of Plated Half Holes | - | 0.4mm"}
+   ],
+   "surface_finishes": [
+    {"value": "HASL, lead-free HASL, ENIG, OSP, hard gold, immersion silver, immersion tin, ENEPIG", "quote": "HASL with lead, HASL lead free, Immersion gold, OSP, Hard Gold, Immersion Silver, Immersion Tin, ENEPIG;"}
+   ],
+   "ipc_class": [
+    {"unpublished": "The standard table names ISO 9001 and UL only."}
    ]
   },
   "advanced_normal": {
@@ -95,6 +123,33 @@
     {"mil": 8, "when": {"layers": [6, 6]}, "quote": "6L ≥8MIL 6.5MIL≤isolation ring"},
     {"mil": 9, "when": {"layers": [8, 8]}, "quote": "8L ≥9MIL 7MIL≤isolation ring"},
     {"mil": 10, "when": {"layers": [10, null]}, "quote": "≥10L ≥10MIL 8MIL≤isolation ring"}
+   ],
+   "copper_to_edge": [
+    {"mm": 0.25, "quote": "Line to board edge distance CNC milling 0.25mm"}
+   ],
+   "pth_hole_tolerance": [
+    {"mm": 0.075, "quote": "PTH ±0.075mm or no customer requirements"}
+   ],
+   "npth_hole_tolerance": [
+    {"mm": 0.075, "quote": "NPTH ≥±0.075mm"}
+   ],
+   "outline_tolerance": [
+    {"mm": 0.15, "quote": "Shape tolerance tolerance≥±0.15mm"}
+   ],
+   "max_board_size": [
+    {"value": "508 x 610 mm (1-2 layers), 508 x 600 mm (multilayer)", "quote": "Single and double side PCB 508×610mm"}
+   ],
+   "impedance_tolerance": [
+    {"value": "±10%, ±5 Ω at 50 Ω and below", "quote": "Impedance control tolerance ±10%，50Ω and below：±5Ω"}
+   ],
+   "castellated_holes": [
+    {"mm": 0.5, "quote": "Castellated Holes diameter ≥0.5mm"}
+   ],
+   "max_aspect_ratio": [
+    {"value": "8:1", "quote": "Thickness to diameter ratio≤8"}
+   ],
+   "ipc_class": [
+    {"value": "IPC standard; class 2 and 3 cost more", "quote": "IPC standard", "note": "Normal column; 'IPC2 level standard' and 'IPC Level 3 standard' are the medium and high difficulty columns (order inferred)."}
    ]
   }
  }

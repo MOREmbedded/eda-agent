@@ -85,6 +85,8 @@ def _mils(fig: dict) -> Optional[float]:
         return round(fig["mm"] * MILS_PER_MM, 3)
     if "mil" in fig:
         return float(fig["mil"])
+    if "um" in fig:                                  # micrometres, as Multi-CB
+        return round(fig["um"] / 1000.0 * MILS_PER_MM, 3)
     return None
 
 

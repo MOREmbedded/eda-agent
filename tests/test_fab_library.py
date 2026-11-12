@@ -47,7 +47,7 @@ def test_every_figure_is_quoted_or_says_why_it_is_missing():
                     where = (data["vendor"], tier, key)
                     if "unpublished" in f:
                         assert f["unpublished"].strip(), where
-                        assert "mm" not in f and "mil" not in f, where
+                        assert not {"mm", "mil", "um"} & set(f), where
                     else:
                         assert f.get("quote", "").strip(), where
 
@@ -59,12 +59,14 @@ def test_each_published_number_is_inside_its_own_quote():
         for tier, figs in data["tiers"].items():
             for key, options in figs.items():
                 for f in options:
-                    unit = "mm" if "mm" in f else "mil" if "mil" in f else None
+                    unit = next((u for u in ("mm", "mil", "um") if u in f), None)
                     if unit is None:
                         continue
                     if "derived" in f:
                         continue
-                    numbers = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", f["quote"])}
+                    # Polish and German pages write decimal commas: 0,25 mm.
+                    quote = re.sub(r"(\d),(\d)", r"\1.\2", f["quote"])
+                    numbers = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", quote)}
                     assert f[unit] in numbers, (data["vendor"], tier, key, f[unit])
 
 

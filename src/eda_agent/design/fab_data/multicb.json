@@ -1,0 +1,253 @@
+{
+ "vendor": "Multi Circuit Boards",
+ "source": {
+  "url": "https://www.multi-circuit-boards.eu/en/pcb-design-aid/design-parameters.html",
+  "other_urls": [
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/drills-throughplating.html",
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/surface/solder-stop.html",
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/surface/legend-marking-print.html",
+   "https://www.multi-circuit-boards.eu/en/pcb-design-aid/mechanics/milling.html",
+   "https://www.multi-circuit-boards.eu/fileadmin/user_upload/downloads/leiterplatten_design-hilfe/Multi-CB-Leiterplatten_Basic-Design-Rules_en.pdf"
+  ],
+  "retrieved": "2026-11-11",
+  "note": "Multi-CB (Germany). One lettered table with 'Standard (min.)' and 'Special production (min.)' columns, for 35 µm copper; detail on sub-pages. Tiers standard and special. The copper-thickness table (track = gap at every weight) is not split by layer count. Tolerance, impedance and BGA pages not read. Read 2026-11-11 by an automated page reader; `eda-agent fab-refresh` re-checks every quote against the live page."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40,
+      42,
+      44,
+      46,
+      48
+     ],
+     "quote": "1 - 48 layers"
+    }
+   ],
+   "min_track": [
+    {
+     "um": 100,
+     "quote": "100µm | 100µm",
+     "note": "Row H, I width | space at 35 µm. 70 µm copper needs 150 µm."
+    }
+   ],
+   "min_gap": [
+    {
+     "um": 100,
+     "quote": "100µm | 100µm"
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.1,
+     "quote": "Drilling | 0.1mm | 5.9mm (larger = milling) | 1:10 (rfq 1:20)"
+    }
+   ],
+   "min_laser_drill": [
+    {
+     "mm": 0.075,
+     "quote": "Laser drilling | 0.075mm"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "um": 100,
+     "quote": "100µm circular",
+     "note": "Row A, B, C (via): via pad 400 µm on a 200 µm drill."
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "um": 125,
+     "quote": "annular ring ≥ 125µm"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "Not on the pages read; only conductor to hole (row K)."
+    }
+   ],
+   "hole_to_copper_inner": [
+    {
+     "um": 200,
+     "quote": "Conductor/pad to hole (PTH, NPTH) ... 200µm",
+     "note": "Row K, one figure for all layers."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "um": 100,
+     "quote": "The smallest possible solder-stop bridge width is 100µm (green)",
+     "note": "Other colours 125 µm."
+    }
+   ],
+   "mask_expansion": [
+    {
+     "um": 50,
+     "quote": "please ensure a clearance (spacing between copper to solder-stop) of at least 50µm (green solder-stop)",
+     "note": "75 µm recommended; other colours 75 µm minimum."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "No minimum legend line width; only an optimum width per font height (1.2 mm font: 150 µm)."
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 1.2,
+     "quote": "1.2mm | 150µm (6mil)",
+     "note": "Smallest font height in the legend table, not stated as a minimum."
+    }
+   ],
+   "silk_to_pad": [
+    {
+     "um": 150,
+     "quote": "Legend print spacing min. ... 150µm"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "um": 200,
+     "quote": "Min. spacing copper / milling | 200µm"
+    }
+   ],
+   "copper_to_vcut": [
+    {
+     "um": 500,
+     "quote": "Conductor/pad to scoring edge ... 500µm"
+    }
+   ],
+   "max_aspect_ratio": [
+    {
+     "value": "1:10",
+     "quote": "Multi-CB can produce aspect ratios up to a maximum of 1:10 (rfq 1:20)"
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "1.55 mm FR4 default",
+     "quote": "FR4 1.55 mm"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "lead-free HAL, chemical gold",
+     "quote": "HAL lead-free ... chem. Gold"
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "Not on the pages read."
+    }
+   ]
+  },
+  "special": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36,
+      38,
+      40,
+      42,
+      44,
+      46,
+      48
+     ],
+     "quote": "1 - 48 layers"
+    }
+   ],
+   "min_track": [
+    {
+     "um": 75,
+     "quote": "75µm | 75µm",
+     "note": "At 35 µm copper the special copper table gives 90 µm; 75 µm is for 18 µm copper."
+    }
+   ],
+   "min_gap": [
+    {
+     "um": 75,
+     "quote": "75µm | 75µm"
+    }
+   ],
+   "min_laser_drill": [
+    {
+     "mm": 0.075,
+     "quote": "Laser drilling | 0.075mm"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "um": 75,
+     "quote": "75µm circular",
+     "note": "Mechanical blind via; laser blind via 90 µm."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "um": 80,
+     "quote": "80µm",
+     "note": "Row L, green, special production."
+    }
+   ],
+   "mask_expansion": [
+    {
+     "um": 25,
+     "quote": "25µm circ. (BGA)"
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "um": 200,
+     "quote": "Conductor/pad to milling edge ... 200µm"
+    }
+   ],
+   "copper_to_vcut": [
+    {
+     "um": 500,
+     "quote": "Conductor/pad to scoring edge ... 500µm"
+    }
+   ]
+  }
+ }
+}

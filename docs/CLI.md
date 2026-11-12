@@ -99,6 +99,10 @@ listings can be read against each other.
 | `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |
 | `eda-agent stackup-profile <vendor> [--fill NAME=MILS]` | Emit a fab profile JSON, or say what the vendor does not publish |
 | `eda-agent laminates [--json]` | Laminate properties, with both dielectric constants |
+| `eda-agent fab-list [--json]` | Fab connectors: which fabs have design-rule data, its status and age |
+| `eda-agent fab-rules <fab> --layers N [--oz 1] [--tier T] [--ipc-class 2\|3]` | Every published design rule of one build, each with its quote |
+| `eda-agent fab-compare --layers N [--oz 1] [--key K]` | All fabs and tiers side by side, in mils |
+| `eda-agent fab-refresh <fab> [--file saved.html] [--write]` | Re-read a fab's pages and check every stored quote is still there |
 
 ## Altium 365
 
