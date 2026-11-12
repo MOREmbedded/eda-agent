@@ -16,6 +16,22 @@ maturity classification for every tool.
 
 ### Added
 
+- **Symbol and footprint preview before placing a part.** The
+  dashboard's Library pane has a "Look up a part" view: search the
+  profile's scanned Altium 365 library offline (name, value,
+  description, MPN), pick a part, and see its symbol and footprint as
+  they are in the library, with pin and pad counts and where each comes
+  from; a multi-part symbol shows one part at a time. A part from a
+  .SchLib or .IntLib can be previewed by path and name. New script
+  read `library.get_symbol_geometry` loads the symbol the way placement
+  does (`SchServer.LoadComponent` for a Workspace part,
+  `LoadComponentFromLibrary` for an IntLib, the open SchLib otherwise),
+  answers its graphics, pins and models, and destroys a loaded part
+  again, so nothing reaches a sheet. New tool `lib_preview_part` writes
+  both drawings as SVG. UNVERIFIED live: whether a Workspace part's
+  footprint link names a library file Altium can open; when it does
+  not, the preview says so and shows the symbol only.
+
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced

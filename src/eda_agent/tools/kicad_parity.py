@@ -281,6 +281,7 @@ COVERED: dict[str, str] = {
     "lib_create_footprint_from_package": "kicad_create_footprint_from_package",
     "lib_create_standard_footprint": "kicad_create_footprint_from_package",
     "lib_render_footprint": "kicad_export_footprint_svg",
+    "lib_preview_part": "kicad_export_symbol_svg",
     # design family members registered on the Altium backend only
     "design_validate": "design_validate_plan",
     "design_lint_report": "kicad_full_review",

@@ -8365,6 +8365,74 @@ def register_library_tools(mcp):
         return out
 
     @mcp.tool()
+    async def lib_preview_part(
+        design_item_id: str = "",
+        vault: str = "",
+        library_path: str = "",
+        component_name: str = "",
+        part: int = 1,
+        out_dir: str = "",
+    ) -> dict[str, Any]:
+        """Draw a part's symbol and its footprint before placing it.
+
+        The symbol is loaded the way placement loads it and nothing goes on
+        a sheet: a Workspace (Altium 365) part by ``design_item_id``
+        (``vault`` = the Workspace name as Altium shows it; empty = read off
+        a managed part on an open sheet), or a library file part by
+        ``library_path`` (.SchLib, .IntLib) + ``component_name``. The
+        footprint is the part's current footprint model, read from the
+        library its link names; a link naming no library file Altium can
+        open says so in ``footprint.reason``. The dashboard's Library pane
+        ("Look up a part") shows the same preview.
+
+        Args:
+            design_item_id: Workspace part ID, e.g. "CMP-00012"
+                (with or without a revision on the end).
+            vault: Workspace name; empty = read off the design.
+            library_path: the .SchLib / .IntLib, for a library file part.
+            component_name: the symbol's name in that library.
+            part: which part of a multi-part symbol (default 1).
+            out_dir: folder for the SVGs; default <workspace>/renders.
+
+        Returns:
+            {ok, lib_ref, comment, description, source, part, part_count,
+            symbol: {svg_path, pins, hidden_pins, by_type, graphics},
+            footprint: {ok, svg_path, name, library, pads, notes} or
+            {ok: False, reason}, models, notes}.
+        """
+        from ..library_preview import preview_part
+
+        if not design_item_id and not (component_name and library_path):
+            return {"ok": False, "reason": "give design_item_id, or library_path "
+                                           "with component_name"}
+        bridge = get_bridge()
+
+        def send(command: str, params: dict, timeout: float) -> Any:
+            return bridge.send_command(command, params, timeout=timeout)
+
+        got = await asyncio.to_thread(
+            preview_part, send, design_item_id=design_item_id, vault=vault,
+            library_path=library_path, component_name=component_name, part=part)
+        if not got.get("ok"):
+            return got
+        name = got.get("lib_ref") or design_item_id or component_name
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("._") or "part"
+        target = Path(out_dir) if out_dir else get_config().workspace_dir / "renders"
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            sym_path = target / f"{safe}_symbol.svg"
+            sym_path.write_text(got["symbol"].pop("svg"), encoding="utf-8")
+            got["symbol"]["svg_path"] = str(sym_path)
+            fp = got.get("footprint") or {}
+            if fp.get("svg"):
+                fp_path = target / f"{safe}_footprint.svg"
+                fp_path.write_text(fp.pop("svg"), encoding="utf-8")
+                fp["svg_path"] = str(fp_path)
+        except OSError as exc:
+            return {"ok": False, "reason": f"could not write to {target}: {exc}"}
+        return got
+
+    @mcp.tool()
     async def lib_compare_footprints(
         footprint_a: str,
         footprint_b: str,
