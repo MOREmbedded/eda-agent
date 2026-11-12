@@ -84,11 +84,11 @@ def test_thick_stripline_matches_wheeler():
 
 
 def test_coplanar_in_air_matches_the_exact_conformal_map():
-    # With no substrate the conformal map is exact: Z0 = 30 pi K(k')/K(k).
+    # With no substrate the conformal map is exact: Z0 = (eta0/4) K(k')/K(k).
     r = impedance.coplanar(impedance.coplanar.__wrapped_parse__(
         {"t": "0 mil", "grounded": False, "frequency": 0, "gw": 600, "er": 1.0}))
     k0 = 10.0 / 22.0
-    assert r.value("z0") == pytest.approx(30 * math.pi / tline.k_ratio(k0), rel=0.002)
+    assert r.value("z0") == pytest.approx(tline.ETA0 / 4 / tline.k_ratio(k0), rel=0.002)
     assert r.value("er_eff") == pytest.approx(1.0, abs=1e-9)
 
 
