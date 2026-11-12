@@ -55,6 +55,20 @@ complete provenance, or the whole file is refused:
 A rule with no value is reported as not configured, with the standards to
 read it from. Nothing is guessed.
 
+A `licensed_copy` value whose `document` is not the catalogue's current
+revision (for example `IPC-6012E` while the catalogue lists `IPC-6012F`)
+still loads, but every load reports it as a warning: an older revision can
+be what a customer contract names, and it should never pass silently.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `eda-agent std-list [--domain D] [--priority N]` | The catalogue, with current revisions |
+| `eda-agent std-rules [--category C]` | Every rule definition and how many values your profile holds for it |
+| `eda-agent std-floors` | Regenerates `standards/ipc_class_floors.json` from `values.json` |
+| `eda-agent fab-rules <fab> --layers N --ipc-class 2` | A fab's rules with your class floors applied |
+
 ## Class floors for the fab rules
 
 `eda_agent.design.standards.write_class_floors(profile_dir)` writes

@@ -104,6 +104,16 @@ listings can be read against each other.
 | `eda-agent fab-compare --layers N [--oz 1] [--key K]` | All fabs and tiers side by side, in mils |
 | `eda-agent fab-refresh <fab> [--file saved.html] [--write]` | Re-read a fab's pages and check every stored quote is still there |
 
+## IPC standards
+
+IPC values are never shipped; they come from your licensed copy, in the profile. See [IPC standards and rule values](IPC_STANDARDS.md).
+
+| Command | Purpose |
+|---|---|
+| `eda-agent std-list [--domain D] [--priority 1\|2\|3] [--json]` | The IPC standards catalogue: current revision, scope, priority |
+| `eda-agent std-rules [--category C] [--json]` | IPC rule definitions and which have values in the active profile |
+| `eda-agent std-floors [--json]` | Write `standards/ipc_class_floors.json` (read by `fab-rules --ipc-class`) from the profile's values |
+
 ## Altium 365
 
 | Command | Purpose |

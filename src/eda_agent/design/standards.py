@@ -251,10 +251,10 @@ def load_values(profile_dir: Optional[Path]) -> dict[str, Any]:
     complete provenance fails the whole file rather than half-loading it.
     """
     if profile_dir is None:
-        return {"ok": True, "values": [], "path": None}
+        return {"ok": True, "values": [], "path": None, "warnings": []}
     path = Path(profile_dir) / VALUES_FILE
     if not path.is_file():
-        return {"ok": True, "values": [], "path": None}
+        return {"ok": True, "values": [], "path": None, "warnings": []}
     try:
         vf = ValuesFile.model_validate(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, ValidationError) as exc:
@@ -276,7 +276,33 @@ def load_values(profile_dir: Optional[Path]) -> dict[str, Any]:
         seen.add(ident)
     if errors:
         return {"ok": False, "reason": f"{path}: {len(errors)} problem(s)", "errors": errors}
-    return {"ok": True, "values": vf.values, "path": str(path)}
+    return {"ok": True, "values": vf.values, "path": str(path),
+            "warnings": revision_warnings(vf.values)}
+
+
+def revision_warnings(values: list[RuleValue]) -> list[str]:
+    """Values read from a revision other than the catalogue's current one.
+
+    Not an error: an older copy may be what a customer contract names. But
+    a value from IPC-6012E on a profile that claims the current standard is
+    worth saying out loud every time it is loaded.
+    """
+    cat = load_catalogue()
+    out: list[str] = []
+    for rv in values:
+        doc = rv.provenance.document
+        if rv.provenance.kind != "licensed_copy" or not doc:
+            continue
+        std = max((s for s in cat.standards if doc.startswith(s.id)),
+                  key=lambda s: len(s.id), default=None)
+        if std is None:
+            out.append(f"{rv.rule_id}: {doc} is not in the catalogue")
+            continue
+        cited = doc[len(std.id):].split("-")[0].strip() or None
+        if std.revision and cited != std.revision:
+            out.append(f"{rv.rule_id}: cites {doc}, the catalogue's current "
+                       f"revision is {std.label}")
+    return out
 
 
 def resolve(rule_id: str, key: dict[str, str], values: list[RuleValue]) -> dict[str, Any]:
@@ -345,12 +371,13 @@ def coverage(values: list[RuleValue]) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for rv in values:
         counts[rv.rule_id] = counts.get(rv.rule_id, 0) + 1
-    return [{"rule_id": r.rule_id, "title": r.title, "values": counts.get(r.rule_id, 0),
+    return [{"rule_id": r.rule_id, "title": r.title, "category": r.category,
+             "values": counts.get(r.rule_id, 0),
              "standards": r.standards, "check": r.check} for r in load_rules().rules]
 
 
 __all__ = [
     "Catalogue", "Rule", "RuleBook", "RuleValue", "Provenance", "Standard",
     "VALUES_FILE", "CLASS_FLOORS_FILE", "load_catalogue", "load_rules",
-    "load_values", "resolve", "class_floors", "write_class_floors", "coverage",
+    "load_values", "revision_warnings", "resolve", "class_floors", "write_class_floors", "coverage",
 ]
