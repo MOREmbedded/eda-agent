@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..emc.stack import Stack
+from ..emc.stack import CopperLayer, Dielectric, Stack, assumed_stack
 from ..layout.copper_raster import MAX_CELLS, CopperRaster, rasterize
 from ..layout.model import BOTTOM, LayoutBoard
 from .solver import Clamp, HeatArea, Package, Result, Setup, match_powers, solve
@@ -96,6 +96,62 @@ def _overlap(a0: float, da: float, na: int, b0: float, db: float, nb: int) -> np
     lo = np.maximum(a_lo[:, None], b_lo[None, :])
     hi = np.minimum(a_lo[:, None] + da, b_lo[None, :] + db)
     return np.clip(hi - lo, 0.0, None) / da
+
+
+#: Copper thickness taken when the stackup gives none, mils (1 oz).
+DEFAULT_COPPER_MILS = 1.4
+
+
+def usable_stack(stack: Stack) -> Stack:
+    """``stack`` with what a thermal model cannot do without filled in.
+
+    A board whose layer stack was never set up in the PCB editor reports
+    copper layers with no dielectric between them, or no copper
+    thickness. Solved as read, it would be a board a few mils thick. Each
+    missing dielectric takes the height the same gap has in an evenly
+    built 1.6 mm board, each missing copper thickness 1 oz, and the notes
+    say which."""
+    n = len(stack.layers)
+    gaps = [stack.layers[i].z_mils - stack.layers[i + 1].z_mils for i in range(n - 1)]
+    thin = [l.name for l in stack.layers if l.copper_mils <= 0]
+    if all(g > 0 for g in gaps) and not thin:
+        return stack
+    from types import SimpleNamespace
+    ref = assumed_stack([SimpleNamespace(name=l.name, order=i, kind=l.kind)
+                         for i, l in enumerate(stack.layers)])
+    notes = [x for x in stack.notes if "no dielectric beneath" not in x]
+    missing = []
+    for i, g in enumerate(gaps):
+        if g <= 0:
+            gaps[i] = ref.layers[i].z_mils - ref.layers[i + 1].z_mils
+            missing.append(f"{stack.layers[i].name}/{stack.layers[i + 1].name} "
+                           f"{gaps[i]:g} mil")
+    if missing:
+        notes.append("the stackup gives no dielectric between " + ", ".join(missing[:8])
+                     + (" ..." if len(missing) > 8 else "")
+                     + " (assumed, from an evenly built 1.6 mm board). Set the layer "
+                       "stack in the PCB editor for real numbers.")
+    if thin:
+        notes.append(f"no copper thickness for {', '.join(thin[:8])}: "
+                     f"{DEFAULT_COPPER_MILS:g} mil (1 oz) assumed")
+    out = Stack(assumed=stack.assumed or (bool(missing) and len(missing) == n - 1), notes=notes)
+    z = 0.0
+    layers, diel = [], []
+    for i in range(n - 1, -1, -1):
+        src = stack.layers[i]
+        if i < n - 1:
+            old = next((d for d in stack.dielectrics
+                        if d.z_bottom_mils >= stack.layers[i + 1].z_mils - 1e-9
+                        and d.z_top_mils <= src.z_mils + 1e-9 and d.height_mils > 0), None)
+            diel.append(Dielectric(z, z + gaps[i], *((old.er, old.tan_d, old.kind) if old
+                                                      else ())))
+            z += gaps[i]
+        layers.append(CopperLayer(src.name, src.label, z,
+                                  src.copper_mils if src.copper_mils > 0 else DEFAULT_COPPER_MILS,
+                                  src.kind))
+    out.layers = layers[::-1]
+    out.dielectrics = diel[::-1]
+    return out
 
 
 def board_area_mils2(board: LayoutBoard) -> float:
@@ -274,6 +330,7 @@ def analyze(board: LayoutBoard, stack: Stack,
     """
     setup = setup or Setup()
     setup.check()
+    stack = usable_stack(stack)
     packages = packages or {}
     pw = match_powers(board, powers or {})
     total = sum(pw.values()) + sum(h.power_w for h in heat_areas or []) \

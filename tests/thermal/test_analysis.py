@@ -403,3 +403,46 @@ def test_solver_result_lookup(demo):
     _, _, _, res = demo
     assert res.at("TopLayer", 2100, 1300) > res.at("TopLayer", 100, 100) > 25.0
     assert res.t_min_c > 25.0 and res.t_max_c >= float(np.nanmax(res.temps["TopLayer"]))
+
+
+# -- a stackup that was never set up ---------------------------------------------------
+
+def test_a_stackup_with_no_dielectric_is_filled_in_and_said_so():
+    """Altium reports a board whose layer stack was never edited with no
+    dielectric between the copper layers. Solved as read it is a board a
+    few mils thick; the missing heights come from a 1.6 mm board."""
+    from eda_agent.emc.stack import stack_from_stackup
+    from eda_agent.thermal.analysis import usable_stack
+
+    board, good = demo_board()
+    bare = stack_from_stackup({"layers": [
+        {"layer_id": 1, "copper_thickness_mils": 1.4}, {"layer_id": 39, "copper_thickness_mils": 0},
+        {"layer_id": 40, "copper_thickness_mils": 1.4}, {"layer_id": 32, "copper_thickness_mils": 1.4},
+    ]}, board.layers)
+    assert bare.thickness_mils == 0.0
+    fixed = usable_stack(bare)
+    assert fixed.thickness_mils == pytest.approx(63.0, abs=0.1) and fixed.assumed is True
+    assert [l.name for l in fixed.layers] == [l.name for l in bare.layers]
+    assert [round(d.height_mils, 1) for d in fixed.dielectrics] == [8.0, 47.0, 8.0]
+    assert fixed.get("InternalPlane1").copper_mils == 1.4
+    assert any("no dielectric between TopLayer/InternalPlane1 8 mil" in n for n in fixed.notes)
+    assert any("no copper thickness for InternalPlane1" in n for n in fixed.notes)
+    assert usable_stack(good) is good                           # a real stackup is left alone
+
+    rep, _ = analyze(board, bare, powers={"U1": 1.0}, cell_mils=50.0)
+    ref, _ = analyze(board, usable_stack(bare), powers={"U1": 1.0}, cell_mils=50.0)
+    assert rep["t_max_c"] == ref["t_max_c"] and rep["stackup"]["assumed"] is True
+    assert rep["stackup"]["thickness_mils"] == pytest.approx(63.0, abs=0.1)
+    assert any("Set the layer stack" in n for n in rep["notes"])
+
+    # one height missing: only that one is assumed, the stack stays the board's own
+    part = stack_from_stackup({"layers": [
+        {"layer_id": 1, "copper_thickness_mils": 1.4, "dielectric_type": "PrePreg",
+         "dielectric_height_mils": 5.0, "dielectric_constant": 4.0},
+        {"layer_id": 39, "copper_thickness_mils": 1.4},
+        {"layer_id": 40, "copper_thickness_mils": 1.4, "dielectric_type": "PrePreg",
+         "dielectric_height_mils": 5.0, "dielectric_constant": 4.0},
+        {"layer_id": 32, "copper_thickness_mils": 1.4}]}, board.layers)
+    fixed = usable_stack(part)
+    assert [round(d.height_mils, 1) for d in fixed.dielectrics] == [5.0, 47.0, 5.0]
+    assert fixed.assumed is False and fixed.dielectrics[0].er == 4.0

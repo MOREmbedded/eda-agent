@@ -160,6 +160,10 @@ bigger pour, a different orientation) reliably.
   it as a clamp.
 - A polygon pour that has not been poured has no copper to count. The reply
   names it.
+- A stackup with no dielectric thickness or no copper thickness set: the
+  missing numbers are filled from a standard 1.6 mm build and 1 oz copper,
+  and the reply says which. Set the layer stack in the PCB editor for real
+  numbers.
 
 ## Files
 

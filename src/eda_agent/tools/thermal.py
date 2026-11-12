@@ -115,7 +115,7 @@ def register_thermal_tools(mcp) -> None:
             "steady state: the temperatures the board settles at, not a transient",
             "thermal reliefs taken as fully connected",
             "copper at nominal thickness; laminate conductivity from the table "
-            f"({result.planes and report['setup'].get('dielectric', 'fr4')})",
+            f"({report['setup'].get('dielectric', 'fr4')})",
             "the air is still or moves evenly along the board; an enclosure, nearby "
             "boards and ducting are not modelled (raise ambient_c to the air inside)",
         ]
