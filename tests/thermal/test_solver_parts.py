@@ -322,3 +322,16 @@ def test_direct_solver_fallback_when_pyamg_is_missing(monkeypatch):
     assert any("pyamg is not installed" in n for n in res.notes)
     assert res.t_max_c == pytest.approx(ref.t_max_c, abs=1e-4)
     assert solver.AMG_MIN_UNKNOWNS < res.solver["unknowns"]
+
+
+def test_no_false_peak_in_the_drill_holes_under_a_pad():
+    """On a grid fine enough to see the drill holes of a via-in-pad, the
+    cells inside a hole have no copper and must take none of the pad's
+    heat: the copper round them does not reach in, so they would stand
+    out as peaks several kelvin over the pad (5 K on the demo board)."""
+    board, stack = four_layer(500, 500)
+    add_qfn(board, "U1", 251, 249)
+    res = _solve(board, stack, cell=5.0, powers={"U1": 1.0})
+    p = _part(res, "U1")
+    assert res.t_max_c - p["t_pads_c"] < 1.0
+    assert p["t_pads_max_c"] - p["t_pads_c"] < 1.0
