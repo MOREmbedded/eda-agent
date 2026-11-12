@@ -44,7 +44,7 @@ def footprint_link(models: list[dict]) -> dict[str, str]:
 
 
 def _is_file_library(path: str) -> bool:
-    return bool(re.search(r"\.(pcblib|intlib)$", path.strip(), re.I))
+    return bool(re.search(r"\.pcblib$", path.strip(), re.I))
 
 
 def read_symbol(send: Send, *, design_item_id: str = "", vault: str = "",

@@ -22,12 +22,12 @@ maturity classification for every tool.
   description, MPN), pick a part, and see its symbol and footprint as
   they are in the library, with pin and pad counts and where each comes
   from; a multi-part symbol shows one part at a time. A part from a
-  .SchLib or .IntLib can be previewed by path and name. New script
-  read `library.get_symbol_geometry` loads the symbol the way placement
-  does (`SchServer.LoadComponent` for a Workspace part,
-  `LoadComponentFromLibrary` for an IntLib, the open SchLib otherwise),
-  answers its graphics, pins and models, and destroys a loaded part
-  again, so nothing reaches a sheet. New tool `lib_preview_part` writes
+  .SchLib can be previewed by path and name (an .IntLib through its
+  extracted .SchLib, never opened in Altium). New script read
+  `library.get_symbol_geometry` loads the symbol the way placement does
+  (`SchServer.LoadComponent` for a Workspace part, the open SchLib
+  otherwise), answers its graphics, pins and models, and destroys a
+  loaded part again, so nothing reaches a sheet. New tool `lib_preview_part` writes
   both drawings as SVG. UNVERIFIED live: whether a Workspace part's
   footprint link names a library file Altium can open; when it does
   not, the preview says so and shows the symbol only.

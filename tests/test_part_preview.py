@@ -182,6 +182,16 @@ def test_a_footprint_link_with_no_library_file_is_said_and_not_read():
     assert [c for c, _ in alt.sent] == ["library.get_symbol_geometry"]
 
 
+def test_a_footprint_in_an_intlib_is_not_handed_to_altium():
+    sym = dict(SYMBOL, models=[{"model_name": "FP", "model_type": "PCBLIB", "is_current": True,
+                                "datafile_links": [{"entity_name": "FP",
+                                                    "location": r"C:\libs\all.IntLib"}]}])
+    alt = FakeAltium(symbol=sym)
+    got = lp.preview_part(alt, design_item_id="CMP-1")
+    assert got["footprint"]["ok"] is False
+    assert [c for c, _ in alt.sent] == ["library.get_symbol_geometry"]
+
+
 def test_a_part_with_no_footprint_says_so():
     got = lp.preview_part(FakeAltium(symbol=dict(SYMBOL, models=[])), design_item_id="X")
     assert got["footprint"] == {"ok": False, "name": "", "library": "",
@@ -405,7 +415,10 @@ def test_the_read_is_routed_and_keeps_the_focus():
 
 def test_a_loaded_part_is_destroyed_and_nothing_is_placed():
     body = _fn("Lib_GetSymbolGeometry")
-    assert "SchServer.LoadComponent(" in body and "LoadComponentFromLibrary(" in body
+    assert "SchServer.LoadComponent(" in body
+    # An .IntLib never reaches Altium: it raises a modal nothing catches.
+    assert "LoadComponentFromLibrary(" not in body
+    assert "LibPath := Resolved" in body and "ResolveSchLibForLoad(LibPath" in body
     finally_part = body[body.rindex("Finally"):]
     assert "If Owned Then" in finally_part and "DestroySchObject(Comp)" in finally_part
     for write in ("AddSchObject", "SchBeginEdit", "MarkDocDirty", "MarkLibDirty"):

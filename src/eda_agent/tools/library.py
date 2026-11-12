@@ -8376,10 +8376,11 @@ def register_library_tools(mcp):
         """Draw a part's symbol and its footprint before placing it.
 
         The symbol is loaded the way placement loads it and nothing goes on
-        a sheet: a Workspace (Altium 365) part by ``design_item_id``
-        (``vault`` = the Workspace name as Altium shows it; empty = read off
-        a managed part on an open sheet), or a library file part by
-        ``library_path`` (.SchLib, .IntLib) + ``component_name``. The
+        a sheet: a Workspace (Altium 365) part by its Design Item ID
+        (vault = the Workspace name as Altium shows it; empty = read off
+        a managed part on an open sheet), or a library file part by its
+        library path and symbol name (.SchLib; an .IntLib is read from its
+        extracted .SchLib, never opened in Altium). The
         footprint is the part's current footprint model, read from the
         library its link names; a link naming no library file Altium can
         open says so in ``footprint.reason``. The dashboard's Library pane
@@ -8389,7 +8390,8 @@ def register_library_tools(mcp):
             design_item_id: Workspace part ID, e.g. "CMP-00012"
                 (with or without a revision on the end).
             vault: Workspace name; empty = read off the design.
-            library_path: the .SchLib / .IntLib, for a library file part.
+            library_path: the .SchLib (or .IntLib with extracted
+                sources), for a library file part.
             component_name: the symbol's name in that library.
             part: which part of a multi-part symbol (default 1).
             out_dir: folder for the SVGs; default <workspace>/renders.

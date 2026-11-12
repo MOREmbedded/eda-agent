@@ -11103,15 +11103,16 @@ End;
 {                                                                              }
 { Params: either design_item_id (+ vault, lib_identifier_kind) for a managed   }
 { part, loaded with SchServer.LoadComponent the way placement loads it; or     }
-{ component_name + library_path for a library file (.SchLib: looked up in the  }
-{ open library, opened when it is not; anything else: LoadComponentFromLibrary).}
+{ component_name + library_path for a library file, looked up in the open    }
+{ .SchLib (opened when it is not; an .IntLib is read from its extracted     }
+{ .SchLib, never handed to Altium).                                          }
 { part: which part of a multi-part symbol (default 1).                         }
 {..............................................................................}
 Function Lib_GetSymbolGeometry(Params : String; RequestId : String) : String;
 Var
     DesignItemId, VaultName, Note, CompName, LibPath, Source, Probe : String;
     PrimJson, PinsJson, One, ElecStr, ParamName, PartsSeen, Desig, Descr : String;
-    LibRef, Comment : String;
+    LibRef, Comment, Resolved, Reason : String;
     Asked, Kind, Slot, Part, PartCount, NumPrim, NumPins, Owner, Skipped : Integer;
     Owned, Raised : Boolean;
     Comp : ISch_Component;
@@ -11181,37 +11182,37 @@ Begin
             Exit;
         End;
         If LibPath <> '' Then LibPath := CanonicalPathValue('path', LibPath);
-        If (LibPath <> '') And (UpperCase(ExtractFileExt(LibPath)) <> '.SCHLIB') Then
+        { NEVER an .IntLib to Altium: LoadComponentFromLibrary and an open of  }
+        { one raise the "Open Integrated Library" modal, which no Try/Except   }
+        { catches. ResolveSchLibForLoad finds its extracted .SchLib on disk.   }
+        If LibPath <> '' Then
         Begin
-            Try Comp := SchServer.LoadComponentFromLibrary(CompName, LibPath); Except Comp := Nil; End;
-            Owned := True;
-            If Comp = Nil Then
-            Begin
-                Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
-                    'LoadComponentFromLibrary found no ' + CompName + ' in ' + LibPath);
-                Exit;
-            End;
-        End
-        Else
-        Begin
-            SchLib := Nil;
-            If LibPath <> '' Then
-                Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
-            If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
-                SchLib := FocusSchLib(LibPath);
-            If SchLib = Nil Then
+            Resolved := ResolveSchLibForLoad(LibPath, Reason);
+            If Resolved = '' Then
             Begin
                 Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
-                    'No schematic library at ' + LibPath);
+                    'No .SchLib to read for ' + LibPath + ': ' + Reason);
                 Exit;
             End;
-            Comp := LookupLibComponent(SchLib, CompName);
-            If Comp = Nil Then
-            Begin
-                Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
-                    'Component not found in library: ' + CompName);
-                Exit;
-            End;
+            LibPath := Resolved;
+        End;
+        SchLib := Nil;
+        If LibPath <> '' Then
+            Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
+        If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+            SchLib := FocusSchLib(LibPath);
+        If SchLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+                'No schematic library at ' + LibPath);
+            Exit;
+        End;
+        Comp := LookupLibComponent(SchLib, CompName);
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+                'Component not found in library: ' + CompName);
+            Exit;
         End;
         Source := LibPath;
     End;
