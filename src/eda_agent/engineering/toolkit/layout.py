@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from .. import pcb_calc
-from .core import UNIT_CHOICES, UNITS, Input, Result, calculator, from_si, need, to_si
+from .core import INCH, UNITS, UNIT_CHOICES, Input, Result, calculator, from_si, need, to_si
 
 
 @calculator(
@@ -152,11 +152,11 @@ def wire_gauge(a):
 def drill_chart(a):
     d = a["hole"]
     metric = round(d * 1e3 / 0.05) * 0.05e-3
-    frac64 = round(d / 0.0254 * 64)
+    frac64 = round(d / INCH * 64)
     r = Result(model="Metric drills in 0.05 mm steps; fractional inch in 1/64", status="exact")
     r.add("metric", "Nearest metric drill", metric, "length", primary=True)
     r.add("metric_up", "Next metric drill up", math.ceil(d * 1e3 / 0.05 - 1e-9) * 0.05e-3, "length")
-    r.add("fraction", f"Nearest fractional: {frac64}/64 in", frac64 / 64 * 0.0254, "length")
+    r.add("fraction", f"Nearest fractional: {frac64}/64 in", frac64 / 64 * INCH, "length")
     return r
 
 

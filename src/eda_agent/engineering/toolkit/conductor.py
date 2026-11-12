@@ -15,10 +15,9 @@ import math
 from ...thermal import physics as tp
 from .. import pcb_calc
 from . import tline
-from .core import Input, Result, calculator, need
+from .core import MIL, OZ_M, Input, Result, calculator, need
 from .thermal_fv import Board, Plane, current_for_rise, solve_trace, width_for_current
 
-MIL = 25.4e-6
 
 THERMAL_REFS = [
     "IPC-2152 (2009): current capacity depends on board, planes and environment",
@@ -202,7 +201,7 @@ def conductor_properties(a):
 def fusing_current(a):
     w_eff = a["w"] - a["etch_factor"] / 2.0
     need(w_eff > 0, "the etch removes the whole trace")
-    oz = a["t"] / (1.378 * MIL)
+    oz = a["t"] / OZ_M
     d = pcb_calc.fusing_current(w_eff / MIL, oz, a["time"], a["ambient"])
     need(d.get("ok", False), d.get("reason", "cannot compute"))
     r = Result(model="Onderdonk's equation (adiabatic)", status="published")

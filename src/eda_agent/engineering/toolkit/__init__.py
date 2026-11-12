@@ -19,7 +19,8 @@ from . import (  # noqa: F401  (imported to register the calculators)
 )
 from .core import GROUPS, REGISTRY, InputError, Result
 
-__all__ = ["GROUPS", "REGISTRY", "InputError", "Result", "run", "catalog"]
+__all__ = ["GROUPS", "REGISTRY", "InputError", "Result", "run", "catalog",
+           "listing", "describe"]
 
 
 def catalog() -> dict:
@@ -30,6 +31,25 @@ def catalog() -> dict:
         if items:
             groups.append({"key": key, "title": title, "calculators": items})
     return {"ok": True, "groups": groups, "count": len(REGISTRY)}
+
+
+def listing() -> dict:
+    """Every calculator by group: name, title and summary, no inputs."""
+    cat = catalog()
+    for g in cat["groups"]:
+        g["calculators"] = [{"name": c["name"], "title": c["title"],
+                             "summary": c["summary"]} for c in g["calculators"]]
+    return cat
+
+
+def describe(name: str) -> dict:
+    """One calculator's declaration: its inputs, defaults and units."""
+    calc = REGISTRY.get(name)
+    if calc is None:
+        return {"ok": False, "reason": f"no calculator named '{name}'",
+                "available": sorted(REGISTRY)}
+    return {"ok": True, **calc.spec(),
+            "hint": "pass inputs (an empty dict for all defaults) to run it"}
 
 
 def run(name: str, inputs: dict | None = None) -> dict:

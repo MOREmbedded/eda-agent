@@ -6,7 +6,7 @@ import math
 import re
 
 from .. import pcb_calc
-from .core import Input, InputError, Result, calculator, need, to_si
+from .core import MIL, Input, InputError, Result, calculator, need, to_si
 
 
 @calculator(
@@ -259,7 +259,7 @@ def planar_inductor(a):
     r = Result(model="Mohan et al. 1999: current-sheet and modified Wheeler", status="published")
     r.add("l", "Inductance (current sheet)", l_cs, "inductance", primary=True)
     if a["shape"] != "circular":
-        d = pcb_calc.spiral_inductor(n, do / 25.4e-6, di / 25.4e-6, a["shape"])
+        d = pcb_calc.spiral_inductor(n, do / MIL, di / MIL, a["shape"])
         if d.get("ok"):
             r.add("l_wheeler", "Inductance (modified Wheeler)", d["inductance_nh"] * 1e-9,
                   "inductance")

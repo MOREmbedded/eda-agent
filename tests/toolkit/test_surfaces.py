@@ -35,10 +35,9 @@ def _tools(altium):
     return m.tools
 
 
-def test_two_tools_everywhere_and_the_board_reader_only_with_altium():
-    assert set(_tools(False)) == {"pcb_calc_toolkit_list", "pcb_calc_toolkit"}
-    assert set(_tools(True)) == {"pcb_calc_toolkit_list", "pcb_calc_toolkit",
-                                 "pcb_calc_toolkit_board"}
+def test_one_tool_everywhere_and_the_board_reader_only_with_altium():
+    assert set(_tools(False)) == {"pcb_calc_toolkit"}
+    assert set(_tools(True)) == {"pcb_calc_toolkit", "pcb_calc_toolkit_board"}
 
 
 def test_the_tools_are_registered_on_the_server_surface():
@@ -47,13 +46,32 @@ def test_the_tools_are_registered_on_the_server_surface():
     assert "register_toolkit_tools(mcp, altium=" in src
 
 
-def test_list_tool_filters_by_group():
+def test_no_name_lists_every_calculator_without_its_inputs():
+    listed = asyncio.run(_tools(False)["pcb_calc_toolkit"]())
+    assert listed["ok"] and listed["count"] == len(toolkit.REGISTRY)
+    names = [c["name"] for g in listed["groups"] for c in g["calculators"]]
+    assert sorted(names) == sorted(toolkit.REGISTRY)
+    assert [g["key"] for g in listed["groups"]] == [k for k, _ in toolkit.GROUPS]
+    for g in listed["groups"]:
+        for c in g["calculators"]:
+            assert set(c) == {"name", "title", "summary"} and c["summary"]
+
+
+def test_a_name_without_inputs_describes_and_does_not_run(monkeypatch):
+    ran = []
+    monkeypatch.setattr(toolkit, "run", lambda *a, **k: ran.append(a) or {"ok": True})
     t = _tools(False)
-    everything = asyncio.run(t["pcb_calc_toolkit_list"]())
-    assert everything["count"] == len(toolkit.REGISTRY)
-    pairs = asyncio.run(t["pcb_calc_toolkit_list"]("pairs"))
-    assert [g["key"] for g in pairs["groups"]] == ["pairs"]
-    assert not asyncio.run(t["pcb_calc_toolkit_list"]("nope"))["ok"]
+    got = asyncio.run(t["pcb_calc_toolkit"]("microstrip"))
+    assert got["ok"] and got["name"] == "microstrip" and not ran
+    keys = [i["key"] for i in got["inputs"]]
+    assert keys[:3] == ["w", "h", "t"] and "er" in keys and "frequency" in keys
+    w = got["inputs"][0]
+    assert w["unit"] == "mil" and w["kind"] == "length" and "mm" in w["units"]
+    assert "inputs" in got["hint"]
+    missing = asyncio.run(t["pcb_calc_toolkit"]("no_such"))
+    assert not missing["ok"] and "microstrip" in missing["available"]
+    asyncio.run(t["pcb_calc_toolkit"]("microstrip", {}))
+    assert ran == [("microstrip", {})]            # an empty dict runs the defaults
 
 
 def test_run_tool_matches_the_engine_and_refuses_cleanly():
@@ -62,8 +80,9 @@ def test_run_tool_matches_the_engine_and_refuses_cleanly():
     assert got == toolkit.run("attenuator", {"db": 10, "z0": 75})
     assert got["ok"] and got["status"] == "exact"
     assert not asyncio.run(t["pcb_calc_toolkit"]("attenuator", {"db": "loud"}))["ok"]
-    assert not asyncio.run(t["pcb_calc_toolkit"]("no_such"))["ok"]
-    assert asyncio.run(t["pcb_calc_toolkit"]("ppm"))["ok"]       # inputs may be omitted
+    assert not asyncio.run(t["pcb_calc_toolkit"]("no_such", {}))["ok"]
+    defaults = asyncio.run(t["pcb_calc_toolkit"]("ppm", {}))
+    assert defaults["ok"] and defaults["outputs"]
 
 
 def test_board_tool_reads_the_stack_through_the_bridge(monkeypatch):
@@ -109,8 +128,11 @@ def test_the_family_tool_reaches_the_toolkit():
         kind="toolkit", args={"calculator": "voltage_divider",
                               "inputs": {"vin": "12 V", "r1": "9 kohm", "r2": 3000}}))
     assert got["ok"] and got["outputs"][0]["value"] == pytest.approx(3.0)
-    listed = asyncio.run(server.tools["pcb_calc"](kind="toolkit_list", args={"group": "via"}))
-    assert [c["name"] for c in listed["groups"][0]["calculators"]] == ["via_properties", "via_pair"]
+    listed = asyncio.run(server.tools["pcb_calc"](kind="toolkit", args={}))
+    via = [g for g in listed["groups"] if g["key"] == "via"][0]
+    assert [c["name"] for c in via["calculators"]] == ["via_properties", "via_pair"]
+    spec = asyncio.run(server.tools["pcb_calc"](kind="toolkit", args={"calculator": "via_pair"}))
+    assert spec["ok"] and spec["inputs"] and "outputs" not in spec
 
 
 # ------------------------------------------------------------ dashboard

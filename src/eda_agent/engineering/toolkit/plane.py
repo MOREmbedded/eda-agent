@@ -19,7 +19,7 @@ from typing import Sequence
 import numpy as np
 
 from .. import pcb_calc
-from .core import Input, Result, calculator, need
+from .core import INCH, Input, Result, calculator, need
 from .fdsolver import C0, EPS0, MU0
 
 SIGMA_CU = 5.8e7
@@ -100,7 +100,7 @@ def plane_pair(a):
     r = Result(model="Parallel-plate capacitance; cavity modal sum (Lei et al. 1999)",
                status="exact")
     r.add("c", "Plane capacitance", c, "capacitance", primary=True)
-    r.add("c_per_area", "Capacitance per square inch", EPS0 * er / d * 0.0254 ** 2,
+    r.add("c_per_area", "Capacitance per square inch", EPS0 * er / d * INCH ** 2,
           "capacitance")
     res = resonances(A, B, er, 6)
     for (m, n, fr) in res[:4]:

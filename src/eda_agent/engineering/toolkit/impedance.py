@@ -18,7 +18,7 @@ from scipy.linalg import sqrtm
 
 from . import fdsolver as fd
 from . import tline
-from .core import OZ_M, Input, Result, calculator, need
+from .core import INCH, MIL, OZ_M, Input, Result, calculator, need
 
 NP_TO_DB = 20.0 / math.log(10.0)
 
@@ -180,17 +180,17 @@ def _report_line(r: Result, m: dict, prefix: str = "", label: str = "",
     r.add(prefix + "z0", label or "Characteristic impedance Z0", m["z"], "resistance",
           primary=primary_z)
     r.add(prefix + "er_eff", "Effective Er", m["ee"], "ratio")
-    r.add(prefix + "delay_per_in", "Propagation delay", m["delay"] * 0.0254, "time",
+    r.add(prefix + "delay_per_in", "Propagation delay", m["delay"] * INCH, "time",
           note="per inch")
     r.add(prefix + "delay_per_mm", "Propagation delay per mm", m["delay"] * 1e-3, "time")
-    r.add(prefix + "c_per_in", "Capacitance per inch", m["c"] * 0.0254, "capacitance")
-    r.add(prefix + "l_per_in", "Inductance per inch", m["l"] * 0.0254, "inductance")
+    r.add(prefix + "c_per_in", "Capacitance per inch", m["c"] * INCH, "capacitance")
+    r.add(prefix + "l_per_in", "Inductance per inch", m["l"] * INCH, "inductance")
     if m.get("ac") is not None:
-        r.add(prefix + "loss_conductor", "Conductor loss", m["ac"] * NP_TO_DB * 0.0254,
+        r.add(prefix + "loss_conductor", "Conductor loss", m["ac"] * NP_TO_DB * INCH,
               "db", note="dB per inch")
-        r.add(prefix + "loss_dielectric", "Dielectric loss", m["ad"] * NP_TO_DB * 0.0254,
+        r.add(prefix + "loss_dielectric", "Dielectric loss", m["ad"] * NP_TO_DB * INCH,
               "db", note="dB per inch")
-        r.add(prefix + "loss_total", "Total loss", (m["ac"] + m["ad"]) * NP_TO_DB * 0.0254,
+        r.add(prefix + "loss_total", "Total loss", (m["ac"] + m["ad"]) * NP_TO_DB * INCH,
               "db", note="dB per inch")
 
 
@@ -443,24 +443,24 @@ def _pair_report(a, sol, r: Result) -> None:
     r.add("z0_single", "Single-ended Z0 (other line at 0 V)", single["z"], "resistance")
     r.add("er_eff_odd", "Effective Er, odd mode", odd["ee"], "ratio")
     r.add("er_eff_even", "Effective Er, even mode", even["ee"], "ratio")
-    r.add("delay_odd", "Delay, odd mode", odd["delay"] * 0.0254, "time", note="per inch")
-    r.add("delay_even", "Delay, even mode", even["delay"] * 0.0254, "time", note="per inch")
+    r.add("delay_odd", "Delay, odd mode", odd["delay"] * INCH, "time", note="per inch")
+    r.add("delay_even", "Delay, even mode", even["delay"] * INCH, "time", note="per inch")
     c11, c12 = sol.C[0, 0], sol.C[0, 1]
     l11, l12 = sol.L[0, 0], sol.L[0, 1]
     kb = 0.25 * (-c12 / c11 + l12 / l11)
     r.add("next_coeff", "Backward (NEXT) coefficient Kb", kb, "ratio")
     kf = 0.5 * (-c12 / c11 - l12 / l11) * math.sqrt(c11 * l11)      # s/m
-    r.add("fext_coeff", "Forward (FEXT) coefficient", kf * 0.0254, "time",
+    r.add("fext_coeff", "Forward (FEXT) coefficient", kf * INCH, "time",
           note="per inch: V_fext / V = this x length / rise time")
     f = a["frequency"]
     if f > 0:
         r.add("loss_diff", "Differential loss",
-              (odd["ac"] + odd["ad"]) * NP_TO_DB * 0.0254, "db", note="dB per inch")
-        r.add("loss_diff_cond", "  of which conductor", odd["ac"] * NP_TO_DB * 0.0254, "db")
-        r.add("loss_diff_diel", "  of which dielectric", odd["ad"] * NP_TO_DB * 0.0254, "db")
+              (odd["ac"] + odd["ad"]) * NP_TO_DB * INCH, "db", note="dB per inch")
+        r.add("loss_diff_cond", "  of which conductor", odd["ac"] * NP_TO_DB * INCH, "db")
+        r.add("loss_diff_diel", "  of which dielectric", odd["ad"] * NP_TO_DB * INCH, "db")
     r.extra["matrices"] = {
-        "C_pF_per_in": (sol.C * 0.0254e12).round(5).tolist(),
-        "L_nH_per_in": (sol.L * 0.0254e9).round(5).tolist(),
+        "C_pF_per_in": (sol.C * INCH * 1e12).round(5).tolist(),
+        "L_nH_per_in": (sol.L * INCH * 1e9).round(5).tolist(),
     }
     _solver_note(r, sol)
 
@@ -707,7 +707,7 @@ def width_for_impedance(a):
         base["s"] = a["s"]
     if "g" in base:
         base["g"] = a["s"]
-    base["w"] = 6 * 25.4e-6
+    base["w"] = 6 * MIL
     key = "zdiff" if st.startswith("edge_coupled") else "z0"
     w = solve_width_for_z(st, base, a["target"], key_out=key)
     final = calc.fn(dict(base, w=w))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from .core import REGISTRY, Input, Result, calculator, need
+from .core import INCH, REGISTRY, Input, Result, calculator, need
 from .fdsolver import C0
 
 
@@ -43,7 +43,7 @@ def rise_time_bandwidth(a):
     r.add("l_crit", "Critical length", frac * tr / tpd, "length", primary=True)
     r.add("bw", "Bandwidth (0.35 / tr)", 0.35 / tr, "frequency")
     r.add("f_knee", "Knee frequency (0.5 / tr)", 0.5 / tr, "frequency")
-    r.add("tpd", "Delay per inch", tpd * 0.0254, "time")
+    r.add("tpd", "Delay per inch", tpd * INCH, "time")
     r.add("edge_length", "Length of the rising edge on the board", tr / tpd, "length")
     r.accuracy = ("0.35 holds for a single-pole (Gaussian-like) edge; 0.5 (Johnson's "
                   "knee) bounds the significant spectrum of a digital edge. IPC-2251's "
@@ -108,7 +108,7 @@ def crosstalk(a):
     sat = min(1.0, 2.0 * td / a["t_rise"])
     v = a["voltage"]
     next_v = kb * v * sat
-    fext_v = kf_per_in * (a["length"] / 0.0254) / a["t_rise"] * v
+    fext_v = kf_per_in * (a["length"] / INCH) / a["t_rise"] * v
     r = Result(model="Field-solver L/C matrices, weak-coupling crosstalk", status="solver")
     r.add("next", "Near-end crosstalk (NEXT)", next_v, "voltage", primary=True)
     r.add("next_pct", "NEXT, % of swing", 100 * next_v / v if v else 0.0, "percent")

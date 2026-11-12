@@ -7,11 +7,10 @@ import math
 from ...thermal import physics as tp
 from .. import pcb_calc
 from .conductor import _board_inputs, make_board
-from .core import Input, Result, calculator, need
+from .core import INCH, MIL, Input, Result, calculator, need
 from .fdsolver import C0, EPS0, MU0
 from .thermal_fv import current_for_rise, solve_trace
 
-MIL = 25.4e-6
 
 
 @calculator(
@@ -63,11 +62,11 @@ def via_properties(a):
     r.add("rth", "Thermal resistance (all vias)", rth_one / n, "thermal_resistance")
     r.add("aspect", "Aspect ratio (length / drill)", L / drill, "ratio")
     r.add("area", "Barrel copper cross-section", area, "area")
-    h_in, d_in = L / 0.0254, d / 0.0254
+    h_in, d_in = L / INCH, d / INCH
     l_nh = 5.08 * h_in * (math.log(4.0 * h_in / d_in) + 1.0)
     r.add("l_self", "Inductance (partial, Johnson)", l_nh * 1e-9, "inductance")
     if a["pad"] > 0 and a["antipad"] > a["pad"]:
-        c_pf = 1.41 * a["er"] * h_in * (a["pad"] / 0.0254) / ((a["antipad"] - a["pad"]) / 0.0254)
+        c_pf = 1.41 * a["er"] * h_in * (a["pad"] / INCH) / ((a["antipad"] - a["pad"]) / INCH)
         c = c_pf * 1e-12
         r.add("c_pad", "Capacitance (pad to plane, Johnson)", c, "capacitance")
         lv = l_nh * 1e-9

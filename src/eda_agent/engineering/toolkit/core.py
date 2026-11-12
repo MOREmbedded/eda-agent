@@ -19,16 +19,22 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from ...units import MM_PER_INCH, MM_PER_MIL, OZ_TO_MILS
+
 # ---------------------------------------------------------------- units
 
-#: Copper weight: 1 oz/ft^2 is taken as 1.378 mil (35.0 um), the same
-#: convention as eda_agent.units.OZ_TO_MILS.
-OZ_M = 1.378 * 25.4e-6
+#: Metres per mil and per inch, from the one definition in eda_agent.units.
+MIL = MM_PER_MIL / 1000.0
+INCH = MM_PER_INCH / 1000.0
+
+#: Copper weight: 1 oz/ft^2 is the conventional 35 um figure that
+#: eda_agent.units.OZ_TO_MILS states, in metres.
+OZ_M = OZ_TO_MILS * MIL
 
 UNITS: dict[str, dict[str, float]] = {
-    "length": {"mil": 25.4e-6, "mm": 1e-3, "um": 1e-6, "in": 0.0254, "cm": 1e-2,
-               "m": 1.0, "oz": OZ_M, "µm": 1e-6, "nm": 1e-9, "mils": 25.4e-6,
-               "thou": 25.4e-6, "inch": 0.0254, "ft": 0.3048},
+    "length": {"mil": MIL, "mm": 1e-3, "um": 1e-6, "in": INCH, "cm": 1e-2,
+               "m": 1.0, "oz": OZ_M, "µm": 1e-6, "nm": 1e-9, "mils": MIL,
+               "thou": MIL, "inch": INCH, "ft": 0.3048},
     "frequency": {"Hz": 1.0, "kHz": 1e3, "MHz": 1e6, "GHz": 1e9, "THz": 1e12},
     "time": {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9, "ps": 1e-12,
              "fs": 1e-15, "µs": 1e-6},
@@ -49,7 +55,7 @@ UNITS: dict[str, dict[str, float]] = {
     "velocity": {"m/s": 1.0, "LFM": 0.00508, "ft/min": 0.00508},
     "conductivity": {"S/m": 1.0},
     "resistivity": {"ohm.m": 1.0, "ohm.cm": 1e-2, "uohm.cm": 1e-8},
-    "area": {"mm2": 1e-6, "mil2": (25.4e-6) ** 2, "in2": 0.0254 ** 2, "m2": 1.0},
+    "area": {"mm2": 1e-6, "mil2": MIL ** 2, "in2": INCH ** 2, "m2": 1.0},
     "ratio": {"": 1.0},
     "percent": {"%": 1.0},
     "ppm": {"ppm": 1.0},
@@ -179,12 +185,12 @@ def fmt(value: float, kind: str, digits: int = 4) -> str:
         return f"{value:.3e} {_SI_SYMBOL[kind]}"
     if kind == "length":
         mm = value * 1e3
-        mil = value / 25.4e-6
+        mil = value / MIL
         if abs(mm) < 0.1:
             return f"{sig(value * 1e6, digits)} µm ({sig(mil, digits)} mil)"
         return f"{sig(mm, digits)} mm ({sig(mil, digits)} mil)"
     if kind == "area":
-        return f"{sig(value * 1e6, digits)} mm² ({sig(value / (25.4e-6) ** 2, digits)} mil²)"
+        return f"{sig(value * 1e6, digits)} mm² ({sig(value / MIL ** 2, digits)} mil²)"
     unit = DISPLAY.get(kind, "")
     return f"{sig(value, digits)} {unit}".strip()
 

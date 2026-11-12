@@ -50,10 +50,6 @@ FOLDS: dict[str, Fold] = {
                  "impedance, terminations, length matching, thermal vias, "
                  "reactance, resonance, wavelength, PDN target, wire gauge, "
                  "fusing current, via and spiral inductance, padstacks. "
-                 "kind=toolkit runs the PCB toolkit by calculator name "
-                 "(field-solver impedance and differential pairs, trace "
-                 "temperature, vias, planes, crosstalk, passives); "
-                 "kind=toolkit_list names its calculators and inputs. "
                  "Offline, except polygon_area and toolkit_board, which "
                  "read the open board."),
         prefixes=("pcb_calc_",),

@@ -907,7 +907,7 @@
  "Fill from the board": "Заполнить из платы",
  "Filled {0} values from {1}.": "Заполнено значений: {0}, слой {1}.",
  "Filter calculators": "Фильтр калькуляторов",
- "Impedance and crosstalk come from a 2D field solver, trace and via current from a thermal model of the board. Each result names its model, its accuracy and what it was checked against.": "Импеданс и перекрёстные помехи считает двумерный полевой решатель, ток проводников и переходных отверстий — тепловая модель платы. Каждый результат указывает свою модель, точность и то, с чем он сверен.",
+ "Impedance and crosstalk come from a 2D field solver, trace and via current from a thermal model of the board. Each result names its model, its accuracy and what it was checked against.": "Импеданс и перекрёстные помехи считает двумерный полевой решатель, а ток проводников и переходных отверстий рассчитывает тепловая модель платы. Каждый результат указывает свою модель, точность и то, с чем он сверен.",
  "Layer": "Слой",
  "Model": "Модель",
  "Nothing on this calculator comes from the layer stack.": "В этом калькуляторе нет значений из стека слоёв.",

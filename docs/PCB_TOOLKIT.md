@@ -37,11 +37,14 @@ the layer you pick; filled fields are marked green.
 **AI / MCP.** The same calculators, by name:
 
 ```text
-pcb_calc kind=toolkit_list                      # every calculator and its inputs
+pcb_calc kind=toolkit                           # every calculator, by group
+pcb_calc kind=toolkit args={"calculator": "edge_coupled_stripline"}
+                                                # that calculator's inputs, defaults and units
 pcb_calc kind=toolkit args={"calculator": "edge_coupled_stripline",
                             "inputs": {"w": "4 mil", "s": "5 mil",
                                        "h1": "5 mil", "h2": "5 mil",
                                        "er": 3.9, "frequency": "5 GHz"}}
+                                                # the result ("inputs": {} runs the defaults)
 pcb_calc kind=toolkit_board                     # the open board's stack as inputs
 ```
 
@@ -255,6 +258,16 @@ a board-level thermal analysis.
 - **PDN target impedance** is the flat first-pass target. The plane
   pair's impedance is the exact rectangular-cavity sum, without
   decoupling capacitors.
+
+## Not the same thing as pcb-toolkit
+
+`engineering/pcb_toolkit.py` and `eda-agent calc-cross-check` compare
+the older closed-form calculators with
+[pcb-toolkit](https://github.com/akiselev/pcb-toolkit), an optional
+Rust program you build yourself (see
+[Fab rules and calculators](FAB_AND_CALCULATORS.md)). The toolkit on
+this page is native Python, needs nothing installed, and carries its
+own cross-checks in every result.
 
 ## Adding a calculator
 

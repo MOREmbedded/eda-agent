@@ -386,8 +386,8 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # Altium users, which is this project's main backend.
     register_pcb_calc_tools(mcp)
     # The PCB calculator toolkit: field-solver impedance, thermal trace
-    # current and the rest, behind two tools (list, run) on every
-    # backend, plus the board's stackup as inputs where Altium is.
+    # current and the rest, behind one tool (list, describe, run) on
+    # every backend, plus the board's stackup as inputs where Altium is.
     register_toolkit_tools(mcp, altium=backend in ("altium", "both"))
     # Bundled fab capabilities, stackup templates and laminate data.
     # Everywhere, for the same reason: four of the five are local file
