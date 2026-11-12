@@ -74,8 +74,8 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 
 | Variable | Default | What it does |
 |---|---|---|
-| `EDA_AGENT_NEXAR_APP_ID` | unset | Your Nexar app's client id. Turns on the Nexar route; sign in once with `eda-agent altium365-login`. |
-| `EDA_AGENT_NEXAR_CLIENT_SECRET` | unset | The client secret of an app made in the Nexar portal. Sent only to Nexar's token endpoint. Set it with `setx`, never in a chat. |
+| `EDA_AGENT_NEXAR_APP_ID` | unset | Your Nexar app's client id. Turns on the Nexar route; sign in once with `eda-agent altium365-login`. With the secret below it also serves the `nexar` part search when `NEXAR_CLIENT_ID` is unset. |
+| `EDA_AGENT_NEXAR_CLIENT_SECRET` | unset | The client secret of an app made in the Nexar portal. Sent only to Nexar's token endpoint. Set it with `setx`, never in a chat. The `nexar` part search uses it with the app id above when `NEXAR_CLIENT_SECRET` is unset. |
 | `EDA_AGENT_NEXAR_REDIRECT` | `http://localhost:3000/login` | The redirect URL registered on your Nexar app, if it differs. |
 | `EDA_AGENT_ALTIUM365_DOMAIN` | unset | Your workspace host, for the direct route to the workspace's own API. Wins over Nexar when set. |
 | `EDA_AGENT_ALTIUM365_TOKEN` | unset | A workspace API token for the direct route (only plans whose admin pages offer API tokens). |
@@ -140,7 +140,7 @@ Each catalogue provider reads its own credentials. Enable the provider with `EDA
 | `digikey` | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET` |
 | `element14` | `ELEMENT14_API_KEY` |
 | `mouser` | `MOUSER_API_KEY` |
-| `nexar` | `NEXAR_CLIENT_ID`, `NEXAR_CLIENT_SECRET` |
+| `nexar` | `NEXAR_CLIENT_ID`, `NEXAR_CLIENT_SECRET`, or else `EDA_AGENT_NEXAR_APP_ID`, `EDA_AGENT_NEXAR_CLIENT_SECRET` |
 | `tme` | `TME_TOKEN`, `TME_SECRET` |
 
 ## Config tab and `preferences.json`

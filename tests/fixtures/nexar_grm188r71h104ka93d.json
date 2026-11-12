@@ -1,0 +1,73 @@
+{
+ "_source": "Nexar supSearchMpn, live, 2026-11-12. Part data only: no credential, token or account detail. 'original' is the full parametric map Nexar returned for GRM188R71H104KA93D. 'C0603C104K5RACTU' holds only the attributes that run's (truncated) output showed for that candidate, verbatim.",
+ "original": {
+  "mpn": "GRM188R71H104KA93D",
+  "manufacturer": "Murata",
+  "provider": "nexar",
+  "lifecycle": "EOL (Last Updated: 6 years ago)",
+  "total_available": 34504351,
+  "parameters": {
+   "capacitance": "100 nF",
+   "case_package": "0603",
+   "casecode_imperial_": "0603",
+   "casecode_metric_": "1608",
+   "contactplating": "Tin",
+   "depth": "800 µm",
+   "dielectric": "X7R",
+   "dielectricmaterial": "Ceramic",
+   "height": "800 µm",
+   "insulationresistance": "10 GΩ",
+   "introdate": "2004-11-19",
+   "leadfree": "Lead Free",
+   "length": "1.6 mm",
+   "lifecyclestatus": "EOL (Last Updated: 6 years ago)",
+   "ltb_date": "2019-03-31",
+   "ltd_date": "2020-03-31",
+   "manufacturerlifecyclestatus": "TO BE DISCONTINUED (Last Updated: 6 years ago)",
+   "material": "Ceramic",
+   "maxoperatingtemperature": "125 °C",
+   "minoperatingtemperature": "-55 °C",
+   "mount": "Surface Mount",
+   "numberofpins": "2",
+   "numberofterminals": "2",
+   "packaging": "Cut Tape",
+   "radiationhardening": "No",
+   "reachsvhc": "Unaffected",
+   "rohs": "Compliant",
+   "termination": "SMD/SMT",
+   "thickness": "800 µm",
+   "tolerance": "10 %",
+   "voltage": "50 V",
+   "voltagerating": "50 V",
+   "voltagerating_dc_": "50 V",
+   "width": "800 µm"
+  },
+  "parameter_names": {
+   "case_package": "Case/Package",
+   "casecode_imperial_": "Case Code (Imperial)",
+   "casecode_metric_": "Case Code (Metric)",
+   "dielectric": "Dielectric",
+   "dielectricmaterial": "Dielectric Material",
+   "insulationresistance": "Insulation Resistance"
+  }
+ },
+ "C0603C104K5RACTU": {
+  "mpn": "C0603C104K5RACTU",
+  "manufacturer": "Yageo Group",
+  "provider": "nexar",
+  "lifecycle": "Production (Last Updated: 10 months ago)",
+  "total_available": 66276574,
+  "parameters": {
+   "capacitance": "100 nF",
+   "case_package": "0603",
+   "contactplating": "Tin",
+   "depth": "800 µm",
+   "dielectric": "X7R",
+   "height": "800 µm",
+   "introdate": "2011-07-27",
+   "leadfree": "Lead Free",
+   "length": "1.6 mm",
+   "lifecyclestatus": "Production (Last Updated: 10 months ago)"
+  }
+ }
+}

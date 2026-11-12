@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -214,10 +215,19 @@ class DistributorProvider:
             if not problem:
                 continue
             detail = json.dumps(problem)[:200]
+            # Measured 2026-11-12 on Nexar: a plan's part quota running
+            # out also arrives under 200 ("exceeded your part limit"),
+            # and blaming the credential sent the reader the wrong way.
+            if re.search(r"exceeded|\blimit\b|quota|rate.?limit|too many requests",
+                         detail, re.IGNORECASE):
+                cause = ("The source reports a usage limit (plan quota or "
+                         "rate limit) reached; the credential itself "
+                         "worked")
+            else:
+                cause = "This is usually a rejected or missing credential"
             raise ProviderUnavailable(
                 f"{self.name} returned an error under HTTP 200: {detail}. "
-                f"This is usually a rejected or missing credential; it is "
-                f"NOT an empty result.")
+                f"{cause}; it is NOT an empty result.")
 
     # ---- helpers for subclasses --------------------------------------
 

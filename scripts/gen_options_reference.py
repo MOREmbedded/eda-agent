@@ -134,7 +134,11 @@ def env_section() -> list[str]:
     for p in available_providers():
         names = getattr(p, "env_vars", ())
         if names:
-            out.append(f"| `{p.name}` | {', '.join(f'`{n}`' for n in names)} |")
+            cell = ', '.join(f'`{n}`' for n in names)
+            fallback = getattr(p, "fallback_env_vars", ())
+            if fallback:
+                cell += (", or else " + ', '.join(f'`{n}`' for n in fallback))
+            out.append(f"| `{p.name}` | {cell} |")
     out.append("")
     return out
 

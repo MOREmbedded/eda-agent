@@ -77,11 +77,19 @@ def register_altium365_tools(mcp) -> None:
 
     @mcp.tool()
     async def altium365_list_components(workspace_url: str, name_contains: str = "",
-                                        with_parameters: bool = False) -> dict[str, Any]:
+                                        with_parameters: bool = False,
+                                        limit: int = 500) -> dict[str, Any]:
         """Managed components of a workspace (id, name), and their parameters
-        when asked, the whole library in one call."""
-        return await _answer(lambda: {"components": _session().list_components(
-            workspace_url, name_contains, with_parameters)})
+        when asked, read page by page until ``limit`` matches are found or
+        the library ends (``limit=0``: the whole library, which can take
+        minutes; altium365_scan_library keeps a whole library offline).
+
+        Returns:
+            ``components``, ``pages_read``, and ``cut_short`` when more
+            matches were left unread.
+        """
+        return await _answer(lambda: _session().list_components(
+            workspace_url, name_contains, with_parameters, limit))
 
     @mcp.tool()
     async def altium365_get_component(component_id: str) -> dict[str, Any]:
