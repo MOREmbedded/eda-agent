@@ -52,6 +52,10 @@ dependencies = [
     # Text search in datasheet PDFs (design/datasheet_search.py): finds the
     # page a manufacturer's land pattern is on. Pure Python, BSD.
     "pypdf>=4,<7",
+    # CA bundle for fab-refresh (design/fab_connectors.py): some Windows
+    # certificate stores reject valid Let's Encrypt chains. httpx pulls
+    # it in already; declared because the code imports it.
+    "certifi>=2023.7.22",
     # Renders a region of a datasheet page as an image, with the printed
     # numbers and where they sit (design/datasheet_render.py): the
     # land-pattern figure is read zoomed and set beside the lands built
