@@ -24,6 +24,8 @@ _UI = "drives Altium's own dialogs, panels or menus"
 _ALT_DOC = "Altium document or project bookkeeping with no KiCad counterpart"
 _VARIANT = "assembly variants: KiCad 10.0's API and files have no variant model to drive"
 _SIM = "Altium's mixed-mode simulator; KiCad simulates with kicad_run_spice"
+_SIM_MODELS = ("links vendor SPICE models to Altium parts; KiCad assigns models in "
+               "its own Simulation Model dialog")
 _NO_API = "KiCad 10.0's API has no call for it"
 _STACKUP_RO = "stackup is read-only in KiCad 10.0's API; edit it in Board Setup"
 _MECH = "Altium mechanical layer pairs and kinds; KiCad has fixed User layers"
@@ -345,7 +347,8 @@ NOT_APPLICABLE: dict[str, str] = {
     # Live-Altium comparisons: they read a running editor, not a file.
     **{name: "reads a running Altium editor, not a file" for name in (
         "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
-        "eng_ltspice_deck_from_schematic", "eng_validate_library_live")},
+        "eng_ltspice_deck_from_schematic", "eng_validate_library_live",
+        "eng_ltspice_compare_schematic")},
     # Altium 365
     **{name: _A365 for name in (
         "altium365_check_setup", "altium365_describe_type", "altium365_get_component",
@@ -431,6 +434,10 @@ NOT_APPLICABLE: dict[str, str] = {
     **{name: _SIM for name in (
         "sim_attach_model", "sim_attach_primitives", "sim_get_probes", "sim_get_readiness",
         "sim_get_results", "sim_get_setup", "sim_setup_analysis", "sch_place_probe")},
+    # SPICE model library: links vendor models to Altium parts.
+    **{name: _SIM_MODELS for name in (
+        "sim_scan_models", "sim_find_models", "sim_set_pin_map",
+        "sim_find_schematic_models", "sim_get_pin_map", "sim_attach_library_model")},
     # Altium-only board objects and features
     "pcb_add_bend_line": "rigid-flex bend lines are Altium's",
     "pcb_delete_bend_line": "rigid-flex bend lines are Altium's",

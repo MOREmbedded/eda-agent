@@ -152,6 +152,10 @@ window on screen.
 
 ### Simulating the schematic you have open
 
+Vendor model linking, pin maps, export to the LTspice GUI and comparing an
+LTspice circuit with the schematic are described in
+[SPICE models and LTspice](SPICE_MODELS.md).
+
 `eng_ltspice_deck_from_schematic` builds the deck for you, which is the
 step that connects LTspice to the design rather than leaving it a
 calculator on the side. It reads the live sheet twice - the same SPICE

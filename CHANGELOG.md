@@ -16,6 +16,23 @@ maturity classification for every tool.
 
 ### Added
 
+- **SPICE model library and LTspice round trip.** `sim_scan_models`
+  indexes vendor model files and LTspice symbols (including LTspice's own
+  library, encrypted models through their symbols) into the design
+  workspace; `sim_find_models` and `sim_find_schematic_models` find models
+  by MPN; `sim_get_pin_map` and `sim_set_pin_map` match symbol pins to
+  model nodes by name, never silently by pin number; and
+  `sim_attach_library_model` links a model only after its pins check out.
+  `eng_ltspice_deck_from_schematic` now emits subcircuits with the model's
+  name and node order and includes their files (it used the Comment and
+  pin-number order before, and dropped parts that had SpicePrefix but no
+  SIM link). `eng_ltspice_run` copies model files into the run folder,
+  `eng_ltspice_export` writes a deck with its models for the LTspice GUI,
+  and `eng_ltspice_compare_schematic` checks an LTspice `.asc`/`.net`
+  against the Altium schematic (parts, values, wiring). See
+  [`docs/SPICE_MODELS.md`](docs/SPICE_MODELS.md). Checked live against
+  LTspice XVII; UNVERIFIED against live Altium.
+
 - **Symbol and footprint preview before placing a part.** The
   dashboard's Library pane has a "Look up a part" view: search the
   profile's scanned Altium 365 library offline (name, value,
@@ -236,6 +253,11 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **The `eng_ltspice_*` tools now find LTspice XVII.** They looked for
+  LTspice 24 only, while the `sim_*` tools found either; a wrong
+  `EDA_AGENT_LTSPICE_EXE` is now reported instead of being ignored.
+- **`.MEAS` results with a lower-case `at`/`from`/`to`** (as LTspice XVII
+  writes them) are read; they were dropped from `measurements`.
 - **`rotation_audit` no longer lets a part on the other side block a
   turn.** A turned part's courtyard was checked against every other
   part's, so a bottom-side part under a top-side part was never offered
