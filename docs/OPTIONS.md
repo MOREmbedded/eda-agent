@@ -106,6 +106,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_LTSPICE_MODEL_ROOTS` | none | Extra folders of LTspice models a deck may include, separated by `;` on Windows. |
 | `EDA_AGENT_SPICE_MODEL_DIRS` | none | Extra folders of SPICE models `design_simulate_deck` may include, separated by `;` on Windows. |
 | `EDA_AGENT_EM_RUNS` | `%USERPROFILE%\EDA Agent\em` | Where each openEMS field-solver run (`sim_em_build_model`) gets its own folder. Runs can be large: point it at a drive with room. |
+| `EDA_AGENT_THERMAL_RUNS` | `%USERPROFILE%\EDA Agent\thermal` | Where each `sim_thermal_analysis` run writes its heat maps, fields and report, one folder per run. |
 | `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` and `PYTHONPATH` for the solver run. |
 | `EDA_AGENT_OPENEMS_PYTHON` | this Python, then `python` on PATH | A Python that can `import openEMS`, used to run the solver. |
 
