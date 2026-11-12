@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Incremental SA objective: bit-identical to the full-board ``score``.
 
 The polish scores each move with ``_IncrementalObjective``, which re-scores
