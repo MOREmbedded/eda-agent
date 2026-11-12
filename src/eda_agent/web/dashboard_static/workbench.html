@@ -311,6 +311,42 @@ table.grid.usage .m { position:relative; font:12px var(--mono); overflow-wrap:an
 table.grid.usage td:first-child { min-width:180px; }
 @container (max-width: 760px) { table.grid.usage .opt { display:none; } }
 table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { text-align:right; white-space:nowrap; }
+/* Calculators: the list, the inputs, the result. */
+.tk { display:grid; grid-template-columns:230px minmax(300px, 400px) minmax(0, 1fr); gap:var(--s4); align-items:start; container-type:inline-size; }
+.tk > * { min-width:0; }
+.tklist { background:var(--paper); border:1px solid var(--rule); max-height:calc(100vh - 120px); overflow:auto; position:sticky; top:0; }
+.tklist input { width:calc(100% - 12px); margin:6px; }
+.tklist h3 { margin:0; padding:8px 10px 3px; font-size:11px; font-weight:600; color:var(--ink3); text-transform:uppercase; letter-spacing:.04em; }
+.tklist button { display:block; width:100%; text-align:left; border:none; border-radius:0; background:none; padding:4px 10px; }
+.tklist button:hover { background:var(--paper2); }
+.tklist button[aria-current="true"] { background:var(--sel); font-weight:600; }
+.tkform, .tkout { background:var(--paper); border:1px solid var(--rule); padding:var(--s3) var(--s4); }
+.tkform h3, .tkout h3 { margin:0 0 2px; font-size:16px; font-weight:600; display:flex; gap:var(--s2); align-items:baseline; }
+.tkform h3 .sp { flex:1; } .tkform h3 button { font-size:12px; font-weight:400; }
+.tkrow { display:grid; grid-template-columns:minmax(0, 1fr) 96px 70px; gap:4px 6px; align-items:center; padding:3px 0; border-bottom:1px solid var(--rule2); }
+.tkrow label { color:var(--ink2); overflow-wrap:anywhere; }
+.tkrow input[type=text] { width:100%; text-align:right; font-family:var(--mono); font-size:12px; }
+.tkrow select { width:100%; padding:4px 2px; }
+.tkrow .wide { grid-column:2 / span 2; } .tkrow .wide input, .tkrow .wide select { text-align:left; }
+.tkrow .u { color:var(--ink3); font-size:12px; }
+.tkrow.filled input[type=text] { border-color:var(--green); box-shadow:inset 3px 0 0 var(--green); }
+.tkboard { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:var(--s2) 0; }
+.tkfig { display:flex; flex-wrap:wrap; gap:var(--s3) var(--s5); margin:var(--s2) 0 var(--s3); }
+.tkfig div { display:flex; flex-direction:column; }
+.tkfig span { color:var(--ink3); font-size:12px; }
+.tkfig b { font-size:26px; font-weight:600; line-height:1.15; }
+.tkout table.grid td { cursor:default; } .tkout table.grid td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
+.tkout table.grid td small { color:var(--ink3); }
+.tkbadge { font-size:11px; font-weight:600; padding:1px 7px; border-radius:9px; border:1px solid var(--rule); color:var(--ink2); white-space:nowrap; }
+.tkbadge.solver, .tkbadge.exact { border-color:var(--green); color:var(--green); } .tkbadge.estimate { border-color:var(--amber); color:var(--amber); }
+.tkout dl { display:grid; grid-template-columns:max-content 1fr; gap:3px var(--s3); margin:var(--s3) 0 0; font-size:12px; }
+.tkout dt { color:var(--ink3); } .tkout dd { margin:0; color:var(--ink2); }
+.tkout svg { display:block; width:100%; height:auto; margin:var(--s2) 0; background:var(--field); border:1px solid var(--rule2); }
+.tkout svg text { font:10px var(--mono); fill:var(--ink3); }
+.tkout.busy .tkfig b { color:var(--ink3); }
+@media (min-width: 821px) { #app[data-mode="calc"] { grid-template-columns:268px 1fr 0; } #app[data-mode="calc"] #side { display:none; } }
+@container (max-width: 980px) { .tk { grid-template-columns:200px minmax(0, 1fr); } .tkout { grid-column:2; } }
+@container (max-width: 640px) { .tk { grid-template-columns:minmax(0, 1fr); } .tkout { grid-column:1; } .tklist { position:static; max-height:240px; } }
 .uchart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:var(--s2) 0 var(--s3); }
 .uchart div { flex:0 1 36px; display:flex; flex-direction:column; justify-content:flex-end; height:100%; min-width:0; }
 .uchart i { display:block; background:var(--ink3); border-radius:2px 2px 0 0; }
@@ -444,6 +480,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
       <button data-mode="tools" title="Run any tool (7)">Tools</button>
       <button data-mode="workspace" title="The profile in effect: its design rules, ERC sets and templates (8)">Workspace</button>
       <button data-mode="usage" title="Tokens the AI spent on the EDA tools, estimated (9)">Usage</button>
+      <button data-mode="calc" title="PCB calculators: impedance, trace current, vias, planes and more (0)">Calculators</button>
     </nav>
     <div class="end">
       <button id="wsbtn" data-src="none" title="Which profile the tools work under"><span class="dot" aria-hidden="true"></span><span id="wsname">Profile</span></button>
@@ -504,6 +541,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
   <h2>Keyboard</h2>
   <dl>
     <dt><kbd>1</kbd> to <kbd>9</kbd></dt><dd>Change mode</dd>
+    <dt><kbd>0</kbd></dt><dd>Open the calculators</dd>
     <dt><kbd>Ctrl K</kbd></dt><dd>Find a part, net, problem or command</dd>
     <dt><kbd>/</kbd></dt><dd>Filter the list</dd>
     <dt><kbd>N</kbd> <kbd>Shift N</kbd></dt><dd>Next and previous problem</dd>
@@ -607,8 +645,8 @@ const num = (v, d) => v == null || v === "" ? "-" : Number(v).toLocaleString(LAN
 const store = {get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
 const baseName = p => String(p || "").split(/[\\/]/).pop();
-const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage"];
-const PANE_MODES = ["library", "tools", "workspace", "usage"];
+const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage", "calc"];
+const PANE_MODES = ["library", "tools", "workspace", "usage", "calc"];
 
 const S = {
   mode: store.get("wb.mode", "place"), list: store.get("wb.list", "parts"),
@@ -945,6 +983,7 @@ function paintTools() {
   else if (S.mode === "tools") html = toolsSideBlock();
   else if (S.mode === "workspace") html = workspaceSideBlock();
   else if (S.mode === "usage") html = usageSideBlock();
+  else if (S.mode === "calc") html = calcSideBlock();
   const el = $("#tools");
   if (el.dataset.html === html) return;
   const keep = {};
@@ -1208,6 +1247,7 @@ function paintPane() {
   if (S.mode === "tools") return paintToolsPane();
   if (S.mode === "workspace") return paintWorkspacePane();
   if (S.mode === "usage") return paintUsagePane();
+  if (S.mode === "calc") return paintCalcPane();
   if (pane.hidden) return;
   if (S.libView === "find") return paintFindPane();
   const L = S.lib || {};
@@ -2222,6 +2262,183 @@ async function openBoard(file) {
   S.version = -1; S.checksVersion = -1; S.sel = null; S.multi = new Set(); S.view = null;
   say(T("Loading {0}", baseName(file)));
 }
+/* ================================================================ calculators */
+// The PCB toolkit (eda_agent.engineering.toolkit): the server declares each
+// calculator's inputs, so the forms here are built from that and a new
+// calculator needs nothing on this page. A result is asked for as you type.
+const TK = {cat: null, name: store.get("wb.tk.name", "microstrip"), vals: store.get("wb.tk.vals", {}),
+            res: null, busy: false, seq: 0, timer: 0, filter: "", board: null, layer: 0, filled: {}};
+function tkAll() { return TK.cat ? TK.cat.groups.flatMap(g => g.calculators) : []; }
+function tkCalc() { return tkAll().find(c => c.name === TK.name) || tkAll()[0] || null; }
+function tkVal(c, i) {
+  const v = (TK.vals[c.name] || {})[i.key];
+  if (v) return v;
+  return {v: i.default == null ? "" : i.default, u: i.unit || ""};
+}
+function tkShown(c, i) {
+  if (!i.show_if) return true;
+  return Object.entries(i.show_if).every(([k, allowed]) => { const o = c.inputs.find(x => x.key === k); return !o || allowed.includes(String(tkVal(c, o).v)); });
+}
+async function loadCalc() {
+  if (!TK.cat) {
+    TK.cat = await get("/api/wb/toolkit/catalog");
+    if (S.mode === "calc") paintPane();
+  }
+  if (TK.cat && TK.cat.ok && !TK.res) calcRun(0);
+}
+function calcRun(delay) {
+  clearTimeout(TK.timer);
+  TK.timer = setTimeout(async () => {
+    const c = tkCalc(); if (!c) return;
+    const inputs = {};
+    for (const i of c.inputs) {
+      if (!tkShown(c, i)) continue;
+      const v = tkVal(c, i);
+      if (i.kind === "bool" || i.kind === "choice" || i.kind === "choice_text") inputs[i.key] = v.v;
+      else if (v.v === "" || v.v == null) { if (i.optional) inputs[i.key] = null; }
+      else inputs[i.key] = {value: String(v.v).trim().replace(",", "."), unit: v.u || i.unit || ""};
+    }
+    const seq = ++TK.seq; TK.busy = true; paintCalcOut();
+    const r = await post("/api/wb/toolkit/run", {name: c.name, inputs});
+    if (seq !== TK.seq) return;
+    TK.busy = false; TK.res = r; paintCalcOut();
+  }, delay);
+}
+function tkField(c, i) {
+  const v = tkVal(c, i), id = "tk_" + i.key, tip = i.help ? ` title="${esc(i.help)}"` : "";
+  const cls = "tkrow" + (TK.filled[c.name + "." + i.key] ? " filled" : "");
+  let body;
+  if (i.kind === "choice") body = `<span class="wide"><select id="${id}" data-tk="${esc(i.key)}">${i.choices.map(o => `<option value="${esc(o.value)}"${String(v.v) === o.value ? " selected" : ""}>${esc(o.label)}</option>`).join("")}</select></span>`;
+  else if (i.kind === "bool") body = `<span class="wide"><input type="checkbox" id="${id}" data-tk="${esc(i.key)}"${v.v === true || v.v === "true" ? " checked" : ""}></span>`;
+  else if (i.kind === "choice_text") body = `<span class="wide"><input type="text" id="${id}" data-tk="${esc(i.key)}" value="${esc(v.v)}" autocomplete="off"></span>`;
+  else {
+    const units = i.units || [], un = units.length > 1
+      ? `<select data-tku="${esc(i.key)}" aria-label="${esc(i.label)}">${units.map(u => `<option${u === String(v.u) ? " selected" : ""}>${esc(u)}</option>`).join("")}</select>`
+      : `<span class="u">${esc(v.u || "")}</span>`;
+    body = `<input type="text" inputmode="decimal" id="${id}" data-tk="${esc(i.key)}" value="${esc(v.v)}" autocomplete="off">${un}`;
+  }
+  return `<div class="${cls}"${tip}><label for="${id}">${esc(i.label)}</label>${body}</div>`;
+}
+function tkForm() {
+  const c = tkCalc(); if (!c) return "";
+  const usesBoard = c.inputs.some(i => i.prefill && /^(stackup|board)\./.test(i.prefill));
+  const B = TK.board;
+  const boardRow = !usesBoard ? "" : `<div class="tkboard"><button type="button" data-tkboard="read">${esc(T("Fill from the board"))}</button>${
+    B && B.ok ? `<select data-tklayer aria-label="${esc(T("Layer"))}">${B.layers.map((l, n) => `<option value="${n}"${n === TK.layer ? " selected" : ""}>${esc(l.name)}</option>`).join("")}</select>`
+    : B && B.reading ? `<span class="hint"><span class="spin"></span> ${esc(T("Reading the board's layer stack"))}</span>`
+    : B ? `<span class="bad">${esc(B.reason || "")}</span>` : ""}</div>`;
+  return `<form class="tkform" autocomplete="off"><h3>${esc(c.title)}<span class="sp"></span><button type="button" class="quiet" data-tkreset="1">${esc(T("Reset"))}</button></h3>
+    <p class="hint">${esc(c.summary)}</p>${boardRow}${c.inputs.filter(i => tkShown(c, i)).map(i => tkField(c, i)).join("")}</form>`;
+}
+function tkSection(sec) {
+  // The solved cross-section, to scale across and exaggerated in height
+  // where the copper would otherwise be a hairline.
+  const sig = sec.metals.filter(m => m.net >= 0); if (!sig.length) return "";
+  const ys = sec.dielectrics.flatMap(d => [d.y0, d.y1]).concat(sec.metals.flatMap(m => [m.y0, m.y1]));
+  const y0 = sec.ground_bottom != null ? sec.ground_bottom : Math.min(...ys), y1 = sec.ground_top != null ? sec.ground_top : Math.max(...ys);
+  const H = (y1 - y0) || 1, cx0 = Math.min(...sig.map(m => m.x0)), cx1 = Math.max(...sig.map(m => m.x1));
+  const span = Math.max((cx1 - cx0) * 1.5 + 3 * H, 5 * H), mid = (cx0 + cx1) / 2, xa = mid - span / 2;
+  const W = 520, pad = 14, k = (W - 2 * pad) / span, plane = 5, air = sec.ground_top == null ? 22 : 0;
+  const hh = Math.max(H * k, 70), ky = hh / H, top = pad + air + (sec.ground_top != null ? plane : 0);
+  const X = x => pad + (x - xa) * k, Y = y => top + (y1 - y) * ky;
+  const clip = (a, b) => [Math.max(a, xa), Math.min(b, xa + span)];
+  let g = "";
+  for (const d of sec.dielectrics) g += `<rect x="${pad}" y="${Y(d.y1)}" width="${W - 2 * pad}" height="${(d.y1 - d.y0) * ky}" fill="var(--mask)" opacity="${d.er > 1 ? .22 : 0}"/><text x="${W - pad - 4}" y="${Y(d.y1) + 11}" text-anchor="end">Er ${d.er.toFixed(2)}</text>`;
+  if (sec.ground_bottom != null) g += `<rect x="${pad}" y="${Y(y0)}" width="${W - 2 * pad}" height="${plane}" fill="var(--amber)"/>`;
+  if (sec.ground_top != null) g += `<rect x="${pad}" y="${Y(y1) - plane}" width="${W - 2 * pad}" height="${plane}" fill="var(--amber)"/>`;
+  for (const m of sec.metals) {
+    const [a, b] = clip(m.x0, m.x1), [ta, tb] = clip(m.xt0, m.xt1); if (b <= a) continue;
+    const yb = Y(m.y0), yt = Math.min(Y(m.y1), yb - 2);
+    g += `<polygon points="${X(a)},${yb} ${X(b)},${yb} ${X(tb)},${yt} ${X(ta)},${yt}" fill="${m.net >= 0 ? "var(--red)" : "var(--amber)"}"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${top + hh + plane + pad}" role="img" aria-label="${esc(T("Cross-section"))}">${g}</svg>`;
+}
+function tkCurve(cv) {
+  const W = 520, Hh = 190, l = 46, b = 22, lx = v => cv.log_x ? Math.log10(v) : v, ly = v => cv.log_y ? Math.log10(Math.max(v, 1e-12)) : v;
+  const xs = cv.x.map(lx), ys = cv.y.map(ly), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.floor(Math.min(...ys)), y1 = Math.ceil(Math.max(...ys));
+  const X = v => l + (v - x0) / ((x1 - x0) || 1) * (W - l - 8), Y = v => 8 + (y1 - v) / ((y1 - y0) || 1) * (Hh - b - 8);
+  let g = "";
+  for (let d = y0; d <= y1; d++) g += `<line x1="${l}" x2="${W - 8}" y1="${Y(d)}" y2="${Y(d)}" stroke="var(--rule2)"/><text x="${l - 4}" y="${Y(d) + 3}" text-anchor="end">${esc(tkEng(cv.log_y ? 10 ** d : d))}Ω</text>`;
+  for (let d = Math.ceil(x0); d <= Math.floor(x1); d++) g += `<line y1="8" y2="${Hh - b}" x1="${X(d)}" x2="${X(d)}" stroke="var(--rule2)"/><text x="${X(d)}" y="${Hh - 8}" text-anchor="middle">${esc(tkEng(10 ** d))}Hz</text>`;
+  return `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="${esc(cv.label || "")}">${g}<polyline fill="none" stroke="var(--blue)" stroke-width="1.5" points="${xs.map((x, n) => X(x).toFixed(1) + "," + Y(ys[n]).toFixed(1)).join(" ")}"/></svg>`;
+}
+function tkEng(v) { const p = [[1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"], [1e-6, "µ"]]; for (const [f, s] of p) if (v >= f * .999) return +(v / f).toPrecision(3) + " " + s; return v.toExponential(0) + " "; }
+function tkOut() {
+  const r = TK.res, c = tkCalc();
+  if (!r) return `<div class="tkout"><p class="hint"><span class="spin"></span> ${esc(T("Calculating"))}</p></div>`;
+  if (!r.ok) return `<div class="tkout"><h3>${esc(c ? c.title : "")}</h3><div class="result fail">${esc(r.reason || "")}</div></div>`;
+  const prim = r.outputs.filter(o => o.primary), rest = r.outputs.filter(o => !o.primary);
+  const status = T({exact: "Exact", solver: "Field solver", published: "Published formula", estimate: "Estimate"}[r.status] || "Published formula");
+  return `<div class="tkout${TK.busy ? " busy" : ""}"><h3>${esc(r.title || "")}<span class="tkbadge ${esc(r.status)}">${esc(status)}</span>${TK.busy ? '<span class="spin"></span>' : ""}</h3>
+    <div class="tkfig">${prim.map(o => `<div><span>${esc(o.label)}</span><b>${esc(o.display)}</b></div>`).join("")}</div>
+    ${(r.warnings || []).map(w => `<div class="result fail">${esc(w)}</div>`).join("")}
+    ${r.section ? tkSection(r.section) : ""}${r.curve ? tkCurve(r.curve) : ""}
+    ${rest.length ? `<table class="grid"><tbody>${rest.map(o => `<tr><td>${esc(o.label)}${o.note ? ` <small>${esc(o.note)}</small>` : ""}</td><td class="v">${esc(o.display)}</td></tr>`).join("")}</tbody></table>` : ""}
+    <dl><dt>${esc(T("Model"))}</dt><dd>${esc(r.model || "")}</dd>
+    ${r.accuracy ? `<dt>${esc(T("Accuracy"))}</dt><dd>${esc(r.accuracy)}</dd>` : ""}
+    ${(r.cross_checks || []).map(k => `<dt>${esc(T("Checked against"))}</dt><dd>${esc(k.model)}: ${esc(k.label)} ${esc(k.display)}, ${esc(T("difference {0} %", (k.difference_percent > 0 ? "+" : "") + k.difference_percent.toFixed(2)))}${k.note ? " (" + esc(k.note) + ")" : ""}</dd>`).join("")}
+    ${(r.references || []).length ? `<dt>${esc(T("Sources"))}</dt><dd>${r.references.map(esc).join("<br>")}</dd>` : ""}</dl></div>`;
+}
+function paintCalcOut() { const el = document.querySelector("#pane .tkout"); if (el) el.outerHTML = tkOut(); }
+function tkListHtml() {
+  const f = TK.filter.trim().toLowerCase();
+  return TK.cat.groups.map(g => {
+    const rows = g.calculators.filter(c => !f || (c.title + " " + c.summary + " " + g.title).toLowerCase().includes(f));
+    return rows.length ? `<h3>${esc(g.title)}</h3>${rows.map(c => `<button type="button" data-tkname="${esc(c.name)}"${c.name === TK.name ? ' aria-current="true"' : ""} title="${esc(c.summary)}">${esc(c.title)}</button>`).join("")}` : "";
+  }).join("");
+}
+function paintCalcPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  if (!TK.cat) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!TK.cat.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  if (!tkAll().some(c => c.name === TK.name)) TK.name = tkAll()[0].name;
+  pane.innerHTML = `<div class="tk"><div class="tklist"><input id="tkq" placeholder="${esc(T("Filter calculators"))}" value="${esc(TK.filter)}" autocomplete="off" aria-label="${esc(T("Filter calculators"))}"><div id="tkitems">${tkListHtml()}</div></div>${tkForm()}${tkOut()}</div>`;
+}
+function tkSet(key, patch) {
+  const c = tkCalc(), i = c.inputs.find(x => x.key === key); if (!i) return;
+  const all = TK.vals[c.name] || (TK.vals[c.name] = {});
+  all[key] = Object.assign({}, tkVal(c, i), patch); delete TK.filled[c.name + "." + key];
+  store.set("wb.tk.vals", TK.vals);
+}
+function tkRepaintForm() { const el = document.querySelector("#pane .tkform"); if (el) el.outerHTML = tkForm(); }
+function calcInput(e) {
+  const t = e.target;
+  if (t.id === "tkq") { TK.filter = t.value; $("#tkitems").innerHTML = tkListHtml(); return; }
+  if (t.dataset.tk && t.type === "text") { tkSet(t.dataset.tk, {v: t.value}); t.closest(".tkrow").classList.remove("filled"); calcRun(350); }
+}
+function calcChange(e) {
+  const t = e.target;
+  if (t.dataset.tklayer != null) { TK.layer = +t.value; return tkFill(); }
+  if (t.dataset.tku) { tkSet(t.dataset.tku, {u: t.value}); return calcRun(0); }
+  if (t.dataset.tk && t.type !== "text") { tkSet(t.dataset.tk, {v: t.type === "checkbox" ? t.checked : t.value}); tkRepaintForm(); calcRun(0); }
+}
+function tkFill() {
+  const c = tkCalc(), B = TK.board; if (!c || !B || !B.ok) return;
+  const L = B.layers[TK.layer] || B.layers[0]; let n = 0;
+  const all = TK.vals[c.name] || (TK.vals[c.name] = {});
+  for (const i of c.inputs) {
+    const got = i.prefill && L.values[i.prefill]; if (!got) continue;
+    all[i.key] = {v: got.value, u: got.unit || i.unit || ""}; TK.filled[c.name + "." + i.key] = true; n++;
+  }
+  store.set("wb.tk.vals", TK.vals); tkRepaintForm(); calcRun(0);
+  const note = (B.notes || []).join(" ");
+  say((n ? T("Filled {0} values from {1}.", n, L.name) : T("Nothing on this calculator comes from the layer stack.")) + (note ? " " + note : ""), !n || !!note);
+}
+async function calcClick(e) {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.tkname) { TK.name = t.dataset.tkname; store.set("wb.tk.name", TK.name); TK.res = null; paintPane(); return calcRun(0); }
+  if (t.dataset.tkreset) { const c = tkCalc(); delete TK.vals[c.name]; for (const k of Object.keys(TK.filled)) if (k.startsWith(c.name + ".")) delete TK.filled[k]; store.set("wb.tk.vals", TK.vals); tkRepaintForm(); return calcRun(0); }
+  if (t.dataset.tkboard) {
+    TK.board = {reading: true}; tkRepaintForm();
+    TK.board = await get("/api/wb/toolkit/board") || {ok: false, reason: T("The dashboard did not answer.")};
+    if (TK.board.ok) { const c = tkCalc(), want = /stripline/.test(c.name) ? "inner" : "outer"; TK.layer = Math.max(0, TK.board.layers.findIndex(l => l.kind === want)); tkFill(); }
+    else tkRepaintForm();
+  }
+}
+function calcSideBlock() {
+  return `<section class="block"><h2>${esc(T("Calculators"))}</h2><p class="hint">${esc(T("Impedance and crosstalk come from a 2D field solver, trace and via current from a thermal model of the board. Each result names its model, its accuracy and what it was checked against."))}</p><p class="hint">${esc(T("The AI runs the same calculators with the pcb_calc_toolkit tool."))}</p></section>`;
+}
+
 $("#boardbtn").addEventListener("click", e => { e.stopPropagation(); $("#boardmenu").hidden ? openPicker() : closePicker(); });
 $("#boardmenu").addEventListener("click", e => { const r = e.target.closest("[data-file]"); if (r) openBoard(r.dataset.file); });
 document.addEventListener("click", e => { if (!e.target.closest("#picker")) closePicker(); });
@@ -2235,7 +2452,7 @@ $("#follow").addEventListener("change", async e => {
 /* ================================================================ wiring */
 function setMode(m) {
   if (!MODES.includes(m)) m = "place";
-  const from = S.mode; S.mode = m; store.set("wb.mode", m);
+  const from = S.mode; S.mode = m; store.set("wb.mode", m); $("#app").dataset.mode = m;
   document.querySelectorAll("#modes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
   if (m === "route" && S.list === "parts") setList("nets");
   if ((m === "place" || m === "assemble") && S.list === "nets") setList("parts");
@@ -2245,6 +2462,8 @@ function setMode(m) {
   else if (from === "assemble") S.multi = new Set();
   if (m === "library" && !S.lib && S.libView !== "find") pollLibrary(true);
   if (m === "usage") loadUsage();
+  if (m === "calc") loadCalc();
+  if ((m === "calc") !== (from === "calc")) resize();
   S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
 }
 function repaintAll() { legend(); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); paintEmpty(); paintPane(); lastCall(); if (ACT.open) paintActivity(); draw(); }
@@ -2298,6 +2517,7 @@ function sideClick(e) {
 }
 $("#side").addEventListener("click", sideClick);
 $("#pane").addEventListener("click", e => {
+  if (S.mode === "calc") return calcClick(e);
   if (S.mode === "workspace") return wsPaneClick(e);
   if (S.mode === "tools") {
     const r = e.target.closest("[data-tool]"); if (r) { S.tool = r.dataset.tool; S.toolResult = null; paintPane(); }
@@ -2318,6 +2538,7 @@ $("#pane").addEventListener("click", e => {
   S.multi = new Set(S.libPick); paintPane(); clearTools(); paintTools();
 });
 $("#pane").addEventListener("input", e => {
+  if (S.mode === "calc") return calcInput(e);
   if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
   if (e.target.id === "pfq") pfSearch(e.target.value);
   if (e.target.id === "pflib") S.pf.lib = e.target.value;
@@ -2327,8 +2548,9 @@ $("#pane").addEventListener("input", e => {
   if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
   if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;
 });
-$("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
+$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); runTool(e.target); });
 $("#pane").addEventListener("change", e => {
+  if (S.mode === "calc") return calcChange(e);
   if (S.mode === "usage" && e.target.dataset) {
     if (e.target.dataset.usagews != null) { S.usageWs = e.target.value; loadUsage(); }
     else if (e.target.dataset.usagedays != null) { S.usageDays = +e.target.value; loadUsage(); }
@@ -2368,6 +2590,7 @@ window.addEventListener("keydown", e => {
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
   if (/^[1-9]$/.test(k)) setMode(MODES[+k - 1]);
+  else if (k === "0") setMode("calc");
   else if (k === "/") { e.preventDefault(); $("#q").focus(); }
   else if (k === "f" || k === "F") fit();
   else if (k === "n") nextProblem(1); else if (k === "N") nextProblem(-1);
