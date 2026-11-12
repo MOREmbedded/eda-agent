@@ -128,3 +128,42 @@ def test_kinds_filter_leaves_tracks_out():
     assert "tracks" not in r.kinds
     with pytest.raises(ValueError):
         rasterize(b, kinds={"bogus"})
+
+
+def test_a_pour_outline_is_not_copper():
+    # read_altium keeps a polygon's outline (kind "pour_boundary") beside
+    # the copper it poured (kind "pour"): only the poured copper counts.
+    from eda_agent.layout.model import Layer, LayoutBoard, Region
+    b = LayoutBoard(outline=[(0, 0), (1000, 0), (1000, 1000), (0, 1000)],
+                    layers=[Layer("TopLayer", "signal", 0), Layer("InternalPlane1", "plane", 1)])
+    b.regions += [
+        Region("TopLayer", [(100, 400), (900, 400), (900, 600), (100, 600)], [], "P", "pour"),
+        Region("TopLayer", [(0, 0), (1000, 0), (1000, 1000), (0, 1000)], [], "P", "pour_boundary"),
+        Region("InternalPlane1", [(0, 0), (500, 0), (500, 1000), (0, 1000)], [], "P", "copper"),
+        Region("InternalPlane1", [(0, 0), (1000, 0), (1000, 1000), (0, 1000)], [], "P", "pour_boundary"),
+    ]
+    r = rasterize(b, 20.0, nets=["P"])
+    assert r.copper_area_mils2("TopLayer") == pytest.approx(800 * 200, rel=0.01)
+    assert r.copper_area_mils2("InternalPlane1") == pytest.approx(500 * 1000, rel=0.01)
+
+
+def test_links_follow_the_copper_not_the_cell():
+    from eda_agent.layout.model import Layer, LayoutBoard, Region
+    b = LayoutBoard(outline=[(0, 0), (400, 0), (400, 200), (0, 200)],
+                    layers=[Layer("TopLayer", "signal", 0)])
+    # two pours 6 mil apart (gap at x = 197..203, inside one 20 mil cell),
+    # the lower half of the board only
+    b.regions += [Region("TopLayer", [(0, 0), (197, 0), (197, 100), (0, 100)], [], "P", "pour"),
+                  Region("TopLayer", [(203, 0), (400, 0), (400, 100), (203, 100)], [], "P", "pour")]
+    r = rasterize(b, 20.0, nets=["P"], supersample=8, links=True)
+    lx, ly = r.link_x["TopLayer"], r.link_y["TopLayer"]
+    assert lx.shape == (10, 19) and ly.shape == (9, 20)
+    assert np.all(lx[:5, :8] == 1.0) and np.all(lx[:5, 11:] == 1.0)   # solid copper
+    assert np.all(lx[:5, 9] == 0.0)          # the gap breaks the link across it
+    assert np.all(lx[5:, :] == 0.0)          # no copper above y = 100
+    assert np.all(ly[:4, :9] == 1.0) and np.all(ly[4:, :] == 0.0)
+    # a face half covered conducts by half: copper to y = 110 on a 20 mil grid
+    b.regions = [Region("TopLayer", [(0, 0), (400, 0), (400, 110), (0, 110)], [], "P", "pour")]
+    r = rasterize(b, 20.0, nets=["P"], supersample=8, links=True)
+    assert np.allclose(r.link_x["TopLayer"][5, :], 0.5)
+    assert not rasterize(b, 20.0, nets=["P"]).link_x          # off by default
