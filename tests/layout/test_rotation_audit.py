@@ -88,6 +88,34 @@ def test_a_bottom_part_is_scored_and_given_a_rotation_value():
     assert r1["side"] == BOTTOM
 
 
+def _blocked_board(r1_side, c9_side):
+    """R1's courtyard is off its origin, so every turn swings it into C9."""
+    board = _board(r1_side=r1_side)
+    board.components[1].courtyard = _rect(0, 40, 160, 60)
+    board.components.append(Component(ref="C9", x=0, y=-60, side=c9_side,
+                                      courtyard=_rect(0, -60, 40, 40),
+                                      courtyard_source="courtyard"))
+    return board
+
+
+def test_a_neighbour_on_the_same_side_blocks_every_turn():
+    for side in ("top", BOTTOM):
+        out = rotation_audit(_blocked_board(side, side))
+        assert not [s for s in out["suggestions"] if s["ref"] == "R1"], side
+        hits = [b for b in out["blocked"] if b["ref"] == "R1"]
+        assert {b["turn_by"] for b in hits} == {90.0, 180.0, 270.0}
+        assert {b["collides_with"] for b in hits} == {"C9"}
+
+
+def test_a_part_on_the_other_side_does_not_block_a_turn():
+    """Courtyards on opposite sides never meet, as in placement_audit."""
+    for r1_side, c9_side in (("top", BOTTOM), (BOTTOM, "top")):
+        out = rotation_audit(_blocked_board(r1_side, c9_side))
+        r1 = next(s for s in out["suggestions"] if s["ref"] == "R1")
+        assert r1["turn_by"] == 180.0 and r1["side"] == r1_side
+        assert not [b for b in out["blocked"] if b["ref"] == "R1"]
+
+
 def test_a_locked_part_is_not_touched():
     board = _board()
     board.components[1].locked = True

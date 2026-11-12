@@ -16,8 +16,10 @@ practice) the distance from each of the part's pads to the nearest pad of
 the same net elsewhere, which is where its return or supply really goes.
 
 A TURN THAT COLLIDES IS NOT SUGGESTED: the part's courtyard is turned with
-it and checked against every other part's, so a suggestion can be applied
-as it is. Bottom-side parts are scored too: their pads are turned where
+it and checked against every other part's ON THE SAME SIDE, so a
+suggestion can be applied as it is; a bottom-side part's turn is not ruled
+out by a top-side part above it, nor the other way round, the same rule
+``placement_audit`` uses for overlaps. Bottom-side parts are scored too: their pads are turned where
 they are on the board, which needs no assumption about how a mirrored
 part's rotation angle is counted.
 
@@ -131,7 +133,8 @@ def rotation_audit(board: LayoutBoard, limit: int = LIMIT,
                 turned = geom.polygon([_turn(x, y, comp.x, comp.y, deg)
                                        for x, y in outline])
                 for other in board.components:
-                    if other.ref == comp.ref or not outlines.get(other.ref):
+                    if (other.ref == comp.ref or other.side != comp.side
+                            or not outlines.get(other.ref)):
                         continue
                     if _overlaps(turned, geom.polygon(outlines[other.ref])):
                         hit = other.ref
