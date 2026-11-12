@@ -208,6 +208,14 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_SPICE_MODEL_DIRS", "Simulation", "none",
            "Extra folders of SPICE models `design_simulate_deck` may "
            "include, separated by `;` on Windows."),
+    EnvVar("EDA_AGENT_EM_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\em`",
+           "Where each openEMS field-solver run (`sim_em_build_model`) gets "
+           "its own folder. Runs can be large: point it at a drive with room."),
+    EnvVar("EDA_AGENT_OPENEMS_DIR", "Simulation", "none",
+           "The unzipped openEMS folder (Windows build). Added to `PATH` and "
+           "`PYTHONPATH` for the solver run."),
+    EnvVar("EDA_AGENT_OPENEMS_PYTHON", "Simulation", "this Python, then `python` on PATH",
+           "A Python that can `import openEMS`, used to run the solver."),
     # ---- 3D and SDK -----------------------------------------------------
     EnvVar("EDA_AGENT_STEP_WRITER", "3D models and Altium SDK", "cadquery",
            "`freecad` tries FreeCAD before CadQuery when building a STEP "

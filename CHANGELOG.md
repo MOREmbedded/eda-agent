@@ -16,6 +16,21 @@ maturity classification for every tool.
 
 ### Added
 
+- **EMI/EMC pre-scan and openEMS field solving.** `sim_emc_prescan`
+  checks a routed board's fast nets with no external program. It finds
+  tracks that cross a split or slot in their reference plane or have no
+  plane beside them, fast tracks near the board edge, and layer changes
+  with no return via. It also estimates differential-mode radiated
+  emission per net (Ott's small-loop formula) against CISPR 32 or
+  FCC Part 15 limit lines. `sim_em_build_model`, `sim_em_run` and
+  `sim_em_results` cut a few nets with their return copper and the real
+  stackup out of the board and solve them in openEMS, which runs as a
+  separate process. Results come back as a Touchstone file and a summary:
+  return loss, S21, and for antennas directivity, efficiency and pattern.
+  `sim_read_touchstone` summarises any `.sNp` file. UNVERIFIED against a
+  real openEMS install: the runner is tested on a stand-in that records
+  its calls. See [`docs/EMC_RF.md`](docs/EMC_RF.md).
+
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced
