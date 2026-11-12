@@ -380,6 +380,9 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
     z_lines = sorted({round(l.z_mils * MM_PER_MIL, 5) for l in stack.layers}
                      | {sim_box["z"][0], sim_box["z"][1]})
 
+    widths = [t.width for t in board.tracks if t.net in chosen] + \
+        [a.width for a in board.arcs if a.net in chosen]
+    min_feature_mm = (min(widths) if widths else 10.0) * MM_PER_MIL
     cells = _cell_estimate(sim_box, res_mm, len(edges_x), len(edges_y), len(z_lines),
                            thick, er_max, lam_max_mm)
     if cells > max_cells:
@@ -401,6 +404,7 @@ def build_model(board: LayoutBoard, nets: list[str], ports: list[str],
         "boundary": ["PML_8"] * 6 if mode == "antenna" else ["MUR"] * 6,
         "sim_box": sim_box,
         "mesh": {"res_mm": round(res_mm, 5), "ratio": MESH_RATIO,
+                 "min_gap_mm": round(max(min(res_mm / 10, min_feature_mm / 3), 0.005), 5),
                  "x": sorted(edges_x | set(sim_box["x"])),
                  "y": sorted(edges_y | set(sim_box["y"])),
                  "z": z_lines,
@@ -507,6 +511,9 @@ def _run_env() -> dict:
     home = os.environ.get("EDA_AGENT_OPENEMS_DIR", "")
     if home:
         env["PATH"] = home + os.pathsep + env.get("PATH", "")
+        # The CSXCAD and openEMS bindings find their DLLs through these.
+        env.setdefault("CSXCAD_INSTALL_PATH", home)
+        env.setdefault("OPENEMS_INSTALL_PATH", home)
         py = Path(home) / "python"
         if py.is_dir():
             env["PYTHONPATH"] = str(py) + os.pathsep + env.get("PYTHONPATH", "")
@@ -564,12 +571,18 @@ def start_run(folder: str | Path, python: str = "", threads: int = 0) -> dict:
 
 
 def _alive(pid: int) -> bool:
-    try:
-        import psutil
-        p = psutil.Process(pid)
-        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
-    except Exception:  # noqa: BLE001 - gone, or no access: treat as finished
+    """Whether the runner process still runs. A process that cannot be
+    inspected (access denied, a busy machine) counts as running: calling a
+    live solve finished would stop whoever is waiting on it."""
+    import psutil
+    if pid <= 0 or not psutil.pid_exists(pid):
         return False
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:  # noqa: BLE001 - access denied, timeouts: assume running
+        return True
 
 
 def _read(path: Path) -> Optional[dict]:

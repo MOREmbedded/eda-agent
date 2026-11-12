@@ -215,3 +215,14 @@ def test_runner_retries_a_rename_a_scanner_blocks(tmp_path, monkeypatch):
     runner._write(str(tmp_path / "status.json"), {"x": 1})
     assert json.loads((tmp_path / "status.json").read_text()) == {"x": 1}
     assert state["n"] == 3
+
+
+def test_near_duplicate_mesh_lines_are_merged():
+    """A hair-thin cell sets a hair-thin time step and the solve crawls."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runner2", em.RUNNER)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    assert runner.merge_lines([0.17780, 0.1778049, -1.0, 0.5, 0.17781], 0.01) == [-1.0, 0.1778, 0.5]
+    m = _model()
+    assert 0.005 <= m["mesh"]["min_gap_mm"] <= 14 * 0.0254 / 3 + 1e-9

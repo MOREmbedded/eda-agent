@@ -44,6 +44,18 @@ def _write(path, data):
     os.replace(tmp, path)
 
 
+def merge_lines(values, min_gap):
+    """Sorted mesh lines with near-duplicates merged. Two lines a hair
+    apart make one tiny cell, and the FDTD time step follows the smallest
+    cell: the solve then crawls and never reaches its end criterion."""
+    out = []
+    for v in sorted(float(x) for x in values):
+        if out and v - out[-1] < min_gap:
+            continue
+        out.append(v)
+    return out
+
+
 def build(model, excite, np, ContinuousStructure, openEMS):
     """The CSX structure and FDTD set-up for one excitation."""
     fdtd = openEMS(NrTS=int(model.get("max_steps", 2_000_000)),
@@ -79,15 +91,16 @@ def build(model, excite, np, ContinuousStructure, openEMS):
                                         priority=5))
 
     m = model["mesh"]
+    gap = float(m.get("min_gap_mm", 0.01))
     via_xy = [v["xy"] for v in model["vias"] if v.get("role") == "signal"]
     xs = list(m["x"]) + [v[0] for v in via_xy]
     ys = list(m["y"]) + [v[1] for v in via_xy]
-    mesh.AddLine("x", xs)
-    mesh.AddLine("y", ys)
+    mesh.AddLine("x", merge_lines(xs, gap))
+    mesh.AddLine("y", merge_lines(ys, gap))
     zs = list(m["z"])
     for d in model["dielectrics"]:
-        zs += list(np.linspace(d["z1"], d["z2"], 4))
-    mesh.AddLine("z", zs)
+        zs += [float(z) for z in np.linspace(d["z1"], d["z2"], 4)]
+    mesh.AddLine("z", merge_lines(zs, gap))
     mesh.SmoothMeshLines("x", m["res_mm"], m["ratio"])
     mesh.SmoothMeshLines("y", m["res_mm"], m["ratio"])
     mesh.SmoothMeshLines("z", m["res_mm"], m["ratio"])
