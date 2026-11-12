@@ -20,8 +20,8 @@ maturity classification for every tool.
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
   Boards, AISLER, Beta LAYOUT, NextPCB, PCBCart, OSH Park and Advanced
   Circuits, each with its published pages registered as a connector.
-  Nine have rules stored so far, every figure with the fab's quote, page
-  and date; four are pending because their pages refused the reader.
+  Twelve have rules stored, every figure with the fab's quote, page and
+  date; Würth Elektronik is pending (its site refuses scripts).
   New `fab-list`, `fab-rules`, `fab-compare` and `fab-refresh` commands
   and `design_list_fabs`, `design_fab_rules`, `design_fab_compare`
   tools give every rule of one build (board edge, V-score, mask,

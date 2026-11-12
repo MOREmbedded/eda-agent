@@ -1,0 +1,237 @@
+{
+ "vendor": "Satland Prototype",
+ "source": {
+  "url": "https://www.prototypy.com/t/51,Plytki_PCB",
+  "other_urls": [
+   "https://www.prototypy.com/t/55,Odwiert"
+  ],
+  "retrieved": "2026-11-12",
+  "note": "Satland Prototype (Warsaw). 'Zasady ogólne dla płytek PCB': standard rules for 35 µm copper, a second set for 70 and 105 µm, and 'Zasady dla zamówień specjalnych' (special orders, priced individually) as tier special. Multilayer boards are offered but no layer counts are given, so only 1 and 2 are listed. Read 2026-11-12 from the live pages by `eda-agent fab-refresh` on a Windows PC and transcribed by hand."
+ },
+ "tiers": {
+  "standard": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2
+     ],
+     "quote": "Wykonujemy płytki jedno, dwuwarstwowe oraz wielowarstwowe.",
+     "note": "Multilayer is offered without a published layer count; ask Satland before using a 4+ layer build."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.2,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "wymagania standardowe dla miedzi 35µm : szerokość ścieżek : od 0,2mm (8 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "wymagania standardowe dla miedzi 70 µm oraz 105 µm : szerokość ścieżek : od 0,25mm (10 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 3
+     },
+     "quote": "wymagania standardowe dla miedzi 70 µm oraz 105 µm : szerokość ścieżek : od 0,25mm (10 mils)"
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.2,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "dla miedzi 35µm : ... rozstęp ścieżek, padów: od 0,2mm (8 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "dla miedzi 70 µm oraz 105 µm : ... rozstęp ścieżek, padów: od 0,25mm (10 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 3
+     },
+     "quote": "dla miedzi 70 µm oraz 105 µm : ... rozstęp ścieżek, padów: od 0,25mm (10 mils)"
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.3,
+     "quote": "Wiertła: 0,3mm - 6.4mm (większe otwory są frezowane)."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.2,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "dla miedzi 35µm : ... szerokość pierścienia wokół otworów: od 0,2mm (8 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "dla miedzi 70 µm oraz 105 µm : ... szerokość pierścienia wokół otworów: od 0,25mm (10 mils)"
+    },
+    {
+     "mm": 0.25,
+     "when": {
+      "outer_oz": 3
+     },
+     "quote": "dla miedzi 70 µm oraz 105 µm : ... szerokość pierścienia wokół otworów: od 0,25mm (10 mils)"
+    }
+   ],
+   "pth_annular_ring": [
+    {
+     "mm": 0.2,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "szerokość pierścienia wokół otworów: od 0,2mm (8 mils)",
+     "note": "One ring rule for every hole. The standard pads on 'Odwiert' are hole + 0.44 mm."
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "Not published."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "Not published."
+    }
+   ],
+   "mask_expansion": [
+    {
+     "mm": 0.1,
+     "quote": "pad soldermaski powinien być wiekszy o 0,2mm (8mils) od pada miedzi( 0,1mm z każdej strony pada)"
+    }
+   ],
+   "min_silk_width": [
+    {
+     "unpublished": "Only the special-order figure is published (tier special)."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mm": 0.2,
+     "quote": "odstęp ścieżek i padów od obrysu płytki minimum 0,2mm"
+    }
+   ],
+   "board_thickness": [
+    {
+     "value": "0.2-3.2 mm",
+     "quote": "gr. laminatów: 0.2; 0.4; 0.8; 1;1.2; 1.5; 2; 2.5; 3.2 mm"
+    }
+   ],
+   "copper_weights": [
+    {
+     "value": "18, 35, 70 µm",
+     "quote": "gr. miedzi: 18µm, 35µm, 70µm"
+    }
+   ],
+   "outline_tolerance": [
+    {
+     "mm": 0.2,
+     "quote": "Tolerancja frezowania +/- 0.2mm"
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "300 x 400 mm production panel",
+     "quote": "Standardowy wymiar formatek produkcyjnych 300mm x 400mm.",
+     "note": "The production panel; larger on request."
+    }
+   ],
+   "castellated_holes": [
+    {
+     "value": "offered",
+     "quote": "półotwory metalizowane na krawedzi płytki(castellated holes)"
+    }
+   ],
+   "surface_finishes": [
+    {
+     "value": "chemical tin, HAL, chemical and galvanic gold",
+     "quote": "cynowanie: chemiczne, tradycyjne HAL - hot air leveling) ... złocenie: chemiczne, galwaniczne."
+    }
+   ],
+   "ipc_class": [
+    {
+     "unpublished": "Not published."
+    }
+   ]
+  },
+  "special": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2
+     ],
+     "quote": "Wykonujemy płytki jedno, dwuwarstwowe oraz wielowarstwowe."
+    }
+   ],
+   "min_track": [
+    {
+     "mm": 0.1,
+     "quote": "szerokość ścieżek : od 0,1mm (4mils) (dla warstw zewnętrznych)",
+     "note": "Outer layers, special orders priced individually."
+    }
+   ],
+   "min_gap": [
+    {
+     "mm": 0.1,
+     "quote": "rozstęp ścieżek, padów: od 0,1mm (4mils) (dla warstw zewnętrzych)"
+    }
+   ],
+   "min_drill": [
+    {
+     "mm": 0.3,
+     "quote": "otwory: od 0.3 mm"
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "mm": 0.1,
+     "quote": "szerokość pierścienia wokół otworów: od 0,1mm (4mils) (dla warstw zewnętrznych)"
+    }
+   ],
+   "min_hole_to_hole": [
+    {
+     "unpublished": "Not published."
+    }
+   ],
+   "min_mask_sliver": [
+    {
+     "unpublished": "Not published."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mm": 0.1,
+     "quote": "opisy: grubość lini 0,1mm ( 4mils), wysokość 0,8mm (31mils)"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mm": 0.8,
+     "quote": "opisy: grubość lini 0,1mm ( 4mils), wysokość 0,8mm (31mils)"
+    }
+   ]
+  }
+ }
+}

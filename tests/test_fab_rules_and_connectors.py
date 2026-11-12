@@ -223,9 +223,9 @@ def test_refresh_takes_a_saved_page(monkeypatch, tmp_path):
 
 def test_refresh_of_a_pending_fab_keeps_the_snapshot_for_transcription(monkeypatch, tmp_path):
     monkeypatch.setattr(fc, "snapshot_dir", lambda: tmp_path)
-    saved = tmp_path / "satland.txt"
-    saved.write_text("Minimalna ścieżka 0,1 mm", encoding="utf-8")
-    got = fc.refresh("satland", files=[str(saved)])
+    saved = tmp_path / "wurth.txt"
+    saved.write_text("Minimum conductor width 100 µm", encoding="utf-8")
+    got = fc.refresh("wurth", files=[str(saved)])
     assert got["ok"] and "check" not in got and "transcribe" in got["note"]
 
 
@@ -289,3 +289,12 @@ def test_tls_uses_certifi_when_installed():
     want = {c["serialNumber"] for c in
             __import__("ssl").create_default_context(cafile=certifi.where()).get_ca_certs()}
     assert want and {c["serialNumber"] for c in ctx.get_ca_certs()} == want
+
+
+def test_pdf_symbol_glyphs_and_spaced_colons_match():
+    """TS PCB's PDF prints ± as the Symbol glyph U+F0B1; Eurocircuits
+    writes 'Exposed copper (...) : 0.100mm' (2026-11-12, live pages)."""
+    ts = fc.normalise("frezowania: ……..… 0,1 mm")
+    assert fc.quote_on_page("frezowania: ... ±0,1 mm", ts)
+    ec = fc.normalise("     Exposed copper  (or surface finished copper) :  0.100mm")
+    assert fc.quote_on_page("Exposed copper (or surface finished copper): 0.100mm", ec)

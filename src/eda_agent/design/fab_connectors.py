@@ -81,7 +81,10 @@ def list_connectors(today: Optional[_dt.date] = None) -> list[dict]:
 
 _SUBS = [("≧", "≥"), ("⩾", "≥"), ("≦", "≤"), ("⩽", "≤"), ("×", "x"),
          ("μ", "u"), ("µ", "u"), ("\u2013", "-"), ("\u2014", "-"), ("，", ","),
-         ("：", ":"), ("（", "("), ("）", ")"), (" ", " "), ("|", " ")]
+         ("：", ":"), ("（", "("), ("）", ")"), (" ", " "), ("|", " "),
+         # Symbol-font private-use glyphs that PDF text extraction leaves
+         # in place: TS PCB's PDF prints its ± as U+F0B1.
+         ("\uf0b1", "±"), ("\uf02d", "-"), ("\uf0b0", "°")]
 
 
 def normalise(text: str) -> str:
@@ -90,6 +93,7 @@ def normalise(text: str) -> str:
         text = text.replace(a, b)
     text = re.sub(r"[.\u2026]{2,}", " ", text)     # PDF dot leaders: "wiertła: ....... 0,25"
     text = re.sub(r"\s*-\s*", "-", text)           # "0.3 - 6.3" and "0.3-6.3" alike
+    text = re.sub(r"\s+:", ":", text)               # "Exposed copper (...) : 0.100mm"
     return re.sub(r"\s+", " ", text).strip().lower()
 
 

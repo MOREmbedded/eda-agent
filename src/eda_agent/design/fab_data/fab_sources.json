@@ -33,12 +33,13 @@
   "satland": {
    "vendor": "Satland Prototype",
    "country": "PL",
-   "data_file": null,
-   "status": "pending",
+   "data_file": "satland.json",
+   "status": "data",
    "urls": [
-    "https://www.prototypy.com/"
+    "https://www.prototypy.com/t/51,Plytki_PCB",
+    "https://www.prototypy.com/t/55,Odwiert"
    ],
-   "note": "Site prototypy.com (Satland Prototype, Warsaw); its capability pages are not transcribed yet. If robots.txt refuses, save the page from a browser and run fab-refresh satland --file <saved page>."
+   "note": "Satland Prototype, Warsaw (prototypy.com). Design rules on 'Płytki PCB', drill set on 'Odwiert'. Layer counts above 2 are not published."
   },
   "eurocircuits": {
    "vendor": "Eurocircuits",
@@ -47,6 +48,10 @@
    "status": "partial",
    "urls": [
     "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/",
+    "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/copper-layers/",
+    "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/drilled-holes/",
+    "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/legend-print/",
+    "https://www.eurocircuits.com/technical-guidelines/pcb-design-guidelines/soldermask/",
     "https://www.eurocircuits.com/pcb-design-guidelines-classification/",
     "https://www.eurocircuits.com/services/"
    ],
@@ -110,12 +115,13 @@
   "pcbcart": {
    "vendor": "PCBCart",
    "country": "CN",
-   "data_file": null,
-   "status": "pending",
+   "data_file": "pcbcart.json",
+   "status": "partial",
    "urls": [
-    "https://www.pcbcart.com/"
+    "https://www.pcbcart.com/pcb-capability/full-service-pcb-fab.html",
+    "https://www.pcbcart.com/pcb-capability/tolerances.html"
    ],
-   "note": "The old capability URLs return a 404 page; find the current capability page from the home page."
+   "note": "Clearances, silkscreen and tolerances are published; minimum track, drill and ring are not on these pages (try multilayer-pcb-fabrication.html)."
   },
   "oshpark": {
    "vendor": "OSH Park",

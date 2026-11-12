@@ -1,0 +1,170 @@
+{
+ "vendor": "PCBCart",
+ "source": {
+  "url": "https://www.pcbcart.com/pcb-capability/full-service-pcb-fab.html",
+  "other_urls": [
+   "https://www.pcbcart.com/pcb-capability/tolerances.html"
+  ],
+  "retrieved": "2026-11-12",
+  "note": "Clearances by finished copper weight with a Typical and an Ultimate column (tiers typical and ultimate), FR4 only. No minimum track width, drill or ring on these pages. Read 2026-11-12 from the live pages by `eda-agent fab-refresh` on a Windows PC and transcribed by hand."
+ },
+ "tiers": {
+  "typical": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32
+     ],
+     "quote": "1-32 layers",
+     "note": "1 and 2 plus even counts."
+    }
+   ],
+   "min_track": [
+    {
+     "unpublished": "Not on the capability or tolerance pages."
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 4,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "Clearance depends on your PCB finished copper weight ... 1oz ... 4.00",
+     "note": "wire-to-wire / wire-to-copper, typical."
+    },
+    {
+     "mil": 8,
+     "when": {
+      "outer_oz": 2
+     },
+     "quote": "Clearance depends on your PCB finished copper weight ... 2oz ... 8.00"
+    }
+   ],
+   "min_drill": [
+    {
+     "unpublished": "Not on the capability or tolerance pages."
+    }
+   ],
+   "min_annular_ring": [
+    {
+     "unpublished": "Not on the capability or tolerance pages."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 10,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "wire-to-the edge of PCB ... 10.00",
+     "note": "Via and pad to edge: 12 mil."
+    }
+   ],
+   "min_silk_width": [
+    {
+     "mil": 5,
+     "quote": "Character width ... 5mil"
+    }
+   ],
+   "min_silk_height": [
+    {
+     "mil": 30,
+     "quote": "Character height ... 30mil"
+    }
+   ],
+   "pth_hole_tolerance": [
+    {
+     "mm": 0.08,
+     "quote": "PTH ... ≤0.8mm ... ±0.08mm",
+     "note": "±0.1 mm from 0.8 to 2.5 mm."
+    }
+   ],
+   "npth_hole_tolerance": [
+    {
+     "mm": 0.05,
+     "quote": "NPTH ... ±0.05mm"
+    }
+   ],
+   "outline_tolerance": [
+    {
+     "value": "±0.1 to ±0.3 mm",
+     "quote": "Board size (finished) ... ±0.1mm-±0.3mm"
+    }
+   ],
+   "max_board_size": [
+    {
+     "value": "400 x 450 mm panel",
+     "quote": "400mm*450mm"
+    }
+   ],
+   "impedance_tolerance": [
+    {
+     "value": "±10%",
+     "quote": "±10%"
+    }
+   ]
+  },
+  "ultimate": {
+   "copper_layer_counts": [
+    {
+     "counts": [
+      1,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32
+     ],
+     "quote": "1-32 layers"
+    }
+   ],
+   "min_gap": [
+    {
+     "mil": 3.5,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "1oz ... 4.00 ... 3.50",
+     "note": "wire-to-wire / wire-to-copper, ultimate value."
+    }
+   ],
+   "copper_to_edge": [
+    {
+     "mil": 8,
+     "when": {
+      "outer_oz": 1
+     },
+     "quote": "wire-to-the edge of PCB ... 10.00 ... 8.00"
+    }
+   ]
+  }
+ }
+}

@@ -54,14 +54,14 @@ read, exactly as the JLCPCB and PCBWay data below always has been.
 | JLCPCB | CN | data | standard |
 | PCBWay | CN | data | standard, advanced_normal |
 | Technoservice (TS PCB) | PL | data | standard |
-| Satland Prototype | PL | pending | prototypy.com, not transcribed yet |
+| Satland Prototype | PL | data | standard, special (1-2 layers published) |
 | Eurocircuits | BE | partial | standard_pool (pattern classes are an image) |
 | Würth Elektronik | DE | pending | Basic Design Guide to be read |
 | Multi Circuit Boards | DE | data | standard, special |
 | AISLER | DE/NL | pending | help page moved |
 | Beta LAYOUT (PCB-POOL) | DE/IE | partial | pool, overseas (summary only) |
 | NextPCB | CN | data | standard, advanced_hdi |
-| PCBCart | CN | pending | capability page moved |
+| PCBCart | CN | partial | typical, ultimate (clearances and tolerances; no track or drill) |
 | OSH Park | US | data | two_layer, four_layer, six_layer, after_dark |
 | Advanced Circuits | US | partial | standard, custom |
 
