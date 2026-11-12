@@ -556,6 +556,11 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "sim_emc_prescan": "reads the board through Altium's layout model; a KiCad board reader for it is not written",
+    "sim_em_build_model": "as sim_emc_prescan",
+    "sim_em_run": "runs models from sim_em_build_model, which has no KiCad reader yet",
+    "sim_em_results": "as sim_em_run",
+    "sim_read_touchstone": "reads a file only; registered with the Altium suite, not yet on the KiCad surface",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",
     "pcb_audit_placement_plan": "not ported",
