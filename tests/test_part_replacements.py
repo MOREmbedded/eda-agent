@@ -366,3 +366,59 @@ def test_no_candidates_at_all_says_how_to_supply_them(monkeypatch):
 
 def test_an_empty_mpn_is_refused(monkeypatch):
     assert asyncio.run(_tool(monkeypatch, {})("   "))["ok"] is False
+
+
+# ---- regressions from a live Nexar run (2026-11-12) ---------------------
+
+def _live_capture():
+    import json
+    from pathlib import Path
+    path = Path(__file__).parent / "fixtures" / "nexar_grm188r71h104ka93d.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_live_candidate_is_not_blocked_by_its_own_package_and_dielectric():
+    """Live, every candidate for GRM188R71H104KA93D came back blocked on
+    ``casecode_metric_`` (1608 judged against the candidate's imperial
+    0603) and ``dielectricmaterial`` (Ceramic judged against X7R): two
+    blocks that were the pairing's fault, not the parts'."""
+    data = _live_capture()
+    result = rank_replacements(data["original"], [data["C0603C104K5RACTU"]])
+    candidate = result["candidates"][0]
+    assert candidate["blocking"] == []
+    by_name = {a["attribute"]: a for a in candidate["parameters"]["attributes"]}
+    # Not stated by this candidate: unreviewed, never a pass or a block.
+    assert by_name["casecode_metric_"]["verdict"] == "missing"
+    assert by_name["dielectricmaterial"]["verdict"] == "missing"
+    assert by_name["dielectric"]["verdict"] == "same"
+    assert candidate["package"]["verdict"] == "same"
+
+
+def test_a_candidate_stating_the_originals_exact_attributes_passes_them():
+    """A part from the same family states the same attributes with the
+    same values (GCM188R71H104KA57J did live, and was still blocked).
+    Each must be compared with its namesake."""
+    original = _live_capture()["original"]
+    twin = dict(original, mpn="TWIN", lifecycle="Production")
+    result = rank_replacements(original, [twin])
+    candidate = result["candidates"][0]
+    assert candidate["blocking"] == []
+    for record in candidate["parameters"]["attributes"]:
+        assert record["candidate_attribute"] == record["attribute"]
+
+
+def test_higher_insulation_resistance_is_better_not_worse():
+    """"insulationresistance" contains "onresistance" and was compared
+    as an on-resistance, where lower is better: backwards."""
+    original = _live_capture()["original"]
+    params = dict(original["parameters"], insulationresistance="100 GΩ")
+    better = dict(original, mpn="BETTER", parameters=params)
+    params = dict(original["parameters"], insulationresistance="1 GΩ")
+    worse = dict(original, mpn="WORSE", parameters=params)
+    result = rank_replacements(original, [better, worse])
+    verdicts = {c["mpn"]: {a["attribute"]: a for a in
+                           c["parameters"]["attributes"]}["insulationresistance"]
+                for c in result["candidates"]}
+    assert verdicts["BETTER"]["verdict"] == "better"
+    assert verdicts["BETTER"]["canonical"] == "insulation_resistance"
+    assert verdicts["WORSE"]["verdict"] == "worse"

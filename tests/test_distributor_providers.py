@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -249,6 +250,11 @@ def test_endpoints_are_https_and_not_placeholders(cls):
         assert "example" not in url and "TODO" not in url
 
 
+#: Clients that HAVE run against the live API with a real credential,
+#: and when. Adding one here is the only way to flip its flag.
+LIVE_VERIFIED = {NexarProvider: "2026-11-12"}
+
+
 @pytest.mark.parametrize("cls", ALL_DISTRIBUTORS)
 def test_the_unverified_claim_is_published_not_hidden(cls):
     """The endpoint was measured; the response shape was not.
@@ -256,9 +262,105 @@ def test_the_unverified_claim_is_published_not_hidden(cls):
     Saying so is the same discipline the tool catalog already applies to
     maturity: a claim nobody checked is worth less than an honest blank.
     """
-    assert cls.verified_live is False, (
+    assert cls.verified_live is (cls in LIVE_VERIFIED), (
         "flip this only when the client has actually run against the "
-        "live API with a real credential")
+        "live API with a real credential, and record it in LIVE_VERIFIED")
+
+
+# ---- Nexar: the Altium 365 app's credentials as a fallback ------------
+
+_A365_PAIR = ("EDA_AGENT_NEXAR_APP_ID", "EDA_AGENT_NEXAR_CLIENT_SECRET")
+
+
+def _token_form(monkeypatch):
+    """Capture the token request's form; answer it and the search."""
+    sent = []
+
+    class _Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _open(request, *a, **k):
+        if "connect/token" in request.full_url:
+            sent.append(urllib.parse.parse_qs(request.data.decode()))
+            return _Response(json.dumps({"access_token": "t"}).encode())
+        return _Response(json.dumps(
+            {"data": {"supSearchMpn": {"results": []}}}).encode())
+
+    monkeypatch.setattr(
+        "eda_agent.libimport.providers._distributor.urllib.request.urlopen",
+        _open)
+    return sent
+
+
+def test_nexar_uses_the_altium365_pair_when_its_own_is_unset(monkeypatch):
+    """Measured: the same portal app serves altium365_ and the Supply API,
+    so a user who set it up once for Altium 365 should not have to set it
+    again under other names to search parts."""
+    monkeypatch.setenv(_A365_PAIR[0], "a365-id")
+    monkeypatch.setenv(_A365_PAIR[1], "a365-secret")
+    sent = _token_form(monkeypatch)
+
+    NexarProvider().search("LM317")
+
+    assert sent[0]["client_id"] == ["a365-id"]
+    assert sent[0]["client_secret"] == ["a365-secret"]
+
+
+def test_nexar_prefers_its_own_pair(monkeypatch):
+    monkeypatch.setenv("NEXAR_CLIENT_ID", "own-id")
+    monkeypatch.setenv("NEXAR_CLIENT_SECRET", "own-secret")
+    monkeypatch.setenv(_A365_PAIR[0], "a365-id")
+    monkeypatch.setenv(_A365_PAIR[1], "a365-secret")
+    sent = _token_form(monkeypatch)
+
+    NexarProvider().search("LM317")
+
+    assert sent[0]["client_id"] == ["own-id"]
+    assert sent[0]["client_secret"] == ["own-secret"]
+
+
+def test_nexar_never_mixes_halves_of_two_pairs(monkeypatch):
+    """An id from one app with the secret of another fails at the token
+    endpoint with nothing to say which half was wrong."""
+    monkeypatch.setenv("NEXAR_CLIENT_ID", "own-id")
+    monkeypatch.setenv(_A365_PAIR[1], "a365-secret")
+
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        NexarProvider().search("LM317")
+    for name in ("NEXAR_CLIENT_ID", "NEXAR_CLIENT_SECRET", *_A365_PAIR):
+        assert name in str(excinfo.value)
+
+
+def test_a_quota_error_under_200_is_not_blamed_on_the_credential(monkeypatch):
+    """Measured 2026-11-12: Nexar's free plan answers its exhausted part
+    quota with HTTP 200 and an errors array. The credential worked."""
+    monkeypatch.setenv("MOUSER_API_KEY", "k")
+    _respond(monkeypatch, {"errors": [{"message": (
+        "You have exceeded your part limit of 100. Please upgrade your "
+        "plan.")}]})
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        MouserProvider().search("LM317")
+    assert "usage limit" in str(excinfo.value)
+    assert "rejected or missing credential" not in str(excinfo.value)
+
+
+def test_nexar_reads_the_saved_user_environment(monkeypatch):
+    """``setx`` while the server runs must work without a restart, as it
+    already does for the altium365_ tools."""
+    import eda_agent.altium365 as a365
+    monkeypatch.setattr(a365, "saved_user_environment", lambda names=None: {
+        _A365_PAIR[0]: "saved-id", _A365_PAIR[1]: "saved-secret"})
+    sent = _token_form(monkeypatch)
+
+    NexarProvider().search("LM317")
+
+    assert sent[0]["client_id"] == ["saved-id"]
 
 
 def test_a_catalogue_hit_states_it_carries_no_symbol(monkeypatch):
