@@ -126,6 +126,15 @@ def test_text_rides_as_symbol_text_not_as_a_graphic():
     assert {p["comp"] for p in geom["pins"]} == {"U?"}
 
 
+def test_altium_negation_marks_draw_as_a_bar():
+    from eda_agent.render.symbol_svg import overbar
+    assert overbar("S\\H\\D\\N\\") == "S\u0305H\u0305D\u0305N\u0305"
+    assert overbar("P\\O\\K\\ OUT") == "P\u0305O\u0305K\u0305 OUT"
+    assert overbar("VCC") == "VCC" and overbar("\\") == "\\"
+    svg = render_symbol_svg(dict(SYMBOL, pins=[dict(SYMBOL["pins"][0], name="R\\S\\T\\")]))
+    assert "R\u0305S\u0305T\u0305" in svg and "R\\S" not in svg
+
+
 def test_markup_in_names_is_escaped():
     sym = dict(SYMBOL, lib_ref="A<B>", pins=[dict(SYMBOL["pins"][0], name="<script>")])
     svg = render_symbol_svg(sym)
@@ -178,7 +187,57 @@ def test_a_footprint_link_with_no_library_file_is_said_and_not_read():
     alt = FakeAltium(symbol=sym)
     got = lp.preview_part(alt, design_item_id="CMP-1")
     assert got["ok"] is True and got["footprint"]["ok"] is False
-    assert "names no library file" in got["footprint"]["reason"]
+    # Measured live: a Workspace part's footprint link carries no location.
+    assert "kept in the Workspace" in got["footprint"]["reason"]
+    assert [c for c, _ in alt.sent] == ["library.get_symbol_geometry"]
+
+
+def _schlib_part(tmp_path, monkeypatch, holders):
+    """A .SchLib part whose footprint link names no file, with .PcbLibs
+    around it; ``holders`` maps a .PcbLib (relative path) to its names."""
+    lib = tmp_path / "CB_REVC" / "CB_REV_C.SchLib"
+    lib.parent.mkdir(parents=True)
+    lib.write_text("x")
+    for rel in holders:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    names = {str((tmp_path / rel)).lower(): set(v) for rel, v in holders.items()}
+    monkeypatch.setattr("eda_agent.fileio.altium_pcblib.read_pcblib_footprints",
+                        lambda path: [{"name": n[:31], "pattern": n}
+                                      for n in names.get(str(path).lower(), ())])
+    lp._NAMES_CACHE.clear()
+    sym = dict(SYMBOL, source=str(lib), models=[{
+        "model_name": "JST_GH_V6", "model_type": "PCBLIB", "is_current": True,
+        "use_component_library": True,
+        "datafile_links": [{"entity_name": "JST_GH_V6", "location": ""}]}])
+    return lib, sym
+
+
+def test_a_footprint_with_no_library_is_found_beside_the_symbol_library(tmp_path, monkeypatch):
+    lib, sym = _schlib_part(tmp_path, monkeypatch, {
+        "CB_REVC/OTHER.PcbLib": ["SOT23"],
+        "CB_REVC/FULL_CB_REV_C.PcbLib": ["SOT23", "JST_GH_V6"]})
+    alt = FakeAltium(symbol=sym)
+    got = lp.preview_part(alt, library_path=str(lib), component_name="JST_GH_V6")
+    fp = got["footprint"]
+    assert fp["ok"] is True and fp["library"].endswith("FULL_CB_REV_C.PcbLib")
+    assert fp["found_by"] == "search beside the symbol's library"
+    assert dict(alt.sent)["library.get_pad_geometry"]["library_path"] == fp["library"]
+
+
+def test_a_sibling_folder_is_searched_and_a_long_name_matches_its_pattern(tmp_path, monkeypatch):
+    long = "JST_GH_V6_" + "X" * 30
+    lib, sym = _schlib_part(tmp_path, monkeypatch, {"PCB/ALL.PcbLib": [long]})
+    sym["models"][0]["datafile_links"][0]["entity_name"] = long
+    assert lp.find_footprint_library(long, str(lib)).endswith("ALL.PcbLib")
+
+
+def test_no_pcblib_holding_it_is_said_and_altium_is_not_asked(tmp_path, monkeypatch):
+    lib, sym = _schlib_part(tmp_path, monkeypatch, {"CB_REVC/OTHER.PcbLib": ["SOT23"]})
+    alt = FakeAltium(symbol=sym)
+    got = lp.preview_part(alt, library_path=str(lib), component_name="JST_GH_V6")
+    assert got["footprint"]["ok"] is False
+    assert "no .PcbLib beside CB_REV_C.SchLib holds JST_GH_V6" in got["footprint"]["reason"]
     assert [c for c, _ in alt.sent] == ["library.get_symbol_geometry"]
 
 
@@ -350,6 +409,9 @@ def test_the_page_has_the_lookup_view_and_asks_the_routes():
     page = (ROOT / "src" / "eda_agent" / "web" / "dashboard_static" / "workbench.html").read_text("utf-8")
     assert 'data-libview="find"' in page
     assert '"/api/wb/parts/find?q="' in page and '"/api/wb/parts/preview"' in page
+    # The ID as the library lists it, revision included: Altium did not
+    # load a live Workspace part without its revision.
+    assert "pvAsk({design_item_id: r.name})" in page
     # The library read is not started for a person who only looks parts up.
     assert 'S.libView !== "find") pollLibrary(true)' in page
 

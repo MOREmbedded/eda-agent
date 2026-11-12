@@ -1297,7 +1297,7 @@ function paintFindPane() {
   const list = P.rows == null ? `<p class="hint">${esc(T("Search your scanned Altium 365 library by name, value, description or MPN."))}</p>`
     : !rows.length ? `<p class="hint">${esc(P.note || (P.q.trim().length < 2 ? T("Type two letters or more.") : T("No part matches.")))}</p>`
     : `<div class="pflist"><table class="grid"><thead><tr><th>${esc(T("Part"))}</th><th>${esc(T("Comment"))}</th><th>${esc(T("Footprint"))}</th><th>${esc(T("State"))}</th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr data-pfrow="${i}" aria-selected="${!!(S.pv && S.pv.spec && S.pv.spec.design_item_id === r.item)}"><td class="n" title="${esc(r.description)}">${esc(r.name)}<div class="sub">${esc(r.description)}</div></td><td>${esc(r.comment)}</td>
+      ${rows.map((r, i) => `<tr data-pfrow="${i}" aria-selected="${!!(S.pv && S.pv.spec && S.pv.spec.design_item_id === r.name)}"><td class="n" title="${esc(r.description)}">${esc(r.name)}<div class="sub">${esc(r.description)}</div></td><td>${esc(r.comment)}</td>
         <td class="m">${esc((r.footprints || []).join(", "))}</td><td>${esc(r.lifecycle)}</td></tr>`).join("")}</tbody></table></div>
       ${P.matches > rows.length ? `<p class="hint">${esc(T("{0} of {1} matches shown. Narrow the search.", rows.length, P.matches))}</p>` : ""}`;
   pane.innerHTML = libTabs() + `<div class="pfgrid"><div>
@@ -1315,7 +1315,7 @@ function pfClick(e) {
   if (tab) { S.libView = tab.dataset.libview; store.set("wb.libView", S.libView); if (S.libView === "design" && !S.lib) pollLibrary(true); paintPane(); return true; }
   if (S.libView !== "find") return false;
   const row = e.target.closest("[data-pfrow]");
-  if (row) { const r = S.pf.rows[+row.dataset.pfrow]; pvAsk({design_item_id: r.item}); return true; }
+  if (row) { const r = S.pf.rows[+row.dataset.pfrow]; pvAsk({design_item_id: r.name}); return true; }
   const part = e.target.closest("[data-pvpart]");
   if (part && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {part: +part.dataset.pvpart})); return true; }
   if (e.target.closest("[data-pvagain]") && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {again: true})); return true; }

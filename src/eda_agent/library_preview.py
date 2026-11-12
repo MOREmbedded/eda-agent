@@ -47,6 +47,59 @@ def _is_file_library(path: str) -> bool:
     return bool(re.search(r"\.pcblib$", path.strip(), re.I))
 
 
+_NAMES_CACHE: dict[tuple[str, float], set[str]] = {}
+
+
+def _footprint_names(path: Path) -> set[str]:
+    """Lower-case footprint names in a .PcbLib, read from the file itself
+    (no Altium). The OLE storage name stops at 31 characters, so the
+    footprint's own PATTERN counts too."""
+    from .fileio.altium_pcblib import read_pcblib_footprints
+
+    try:
+        key = (str(path).lower(), path.stat().st_mtime)
+    except OSError:
+        return set()
+    if key not in _NAMES_CACHE:
+        try:
+            rows = read_pcblib_footprints(path)
+        except (OSError, ValueError):
+            rows = []
+        _NAMES_CACHE[key] = {str(r.get(k, "")).lower() for r in rows
+                             for k in ("name", "pattern") if r.get(k)}
+    return _NAMES_CACHE[key]
+
+
+def find_footprint_library(name: str, near: str, *, limit: int = 200) -> str:
+    """The .PcbLib holding footprint ``name``, looked for the way a person
+    would: beside the symbol's library, then in its parent folder and the
+    parent's other folders. Read from the files, so Altium is not asked
+    to open each one. '' when none has it."""
+    if not name or not near:
+        return ""
+    start = Path(near).parent
+    folders = [start, start.parent]
+    try:
+        folders += sorted(d for d in start.parent.iterdir() if d.is_dir() and d != start)
+    except OSError:
+        pass
+    seen = 0
+    want = name.lower()
+    for folder in folders:
+        try:
+            libs = sorted(f for f in folder.iterdir()
+                          if f.is_file() and f.suffix.lower() == ".pcblib")
+        except OSError:
+            continue
+        for lib in libs:
+            seen += 1
+            if seen > limit:
+                return ""
+            if want in _footprint_names(lib):
+                return str(lib)
+    return ""
+
+
 def read_symbol(send: Send, *, design_item_id: str = "", vault: str = "",
                 library_path: str = "", component_name: str = "",
                 part: int = 1) -> dict[str, Any]:
@@ -126,15 +179,27 @@ def preview_part(send: Send, *, design_item_id: str = "", vault: str = "",
         return out
     link = footprint_link(sym.get("models") or [])
     fp: dict[str, Any] = {"ok": False, "name": link["name"], "library": link["library"]}
+    source = str(sym.get("source") or "")
+    if link["name"] and not _is_file_library(link["library"]) \
+            and source.lower().endswith(".schlib"):
+        # Most links name no file ("any library"): Altium finds the
+        # footprint by searching. Look beside the symbol's library.
+        found = find_footprint_library(link["name"], source)
+        if found:
+            fp["library"] = found
+            fp["found_by"] = "search beside the symbol's library"
     if not link["name"]:
         fp["reason"] = "the part has no footprint model"
-    elif not _is_file_library(link["library"]):
-        fp["reason"] = (f"the footprint {link['name']} names no library file Altium can "
-                        f"open here ({link['library'] or 'no location'})")
+    elif design_item_id and not _is_file_library(fp["library"]):
+        fp["reason"] = (f"the footprint {link['name']} is kept in the Workspace, not in "
+                        f"a library file, so it is not drawn here yet")
+    elif not _is_file_library(fp["library"]):
+        fp["reason"] = (f"no .PcbLib beside {Path(source).name or 'the symbol library'} "
+                        f"holds {link['name']}, and the part's link names no library file")
     else:
         try:
             from .design.landpattern.svg import render_svg
-            model, notes = read_footprint(send, link["name"], link["library"])
+            model, notes = read_footprint(send, link["name"], fp["library"])
             fp.update(ok=True, pads=len(model.pads), notes=notes,
                       svg=render_svg(model, notes=[f"{len(model.pads)} pads"]))
         except Exception as exc:                          # noqa: BLE001

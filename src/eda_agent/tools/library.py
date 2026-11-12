@@ -8382,13 +8382,16 @@ def register_library_tools(mcp):
         library path and symbol name (.SchLib; an .IntLib is read from its
         extracted .SchLib, never opened in Altium). The
         footprint is the part's current footprint model, read from the
-        library its link names; a link naming no library file Altium can
-        open says so in ``footprint.reason``. The dashboard's Library pane
+        .PcbLib its link names, or for a library file part whose link names
+        none, from the .PcbLib beside the symbol's library that holds it.
+        A Workspace part's footprint lives in the Workspace and is not
+        drawn yet; ``footprint.reason`` says so. The dashboard's Library pane
         ("Look up a part") shows the same preview.
 
         Args:
-            design_item_id: Workspace part ID, e.g. "CMP-00012"
-                (with or without a revision on the end).
+            design_item_id: Workspace part ID as the library lists it,
+                revision included, e.g. "CMP-00012-3" (Altium did not
+                load the ID without its revision on a live Workspace).
             vault: Workspace name; empty = read off the design.
             library_path: the .SchLib (or .IntLib with extracted
                 sources), for a library file part.

@@ -28,6 +28,19 @@ def _num(v: Any) -> float:
         return 0.0
 
 
+def overbar(text: Any) -> str:
+    """Altium's negation mark as drawn: a letter followed by a backslash
+    carries a bar (``R\\S\\T\\`` reads RST with a bar over it). The bar is a
+    combining overline, so the text stays text."""
+    out: list[str] = []
+    for ch in str(text or ""):
+        if ch == "\\" and out and out[-1] not in ("\u0305", " "):
+            out.append("\u0305")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def symbol_bbox(read: dict[str, Any], *, hidden_pins: bool = False
                 ) -> tuple[float, float, float, float] | None:
     """(x1, y1, x2, y2) in mils around the graphics, the text anchors and
@@ -72,10 +85,10 @@ def symbol_geometry(read: dict[str, Any], *, hidden_pins: bool = False) -> dict[
     des = str(read.get("designator") or "") or "?"
     box = symbol_bbox(read, hidden_pins=hidden_pins) or (-100.0, -100.0, 100.0, 100.0)
     graphics = [p for p in read.get("primitives") or [] if p.get("kind") != "text"]
-    texts = [{"name": p.get("name", ""), "text": p.get("text", ""), "x": p.get("x", 0),
+    texts = [{"name": p.get("name", ""), "text": overbar(p.get("text", "")), "x": p.get("x", 0),
               "y": p.get("y", 0), "rot": p.get("rot", 0), "color": p.get("color")}
              for p in read.get("primitives") or [] if p.get("kind") == "text"]
-    pins = [dict(p, comp=des) for p in read.get("pins") or []
+    pins = [dict(p, comp=des, name=overbar(p.get("name", ""))) for p in read.get("pins") or []
             if hidden_pins or not p.get("hidden")]
     return {
         "doc": read.get("lib_ref") or "symbol",
@@ -99,4 +112,4 @@ def render_symbol_svg(read: dict[str, Any], *, hidden_pins: bool = False,
     return render_sch_svg(geom, opt)
 
 
-__all__ = ["render_symbol_svg", "symbol_bbox", "symbol_geometry"]
+__all__ = ["overbar", "render_symbol_svg", "symbol_bbox", "symbol_geometry"]

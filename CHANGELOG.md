@@ -28,9 +28,14 @@ maturity classification for every tool.
   (`SchServer.LoadComponent` for a Workspace part, the open SchLib
   otherwise), answers its graphics, pins and models, and destroys a
   loaded part again, so nothing reaches a sheet. New tool `lib_preview_part` writes
-  both drawings as SVG. UNVERIFIED live: whether a Workspace part's
-  footprint link names a library file Altium can open; when it does
-  not, the preview says so and shows the symbol only.
+  both drawings as SVG. A footprint link that names no file (the usual
+  "any library" link) is resolved by reading the .PcbLibs beside the
+  symbol's library from disk. Checked live on a Workspace part and a
+  .SchLib part: symbols read in under a second (SchLib: 6 to 9 s, it is
+  opened), nothing opened, closed, placed or marked modified. A
+  Workspace part must be asked for with its revision (CMP-00000010-3).
+  Not done yet: a Workspace part's footprint, which has no file to read;
+  the preview says so and shows the symbol.
 
 - **Fab design-rule database for thirteen PCB fabs.** JLCPCB, PCBWay,
   Technoservice, Satland, Eurocircuits, Würth Elektronik, Multi Circuit
