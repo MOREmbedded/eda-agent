@@ -151,32 +151,32 @@
    "min_drill": [
     {
      "mil": 4,
-     "quote": "Min. Hole Size | 0.004\"",
+     "quote": "Min. Hole Size ... 0.004\"",
      "derived": "0.004 inch = 4 mil"
     }
    ],
    "copper_weights": [
     {
      "value": "0.5-4 oz inner, 1-20 oz outer",
-     "quote": "Copper Weight | 0.5 - 4 oz. Inner / 1 - 20 oz. Outer"
+     "quote": "Copper Weight ... 0.5 - 4 oz. Inner / 1 - 20 oz. Outer"
     }
    ],
    "pth_hole_tolerance": [
     {
      "value": "±0.003 inch on request",
-     "quote": "Hole Tolerance | +/- 0.003\" (Upon Request)"
+     "quote": "Hole Tolerance ... +/- 0.003\" (Upon Request)"
     }
    ],
    "via_in_pad": [
     {
      "value": "yes, VIPPO",
-     "quote": "Via-in-Pad | Yes"
+     "quote": "Via-in-Pad ... Yes"
     }
    ],
    "castellated_holes": [
     {
      "value": "yes",
-     "quote": "Castellated Holes | Yes"
+     "quote": "Castellated Holes ... Yes"
     }
    ],
    "ipc_class": [

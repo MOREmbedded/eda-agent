@@ -18,8 +18,9 @@ reported for review, not overwritten. Only when EVERY quote of a fab is
 still on its pages may ``write_retrieved`` move the reading date on.
 
 Quotes may elide with ``...``; each fragment must then appear, in order.
-Whitespace, case, ``|`` table separators and typographic variants
-(≥/≧, ×/x, µ/u) are normalised on both sides.
+Whitespace, case, ``|`` table separators, PDF dot leaders, spaces
+around dashes and typographic variants (≥/≧, ×/x, µ/u, en dash) are
+normalised on both sides.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import html as _html
 import io
 import json
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,6 +88,8 @@ def normalise(text: str) -> str:
     """The form both a page and a quote are compared in."""
     for a, b in _SUBS:
         text = text.replace(a, b)
+    text = re.sub(r"[.\u2026]{2,}", " ", text)     # PDF dot leaders: "wiertła: ....... 0,25"
+    text = re.sub(r"\s*-\s*", "-", text)           # "0.3 - 6.3" and "0.3-6.3" alike
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
@@ -128,9 +132,23 @@ def _robots_allow(url: str, opener: Callable) -> tuple[bool, str]:
     return ok, "" if ok else "the site's robots.txt disallows automated reading"
 
 
+def _tls_context() -> ssl.SSLContext:
+    """certifi's CA list when it is installed (it comes with httpx).
+
+    On Windows, Python's default context reads the machine's certificate
+    store, which on some PCs rejects valid Let's Encrypt chains as
+    "certificate has expired"; certifi's bundle does not."""
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def _urlopen(url: str) -> tuple[bytes, str]:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:  # noqa: S310 (https only, from the registry)
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S,  # noqa: S310
+                                context=_tls_context()) as resp:  # https only, from the registry
         return resp.read(), resp.headers.get("Content-Type", "")
 
 

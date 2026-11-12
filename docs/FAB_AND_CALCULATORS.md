@@ -54,7 +54,7 @@ read, exactly as the JLCPCB and PCBWay data below always has been.
 | JLCPCB | CN | data | standard |
 | PCBWay | CN | data | standard, advanced_normal |
 | Technoservice (TS PCB) | PL | data | standard |
-| Satland Prototype | PL | pending | robots.txt refuses readers: use `--file` |
+| Satland Prototype | PL | pending | prototypy.com, not transcribed yet |
 | Eurocircuits | BE | partial | standard_pool (pattern classes are an image) |
 | Würth Elektronik | DE | pending | Basic Design Guide to be read |
 | Multi Circuit Boards | DE | data | standard, special |

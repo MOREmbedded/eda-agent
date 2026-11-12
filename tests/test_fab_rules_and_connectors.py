@@ -150,6 +150,20 @@ def test_quote_matching_tolerates_layout_but_not_a_changed_number():
     assert not fc.quote_on_page("other text ... Min. track", page)   # order
 
 
+def test_quote_matching_survives_real_page_layouts():
+    """Layouts met on real pages (2026-11-12): JLCPCB's en dash with
+    spaces, TS PCB's PDF dot leaders, AdvancedPCB's standard column
+    between label and advanced value."""
+    jlc = fc.normalise("Drill Diameter\n |     1-layer: 0.3 \u2013 6.3 mm")
+    assert fc.quote_on_page("Drill Diameter 1-layer: 0.3-6.3 mm", jlc)
+    ts = fc.normalise("\u2212 minimalna średnica wiertła:  \u2026\u2026\u2026...\u2026\u2026.. 0,25 mm")
+    assert fc.quote_on_page("minimalna średnica wiertła: 0,25 mm", ts)
+    assert not fc.quote_on_page("minimalna średnica wiertła: 0,2 mm", ts.replace("0,25", "0,3"))
+    ac = fc.normalise('Min. Hole Size \n |    0.010" \n |    0.004" \n |')
+    assert fc.quote_on_page('Min. Hole Size ... 0.004"', ac)
+    assert not fc.quote_on_page('Min. Hole Size ... 0.003"', ac)
+
+
 def _pages_from_quotes(vendor: str) -> str:
     """A page carrying every stored quote, as the fab's page does."""
     got = fl.vendor(vendor)
@@ -265,3 +279,13 @@ def test_mcp_tools_answer_offline():
     assert rules["ok"] and rules["rules"]["min_track"]["mils"] == 4.0
     cmp_ = asyncio.run(call("design_fab_compare", copper_layers=2))
     assert cmp_["ok"] and cmp_["rows"]
+
+
+def test_tls_uses_certifi_when_installed():
+    """A Windows certificate store that rejects valid Let's Encrypt chains
+    made three fabs unreadable on a real PC; certifi's bundle reads them."""
+    certifi = pytest.importorskip("certifi")
+    ctx = fc._tls_context()
+    want = {c["serialNumber"] for c in
+            __import__("ssl").create_default_context(cafile=certifi.where()).get_ca_certs()}
+    assert want and {c["serialNumber"] for c in ctx.get_ca_certs()} == want

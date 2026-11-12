@@ -36,9 +36,9 @@
    "data_file": null,
    "status": "pending",
    "urls": [
-    "https://www.satland.com.pl/"
+    "https://www.prototypy.com/"
    ],
-   "note": "The site's robots.txt refuses automated readers: save its technology page from a browser and run fab-refresh satland --file <saved page>."
+   "note": "Site prototypy.com (Satland Prototype, Warsaw); its capability pages are not transcribed yet. If robots.txt refuses, save the page from a browser and run fab-refresh satland --file <saved page>."
   },
   "eurocircuits": {
    "vendor": "Eurocircuits",
