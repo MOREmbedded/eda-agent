@@ -21,9 +21,12 @@ from .boards import (
 PLAIN = dict(radiation=False, edges=False, solder_mask=False)
 
 
-def _solve(board, stack, cell=25.0, **kw):
-    """Solved as the tool solves it: copper sampled at 2 mil (supersample=0)."""
-    return solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0, islands=True), **kw)
+def _solve(board, stack, cell=25.0, islands=True, **kw):
+    """Solved as the tool solves it: copper sampled at 2 mil
+    (supersample=0) and split by island. ``islands=False``: a raster
+    without the split, which the solver still takes."""
+    raster = rasterize(board, cell_mils=cell, links=True, supersample=0, islands=islands)
+    return solve(board, stack, raster, **kw)
 
 
 def _part(res, ref):
@@ -328,7 +331,8 @@ def test_direct_solver_fallback_when_pyamg_is_missing(monkeypatch):
     assert solver.AMG_MIN_UNKNOWNS < res.solver["unknowns"]
 
 
-def test_no_false_peak_in_the_drill_holes_under_a_pad():
+@pytest.mark.parametrize("islands", [True, False], ids=["islands", "one node per cell"])
+def test_no_false_peak_in_the_drill_holes_under_a_pad(islands):
     """On a grid fine enough to see the drill holes of a via-in-pad, the
     cells inside a hole have no copper and must take none of the pad's
     heat: the copper round them does not reach in. A junction feeding
@@ -337,7 +341,7 @@ def test_no_false_peak_in_the_drill_holes_under_a_pad():
     each hole holds a cell with no copper at all."""
     board, stack = four_layer(500, 500)
     add_qfn(board, "U1", 252.5, 247.5)
-    res = _solve(board, stack, cell=5.0, powers={"U1": 1.0},
+    res = _solve(board, stack, cell=5.0, islands=islands, powers={"U1": 1.0},
                  packages={"U1": Package(theta_jb=12.0)})
     p = _part(res, "U1")
     assert res.t_max_c - p["t_pads_c"] < 1.0
@@ -428,14 +432,15 @@ def test_a_pad_far_smaller_than_a_cell_keeps_its_temperature(kind, rel):
     assert _small_pad_rise(kind, 12.5) == pytest.approx(fine, rel=rel)
 
 
-def test_a_via_land_sits_at_its_barrel_temperature_on_a_fine_grid():
+@pytest.mark.parametrize("islands", [True, False], ids=["islands", "one node per cell"])
+def test_a_via_land_sits_at_its_barrel_temperature_on_a_fine_grid(islands):
     """A via's land is the barrel's own copper. On cells smaller than the
     land its cells lie inside the ring where the barrel meets the layer;
     untied, they floated 8 K over the laminate round them with heat
     spread over the top."""
     board, stack = four_layer(1200.0, 1200.0)
     board.vias.append(Via(580.0, 580.0, 18.0, 8.0, "TopLayer", "BottomLayer", "SIG"))
-    res = _solve(board, stack, cell=10.0, powers={},
+    res = _solve(board, stack, cell=10.0, islands=islands, powers={},
                  heat_areas=[HeatArea("TopLayer", 360, 360, 840, 840, 2.0)])
     top = res.temps["TopLayer"]
     land = top[57:59, 57:59]                   # the four cells round (580, 580)
