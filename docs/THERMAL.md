@@ -101,6 +101,14 @@ unknown, so a four-layer board is several hundred thousand of them.
   laminate.
 - A via's land is at its barrel's temperature, on cells larger and smaller
   than the land.
+- Copper that does not touch is never joined by the grid. A cell that holds
+  a pad and the pour beyond its clearance, two tracks side by side, or a
+  via's land in another net's pour, has one node for each of those pieces of
+  copper. Each piece conducts to its own island in the next cell, to the
+  laminate under its own area, to its own barrel and to its own pads. So a
+  gull-wing part in a pour reads the same on 50 mil cells as on cells that
+  resolve its 6 mil clearance. The heat map shows the hottest copper of each
+  cell.
 
 **Surfaces.** Both faces, the board's edges and part cases lose heat to the
 air and to the surroundings.
@@ -140,6 +148,9 @@ The solver is tested against exact solutions (`tests/thermal`):
 | Heat through an inner layer of tracks, 25 mil cells against 5 | The same answer | 4 % |
 | A 20 mil pad in 50 mil cells: on bare laminate, over a plane, over tracks | The same pad on 2.5 mil cells | 8 to 11 % |
 | A BGA's via field, 20 mil cells against 10 | The same answer | 1 % |
+| A gull-wing part in a pour, 8 mil clearance, cells of 50, 25 and 20 mil | The same part on 6.25 mil cells | 4 % (46 % low before islands were split) |
+| A copy of a real 16-pin part in a pour, 6.5 mil clearance, cells from 25 mil down to 5 | The same answer | 1 K on a 47 K rise |
+| Vias of one net through another net's pour, cells of 30 and 20 mil | The same on 5 mil cells | 2 % |
 
 `refine=True` solves the board a second time with cells half the size and
 lists how far every temperature moved. That move is the estimate of the

@@ -28,8 +28,12 @@ maturity classification for every tool.
   error estimate, and writes a heat map per layer. It takes the Joule
   heat map of an IR-drop run as an extra source. Checked against exact
   solutions (series slab, Bessel fin, Fourier spreading series,
-  convection and radiation balance, via arrays). See
-  [`docs/THERMAL.md`](docs/THERMAL.md). UNVERIFIED live.
+  convection and radiation balance, via arrays). Copper that does not
+  touch is kept apart inside a grid cell (a pad and the pour round it, a
+  via in another net's pour), so the answer does not depend on the cell
+  size resolving the clearances. Each run also writes a picture of the
+  copper as it was solved. See [`docs/THERMAL.md`](docs/THERMAL.md).
+  Run live on one populated six-layer board read from Altium.
 
 - **PCB toolkit: 44 calculators, a Calculators tab and `pcb_calc
   kind=toolkit`.** Controlled impedance (microstrip, embedded
