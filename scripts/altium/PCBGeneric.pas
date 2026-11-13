@@ -626,9 +626,16 @@ Begin
         End
         Else If Oid = eComponentBodyObject Then
         Begin
-            Body := Obj;
-            If WantY Then Result := Body.y Else Result := Body.x;
-            Found := True;
+            { IPCB_ComponentBody has no x/y on AD21: even a read inside Try
+              halts the script. Read on 25 and later, where it was measured;
+              elsewhere Bounds* give the extent. The version is asked in an
+              If of its own, before the member is reached. }
+            If AltiumVersionCode(0) >= 2500 Then
+            Begin
+                Body := Obj;
+                If WantY Then Result := Body.y Else Result := Body.x;
+                Found := True;
+            End;
         End
         Else If Oid = eTextObject Then
         Begin
@@ -1176,6 +1183,94 @@ Begin
 End;
 { END GENERATED - SDK property probe. }
 
+{ A PLACED COMPONENT'S HEIGHT IS ITS TALLEST 3D BODY. The component's own  }
+{ Height is the footprint's Height field, a parameter typed by hand that    }
+{ is often 0 or out of step with the model; a 0 silently passes the height }
+{ DRC. So a reader of a component's height takes the tallest body when the }
+{ part has one, STEP and extruded alike (cylinders and spheres too), and   }
+{ the parameter only when it has none (issue #323).                       }
+
+{ T3DModelType of a body's model: 0 extruded, 1 STEP (measured), 2         }
+{ cylinder, 3 sphere. Anything else is named by its number.                }
+Function ComponentBodyKind(Body : IPCB_ComponentBody) : String;
+Var
+    Model : IPCB_Model;
+    Kind  : Integer;
+Begin
+    Result := 'unknown';
+    Model := Nil;
+    Try Model := Body.Model; Except Model := Nil; End;
+    If Model = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Model.ModelType; Except Kind := -1; End;
+    If Kind = 0 Then Result := 'extruded'
+    Else If Kind = 1 Then Result := 'step'
+    Else If Kind = 2 Then Result := 'cylinder'
+    Else If Kind = 3 Then Result := 'sphere'
+    Else If Kind >= 0 Then Result := 'type_' + IntToStr(Kind);
+End;
+
+{ Walks the component's 3D bodies: MaxOverall = the tallest OverallHeight, }
+{ Count = how many. With WantList the result is the bodies as JSON objects }
+{ (comma separated, no brackets), else ''.                                 }
+Function ComponentBodyScan(Comp : IPCB_Component; WantList : Boolean; Var MaxOverall : Integer; Var Count : Integer) : String;
+Var
+    GIter : IPCB_GroupIterator;
+    Body  : IPCB_ComponentBody;
+    Overall, Standoff : Integer;
+    Ident, LayerName : String;
+Begin
+    Result := '';
+    MaxOverall := 0;
+    Count := 0;
+    GIter := Comp.GroupIterator_Create;
+    Try
+        GIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        GIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Body := GIter.FirstPCBObject;
+        While Body <> Nil Do
+        Begin
+            Overall := 0;
+            Try Overall := Body.OverallHeight; Except Overall := 0; End;
+            If (Count = 0) Or (Overall > MaxOverall) Then MaxOverall := Overall;
+            Inc(Count);
+            If WantList Then
+            Begin
+                Standoff := 0;
+                Try Standoff := Body.StandoffHeight; Except Standoff := 0; End;
+                Ident := '';
+                Try Ident := Body.Identifier; Except Ident := ''; End;
+                LayerName := '';
+                Try LayerName := LayerDisplayName(Body.Layer); Except LayerName := ''; End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '{"identifier":"' + EscapeJsonString(Ident)
+                    + '","kind":"' + ComponentBodyKind(Body)
+                    + '","layer":"' + EscapeJsonString(LayerName)
+                    + '","standoff_mils":' + FloatToJsonStr(CoordToMilsF(Standoff))
+                    + ',"overall_mils":' + FloatToJsonStr(CoordToMilsF(Overall)) + '}';
+            End;
+            Body := GIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GIter);
+    End;
+End;
+
+{ The component's height as a reader should see it: its tallest body, or }
+{ the Height parameter when it has no body.                               }
+Function ComponentGuardedHeight(Comp : IPCB_Component) : Integer;
+Var
+    MaxOverall, Count : Integer;
+Begin
+    ComponentBodyScan(Comp, False, MaxOverall, Count);
+    If Count > 0 Then Result := MaxOverall
+    Else
+    Begin
+        Result := 0;
+        Try Result := Comp.Height; Except Result := 0; End;
+    End;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -1535,9 +1630,21 @@ Begin
         { A text's height and stroke width under the names a caller reaches  }
         { for (Altium's own are Size and Width), and whether it is a        }
         { component's designator or comment, so a filter can pick those out. }
+        { On a component Height is GUARDED: its tallest 3D body when it has }
+        { one, else its Height parameter; ComponentHeight is the parameter  }
+        { as typed.                                                          }
         Else If PropName = 'Height' Then
         Begin
-            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End;
+            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End
+            Else If Oid = eComponentObject Then
+            Begin
+                Comp := Obj;
+                Result := FloatToJsonStr(CoordToMilsF(ComponentGuardedHeight(Comp)));
+            End;
+        End
+        Else If PropName = 'ComponentHeight' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := FloatToJsonStr(CoordToMilsF(Comp.Height)); End;
         End
         Else If PropName = 'StrokeWidth' Then
         Begin
@@ -1708,6 +1815,7 @@ Begin
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
+        (PropName = 'ComponentHeight') Or
         (PropName = 'Size') Or (PropName = 'BotXSize') Or
         (PropName = 'BotYSize') Or (PropName = 'HoleWidth') Or
         (PropName = 'SizeTop') Or (PropName = 'SizeMid') Or
@@ -1924,7 +2032,20 @@ Begin
             Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
             { A free text, or a component's designator / comment text: the   }
             { same member PCB_PlaceText and the layout copy already write.    }
-            Else If Oid = eTextObject Then Begin Txt := Obj; Txt.Rotation := StrToFloatDef(Value, 0); End
+            { A designator turns about its CENTRE, so its anchor (XLocation, }
+            { which X / Y read and move from) shifts, but Altium updates the }
+            { anchor only at the next geometry operation. MEASURED: in one   }
+            { set Rotation|X|Y the X write read the anchor from before the   }
+            { turn and landed off by the whole shift (up to ~110 mil), while }
+            { the Y after it was exact. The zero move brings the anchor up   }
+            { to date for the next property; a free text turns about its     }
+            { anchor and is not moved by it (issue #305).                    }
+            Else If Oid = eTextObject Then
+            Begin
+                Txt := Obj;
+                Txt.Rotation := StrToFloatDef(Value, 0);
+                Txt.MoveByXY(0, 0);
+            End
             Else Matched := False;
         End
         { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }
@@ -2538,6 +2659,7 @@ Begin
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
+        (PropName = 'ComponentHeight') Or
         (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
         (PropName = 'IsComment') Or (PropName = 'UseTTFonts') Or
         (PropName = 'MirrorFlag') Or
@@ -2614,7 +2736,7 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
-        + 'StandoffHeight, OverallHeight, BodyOpacity3D, InComponent, Component, '
+        + 'StandoffHeight, OverallHeight, ComponentHeight, BodyOpacity3D, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
         + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '

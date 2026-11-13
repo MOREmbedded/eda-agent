@@ -4,7 +4,7 @@
 
 **Let an AI work inside your live Altium Designer session.**
 
-An MCP server that gives Claude, or any MCP client, around 700 tools on the design you have open:
+An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
 schematic, PCB, library, project and review. You watch every change happen in Altium.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -100,6 +100,7 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 📈 **Simulation** | SPICE model library and LTspice round trip: find models by MPN, check pin maps, export and compare decks. See [SPICE models](docs/SPICE_MODELS.md) |
 | 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
 | 🌡️ **Thermal analysis** | Board temperatures and hotspots from part powers (`sim_thermal_analysis`): 3D conduction in the real copper, vias and laminate, convection and radiation, heat maps per layer, a grid-convergence error estimate. See [Thermal analysis](docs/THERMAL.md) |
+| 🔋 **Power integrity (PDN)** | DC IR drop and current density on the real copper (`sim_pdn_ir_drop`), AC impedance against a target with a field-solved plane pair and every capacitor's mounting (`sim_pdn_impedance`). See [PDN analysis](docs/PDN.md) |
 | 🤖 **Guided design runs** | Spec to board, reference redraw, dev-kit derivative. See [Design modes](docs/DESIGN_MODES.md) and [Autonomous design](docs/AUTONOMOUS_DESIGN.md) |
 | 🚦 **NPI phase gates** | EVT, DVT and PVT checklists, answered by tools where possible. See [NPI phase gates](docs/NPI_PHASE_GATES.md) |
 | ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly, plus an offline copy of the managed library. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
@@ -133,6 +134,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [PCB toolkit calculators](docs/PCB_TOOLKIT.md) | The Calculators tab: field-solver impedance and pairs, trace thermal model, vias, planes, crosstalk, passives, with measured accuracy |
 | [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
 | [Thermal analysis](docs/THERMAL.md) | Board temperatures, hotspots and junction margins from part powers, with the model and its validation |
+| [PDN analysis](docs/PDN.md) | DC IR drop, current density, and AC impedance against a target impedance |
 | [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |
 | [Autonomous design](docs/AUTONOMOUS_DESIGN.md) | Driving a full spec-to-board run from any MCP client |
 | [NPI phase gates](docs/NPI_PHASE_GATES.md) | The stage checks, and which ones a tool can answer |
@@ -156,6 +158,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [All options](docs/OPTIONS.md) | Every setting in one generated list: flags, environment variables, Config tab, `workspace.json`, profile keys |
 | [CLI](docs/CLI.md) | Every `eda-agent` command, grouped as `--help` groups them |
 | [Configuration](docs/CONFIGURATION.md) | Environment variables, paths and logs |
+| [The Config tab](docs/CONFIG.md) | Every setting on the Altium panel's Config tab, including the pre-build checks, and what to do when one refuses |
 | [Tool naming](docs/TOOL_NAMING.md) | The `ns_verb_object` convention every tool name follows |
 | [SDK coverage](docs/SDK_COVERAGE.md) | How much of Altium's object model the generic layer reaches |
 | [Altium scripting coverage](docs/ALTIUM_SCRIPTING_COVERAGE.md) | Official Altium scripting examples mapped to tools, with known gaps |
@@ -169,6 +172,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 |---|---|
 | [Development](docs/DEVELOPMENT.md) | Architecture, tests, project layout, the two version numbers |
 | [Release verification](docs/RELEASE_VERIFICATION.md) | How a release's Pascal is recorded as read live, or declared unverified |
+| [STEP placement verification](docs/step-placement-verification.md) | How placing a 3D body at an X/Y was checked on Altium 21 |
 | [AI field notes on Altium](docs/AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating rules |
 | [Altium autonomy runbook](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | The by-hand runbook that drives a real Altium |
 | [Changelog](CHANGELOG.md) | What each change added or fixed |

@@ -63,6 +63,19 @@ SCH_INTERFACE_OVERRIDES: dict[str, str] = {
     "eDesignator": "ISch_Designator",
 }
 
+#: Schematic object types Altium's SDK assembly declares no interface
+#: for, with what a script reaches them through instead. They are listed
+#: apart and not measured: a stand-in interface would count properties
+#: the object may not have. The test against a real reflection checks
+#: each is still absent, so an entry goes once Altium declares one.
+SCH_NOT_IN_SDK: dict[str, str] = {
+    # Built like a wire, through ISch_Polygon's vertex members. AD26's
+    # assembly has no ISch_SignalHarness: its Harness interfaces are the
+    # harness connector, its entries and type label, and the objects of
+    # a Wire Harness document.
+    "eSignalHarness": "reached through ISch_GraphicalObject and ISch_Polygon",
+}
+
 PCB_INTERFACE_OVERRIDES: dict[str, str] = {
     "eComponentObject": "IPCB_Component",
     "eTrackObject": "IPCB_Track",
@@ -303,6 +316,10 @@ class TypeCoverage:
     declared: dict[str, Property] = field(default_factory=dict)
     read_covered: set[str] = field(default_factory=set)
     write_covered: set[str] = field(default_factory=set)
+    #: False for a type the SDK declares no interface for (SCH_NOT_IN_SDK);
+    #: ``note`` then says what reaches it instead.
+    in_sdk: bool = True
+    note: str = ""
 
     @property
     def readable(self) -> set[str]:
@@ -360,8 +377,14 @@ class Report:
         Either our name for it is wrong, or the assembly does not
         declare it under that name. Both are worth seeing; neither is
         counted as a gap in coverage, since there is nothing to cover.
+        A type known to have no interface of its own is not among them:
+        see ``not_in_sdk``.
         """
-        return [t for t in self.types if not t.resolved]
+        return [t for t in self.types if not t.resolved and t.in_sdk]
+
+    def not_in_sdk(self) -> list[TypeCoverage]:
+        """Types the SDK declares no interface for, so nothing measures them."""
+        return [t for t in self.types if not t.in_sdk]
 
 
 def _delegated_for(delegated: dict | None, constant: str) -> set[str]:
@@ -387,6 +410,9 @@ def _coverage_for(model: SdkModel, type_name: str, constant: str,
     write_heads = write_heads | _delegated_for(write_delegated, constant)
     iface: Interface | None = model.get(iface_name)
     declared = model.effective_properties(iface_name) if iface else {}
+    # Listed as absent but declared after all: measure it like any other,
+    # and the real-SDK test says the listing is stale.
+    note = SCH_NOT_IN_SDK.get(constant, "") if domain == "SCH" else ""
     return TypeCoverage(
         type_name=type_name,
         constant=constant,
@@ -395,6 +421,8 @@ def _coverage_for(model: SdkModel, type_name: str, constant: str,
         declared=declared,
         read_covered=read_heads & set(declared),
         write_covered=write_heads & set(declared),
+        in_sdk=iface is not None or not note,
+        note=note,
     )
 
 
@@ -477,6 +505,11 @@ def format_report(report: Report, detail: int = 0) -> str:
                    f"(nothing to measure against):")
         out.append("  " + ", ".join(
             f"{t.type_name} -> {t.interface}" for t in missing))
+    absent = report.not_in_sdk()
+    if absent:
+        out.append(f"Not declared by the SDK, so not measured ({len(absent)}):")
+        for t in absent:
+            out.append(f"  {t.type_name}: {t.note}")
     return "\n".join(out)
 
 
@@ -499,6 +532,7 @@ def report_as_dict(report: Report) -> dict:
                 "constant": t.constant,
                 "interface": t.interface,
                 "resolved": t.resolved,
+                "in_sdk": t.in_sdk,
                 "declared": len(t.declared),
                 "reached": t.ratio()[0],
                 "missing_reads": sorted(t.missing_reads),

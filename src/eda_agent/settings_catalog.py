@@ -218,6 +218,9 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_THERMAL_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\thermal`",
            "Where each `sim_thermal_analysis` run writes its heat maps, fields "
            "and report, one folder per run."),
+    EnvVar("EDA_AGENT_PDN_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\pdn`",
+           "Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, "
+           "curves and SPICE decks, one folder per run."),
     EnvVar("EDA_AGENT_OPENEMS_DIR", "Simulation", "none",
            "The unzipped openEMS folder (Windows build). Added to `PATH` and "
            "`PYTHONPATH` for the solver run."),
@@ -295,6 +298,9 @@ PREFERENCES: dict[str, str] = {
     "dialogs": "`manual` leaves dialogs such as the change order for you to "
                "answer, instead of the tool answering them.",
     "usage_stats": "`off` stops counting the tokens each tool call costs.",
+    "length_units": "The unit a new AI session gives and reads lengths in: "
+                    "`mil` (default) or `mm`. Each session may change its "
+                    "own with the `length_units` tool.",
     "theme": "The web dashboard's look: `system`, `light` or `dark`. Set in "
              "the profile only; the Altium panel has no switch for it.",
 }

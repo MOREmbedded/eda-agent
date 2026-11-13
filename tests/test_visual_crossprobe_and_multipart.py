@@ -73,6 +73,11 @@ async def test_multipart_symbol_assigns_parts_and_shared_pins(monkeypatch):
 
     bridge = _Bridge()
     monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
+    # No datasheet here: the pin-table check is switched off, as the
+    # Config tab would, so the composition itself is what is tested.
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, '_read',
+                        lambda workspace=None: {'checks_off': 'symbol_pins'})
     mcp = _Mcp()
     library.register_library_tools(mcp)
 
@@ -108,6 +113,11 @@ async def test_multipart_validates_before_mutating(monkeypatch):
 
     bridge = _Bridge()
     monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
+    # No datasheet here: the pin-table check is switched off, as the
+    # Config tab would, so the composition itself is what is tested.
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, '_read',
+                        lambda workspace=None: {'checks_off': 'symbol_pins'})
     mcp = _Mcp()
     library.register_library_tools(mcp)
     make = mcp.tools['lib_create_symbol_in_parts']

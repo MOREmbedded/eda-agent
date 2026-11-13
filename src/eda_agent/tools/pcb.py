@@ -3731,7 +3731,7 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_components() -> dict[str, Any]:
+    async def pcb_get_components(body_heights: str = "max") -> dict[str, Any]:
         """Get all components from the active PCB with position and properties.
 
         DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`
@@ -3745,9 +3745,28 @@ def register_pcb_tools(mcp):
             rotation, layer, footprint, bbox, and bbox_no_name_comment: the
             box without the part's designator and comment) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
+
+            Heights, in mils above the part's own side of the board:
+            ``height_mils`` is the tallest 3D body (STEP or extruded) when
+            the part has one, else the footprint's Height parameter
+            (``height_source`` says which). ``component_height_mils`` is
+            that parameter as typed, ``max_body_height_mils`` the tallest
+            body (null without one), ``body_count``, and
+            ``height_mismatch`` true when the two differ.
+
+        Args:
+            body_heights: ``max`` (default) gives the tallest body per
+                part; ``all`` adds ``bodies``: identifier, kind (step,
+                extruded, cylinder, sphere), layer, standoff_mils,
+                overall_mils.
         """
+        mode = (body_heights or "max").strip().lower()
+        if mode not in ("max", "all"):
+            return {"ok": False,
+                    "reason": f"body_heights must be 'max' or 'all', got {body_heights!r}"}
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_components", {})
+        result = await bridge.send_command_async(
+            "pcb.get_components", {"body_heights": mode})
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()
@@ -4085,6 +4104,7 @@ def register_pcb_tools(mcp):
         mask_clearance_mils: float | None = None,
         mask_expansion_mils: float = 4,
         designators: list[str] | None = None,
+        rotations: list[float] | None = None,
     ) -> dict[str, Any]:
         """Move designators that break silk clearance to a clear position.
 
@@ -4106,12 +4126,19 @@ def register_pcb_tools(mcp):
             mask_expansion_mils: How far a pad's mask opening extends past
                 its copper (default 4, Altium's default).
             designators: Only these components. ``None`` means all.
+            rotations: Reading directions in board degrees, tried in
+                order (``[0, 90]``: horizontal, else vertical). A
+                designator at none of them is turned even when clear;
+                each angle gets the whole anchor ring before the next.
+                One that nothing clears keeps its own angle and place.
+                Different parts, different directions: ``items``.
 
         Refused with NO_CLEARANCE, moving nothing, when a clearance is
         neither given nor readable from an enabled rule.
 
         Returns:
-            ``placed``, ``already_clear``, ``unplaced``, ``hidden``,
+            ``placed``, ``turned`` (placed at a new angle),
+            ``already_clear``, ``unplaced``, ``hidden``,
             ``total``, the placed and unplaced designators, and each
             clearance used with its source (``argument`` or the rule's
             name). ``skipped`` is ``unplaced + hidden``.
@@ -4131,6 +4158,13 @@ def register_pcb_tools(mcp):
                 return {"ok": False,
                         "reason": f"a designator cannot contain |: {bad[0]}"}
             params["designators"] = "|".join(str(d) for d in designators)
+        if rotations:
+            try:
+                params["rotations"] = "|".join(format_length(float(r))
+                                               for r in rotations)
+            except (TypeError, ValueError):
+                return {"ok": False,
+                        "reason": "rotations are angles in degrees"}
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.autoplace_silkscreen", params)
 
@@ -10781,17 +10815,21 @@ def register_pcb_tools(mcp):
 
         Args:
             model_path: absolute path to the .step / .stp file.
-            x: X of the model's own origin in mils; where the body lands
-                depends on how the STEP was authored, so check it against
-                a known feature.
-            y: Y of the model's origin in mils.
+            x: X translation from the STEP's authored coordinates, in mils.
+                Nonzero internal model coordinates are preserved.
+            y: Y translation from the STEP's authored coordinates, in mils.
             layer: board layer to attach it to.
-            standoff_height: underside height above the board, mils.
+            standoff_height: additional model Z translation, in mils. Authored
+                Z coordinates are preserved; this is not underside clearance.
 
         Returns:
             ``{"success", "model_path", "x", "y", "layer",
             "standoff_height", "standoff_applied", "rotation_applied",
-            "note"}``; x and y are read back from the placed body.
+            "note"}``; x and y are verified by the change in primitive
+            bounds. ``position_verified`` reports that check; ``bounds``
+            contains the placed outline bounds. No body X/Y member is used.
+            This verifies XY only. ``standoff_applied`` reports a model Z write,
+            not an independent Z readback; inspect the 3D view before use.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {

@@ -335,6 +335,10 @@ def _close_dir_watcher(handle) -> None:
         pass
 
 
+#: Set by Claude Code in every process it starts; one per Claude process.
+CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
+
+
 def _claude_session_tag() -> str:
     """Eight hex digits naming the Claude session this server runs under.
 
@@ -342,13 +346,22 @@ def _claude_session_tag() -> str:
     the two-tool surface), and the reload proxy restarts its child, so a
     random tag per process gave one session several. Altium then refused
     a session's own write as another session's (measured 2026-11-05: a
-    repour through one server, the DRC after it through the other). The
-    tag is made from the nearest Claude process above this one, its pid
-    and start time, so every server of a session shares it. Random when
-    no Claude process is found (a script, a test).
+    repour through one server, the DRC after it through the other).
+
+    The tag is made from CLAUDE_CODE_MESSAGING_SOCKET, which Claude Code
+    gives every process it starts and which names its own process: the
+    servers, and anything its shell starts, inherit it however they were
+    launched. Walking up to the Claude process missed a server started by
+    a script whose launcher had exited (the chain of parents ends there),
+    and Altium refused that session's writes as another's. Without the
+    variable (another client), the nearest Claude process above this one,
+    its pid and start time; random when there is none (a script, a test).
     """
+    import hashlib
+    socket = os.environ.get(CLAUDE_SOCKET_ENV, "").strip()
+    if socket:
+        return hashlib.sha1(f"socket:{socket}".encode()).hexdigest()[:8]
     try:
-        import hashlib
         import psutil
         for parent in psutil.Process().parents():
             name = parent.name().lower()
@@ -1214,6 +1227,12 @@ class AltiumBridge:
                 if early and early.get("blocked") and self._recover_script_crash(
                         request_id, response_path, early) == "continue":
                     continue
+                # A box the crashed call is no longer there to answer: this
+                # call answers it rather than failing on it (see
+                # _clear_orphan_crash).
+                if early and early.get("blocked") and self._clear_orphan_crash(
+                        request_id, early) == "continue":
+                    continue
                 # Another session is clearing a crash or restarting the
                 # loop: a request not yet taken waits for the new loop.
                 if (early and early.get("blocked")
@@ -1582,6 +1601,89 @@ class AltiumBridge:
                      command, restart.get("restarted"), outcome.get("record"))
         raise AltiumScriptCrashError(script_crash.crash_message(outcome),
                                      details=outcome)
+
+    def _clear_orphan_crash(self, request_id: str,
+                            probe: Optional[dict]) -> Optional[str]:
+        """Answer a script error box that an EARLIER call left behind.
+
+        _recover_script_crash only acts for the call whose handler crashed.
+        When that caller has gone (exited, timed out, or a client without
+        this recovery), nothing pressed OK, and every other session's call
+        failed on the box until a person closed it. Measured 2026-11-11 on
+        proj_set_parameter (#311).
+
+        Only while THIS call's request is still queued (the loop is not
+        running it) and no one holds the recovery marker. The crashed call
+        is given ORPHAN_GRACE_S to answer its own box; after that this
+        call claims the marker, recovers exactly as the crashed call would
+        have, and goes on waiting for the new loop. Returns "continue" while
+        it waits or after it recovered, None when there is nothing for it.
+        """
+        from . import script_crash
+
+        workspace_dir = self.config.workspace_dir
+        if not self._request_path(request_id).exists():
+            return None
+        dialog = script_crash.script_error_dialog(probe)
+        if dialog is None or maintenance_in_progress(workspace_dir):
+            return None
+        hwnd = int(dialog.get("hwnd") or 0)
+        seen = self.__dict__.setdefault("_orphan_seen", {})
+        first = seen.setdefault(hwnd, time.monotonic())
+        if time.monotonic() - first < script_crash.ORPHAN_GRACE_S:
+            return "continue"
+        try:
+            from ..ui import windows
+
+            if not windows.available():
+                return None
+            process = self.process_manager.get_altium_info()
+            if not process:
+                return None
+        except Exception:                        # pragma: no cover - guard
+            return None
+        marker = Path(workspace_dir) / MAINTENANCE_FILE
+        if not script_crash.claim_marker(marker,
+                                         "orphaned script crash recovery"):
+            return "continue"
+        seen.pop(hwnd, None)
+        _trace_log(workspace_dir,
+                   f"SCRIPT_CRASH_ORPHAN id={request_id[:8]} "
+                   f"box={dialog.get('title', '')[:40]}")
+
+        def drop_marker() -> None:
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+        outcome = None
+        try:
+            outcome = script_crash.recover_orphan(workspace_dir, process.pid,
+                                                  dialog, drop_marker)
+        finally:
+            restarting = bool(outcome and (outcome.get("restart") or {})
+                              .get("in_background"))
+            if not restarting:
+                drop_marker()
+        if outcome and outcome.get("halted"):
+            logger.error("An earlier call had crashed the Altium script and "
+                         "left its error box up; it was answered and the "
+                         "loop restarted. %s", outcome.get("record"))
+        _CALL.answered_box = {
+            "title": dialog.get("title"),
+            "said": dialog.get("message") or dialog.get("ocr_text") or [],
+            "screenshots": (outcome or {}).get("screenshots") or [],
+            "record": (outcome or {}).get("record") or "",
+            "note": ("An earlier call had crashed the Altium script and left "
+                     "this error box up with no one to answer it. OK was "
+                     "pressed"
+                     + (" and the loop restarted" if (outcome or {}).get("halted")
+                        else "")
+                     + "; this command then ran. That earlier call's change "
+                     "may be half applied."),
+        }
+        return "continue"
 
     @staticmethod
     def _dialog_suffix(probe: Optional[dict], owner: Optional[dict] = None) -> str:

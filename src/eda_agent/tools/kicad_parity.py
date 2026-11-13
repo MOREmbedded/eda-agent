@@ -172,6 +172,7 @@ COVERED: dict[str, str] = {
     "pcb_special_strings": "kicad_get_text_variables",
     "pcb_render_svg": "kicad_export_pcb",
     "pcb_render_png": "kicad_render_3d",
+    "pcb_render_3d": "kicad_render_3d",
     "pcb_export_coordinates": "kicad_export_pos",
     "pcb_export_component_3d": "kicad_export_step",
     "pcb_gerber_options": "kicad_export_gerbers",
@@ -229,6 +230,7 @@ COVERED: dict[str, str] = {
     "sch_increment_designators": "kicad_sch_annotate",
     "sch_set_sheet_size": "kicad_sch_set_page",
     "sch_set_sheet_options": "kicad_sch_set_page",
+    "sch_sheet_template": "kicad_sch_set_page",
     "sch_get_sheet_parameters": "kicad_sch_get_items",
     "sch_render_svg": "kicad_export_schematic_svg",
     # libraries
@@ -400,6 +402,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "proj_net_color": "per-net colours have no call in KiCad 10.0's API",
     "lib_export_kicad_footprint": "converts Altium footprints to KiCad files",
     "lib_export_kicad_symbol": "converts Altium symbols to KiCad files",
+    "proj_convert_to_kicad": "converts an Altium project to a KiCad project",
     "lib_save_footprint_library": "library tools here write the file on each call",
     "obj_get_font_id": "Altium's font table",
     "obj_get_font_spec": "Altium's font table",
@@ -410,7 +413,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_set_units": "Altium document units; KiCad files are mm",
     # project bookkeeping
     **{name: _ALT_DOC for name in (
-        "proj_add_document", "proj_remove_document", "proj_import_document",
+        "proj_add_document", "proj_remove_document", "proj_rename_document", "proj_import_document",
         "proj_load_sheets", "proj_close", "proj_open", "proj_save",
         "proj_get_compile_freshness", "proj_get_declared_design_objects",
         "proj_get_channels", "proj_get_hierarchy", "proj_push_parameters",
@@ -517,6 +520,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_make_paste_grid": "free pads: KiCad 10.0's API creates pads only inside footprints",
     # Altium-only schematic objects
     "sch_place_harness_connector": "Altium signal harnesses",
+    "sch_place_signal_harness": "Altium signal harnesses",
     "sch_get_constraint_groups": "Altium constraint groups",
     "sch_add_directive": "Altium schematic directives; KiCad uses net classes and rules",
     "sch_get_directives": "Altium schematic directives",
@@ -569,6 +573,8 @@ GAPS: dict[str, str] = {
     "sim_em_run": "runs models from sim_em_build_model, which has no KiCad reader yet",
     "sim_em_results": "as sim_em_run",
     "sim_thermal_analysis": "as sim_emc_prescan",
+    "sim_pdn_ir_drop": "as sim_emc_prescan",
+    "sim_pdn_impedance": "as sim_emc_prescan",
     "sim_read_touchstone": "reads a file only; registered with the Altium suite, not yet on the KiCad surface",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",

@@ -260,6 +260,39 @@ def test_an_unmappable_type_is_reported_not_counted_as_a_gap(model, monkeypatch)
     assert report.totals() == (0, 0)
 
 
+def test_a_type_the_sdk_does_not_declare_is_listed_apart(model, monkeypatch):
+    """A signal harness has no interface of its own in Altium's assembly.
+
+    That is a fact about the SDK, not a mapping bug, so it must neither
+    fail the mapping check nor be measured against a stand-in.
+    """
+    monkeypatch.setattr(cov, "supported_sch_types",
+                        lambda: {"signalharness": "eSignalHarness"})
+    monkeypatch.setattr(cov, "supported_pcb_types", lambda: {})
+    report = cov.build_report(model)
+
+    assert report.unresolved() == []
+    assert [t.type_name for t in report.not_in_sdk()] == ["signalharness"]
+    assert report.totals() == (0, 0)
+    text = cov.format_report(report)
+    assert "Not declared by the SDK" in text and "signalharness" in text
+    assert cov.report_as_dict(report)["types"][0]["in_sdk"] is False
+
+
+def test_a_type_listed_as_absent_is_measured_once_the_sdk_declares_it(model, monkeypatch):
+    """A stale listing must not hide a real interface's coverage."""
+    monkeypatch.setattr(cov, "supported_sch_types",
+                        lambda: {"component": "eSchComponent"})
+    monkeypatch.setattr(cov, "supported_pcb_types", lambda: {})
+    monkeypatch.setitem(cov.SCH_NOT_IN_SDK, "eSchComponent", "listed by mistake")
+    report = cov.build_report(model)
+
+    entry = report.types[0]
+    assert entry.resolved and entry.in_sdk
+    assert report.not_in_sdk() == []
+    assert report.totals()[1] > 0
+
+
 # --- against the real thing, when this machine has one --------------------
 
 def _real_sdk():
@@ -289,3 +322,15 @@ def test_the_real_report_maps_every_supported_type():
     assert reached > 0
     text = cov.format_report(report)
     assert "declared properties reachable" in text
+
+
+@pytest.mark.skipif(_real_sdk() is None,
+                    reason="no reflected Altium SDK on this machine")
+def test_the_types_listed_as_absent_are_still_absent_from_the_real_sdk():
+    """Once Altium declares one, it belongs in the measurement."""
+    report = cov.build_report()
+    declared_now = [f"{t.type_name} -> {t.interface}" for t in report.types
+                    if t.constant in cov.SCH_NOT_IN_SDK and t.in_sdk]
+    assert not declared_now, (
+        "the SDK now declares these; drop them from SCH_NOT_IN_SDK: "
+        + ", ".join(declared_now))

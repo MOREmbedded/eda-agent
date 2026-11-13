@@ -2687,6 +2687,10 @@ Var
     First, HasPlacementBBox : Boolean;
     Count : Integer;
     HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
+    BodyMode, BodyList, HeightJson : String;
+    WantList : Boolean;
+    MaxOverall, BodyCount : Integer;
+    ParamMils, MaxMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -2694,6 +2698,18 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+
+    { body_heights: max (default) = the tallest 3D body per part; all = also }
+    { every body. Either way height_mils is guarded (ComponentGuardedHeight). }
+    BodyMode := LowerCase(Trim(ExtractJsonValue(Params, 'body_heights')));
+    If BodyMode = '' Then BodyMode := 'max';
+    If (BodyMode <> 'max') And (BodyMode <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_BODY_HEIGHTS',
+            'body_heights must be max or all, got "' + BodyMode + '"');
+        Exit;
+    End;
+    WantList := BodyMode = 'all';
 
     JsonItems := '';
     First := True;
@@ -2717,7 +2733,25 @@ Begin
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
         Try SrcUniqueId := Comp.SourceUniqueId; Except SrcUniqueId := ''; End;
         Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
-        Try HeightMils := CoordToMilsF(Comp.Height); Except HeightMils := 0; End;
+        Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
+        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount);
+        MaxMils := CoordToMilsF(MaxOverall);
+        If BodyCount > 0 Then
+        Begin
+            HeightMils := MaxMils;
+            HeightJson := '"height_source":"3d_bodies",'
+                + '"max_body_height_mils":' + FloatToJsonStr(MaxMils) + ','
+                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ',';
+        End
+        Else
+        Begin
+            HeightMils := ParamMils;
+            HeightJson := '"height_source":"component",'
+                + '"max_body_height_mils":null,"height_mismatch":false,';
+        End;
+        HeightJson := HeightJson + '"component_height_mils":' + FloatToJsonStr(ParamMils) + ','
+            + '"body_count":' + IntToStr(BodyCount) + ',';
+        If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
 
         { Component.BoundingRectangle includes designator/comment text. That
           makes a 0201 package look hundreds of mils wide and causes false
@@ -2794,6 +2828,7 @@ Begin
             + '"source_unique_id":"' + EscapeJsonString(SrcUniqueId) + '",'
             + '"unique_id":"' + EscapeJsonString(UniqueIdStr) + '",'
             + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
+            + HeightJson
             + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
             + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '},'
@@ -9414,8 +9449,8 @@ End;
 { ROTATION IS NOT ACCEPTED, and that is deliberate. IPCB_ComponentBody exposes }
 { no Rotation on AD26 26.9.1.9: assigning it raised "Undeclared identifier",   }
 { which DelphiScript cannot catch, and it took the polling loop down. The      }
-{ rotation lives on the MODEL via SetState(90,0,0,0), whose four arguments are }
-{ documented nowhere this project can verify. Guessing them would repeat that. }
+{ Model.SetState takes RotX, RotY, RotZ, Dz (verification section 40).       }
+{ This tool uses Dz only; exposing rotations is outside this change.           }
 {                                                                              }
 { NO identifier PARAMETER EITHER, for the same reason and caught the same    }
 { way. IPCB_ComponentBody declares                                            }
@@ -9435,10 +9470,11 @@ Var
     Model : IPCB_Model;
     ModelPath, LayerStr, Why : String;
     BodyLayer : TLayer;
-    Standoff, CurX, CurY : Double;
+    Standoff : Double;
     BodyX, BodyY : Double;
-    DidStandoff, DidMove : Boolean;
+    DidStandoff, DidMove, PositionOk : Boolean;
     ReadBackX, ReadBackY : Double;
+    BeforeBox, AfterBox : TCoordRect;
 Begin
     ModelPath := ExtractJsonValue(Params, 'model_path');
     If ModelPath = '' Then
@@ -9505,6 +9541,13 @@ Begin
             Exit;
         End;
 
+        { STEP height belongs to the model, not the extruded body's
+          StandoffHeight property. Same tested path as Lib_Link3DModel. }
+        If Standoff <> 0 Then
+        Begin
+            Model.SetState(0, 0, 0, MilsToCoordF(Standoff));
+            DidStandoff := True;
+        End;
         Body.SetState_FromModel;
         Body.Model := Model;
 
@@ -9526,31 +9569,21 @@ Begin
 
         Try Body.Layer := BodyLayer; Except NoteWriteFailed('3D body Layer'); End;
 
-        { MOVED, NOT ASSIGNED. Lib_Link3DModel positions a body with
-          MoveByXY, which is inherited from IPCB_Primitive and already
-          called by PCB_ReplicateLayout, so it cannot be an undeclared
-          identifier. Writing x and y directly on a body is not something
-          this codebase has ever done successfully, and it was the other
-          half of the crash.
-
-          The delta is computed from where the factory actually put the
-          body rather than assuming it starts at the origin. }
-        Try
-            CurX := CoordToMilsF(Body.x);
-            CurY := CoordToMilsF(Body.y);
-        Except
-            CurX := 0;
-            CurY := 0;
-        End;
+        { A newly loaded model is at its own authored origin. x/y are
+          offsets from that origin, not the first vertex of its outline.
+          IPCB_ComponentBody has NO x/y member on AD21: even a READ inside
+          Try/Except halts the script and leaves this transaction open.
+          Verify translation through the supported primitive bounds. }
+        BeforeBox := Body.BoundingRectangle;
         { Inside the body's modify bracket, now that it has a board. Moved   }
         { without it, the spatial index kept the body at the origin, so it   }
         { could not be picked where it was drawn (measured on AD 26.10).     }
-        If (BodyX <> CurX) Or (BodyY <> CurY) Then
+        If (BodyX <> 0) Or (BodyY <> 0) Then
             Try
                 Body.BeginModify;
                 Try
-                    Body.MoveByXY(MilsToCoordF(BodyX - CurX),
-                                  MilsToCoordF(BodyY - CurY));
+                    Body.MoveByXY(MilsToCoordF(BodyX),
+                                  MilsToCoordF(BodyY));
                     DidMove := True;
                 Finally
                     Body.EndModify;
@@ -9558,11 +9591,6 @@ Begin
                 Body.GraphicallyInvalidate;
             Except { the move flag in the reply reports it } End;
 
-        If Standoff <> 0 Then
-            Try
-                Body.StandoffHeight := MilsToCoordF(Standoff);
-                DidStandoff := True;
-            Except { the standoff flag in the reply reports it } End;
     Finally
         PcbEndEdit(0);
     End;
@@ -9570,24 +9598,28 @@ Begin
     { READ THE POSITION BACK. The placement is the one thing a caller cannot
       check without opening the 3D view, and this tool exists because a
       session spent a long time unable to see whether anything had landed. }
-    ReadBackX := BodyX;
-    ReadBackY := BodyY;
-    Try
-        ReadBackX := CoordToMilsF(Body.x);
-        ReadBackY := CoordToMilsF(Body.y);
-    Except End;
+    AfterBox := Body.BoundingRectangle;
+    ReadBackX := CoordToMilsF(AfterBox.Left - BeforeBox.Left);
+    ReadBackY := CoordToMilsF(AfterBox.Bottom - BeforeBox.Bottom);
+    PositionOk := (Abs(ReadBackX - BodyX) < 0.01)
+                  And (Abs(ReadBackY - BodyY) < 0.01)
+                  And (Abs(CoordToMilsF(AfterBox.Right - BeforeBox.Right) - BodyX) < 0.01)
+                  And (Abs(CoordToMilsF(AfterBox.Top - BeforeBox.Top) - BodyY) < 0.01);
 
     MarkDocDirtyByPath(Board.FileName);
 
     { The one thing a caller cannot check from here. }
     NoteNextStep('Look at it before trusting the placement: obj_switch_view '
         + '3d. The body sits at the model''s own origin, so where it lands '
-        + 'depends on how the STEP was authored. obj_modify on '
-        + 'eComponentBodyObject moves it, and obj_delete removes it.');
+        + 'depends on how the STEP was authored. BoundsLeft/Bottom/Right/Top '
+        + 'read its actual extent; obj_delete can remove it.');
 
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
-            JsonBool('success', True) + ',' +
+            JsonBool('success', PositionOk) + ',' +
+            JsonBool('placed', True) + ',' +
+            JsonBool('position_verified', PositionOk) + ',' +
+            JsonStr('position_reference', 'model_origin_offset') + ',' +
             JsonStr('model_path', ModelPath) + ',' +
             JsonFloat('x', ReadBackX) + ',' +
             JsonFloat('y', ReadBackY) + ',' +
@@ -9596,10 +9628,12 @@ Begin
             JsonBool('standoff_applied', DidStandoff) + ',' +
             JsonBool('moved', DidMove) + ',' +
             JsonBool('rotation_applied', False) + ',' +
-            JsonStr('note', 'rotation is not settable from here: '
-                + 'IPCB_ComponentBody exposes no Rotation, and the model-level '
-                + 'SetState signature is undocumented. Rotate in the editor if '
-                + 'the orientation is wrong.')
+            JsonRaw('bounds', '{' + JsonFloat('left', CoordToMilsF(AfterBox.Left))
+                + ',' + JsonFloat('bottom', CoordToMilsF(AfterBox.Bottom))
+                + ',' + JsonFloat('right', CoordToMilsF(AfterBox.Right))
+                + ',' + JsonFloat('top', CoordToMilsF(AfterBox.Top)) + '}') + ',' +
+            JsonStr('note', 'x/y are verified offsets from the STEP model origin; '
+                + 'authored geometry coordinates are preserved. Rotation is unchanged.')
         ));
 End;
 
@@ -20642,6 +20676,27 @@ Begin
         + 'script; choose Add or Remove and confirm it in Altium."}');
 End;
 
+{ True when Angle reads the same as one of the angles in Rots (degrees, any  }
+{ multiple of 360 apart), to a hundredth of a degree.                        }
+Function RotationListed(Angle : Double; Rots : TStringList) : Boolean;
+Var
+    I : Integer;
+    D : Double;
+Begin
+    Result := False;
+    For I := 0 To Rots.Count - 1 Do
+    Begin
+        D := Angle - StrToFloatDef(Rots.Strings[I], 0);
+        While D < 0 Do D := D + 360;
+        While D >= 360 Do D := D - 360;
+        If (D < 0.01) Or (D > 359.99) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { PCB_AutoplaceSilkscreen - move component designators that are too close to  }
 { other silk, to a pad's mask opening, or off the board, onto the first of a  }
@@ -20657,7 +20712,11 @@ End;
 { read from the rule's Descriptor (GapMilsFromDescriptor). Refused when       }
 { neither gives one. A pad's mask opening is taken as its copper plus         }
 { mask_expansion_mils (default 4, Altium's default expansion).               }
-{ Params: designators (pipe list, optional), the three above.                }
+{ ROTATIONS (pipe list of degrees, optional) give the designators a reading  }
+{ direction: one not at a listed angle is turned even when clear, and each   }
+{ angle is tried in order, with the whole anchor ring, before the next. One  }
+{ no angle and anchor clears gets its angle and place back.                  }
+{ Params: designators (pipe list, optional), rotations, the three above.    }
 {..............................................................................}
 Function PCB_AutoplaceSilkscreen(Params : String; RequestId : String) : String;
 Var
@@ -20675,12 +20734,45 @@ Var
     SilkMils, MaskMils, ExpMils, RuleMils : Double;
     SilkSrc, MaskSrc, DesStr, CompName, PlacedList, UnplacedList, S : String;
     Ok, WasOnline : Boolean;
+    Rots : TStringList;
+    R, PipePos, Turned : Integer;
+    OrigRot : Double;
+    Remaining, Item : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
+    End;
+
+    { The reading directions, checked before anything moves. }
+    Rots := TStringList.Create;
+    Remaining := ExtractJsonValue(Params, 'rotations');
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Item := Trim(Copy(Remaining, 1, PipePos - 1));
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Item := Trim(Remaining);
+            Remaining := '';
+        End;
+        If Item <> '' Then
+        Begin
+            If Not IsFloatStr(Item) Then
+            Begin
+                Rots.Free;
+                Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+                    'rotations are angles in degrees: ' + Item);
+                Exit;
+            End;
+            Rots.Add(Item);
+        End;
     End;
 
     SilkMils := -1;
@@ -20756,6 +20848,7 @@ Begin
     End;
     If (SilkMils < 0) Or (MaskMils < 0) Then
     Begin
+        Rots.Free;
         Result := BuildErrorResponse(RequestId, 'NO_CLEARANCE',
             'No clearance to keep: this board has no enabled, readable Silk To Silk '
             + 'or Silk To Solder Mask rule for the one not given. Pass '
@@ -20797,6 +20890,7 @@ Begin
     AlreadyClear := 0;
     Unplaced := 0;
     Hidden := 0;
+    Turned := 0;
     PlacedList := '';
     UnplacedList := '';
     WasOnline := True;
@@ -20822,7 +20916,8 @@ Begin
             End;
             CompName := '';
             Try CompName := Slk.Text; Except End;
-            If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+            If ((Rots.Count = 0) Or RotationListed(Slk.Rotation, Rots))
+                And Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
             Begin
                 Inc(AlreadyClear);
                 Continue;
@@ -20831,18 +20926,33 @@ Begin
             OrigAuto := Comp.NameAutoPosition;
             OrigX := Slk.XLocation;
             OrigY := Slk.YLocation;
+            OrigRot := Slk.Rotation;
             Ok := False;
-            For K := 0 To 7 Do
+            { Without rotations the ring runs once at the designator's own }
+            { angle; with them, once per angle, in the order given.        }
+            R := 0;
+            While (Not Ok) And ((R = 0) Or (R < Rots.Count)) Do
             Begin
-                Comp.BeginModify;
-                Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
-                Comp.EndModify;
-                If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                If Rots.Count > 0 Then
                 Begin
-                    Ok := True;
-                    Break;
+                    Comp.BeginModify;
+                    Try Slk.Rotation := StrToFloatDef(Rots.Strings[R], 0); Except { the clearance check below reads where it is } End;
+                    Comp.EndModify;
                 End;
+                For K := 0 To 7 Do
+                Begin
+                    Comp.BeginModify;
+                    Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
+                    Comp.EndModify;
+                    If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                    Begin
+                        Ok := True;
+                        Break;
+                    End;
+                End;
+                Inc(R);
             End;
+            If Ok And (Abs(Slk.Rotation - OrigRot) > 0.01) Then Inc(Turned);
 
             If Ok Then
             Begin
@@ -20853,6 +20963,10 @@ Begin
             Else
             Begin
                 Comp.BeginModify;
+                If Abs(Slk.Rotation - OrigRot) > 0.01 Then
+                Begin
+                    Try Slk.Rotation := OrigRot; Except NoteWriteFailed('designator rotation back'); End;
+                End;
                 Try Comp.ChangeNameAutoposition(OrigAuto); Except End;
                 If (Slk.XLocation <> OrigX) Or (Slk.YLocation <> OrigY) Then
                     Slk.MoveToXY(OrigX, OrigY);
@@ -20865,12 +20979,14 @@ Begin
     Finally
         PcbEndEdit(0);
         Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except NoteWriteFailed('restore Online DRC (it may be left off)'); End;
+        Rots.Free;
     End;
 
     If Placed + Unplaced > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":' + BoolToJsonStr(Unplaced = 0) + ','
         + '"placed":' + IntToStr(Placed) + ','
+        + '"turned":' + IntToStr(Turned) + ','
         + '"already_clear":' + IntToStr(AlreadyClear) + ','
         + '"unplaced":' + IntToStr(Unplaced) + ','
         + '"hidden":' + IntToStr(Hidden) + ','
@@ -31610,6 +31726,32 @@ Begin
     Result := UpperCase(R);
 End;
 
+{..............................................................................}
+{ LayerStackManagerRefusal - '' where the Layer Stack Manager's script     }
+{ interface is there, else the error reply. Reported on AD 21.4 (issue     }
+{ #275): RemoveLayerStackProvider, a layer's GetState_Weight, the stack's  }
+{ GetDrillPairCount and OpenDocumentFromPcb are undeclared and halt the    }
+{ script in a way no Try catches, and reading the provider without the     }
+{ refresh returns the stack as it was before the last change. So the       }
+{ version is asked first and nothing of the manager is touched below it.   }
+{ AD 22 to 24 are not measured and are let through; an unreadable version  }
+{ is let through too.                                                      }
+{..............................................................................}
+Function LayerStackManagerRefusal(RequestId : String) : String;
+Var
+    Code : Integer;
+Begin
+    Result := '';
+    Code := AltiumVersionCode(0);
+    If (Code > 0) And (Code < 2200) Then
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_VERSION',
+            'The Layer Stack Manager cannot be read or changed from a script on '
+            + 'this Altium version (' + IntToStr(Code div 100) + '.' + IntToStr(Code mod 100)
+            + '): the calls it needs halt the script, and the cached stack it '
+            + 'can read is out of date after a change. pcb_physical_stack reads '
+            + 'the board''s own stack. Nothing was read or changed.');
+End;
+
 Function PCB_LayerStackManager(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -31628,6 +31770,8 @@ Var
     PropName, PropValue, LName, LGuid, SpanName : String;
     I, J, LayerCount, PropCount, StartId, StopId : Integer;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Model := LowerCase(Trim(ExtractJsonValue(Params, 'include_model')));
     If (Model <> '') And (Model <> 'xml') And (Model <> 'records') Then
     Begin
@@ -31818,6 +31962,8 @@ Var
     Steps, Done, J : Integer;
     WasSym, Alone, SymOff, Refused, Can, SymAfter : Boolean;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
@@ -31987,6 +32133,8 @@ Var
     SL : TStringList;
     WasSym, SymAfter, Can : Boolean;
 Begin
+    Result := LayerStackManagerRefusal(RequestId);
+    If Result <> '' Then Exit;
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin

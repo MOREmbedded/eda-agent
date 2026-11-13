@@ -291,6 +291,26 @@ def _iter_batch_ops(payload: str):
 
 
 
+_PAD_SHAPES = ("round", "rectangular", "octagonal", "roundrect")
+
+
+def _pad_shape_word(raw: str) -> str:
+    """Mirrors CanonicalPadShape: the shape word, "" when none was given,
+    or "?" and the word as given when it is not a pad shape."""
+    s = str(raw or "").strip().lower()
+    if s in ("roundrectangle", "roundedrect", "rounded_rectangular"):
+        s = "roundrect"
+    if s == "" or s in _PAD_SHAPES:
+        return s
+    return "?" + str(raw).strip()
+
+
+def _pad_shape_refusal(words: str) -> str:
+    """Mirrors PadShapeRefusal."""
+    return ("shape must be round, rectangular, octagonal or roundrect "
+            "(got: %s)" % words)
+
+
 def _int_or_zero(text: str) -> int:
     """Mirrors StrToIntDef(x, 0): a non-numeric field reads as zero."""
     try:
@@ -355,6 +375,9 @@ class AltiumSimulator:
         #: What the bulk library handlers accepted, so a test can assert
         #: on the PARSED payload rather than only on a success count.
         self.lib_pins: list[dict] = []
+        # The symbol add_pins writes into: the one created last, as
+        # Lib_AddPins's GetTargetLibComponent picks it (#263).
+        self.lib_target: str = ""
         self.lib_symbol_texts: list[dict] = []
         self.lib_pads: list[dict] = []
         self.lib_tracks: list[dict] = []
@@ -1178,9 +1201,22 @@ class AltiumSimulator:
                 return _build_error_response(rid, "NO_SCHLIB",
                                              "No schematic library is active")
             self.lib_components.append(MockLibComponent(name))
+            self.lib_target = name
             return _build_success_response(
                 rid, '{"success":true,"name":"' + _escape_json_string(name) + '"}'
             )
+
+        elif action == "get_pin_list":
+            # Mirrors Lib_GetPinList: the named symbol's pins, every part.
+            name = params.get("component_name", "")
+            pins = [p for p in self.lib_pins if p.get("component") == name]
+            body = ",".join(
+                '{"designator":"%s","name":"%s"}' % (
+                    _escape_json_string(p["designator"]),
+                    _escape_json_string(p["name"])) for p in pins)
+            return _build_success_response(
+                rid, '{"component":"%s","count":%d,"pins":[%s]}' % (
+                    _escape_json_string(name), len(pins), body))
 
         elif action == "add_pin":
             designator = params.get("designator", "")
@@ -1207,6 +1243,7 @@ class AltiumSimulator:
                 if _get_batch_field(op, "designator").strip():
                     added += 1
                     self.lib_pins.append({
+                        "component": self.lib_target,
                         "designator": _get_batch_field(op, "designator"),
                         "name": _get_batch_field(op, "name"),
                         "electrical_type": _get_batch_field(
@@ -1239,6 +1276,17 @@ class AltiumSimulator:
             if not params.get("pads"):
                 return _build_error_response(rid, "MISSING_PARAM",
                                              "pads is required")
+            # An unknown shape word refuses the whole batch before any pad
+            # is made, as the Pascal does.
+            bad: list[str] = []
+            for op in _iter_batch_ops(params.get("pads", "")):
+                word = _pad_shape_word(_get_batch_field(op, "shape"))
+                if word.startswith("?") and word[1:] not in bad:
+                    bad.append(word[1:])
+            if bad:
+                return _build_error_response(
+                    rid, "INVALID_SHAPE",
+                    _pad_shape_refusal(", ".join(bad)) + "; no pad was added")
             if not self.lib_has_pcblib:
                 return _build_error_response(rid, "NO_PCBLIB",
                                              "No PCB library is active")
@@ -1354,6 +1402,11 @@ class AltiumSimulator:
             )
 
         elif action == "add_footprint_pad":
+            word = _pad_shape_word(params.get("shape", ""))
+            if word.startswith("?"):
+                return _build_error_response(
+                    rid, "INVALID_SHAPE",
+                    _pad_shape_refusal(word[1:]) + "; no pad was added")
             designator = params.get("designator", "")
             return _build_success_response(
                 rid,
@@ -2162,6 +2215,11 @@ class AltiumSimulator:
                              % _escape_json_string(d) for d in matched))))
 
         if action == "get_components":
+            mode = (params.get("body_heights") or "max").strip().lower()
+            if mode not in ("max", "all"):
+                return _build_error_response(
+                    rid, "BAD_BODY_HEIGHTS",
+                    'body_heights must be max or all, got "%s"' % mode)
             items = []
             for c in board.components:
                 x1, y1 = c.x - c.width // 2, c.y - c.height // 2
@@ -2175,6 +2233,12 @@ class AltiumSimulator:
                     '"footprint":"' + _escape_json_string(c.footprint) + '",'
                     '"source_designator":"' + _escape_json_string(c.designator) + '",'
                     '"height_mils":' + str(c.height_mils) + ','
+                    # The simulated board carries no 3D bodies, so the
+                    # height is the component's own parameter.
+                    '"height_source":"component","max_body_height_mils":null,'
+                    '"height_mismatch":false,'
+                    '"component_height_mils":' + str(c.height_mils) + ','
+                    '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
                     '"bbox":{"x1":' + str(x1) + ',"y1":' + str(y1) +
                     ',"x2":' + str(x2) + ',"y2":' + str(y2) +
                     ',"width":' + str(c.width) + ',"height":' + str(c.height) + '}}'
