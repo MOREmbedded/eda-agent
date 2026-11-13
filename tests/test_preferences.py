@@ -193,7 +193,7 @@ def test_the_config_tab_is_wired_and_painted_at_start():
 
 def test_one_tab_shows_at_a_time():
     show = functions(strip_comments(_code("StatusForm.pas")))["ShowTab"]
-    for line in ("mmo_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
+    for line in ("pnl_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
                  "pnl_Config.Visible := Which = 2;", "mmo_Stats.Visible := Which = 3;"):
         assert line in show
 
@@ -400,8 +400,8 @@ def test_token_stats_are_kept_and_default_to_on(tmp_path):
     (tmp_path / "preferences.json").write_text('{"usage_stats":"off"}')
     assert not preferences.usage_stats_on(tmp_path)
 _CHECK_STUBS = """
-type TLog = record Lines : TStringList; end;
-var mmo_Log : TLog;
+type TLog = record Items : TStringList; end;
+var lst_Log : TLog;
 procedure PaintAgentSettings(Dummy : Integer); begin end;
 """
 
@@ -429,7 +429,7 @@ def test_the_panel_turns_checks_off_and_on_and_keeps_them(tmp_path):
     _STUBS = saved + _CHECK_STUBS
     try:
         out = _run(tmp_path, [
-            "  mmo_Log.Lines := TStringList.Create;",
+            "  lst_Log.Items := TStringList.Create;",
             "  LoadPreferences(0); WriteLn('[', ChecksOff, ']');",
             "  ChooseCheck('spice_model', False); ChooseCheck('fab_export', False);",
             "  ChooseCheck('spice_model', False);",
