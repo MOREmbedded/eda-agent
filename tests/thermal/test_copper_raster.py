@@ -332,3 +332,87 @@ def test_a_gap_narrower_than_a_sample_is_open_and_an_edge_row_conducts():
     # the track spans y = 338..368: 12 mil in row 6 (300..350), 18 in row 7
     assert kx[6, 8] == pytest.approx(12 / 50, rel=1e-6)
     assert kx[7, 8] == pytest.approx(18 / 50, rel=1e-6)
+
+
+# -- sample pitch for conduction ----------------------------------------------
+
+def rect(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def test_fine_supersample_holds_the_sample_near_two_mils():
+    from eda_agent.layout.copper_raster import MAX_SAMPLES, SAMPLE_MILS, fine_supersample
+    assert SAMPLE_MILS == 2.0
+    assert fine_supersample(25.0, 40_000) == 13          # 1.9 mil
+    assert fine_supersample(40.0, 40_000) == 20
+    assert fine_supersample(5.0, 40_000) == 4            # never under 4
+    # a grid too large for it takes the finest sample that fits
+    s = fine_supersample(50.0, 1_000_000)
+    assert s == 4 and 1_000_000 * s * s <= MAX_SAMPLES
+    assert fine_supersample(50.0, 250_000) == 8
+    board = LayoutBoard(name="b", outline=rect(0, 0, 400, 400),
+                        layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)])
+    assert rasterize(board, cell_mils=40.0, supersample=0).supersample == 20
+    assert rasterize(board, cell_mils=40.0).supersample == 4
+
+
+def _sheet_conductance(raster, layer):
+    """Conductance per square of ``layer`` from its left edge to its right
+    one, 1 for solid copper, from the raster's link conductivities."""
+    kx, ky = raster.link_conductivity(layer, 1.0, 0.0)
+    ny, nx = raster.ny, raster.nx
+    idx = np.arange(ny * nx).reshape(ny, nx)
+    a = np.zeros((ny * nx, ny * nx))
+    for i, j, g in ((idx[:, :-1], idx[:, 1:], kx), (idx[:-1, :], idx[1:, :], ky)):
+        i, j, g = i.ravel(), j.ravel(), g.ravel()
+        np.add.at(a, (i, i), g)
+        np.add.at(a, (j, j), g)
+        np.add.at(a, (i, j), -g)
+        np.add.at(a, (j, i), -g)
+    b = np.zeros(ny * nx)
+    big = 1e6
+    a[idx[:, 0], idx[:, 0]] += big
+    b[idx[:, 0]] += big
+    a[idx[:, -1], idx[:, -1]] += big
+    v = np.linalg.solve(a + 1e-12 * np.eye(ny * nx), b).reshape(ny, nx)
+    mid = nx // 2
+    current = float((kx[:, mid] * (v[:, mid] - v[:, mid + 1])).sum())
+    return current * (nx - 1) / ny
+
+
+def _via_field(pitch=40.0, hole=8.0, n=12, stagger=False):
+    w = n * pitch
+    layers = [Layer("TopLayer", "signal", 0), Layer("InternalPlane1", "plane", 1, "GND"),
+              Layer("BottomLayer", "signal", 2)]
+    board = LayoutBoard(name="bga", outline=rect(0, 0, w, w), layers=layers)
+    for i in range(n):
+        for j in range(n):
+            x = (i + 0.5) * pitch + (pitch / 2 if stagger and j % 2 else 0.0)
+            if x < w - 1:
+                board.vias.append(Via(x, (j + 0.5) * pitch, hole + 10, hole,
+                                      "TopLayer", "BottomLayer", "SIG"))
+    return board
+
+
+@pytest.mark.parametrize("cell,rel", [(8.0, 0.04), (16.0, 0.04), (24.0, 0.06), (40.0, 0.15)])
+def test_a_plane_under_a_via_field_conducts_as_the_perforated_sheet_it_is(cell, rel):
+    """A plane a BGA's vias pass through: round antipads of 28 mil at
+    40 mil pitch, webs of 12 mil between them. Rayleigh's result for a
+    square array of round holes of area share f in a sheet is
+    1 - 2f / (1 + f - 0.3058 f^4). With a sample of 2 mil the webs are
+    seen whatever the cell; with four samples to a 40 mil cell every web
+    read as a cut and the plane as open (conductance 0)."""
+    board = _via_field()
+    f = math.pi * 14.0 ** 2 / 40.0 ** 2
+    rayleigh = 1.0 - 2.0 * f / (1.0 + f - 0.305827 * f ** 4)
+    r = rasterize(board, cell_mils=cell, links=True, supersample=0, plane_clearance_mils=10.0)
+    assert r.fill["InternalPlane1"].mean() == pytest.approx(1.0 - f, abs=2e-3)
+    assert _sheet_conductance(r, "InternalPlane1") == pytest.approx(rayleigh, rel=rel)
+
+
+def test_staggered_holes_do_not_cut_the_plane_either():
+    board = _via_field(stagger=True)
+    for cell in (16.0, 40.0):
+        r = rasterize(board, cell_mils=cell, links=True, supersample=0,
+                      plane_clearance_mils=10.0)
+        assert 0.40 < _sheet_conductance(r, "InternalPlane1") < 0.55

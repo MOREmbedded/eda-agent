@@ -54,7 +54,7 @@ The reply:
 | `airflow_ms`, `airflow_deg` | Forced air along the board and the direction it moves towards. Parts downstream sit in warmed air and run hotter |
 | `altitude_m` | Thinner air convects less: about 12 % less at 3000 m |
 | `clamps` | A rectangle of a face held to a chassis at a temperature, through a contact conductance: a mounting rail, a gap pad to the case |
-| `heat_areas` | Heat spread over a rectangle of a copper layer |
+| `heat_areas` | Heat made in the copper of a layer inside a rectangle, each piece of copper taking its share. A rectangle with under 1 % copper heats the bare laminate there |
 | `heat_map_npz` | The Joule heat an IR-drop run found, added to the part powers: `.npz` files with one `W_<layer>` array of watts per cell for each copper layer, and `x0`, `y0`, `cell_mils` of their grid. The grid need not match |
 | `options` | `emissivity`, `dielectric` (`fr4`, `high_tg_fr4`, `polyimide`, `rogers_4350b`, `rogers_4003c`, `ptfe`, `imsl`) or `k_xy` / `k_z`, `via_fill` (`none`, `epoxy`, `conductive`, `silver`, `copper`), `plating_um`, `solder_mask`, `radiation`, `convection` (`local` or `mean`), fixed `h_top` / `h_bottom`, `up_deg` |
 
@@ -78,6 +78,9 @@ unknown, so a four-layer board is several hundred thousand of them.
   really joins them. A track along the way conducts with its width. A
   clearance across it conducts only through the resin, even when it is far
   narrower than a cell.
+- The copper is sampled every 2 mil whatever the cell size. The web of
+  copper between two antipads under a BGA is 10 mil or less: on a coarser
+  sample it reads as a cut, and the plane under the BGA as open.
 - The laminate conducts three times better along the glass than through it
   (0.81 against 0.29 W/m/K for FR-4). Both values are used.
 - Every plated hole is modelled on its own: the barrel's copper wall from
@@ -89,6 +92,12 @@ unknown, so a four-layer board is several hundred thousand of them.
 - A pad smaller than the cells around it is not smeared over them: heat
   leaves through the area under the copper and a fringe beside each edge,
   from the conformal-mapping result for a strip over a plane.
+- The laminate is one body from face to face. Heat on its way through the
+  board passes an inner layer through the laminate between its tracks, and
+  a plane through its antipads, also in a cell that holds copper and bare
+  laminate.
+- A via's land is at its barrel's temperature, on cells larger and smaller
+  than the land.
 
 **Surfaces.** Both faces, the board's edges and part cases lose heat to the
 air and to the surroundings.
@@ -122,8 +131,11 @@ The solver is tested against exact solutions (`tests/thermal`):
 | Board in still air with radiation | The scalar balance of the same correlations | 0.002 K |
 | Vertical board and forced flow | Churchill-Chu and flat-plate averages | Matches the average, with the expected gradient along the board |
 | Via arrays | Barrels in parallel | 2 % |
+| A plane perforated by a BGA's antipads | Rayleigh's conductivity of a sheet with a square array of round holes | 4 % on 16 mil cells, 15 % on 40 mil |
 | A track as the only path | Its own length over conductivity, width and thickness | 3 % at any cell size |
 | A part on thermal vias, cells from 40 mil down to 5 | The same answer | Within 0.5 K on a 62 K rise |
+| Heat through an inner layer of tracks, 25 mil cells against 5 | The same answer | 4 % |
+| A BGA's via field, 20 mil cells against 10 | The same answer | 1 % |
 
 `refine=True` solves the board a second time with cells half the size and
 lists how far every temperature moved. That move is the estimate of the

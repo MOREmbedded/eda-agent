@@ -54,6 +54,16 @@ DEFAULT_PLANE_CLEARANCE_MILS = 10.0
 #: Hard cap on cells per layer, so a tiny cell on a large board cannot
 #: take the machine's memory. The caller is told to coarsen.
 MAX_CELLS = 4_000_000
+#: ``supersample=0``: the sample pitch a conduction model wants, mils. The
+#: narrowest copper web and clearance on a board are 3 to 4 mil; a web is
+#: told from a cut only when it is more than a sample wide, so a coarser
+#: sample reads the web between two antipads of a BGA field as cut and the
+#: plane under the BGA as open.
+SAMPLE_MILS = 2.0
+#: ... and the most samples one layer may take for it (float32 each, and a
+#: few times that while the links are made). A board too large for
+#: ``SAMPLE_MILS`` gets the finest pitch that fits.
+MAX_SAMPLES = 16_000_000
 
 
 #: Region kinds that are not copper: a polygon cutout, a keepout, and a
@@ -633,6 +643,15 @@ def _unpoured(board: LayoutBoard, want: list[str], keep) -> list[str]:
             f"left out (repour them in the PCB editor): {', '.join(empty[:6])}{more}"]
 
 
+def fine_supersample(cell_mils: float, cells: int, sample_mils: float = SAMPLE_MILS,
+                     max_samples: int = MAX_SAMPLES) -> int:
+    """Samples per cell side for a sample pitch of ``sample_mils``, as
+    far as ``max_samples`` on a grid of ``cells`` allows; never under 4."""
+    want = int(math.ceil(cell_mils / sample_mils - 1e-9))
+    room = int(math.sqrt(max_samples / max(1, cells)))
+    return max(4, min(want, room))
+
+
 def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
               nets: Optional[Iterable[str]] = None,
               layers: Optional[Iterable[str]] = None,
@@ -648,7 +667,9 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     layers (default all, top first). ``supersample``: samples per cell
     side; it sets how finely a pour's edge and a gap are placed (to half
     a sample), not the area of tracks, circles and rectangles, which is
-    exact. ``kinds``: paint only these object kinds, a subset of
+    exact. 0 picks it for conduction: a sample of ``SAMPLE_MILS`` or the
+    finest that keeps a layer under ``MAX_SAMPLES``, and at least 4 per
+    cell (``fine_supersample``). ``kinds``: paint only these object kinds, a subset of
     ``KINDS`` (default all); an IR-drop model that treats tracks as exact
     1D resistors leaves ``tracks`` and ``arcs`` out. Drill holes are
     always cut. ``links`` also fills ``link_x`` / ``link_y``, the copper's
@@ -664,7 +685,6 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
         raise ValueError(f"unknown kinds {sorted(unknown)}; use {list(KINDS)}")
     if cell_mils <= 0:
         raise ValueError("cell_mils must be > 0")
-    s = max(1, int(supersample))
     order = board.copper_layers() or ["TopLayer", "BottomLayer"]
     want = [l for l in order if layers is None or l in set(layers)]
     net_set = None if nets is None else {n for n in nets}
@@ -678,6 +698,8 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     if nx * ny > MAX_CELLS:
         raise ValueError(f"{nx} x {ny} cells is too fine for this board; "
                          f"use a larger cell_mils")
+    s = int(supersample)
+    s = fine_supersample(cell_mils, nx * ny) if s <= 0 else s
     pitch = cell_mils / s
     clear = plane_clearance_mils
     notes = []

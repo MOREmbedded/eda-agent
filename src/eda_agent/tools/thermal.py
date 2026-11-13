@@ -75,7 +75,8 @@ def register_thermal_tools(mcp) -> None:
                 temperature moved (the discretisation error estimate).
             limit_c: flag every part whose board temperature is above it.
             heat_areas: [{layer, x0, y0, x1, y1, power_w}] in mils, heat
-                spread over a rectangle of a copper layer.
+                made in the copper of a layer inside a rectangle (in the
+                bare laminate when under 1 % of it is copper).
             clamps: [{x0, y0, x1, y1, temp_c, side, h_contact}] a
                 rectangle of a face held to a chassis at temp_c.
             heat_map_npz: .npz files of an IR-drop run; their Joule heat

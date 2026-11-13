@@ -92,6 +92,9 @@ LN_MIN = 0.05
 FRINGE = 2.0 * math.log(2.0) / math.pi
 #: Conductance tying a junction to its pads when no theta_jb is known, W/K.
 TIGHT_W_PER_K = 1.0e3
+#: A heat area with less than this share of copper in it heats the bare
+#: laminate instead.
+HEAT_AREA_MIN_COPPER = 0.01
 #: Contact conductance of a clamp to a chassis, W/m^2/K (a thermal pad).
 CLAMP_H = 5000.0
 #: Below this many unknowns a direct solve is as quick as multigrid.
@@ -380,12 +383,14 @@ def _pad_cells(board: LayoutBoard, raster: CopperRaster, ref: str, layer: str,
     return {int(c): float(a) * MIL * MIL for c, a in zip(cells[keep], area[keep])}
 
 
-def _ring(raster: CopperRaster, idx: np.ndarray, x: float, y: float, r_mils: float
-          ) -> tuple[np.ndarray, np.ndarray]:
+def _ring(raster: CopperRaster, idx: np.ndarray, x: float, y: float, r_mils: float,
+          reach: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
     """Active cells whose centres lie more than ``r_mils`` and at most
-    ``r_mils`` plus one cell from (x, y), and those distances in mils."""
+    ``r_mils`` plus one cell from (x, y), and those distances in mils.
+    ``reach`` sets the outer radius instead; with ``r_mils`` 0 the cells
+    are the disc of that radius."""
     cell = raster.cell_mils
-    reach = r_mils + cell
+    reach = r_mils + cell if reach is None else reach
     i0 = max(0, int(math.floor((x - reach - raster.x0) / cell)))
     i1 = min(raster.nx - 1, int(math.floor((x + reach - raster.x0) / cell)))
     j0 = max(0, int(math.floor((y - reach - raster.y0) / cell)))
@@ -396,7 +401,7 @@ def _ring(raster: CopperRaster, idx: np.ndarray, x: float, y: float, r_mils: flo
     ys = raster.y0 + (np.arange(j0, j1 + 1) + 0.5) * cell - y
     rho = np.hypot(xs[None, :], ys[:, None])
     c = idx[j0:j1 + 1, i0:i1 + 1]
-    sel = (c >= 0) & (rho > r_mils) & (rho <= reach + 1e-9)
+    sel = (c >= 0) & ((rho > r_mils) | (r_mils <= 0)) & (rho <= reach + 1e-9)
     return c[sel], rho[sel]
 
 
@@ -629,17 +634,41 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
     cells = np.arange(M)
     aniso = math.sqrt(kxy_d / _kz_d)
     cu_planes = [p for p, pl in enumerate(planes) if pl.kind == "cu"]
+
+    def end_cover(p_cu: int, gap: float) -> np.ndarray:
+        cu = planes[p_cu]
+        if cu.edge_m is None:
+            return np.ones(M)
+        cov = _fringe_cover(cu.fill, cu.edge_m, FRINGE * aniso * gap, dx * dx)
+        return np.where(cu.fill > 0, cov, 1.0)
+
+    # The laminate is one body from face to face. Copper exchanges heat
+    # with it under its own area and the fringe beside it (_fringe_cover);
+    # a cell with no copper on a layer is laminate there and conducts over
+    # its whole area. What an inner layer's copper does not cover lets the
+    # heat pass (``bare``): through that share the laminate above the
+    # layer joins the laminate below it directly, and the columns either
+    # side carry it. An outer layer has nothing beyond it to pass heat to.
+    gap_of = {pa: (planes[pa + 1].gap_m if pb > pa + 1 else 0.0)
+              for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
+    c_dn = {pa: end_cover(pa, gap_of[pa]) for pa in cu_planes[:-1]}
+    c_up = {pb: end_cover(pb, gap_of[pa]) for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
+    bare = {p: np.zeros(M) for p in cu_planes}
+    for p in cu_planes[1:-1]:
+        if planes[p - 1].kind == "diel" and planes[p + 1].kind == "diel":
+            bare[p] = 1.0 - np.maximum(c_up[p], c_dn[p])
+            sel = bare[p] > 1e-9
+            if sel.any():
+                r = (planes[p - 1].t_m / (2 * planes[p - 1].kz) + planes[p].t_m / planes[p].k_res
+                     + planes[p + 1].t_m / (2 * planes[p + 1].kz))
+                link((p - 1) * M + cells[sel], (p + 1) * M + cells[sel],
+                     (A * bare[p] / r)[sel])
     for pa, pb in zip(cu_planes[:-1], cu_planes[1:]):
-        # The column of laminate between two copper layers conducts under
-        # the copper at its ends and the fringe beside it (_fringe_cover),
-        # the narrower end deciding; a cell with no copper at an end is
-        # laminate all the way and conducts over its whole area.
-        gap = planes[pa + 1].gap_m if pb > pa + 1 else 0.0
-        cover = np.ones(M)
-        for cu in (planes[pa], planes[pb]):
-            if cu.edge_m is not None:
-                cov = _fringe_cover(cu.fill, cu.edge_m, FRINGE * aniso * gap, dx * dx)
-                cover = np.minimum(cover, np.where(cu.fill > 0, cov, 1.0))
+        ca, cb = c_dn[pa], c_up[pb]
+        # The column between two copper layers: the tube that joins their
+        # copper (the narrower end deciding) and what passes each of them.
+        col = np.minimum(1.0, np.minimum(ca, cb) + bare[pa] + bare[pb])
+        r_gap = sum(planes[p].t_m / planes[p].kz for p in range(pa + 1, pb))
         for p in range(pa, pb):
             r = np.zeros(M)
             for pl in (planes[p], planes[p + 1]):
@@ -647,7 +676,22 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
                     r += pl.t_m / (2 * np.where(pl.fill > 0, ph.K_COPPER, pl.k_res))
                 else:
                     r += pl.t_m / (2 * pl.kz)
-            link(p * M + cells, (p + 1) * M + cells, A * cover / r)
+            share = col
+            extra = np.zeros(M)
+            for end, c_end, first in ((pa, ca, pa + 1), (pb, cb, pb - 1)):
+                if (p == end or p + 1 == end) and pb > pa + 1:
+                    # Copper narrower than the column meets it over its own
+                    # cover. On an outer layer, where the parts are, the
+                    # copper is the source: it sees the next layer through
+                    # a tube of that width the whole way, so the rest of
+                    # the gap's resistance at the tube's width instead of
+                    # the column's is added to its link. Inner copper lies
+                    # in the heat's way and gathers it only close by.
+                    share = np.minimum(share, c_end)
+                    if end in (cu_planes[0], cu_planes[-1]):
+                        rest = r_gap - planes[first].t_m / (2 * planes[first].kz)
+                        extra = extra + rest * np.maximum(1.0 / c_end - 1.0 / col, 0.0)
+            link(p * M + cells, (p + 1) * M + cells, A / (r / share + extra))
 
     # plated holes
     plating = setup.plating_um * 1e-6
@@ -696,6 +740,15 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             else:
                 g = two_pi * sheet / (len(rc) * np.maximum(np.log(rho / r_c), LN_MIN))
             link(np.full(rc.shape, node), (p0 + k) * M + rc, g)
+            if connects and not is_plane and r_land > r_wall:
+                # The land is the barrel's own copper: the cells under it
+                # sit at the barrel's temperature. On a grid finer than the
+                # land they lie inside the ring above and nothing else
+                # would tie them to it.
+                lc, _ = _ring(raster, idx, b.x, b.y, 0.0, reach=r_land)
+                if len(lc):
+                    link(np.full(lc.shape, node), (p0 + k) * M + lc,
+                         two_pi * pl.kxy[lc] * pl.t_m / (len(lc) * LN_MIN))
         barrel_nodes.append((b, chain))
 
     # parts
@@ -772,6 +825,14 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
                if idx[iy, ix] >= 0}
         if not got:
             raise ValueError(f"heat area on {ha.layer} lies outside the board")
+        # The heat is made in the layer's copper inside the rectangle, each
+        # cell taking its copper's share, so the answer does not depend on
+        # whether a cell holds copper alone or copper and bare laminate.
+        # A rectangle with next to no copper heats the laminate's surface.
+        fill_l = planes[cu_index[ha.layer]].fill
+        in_cu = {c: a * float(fill_l[c]) for c, a in got.items()}
+        if sum(in_cu.values()) >= HEAT_AREA_MIN_COPPER * sum(got.values()):
+            got = {c: a for c, a in in_cu.items() if a > 0.0}
         tot = sum(got.values())
         for c, a in got.items():
             b_vec[cu_index[ha.layer] * M + c] += ha.power_w * a / tot

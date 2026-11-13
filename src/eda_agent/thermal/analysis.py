@@ -288,7 +288,7 @@ def _layer_rows(result: Result) -> list[dict]:
 
 def _solve_once(board, stack, cell_mils, powers, packages, setup, heat_areas, clamps,
                 extra_heat_w, report_parts, heat_maps=None) -> Result:
-    raster = rasterize(board, cell_mils=cell_mils, links=True)
+    raster = rasterize(board, cell_mils=cell_mils, links=True, supersample=0)
     extra = {k: np.asarray(v, dtype=float) for k, v in (extra_heat_w or {}).items()}
     notes = []
     for hm in heat_maps or []:

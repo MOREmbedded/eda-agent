@@ -139,11 +139,13 @@ def test_automatic_cell_size_follows_the_board():
 def test_refine_reports_how_far_the_numbers_moved():
     board, stack = demo_board()
     pk = parse_packages(PACKAGES)
-    coarse, _ = analyze(board, stack, powers=POWERS, packages=pk, cell_mils=50.0)
-    rep, res = analyze(board, stack, powers=POWERS, packages=pk, cell_mils=50.0, refine=True)
+    coarse, _ = analyze(board, stack, powers=POWERS, packages=pk, cell_mils=25.0)
+    rep, res = analyze(board, stack, powers=POWERS, packages=pk, cell_mils=25.0, refine=True)
     ref = rep["refinement"]
-    assert ref["cells_mils"] == [50.0, 25.0] and rep["grid"]["cell_mils"] == 25.0
-    assert res.raster.cell_mils == 25.0
+    assert ref["cells_mils"] == [25.0, 12.5] and rep["grid"]["cell_mils"] == 12.5
+    assert res.raster.cell_mils == 12.5
+    # the copper is sampled at 2 mil whatever the cell (webs between antipads)
+    assert res.raster.cell_mils / res.raster.supersample <= 2.0
     assert ref["t_max_c"]["coarse_c"] == pytest.approx(coarse["t_max_c"], abs=0.01)
     assert ref["t_max_c"]["fine_c"] == pytest.approx(rep["t_max_c"], abs=0.01)
     rows = {r["ref"]: r for r in ref["parts"]}

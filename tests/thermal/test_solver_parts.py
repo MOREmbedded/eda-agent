@@ -20,7 +20,8 @@ PLAIN = dict(radiation=False, edges=False, solder_mask=False)
 
 
 def _solve(board, stack, cell=25.0, **kw):
-    return solve(board, stack, rasterize(board, cell_mils=cell, links=True), **kw)
+    """Solved as the tool solves it: copper sampled at 2 mil (supersample=0)."""
+    return solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0), **kw)
 
 
 def _part(res, ref):
@@ -39,8 +40,9 @@ def test_theta_jb_adds_power_times_theta_above_the_pads():
     p = _part(res, "U1")
     assert p["t_junction_c"] - p["t_pads_c"] == pytest.approx(1.2 * 9.0, abs=2e-3)
     # Without theta_jb the pads are tied into one isothermal source; with it
-    # the heat is shared by pad area. The mean pad temperature barely moves.
-    assert p["t_pads_c"] == pytest.approx(bare["t_pads_c"], abs=0.3)
+    # the heat is shared by pad area. The mean pad temperature barely moves
+    # (0.4 K on a 58 K rise).
+    assert p["t_pads_c"] == pytest.approx(bare["t_pads_c"], abs=0.6)
     assert p["margin_k"] == pytest.approx(125.0 - p["t_junction_c"], abs=1e-3)
     assert res.balance["error_pct"] < 1e-5
 
@@ -215,7 +217,7 @@ def test_clamp_takes_the_heat_and_holds_its_temperature():
 def test_extra_heat_map_adds_to_the_part_powers():
     board, stack = two_layer(1000, 1000)
     add_chip(board, "R1", 500, 500)
-    r = rasterize(board, cell_mils=50, links=True)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0)
     joule = np.zeros((r.ny, r.nx))
     joule[2:6, 2:6] = 0.5 / 16
     res = solve(board, stack, r, powers={"R1": 0.25}, extra_heat_w={"BottomLayer": joule})
@@ -275,7 +277,7 @@ def test_orientation_and_altitude_move_the_result_the_right_way():
 
 def test_bad_inputs_are_refused():
     board, stack = demo_board()
-    r = rasterize(board, cell_mils=100, links=True)
+    r = rasterize(board, cell_mils=100, links=True, supersample=0)
     for bad in (dict(orientation="sideways"), dict(convection="magic"),
                 dict(dielectric="cheese"), dict(emissivity=1.5), dict(k_z=0.0),
                 dict(max_sublayer_mils=0.0)):
@@ -306,7 +308,7 @@ def test_direct_solver_fallback_when_pyamg_is_missing(monkeypatch):
     import eda_agent.thermal.solver as solver
 
     board, stack = demo_board()
-    r = rasterize(board, cell_mils=50, links=True)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0)
     ref = solve(board, stack, r, powers={"U1": 1.0, "U2": 1.5})
     assert ref.solver["linear_solver"] == "amg-cg"
     real_import = builtins.__import__
@@ -339,3 +341,97 @@ def test_no_false_peak_in_the_drill_holes_under_a_pad():
     assert res.t_max_c - p["t_pads_c"] < 1.0
     assert p["t_pads_max_c"] - p["t_pads_c"] < 1.0
     assert p["t_junction_c"] == pytest.approx(p["t_pads_c"] + 12.0, abs=0.01)
+
+
+# -- heat through the board and past its inner layers ---------------------------
+
+def _three_layer(kind, w=400.0):
+    """Top and bottom bare, a middle layer that is bare, solid, or 5 mil
+    tracks at 25 mil pitch (a fifth copper); 8 mil of laminate each side."""
+    from eda_agent.emc.stack import stack_from_stackup
+    from eda_agent.layout.model import Layer, LayoutBoard
+    layers = [Layer("TopLayer", "signal", 0), Layer("MidLayer1", "signal", 1),
+              Layer("BottomLayer", "signal", 2)]
+    board = LayoutBoard(name="t.PcbDoc", outline=rect(0, 0, w, w), layers=layers)
+    if kind == "tracks":
+        for k in range(int(w // 25)):
+            y = 12.5 + 25.0 * k
+            board.tracks.append(Track("MidLayer1", 5, y, w - 5, y, 5.0, f"N{k}"))
+    elif kind == "solid":
+        board.regions.append(Region("MidLayer1", rect(0, 0, w, w), net="GND", kind="pour"))
+    row = {"copper_thickness_mils": 1.4, "dielectric_type": "Core",
+           "dielectric_height_mils": 8.0, "dielectric_constant": 4.2}
+    stack = stack_from_stackup({"layers": [dict(row, layer_id=1), dict(row, layer_id=2),
+                                           {"layer_id": 32, "copper_thickness_mils": 1.4}]},
+                               layers)
+    return board, stack
+
+
+def _through_rise(kind, cell, w=400.0):
+    """Mean rise of the top face over a bottom face held at 25 C, 1 W
+    spread over the top."""
+    board, stack = _three_layer(kind, w)
+    setup = Setup(ambient_c=25.0, radiation=False, h_top=1e-6, h_bottom=1e-6, edges=False)
+    res = solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0),
+                powers={}, setup=setup, heat_areas=[HeatArea("TopLayer", 0, 0, w, w, 1.0)],
+                clamps=[Clamp(0, 0, w, w, 25.0, side="bottom", h_contact=1e6)])
+    return float(np.nanmean(res.temps["TopLayer"])) - 25.0
+
+
+def test_heat_crosses_a_partly_covered_inner_layer():
+    """Heat on its way through the board passes an inner layer's tracks
+    through the laminate between them. Cells that hold a track and bare
+    laminate must let it: with the column cut down to the track's own
+    cover the board read 42 % more resistance on 25 mil cells than on
+    5 mil ones, which resolve the tracks."""
+    bare, solid = _through_rise("none", 25.0), _through_rise("solid", 25.0)
+    coarse, fine = _through_rise("tracks", 25.0), _through_rise("tracks", 5.0)
+    assert solid < fine < bare                 # a fifth copper helps a little
+    assert coarse == pytest.approx(fine, rel=0.05)
+    assert solid < coarse < bare
+    # no copper, or all copper: nothing to resolve, any cell gives the same
+    assert _through_rise("none", 50.0) == pytest.approx(bare, rel=1e-6)
+    assert _through_rise("solid", 50.0) == pytest.approx(solid, rel=1e-6)
+
+
+def test_a_via_land_sits_at_its_barrel_temperature_on_a_fine_grid():
+    """A via's land is the barrel's own copper. On cells smaller than the
+    land its cells lie inside the ring where the barrel meets the layer;
+    untied, they floated 8 K over the laminate round them with heat
+    spread over the top."""
+    board, stack = four_layer(1200.0, 1200.0)
+    board.vias.append(Via(580.0, 580.0, 18.0, 8.0, "TopLayer", "BottomLayer", "SIG"))
+    res = _solve(board, stack, cell=10.0, powers={},
+                 heat_areas=[HeatArea("TopLayer", 360, 360, 840, 840, 2.0)])
+    top = res.temps["TopLayer"]
+    land = top[57:59, 57:59]                   # the four cells round (580, 580)
+    assert res.raster.fill["TopLayer"][57:59, 57:59].min() > 0.4
+    round_it = np.concatenate([top[56, 56:60], top[59, 56:60], top[57:59, 56], top[57:59, 59]])
+    assert land.max() < round_it.min() - 3.0   # the barrel draws the heat down
+    assert land.max() - res.barrels[0]["t_top_c"] < 3.0
+
+
+def _bga(cell):
+    """2 W in the lands of a 12 x 12 field of signal vias at 40 mil pitch
+    over two planes that every via passes through an antipad."""
+    board, stack = four_layer(1200.0, 1200.0)
+    for i in range(12):
+        for j in range(12):
+            board.vias.append(Via(380.0 + 40.0 * i, 380.0 + 40.0 * j, 18.0, 8.0,
+                                  "TopLayer", "BottomLayer", f"S{i}_{j}"))
+    return _solve(board, stack, cell=cell, powers={},
+                  heat_areas=[HeatArea("TopLayer", 360, 360, 840, 840, 2.0)])
+
+
+def test_a_via_field_reads_the_same_on_coarse_and_fine_cells():
+    """A BGA's via field: lands on top, antipads in both planes, webs of
+    12 mil between them. Cells of half the pitch and of a quarter must
+    agree. They did not: heat put into cells that hold a land and bare
+    laminate, the plane's webs read as cut, and columns choked by a
+    sliver of plane each moved the peak by 10 K and more."""
+    coarse, fine = _bga(20.0), _bga(10.0)
+    assert coarse.t_max_c - 25.0 == pytest.approx(fine.t_max_c - 25.0, rel=0.02)
+    for name in ("InternalPlane1", "InternalPlane2", "BottomLayer"):
+        assert (np.nanmax(coarse.temps[name]) - 25.0
+                == pytest.approx(np.nanmax(fine.temps[name]) - 25.0, rel=0.03))
+    assert coarse.balance["error_pct"] < 1e-4 and fine.balance["error_pct"] < 1e-4
