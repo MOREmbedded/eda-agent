@@ -10,6 +10,8 @@ DRC's verdict on the routed board. Nothing is applied here.
 
 from __future__ import annotations
 
+import math
+import numbers
 import time
 from typing import Any
 
@@ -37,8 +39,8 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     if setting["problem"]:
         engine_notes.append(f"The router setting was ignored ({setting['problem']}), so the "
                             "default engine routed.")
-    stages_in, notes = _pad_vias(params.get("stages"), which)
-    engine_notes += notes
+    stages_in, centre_asked = _pad_vias(params.get("stages"), which)
+    _check_stage_numbers(stages_in)
     euan_args: dict[str, Any] = {}
     if which == "euan":
         # Before anything runs: a bad switch fails the job as it does with
@@ -74,6 +76,10 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                            stages=stages_in,
                            log=live.progress_logger("route"))
         report_of = finish_report
+        if centre_asked is not None:
+            # Written now, from the attempt kept: its fallback may have
+            # widened "bga" to "ic".
+            engine_notes.append(_pad_vias_note(centre_asked, r.options.pad_vias))
     out = r.apply()
     # The router's own tracks laid again as the shortest clean 45/90 runs;
     # the board's tracks before it stay as they are (gloss.py).
@@ -205,34 +211,81 @@ def _euan_param(key: str, value: Any, board: LayoutBoard | None) -> Any:
     return number
 
 
+#: The numbers the stage options take, the same for both engines; outside
+#: its range a value fails the job before anything runs. Unchecked, a
+#: negative lane_cost gave scipy's Dijkstra negative weights, which ran
+#: the server process out of memory and aborted it, and a lane_depth of
+#: 1e7 mil walked each fine-pitch pin's lane back half a cell at a time
+#: for hours. A lane costs at least an open cell (inf makes it a wall),
+#: and a bus is two nets or more.
+STAGE_RANGES = {"pair_skew": (0.0, 1000.0), "pair_width": (1.0, 1000.0),
+                "pair_gap": (1.0, 1000.0), "lane_depth": (0.0, 1000.0),
+                "fine_pitch": (1.0, 1000.0), "lane_cost": (1.0, math.inf),
+                "bus_min": (2, 10000)}
+
+
+def _check_stage_numbers(stages: Any) -> None:
+    """ValueError for a numeric stage option out of STAGE_RANGES, or not a
+    number at all; pair_width and pair_gap may be None (the board's rule)."""
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(stages) and not isinstance(stages, type):
+        stages = asdict(stages)
+    if not isinstance(stages, dict):
+        return
+    for key, (lo, hi) in STAGE_RANGES.items():
+        if key not in stages or (stages[key] is None and key in ("pair_width", "pair_gap")):
+            continue
+        value = stages[key]
+        whole = key == "bus_min"
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) \
+                or (whole and not float(value).is_integer()):
+            raise ValueError(f"{key} takes {'a whole number' if whole else 'a number'}, "
+                             f"not {value!r}")
+        if not lo <= value <= hi:                  # NaN fails this as well
+            raise ValueError(f"{key} takes {lo:g} to {hi:g}, not {value!r}")
+
+
 #: Where a via may go into a pad (the stage option pad_vias), by engine.
 PAD_VIAS = {"default": ("bga", "ic", "any"), "euan": ("bga", "ic", "any", "centre")}
 
 
-def _pad_vias(stages: Any, which: str) -> tuple[Any, list[str]]:
-    """``stages`` with its pad_vias as the engine that routes takes it,
-    and notes. A value neither engine knows fails the job before anything
-    runs. The euan engine's "centre" is "bga" to the default engine (its
-    own default, which its fallback may widen to "ic"), and a note says
-    so: routed as "bga" in silence, the person was never told that the
-    option asked for was not applied.
+def _pad_vias(stages: Any, which: str) -> tuple[Any, Any]:
+    """``stages`` with its pad_vias as the engine that routes takes it, and
+    the value asked for when that engine cannot take it (else None). A
+    value neither engine knows fails the job before anything runs. The
+    euan engine's "centre" is "bga" to the default engine, its own
+    default; route_job's notes say so (_pad_vias_note): routed as "bga" in
+    silence, the person was never told that what they asked for was not
+    applied. Options given as a StageOptions object are checked the same.
     """
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(stages) and not isinstance(stages, type):
+        stages = asdict(stages)
     if not isinstance(stages, dict) or "pad_vias" not in stages:
-        return stages, []
+        return stages, None
     raw = stages["pad_vias"]
     if raw is None:                 # not given: the engine's own default
-        return {k: v for k, v in stages.items() if k != "pad_vias"}, []
+        return {k: v for k, v in stages.items() if k != "pad_vias"}, None
     word = str(raw).strip().lower()
     word = "centre" if word == "center" else word
     if word not in PAD_VIAS["euan"]:
         raise ValueError("pad_vias takes 'bga', 'ic' or 'any', or 'centre' with the euan "
                          f"engine; not {raw!r}")
-    notes = []
     if word not in PAD_VIAS.get(which, PAD_VIAS["default"]):
-        notes.append(f"pad_vias={raw!r} only steers the euan engine; the default engine "
-                     "routed with 'bga', a via only in a BGA's ball or an exposed pad.")
-        word = "bga"
-    return {**stages, "pad_vias": word}, notes
+        return {**stages, "pad_vias": "bga"}, raw
+    return {**stages, "pad_vias": word}, None
+
+
+def _pad_vias_note(asked: Any, routed: str) -> str:
+    """What the default engine did with a pad_vias only Euan's takes:
+    "bga", or "ic" where its fallback widened that (route_adaptive)."""
+    did = ("a via only in a BGA's ball or an exposed pad" if routed == "bga" else
+           "its fallback having widened 'bga' to IC pins, where a via may stand anywhere "
+           "in the pin" if routed == "ic" else "")
+    return (f"pad_vias={asked!r} only steers the euan engine; the default engine routed "
+            f"with {routed!r}" + (f", {did}." if did else "."))
 
 
 def euan_kwargs(stages: Any, board: LayoutBoard | None = None,

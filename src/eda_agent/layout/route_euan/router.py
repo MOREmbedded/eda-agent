@@ -99,10 +99,14 @@ class NetJob:
     terminals: list[Terminal]
     plane_mask: np.ndarray | None = None      # (ny, nx) cells in its plane
     paths: list[list[tuple[int, int, int]]] = field(default_factory=list)
-    # Per path, the width it is laid at when not the net's (a branch the
-    # trunk could not reach at full width, Router._branch_down); empty or
-    # None means job.width.
-    path_w: list = field(default_factory=list)
+    # The width a path is laid at when not the net's: a branch the trunk
+    # could not reach at full width (Router._branch_down). Keyed by the
+    # path's id, holding the path itself, so the width stays with its path
+    # however the paths are filtered, saved and put back (branch_width). A
+    # list kept in step by position was not: the pour stage's prune took
+    # the trunk out, the branch moved into its slot, and a 20 mil branch
+    # was laid at the net's 40 mil, 5 mil from another net's pad.
+    path_w: dict = field(default_factory=dict)
     via_at: dict = field(default_factory=dict)   # (y, x) -> index into vias
     stamp: list = field(default_factory=list)
     failed: int = 0
@@ -138,6 +142,11 @@ class NetJob:
     # 2 the rest (see Router._rank).
     rank: int = 2
     _deep: set | None = None
+
+    def branch_width(self, path) -> float | None:
+        """The width ``path`` is laid at when not the net's, else None."""
+        got = self.path_w.get(id(path))
+        return got[1] if got is not None and got[0] is path else None
 
     @property
     def escapes(self) -> dict:
@@ -614,16 +623,18 @@ class Router:
                 out.append(PourPlane(layer, r.net, r.outline, []))
         return out
 
-    def _plane_masks(self) -> dict[str, np.ndarray]:
+    def _plane_layer_masks(self) -> dict[str, dict[str, np.ndarray]]:
+        """Per net with a plane, per layer it is on, the cells it covers."""
         b = self.board
-        out: dict[str, np.ndarray] = {}
+        out: dict[str, dict[str, np.ndarray]] = {}
         full = np.ones((self.ny, self.nx), dtype=bool)
         for layer in b.layers:
             if layer.kind == "plane" and layer.plane_net:
-                out[layer.plane_net] = full
-        rings = [(r.net, r.outline, r.holes) for r in b.regions if r.kind == "plane" and r.net]
-        rings += [(p.net, p.outline, p.holes) for p in self.pour_planes]
-        for net, outline, holes in rings:
+                out.setdefault(layer.plane_net, {})[layer.name] = full
+        rings = [(r.net, r.layer, r.outline, r.holes) for r in b.regions
+                 if r.kind == "plane" and r.net]
+        rings += [(p.net, p.layer, p.outline, p.holes) for p in self.pour_planes]
+        for net, layer, outline, holes in rings:
             # Inside the outline and in none of its holes, as the copper
             # is drawn (and the DRC reads it). Filled even-odd with its
             # holes, another net's pour taken as a hole that reached past
@@ -632,11 +643,19 @@ class Router:
             m = fill_polygon(self.grid.spec, [outline])
             for h in holes:
                 m &= ~fill_polygon(self.grid.spec, [h])
-            out[net] = out.get(net, np.zeros_like(m)) | m
+            per = out.setdefault(net, {})
+            per[layer] = per[layer] | m if layer in per else m
         return out
 
+    def _plane_masks(self, by_layer: dict | None = None) -> dict[str, np.ndarray]:
+        """Per net with a plane, the cells it covers on any layer."""
+        by_layer = self._plane_layer_masks() if by_layer is None else by_layer
+        return {net: np.logical_or.reduce(list(per.values())) if len(per) > 1
+                else next(iter(per.values())) for net, per in by_layer.items()}
+
     def _jobs(self) -> list[NetJob]:
-        planes = self._plane_masks()
+        self._plane_layers = self._plane_layer_masks()
+        planes = self._plane_masks(self._plane_layers)
         self._copper_roots_cache = None
         jobs = []
         index = {id(p): i for i, p in enumerate(self.board.pads)}
@@ -660,9 +679,14 @@ class Router:
                 if self.reuse_vias and terms:
                     # A pad its net's copper already joins to a via into
                     # the plane is in it: routed again it got a second via.
+                    # Into the plane: one that stands in it on a layer the
+                    # via passes. Any via of the net once served, and a pad
+                    # wired to a via in a cut-out, or to a blind via short
+                    # of the plane's layer, was never joined to it.
                     served = set()
-                    for tk, _cells, has_via in self._existing_groups(net, terms, with_vias=True):
-                        if has_via:
+                    for tk, _cells, held in self._existing_groups(net, terms, with_vias=True):
+                        if any(self._in_plane_at(net, v.x, v.y, self.board.layers_between(
+                                v.low_layer, v.high_layer)) for v in held):
                             served.update(tk)
                     terms = [t for k, t in enumerate(terms) if k not in served]
                 if not terms:
@@ -736,7 +760,8 @@ class Router:
 
     def _existing_groups(self, net: str, terms: list, with_vias: bool = False) -> list:
         """The net's terminals grouped by the copper already joining them
-        (join_existing), each with the grid cells of that copper.
+        (join_existing), each with the grid cells of that copper, and with
+        ``with_vias`` the board vias in it.
 
         Pads, tracks and vias are joined as the verdict joins them
         (drc._joined: copper that touches, a via on the layers it spans).
@@ -839,7 +864,7 @@ class Router:
             cells = [c for c in cells if 0 <= c[1] < self.ny and 0 <= c[2] < self.nx]
             arr = np.array(sorted(set(cells)), dtype=np.int64).reshape(-1, 3)
             if with_vias:
-                out.append((tk, arr, any(kind == "v" for kind, _ in g)))
+                out.append((tk, arr, [d for kind, d in g if kind == "v"]))
             else:
                 out.append((tk, arr))
         # the biggest group seeds the tree
@@ -961,7 +986,7 @@ class Router:
         extra = []
         nx = self.grid.spec.nx
         for v in job.vias:
-            webs = self._mask_webs(v)
+            webs = self._mask_webs(v, job.name)
             if self.options.pad_vias == "centre" and job.pad_via:
                 # A pad's centre cell, where the search lays the pad's via
                 # at its centre: judged there by _guard_pad_vias.
@@ -1170,7 +1195,8 @@ class Router:
         A via whose centre lies within ``reach`` of the opening leaves a
         web narrower than the board's sliver rule, unless it is within
         ``merge`` and ``takes`` (the openings meet and leave none, which a
-        pad that may not take a via does not allow). The new via is masked
+        pad that may not take a via does not allow, nor another net's pad:
+        _mask_webs). The new via is masked
         like most of the board's vias (drc.usual_via_mask); no rings when
         it is tented on both sides or the mask was not read. This router's
         vias go through every copper layer, so both sides' openings count.
@@ -1210,16 +1236,30 @@ class Router:
             rings.append((it, merge, merge + web, takes))
         return rings
 
-    def _mask_webs(self, v) -> np.ndarray:
-        """The cells (y, x) where a new via of style ``v`` would stand in
-        one of the rings of _web_rings."""
+    def _mask_webs(self, v, net: str | None = None) -> np.ndarray:
+        """The cells (y, x) where a new via of style ``v`` and ``net`` would
+        stand in one of the rings of _web_rings. Its opening may run into
+        a via's opening, or into a pad's of its own net that may take a
+        via; into another net's pad's it may not: no mask would be left
+        between the two nets' copper, and no sliver rule sees that."""
+        full, free = self._mask_web_cells(v)
+        own = free.get(net) if net else None
+        if own is None:
+            return full
+        nx = self.grid.spec.nx
+        return full[~np.isin(full[:, 0] * nx + full[:, 1], own)]
+
+    def _mask_web_cells(self, v) -> tuple:
+        """For via style ``v``: the cells (y, x) a via of no pad's net may
+        not take, and per net the flat cells (y * nx + x) among them that
+        only that net's pads barred, as openings its via may merge into."""
         cache = self.__dict__.setdefault("_mask_webs_cache", {})
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
             return cache[key]
         spec = self.grid.spec
-        cells = np.zeros((0, 2), dtype=np.int64)
-        out = []
+        nx = spec.nx
+        out, merged = [], {}
         for it, merge, reach, takes in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
@@ -1229,28 +1269,51 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             d = shape_distance(it.shape, X, Y)
             near = d < reach - EPS
-            if takes:
-                # Openings that meet merge into one and leave no web.
-                near &= d > merge + EPS
+            if takes and (it.kind != "pad" or it.net):
+                # Openings that meet merge into one and leave no web: any
+                # via's, a pad's only for the pad's own net.
+                inside = near & (d <= merge + EPS)
+                near &= ~inside
+                if it.kind == "pad":
+                    ys, xs = np.nonzero(inside)
+                    merged.setdefault(it.net, []).append((ys + j0).astype(np.int64) * nx
+                                                         + (xs + i0))
             ys, xs = np.nonzero(near)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        if out:
-            cells = _unique_cells(out, spec.nx)
-        cache[key] = cells
-        return cells
+        common = _unique_cells(out, nx)
+        flat = common[:, 0].astype(np.int64) * nx + common[:, 1]
+        free: dict = {}
+        if merged:
+            per = {n: np.unique(np.concatenate(fs)) for n, fs in merged.items()}
+            every, count = np.unique(np.concatenate(list(per.values())), return_counts=True)
+            shared = every[count > 1]           # within two nets' pads' merge
+            for n, f in per.items():
+                f = f[~np.isin(f, shared) & ~np.isin(f, flat)]
+                if len(f):
+                    free[n] = f
+            flat = np.union1d(flat, every)
+        full = np.stack([flat // nx, flat % nx], axis=1)
+        cache[key] = (full, free)
+        return cache[key]
 
-    def via_leaves_web(self, v, x: float, y: float, pad: int | None = None) -> bool:
-        """A via of style ``v`` at (x, y) stands in one of the rings of
-        _web_rings; ``pad``, a pad its array is meant to be in, takes it."""
+    def via_leaves_web(self, v, x: float, y: float, pad: int | None = None,
+                       net: str | None = None) -> bool:
+        """A via of style ``v`` and ``net`` at (x, y) stands in one of the
+        rings of _web_rings; ``pad``, a pad its array is meant to be in,
+        takes it. Its opening may merge with a via's, or with a pad's of
+        its own net that may take a via (see _mask_webs)."""
         at_x, at_y = np.array([[x]]), np.array([[y]])
         for it, merge, reach, takes in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
                 continue
             d = float(shape_distance(it.shape, at_x, at_y)[0, 0])
-            if d < reach - EPS and not ((takes or (it.kind == "pad" and it.idx == pad))
-                                        and d <= merge + EPS):
-                return True
+            if d >= reach - EPS:
+                continue
+            mine = it.kind != "pad" or (bool(net) and it.net == net)
+            if d <= merge + EPS and ((takes and mine) or (it.kind == "pad" and it.idx == pad)):
+                continue
+            return True
         return False
 
     def pad_web(self, v, pad: int) -> float:
@@ -1326,7 +1389,7 @@ class Router:
                 continue
             for k, v in enumerate(job.vias):
                 if not self.via_clear_of_hidden(v, pad.x, pad.y, job.name) or \
-                        self.via_leaves_web(v, pad.x, pad.y, t.pad):
+                        self.via_leaves_web(v, pad.x, pad.y, t.pad, job.name):
                     bar[k].append((cj, ci))
         if not any(bar):
             return
@@ -1429,10 +1492,15 @@ class Router:
                 ok = inside & (slack >= best - EPS)
             if not ok.any():
                 # A pad smaller than a cell: the nearest cell to its centre.
+                # No cell centre is in the pad (one would have been taken
+                # above), so a track ending there stands out of it, and the
+                # cell is stamped like any other. Taken as deep, it was left
+                # out of the stamps, and another net's via came 2 mil from
+                # that track end.
                 ci, cj = g.spec.cell(pad.x, pad.y)
                 if 0 <= ci < g.spec.nx and 0 <= cj < g.spec.ny:
                     cells.append((li, cj, ci))
-                    deep.append(True)
+                    deep.append(False)
                 continue
             # Deep only where the whole track width is pad copper. Where
             # no cell holds it, none is: the most central were once taken
@@ -1975,15 +2043,25 @@ class Router:
         d = distance_transform_edt(far)
         return d[win.cy, win.cx] * (self.pitch * self.greed)
 
-    def _barrel_in(self, mask: np.ndarray, pad: int) -> bool:
-        """Whether existing copper takes ``pad`` to a via or plated hole
-        standing inside ``mask`` (a plane's cells)."""
-        spec = self.grid.spec
-        for x, y in self.pad_barrels.get(pad, ()):
-            i, j = spec.cell(x, y)
-            if 0 <= j < mask.shape[0] and 0 <= i < mask.shape[1] and mask[j, i]:
+    def _in_plane_at(self, net: str, x: float, y: float, span) -> bool:
+        """Whether a barrel at (x, y) through the copper layers ``span``
+        stands in ``net``'s plane on one of them."""
+        if self.__dict__.get("_plane_layers") is None:
+            self._plane_layers = self._plane_layer_masks()
+        i, j = self.grid.spec.cell(x, y)
+        for layer, mask in self._plane_layers.get(net, {}).items():
+            if layer in span and 0 <= j < mask.shape[0] and 0 <= i < mask.shape[1] \
+                    and mask[j, i]:
                 return True
         return False
+
+    def _barrel_in(self, net: str, pad: int) -> bool:
+        """Whether existing copper takes ``pad`` to a via or plated hole
+        standing in its net's plane on a layer the barrel passes. A blind
+        via that stops short of the plane's layer joins the pad to
+        nothing: taken as its way in, the pad was never routed."""
+        return any(self._in_plane_at(net, x, y, span)
+                   for x, y, span in self.pad_barrels.get(pad, ()))
 
     def _add_path(self, job: NetJob, path) -> None:
         job.paths.append(path)
@@ -1998,12 +2076,11 @@ class Router:
             return
         self._unstamp(job)
         job.paths = []
-        job.path_w = []
         job.via_at = {}
         job.failed = 0
         if job.plane_mask is not None:
             for t in job.terminals:
-                if self._barrel_in(job.plane_mask, t.pad):
+                if self._barrel_in(job.name, t.pad):
                     # Its own stub and via already reach the plane: a plane
                     # joins every barrel of its net that stands in it.
                     continue
@@ -2343,6 +2420,9 @@ class Router:
                 todo.append(job)
                 continue
             job.paths = paths
+            # A branch keeps the narrower width it was routed at.
+            job.path_w = {id(new): (new, w) for new, w in
+                          zip(paths, (old.branch_width(p) for p in old.paths)) if w}
             job.via_at = dict(old.via_at)
             job.failed = 0
             self._stamp(job)
@@ -2643,7 +2723,6 @@ class Router:
                     or job.pre_groups:
                 continue
             full = job.width
-            job.path_w = (list(job.path_w) + [None] * len(job.paths))[:len(job.paths)]
             tree = {(l, y, x) for pth in job.paths for (l, y, x) in pth if l >= 0}
             hubs = {(y, x) for pth in job.paths for (l, y, x) in pth if l < 0}
             missing = []
@@ -2674,7 +2753,7 @@ class Router:
                         job.width = full
                     if path is not None:
                         self._add_path(job, path)
-                        job.path_w.append(w)
+                        job.path_w[id(path)] = (path, w)
                         job.terminals[job.terminals.index(t)] = nt
                         for l, y, x in path:
                             (hubs.add((y, x)) if l < 0 else tree.add((l, y, x)))
@@ -2786,8 +2865,7 @@ class Router:
             lines = [] if straight else None
             for k, path in enumerate(job.paths):
                 w0 = job.width
-                if k < len(job.path_w) and job.path_w[k]:
-                    job.width = job.path_w[k]
+                job.width = job.branch_width(path) or w0
                 try:
                     self._emit_path(job, path, out, spec, layers, vias_done, copper, junctions,
                                     lines, k)
@@ -2918,7 +2996,7 @@ class Router:
                         continue
                     nv = Via(cx, cy, d, via.hole, via.low_layer, via.high_layer, job.name)
                     if not self.via_clear_of_hidden(nv, cx, cy, job.name) or \
-                            self.via_leaves_web(nv, cx, cy):
+                            self.via_leaves_web(nv, cx, cy, net=job.name):
                         continue        # the via guards, as for every new via
                     ok = all(self._static_clears(job.id, d, li, (cx, cy), (cx, cy))
                              and self._routed_clears(job.id, d, li, (cx, cy), (cx, cy))
@@ -2999,7 +3077,7 @@ class Router:
             tracks = [t for t in out.tracks[t0:t1] if id(t) in getattr(self, "_neck_tracks", ())]
             w0 = job.width
             for l, pre, cells, post, k, first in lines:
-                job.width = job.path_w[k] if k < len(job.path_w) and job.path_w[k] else w0
+                job.width = job.branch_width(job.paths[k]) or w0
                 pts = self._straighten(job, l, cells, meets.get(l, {}), pre, post, k)
                 pts = [p for i, p in enumerate(pts)
                        if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > EPS]

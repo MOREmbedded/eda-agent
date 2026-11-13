@@ -162,7 +162,7 @@ def _choose(router, job, bga: BGA, pad, placed):
             if any(math.hypot(x - px, y - py) < r + pr + router.c - EPS
                    for px, py, pr, net in placed if net != job.name):
                 continue
-            if router.via_leaves_web(style, x, y) or \
+            if router.via_leaves_web(style, x, y, net=job.name) or \
                     not router.via_clear_of_hidden(style, x, y, job.name):
                 continue
             if not stub or _stub_clear(router, job, pad, x, y):

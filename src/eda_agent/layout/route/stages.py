@@ -363,7 +363,7 @@ class StageContext:
             if not r.via_clear_of_hidden(via, via.x, via.y, via.net, span):
                 return False
             # Its solder mask opening leaves the board's web to every other.
-            if r.via_leaves_web(via, via.x, via.y, pad if in_pad else None):
+            if r.via_leaves_web(via, via.x, via.y, pad if in_pad else None, via.net):
                 return False
         return True
 

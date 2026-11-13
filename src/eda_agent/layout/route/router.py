@@ -575,16 +575,18 @@ class Router:
                 out.append(PourPlane(layer, r.net, r.outline, []))
         return out
 
-    def _plane_masks(self) -> dict[str, np.ndarray]:
+    def _plane_layer_masks(self) -> dict[str, dict[str, np.ndarray]]:
+        """Per net with a plane, per layer it is on, the cells it covers."""
         b = self.board
-        out: dict[str, np.ndarray] = {}
+        out: dict[str, dict[str, np.ndarray]] = {}
         full = np.ones((self.ny, self.nx), dtype=bool)
         for layer in b.layers:
             if layer.kind == "plane" and layer.plane_net:
-                out[layer.plane_net] = full
-        rings = [(r.net, r.outline, r.holes) for r in b.regions if r.kind == "plane" and r.net]
-        rings += [(p.net, p.outline, p.holes) for p in self.pour_planes]
-        for net, outline, holes in rings:
+                out.setdefault(layer.plane_net, {})[layer.name] = full
+        rings = [(r.net, r.layer, r.outline, r.holes) for r in b.regions
+                 if r.kind == "plane" and r.net]
+        rings += [(p.net, p.layer, p.outline, p.holes) for p in self.pour_planes]
+        for net, layer, outline, holes in rings:
             # Inside the outline and in none of its holes, as the copper
             # is drawn (and the DRC reads it). Filled even-odd with its
             # holes, another net's pour taken as a hole that reached past
@@ -593,11 +595,19 @@ class Router:
             m = fill_polygon(self.grid.spec, [outline])
             for h in holes:
                 m &= ~fill_polygon(self.grid.spec, [h])
-            out[net] = out.get(net, np.zeros_like(m)) | m
+            per = out.setdefault(net, {})
+            per[layer] = per[layer] | m if layer in per else m
         return out
 
+    def _plane_masks(self, by_layer: dict | None = None) -> dict[str, np.ndarray]:
+        """Per net with a plane, the cells it covers on any layer."""
+        by_layer = self._plane_layer_masks() if by_layer is None else by_layer
+        return {net: np.logical_or.reduce(list(per.values())) if len(per) > 1
+                else next(iter(per.values())) for net, per in by_layer.items()}
+
     def _jobs(self) -> list[NetJob]:
-        planes = self._plane_masks()
+        self._plane_layers = self._plane_layer_masks()
+        planes = self._plane_masks(self._plane_layers)
         jobs = []
         index = {id(p): i for i, p in enumerate(self.board.pads)}
         for net, pads in self.board.pads_by_net().items():
@@ -684,7 +694,7 @@ class Router:
                 off = self._off_grid_copper(job, v.diameter / 2)
                 if len(off):
                     out[k].append(off)
-                webs = self._mask_webs(v)
+                webs = self._mask_webs(v, job.name)
                 if len(webs):
                     out[k].append(webs)
         for i in ([] if mode == "any" else pads):
@@ -750,7 +760,8 @@ class Router:
         A via whose centre lies within ``reach`` of the opening leaves a
         web narrower than the board's sliver rule, unless it is within
         ``merge`` and ``takes`` (the openings meet and leave none, which a
-        pad that may not take a via does not allow). The new via is masked
+        pad that may not take a via does not allow, nor another net's pad:
+        _mask_webs). The new via is masked
         like most of the board's vias (drc.usual_via_mask); no rings when
         it is tented on both sides or the mask was not read. This router's
         vias go through every copper layer, so both sides' openings count,
@@ -788,16 +799,30 @@ class Router:
             rings.append((it, merge, merge + web, takes))
         return rings
 
-    def _mask_webs(self, v) -> np.ndarray:
-        """The cells (y, x) where a new via of style ``v`` would stand in
-        one of the rings of _web_rings."""
+    def _mask_webs(self, v, net: str | None = None) -> np.ndarray:
+        """The cells (y, x) where a new via of style ``v`` and ``net`` would
+        stand in one of the rings of _web_rings. Its opening may run into
+        a via's opening, or into a pad's of its own net that may take a
+        via; into another net's pad's it may not: no mask would be left
+        between the two nets' copper, and no sliver rule sees that."""
+        full, free = self._mask_web_cells(v)
+        own = free.get(net) if net else None
+        if own is None:
+            return full
+        nx = self.grid.spec.nx
+        return full[~np.isin(full[:, 0] * nx + full[:, 1], own)]
+
+    def _mask_web_cells(self, v) -> tuple:
+        """For via style ``v``: the cells (y, x) a via of no pad's net may
+        not take, and per net the flat cells (y * nx + x) among them that
+        only that net's pads barred, as openings its via may merge into."""
         cache = self.__dict__.setdefault("_mask_webs_cache", {})
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
             return cache[key]
         spec = self.grid.spec
-        cells = np.zeros((0, 2), dtype=np.int64)
-        out = []
+        nx = spec.nx
+        out, merged = [], {}
         for it, merge, reach, takes in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
@@ -807,28 +832,51 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             d = shape_distance(it.shape, X, Y)
             near = d < reach - EPS
-            if takes:
-                # Openings that meet merge into one and leave no web.
-                near &= d > merge + EPS
+            if takes and (it.kind != "pad" or it.net):
+                # Openings that meet merge into one and leave no web: any
+                # via's, a pad's only for the pad's own net.
+                inside = near & (d <= merge + EPS)
+                near &= ~inside
+                if it.kind == "pad":
+                    ys, xs = np.nonzero(inside)
+                    merged.setdefault(it.net, []).append((ys + j0).astype(np.int64) * nx
+                                                         + (xs + i0))
             ys, xs = np.nonzero(near)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        if out:
-            cells = _unique_cells(out, spec.nx)
-        cache[key] = cells
-        return cells
+        common = _unique_cells(out, nx)
+        flat = common[:, 0].astype(np.int64) * nx + common[:, 1]
+        free: dict = {}
+        if merged:
+            per = {n: np.unique(np.concatenate(fs)) for n, fs in merged.items()}
+            every, count = np.unique(np.concatenate(list(per.values())), return_counts=True)
+            shared = every[count > 1]           # within two nets' pads' merge
+            for n, f in per.items():
+                f = f[~np.isin(f, shared) & ~np.isin(f, flat)]
+                if len(f):
+                    free[n] = f
+            flat = np.union1d(flat, every)
+        full = np.stack([flat // nx, flat % nx], axis=1)
+        cache[key] = (full, free)
+        return cache[key]
 
-    def via_leaves_web(self, v, x: float, y: float, pad: int | None = None) -> bool:
-        """A via of style ``v`` at (x, y) stands in one of the rings of
-        _web_rings; ``pad``, a pad its array is meant to be in, takes it."""
+    def via_leaves_web(self, v, x: float, y: float, pad: int | None = None,
+                       net: str | None = None) -> bool:
+        """A via of style ``v`` and ``net`` at (x, y) stands in one of the
+        rings of _web_rings; ``pad``, a pad its array is meant to be in,
+        takes it. Its opening may merge with a via's, or with a pad's of
+        its own net that may take a via (see _mask_webs)."""
         at_x, at_y = np.array([[x]]), np.array([[y]])
         for it, merge, reach, takes in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
                 continue
             d = float(shape_distance(it.shape, at_x, at_y)[0, 0])
-            if d < reach - EPS and not ((takes or (it.kind == "pad" and it.idx == pad))
-                                        and d <= merge + EPS):
-                return True
+            if d >= reach - EPS:
+                continue
+            mine = it.kind != "pad" or (bool(net) and it.net == net)
+            if d <= merge + EPS and ((takes and mine) or (it.kind == "pad" and it.idx == pad)):
+                continue
+            return True
         return False
 
     def pad_web(self, v, pad: int) -> float:
@@ -1078,7 +1126,7 @@ class Router:
                 continue
             for k, v in enumerate(job.vias):
                 if not self.via_clear_of_hidden(v, pad.x, pad.y, job.name) or \
-                        self.via_leaves_web(v, pad.x, pad.y, t.pad):
+                        self.via_leaves_web(v, pad.x, pad.y, t.pad, job.name):
                     bar[k].append((cj, ci))
         if not any(bar):
             return
@@ -1158,10 +1206,15 @@ class Router:
                 ok = inside & (slack >= best - EPS)
             if not ok.any():
                 # A pad smaller than a cell: the nearest cell to its centre.
+                # No cell centre is in the pad (one would have been taken
+                # above), so a track ending there stands out of it, and the
+                # cell is stamped like any other. Taken as deep, it was left
+                # out of the stamps, and another net's via came 2 mil from
+                # that track end.
                 ci, cj = g.spec.cell(pad.x, pad.y)
                 if 0 <= ci < g.spec.nx and 0 <= cj < g.spec.ny:
                     cells.append((li, cj, ci))
-                    deep.append(True)
+                    deep.append(False)
                 continue
             # Deep only where the whole track width is pad copper. Where
             # no cell holds it, none is: the most central were once taken
@@ -1779,15 +1832,25 @@ class Router:
         d = distance_transform_edt(far)
         return d[win.cy, win.cx] * (self.pitch * self.greed)
 
-    def _barrel_in(self, mask: np.ndarray, pad: int) -> bool:
-        """Whether existing copper takes ``pad`` to a via or plated hole
-        standing inside ``mask`` (a plane's cells)."""
-        spec = self.grid.spec
-        for x, y in self.pad_barrels.get(pad, ()):
-            i, j = spec.cell(x, y)
-            if 0 <= j < mask.shape[0] and 0 <= i < mask.shape[1] and mask[j, i]:
+    def _in_plane_at(self, net: str, x: float, y: float, span) -> bool:
+        """Whether a barrel at (x, y) through the copper layers ``span``
+        stands in ``net``'s plane on one of them."""
+        if self.__dict__.get("_plane_layers") is None:
+            self._plane_layers = self._plane_layer_masks()
+        i, j = self.grid.spec.cell(x, y)
+        for layer, mask in self._plane_layers.get(net, {}).items():
+            if layer in span and 0 <= j < mask.shape[0] and 0 <= i < mask.shape[1] \
+                    and mask[j, i]:
                 return True
         return False
+
+    def _barrel_in(self, net: str, pad: int) -> bool:
+        """Whether existing copper takes ``pad`` to a via or plated hole
+        standing in its net's plane on a layer the barrel passes. A blind
+        via that stops short of the plane's layer joins the pad to
+        nothing: taken as its way in, the pad was never routed."""
+        return any(self._in_plane_at(net, x, y, span)
+                   for x, y, span in self.pad_barrels.get(pad, ()))
 
     def _add_path(self, job: NetJob, path) -> None:
         job.paths.append(path)
@@ -1806,7 +1869,7 @@ class Router:
         job.failed = 0
         if job.plane_mask is not None:
             for t in job.terminals:
-                if self._barrel_in(job.plane_mask, t.pad):
+                if self._barrel_in(job.name, t.pad):
                     # Its own stub and via already reach the plane: a plane
                     # joins every barrel of its net that stands in it.
                     continue

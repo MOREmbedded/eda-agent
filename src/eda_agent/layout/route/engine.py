@@ -135,10 +135,12 @@ def write(directory: Path, engine: str) -> dict[str, Any]:
         # A folder that takes no new file (an access rule that lets the
         # file be changed but nothing be added) fails here.
         fd, tmp = tempfile.mkstemp(prefix=".router.", suffix=".tmp", dir=str(directory))
+        # Escaped, so whatever the file held goes back as it was read: a
+        # lone surrogate (half an emoji) could not be written as UTF-8.
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
         replace_with_retry(tmp, path)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         if tmp is not None:
             discard(tmp)
         return {"ok": False, "reason": f"cannot write {path}: {exc}"}

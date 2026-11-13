@@ -142,6 +142,33 @@ def test_router_use_reports_a_folder_that_takes_no_new_file(tmp_path, monkeypatc
     assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
 
 
+def test_router_use_keeps_half_an_emoji_the_file_already_held(tmp_path, monkeypatch, capsys):
+    """A lone surrogate read from router.json (an emoji cut in half by
+    some other tool) goes back as the escape it was. Written as UTF-8 it
+    raised UnicodeEncodeError: a traceback, and a .tmp file left behind
+    on every try."""
+    from eda_agent import cli, profile
+    path = tmp_path / engine.FILE
+    path.write_text('{"engine": "default", "note": "\\ud83d"}')
+    monkeypatch.delenv(engine.ENV, raising=False)
+    found = engine.describe(tmp_path)
+    assert (found["engine"], found["source"]) == ("default", "profile"), found
+    monkeypatch.setattr(profile, "resolve_profile_dir", lambda: tmp_path)
+    assert cli.cmd_router_use("euan") == 0
+    capsys.readouterr()
+    assert json.loads(path.read_text()) == {"engine": "euan", "note": "\ud83d"}
+    assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
+    # Whatever else a write cannot encode is reported, not raised, and
+    # leaves no temporary file.
+    def circular(*args, **kwargs):
+        raise ValueError("Circular reference detected")
+    monkeypatch.setattr(engine.json, "dumps", circular)
+    res = engine.write(tmp_path, "default")
+    assert not res["ok"] and "cannot write" in res["reason"] and "Circular" in res["reason"]
+    assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
+    assert json.loads(path.read_text())["engine"] == "euan"
+
+
 @pytest.mark.parametrize("content", [
     "[" * 30000 + "]" * 30000,                                  # deeper than the parser goes
     " " * (engine.MAX_BYTES + 1) + '{"engine": "euan"}',        # too big to be a setting
@@ -242,6 +269,119 @@ def test_pad_vias_is_checked_for_the_engine_that_routes(which, monkeypatch):
                          "routed with 'bga', a via only in a BGA's ball or an exposed pad."]
     route_job({"board": _board(), "stages": {"pad_vias": None, "bus_lanes": False}})
     assert got[-1]["stages"] == {"bus_lanes": False}, "None leaves the engine's own default"
+
+
+@pytest.mark.parametrize("which", engine.ENGINES)
+def test_pad_vias_in_a_stage_options_object_is_checked_the_same(which, monkeypatch):
+    """Our StageOptions object reached either router unchecked: an unknown
+    value routed, 'centre' went to the default engine without a word, and
+    'Center' reached Euan's router, which compares with case, so his
+    centre mode never ran."""
+    import eda_agent.layout.route.job as job_mod
+    import eda_agent.layout.route_euan.router as euan
+    from eda_agent.layout.route.stages import StageOptions
+    where = euan if which == "euan" else job_mod
+    got = []
+    real = where.route_adaptive
+    monkeypatch.setattr(where, "route_adaptive", lambda *a, **k: got.append(k) or real(*a, **k))
+    monkeypatch.setenv(engine.ENV, which)
+    with pytest.raises(ValueError, match="pad_vias takes 'bga', 'ic' or 'any'"):
+        route_job({"board": _board(), "stages": StageOptions(pad_vias="everywhere")})
+    assert not got, "the job failed before the router ran"
+    with pytest.raises(ValueError, match="lane_cost takes 1 to inf"):
+        route_job({"board": _board(), "stages": StageOptions(lane_cost=-1.0)})
+    assert not got
+    res = route_job({"board": _board(), "stages": StageOptions(pad_vias="Center")})
+    assert res["summary"]["completion"] == 1.0
+    noted = [n for n in res["notes"] if "pad_vias" in n]
+    passed = got[-1]["stages"]
+    passed = passed if isinstance(passed, dict) else passed.__dict__
+    if which == "euan":
+        assert passed["pad_vias"] == "centre" and not noted
+    else:
+        assert passed["pad_vias"] == "bga" and len(noted) == 1
+
+
+def _boxed_ic_pin() -> LayoutBoard:
+    """IC pin U1.1 (net A) boxed in on top by a keep-out with a window just
+    round it; its other end, J1.1, is on the bottom. Only a via in the pin
+    joins them, which 'bga' does not allow and the fallback's 'ic' does."""
+    from eda_agent.layout.model import Region
+
+    def ring(x0, y0, x1, y1):
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+    def pad(comp, name, x, y, net, layer="TopLayer"):
+        return Pad(comp, name, x, y, net=net, copper=[PadCopper(layer, "rect", 30, 30)])
+
+    b = _board()
+    b.pads = [pad("U1", "1", 150, 200, "A"), pad("U1", "2", 150, 350, "B"),
+              pad("U1", "3", 150, 50, "C"), pad("J1", "1", 450, 200, "A", "BottomLayer"),
+              pad("J1", "2", 450, 350, "B"), pad("J1", "3", 450, 50, "C")]
+    b.components = [Component("U1", x=150, y=200), Component("J1", x=450, y=200)]
+    b.regions.append(Region("TopLayer", ring(-5, -5, 605, 405),
+                            [ring(130, 180, 170, 220), ring(120, 320, 480, 380),
+                             ring(120, 20, 480, 80)], kind="keepout", keepout=True))
+    return b
+
+
+def test_the_centre_note_tells_of_the_fallbacks_ic_pins(monkeypatch):
+    """The default engine routes 'centre' as 'bga'. When its fallback then
+    widens that to IC pins and keeps the result, the note says so: written
+    before routing, it said the via went only into a BGA's ball or an
+    exposed pad, beside a via 11.8 mil off the IC pin's centre."""
+    monkeypatch.setenv(engine.ENV, "default")
+    res = route_job({"board": _boxed_ic_pin(), "stages": {"pad_vias": "centre"}})
+    assert res["summary"]["completion"] == 1.0 and res["fallback"]
+    assert [v["kind"] for v in res["via_in_pad"]] == ["ic pin"]
+    noted = [n for n in res["notes"] if "pad_vias" in n]
+    assert noted == ["pad_vias='centre' only steers the euan engine; the default engine routed "
+                     "with 'ic', its fallback having widened 'bga' to IC pins, where a via may "
+                     "stand anywhere in the pin."]
+    # Euan's engine takes 'centre' itself: the via stands at the pin's centre.
+    monkeypatch.setenv(engine.ENV, "euan")
+    res = route_job({"board": _boxed_ic_pin(), "stages": {"pad_vias": "centre"}})
+    assert res["summary"]["completion"] == 1.0
+    assert [(v["x"], v["y"]) for v in res["via_in_pad"]] == [(150.0, 200.0)]
+
+
+@pytest.mark.parametrize("key, value, match", [
+    # A negative lane cost gave scipy's Dijkstra negative weights, which
+    # ran the server process out of memory and aborted it.
+    ("lane_cost", -1, "lane_cost takes 1 to inf, not -1"),
+    ("lane_cost", 0.5, "lane_cost takes 1 to inf, not 0.5"),
+    ("lane_cost", float("nan"), "lane_cost takes 1 to inf, not nan"),
+    ("lane_cost", "8", "lane_cost takes a number, not '8'"),
+    # Walked back half a cell at a time, this lane took hours.
+    ("lane_depth", 1e7, "lane_depth takes 0 to 1000, not 10000000.0"),
+    ("pair_skew", -1.0, "pair_skew takes 0 to 1000, not -1.0"),
+    ("pair_width", 0, "pair_width takes 1 to 1000, not 0"),
+    ("pair_gap", True, "pair_gap takes a number, not True"),
+    ("fine_pitch", float("inf"), "fine_pitch takes 1 to 1000, not inf"),
+    ("bus_min", 1, "bus_min takes 2 to 10000, not 1"),
+    ("bus_min", 2.5, "bus_min takes a whole number, not 2.5"),
+])
+@pytest.mark.parametrize("which", engine.ENGINES)
+def test_stage_numbers_are_checked_before_either_engine_runs(which, key, value, match,
+                                                              monkeypatch):
+    import eda_agent.layout.route.job as job_mod
+    import eda_agent.layout.route_euan.router as euan
+    ran = []
+    for where in (job_mod, euan):
+        monkeypatch.setattr(where, "route_adaptive", lambda *a, **k: ran.append(k))
+    monkeypatch.setenv(engine.ENV, which)
+    with pytest.raises(ValueError, match=re.escape(match)):
+        route_job({"board": _board(), "stages": {key: value}})
+    assert not ran, "the job failed before the router ran"
+
+
+@pytest.mark.parametrize("which", engine.ENGINES)
+def test_stage_numbers_in_range_are_taken(which, monkeypatch):
+    monkeypatch.setenv(engine.ENV, which)
+    res = route_job({"board": _board(), "stages": {
+        "lane_cost": float("inf"), "bus_min": 4, "pair_width": None, "pair_gap": None,
+        "lane_depth": 0, "pair_skew": 0.2, "fine_pitch": 25.6}})
+    assert res["router"] == which and res["summary"]["completion"] == 1.0
 
 
 def test_the_cli_commands_exist(tmp_path, monkeypatch, capsys):
