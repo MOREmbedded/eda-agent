@@ -43,6 +43,8 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
     "rl_min_db": ("number", False, "required return loss up to Nyquist (no check if absent)"),
     "skew_max_ps": ("number", False, "allowed intra-pair skew (default 5 % of a unit interval "
                                      "when data_rate_gbps is given)"),
+    "stub_margin": ("number", False, "a stub's first notch must lie this many times above "
+                                     "Nyquist (default 2; needs data_rate_gbps)"),
     "tand": ("number", False, "loss tangent of every dielectric (default 0.02)"),
     "foil": ("text", False, "copper roughness preset"),
     "mask_mils": ("number", False, "solder mask on outer layers (default 0.6)"),
@@ -51,7 +53,8 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
 }
 
 
-def _plot(path: Path, f, curves, t, tdr, z_target, title: str) -> bool:
+def _plot(path: Path, f, curves, t, tdr, z_target, title: str,
+          t_end: Optional[float] = None) -> bool:
     try:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
@@ -69,7 +72,12 @@ def _plot(path: Path, f, curves, t, tdr, z_target, title: str) -> bool:
         ax.grid(True, alpha=0.3)
         ax.legend()
         bx = fig.add_subplot(212)
-        bx.plot(np.asarray(t) * 1e12, tdr, lw=1.5, label="TDR")
+        t = np.asarray(t)
+        tdr = np.asarray(tdr)
+        if t_end:
+            keep = t <= t_end
+            t, tdr = t[keep], tdr[keep]
+        bx.plot(t * 1e12, tdr, lw=1.5, label="TDR")
         bx.axhline(z_target, ls="--", lw=1, color="0.5", label=f"{z_target:g} ohm")
         bx.set_xlabel("Time (ps)")
         bx.set_ylabel("Impedance (ohm)")
@@ -135,7 +143,9 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
                header="time_ps,impedance_ohm", comments="")
     files = {"touchstone": Path(ts).name, "path": "path.json", "sections": "sections.json",
              "tdr": "tdr.csv"}
-    if _plot(folder / "channel.png", f, curves, t, z, z_target, label):
+    # the TDR is shown to the far end's reflection and a little after it
+    t_end = (2.5 * figs["delay_ps"] * 1e-12 + 6 * rise) if figs.get("delay_ps") else None
+    if _plot(folder / "channel.png", f, curves, t, z, z_target, label, t_end):
         files["plot"] = "channel.png"
 
     nyq = f"at {figs['f_nyquist_hz'] / 1e9:g} GHz"
@@ -153,6 +163,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
     if "tdr_min_ohms" in figs:
         m["tdr_min_ohms"] = _metric(round(figs["tdr_min_ohms"], 2), "ohm", "Lowest TDR impedance")
         m["tdr_max_ohms"] = _metric(round(figs["tdr_max_ohms"], 2), "ohm", "Highest TDR impedance")
+    if "line_loss_db_at_nyquist" in figs:
+        m["line_loss_db"] = _metric(round(figs["line_loss_db_at_nyquist"], 3), "dB",
+                                    f"Loss of the lines alone {nyq}")
+    if "stub_resonance_hz" in figs:
+        m["stub_resonance_ghz"] = _metric(round(figs["stub_resonance_hz"] / 1e9, 3), "GHz",
+                                          f"Lowest stub notch ({figs['stub_resonance_of']})")
     if pair:
         m["mode_conversion_db"] = _metric(round(figs["scd21_db_at_nyquist"], 3), "dB",
                                           f"SCD21 {nyq}")
@@ -183,6 +199,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         lim = float(spec["rl_min_db"])
         verdicts.append({"check": "return loss", "pass": figs["return_loss_db_worst"] >= lim,
                          "detail": f"{figs['return_loss_db_worst']:.2f} dB worst, {lim:g} dB needed"})
+    if "stub_resonance_hz" in figs and rate:
+        margin = _num(spec, "stub_margin", 2.0)
+        fq, fn = figs["stub_resonance_hz"], figs["f_nyquist_hz"]
+        verdicts.append({"check": "stub resonance", "pass": fq >= margin * fn,
+                         "detail": f"{figs['stub_resonance_of']} notches at {fq / 1e9:.2f} GHz, "
+                                   f"{margin:g} x Nyquist = {margin * fn / 1e9:.2f} GHz needed"})
     if pair and "skew_ps" in figs:
         lim = spec.get("skew_max_ps")
         if lim is None and rate:
@@ -275,11 +297,24 @@ def rule_steps(spec: dict[str, Any], figs: dict[str, Any], path, stack, opt,
     if spec.get("il_max_db") is not None:
         length = path.p.length if pair else path.length
         il = figs["insertion_loss_db_at_nyquist"]
-        if il > 0 and length > 0:
-            budget = float(spec["il_max_db"]) / il * length
-            steps.append({"tool": "pcb_create_design_rule", "why":
-                          f"{float(spec['il_max_db']):g} dB at Nyquist over {il / length * 1000:.3g} "
-                          f"dB per 1000 mil as routed (vias included)",
-                          "args": {"name": f"SI length {name}", "rule_type": "length",
-                                   "value": 0, "max_value": round(budget, 1), "scope": scope}})
+        line_db = figs.get("line_loss_db_at_nyquist")
+        line_mils = figs.get("line_mils")
+        lim = float(spec["il_max_db"])
+        if line_db and line_mils and length > 0:
+            # vias, stubs and mismatch cost the same however long the
+            # trace is; only the lines' loss grows with length, so the
+            # headroom left is spent on trace at the lines' own rate
+            per_mil = line_db / line_mils
+            fixed = max(il - line_db, 0.0)
+            budget = length + (lim - il) / per_mil
+            why = (f"{lim:g} dB at Nyquist: the lines lose {per_mil * 1000:.3g} dB per 1000 mil, "
+                   f"vias, stubs and mismatch {fixed:.2f} dB whatever the length")
+            if figs.get("stub_resonance_hz") and figs["stub_resonance_hz"] < 2 * figs["f_nyquist_hz"]:
+                why += (f"; the {figs['stub_resonance_of']} notches at "
+                        f"{figs['stub_resonance_hz'] / 1e9:.2f} GHz, so shorten it (or back-drill) "
+                        "before trusting this budget")
+            if budget > 0:
+                steps.append({"tool": "pcb_create_design_rule", "why": why,
+                              "args": {"name": f"SI length {name}", "rule_type": "length",
+                                       "value": 0, "max_value": round(budget, 1), "scope": scope}})
     return steps

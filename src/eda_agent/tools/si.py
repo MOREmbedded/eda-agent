@@ -21,7 +21,7 @@ import hashlib
 import json
 from typing import Any, Optional
 
-__all__ = ["register_si_net_tools", "register_si_tools"]
+__all__ = ["register_si_tools"]
 
 
 def _failed(exc: Exception) -> dict[str, Any]:
@@ -79,7 +79,7 @@ def _run(kind: str, engines: list[str], spec: dict, inputs: dict, title: str, fo
 
 
 def register_si_tools(mcp) -> None:
-    register_si_net_tools(mcp)
+    _register_si_net_tools(mcp)
 
     @mcp.tool()
     async def si_line_model(spec: dict, engines: Optional[list[str]] = None, stackup_file: str = "",
@@ -253,7 +253,7 @@ async def _snapshot_from_args(snapshot: str, expect_file: str, board_json_path: 
     return {**rec, **snap.status(rec)}
 
 
-def register_si_net_tools(mcp) -> None:
+def _register_si_net_tools(mcp) -> None:
 
     @mcp.tool()
     async def si_board_snapshot(expect_file: str = "", board_json_path: str = "",

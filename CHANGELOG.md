@@ -26,7 +26,10 @@ maturity classification for every tool.
   named, stale once the board is saved) and `si_net_channel` (S-parameters,
   TDR, delay, loss at Nyquist, skew, mode conversion, checks against limits,
   and the width, gap, uncoupled-length and length rules, written to Altium
-  when asked). See [Routed nets and pairs](docs/SI_NETS.md).
+  when asked). The length rule spends the loss headroom at the lines' own
+  loss per mil, with vias and stubs as a fixed cost, and a stub whose notch
+  falls within twice Nyquist fails its own check. See
+  [Routed nets and pairs](docs/SI_NETS.md).
 - **Signal integrity: transmission lines and a stackup planner.** New
   package `eda_agent.si`. A 2D eddy-current solver gives R(f) and L(f)
   of traces and their reference planes with skin and proximity effect

@@ -44,6 +44,10 @@ class Model:
     blocks: list[dict[str, Any]] = field(default_factory=list)
     sections: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: loss of the lines alone (no vias, stubs or mismatch), dB at each f;
+    #: differential (odd-mode) loss for a pair
+    line_loss_db: Optional[np.ndarray] = None
+    line_mils: float = 0.0
 
     @property
     def sdd(self) -> np.ndarray:
@@ -79,6 +83,36 @@ class _Lines:
                    if isinstance(v, float) and (k2.startswith("z") or "loss" in k2
                                                 or "delay" in k2)}}
         return self.cache[key]
+
+
+def _gamma(r: _rlgc.RLGC, odd: bool = False) -> np.ndarray:
+    """Propagation constant at every frequency: of the single line, or the
+    odd mode of a symmetric pair (what a differential signal sees)."""
+    w = 2 * math.pi * r.f
+    if r.n == 1 or not odd:
+        z = r.R[:, 0, 0] + 1j * w * r.L[:, 0, 0]
+        y = r.G[:, 0, 0] + 1j * w * r.C[:, 0, 0]
+    else:
+        z = (r.R[:, 0, 0] - r.R[:, 0, 1]) + 1j * w * (r.L[:, 0, 0] - r.L[:, 0, 1])
+        y = (r.G[:, 0, 0] - r.G[:, 0, 1]) + 1j * w * (r.C[:, 0, 0] - r.C[:, 0, 1])
+    g = np.sqrt(z * y)
+    return np.where(g.real < 0, -g, g)
+
+
+def line_loss_db(r: _rlgc.RLGC, length_mils: float, odd: bool = False) -> np.ndarray:
+    return 8.685889638 * _gamma(r, odd).real * length_mils * MIL
+
+
+def quarter_wave_hz(r: _rlgc.RLGC, length_mils: float) -> Optional[float]:
+    """First notch of an open stub: where it is a quarter wave long."""
+    if length_mils <= 0:
+        return None
+    k = len(r.f) // 2
+    beta = _gamma(r)[k].imag
+    if beta <= 0:
+        return None
+    tpd = beta / (2 * math.pi * r.f[k])          # s per metre
+    return float(1 / (4 * length_mils * MIL * tpd))
 
 
 def _ground_nets(board: LayoutBoard) -> set[str]:
@@ -162,13 +196,17 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
     chan = ch.Channel(f, 1)
     blocks: list[dict[str, Any]] = []
     notes = list(path.notes)
+    loss = np.zeros(len(f))
+    line_mils = 0.0
 
     def stubs_after(i: int) -> None:
         for s in path.stubs:
             if s.at == i:
                 r = lines.get(s.layer, s.width)
                 chan.add(ch.stub_block(r, s.length * MIL, f"stub {s.length:.0f} mil"))
-                blocks.append({"kind": "stub", **s.to_dict()})
+                fq = quarter_wave_hz(r, s.length)
+                blocks.append({"kind": "stub", **s.to_dict(),
+                               "stub_resonance_ghz": round(fq / 1e9, 2) if fq else None})
 
     stubs_after(-1)
     for i, sec in enumerate(path.sections):
@@ -176,6 +214,8 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
             r = lines.get(sec.layer, sec.width)
             chan.add(ch.line_block(r, sec.length * MIL, sec.layer))
             blocks.append(sec.to_dict())
+            loss = loss + line_loss_db(r, sec.length)
+            line_mils += sec.length
         else:
             mats, info = _via_block(board, stack, lines, opt, f, sec.via, sec.from_layer,
                                     sec.to_layer, "via")
@@ -183,7 +223,7 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
             blocks.append({**sec.to_dict(), **_via_summary(info)})
             notes.extend(info["notes"])
         stubs_after(i)
-    return Model(f, chan.s(z_ref), 1, z_ref, blocks, lines.summary, notes)
+    return Model(f, chan.s(z_ref), 1, z_ref, blocks, lines.summary, notes, loss, line_mils)
 
 
 def _via_summary(info: dict[str, Any]) -> dict[str, Any]:
@@ -217,8 +257,15 @@ def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
     notes = list(pp.notes) + list(pp.p.notes)
     vias_p = [s for s in pp.p.sections if s.kind == "via"]
     vias_n = [s for s in pp.n.sections if s.kind == "via"]
+    acc = {"loss": np.zeros(len(f)), "mils": 0.0}
 
     def uncoupled(zone, half: float, label: str) -> None:
+        # a differential signal on two uncoupled lines loses their mean
+        for side in ("uncoupled_p", "uncoupled_n"):
+            for layer, w, L in zone[side]:
+                if L * half > 0:
+                    acc["loss"] = acc["loss"] + 0.5 * line_loss_db(lines.get(layer, w), L * half)
+                    acc["mils"] += 0.5 * L * half
         a = _chain(lines, zone["uncoupled_p"], half, f)
         b = _chain(lines, zone["uncoupled_n"], half, f)
         mats = np.stack([ch.per_conductor([a[k], b[k]]) for k in range(len(f))])
@@ -229,6 +276,8 @@ def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
         for layer, w, gap, L in zone["coupled"]:
             r = lines.get(layer, w, gap)
             chan.add(ch.line_block(r, L * MIL, layer))
+            acc["loss"] = acc["loss"] + line_loss_db(r, L, odd=True)
+            acc["mils"] += L
             blocks.append({"kind": "coupled", "layer": layer, "width_mils": w, "gap_mils": gap,
                            "length_mils": round(L, 3)})
         uncoupled(zone, 0.5, "breakout")
@@ -249,7 +298,8 @@ def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
         notes.append("stubs on a pair's nets are listed but not modelled")
     notes.append("the vias of a pair are modelled uncoupled; their coupling lowers the "
                  "differential via impedance a little")
-    return Model(f, chan.s(z_ref), 2, z_ref, blocks, lines.summary, sorted(set(notes)))
+    return Model(f, chan.s(z_ref), 2, z_ref, blocks, lines.summary, sorted(set(notes)),
+                 acc["loss"], acc["mils"])
 
 
 # -- time domain ----------------------------------------------------------------------
@@ -321,6 +371,17 @@ def figures(m: Model, f_nyquist: float, rise: float) -> dict[str, Any]:
         if dp is not None and dn is not None:
             out["skew_ps"] = (dp - dn) * 1e12
     out["insertion_loss_db_at_nyquist"] = float(-ch.db(s21[k]))
+    if m.line_loss_db is not None and m.line_mils > 0:
+        out["line_loss_db_at_nyquist"] = float(m.line_loss_db[k])
+        out["line_mils"] = float(m.line_mils)
+    res = [(float(b["stub_resonance_ghz"]) * 1e9, b) for b in m.blocks
+           if b.get("stub_resonance_ghz")]
+    if res:
+        fq, b = min(res, key=lambda x: x[0])
+        out["stub_resonance_hz"] = fq
+        out["stub_resonance_of"] = (f"{b.get('length_mils', 0):.0f} mil trace stub"
+                                    if b["kind"] == "stub" else
+                                    f"via stub of {b.get('stub_mils', 0):.0f} mil")
     out["return_loss_db_worst"] = float(-np.max(ch.db(s11[band])))
     t, step = step_response(m.f, s21, rise)
     d = delay_50(t, step)

@@ -30,21 +30,22 @@ def via(x: float, y: float, net: str, d: float = 20, hole: float = 10) -> Via:
     return Via(x, y, d, hole, "TopLayer", "BottomLayer", net)
 
 
-def single_net(with_stub: bool = True, with_return_via: bool = True) -> LayoutBoard:
-    """U1.1 -> 1000 mil top -> via -> 2000 mil inner -> via -> 500 mil top -> U2.1,
-    with a 300 mil stub to TP1 off the first top run."""
+def single_net(with_stub: bool = True, with_return_via: bool = True,
+               inner: float = 2000) -> LayoutBoard:
+    """U1.1 -> 1000 mil top -> via -> ``inner`` mil inner -> via -> 500 mil top
+    -> U2.1, with a 300 mil stub to TP1 off the first top run."""
     b = LayoutBoard(name="t.PcbDoc", layers=list(LAYERS))
-    b.pads = [smd("U1", "1", 0, 0, "SIG"), smd("U2", "1", 1500, 2000, "SIG")]
-    b.vias = [via(1000, 0, "SIG"), via(1000, 2000, "SIG")]
+    b.pads = [smd("U1", "1", 0, 0, "SIG"), smd("U2", "1", 1500, inner, "SIG")]
+    b.vias = [via(1000, 0, "SIG"), via(1000, inner, "SIG")]
     b.tracks = [Track("TopLayer", 0, 0, 600, 0, 5, "SIG"),
                 Track("TopLayer", 600, 0, 1000, 0, 5, "SIG"),
-                Track("MidLayer1", 1000, 0, 1000, 2000, 4, "SIG"),
-                Track("TopLayer", 1000, 2000, 1500, 2000, 5, "SIG")]
+                Track("MidLayer1", 1000, 0, 1000, inner, 4, "SIG"),
+                Track("TopLayer", 1000, inner, 1500, inner, 5, "SIG")]
     if with_stub:
         b.pads.append(smd("TP1", "1", 600, 300, "SIG"))
         b.tracks.append(Track("TopLayer", 600, 0, 600, 300, 5, "SIG"))
     if with_return_via:
-        b.vias += [via(1040, 0, "GND"), via(1040, 2000, "GND")]
+        b.vias += [via(1040, 0, "GND"), via(1040, inner, "GND")]
     return b
 
 

@@ -55,6 +55,8 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 | `return_loss_db` | Worst return loss up to Nyquist |
 | `delay_ps` | Delay, 50 % of the step |
 | `tdr_min_ohms`, `tdr_max_ohms` | The TDR inside the channel |
+| `line_loss_db` | Loss of the trace sections alone at Nyquist (the odd mode for a pair): what grows with length |
+| `stub_resonance_ghz` | The lowest quarter-wave notch of any trace stub or via stub on the path |
 | `length_mils`, `vias`, `stubs` | What the path is made of |
 | `skew_ps`, `mode_conversion_db`, `length_n_mils` | For a pair |
 
@@ -62,7 +64,8 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 - passivity;
 - reciprocity;
 - impedance: the TDR within `z_tol_pct` of `z_target`;
-- `il_max_db`, `rl_min_db` and `skew_max_ps` when they are given.
+- `il_max_db`, `rl_min_db` and `skew_max_ps` when they are given;
+- stub resonance: with a data rate, every stub's first notch must lie at least `stub_margin` (default 2) times above Nyquist. A notch near Nyquist is a fault of its own that no length limit fixes: shorten the stub or back-drill the via.
 
 When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 
@@ -82,7 +85,7 @@ Each run works out `pcb_create_design_rule` calls:
 | Width (net or pair) | The field solver's width for `z_target` on the layer the net mostly runs on, +/- 10 %. A net-scoped width rule covers every layer; the run says which other layers then need their own width, which `si_stackup_plan` gives. |
 | Differential pair gap | The gap that goes with that width. |
 | Max uncoupled length | The skew budget divided by the routed delay per mil. |
-| Length | The loss budget `il_max_db` divided by the routed loss per mil, vias included. |
+| Length | The routed length plus the loss headroom (`il_max_db` less the insertion loss) spent at the lines' own loss per mil. Vias, stubs and mismatch are a fixed cost that does not grow with the trace, so they are not scaled by length; the rule's reason names a stub whose notch falls near Nyquist. |
 
 `apply_rules: true` creates them through the bridge, with the usual rule-edit log. Do it only when the user asks.
 
@@ -98,7 +101,7 @@ Each run works out `pcb_create_design_rule` calls:
   - `from_pin`, `to_pin`;
   - `data_rate_gbps`, `f_max_ghz`, `points`, `rise_ps`;
   - `z_ref`, `z_target`, `z_tol_pct`;
-  - `il_max_db`, `rl_min_db`, `skew_max_ps`;
+  - `il_max_db`, `rl_min_db`, `skew_max_ps`, `stub_margin`;
   - `tand`, `foil`, `mask_mils`, `etch_mils`;
   - `rules`.
 
@@ -112,6 +115,8 @@ Each run works out `pcb_create_design_rule` calls:
   - On a routed net, the notch of a 300 mil test-point stub falls within 8 % of c / (4 l sqrt(Er_eff)).
   - The TDR at its tee drops to about half the line impedance.
 - **Via stub:** the via stub's notch falls within 5 % of c / (4 l sqrt Er), and back-drilling removes it.
+- **Line loss:** the lines' loss equals the sum of each cross-section's own loss per inch to 0.1 %; a pair's is the odd mode's exactly.
+- **Length budget:** the same stubbed net routed 2000 and 5000 mil long gets the same length limit within 3 % (scaling the whole loss by the routed length moved it by over 30 %).
 - **Pair skew:** the skew of a pair with a 49 mil length mismatch matches the mismatch times the line's delay per mil within 1.5 ps.
 
 ## Limits

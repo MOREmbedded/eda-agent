@@ -253,6 +253,36 @@ def test_single_channel_is_physical_and_sees_the_stub(single_model):
     assert delay < figs["delay_ps"] < 1.08 * delay
 
 
+def test_line_loss_is_the_lines_alone_and_the_stub_notch_is_named(single_model):
+    m, p = single_model
+    k = len(m.f) // 2
+    per_in = {name: v["loss_db_per_in"] for name, v in m.sections.items()}
+    # the sections' own loss figures are at the band's middle, as is k
+    expect = (1500 * per_in["TopLayer 5 mil"] + 2000 * per_in["MidLayer1 4 mil"]) / 1000
+    assert m.line_loss_db[k] == pytest.approx(expect, rel=1e-3)
+    assert m.line_mils == pytest.approx(3500, abs=1)        # the stub is not a line of the path
+    figs = net_model.figures(m, 2e9, 35e-12)
+    assert figs["stub_resonance_of"] == "300 mil trace stub"
+    s21 = np.abs(m.s[:, 1, 0])
+    fq = figs["stub_resonance_hz"]
+    band = (m.f > 0.6 * fq) & (m.f < 1.4 * fq)
+    assert m.f[band][np.argmin(s21[band])] == pytest.approx(fq, rel=0.06)
+
+
+def test_pair_line_loss_is_the_odd_mode():
+    from eda_agent.si import rlgc as _r
+    f = ch.uniform_band(10e9, 50)
+    r = _rlgc(f, n=2)
+    k = 25
+    figs = _r.figures(r, k)
+    assert abs(figs["loss_diff_db_per_in"] - figs["loss_common_db_per_in"]) > 0.01
+    got = net_model.line_loss_db(r, 1000.0, odd=True)[k]
+    assert got == pytest.approx(figs["loss_diff_db_per_in"], rel=1e-9)
+    single = _rlgc(f)
+    assert net_model.line_loss_db(single, 1000.0)[k] == pytest.approx(
+        _r.figures(single, k)["loss_db_per_in"], rel=1e-9)
+
+
 def test_pair_skew_follows_the_length_mismatch():
     b = pair_board(skew=0)
     stack = stack_from_stackup(STACKUP, b.layers)
@@ -357,6 +387,30 @@ def test_pair_job_rules_hold_the_pair(tmp_path):
     rules = {s["args"]["rule_type"]: s["args"] for s in res["altium_steps"]}
     assert rules["differential_pairs"]["scope"] == "InDifferentialPair('D')"
     assert rules["differential_pairs"]["max_uncoupled_length"] > 10
+
+
+def _length_rule(board, rate=10.0, il=20.0):
+    from eda_agent.si.net_jobs import run_net_channel
+    import tempfile
+    r = run_net_channel({"net": "SIG", "data_rate_gbps": rate, "il_max_db": il, "f_max_ghz": 12,
+                         "points": 120}, board.to_dict(), STACKUP, tempfile.mkdtemp())
+    rule = next(s for s in r["altium_steps"] if s["args"]["rule_type"] == "length")
+    return rule, {v["check"]: v for v in r["verdicts"]}
+
+
+def test_length_budget_does_not_scale_the_stub_with_length():
+    # the same 300 mil stub on a short and a long route: the budget is a
+    # fact about the lines' loss and the fixed cost of vias and the stub, so
+    # it must not move with the route (scaling the whole loss by the routed
+    # length moves it by over 30 % here)
+    a, checks = _length_rule(single_net(inner=2000), rate=6.0)
+    b, _ = _length_rule(single_net(inner=5000), rate=6.0)
+    assert a["args"]["max_value"] == pytest.approx(b["args"]["max_value"], rel=0.03)
+    assert "notches at" in a["why"] and "per 1000 mil" in a["why"]
+    stub = checks["stub resonance"]
+    assert stub["pass"] is False and "300 mil trace stub" in stub["detail"]
+    _, slow = _length_rule(single_net(inner=2000), rate=2.0)
+    assert slow["stub resonance"]["pass"] is True
 
 
 def test_job_refuses_a_net_it_cannot_find(tmp_path):
