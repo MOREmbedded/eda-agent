@@ -191,6 +191,12 @@ def test_lineage_links_snapshot_channel_and_eye(tmp_path):
     assert [c["job"] for c in up["children"]] == [e["job"]]
     down = _jobs.lineage(e["job"])
     assert [p["job"] for p in down["parents"]] == [r["job"]] and not down["snapshots"]
+    # a board job names its snapshot by the id the graph shows
+    b = sim.submit("board-si", "eda-agent", {"targets": [{"match": "SIG", "data_rate_gbps": 6}],
+                                            "f_max_ghz": 10, "points": 100},
+                   {"board": rec["board"], "stackup": rec["stackup"]}, "board", True)
+    found = _jobs.get(b["job"]).work_folder("eda-agent") / "findings.json"
+    assert json.loads(found.read_text(encoding="utf-8"))["snapshot"] == rec["id"]
     os.utime(pcb, (time.time() + 10, time.time() + 10))
     assert _jobs.lineage(r["job"])["stale"] is True
     with pytest.raises(KeyError):

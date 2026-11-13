@@ -407,7 +407,9 @@ def delay_50(t: np.ndarray, step: np.ndarray) -> Optional[float]:
 def figures(m: Model, f_nyquist: float, rise: float) -> dict[str, Any]:
     """The numbers a designer reads off a channel."""
     k = ch.nyquist_index(m.f, f_nyquist)
-    out: dict[str, Any] = {"f_nyquist_hz": float(m.f[k])}
+    # f_nyquist_hz is the grid point the figures are read at; the limits that
+    # scale with the data rate use the rate's own Nyquist.
+    out: dict[str, Any] = {"f_nyquist_hz": float(m.f[k]), "f_nyquist_asked_hz": float(f_nyquist)}
     band = m.f <= m.f[k] * 1.0000001
     if m.n == 1:
         s11, s21 = m.s[:, 0, 0], m.s[:, 1, 0]

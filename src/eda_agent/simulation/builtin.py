@@ -160,7 +160,11 @@ class EdaAgentEngine(Engine):
                 stackup = json.loads(job.input_path("stackup").read_text(encoding="utf-8"))
             except (OSError, ValueError, KeyError) as exc:
                 raise EngineError(f"the board or stackup file could not be read: {exc}") from exc
-            snap = "board " + str(job.inputs.get("board", {}).get("sha256", ""))[:12]
+            meta = job.inputs.get("board", {})
+            # The snapshot's own id when the board came from one: the id the
+            # job graph and the dashboard show.
+            snap = str(meta.get("from_snapshot") or "") \
+                or "board file " + str(meta.get("sha256", ""))[:12]
             try:
                 return board_jobs.run_board_si(dict(job.spec), board, stackup, Path(folder),
                                                progress, snapshot=snap)
