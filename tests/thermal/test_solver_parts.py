@@ -14,14 +14,16 @@ from eda_agent.thermal.solver import (
     Clamp, HeatArea, Package, Setup, match_powers, solve,
 )
 
-from .boards import add_chip, add_qfn, demo_board, four_layer, rect, two_layer
+from .boards import (
+    add_chip, add_leaded, add_qfn, demo_board, four_layer, pour_round_pads, rect, two_layer,
+)
 
 PLAIN = dict(radiation=False, edges=False, solder_mask=False)
 
 
 def _solve(board, stack, cell=25.0, **kw):
     """Solved as the tool solves it: copper sampled at 2 mil (supersample=0)."""
-    return solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0), **kw)
+    return solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0, islands=True), **kw)
 
 
 def _part(res, ref):
@@ -217,7 +219,7 @@ def test_clamp_takes_the_heat_and_holds_its_temperature():
 def test_extra_heat_map_adds_to_the_part_powers():
     board, stack = two_layer(1000, 1000)
     add_chip(board, "R1", 500, 500)
-    r = rasterize(board, cell_mils=50, links=True, supersample=0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
     joule = np.zeros((r.ny, r.nx))
     joule[2:6, 2:6] = 0.5 / 16
     res = solve(board, stack, r, powers={"R1": 0.25}, extra_heat_w={"BottomLayer": joule})
@@ -277,7 +279,7 @@ def test_orientation_and_altitude_move_the_result_the_right_way():
 
 def test_bad_inputs_are_refused():
     board, stack = demo_board()
-    r = rasterize(board, cell_mils=100, links=True, supersample=0)
+    r = rasterize(board, cell_mils=100, links=True, supersample=0, islands=True)
     for bad in (dict(orientation="sideways"), dict(convection="magic"),
                 dict(dielectric="cheese"), dict(emissivity=1.5), dict(k_z=0.0),
                 dict(max_sublayer_mils=0.0)):
@@ -308,7 +310,7 @@ def test_direct_solver_fallback_when_pyamg_is_missing(monkeypatch):
     import eda_agent.thermal.solver as solver
 
     board, stack = demo_board()
-    r = rasterize(board, cell_mils=50, links=True, supersample=0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
     ref = solve(board, stack, r, powers={"U1": 1.0, "U2": 1.5})
     assert ref.solver["linear_solver"] == "amg-cg"
     real_import = builtins.__import__
@@ -372,7 +374,7 @@ def _through_rise(kind, cell, w=400.0):
     spread over the top."""
     board, stack = _three_layer(kind, w)
     setup = Setup(ambient_c=25.0, radiation=False, h_top=1e-6, h_bottom=1e-6, edges=False)
-    res = solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0),
+    res = solve(board, stack, rasterize(board, cell_mils=cell, links=True, supersample=0, islands=True),
                 powers={}, setup=setup, heat_areas=[HeatArea("TopLayer", 0, 0, w, w, 1.0)],
                 clamps=[Clamp(0, 0, w, w, 25.0, side="bottom", h_contact=1e6)])
     return float(np.nanmean(res.temps["TopLayer"])) - 25.0
@@ -463,3 +465,127 @@ def test_a_via_field_reads_the_same_on_coarse_and_fine_cells():
         assert (np.nanmax(coarse.temps[name]) - 25.0
                 == pytest.approx(np.nanmax(fine.temps[name]) - 25.0, rel=0.03))
     assert coarse.balance["error_pct"] < 1e-4 and fine.balance["error_pct"] < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Copper islands: a pad, a via and the pour round them in one cell
+# ---------------------------------------------------------------------------
+
+def _leaded(cell, islands=True, nets=None):
+    """1 W in an eight-pin gull-wing part whose pads sit in 8 mil
+    clearances of a top-layer pour, over a plane."""
+    board, stack = four_layer(1000.0, 1000.0)
+    add_leaded(board, "U1", 500.0, 500.0, nets=nets)
+    pour_round_pads(board)
+    raster = rasterize(board, cell_mils=cell, links=True, supersample=0, islands=islands)
+    return solve(board, stack, raster, powers={"U1": 1.0},
+                 packages={"U1": Package(theta_jb=10.0)})
+
+
+@pytest.mark.parametrize("nets", [None, {"4": "GND"}], ids=["no pin on the pour", "pin 4 on it"])
+def test_a_pad_in_a_pour_clearance_is_not_joined_to_the_pour(nets):
+    """Found on a real board: a part's junction rose from 53 to 58 C as
+    the cells went from 25 to 8 mil. A cell that holds a pad and the
+    pour beyond its clearance was one node, so the pour took the pad's
+    heat without it crossing the clearance. Each island of a cell is a
+    node now, and cells of 50, 25 and 20 mil agree with cells that
+    resolve the 8 mil clearance. Without the split they read the rise
+    a third to a half low."""
+    fine = _leaded(6.25).parts[0]["t_junction_c"] - 25.0
+    for cell in (50.0, 25.0, 20.0):
+        res = _leaded(cell, nets=nets) if nets else _leaded(cell)
+        ref = _leaded(6.25, nets=nets).parts[0]["t_junction_c"] - 25.0 if nets else fine
+        assert res.parts[0]["t_junction_c"] - 25.0 == pytest.approx(ref, rel=0.04)
+        assert res.solver["island_pieces"] > 0
+        assert res.balance["error_pct"] < 1e-4
+    joined = _leaded(25.0, islands=False, nets=nets).parts[0]["t_junction_c"] - 25.0
+    ref = _leaded(6.25, nets=nets).parts[0]["t_junction_c"] - 25.0
+    assert joined < 0.75 * ref
+    if nets:
+        # the pin on the pour is a real way out: the part runs cooler with it
+        assert ref < 0.85 * fine
+
+
+def test_the_map_and_the_parts_read_each_island_of_a_cell():
+    """On 50 mil cells a pad and the pour share cells. The part's pad
+    temperature is its pads', the heat map shows the hottest copper of
+    each cell (the pad), ``copper_at`` reads the island at a point, and
+    a neighbour's pad on the pour reads the pour, not the hot pad."""
+    board, stack = four_layer(1000.0, 1000.0)
+    add_leaded(board, "U1", 500.0, 500.0)
+    board.pads.append(Pad("C9", "1", 440.0, 353.0, net="GND",
+                          copper=[PadCopper("TopLayer", "rect", 6.0, 6.0)]))
+    from eda_agent.layout.model import Component
+    board.components.append(Component("C9", x=440.0, y=353.0, courtyard=rect(435, 350, 445, 356)))
+    pour_round_pads(board)
+    raster = rasterize(board, cell_mils=50.0, links=True, supersample=0, islands=True)
+    res = solve(board, stack, raster, powers={"U1": 1.0}, report_parts=["C9"])
+    u1, c9 = _part(res, "U1"), _part(res, "C9")
+    pad = board.pads[0]                                   # U1 pin 1 at (425, 395)
+    assert raster.cell_of(pad.x, pad.y) == raster.cell_of(440.0, 353.0)
+    t_pad = res.copper_at("TopLayer", pad.x, pad.y)
+    t_pour = res.copper_at("TopLayer", 440.0, 353.0)
+    assert t_pad == pytest.approx(u1["t_pads_c"], abs=0.05)         # pads tied: one temperature
+    assert t_pad - t_pour > 15.0                                     # the clearance holds
+    assert c9["t_pads_c"] == pytest.approx(t_pour, abs=0.01)
+    assert res.at("TopLayer", pad.x, pad.y) == pytest.approx(t_pad, abs=0.01)   # the map: hottest
+    assert res.t_max_c == pytest.approx(u1["t_pads_max_c"], abs=0.01)
+    ix, iy = raster.cell_of(pad.x, pad.y)
+    # in this cell the pad holds the most copper: it is the cell's node, the pour a piece
+    assert res.main_temps["TopLayer"][iy, ix] == pytest.approx(t_pad, abs=0.01)
+    assert np.nanmin(np.abs(res.piece_temps["TopLayer"] - t_pour)) < 1e-9
+    # no copper at a point of the clearance: the cell's own node answers
+    assert res.copper_at("TopLayer", 440.0, 395.0) == pytest.approx(t_pad, abs=0.01)
+
+
+def _vias_in_a_pour(cell, islands=True):
+    """2 W in a top pour that 25 vias of another net pass through, each
+    in its clearance, down to that net's pour on the bottom."""
+    board, stack = two_layer(1000.0, 1000.0, pours=False)
+    holes = []
+    for i in range(5):
+        for j in range(5):
+            x, y = 380.0 + 60 * i, 380.0 + 60 * j
+            board.vias.append(Via(x, y, 20.0, 10.0, "TopLayer", "BottomLayer", "S"))
+            holes.append([(x + 18 * np.cos(a * np.pi / 8), y + 18 * np.sin(a * np.pi / 8))
+                          for a in range(16)])
+    board.regions.append(Region("TopLayer", rect(0, 0, 1000, 1000), holes=holes, net="GND",
+                                kind="pour"))
+    board.regions.append(Region("BottomLayer", rect(0, 0, 1000, 1000), net="S", kind="pour"))
+    raster = rasterize(board, cell_mils=cell, links=True, supersample=0, islands=islands)
+    return solve(board, stack, raster,
+                 heat_areas=[HeatArea("TopLayer", 350, 350, 650, 650, 2.0)])
+
+
+def test_a_via_in_another_nets_pour_stays_apart_from_it():
+    """A via's land in a clearance of a pour: on cells larger than the
+    clearance the barrel was tied to the pour's cells and carried the
+    pour's heat to the other side. It joins its own island now; cells of
+    30 and 20 mil agree with 5 mil, where they read the rise 8 % low."""
+    fine = _vias_in_a_pour(5.0)
+    for cell in (30.0, 20.0):
+        res = _vias_in_a_pour(cell)
+        assert res.t_max_c - 25.0 == pytest.approx(fine.t_max_c - 25.0, rel=0.02)
+        assert res.barrels[12]["t_top_c"] - 25.0 == pytest.approx(
+            fine.barrels[12]["t_top_c"] - 25.0, rel=0.03)
+        assert res.balance["error_pct"] < 1e-4
+    joined = _vias_in_a_pour(30.0, islands=False)
+    assert joined.t_max_c - 25.0 < 0.93 * (fine.t_max_c - 25.0)
+    assert joined.barrels[12]["t_top_c"] > fine.barrels[12]["t_top_c"] + 3.0
+
+
+def test_a_heat_area_heats_every_island_under_it_by_its_copper():
+    """A rectangle over a pour and the pads in its clearances: each
+    island takes heat by its copper inside, all of it arrives, and the
+    pads, which only the laminate cools, end hotter than the pour."""
+    board, stack = four_layer(1000.0, 1000.0)
+    add_leaded(board, "U1", 500.0, 500.0)
+    pour_round_pads(board)
+    raster = rasterize(board, cell_mils=50.0, links=True, supersample=0, islands=True)
+    res = solve(board, stack, raster, heat_areas=[HeatArea("TopLayer", 350, 350, 650, 650, 1.0)],
+                report_parts=["U1"])
+    assert res.balance["power_in_w"] == pytest.approx(1.0, abs=1e-9)
+    assert res.balance["error_pct"] < 1e-4
+    t_pad = res.copper_at("TopLayer", 425.0, 395.0)
+    assert t_pad > res.copper_at("TopLayer", 500.0, 500.0) + 0.5
+    assert _part(res, "U1")["t_pads_c"] == pytest.approx(t_pad, abs=1.0)

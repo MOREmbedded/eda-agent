@@ -88,3 +88,39 @@ def demo_board() -> tuple[LayoutBoard, Stack]:
         add_chip(board, f"R{i}", x, y)
     add_chip(board, "C5", 1050.0, 1300.0)
     return board, stack
+
+
+def add_leaded(board: LayoutBoard, ref: str, x: float, y: float, pins: int = 8,
+               pitch: float = 50.0, pad_w: float = 24.0, pad_h: float = 60.0,
+               row: float = 210.0, nets: dict | None = None) -> None:
+    """A gull-wing part: two rows of ``pins`` / 2 pads on the top layer,
+    each pad on its own net unless ``nets`` ({pin name: net}) says so."""
+    half = pins // 2
+    span = half * pitch / 2 + 10
+    board.components.append(Component(
+        ref, x=x, y=y, side="top", height=60.0,
+        courtyard=rect(x - span, y - row / 2 - pad_h / 2 - 10, x + span,
+                       y + row / 2 + pad_h / 2 + 10)))
+    k = 0
+    for sgn in (-1, 1):
+        for i in range(half):
+            k += 1
+            board.pads.append(Pad(ref, str(k), x + (i - (half - 1) / 2) * pitch,
+                                  y + sgn * row / 2, net=(nets or {}).get(str(k), f"{ref}_{k}"),
+                                  copper=[PadCopper("TopLayer", "rect", pad_w, pad_h)]))
+
+
+def pour_round_pads(board: LayoutBoard, clearance: float = 8.0, net: str = "GND",
+                    layer: str = "TopLayer") -> None:
+    """A pour over the whole of ``layer`` that keeps ``clearance`` from
+    every pad on another net and runs into the pads on ``net``."""
+    holes = []
+    for p in board.pads:
+        if p.net == net:
+            continue
+        c = next((c for c in p.copper if c.layer == layer), None)
+        if c is not None:
+            holes.append(rect(p.x - c.w / 2 - clearance, p.y - c.h / 2 - clearance,
+                              p.x + c.w / 2 + clearance, p.y + c.h / 2 + clearance))
+    (x0, y0), (x1, y1) = board.outline[0], board.outline[2]
+    board.regions.append(Region(layer, rect(x0, y0, x1, y1), holes=holes, net=net, kind="pour"))

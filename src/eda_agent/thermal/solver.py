@@ -66,6 +66,7 @@ from __future__ import annotations
 import fnmatch
 import math
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
@@ -229,6 +230,12 @@ class Result:
     barrels: list[dict] = field(default_factory=list)
     solver: dict = field(default_factory=dict)
     ambient_c: float = 25.0
+    #: With copper islands (``rasterize(islands=True)``): each cell's main
+    #: island per layer, and the pieces (other islands in a cell) in the
+    #: order of ``raster.islands[layer]``. ``temps`` shows the hottest
+    #: copper of each cell.
+    main_temps: dict[str, np.ndarray] = field(default_factory=dict)
+    piece_temps: dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
     def t_max_c(self) -> float:
@@ -242,6 +249,21 @@ class Result:
         """Temperature of ``layer`` in the cell holding (x, y), deg C."""
         ix, iy = self.raster.cell_of(x, y)
         return float(self.temps[layer][iy, ix])
+
+    def copper_at(self, layer: str, x: float, y: float) -> float:
+        """Temperature of the copper lying at (x, y) on ``layer``: of its
+        own island where the cell holds several; the cell's where there
+        is no copper at the point."""
+        if layer in self.main_temps and layer in self.raster.islands:
+            _, code = self.raster.island_at(layer, x, y)
+            ncell = self.raster.nx * self.raster.ny
+            if code >= ncell:
+                t = float(self.piece_temps[layer][code - ncell])
+                if math.isfinite(t):
+                    return t
+            ix, iy = self.raster.cell_of(x, y)
+            return float(self.main_temps[layer][iy, ix])
+        return self.at(layer, x, y)
 
 
 def match_powers(board: LayoutBoard, powers: dict[str, float]) -> dict[str, float]:
@@ -292,12 +314,15 @@ def _build_planes(raster: CopperRaster, stack: Stack, setup: Setup,
     n_cu = len(names)
     for i, name in enumerate(names):
         layer = sl[name]
-        f = raster.fill[name][act]
+        isl = raster.islands.get(name)
+        f = (isl.fill_main if isl is not None else raster.fill[name])[act]
         outer_mask = (i == 0 or i == n_cu - 1) and setup.solder_mask
         k_b = _k_between(setup, i, n_cu)
         cu_index[name] = len(planes)
         k_res = k_b if outer_mask else kz_d
-        edge = raster.edge_mils[name][act] * MIL if name in raster.edge_mils else None
+        edge = None
+        if name in raster.edge_mils:
+            edge = (isl.edge_main if isl is not None else raster.edge_mils[name])[act] * MIL
         planes.append(Plane("cu", name, max(layer.copper_mils, 0.05) * MIL,
                             ph.K_COPPER * f + k_b * (1 - f),
                             ph.K_COPPER * f + k_res * (1 - f),
@@ -349,38 +374,61 @@ def _edge_faces(act: np.ndarray) -> np.ndarray:
 
 
 def _pad_cells(board: LayoutBoard, raster: CopperRaster, ref: str, layer: str,
-               idx: np.ndarray) -> dict[int, float]:
-    """Active cell -> copper area (m^2) of ``ref``'s pads on ``layer``.
+               idx: np.ndarray, base: int = 0,
+               piece_node: Optional[np.ndarray] = None) -> dict[int, float]:
+    """Node -> copper area (m^2) of ``ref``'s pads on ``layer``.
 
     A pad's heat enters its copper: the area counted in a cell is the
     pad's there, and no more than the copper the layer has in that cell.
     So a cell inside the drilled hole of a via-in-pad takes none, and one
     the hole's edge crosses takes its copper's share. Without that the
     hole cells, which the copper around them does not reach, would be
-    heated and stand out as false peaks on a fine grid."""
+    heated and stand out as false peaks on a fine grid.
+
+    With copper islands the nodes are those of the pad's own island: a
+    pad in a pour's clearance heats the pad, not the pour that shares its
+    cells. ``base`` is the layer's first node, ``piece_node`` the node of
+    each piece of the layer (-1 outside the board)."""
     out: dict[int, float] = {}
     fill = raster.fill[layer]
     cell_area = raster.cell_mils ** 2
+    isl = raster.islands.get(layer)
+    ncell = raster.nx * raster.ny
+    flat = idx.ravel()
+    loose: dict[int, float] = {}
     for p in board.pads:
         if p.comp != ref:
             continue
         s = p.shape_on(layer)
         if s is None:
             continue
+        if isl is not None:
+            got = raster.island_nodes(layer, s)
+            for code, a in got.items():
+                if code < ncell:
+                    node = base + int(flat[code]) if flat[code] >= 0 else -1
+                else:
+                    node = int(piece_node[code - ncell]) if piece_node is not None else -1
+                if node >= 0:
+                    out[node] = out.get(node, 0.0) + a * MIL * MIL
+            if got:
+                continue
         for (ix, iy), a in raster.shape_area_by_cell(s).items():
             c = int(idx[iy, ix])
             if c >= 0:
-                out[c] = out.get(c, 0.0) + a
-    if not out:
+                loose[c] = loose.get(c, 0.0) + a
+    if not loose:
         return out
-    cells = np.fromiter(out.keys(), dtype=np.int64)
-    area = np.fromiter(out.values(), dtype=float)
+    cells = np.fromiter(loose.keys(), dtype=np.int64)
+    area = np.fromiter(loose.values(), dtype=float)
     copper = fill[idx >= 0][cells] * cell_area
-    area = np.minimum(area, copper)
-    keep = area > 1e-9 * cell_area
-    if not keep.any():
-        return {c: a * MIL * MIL for c, a in out.items()}
-    return {int(c): float(a) * MIL * MIL for c, a in zip(cells[keep], area[keep])}
+    capped = np.minimum(area, copper)
+    keep = capped > 1e-9 * cell_area
+    if keep.any():
+        cells, area = cells[keep], capped[keep]
+    for c, a in zip(cells, area):
+        out[base + int(c)] = out.get(base + int(c), 0.0) + float(a) * MIL * MIL
+    return out
 
 
 def _ring(raster: CopperRaster, idx: np.ndarray, x: float, y: float, r_mils: float,
@@ -592,6 +640,37 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
     n_cu = len(raster.layers)
     kxy_d, _kz_d = setup.laminate()
 
+    # Copper islands: every island of a cell beyond its main one is a
+    # piece, a node of its own (see layout.copper_raster.Islands).
+    idx_flat = idx.ravel()
+    flat_of = np.flatnonzero(act.ravel())
+    ncell = raster.nx * raster.ny
+    next_node = P * M
+    pieces: dict[int, SimpleNamespace] = {}
+    for name, p in cu_index.items():
+        isl = raster.islands.get(name)
+        if isl is None or not len(isl.label):
+            continue
+        c_act = idx_flat[isl.cell]
+        ok = c_act >= 0
+        node_of = np.full(len(isl.label), -1, dtype=np.int64)
+        node_of[ok] = next_node + np.arange(int(ok.sum()))
+        next_node += int(ok.sum())
+        pieces[p] = SimpleNamespace(isl=isl, node=node_of[ok], cell=c_act[ok],
+                                    fill=isl.fill[ok], edge_m=isl.edge_mils[ok] * MIL,
+                                    node_of=node_of)
+    n_pieces = next_node - P * M
+
+    def code_nodes(p: int, codes: np.ndarray) -> np.ndarray:
+        """Nodes of plane ``p`` for island node codes; -1 off the board."""
+        main = codes < ncell
+        out_ = np.where(main, idx_flat[np.where(main, codes, 0)], -1)
+        out_ = np.where(main & (out_ >= 0), p * M + out_, -1)
+        if p in pieces:
+            k = np.where(main, 0, codes - ncell)
+            out_ = np.where(main, out_, pieces[p].node_of[k])
+        return out_
+
     rows: list[np.ndarray] = []
     cols: list[np.ndarray] = []
     vals: list[np.ndarray] = []
@@ -630,17 +709,33 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             gy = 2.0 * s[ay] * s[by] / (s[ay] + s[by])
         link(p * M + ax, p * M + bx, gx)
         link(p * M + ay, p * M + by, gy)
+    for p, pc_ in pieces.items():
+        # a piece and the same island in the next cell, through the copper
+        isl = pc_.isl
+        if len(isl.link_w):
+            na, nb = code_nodes(p, isl.link_a), code_nodes(p, isl.link_b)
+            ok = (na >= 0) & (nb >= 0)
+            link(na[ok], nb[ok], ph.K_COPPER * planes[p].t_m * isl.link_w[ok])
     # through-plane conduction
     cells = np.arange(M)
     aniso = math.sqrt(kxy_d / _kz_d)
     cu_planes = [p for p, pl in enumerate(planes) if pl.kind == "cu"]
 
-    def end_cover(p_cu: int, gap: float) -> np.ndarray:
+    def end_cover(p_cu: int, gap: float) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        """Cover of each cell's main copper and of each piece of the
+        layer. The islands of one cell share it: their covers never add
+        up to more than the cell."""
         cu = planes[p_cu]
         if cu.edge_m is None:
-            return np.ones(M)
+            return np.ones(M), None
         cov = _fringe_cover(cu.fill, cu.edge_m, FRINGE * aniso * gap, dx * dx)
-        return np.where(cu.fill > 0, cov, 1.0)
+        pc_ = pieces.get(p_cu)
+        if pc_ is None:
+            return np.where(cu.fill > 0, cov, 1.0), None
+        cf = _fringe_cover(pc_.fill, pc_.edge_m, FRINGE * aniso * gap, dx * dx)
+        tot = np.where(cu.fill > 0, cov, 0.0) + np.bincount(pc_.cell, weights=cf, minlength=M)
+        scale = 1.0 / np.maximum(tot, 1.0)
+        return np.where(cu.fill > 0, cov * scale, 1.0), cf * scale[pc_.cell]
 
     # The laminate is one body from face to face, and its nodes hold its
     # mean temperature in each cell: every link between two of them takes
@@ -660,12 +755,17 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
     # laminate above the layer joined to the laminate below it directly.
     gap_of = {pa: (planes[pa + 1].gap_m if pb > pa + 1 else 0.0)
               for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
-    c_dn = {pa: end_cover(pa, gap_of[pa]) for pa in cu_planes[:-1]}
-    c_up = {pb: end_cover(pb, gap_of[pa]) for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
+    c_dn, c_up, cf_dn, cf_up = {}, {}, {}, {}
+    for pa, pb in zip(cu_planes[:-1], cu_planes[1:]):
+        c_dn[pa], cf_dn[pa] = end_cover(pa, gap_of[pa])
+        c_up[pb], cf_up[pb] = end_cover(pb, gap_of[pa])
     outer = (cu_planes[0], cu_planes[-1])
     for p in cu_planes[1:-1]:
         if planes[p - 1].kind == "diel" and planes[p + 1].kind == "diel":
             bare = 1.0 - np.maximum(c_up[p], c_dn[p])
+            if cf_up.get(p) is not None:
+                bare = np.maximum(bare - np.bincount(
+                    pieces[p].cell, weights=np.maximum(cf_up[p], cf_dn[p]), minlength=M), 0.0)
             sel = bare > 1e-9
             if sel.any():
                 r = (planes[p - 1].t_m / (2 * planes[p - 1].kz) + planes[p].t_m / planes[p].k_res
@@ -694,13 +794,62 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
                         rest = r_gap - planes[first].t_m / (2 * planes[first].kz)
                         r = r + rest * (1.0 / c_end - 1.0)
             link(p * M + cells, (p + 1) * M + cells, A / r)
+    for p, pc_ in pieces.items():
+        # a piece meets the laminate (or the copper) next to it as the
+        # main copper does: over its cover, outer copper in its tube
+        pl = planes[p]
+        for q, cov in ((p - 1, cf_up.get(p)), (p + 1, cf_dn.get(p))):
+            if cov is None or not 0 <= q < P:
+                continue
+            other = planes[q]
+            if other.kind == "diel":
+                half = other.t_m / (2 * other.kz[pc_.cell])
+            else:
+                half = other.t_m / (2 * np.where(other.fill[pc_.cell] > 0, ph.K_COPPER,
+                                                 other.k_res))
+            r = (pl.t_m / (2 * ph.K_COPPER) + half) / cov
+            if p in outer and other.kind == "diel":
+                r = r + (other.gap_m / other.kz[pc_.cell] - half) * (1.0 / cov - 1.0)
+            link(pc_.node, q * M + pc_.cell, A[pc_.cell] / r)
+
+    def island_nodes(p: int, cells_: np.ndarray, label: int
+                     ) -> tuple[np.ndarray, np.ndarray]:
+        """For active cells of copper plane ``p``: the node of island
+        ``label`` in each (-1 where the island is not in the cell) and
+        its sheet conductance, W/K."""
+        pl = planes[p]
+        isl = raster.islands[pl.name]
+        lm = isl.label_main.ravel()[flat_of[cells_]]
+        nodes = np.where(lm == label, p * M + cells_, -1)
+        sheet = pl.kxy[cells_] * pl.t_m
+        pc_ = pieces.get(p)
+        if pc_ is not None:
+            for i in np.nonzero(nodes < 0)[0]:
+                f0, f1 = isl.start[flat_of[cells_[i]]], isl.start[flat_of[cells_[i]] + 1]
+                for f in range(int(f0), int(f1)):
+                    if isl.label[f] == label and pc_.node_of[f] >= 0:
+                        nodes[i] = pc_.node_of[f]
+                        sheet[i] = ph.K_COPPER * isl.fill[f] * pl.t_m
+                        break
+        return nodes, sheet
+
+    def barrel_island(layer: str, x: float, y: float, r_wall: float, r_land: float) -> int:
+        """The island a hole's land (or the copper at its wall) is part of."""
+        pitch = raster.cell_mils / raster.supersample
+        seen: dict[int, int] = {}
+        for r in {r_wall + 1.5 * pitch, (r_wall + r_land) / 2.0, r_wall + 0.5 * pitch}:
+            for k in range(8):
+                ang = k * math.pi / 4.0
+                lab, _ = raster.island_at(layer, x + r * math.cos(ang), y + r * math.sin(ang))
+                if lab:
+                    seen[lab] = seen.get(lab, 0) + 1
+        return max(seen, key=seen.get) if seen else 0
 
     # plated holes
     plating = setup.plating_um * 1e-6
     layer_kind = {l.name: l for l in board.layers}
     plane_region_nets = {(r.layer, r.net) for r in board.regions if r.kind == "plane" and r.net}
     barrel_nodes: list[tuple[Any, list[int]]] = []
-    next_node = P * M
     two_pi = 2.0 * math.pi
     for b in raster.barrels:
         c0 = idx[b.iy, b.ix]
@@ -733,6 +882,31 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             rc, rho = rings[r_c]
             if not len(rc):
                 rc, rho = np.array([c0]), np.array([r_c * 1.5])
+            if connects and pl.name in raster.islands:
+                # The barrel joins its own island, not whatever copper
+                # lies in the cells round it: a via in another net's pour
+                # stays apart from the pour.
+                label = barrel_island(pl.name, b.x, b.y, r_wall, r_land)
+                tied = False
+                if label:
+                    nodes, sheet = island_nodes(p0 + k, rc, label)
+                    ok = nodes >= 0
+                    if ok.any():
+                        tied = True
+                        link(np.full(int(ok.sum()), node), nodes[ok],
+                             two_pi * sheet[ok] / (ok.sum() * np.maximum(
+                                 np.log(rho[ok] / r_c), LN_MIN)))
+                    if not is_plane and r_land > r_wall:
+                        lc, _ = _ring(raster, idx, b.x, b.y, 0.0, reach=r_land)
+                        if len(lc):
+                            nodes, sheet = island_nodes(p0 + k, lc, label)
+                            ok = nodes >= 0
+                            if ok.any():
+                                tied = True
+                                link(np.full(int(ok.sum()), node), nodes[ok],
+                                     two_pi * sheet[ok] / (ok.sum() * LN_MIN))
+                if tied:
+                    continue
             sheet = pl.kxy[rc] * pl.t_m
             if pl.kind == "cu" and not connects:
                 # through the antipad's resin, then the plane's copper
@@ -764,7 +938,8 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             raise ValueError(f"no component {ref!r} on the board")
         side_layer = raster.layers[-1] if comp.side == BOTTOM else raster.layers[0]
         sp_ = cu_index[side_layer]
-        pads = _pad_cells(board, raster, ref, side_layer, idx)
+        pads = _pad_cells(board, raster, ref, side_layer, idx, sp_ * M,
+                          pieces[sp_].node_of if sp_ in pieces else None)
         ring, a_top, a_side = _body(board, ref)
         row = {"ref": ref, "side": comp.side, "layer": side_layer, "power_w": pw.get(ref, 0.0),
                "plane": sp_, "pkg": packages.get(ref, Package()), "a_top": a_top,
@@ -773,7 +948,7 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             shape = geom.polygon(ring)
             for (ix, iy), a in raster.shape_area_by_cell(shape).items():
                 if idx[iy, ix] >= 0:
-                    pads[int(idx[iy, ix])] = a * MIL * MIL
+                    pads[sp_ * M + int(idx[iy, ix])] = a * MIL * MIL
             if pads and ref in pw:
                 notes.append(f"{ref}: no pads on {side_layer}; its heat enters under its outline")
         if not pads:
@@ -792,7 +967,7 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
             g_jb = (1.0 / pkg.theta_jb) if pkg.theta_jb else TIGHT_W_PER_K
             pc = np.fromiter(pads.keys(), dtype=np.int64)
             pa = np.fromiter(pads.values(), dtype=float)
-            link(np.full(pc.shape, j), sp_ * M + pc, g_jb * pa / tot)
+            link(np.full(pc.shape, j), pc, g_jb * pa / tot)
             sources.append((j, pw.get(ref, 0.0)))
             if pkg.theta_jc is not None:
                 if pkg.theta_jc <= 0:
@@ -831,13 +1006,20 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
         # cell taking its copper's share, so the answer does not depend on
         # whether a cell holds copper alone or copper and bare laminate.
         # A rectangle with next to no copper heats the laminate's surface.
-        fill_l = planes[cu_index[ha.layer]].fill
-        in_cu = {c: a * float(fill_l[c]) for c, a in got.items()}
+        p_ha = cu_index[ha.layer]
+        fill_l = planes[p_ha].fill
+        in_cu = {p_ha * M + c: a * float(fill_l[c]) for c, a in got.items()}
+        if p_ha in pieces:
+            pc_ = pieces[p_ha]
+            for i in np.nonzero(np.isin(pc_.cell, np.fromiter(got, dtype=np.int64)))[0]:
+                in_cu[int(pc_.node[i])] = got[int(pc_.cell[i])] * float(pc_.fill[i])
         if sum(in_cu.values()) >= HEAT_AREA_MIN_COPPER * sum(got.values()):
-            got = {c: a for c, a in in_cu.items() if a > 0.0}
+            got = {n: a for n, a in in_cu.items() if a > 0.0}
+        else:
+            got = {p_ha * M + c: a for c, a in got.items()}
         tot = sum(got.values())
-        for c, a in got.items():
-            b_vec[cu_index[ha.layer] * M + c] += ha.power_w * a / tot
+        for n, a in got.items():
+            b_vec[n] += ha.power_w * a / tot
 
     # clamps: a contact conductance to a fixed temperature
     d_clamp = np.zeros(N)
@@ -992,6 +1174,22 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
         arr = np.full(act.shape, np.nan)
         arr[act] = T[p * M:(p + 1) * M]
         plane_temps.append(arr)
+    main_temps: dict[str, np.ndarray] = {}
+    piece_temps: dict[str, np.ndarray] = {}
+    for p, pc_ in pieces.items():
+        # the map shows the hottest copper of each cell
+        name = planes[p].name
+        main_temps[name] = plane_temps[p]
+        tp = np.full(len(pc_.node_of), np.nan)
+        tp[pc_.node_of >= 0] = T[pc_.node]
+        piece_temps[name] = tp
+        hot = T[p * M:(p + 1) * M].copy()
+        np.maximum.at(hot, pc_.cell, T[pc_.node])
+        arr = np.full(act.shape, np.nan)
+        arr[act] = hot
+        plane_temps[p] = arr
+    for name in raster.islands:
+        main_temps.setdefault(name, plane_temps[cu_index[name]])
     temps = {name: plane_temps[cu_index[name]] for name in raster.layers}
 
     parts = []
@@ -999,7 +1197,7 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
         pads = row["pad_cells"]
         pc = np.fromiter(pads.keys(), dtype=np.int64)
         pa = np.fromiter(pads.values(), dtype=float)
-        tp = T[row["plane"] * M + pc]
+        tp = T[pc]
         pkg = row["pkg"]
         d_ = {"ref": row["ref"], "side": row["side"], "power_w": row["power_w"],
               "t_pads_c": round(float((tp * pa).sum() / pa.sum()), 3),
@@ -1027,9 +1225,10 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
     if info.get("pyamg_missing"):
         notes.append("pyamg is not installed: a direct solver was used, which is slow on "
                      "fine grids (pip install pyamg)")
-    solver = {"cells": M, "planes": P, "plated_holes": len(barrel_nodes), "unknowns": N,
+    solver = {"cells": M, "planes": P, "plated_holes": len(barrel_nodes),
+              "island_pieces": n_pieces, "unknowns": N,
               "newton_iterations": it, "converged": converged,
               "linear_solver": info.get("method", ""),
               "cg_iterations": info.get("cg_iterations", 0)}
     return Result(temps, plane_temps, planes, parts, balance, it, h_used, notes, raster,
-                  barrels, solver, ta)
+                  barrels, solver, ta, main_temps, piece_temps)

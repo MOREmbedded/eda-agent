@@ -276,8 +276,7 @@ def component_temps(result: Result, board: LayoutBoard) -> list[dict]:
         if not p.comp or p.comp not in side:
             continue
         layer = bot if side[p.comp] == BOTTOM else top
-        ix, iy = raster.cell_of(p.x, p.y)
-        t = result.temps[layer][iy, ix]
+        t = result.copper_at(layer, p.x, p.y)
         if np.isfinite(t):
             acc.setdefault(p.comp, []).append(float(t))
     for c in board.components:
@@ -312,7 +311,7 @@ def _layer_rows(result: Result) -> list[dict]:
 def _solve_once(board, stack, cell_mils, powers, packages, setup, heat_areas, clamps,
                 extra_heat_w, report_parts, heat_maps=None) -> Result:
     t0 = time.perf_counter()
-    raster = rasterize(board, cell_mils=cell_mils, links=True, supersample=0)
+    raster = rasterize(board, cell_mils=cell_mils, links=True, supersample=0, islands=True)
     raster_s = time.perf_counter() - t0
     extra = {k: np.asarray(v, dtype=float) for k, v in (extra_heat_w or {}).items()}
     notes = []
