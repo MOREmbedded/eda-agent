@@ -60,13 +60,15 @@ maturity classification for every tool.
   pins of every load, current density, loss per layer, overloaded tracks
   and vias, and a grid-convergence error estimate. `sim_pdn_impedance`
   finds a rail's decoupling capacitors (MLCC, polymer, tantalum and
-  electrolytic defaults), works out each pin's mounting inductance from
+  electrolytic defaults; the value from the comment, else from the
+  part's parameters), works out each pin's mounting inductance from
   the copper that joins it to the planes, solves the power/ground plane
   pair as a field cavity on its real, perforated shape (FDFD, exact
   skin-effect surface impedance, Djordjevic-Sarkar laminate) and reports
   where |Z| at the load exceeds the target. Both are checked against
   closed-form references, and the IR-drop run writes its Joule heat map.
-  UNVERIFIED live. See [`docs/PDN.md`](docs/PDN.md).
+  Both ran live, read-only, on one six-layer board; reading values from
+  parameters is UNVERIFIED live. See [`docs/PDN.md`](docs/PDN.md).
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design

@@ -1148,3 +1148,41 @@ def test_a_hairline_slot_on_a_cell_centre_line_still_parts_the_plane():
     cav = im.find_cavity(b, st, "+1V0", "GND", 1e9, 80.0, near=[(1500, 800)])
     assert any("2 separate islands" in n for n in cav.notes)
     assert cav.area_mils2 < 0.62 * 2000 * 1600
+
+
+def test_a_capacitor_value_is_read_from_its_parameters_when_the_comment_has_none():
+    f = dc.capacitance_from_parameters
+    assert f({"Value": "100nF", "Voltage": "16V"}) == (pytest.approx(100e-9), "Value")
+    assert f([{"name": "Tolerance", "value": "10%"}, {"name": "capacitance", "value": "4u7"}]) \
+        == (pytest.approx(4.7e-6), "capacitance")
+    # a parameter named as the value comes before one that only mentions it
+    assert f({"Value (alt)": "1uF", "Val": "22n"}) == (pytest.approx(22e-9), "Val")
+    assert f({"Component Value": "10 uF"}) == (pytest.approx(10e-6), "Component Value")
+    # not a value: a voltage, a part number, nothing
+    assert f({"Value": "16V", "Manufacturer Part Number": "GRM155R71C104KA88D"}) is None
+    assert f({}) is None and f(None) is None and f({"Value": ""}) is None
+
+    st = stack_from_stackup(STACKUP)
+    b = plane_board()
+    for c in b.components:
+        if c.ref in ("C10", "C11", "C12", "C13"):
+            c.comment = "CAP CER SMD 0402"
+    kw = dict(load={"ref": "U2"}, target_ohms=0.02, points=31)
+    assert sorted(im.decaps_without_a_value(b, "+1V0", "GND")) == ["C10", "C11", "C12", "C13"]
+    assert im.decaps_without_a_value(b, "+1V0", "GND", [{"ref": "C10", "c_uf": 1.0}]) == \
+        ["C11", "C12", "C13"]
+    bare = im.analyse(b, st, "+1V0", "GND", **kw)
+    assert [d["ref"] for d in bare["decaps"]] == ["C1"] and sum("no capacitance in its comment" in n for n in bare["notes"]) == 4
+    vals = {r: (100e-9, "the parameter 'Value'") for r in ("C10", "C11", "C12")}
+    r = im.analyse(b, st, "+1V0", "GND", cap_values=vals, **kw)
+    assert sorted(d["ref"] for d in r["decaps"]) == ["C1", "C10", "C11", "C12"]
+    assert all(d["c_uf"] == pytest.approx(0.1) and "value from the parameter 'Value'" in d["notes"]
+               for d in r["decaps"] if d["ref"] != "C1")
+    assert not any("value from" in n for d in r["decaps"] if d["ref"] == "C1" for n in d.get("notes", []))
+    assert any("3 capacitor(s) with no value in the comment" in n for n in r["notes"])
+    assert sum("C13: no capacitance in its comment" in n for n in r["notes"]) == 1
+    # what the caller gives wins, and a comment that is a value is not asked about
+    r = im.analyse(b, st, "+1V0", "GND", cap_values=vals,
+                   decaps=[{"ref": "C10", "c_uf": 2.2}], **kw)
+    assert next(d for d in r["decaps"] if d["ref"] == "C10")["c_uf"] == pytest.approx(2.2)
+    assert im.decaps_without_a_value(plane_board(), "+1V0", "GND") == []
