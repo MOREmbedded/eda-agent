@@ -25,13 +25,13 @@ object StatusForm: TStatusForm
     Left = 0
     Top = 0
     Width = 380
-    Height = 40
+    Height = 52
     Align = alTop
     BevelOuter = bvNone
     Color = $00130F0B
     object pnl_StatusDot: TPanel
       Left = 12
-      Top = 10
+      Top = 8
       Width = 14
       Height = 20
       BevelOuter = bvNone
@@ -46,24 +46,24 @@ object StatusForm: TStatusForm
     end
     object lbl_Status: TLabel
       Left = 32
-      Top = 11
-      Width = 226
+      Top = 9
+      Width = 90
       Height = 18
       AutoSize = False
       EllipsisPosition = epEndEllipsis
       Caption = 'Idle'
       Font.Charset = DEFAULT_CHARSET
       Font.Color = $00EAE6E1
-      Font.Height = -13
+      Font.Height = -14
       Font.Name = 'Segoe UI Semibold'
       Font.Style = []
       ParentFont = False
     end
     object btn_Update: TPanel
-      Left = 262
-      Top = 10
+      Left = 124
+      Top = 6
       Width = 24
-      Height = 20
+      Height = 22
       BevelOuter = bvNone
       Caption = #59542
       Color = $00130F0B
@@ -81,11 +81,10 @@ object StatusForm: TStatusForm
       OnMouseLeave = btn_UpdateLeave
     end
     object lbl_Version: TLabel
-      Left = 288
-      Top = 13
-      Width = 80
+      Left = 32
+      Top = 29
+      Width = 118
       Height = 14
-      Alignment = taRightJustify
       AutoSize = False
       Caption = 'v?'
       Font.Charset = DEFAULT_CHARSET
@@ -94,27 +93,268 @@ object StatusForm: TStatusForm
       Font.Name = 'Segoe UI'
       Font.Style = []
       ParentFont = False
+      EllipsisPosition = epEndEllipsis
+    end
+    object btn_OpenWeb: TPanel
+      Left = 156
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $00332A22
+      Cursor = crDefault
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $009E958A
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 2
+      OnClick = btn_OpenWebClick
+      OnMouseEnter = btn_OpenWebEnter
+      OnMouseLeave = btn_OpenWebLeave
+      object ico_OpenWeb: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59252
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $009E958A
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_OpenWebClick
+        OnMouseEnter = btn_OpenWebEnter
+      end
+    end
+    object btn_Pause: TPanel
+      Left = 196
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $003D332A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00EAE6E1
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 3
+      OnClick = btn_PauseClick
+      OnMouseEnter = btn_PauseEnter
+      OnMouseLeave = btn_PauseLeave
+      object ico_Pause: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59241
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00EAE6E1
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_PauseClick
+        OnMouseEnter = btn_PauseEnter
+      end
+      object ico_Resume: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59240
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $001C1712
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        Visible = False
+        OnClick = btn_PauseClick
+        OnMouseEnter = btn_PauseEnter
+      end
+    end
+    object btn_Renew: TPanel
+      Left = 230
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $003D332A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00EAE6E1
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 4
+      OnClick = btn_RenewClick
+      OnMouseEnter = btn_RenewEnter
+      OnMouseLeave = btn_RenewLeave
+      object ico_Renew: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59180
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00EAE6E1
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_RenewClick
+        OnMouseEnter = btn_RenewEnter
+      end
+    end
+    object btn_ClearLog: TPanel
+      Left = 264
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $003D332A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00EAE6E1
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 5
+      OnClick = btn_ClearLogClick
+      OnMouseEnter = btn_ClearLogEnter
+      OnMouseLeave = btn_ClearLogLeave
+      object ico_ClearLog: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59213
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00EAE6E1
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_ClearLogClick
+        OnMouseEnter = btn_ClearLogEnter
+      end
+    end
+    object btn_Saving: TPanel
+      Left = 298
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $003D332A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00EAE6E1
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 6
+      OnClick = btn_SavingClick
+      OnMouseEnter = btn_SavingEnter
+      OnMouseLeave = btn_SavingLeave
+      object ico_Saving: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59214
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00EAE6E1
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_SavingClick
+        OnMouseEnter = btn_SavingEnter
+      end
+    end
+    object btn_Detach: TPanel
+      Left = 338
+      Top = 11
+      Width = 30
+      Height = 30
+      BevelOuter = bvNone
+      Caption = ''
+      Color = $003D332A
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00637AFF
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 7
+      OnClick = btn_DetachClick
+      OnMouseEnter = btn_DetachEnter
+      OnMouseLeave = btn_DetachLeave
+      object ico_Detach: TLabel
+        Left = 7
+        Top = 7
+        Width = 16
+        Height = 16
+        AutoSize = False
+        Caption = #59368
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00637AFF
+        Font.Height = -14
+        Font.Name = 'Segoe MDL2 Assets'
+        Font.Style = []
+        ParentFont = False
+        Transparent = True
+        OnClick = btn_DetachClick
+        OnMouseEnter = btn_DetachEnter
+      end
     end
   end
   object pnl_KPIs: TPanel
     Left = 0
-    Top = 40
+    Top = 52
     Width = 380
-    Height = 72
+    Height = 64
     Align = alTop
     BevelOuter = bvNone
     Color = $0027201A
     object pnl_K1: TPanel
       Left = 12
-      Top = 10
-      Width = 83
-      Height = 56
+      Top = 8
+      Width = 88
+      Height = 50
       BevelOuter = bvNone
       Color = $00332A22
       object lbl_LblUp: TLabel
         Left = 10
-        Top = 9
-        Width = 69
+        Top = 7
+        Width = 74
         Height = 13
         AutoSize = False
         Caption = 'UPTIME'
@@ -127,9 +367,9 @@ object StatusForm: TStatusForm
       end
       object lbl_ValUp: TLabel
         Left = 10
-        Top = 24
-        Width = 69
-        Height = 26
+        Top = 21
+        Width = 74
+        Height = 24
         AutoSize = False
         Caption = '0s'
         Font.Charset = DEFAULT_CHARSET
@@ -142,15 +382,15 @@ object StatusForm: TStatusForm
     end
     object pnl_K2: TPanel
       Left = 101
-      Top = 10
-      Width = 83
-      Height = 56
+      Top = 8
+      Width = 88
+      Height = 50
       BevelOuter = bvNone
       Color = $00332A22
       object lbl_LblReq: TLabel
         Left = 10
-        Top = 9
-        Width = 69
+        Top = 7
+        Width = 74
         Height = 13
         AutoSize = False
         Caption = 'REQUESTS'
@@ -163,9 +403,9 @@ object StatusForm: TStatusForm
       end
       object lbl_ValReq: TLabel
         Left = 10
-        Top = 24
-        Width = 69
-        Height = 26
+        Top = 21
+        Width = 74
+        Height = 24
         AutoSize = False
         Caption = '0'
         Font.Charset = DEFAULT_CHARSET
@@ -178,15 +418,15 @@ object StatusForm: TStatusForm
     end
     object pnl_K3: TPanel
       Left = 190
-      Top = 10
-      Width = 83
-      Height = 56
+      Top = 8
+      Width = 88
+      Height = 50
       BevelOuter = bvNone
       Color = $00332A22
       object lbl_LblMs: TLabel
         Left = 10
-        Top = 9
-        Width = 69
+        Top = 7
+        Width = 74
         Height = 13
         AutoSize = False
         Caption = 'BUSY TIME'
@@ -199,9 +439,9 @@ object StatusForm: TStatusForm
       end
       object lbl_ValMs: TLabel
         Left = 10
-        Top = 24
-        Width = 69
-        Height = 26
+        Top = 21
+        Width = 74
+        Height = 24
         AutoSize = False
         Caption = '0s'
         Font.Charset = DEFAULT_CHARSET
@@ -214,15 +454,15 @@ object StatusForm: TStatusForm
     end
     object pnl_K4: TPanel
       Left = 279
-      Top = 10
+      Top = 8
       Width = 89
-      Height = 56
+      Height = 50
       BevelOuter = bvNone
       Color = $00332A22
       OnDblClick = pnl_K4DblClick
       object lbl_LblStop: TLabel
         Left = 10
-        Top = 9
+        Top = 7
         Width = 75
         Height = 13
         AutoSize = False
@@ -237,9 +477,9 @@ object StatusForm: TStatusForm
       end
       object lbl_ValStop: TLabel
         Left = 10
-        Top = 24
+        Top = 21
         Width = 75
-        Height = 26
+        Height = 24
         AutoSize = False
         Caption = '10m'
         Font.Charset = DEFAULT_CHARSET
@@ -254,7 +494,7 @@ object StatusForm: TStatusForm
   end
   object pnl_ErrBar: TPanel
     Left = 0
-    Top = 112
+    Top = 116
     Width = 380
     Height = 0
     Align = alTop
@@ -278,256 +518,16 @@ object StatusForm: TStatusForm
   end
   object pnl_Controls: TPanel
     Left = 0
-    Top = 112
+    Top = 116
     Width = 380
-    Height = 104
+    Height = 36
     Align = alTop
     BevelOuter = bvNone
     Color = $0027201A
-    object btn_OpenWeb: TPanel
-      Left = 12
-      Top = 4
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Dashboard'
-      Color = $00332A22
-      Cursor = crDefault
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $009E958A
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 0
-      OnClick = btn_OpenWebClick
-      OnMouseEnter = btn_OpenWebEnter
-      OnMouseLeave = btn_OpenWebLeave
-      object ico_OpenWeb: TLabel
-        Left = 8
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59252
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $009E958A
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_OpenWebClick
-        OnMouseEnter = btn_OpenWebEnter
-      end
-    end
-    object btn_Pause: TPanel
-      Left = 132
-      Top = 4
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Pause'
-      Color = $003D332A
-      Cursor = crHandPoint
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00EAE6E1
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 1
-      OnClick = btn_PauseClick
-      OnMouseEnter = btn_PauseEnter
-      OnMouseLeave = btn_PauseLeave
-      object ico_Pause: TLabel
-        Left = 15
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59241
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $00EAE6E1
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_PauseClick
-        OnMouseEnter = btn_PauseEnter
-      end
-      object ico_Resume: TLabel
-        Left = 15
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59240
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $001C1712
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        Visible = False
-        OnClick = btn_PauseClick
-        OnMouseEnter = btn_PauseEnter
-      end
-    end
-    object btn_Renew: TPanel
-      Left = 252
-      Top = 4
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Renew'
-      Color = $003D332A
-      Cursor = crHandPoint
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00EAE6E1
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 2
-      OnClick = btn_RenewClick
-      OnMouseEnter = btn_RenewEnter
-      OnMouseLeave = btn_RenewLeave
-      object ico_Renew: TLabel
-        Left = 18
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59180
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $00EAE6E1
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_RenewClick
-        OnMouseEnter = btn_RenewEnter
-      end
-    end
-    object btn_ClearLog: TPanel
-      Left = 12
-      Top = 36
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Clear log'
-      Color = $003D332A
-      Cursor = crHandPoint
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00EAE6E1
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 3
-      OnClick = btn_ClearLogClick
-      OnMouseEnter = btn_ClearLogEnter
-      OnMouseLeave = btn_ClearLogLeave
-      object ico_ClearLog: TLabel
-        Left = 12
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59213
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $00EAE6E1
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_ClearLogClick
-        OnMouseEnter = btn_ClearLogEnter
-      end
-    end
-    object btn_Saving: TPanel
-      Left = 132
-      Top = 36
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Saving on'
-      Color = $003D332A
-      Cursor = crHandPoint
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00EAE6E1
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 4
-      OnClick = btn_SavingClick
-      OnMouseEnter = btn_SavingEnter
-      OnMouseLeave = btn_SavingLeave
-      object ico_Saving: TLabel
-        Left = 8
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59214
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $00EAE6E1
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_SavingClick
-        OnMouseEnter = btn_SavingEnter
-      end
-    end
-    object btn_Detach: TPanel
-      Left = 252
-      Top = 36
-      Width = 116
-      Height = 28
-      BevelOuter = bvNone
-      Caption = 'Detach'
-      Color = $003D332A
-      Cursor = crHandPoint
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00637AFF
-      Font.Height = -11
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-      TabOrder = 5
-      OnClick = btn_DetachClick
-      OnMouseEnter = btn_DetachEnter
-      OnMouseLeave = btn_DetachLeave
-      object ico_Detach: TLabel
-        Left = 17
-        Top = 7
-        Width = 16
-        Height = 16
-        AutoSize = False
-        Caption = #59368
-        Font.Charset = DEFAULT_CHARSET
-        Font.Color = $00637AFF
-        Font.Height = -12
-        Font.Name = 'Segoe MDL2 Assets'
-        Font.Style = []
-        ParentFont = False
-        Transparent = True
-        OnClick = btn_DetachClick
-        OnMouseEnter = btn_DetachEnter
-      end
-    end
     object pnl_Filter: TPanel
       Left = 12
-      Top = 72
-      Width = 164
+      Top = 4
+      Width = 176
       Height = 26
       BevelOuter = bvNone
       BorderWidth = 1
@@ -536,7 +536,7 @@ object StatusForm: TStatusForm
       object pnl_FilterIn: TPanel
         Left = 1
         Top = 1
-        Width = 162
+        Width = 174
         Height = 24
         Align = alClient
         BevelOuter = bvNone
@@ -560,7 +560,7 @@ object StatusForm: TStatusForm
         object edt_Filter: TEdit
           Left = 28
           Top = 5
-          Width = 128
+          Width = 140
           Height = 16
           BorderStyle = bsNone
           Color = $001C1712
@@ -577,9 +577,9 @@ object StatusForm: TStatusForm
       end
     end
     object chk_HidePings: TPanel
-      Left = 180
-      Top = 72
-      Width = 60
+      Left = 192
+      Top = 4
+      Width = 56
       Height = 26
       BevelOuter = bvNone
       Alignment = taCenter
@@ -598,9 +598,9 @@ object StatusForm: TStatusForm
       OnMouseLeave = chk_HidePingsLeave
     end
     object chk_OnlySlow: TPanel
-      Left = 244
-      Top = 72
-      Width = 60
+      Left = 252
+      Top = 4
+      Width = 56
       Height = 26
       BevelOuter = bvNone
       Alignment = taCenter
@@ -619,9 +619,9 @@ object StatusForm: TStatusForm
       OnMouseLeave = chk_OnlySlowLeave
     end
     object chk_OnTop: TPanel
-      Left = 308
-      Top = 72
-      Width = 60
+      Left = 312
+      Top = 4
+      Width = 56
       Height = 26
       BevelOuter = bvNone
       Alignment = taCenter
@@ -642,7 +642,7 @@ object StatusForm: TStatusForm
   end
   object pnl_TabBar: TPanel
     Left = 0
-    Top = 216
+    Top = 152
     Width = 380
     Height = 32
     Align = alTop
@@ -788,9 +788,9 @@ object StatusForm: TStatusForm
   end
   object pnl_Body: TPanel
     Left = 0
-    Top = 248
+    Top = 184
     Width = 380
-    Height = 346
+    Height = 410
     Align = alClient
     BevelOuter = bvNone
     BorderWidth = 8

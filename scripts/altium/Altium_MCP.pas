@@ -102743,8 +102743,10 @@ Begin
         Try tmr_Spinner.Enabled := True; Except End;
         Try
             SetStatusDot(PulseColour(SpinnerFrame));
-            lbl_Status.Caption := Command + '  (0.0 s)';
+            lbl_Status.Caption := 'Running';
             lbl_Status.Font.Color := COLOR_TEXT_BODY;
+            lbl_Version.Caption := Command + '  0.0 s';
+            lbl_Version.Font.Color := COLOR_TEXT_MUTED;
         Except End;
     Except End;
 End;
@@ -102756,6 +102758,8 @@ Begin
         InFlightCommand := '';
         Try tmr_Spinner.Enabled := False; Except End;
         Try
+            lbl_Version.Caption := 'v' + SCRIPT_VERSION;
+            lbl_Version.Font.Color := COLOR_TEXT_FAINT;
             If PausedFlag Then
             Begin
                 SetStatusDot(COLOR_TEXT_FAINT);
@@ -103141,8 +103145,8 @@ Begin
     ElapsedMs := GetTickCount - InFlightStartMs;
     Tenths := ElapsedMs Div 100;
     Try
-        lbl_Status.Caption := InFlightCommand + '  ('
-            + IntToStr(Tenths Div 10) + '.' + IntToStr(Tenths Mod 10) + ' s)';
+        lbl_Version.Caption := InFlightCommand + '  '
+            + IntToStr(Tenths Div 10) + '.' + IntToStr(Tenths Mod 10) + ' s';
     Except End;
 End;
 
@@ -103242,7 +103246,6 @@ Begin
     Try
         If SavingOff Then
         Begin
-            btn_Saving.Caption := 'Saving OFF';
             btn_Saving.Color := COLOR_ACCENT_AMBER;
             btn_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
             ico_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
@@ -103251,7 +103254,6 @@ Begin
         End
         Else
         Begin
-            btn_Saving.Caption := 'Saving on';
             btn_Saving.Color := COLOR_BG_ELEVATED;
             btn_Saving.Font.Color := COLOR_TEXT_BODY;
             ico_Saving.Font.Color := COLOR_TEXT_BODY;
@@ -103569,7 +103571,6 @@ Begin
         PausedFlag := Not PausedFlag;
         If PausedFlag Then
         Begin
-            btn_Pause.Caption := 'Resume';
             btn_Pause.Color := COLOR_ACCENT_AMBER;
             btn_Pause.Font.Color := COLOR_TEXT_ON_ACCENT;
             Try ico_Pause.Visible := False; Except End;
@@ -103581,7 +103582,6 @@ Begin
         End
         Else
         Begin
-            btn_Pause.Caption := 'Pause';
             btn_Pause.Color := COLOR_BG_ELEVATED;
             btn_Pause.Font.Color := COLOR_TEXT_BODY;
             Try ico_Resume.Visible := False; Except End;
