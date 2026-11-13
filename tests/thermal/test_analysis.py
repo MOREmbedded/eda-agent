@@ -448,3 +448,28 @@ def test_a_stackup_with_no_dielectric_is_filled_in_and_said_so():
     fixed = usable_stack(part)
     assert [round(d.height_mils, 1) for d in fixed.dielectrics] == [5.0, 47.0, 5.0]
     assert fixed.assumed is False and fixed.dielectrics[0].er == 4.0
+
+
+def test_a_board_as_the_altium_reader_gives_it_is_solved():
+    """The reader's own output, from the bridge replies its tests use: a
+    plane layer, a pour, a keep-out fill, a board cutout, a mounting hole
+    and a part with one pad. Nothing in it is built by hand for the
+    solver."""
+    from eda_agent.emc.stack import assumed_stack
+    from eda_agent.layout.read_altium import read_board
+    from tests.layout.test_read_altium import _replies
+
+    send, _ = _replies()
+    board = read_board(send)
+    rep, res = analyze(board, assumed_stack(board.layers), powers={"U1": 0.3}, cell_mils=10.0)
+    frac = {row["name"]: row["copper_fraction"] for row in rep["layers"]}
+    # The plane is solid but for the mounting hole's antipad and the via's;
+    # the top layer holds one pad and one track, and the keep-out fill is
+    # not copper.
+    assert 0.98 < frac["InternalPlane1"] < 1.0
+    assert 0.004 < frac["TopLayer"] < 0.01
+    assert rep["balance"]["error_pct"] < 0.01
+    assert rep["t_max_layer"] == "TopLayer"
+    assert rep["t_max_at_mils"] == pytest.approx([100.0, 200.0], abs=10.0)
+    assert np.isfinite(res.t_max_c) and rep["t_max_c"] > rep["layers"][1]["t_max_c"] + 50
+    assert rep["stackup"]["assumed"] is True
