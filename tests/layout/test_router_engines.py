@@ -107,8 +107,17 @@ def test_a_new_via_keeps_the_hole_to_hole_gap(engine, monkeypatch):
 def test_a_new_via_leaves_no_solder_mask_sliver(engine, monkeypatch):
     res = _run(engine, monkeypatch, webs._board())
     assert res["summary"]["completion"] == 1.0
+    assert res["vias"], "the board needs a via, or the test proves nothing"
     assert res["summary"]["mask_slivers"] == 0
     assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    # Where two openings run into each other the verdict sees one opening
+    # and no sliver, so measure the web itself: each via's opening (4 mil
+    # of expansion) keeps the 10 mil sliver rule from each pad's (4 mil).
+    out = _written(webs._board(), res)
+    for v in res["vias"]:
+        for p in out.pads:
+            gap = geom.clearance(geom.circle(v["x"], v["y"], v["size"]), p.shape_on("TopLayer"))
+            assert gap >= 4 + 4 + 10 - 1e-6, (p.comp, p.name, round(gap, 2))
 
 
 # -- vias laid outside the search: a BGA's fan-out and the plane fan-out ---
