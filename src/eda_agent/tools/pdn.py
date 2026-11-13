@@ -6,19 +6,55 @@ the board."""
 from __future__ import annotations
 
 import asyncio
-import re
-import time
+import logging
 from typing import Any, Optional
 
 from .emc import _load_board
 
 __all__ = ["register_pdn_tools"]
 
+log = logging.getLogger(__name__)
 
-def _folder(runs_dir: str, board_name: str, net: str):
-    from ..pdn import runs_dir as base
-    stem = re.sub(r"[^A-Za-z0-9_.+-]+", "_", f"{board_name or 'board'}_{net}")
-    return base(runs_dir) / f"{stem}_{time.strftime('%Y%m%d-%H%M%S')}"
+
+def _failed(what: str, exc: Exception) -> dict[str, Any]:
+    """An error nobody foresaw, as a reply and not a traceback."""
+    log.exception("%s failed", what)
+    return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _drop_empty(folder) -> None:
+    """A run that failed leaves no empty folder behind."""
+    if folder is not None:
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+
+
+def ir_verdict(res: dict, max_drop_pct: float) -> dict[str, Any]:
+    """worst_drop_pct, and pass against the limit when one is set. A sink
+    whose percentage could not be worked out is never counted as 0 %: the
+    worst is then unknown and there is no pass."""
+    if "rails" in res:
+        vals = [r.get("total_drop_pct") for r in res["rails"]]
+    else:
+        vals = [s.get("drop_pct") for s in res["supply"]["sinks"]]
+    out: dict[str, Any] = {}
+    limit = float(max_drop_pct or 0.0)
+    if limit > 0:
+        out["limit_pct"] = limit
+    if not vals or any(v is None for v in vals):
+        out["worst_drop_pct"] = None
+        out["verdict_note"] = ("no drop percentage for every sink, so no worst value"
+                               + (" and no pass" if limit > 0 else ""))
+        if limit > 0:
+            out["pass"] = None
+        return out
+    worst = max(vals)
+    out["worst_drop_pct"] = round(worst, 4)
+    if limit > 0:
+        out["pass"] = bool(worst <= limit)
+    return out
 
 
 def register_pdn_tools(mcp) -> None:
@@ -57,10 +93,15 @@ def register_pdn_tools(mcp) -> None:
         Args:
             net: the power net (e.g. "+3V3").
             sources: [{ref or pads, volts}] regulator outputs / connectors,
-                e.g. [{"ref": "U1", "volts": 3.3}] or {"pads": ["J1.1"]}.
-                All pads of ``ref`` on the net (and on return_net) are used.
-            sinks: [{ref or pads, amps, name}] loads and their DC current.
-            return_net: e.g. "GND" to include the return path's rise.
+                e.g. [{"ref": "U1", "volts": 3.3}] or
+                [{"pads": ["J1.1"], "volts": 5.0, "return_pads": ["J1.2"]}].
+                All pads of ``ref`` on the net (and on return_net) are
+                used. volts is required.
+            sinks: [{ref or pads, amps, name}] loads and their DC current,
+                e.g. [{"ref": "U5", "amps": 1.2}]. amps is required.
+            return_net: e.g. "GND" to include the return path's rise. A
+                source or sink given by pads names its return pins with
+                return_pads.
             expect_file / board_json_path / stackup_json_path: as for
                 sim_emc_prescan.
             cell_mils: grid cell; 0 picks one (a quarter of the smallest
@@ -72,10 +113,14 @@ def register_pdn_tools(mcp) -> None:
             max_drop_pct: fail when a sink's total drop exceeds this; 0
                 reports only.
             temp_rise_c: rise used for the IPC-2221 capacity flags.
-            write_maps: write voltage / current-density PNGs and an .npz
-                (EDA_AGENT_PDN_RUNS, else ~/EDA Agent/pdn).
+            write_maps: write voltage / current-density PNGs, an .npz and
+                a CSV of every sink pin, each run in its own folder
+                (runs_dir, else EDA_AGENT_PDN_RUNS, else ~/EDA Agent/pdn).
+            limit: how many tracks, vias and pins per sink to list, worst
+                first (every pin is in the CSV).
         """
         from ..pdn import ir_drop as ir
+        from ..pdn import run_folder
 
         loaded = await _load_board(expect_file, board_json_path, stackup_json_path)
         if isinstance(loaded, dict):
@@ -85,27 +130,21 @@ def register_pdn_tools(mcp) -> None:
             return {"ok": False, "error": f"net {net!r} is not on the board"}
         try:
             res = await asyncio.to_thread(
-                ir.analyse, board, net, stack, list(sources), list(sinks),
+                ir.analyse, board, net, stack, list(sources or []), list(sinks or []),
                 return_net=return_net, cell_mils=float(cell_mils), temp_c=float(temp_c),
                 plating_mils=float(plating_mils), sink_model=sink_model,
                 temp_rise_c=float(temp_rise_c), limit=max(1, int(limit)))
-        except ir.IRDropError as exc:
+            out: dict[str, Any] = {"ok": True, "source": source,
+                                   "stack_assumed": bool(stack.assumed),
+                                   "supply": ir.public(res["supply"])}
+            if "return" in res:
+                out["return"] = ir.public(res["return"])
+                out["rails"] = res["rails"]
+            out.update(ir_verdict(res, max_drop_pct))
+        except (ir.IRDropError, ValueError, TypeError) as exc:
             return {"ok": False, "error": str(exc)}
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-        out: dict[str, Any] = {"ok": True, "source": source,
-                               "stack_assumed": bool(stack.assumed),
-                               "supply": ir.public(res["supply"])}
-        if "return" in res:
-            out["return"] = ir.public(res["return"])
-            out["rails"] = res["rails"]
-            worst = max(r["total_drop_pct"] or 0.0 for r in res["rails"])
-        else:
-            worst = max((s["drop_pct"] or 0.0) for s in res["supply"]["sinks"])
-        out["worst_drop_pct"] = round(worst, 4)
-        if max_drop_pct and max_drop_pct > 0:
-            out["limit_pct"] = float(max_drop_pct)
-            out["pass"] = worst <= float(max_drop_pct)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return _failed("sim_pdn_ir_drop", exc)
         out["assumptions"] = [
             "thermal reliefs taken as fully connected",
             "copper at nominal thickness (no etch-back or plating build-up)",
@@ -113,14 +152,15 @@ def register_pdn_tools(mcp) -> None:
         ] + (["stackup assumed (1.6 mm FR-4): via lengths are estimates"]
              if stack.assumed else [])
         if write_maps:
+            files: list[str] = []
+            out["files"] = files
             try:
-                folder = _folder(runs_dir, board.name, net)
-                files = await asyncio.to_thread(ir.write_maps, res["supply"], folder)
+                folder = run_folder(runs_dir, board.name, net)
+                files += await asyncio.to_thread(ir.write_maps, res["supply"], folder)
                 if "return" in res:
                     files += await asyncio.to_thread(ir.write_maps, res["return"], folder)
-                out["files"] = files
-            except OSError as exc:
-                out["files_error"] = str(exc)
+            except Exception as exc:  # noqa: BLE001 - the numbers stand without the files
+                out["files_error"] = f"{type(exc).__name__}: {exc}"
         return out
 
     @mcp.tool()
@@ -150,24 +190,33 @@ def register_pdn_tools(mcp) -> None:
         impedance. Offline, changes nothing.
 
         Finds the rail's decoupling capacitors on the board (value from
-        the comment, package from the footprint), works out each one's
-        mounting inductance from its real vias and fan-out, and solves the
-        power/ground plane pair as a field cavity on its real shape, so
-        plane resonances, spreading inductance and capacitor positions are
-        in the curve. Reports where |Z| exceeds the target, the
-        anti-resonances, and what each failing band needs. Writes a CSV,
-        a plot and a lumped SPICE deck (LTspice / ngspice).
+        the comment, package and kind from the footprint), works out each
+        pin's mounting inductance from the copper that really joins it to
+        the planes, and solves the power/ground plane pair as a field
+        cavity on its real shape, perforations included, so plane
+        resonances, spreading inductance and capacitor positions are in
+        the curve. Reports where |Z| exceeds the target, the
+        anti-resonances, and what each failing band needs. Writes the
+        curve and the capacitor table as CSV, a plot and a lumped SPICE
+        deck (LTspice / ngspice), each run in its own folder.
+
+        Reads the whole board: on a very large board ask the user first.
 
         Args:
             net / ground: the rail and its return.
-            load: {ref} or {pads: [...]} of the consuming part;
-                {mount_nh} overrides its via inductance.
+            load: {ref} or {pads: [...], return_pads: [...]} of the
+                consuming part; {mount_nh} overrides its via inductance.
             target_mohm: the target, or give volts + ripple_pct +
                 step_amps (Z = V * ripple / I_step).
             decaps: per-part real data and extra parts:
-                [{ref, c_uf, esr_ohms, esl_nh, mount_nh, touchstone,
-                count, x, y}]. Use the DC-bias derated c_uf for sign-off.
+                [{ref, c_uf, esr_ohms, esl_nh, mount_nh, kind, package,
+                touchstone, count, x, y}]. kind: mlcc, polymer, tantalum
+                or electrolytic. A ref on the board is counted even when
+                it was not found as a capacitor. Use the DC-bias derated
+                c_uf for sign-off. Over 30 capacitors are listed by
+                group; the CSV has every one.
             exclude: designators to leave out (what-if).
+            points: frequency points, 16 to 2001.
             vrm: {r_mohm, l_nh, bandwidth_khz, ref, disable}. Default
                 R = target/2 with a 50 kHz loop.
             mode: auto (cavity when the rail has a plane pair), cavity,
@@ -177,6 +226,7 @@ def register_pdn_tools(mcp) -> None:
                 sim_emc_prescan.
         """
         from ..pdn import impedance as im
+        from ..pdn import run_folder
 
         loaded = await _load_board(expect_file, board_json_path, stackup_json_path)
         if isinstance(loaded, dict):
@@ -186,17 +236,28 @@ def register_pdn_tools(mcp) -> None:
         for n in (net, ground):
             if n not in nets:
                 return {"ok": False, "error": f"net {n!r} is not on the board"}
-        folder = _folder(runs_dir, board.name, net) if write_files else None
+        folder, folder_error = None, ""
+        if write_files:
+            try:
+                folder = run_folder(runs_dir, board.name, net)
+            except OSError as exc:
+                folder_error = f"{type(exc).__name__}: {exc}"
         try:
             res = await asyncio.to_thread(
-                im.analyse, board, stack, net, ground, load=dict(load),
+                im.analyse, board, stack, net, ground, load=load,
                 target_ohms=float(target_mohm) * 1e-3, volts=float(volts),
                 ripple_pct=float(ripple_pct), step_amps=float(step_amps),
-                f_min_hz=float(f_min_hz), f_max_hz=float(f_max_hz),
-                points=max(21, min(2001, int(points))), decaps=decaps, exclude=exclude,
-                vrm=vrm, mode=mode, tand=float(tan_d) or None, out_dir=folder)
-        except (im.PDNError, ValueError, OSError) as exc:
+                f_min_hz=f_min_hz, f_max_hz=f_max_hz, points=points,
+                decaps=decaps, exclude=exclude, vrm=vrm, mode=mode,
+                tand=float(tan_d) or None, out_dir=folder)
+        except (im.PDNError, ValueError, TypeError) as exc:
+            _drop_empty(folder)
             return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            _drop_empty(folder)
+            return _failed("sim_pdn_impedance", exc)
+        if folder_error:
+            res["files_error"] = folder_error
         res["ok"] = True
         res["source"] = source
         res["stack_assumed"] = bool(stack.assumed)

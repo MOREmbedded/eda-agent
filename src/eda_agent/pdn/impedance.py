@@ -33,6 +33,7 @@ capacitance and loss vary with frequency as real laminate does.
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -41,8 +42,8 @@ import numpy as np
 from ..layout import geom
 from ..layout.model import LayoutBoard, Pad
 from . import physics as ph
-from .decap import (Decap, default_esl, default_esr, is_bulk, package_of,
-                    parse_capacitance, touchstone_impedance)
+from .decap import (BULK_KINDS, Decap, bulk_kind, default_esl, default_esr,
+                    is_capacitor_ref, package_of, parse_capacitance, touchstone_impedance)
 from .mounting import VIA_SEARCH_MILS, Copper, mount
 
 #: Cavity grid: at least this many cells across the longer side, at most
@@ -442,9 +443,16 @@ def mount_for(board: LayoutBoard, stack, cav: Optional[Cavity], net: str, ground
     return out
 
 
-def find_decaps(board: LayoutBoard, net: str, ground: str) -> list[tuple[str, list[Pad], list[Pad]]]:
-    """Parts with pads on both the rail and its ground whose comment reads
-    as a capacitance (or whose designator starts with C)."""
+def find_decaps(board: LayoutBoard, net: str, ground: str, also=(),
+                skipped: Optional[list[str]] = None) -> list[tuple[str, list[Pad], list[Pad]]]:
+    """Capacitors across the rail and its ground: parts with pads on both
+    whose designator is a capacitor's (C1, CB3; not CN1 or CR2) or whose
+    comment reads as a capacitance. Two- and three-pad parts are taken,
+    and parts with more pads when all of them are on these two nets (a
+    low-inductance or polymer part with doubled terminals). An array with
+    other nets on it is not: it is named in ``skipped`` (pass it in
+    ``decaps`` to count it). ``also``: designators the caller gave data
+    for, taken whatever they look like."""
     by_ref: dict[str, list[Pad]] = {}
     for p in board.pads:
         if p.comp:
@@ -455,11 +463,20 @@ def find_decaps(board: LayoutBoard, net: str, ground: str) -> list[tuple[str, li
         gn = [p for p in pads if p.net == ground]
         if not pw or not gn:
             continue
+        if ref in also:
+            out.append((ref, pw, gn))
+            continue
         comp = board.component(ref)
         comment = comp.comment if comp else ""
-        if len(pads) <= 3 and (parse_capacitance(comment) is not None
-                               or ref.upper().startswith("C")):
+        if not (is_capacitor_ref(ref) or parse_capacitance(comment) is not None):
+            continue
+        others = sorted({p.net for p in pads if p.net and p.net not in (net, ground)})
+        if len(pads) <= 3 or not others:
             out.append((ref, pw, gn))
+        elif skipped is not None:
+            skipped.append(f"{ref}: {len(pads)} pads, also on {', '.join(others[:3])}"
+                           + (" ..." if len(others) > 3 else "")
+                           + f" (an array?); not counted: pass it in decaps to count it")
     return out
 
 
@@ -471,16 +488,32 @@ def _centre(points) -> Optional[tuple[float, float]]:
     return (sum(p[0] * p[2] for p in points) / wsum, sum(p[1] * p[2] for p in points) / wsum)
 
 
+def _kind_of(o: dict, fp: str, comment: str, c: float, th: bool) -> str:
+    """The part's kind: given (kind: mlcc | polymer | tantalum |
+    electrolytic), else read from its footprint, comment and value."""
+    given = str(o.get("kind", "") or "").strip().lower()
+    if given:
+        if given in ("mlcc", "ceramic"):
+            return ""
+        if given not in BULK_KINDS:
+            raise PDNError(f"{o.get('ref', 'decap')}: kind {o['kind']!r} is not one of "
+                           f"mlcc, {', '.join(BULK_KINDS)}")
+        return given
+    return bulk_kind(fp, comment, c, th)
+
+
 def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
                  overrides: Optional[list[dict]], plating: float,
                  exclude: Optional[list[str]] = None,
                  copper: Optional[Copper] = None) -> tuple[list[Decap], list[str]]:
-    notes = []
+    notes: list[str] = []
     over = {o["ref"]: o for o in (overrides or []) if o.get("ref")}
     excl = set(exclude or [])
     caps: list[Decap] = []
-    found = find_decaps(board, net, ground) if board is not None else []
+    skipped: list[str] = []
+    found = find_decaps(board, net, ground, set(over), skipped) if board is not None else []
     found_refs = {r for r, _, _ in found}
+    notes += [s for s in skipped if s.split(":")[0] not in excl]
     if board is not None and copper is None:
         copper = Copper(board, stack, plating)
     assumed: list[str] = []
@@ -496,20 +529,29 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
             notes.append(f"{ref}: no capacitance in its comment {comment!r}; skipped "
                          f"(pass it in decaps)")
             continue
-        bulk = is_bulk(fp, comment)
+        th = any(p.hole > 0 for p in pw + gn)
+        kind = _kind_of(o, fp, comment, float(c), th)
         pkg = o.get("package") or package_of(fp)
-        esr = o.get("esr_ohms", default_esr(c, bulk))
-        esl = o["esl_nh"] * 1e-9 if "esl_nh" in o else default_esl(pkg, bulk)
+        esr = o.get("esr_ohms", default_esr(c, kind))
+        esl = o["esl_nh"] * 1e-9 if "esl_nh" in o else default_esl(pkg, kind, th)
         src = "user" if o else "defaults"
         d = Decap(ref, float(c), float(esr), float(esl), pkg,
                   x=sum(p.x for p in pw + gn) / len(pw + gn),
                   y=sum(p.y for p in pw + gn) / len(pw + gn),
-                  layer=copper.pad_layer(pw[0]), source=src)
-        if not pkg and not bulk and "esl_nh" not in o:
-            d.notes.append("package not recognised from the footprint; 0.5 nH ESL assumed")
+                  layer=copper.pad_layer(pw[0]), source=src, kind=kind or "mlcc")
+        typical = [f"{name} {val:g} {unit}" for key, name, val, unit in
+                   (("esr_ohms", "ESR", round(esr * 1e3, 1), "mohm"),
+                    ("esl_nh", "ESL", round(esl * 1e9, 2), "nH")) if key not in o]
         if o.get("touchstone"):
             d.touchstone = touchstone_impedance(o["touchstone"], o.get("config", "shunt"))
             d.source = "touchstone"
+        elif kind and typical:
+            d.notes.append(f"{kind} part on typical values ({', '.join(typical)}): these "
+                           f"vary several times between series, read the data sheet")
+        elif not kind and not pkg and "esl_nh" not in o:
+            d.notes.append("package not recognised from the footprint; 0.5 nH ESL assumed"
+                           + ("; 10 uF or more taken as a ceramic chip: say kind if it "
+                              "is not" if c >= 10e-6 and "kind" not in o else ""))
         mt = mount(copper, cav, net, ground, pw, gn)
         at = _centre(mt.get("_at", []) + mt.get("_at_ground", []))
         if at is not None:
@@ -529,25 +571,35 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
                      f"1 nH mounting assumed: {', '.join(assumed[:8])}"
                      + (" ..." if len(assumed) > 8 else ""))
     # capacitors given that are not on the board (what-if, or schematic stage)
+    on_board = {p.comp for p in board.pads} if board is not None else set()
     for ref, o in over.items():
         if ref in found_refs or ref in excl:
             continue
         c = o.get("c_farads") or (o.get("c_uf") and o["c_uf"] * 1e-6)
         if not c:
+            notes.append(f"decaps: {ref} is not a part across {net} and {ground} and has "
+                         f"no c_uf; ignored")
             continue
         n = int(o.get("count", 1))
         pkg = o.get("package", "")
-        d = Decap(ref, float(c) * n, float(o.get("esr_ohms", default_esr(c))) / n,
-                  (o["esl_nh"] * 1e-9 if "esl_nh" in o else default_esl(pkg)) / n, pkg,
+        kind = _kind_of(o, pkg, "", float(c), False)
+        d = Decap(ref, float(c) * n, float(o.get("esr_ohms", default_esr(c, kind))) / n,
+                  (o["esl_nh"] * 1e-9 if "esl_nh" in o else default_esl(pkg, kind)) / n, pkg,
                   mount_l=float(o.get("mount_nh", 0.5)) * 1e-9 / n,
-                  x=float(o.get("x", 0.0)), y=float(o.get("y", 0.0)), source="user")
+                  x=float(o.get("x", 0.0)), y=float(o.get("y", 0.0)), source="user",
+                  kind=kind or "mlcc")
         if o.get("touchstone"):
             d.touchstone = touchstone_impedance(o["touchstone"], o.get("config", "shunt"))
             d.source = "touchstone"
         if n > 1:
             d.notes.append(f"{n} in parallel")
+        if ref in on_board:
+            d.notes.append(f"on the board but not across {net} and {ground}: taken as an "
+                           f"added part")
+        if "mount_nh" not in o:
+            d.notes.append("added part: 0.5 nH mounting assumed (give mount_nh)")
         if "x" not in o and board is not None:
-            d.notes.append("not on the board and no x/y given: attached at the load")
+            d.notes.append("no x/y given: attached at the load")
         caps.append(d)
     return caps, notes
 
@@ -641,31 +693,39 @@ def write_spice(path, freqs, decaps: list[Decap], vrm: Optional[tuple[float, flo
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+#: matplotlib's text layout (the 10^n tick labels go through its mathtext
+#: parser) keeps state between calls, so two figures drawn at once fail
+#: even on the object interface: one at a time.
+_PLOT_LOCK = threading.Lock()
+
+
 def _plot(path, f, zmag, target, zlump=None, title="") -> bool:
-    """The curve as a PNG. Drawn with matplotlib's object interface, which
-    holds no global state, so two runs at once do not draw into each
-    other's figure. False when matplotlib is not installed."""
+    """The curve as a PNG. Drawn with matplotlib's object interface (no
+    pyplot figure registry) and under a lock, so two runs at once neither
+    draw into each other's figure nor trip the text parser. False when
+    matplotlib is not installed."""
     try:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
     except Exception:  # noqa: BLE001 - optional extra
         return False
-    fig = Figure(figsize=(8, 4.5), dpi=120)
-    FigureCanvasAgg(fig)
-    ax = fig.add_subplot(111)
-    ax.loglog(f, zmag * 1e3, label="|Z| at the load", color="#1f5fbf", lw=1.8)
-    if zlump is not None:
-        ax.loglog(f, np.abs(zlump) * 1e3, label="lumped (no spreading)",
-                  color="#999999", lw=1.0, ls="--")
-    if target:
-        ax.axhline(target * 1e3, color="#c0392b", lw=1.2, label="target")
-    ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("|Z| (mohm)")
-    ax.set_title(title)
-    ax.grid(True, which="both", alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(path)
+    with _PLOT_LOCK:
+        fig = Figure(figsize=(8, 4.5), dpi=120)
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        ax.loglog(f, zmag * 1e3, label="|Z| at the load", color="#1f5fbf", lw=1.8)
+        if zlump is not None:
+            ax.loglog(f, np.abs(zlump) * 1e3, label="lumped (no spreading)",
+                      color="#999999", lw=1.0, ls="--")
+        if target:
+            ax.axhline(target * 1e3, color="#c0392b", lw=1.2, label="target")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("|Z| (mohm)")
+        ax.set_title(title)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path)
     return True
 
 
@@ -681,7 +741,7 @@ MAX_POINTS = 2001
 LIST_DECAPS = 30
 
 _DECAP_KEYS = {"ref", "c_uf", "c_farads", "esr_ohms", "esl_nh", "mount_nh", "touchstone",
-               "config", "package", "count", "x", "y"}
+               "config", "package", "kind", "count", "x", "y"}
 _VRM_KEYS = {"r_mohm", "l_nh", "bandwidth_khz", "ref", "refs", "pads", "disable"}
 _LOAD_KEYS = {"ref", "refs", "pads", "mount_nh", "include_vias", "return_pads", "name"}
 _POSITIVE = {"c_uf", "c_farads", "count", "bandwidth_khz"}
@@ -719,13 +779,14 @@ def _decap_list(caps: list[Decap]) -> dict:
         return {"decaps": rows}
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
-        groups.setdefault((r["c_uf"], r["package"], r["model"], r["esr_mohm"], r["esl_nh"]),
-                          []).append(r)
+        groups.setdefault((r["c_uf"], r["package"], r["kind"], r["model"], r["esr_mohm"],
+                           r["esl_nh"]), []).append(r)
     out = []
-    for (c_uf, pkg, model, esr, esl), rs in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+    for (c_uf, pkg, kind, model, esr, esl), rs in sorted(groups.items(),
+                                                         key=lambda kv: -len(kv[1])):
         mounts = [r["mount_nh"] for r in rs]
         srf = [r["srf_mhz"] for r in rs]
-        out.append({"count": len(rs), "c_uf": c_uf, "package": pkg, "model": model,
+        out.append({"count": len(rs), "c_uf": c_uf, "package": pkg, "kind": kind, "model": model,
                     "esr_mohm": esr, "esl_nh": esl,
                     "mount_nh": [min(mounts), max(mounts)],
                     "srf_mhz": [min(srf), max(srf)],
@@ -876,7 +937,7 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
             l_h, r_ohm = copper._strip(layer or cav.power_layer, extra, OFF_PLANE_TRACK_MILS)
             return node, l_h, r_ohm, dist
         ports = []
-        on_board = {r for r, _, _ in find_decaps(board, net, ground)}
+        on_board = {r for r, _, _ in find_decaps(board, net, ground, {o["ref"] for o in given})}
         lcx, lcy = _centre(load_at) or (cav.x0, cav.y0)
         for c in caps:
             if c.ref not in on_board and c.x == 0.0 and c.y == 0.0:
@@ -996,31 +1057,37 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
     if out_dir is not None:
         from pathlib import Path
         folder = Path(out_dir)
-        folder.mkdir(parents=True, exist_ok=True)
         stem = safe_name(net)
-        csv = folder / f"{stem}_pdn_impedance.csv"
-        with open(csv, "w", encoding="utf-8") as fh:
-            fh.write("freq_hz,z_re_ohm,z_im_ohm,z_mag_ohm,z_lumped_mag_ohm,target_ohm\n")
-            for i in range(len(freqs)):
-                fh.write(f"{freqs[i]:.6g},{z[i].real:.6g},{z[i].imag:.6g},{zmag[i]:.6g},"
-                         f"{abs(z_lumped[i] + zl[i]):.6g},{target:.6g}\n")
-        files = [str(csv)]
-        dcsv = folder / f"{stem}_pdn_decaps.csv"
-        with open(dcsv, "w", encoding="utf-8") as fh:
-            fh.write("ref,c_uf,esr_mohm,esl_nh,mount_nh,mount_mohm,srf_mhz,package,model,"
-                     "x_mils,y_mils,layer,notes\n")
-            for c in caps:
-                r_ = c.to_dict()
-                fh.write(",".join(str(x) for x in (
-                    r_["ref"], r_["c_uf"], r_["esr_mohm"], r_["esl_nh"], r_["mount_nh"],
-                    r_["mount_mohm"], r_["srf_mhz"], r_["package"], r_["model"],
-                    r_["at"][0], r_["at"][1], r_["layer"],
-                    '"' + "; ".join(c.notes).replace('"', "'") + '"')) + "\n")
-        files.append(str(dcsv))
-        cir = folder / f"{stem}_pdn_lumped.cir"
-        write_spice(cir, freqs, caps, (r_vrm, l_vrm) if vrm_used is not None else None,
-                    c_pl, load_l, f"{net} PDN", load_r)
-        files.append(str(cir))
+        files: list[str] = []
+        result["files"] = files
+        try:                # the numbers stand whatever happens to the files
+            folder.mkdir(parents=True, exist_ok=True)
+            csv = folder / f"{stem}_pdn_impedance.csv"
+            with open(csv, "w", encoding="utf-8") as fh:
+                fh.write("freq_hz,z_re_ohm,z_im_ohm,z_mag_ohm,z_lumped_mag_ohm,target_ohm\n")
+                for i in range(len(freqs)):
+                    fh.write(f"{freqs[i]:.6g},{z[i].real:.6g},{z[i].imag:.6g},{zmag[i]:.6g},"
+                             f"{abs(z_lumped[i] + zl[i]):.6g},{target:.6g}\n")
+            files.append(str(csv))
+            dcsv = folder / f"{stem}_pdn_decaps.csv"
+            with open(dcsv, "w", encoding="utf-8") as fh:
+                fh.write("ref,c_uf,esr_mohm,esl_nh,mount_nh,mount_mohm,srf_mhz,package,kind,"
+                         "model,x_mils,y_mils,layer,notes\n")
+                for c in caps:
+                    r_ = c.to_dict()
+                    fh.write(",".join(str(x) for x in (
+                        r_["ref"], r_["c_uf"], r_["esr_mohm"], r_["esl_nh"], r_["mount_nh"],
+                        r_["mount_mohm"], r_["srf_mhz"], r_["package"], r_["kind"], r_["model"],
+                        r_["at"][0], r_["at"][1], r_["layer"],
+                        '"' + "; ".join(c.notes).replace('"', "'") + '"')) + "\n")
+            files.append(str(dcsv))
+            cir = folder / f"{stem}_pdn_lumped.cir"
+            write_spice(cir, freqs, caps, (r_vrm, l_vrm) if vrm_used is not None else None,
+                        c_pl, load_l, f"{net} PDN", load_r)
+            files.append(str(cir))
+        except OSError as exc:
+            result["files_error"] = f"{type(exc).__name__}: {exc}"
+            return result
         png = folder / f"{stem}_pdn_impedance.png"
         try:
             if _plot(png, freqs, zmag, target, z_lumped + zl if z_plane is not None else None,
@@ -1031,5 +1098,4 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
                                        "(pip install eda-agent[render]); the CSV has the curve")
         except Exception as exc:  # noqa: BLE001 - the numbers stand without the picture
             result["files_error"] = f"plot not written: {type(exc).__name__}: {exc}"
-        result["files"] = files
     return result

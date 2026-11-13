@@ -10,11 +10,13 @@ import pytest
 
 from eda_agent.emc.stack import stack_from_stackup
 from eda_agent.emc.touchstone import write_touchstone
+from eda_agent.layout.model import Component, Pad, PadCopper, Region, Track, Via
 from eda_agent.pdn import decap as dc
 from eda_agent.pdn import impedance as im
+from eda_agent.pdn import mounting as mt
 from eda_agent.pdn import physics as ph
 
-from .boards import STACKUP, plane_board
+from .boards import STACKUP, add_bga, add_cap, bare_board, plane_board, smd, via
 
 
 def modal_sum(a, b, d, eps, f, p, q, w, modes=160):
@@ -95,9 +97,166 @@ def test_capacitance_is_read_from_a_comment(text, farads):
     assert dc.parse_capacitance(text) == pytest.approx(farads)
 
 
-@pytest.mark.parametrize("text", ["100nH", "10k", "", "LM1117", "0402"])
+@pytest.mark.parametrize("text", ["100nH", "10k", "", "LM1117", "0402", "1N4148", "1N5819",
+                                  "2N7002", "4N35", "BAT54 1N5819", "4.7uH"])
 def test_not_a_capacitance(text):
     assert dc.parse_capacitance(text) is None
+
+
+def test_a_value_beside_a_part_number_is_still_read():
+    assert dc.parse_capacitance("22uF 1N4148") == pytest.approx(22e-6)
+    assert dc.parse_capacitance("10u0") == pytest.approx(10e-6)
+
+
+@pytest.mark.parametrize("ref,is_cap", [
+    ("C1", True), ("CB12", True), ("C_101", True), ("c5", True), ("CAP1", True),
+    ("CN1", False), ("CON3", False), ("CR2", False), ("CRY1", False),
+    ("D1", False), ("Q2", False), ("U1", False), ("", False),
+])
+def test_capacitor_designators(ref, is_cap):
+    assert dc.is_capacitor_ref(ref) is is_cap
+
+
+@pytest.mark.parametrize("text,ohms", [("100nF", 0.03), ("0.1uF", 0.03), ("100n", 0.03),
+                                       ("1uF", 0.012), ("10nF", 0.08), ("10uF", 0.005)])
+def test_default_esr_does_not_depend_on_how_the_value_is_written(text, ohms):
+    # 100 * 1e-9 is not the float 100e-9: a bucket edge there gave the
+    # commonest decoupling value the ESR of a part ten times larger
+    assert dc.default_esr(dc.parse_capacitance(text)) == pytest.approx(ohms, rel=1e-6)
+
+
+def test_default_esr_is_continuous_and_falls_with_value():
+    c = np.logspace(-10, -3, 141)
+    esr = np.array([dc.default_esr(v) for v in c])
+    assert np.all(np.diff(esr) <= 1e-12)
+    assert np.max(esr[:-1] / esr[1:]) < 1.08          # no step between neighbours
+    # between the anchors it is a straight line on log axes
+    assert dc.default_esr(math.sqrt(100e-9 * 1e-6)) == pytest.approx(math.sqrt(0.03 * 0.012))
+
+
+@pytest.mark.parametrize("footprint,comment,kind", [
+    ("CAPMP3528X21N", "", "tantalum"), ("EIA-7343", "", "tantalum"), ("CASE-D", "", "tantalum"),
+    ("C1206", "47uF Tantalum", "tantalum"), ("TAJB106K016", "", "tantalum"),
+    ("C_POLY_7343", "", "polymer"), ("POSCAP_D", "", "polymer"), ("C7343", "330uF SP-Cap", "polymer"),
+    ("CAPAE530X550N", "", "electrolytic"), ("CAPPRD250W50D500H1100", "", "electrolytic"),
+    ("RB5-10.5", "", "electrolytic"), ("CP_Elec_8x10", "", "electrolytic"),
+    ("POLAR0.8", "", "electrolytic"),
+    # ceramics and words that only look like the above
+    ("CAPC1005X55N", "100nF", ""), ("C0805", "22uF", ""), ("C_0603_1608Metric", "100n", ""),
+    ("CAP-0603", "10uF Polypropylene", ""), ("C0805", "Samsung Electro 22uF", ""),
+    ("0402_CONSTANT", "", ""),
+])
+def test_bulk_kind_from_names(footprint, comment, kind):
+    assert dc.bulk_kind(footprint, comment) == kind
+
+
+def test_bulk_kind_without_a_telling_name():
+    assert dc.bulk_kind("XYZ", "", 22e-6, through_hole=True) == "electrolytic"
+    assert dc.bulk_kind("XYZ", "", 100e-6) == "electrolytic"
+    assert dc.bulk_kind("XYZ", "", 22e-6) == ""
+    assert dc.bulk_kind("C1210", "", 100e-6) == ""          # a real 100 uF chip
+    assert dc.bulk_kind("C_Radial_D5.0", "", 100e-9) == ""  # a ceramic disc
+    assert dc.bulk_kind("C_Radial_D5.0", "", 100e-6) == "electrolytic"
+
+
+def test_bulk_defaults_are_not_a_ceramics():
+    c = 100e-6
+    mlcc = dc.default_esr(c)
+    assert dc.default_esr(c, "tantalum") > 50 * mlcc
+    assert dc.default_esr(c, "electrolytic") > 50 * mlcc
+    assert mlcc < dc.default_esr(c, "polymer") < dc.default_esr(c, "tantalum")
+    assert dc.default_esl("", "tantalum") == pytest.approx(2e-9)
+    assert dc.default_esl("", "electrolytic", through_hole=True) == pytest.approx(10e-9)
+    assert dc.default_esl("0402") == pytest.approx(0.35e-9)
+
+
+def _caps(b, decaps=None):
+    st = stack_from_stackup(STACKUP)
+    return im.build_decaps(b, st, im.find_cavity(b, st, "+1V0", "GND", 1e9),
+                           "+1V0", "GND", decaps, 0.79)
+
+
+def test_a_tantalum_on_the_board_gets_tantalum_values_and_says_so():
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700)
+    b.components.append(Component("C20", "CAPMP7343X31N", 1000, 1500, comment="220uF 6.3V"))
+    b.pads += [smd("C20", "1", 880, 1500, "+1V0", 90, 100), smd("C20", "2", 1120, 1500, "GND", 90, 100)]
+    b.vias += [via(880, 1580, "+1V0"), via(1120, 1580, "GND")]
+    caps, _ = _caps(b)
+    by = {c.ref: c for c in caps}
+    assert by["C20"].kind == "tantalum" and by["C20"].esr == pytest.approx(0.2)
+    assert by["C20"].esl == pytest.approx(2e-9)
+    assert any("tantalum part on typical values" in n for n in by["C20"].notes)
+    assert by["C10"].kind == "mlcc" and by["C10"].esr == pytest.approx(0.03) and not by["C10"].notes
+    # the data sheet's numbers take the note away; kind can be said outright
+    caps, _ = _caps(b, [{"ref": "C20", "esr_ohms": 0.045, "esl_nh": 1.6}])
+    c20 = next(c for c in caps if c.ref == "C20")
+    assert c20.esr == pytest.approx(0.045) and not any("typical" in n for n in c20.notes)
+    caps, _ = _caps(b, [{"ref": "C20", "kind": "polymer"}])
+    assert next(c for c in caps if c.ref == "C20").esr == pytest.approx(0.025)
+    with pytest.raises(im.PDNError, match="kind"):
+        _caps(b, [{"ref": "C20", "kind": "paper"}])
+
+
+def test_a_through_hole_electrolytic_is_found_by_its_holes():
+    b = bare_board()
+    b.components.append(Component("C30", "XYZ", 1000, 1500, comment="100uF"))
+    for name, dx, net in (("1", -50, "+1V0"), ("2", 50, "GND")):
+        b.pads.append(Pad("C30", name, 1000 + dx, 1500, 0.0, net,
+                          [PadCopper(l, "round", 60, 60) for l in ("TopLayer", "BottomLayer")],
+                          hole=32.0))
+    caps, _ = _caps(b)
+    assert caps[0].kind == "electrolytic" and caps[0].esl == pytest.approx(10e-9)
+    assert caps[0].esr == pytest.approx(0.35)
+    assert caps[0].mount_detail["how"] == ["through-hole pin"]
+
+
+def test_a_diode_or_a_connector_across_the_rail_is_not_a_capacitor():
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700)
+    for ref, comment in (("D1", "1N4148"), ("CN1", "HDR-2"), ("CR3", "1N5819"), ("Q4", "2N7002")):
+        add_cap(b, ref, 1000 + 100 * len(b.components), 1000, value=comment)
+    caps, notes = _caps(b)
+    assert [c.ref for c in caps] == ["C10"]
+    assert not any("D1" in n or "CN1" in n for n in notes)
+
+
+def test_an_array_is_named_not_dropped_and_a_doubled_part_is_taken():
+    b = bare_board()
+    # CA1: four capacitors in one body, two of them on other rails
+    b.components.append(Component("CA1", "CAPCAV4", 1000, 1000, comment="100nF"))
+    for k, net in enumerate(("+1V0", "+3V3", "+1V8", "+1V0")):
+        b.pads += [smd("CA1", str(k + 1), 1000 + 30 * k, 980, net, 14, 20),
+                   smd("CA1", str(8 - k), 1000 + 30 * k, 1020, "GND", 14, 20)]
+    # C40: a low-inductance part, two terminals a side, nothing else on it
+    b.components.append(Component("C40", "C0612", 1500, 1000, comment="1uF"))
+    for k in range(2):
+        b.pads += [smd("C40", f"P{k}", 1500 + 40 * k, 980, "+1V0", 20, 20),
+                   smd("C40", f"G{k}", 1500 + 40 * k, 1020, "GND", 20, 20)]
+    caps, notes = _caps(b)
+    assert [c.ref for c in caps] == ["C40"]
+    note = next(n for n in notes if n.startswith("CA1:"))
+    assert "8 pads" in note and "+1V8" in note and "decaps" in note
+    # asked for by name, the array's share on this rail is counted
+    caps, notes = _caps(b, [{"ref": "CA1", "c_uf": 0.2}])
+    assert sorted(c.ref for c in caps) == ["C40", "CA1"]
+    assert not any(n.startswith("CA1:") for n in notes)
+
+
+def test_a_part_given_by_ref_is_taken_whatever_it_is_called():
+    b = bare_board()
+    add_cap(b, "X7", 2000, 1700, value="")          # a capacitor by neither name nor comment
+    caps, _ = _caps(b)
+    assert caps == []
+    caps, _ = _caps(b, [{"ref": "X7", "c_uf": 0.1}])
+    assert caps[0].ref == "X7" and caps[0].mount_detail["via_pairs"] == 1
+    # one given that is on the board but not across the rail is an added part, and says so
+    b.components.append(Component("R1", "R0402", 500, 500, comment="10k"))
+    b.pads += [smd("R1", "1", 500, 480, "+3V3"), smd("R1", "2", 500, 520, "GND")]
+    caps, _ = _caps(b, [{"ref": "R1", "c_uf": 1.0}])
+    assert any("not across +1V0 and GND" in n for n in caps[0].notes)
+    _, notes = _caps(b, [{"ref": "R1", "esr_ohms": 0.01}])
+    assert any("R1 is not a part across" in n for n in notes)
 
 
 def test_package_from_footprint():
@@ -384,10 +543,7 @@ def test_bad_inputs():
 
 # --- mounting: each pin's own way to the planes --------------------------------
 
-from eda_agent.layout.model import Component, Region, Track, Via   # noqa: E402
-from eda_agent.pdn import mounting as mt                           # noqa: E402
 
-from .boards import add_bga, add_cap, bare_board, smd, via        # noqa: E402
 
 
 def _load_mount(b, ref="U2", reach=100.0):

@@ -44,22 +44,41 @@ PACKAGE_ESL_NH = {"0201": 0.20, "0402": 0.35, "0603": 0.50, "0805": 0.60,
                   "2512": 1.30}
 METRIC_TO_IMPERIAL = {"0603": "0201", "1005": "0402", "1608": "0603", "2012": "0805",
                       "3216": "1206", "3225": "1210", "4532": "1812", "5750": "2220"}
-_BULK_WORDS = ("TANT", "ELEC", "CPOL", "POLY", "CAPAE", "CAPPM", "CASE_", "SMD_CASE",
-               "RADIAL", "CP_")
 
-_MULT = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3}
+#: Footprint or comment words that mean a bulk part, by kind. IPC-7351
+#: names: CAPMP molded polarised (tantalum), CAPAE aluminium electrolytic,
+#: CAPPR / CAPPA polarised radial / axial; RB<pitch>-<dia> is Altium's own
+#: radial electrolytic.
+_W = r"(?<![A-Za-z0-9])"                 # a word start; "_" counts as a break
+_E = r"(?![A-Za-z])"
+_BULK = (
+    ("polymer", re.compile(rf"POLYMER|{_W}POLY{_E}|POSCAP|{_W}SP-?CAP|OS-?CON|{_W}KO-?CAP", re.I)),
+    ("tantalum", re.compile(rf"{_W}TANT|CAPMP|{_W}EIA-?\d{{4}}|{_W}CASE[-_ ]?[A-EVX]{_E}|{_W}T49\d|"
+                            rf"{_W}TAJ|{_W}TPS[A-E]\d|SMD_CASE", re.I)),
+    ("electrolytic", re.compile(rf"ELECTROLYT|{_W}ELEC{_E}|ELKO|CAPAE|CAPPR|CAPPA|{_W}CPOL|"
+                                rf"{_W}POLAR|{_W}RADIAL|{_W}RB\d|{_W}CP_|{_W}E\d(?:\.\d)?-\d",
+                                re.I)),
+)
+BULK_KINDS = tuple(k for k, _ in _BULK)
+
+_MULT = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "\u00b5": 1e-6, "\u03bc": 1e-6, "m": 1e-3}
+#: 1N4148, 2N7002, 4N35: JEDEC part numbers, not 1.4148 nF.
+_JEDEC = re.compile(r"(?<![A-Za-z0-9])[1-4]N\d{2,}", re.I)
+#: Designators that are capacitors (C1, CB12, C_101), not CN1 / CON1 / CR1.
+_CAP_REF = re.compile(r"^C(?!N\d|ON|R\d|RY)[A-Z_]{0,2}\d", re.I)
 
 
 def parse_capacitance(text: str) -> Optional[float]:
-    """Farads from a value string: 100nF, 0.1uF, 4u7, 4.7µ, 100n, 1uF/16V,
-    10000pF, 1F, 100NF. None when no capacitance is found (100nH is not)."""
+    """Farads from a value string: 100nF, 0.1uF, 4u7, 4.7\u00b5, 100n, 1uF/16V,
+    10000pF, 1F, 100NF. None when no capacitance is found (100nH is not,
+    nor is a 1N4148)."""
     if not text:
         return None
-    s = str(text).strip()
-    m = re.search(r"(?<![\w.])(\d+)([pnuµμ])(\d+)(?![\w.])", s, re.I)
+    s = _JEDEC.sub(" ", str(text).strip())
+    m = re.search(r"(?<![\w.])(\d+)([pnu\u00b5\u03bc])(\d{1,2})(?![\w.])", s, re.I)
     if m:
         return float(f"{m.group(1)}.{m.group(3)}") * _MULT[m.group(2).lower()]
-    m = re.search(r"(?<![\w.])(\d+(?:[.,]\d+)?)\s*(?:(mF)|([pnuµμ])F?|(F))(?![a-zA-Z])", s, re.I)
+    m = re.search(r"(?<![\w.])(\d+(?:[.,]\d+)?)\s*(?:(mF)|([pnu\u00b5\u03bc])F?|(F))(?![a-zA-Z])", s, re.I)
     if not m:
         return None
     v = float(m.group(1).replace(",", "."))
@@ -68,6 +87,10 @@ def parse_capacitance(text: str) -> Optional[float]:
     if m.group(3):
         return v * _MULT[m.group(3).lower()]
     return v
+
+
+def is_capacitor_ref(ref: str) -> bool:
+    return bool(_CAP_REF.match(ref or ""))
 
 
 def package_of(footprint: str) -> str:
@@ -85,33 +108,73 @@ def package_of(footprint: str) -> str:
     return ""
 
 
-def is_bulk(footprint: str, comment: str = "") -> bool:
-    f = (footprint or "").upper() + " " + (comment or "").upper()
-    return any(w in f for w in _BULK_WORDS)
+def bulk_kind(footprint: str, comment: str = "", c: float = 0.0,
+              through_hole: bool = False) -> str:
+    """'' for a ceramic chip, else what kind of bulk part this is:
+    polymer, tantalum or electrolytic. From the footprint's and comment's
+    words (an electrolytic's footprint under 0.33 uF is a ceramic disc);
+    failing those, a through-hole part of 10 uF or more is an
+    electrolytic, and 47 uF or more in no chip case we know is taken as
+    one too."""
+    text = f"{footprint or ''} {comment or ''}"
+    for kind, rx in _BULK:
+        if rx.search(text):
+            if kind == "electrolytic" and 0 < c < 0.33e-6:
+                return ""           # a radial 100 nF is a ceramic disc
+            return kind
+    if through_hole and c >= 10e-6:
+        return "electrolytic"
+    if c >= 47e-6 and not package_of(footprint):
+        return "electrolytic"
+    return ""
 
 
-def default_esr(c: float, bulk: bool = False) -> float:
-    """Typical ESR at the series resonance for an MLCC of this value
-    (a fit to published X7R/X5R curves, within about a factor of two), or
-    a polymer/tantalum bulk part."""
+def is_bulk(footprint: str, comment: str = "", c: float = 0.0,
+            through_hole: bool = False) -> bool:
+    return bool(bulk_kind(footprint, comment, c, through_hole))
+
+
+#: Typical MLCC ESR at the series resonance against capacitance (class II,
+#: X7R / X5R; from makers' published curves), interpolated on log axes.
+_MLCC_ESR = ((1e-9, 0.25), (10e-9, 0.08), (100e-9, 0.03), (1e-6, 0.012),
+             (10e-6, 0.005), (100e-6, 0.003))
+#: Typical 100 kHz ESR of bulk parts: (up to farads, ohms).
+_BULK_ESR = {
+    "polymer": ((47e-6, 0.05), (220e-6, 0.025), (float("inf"), 0.012)),
+    "tantalum": ((22e-6, 1.5), (100e-6, 0.6), (float("inf"), 0.2)),
+    "electrolytic": ((47e-6, 1.0), (220e-6, 0.35), (1000e-6, 0.12), (float("inf"), 0.05)),
+}
+_BULK_ESL_NH = {"polymer": 2.0, "tantalum": 2.0, "electrolytic": 5.0}
+
+
+def default_esr(c: float, bulk=False) -> float:
+    """Typical ESR: of an MLCC of this value at its series resonance (a
+    fit to published X7R / X5R curves, good to about a factor of two), or
+    of a bulk part of the given kind at 100 kHz (good to a factor of
+    three: read the data sheet). ``bulk``: a kind from ``bulk_kind``, or
+    True for a polymer part."""
     if bulk:
-        return 0.05 if c >= 100e-6 else 0.1
-    if c <= 1e-9:
-        return 0.25
-    if c <= 10e-9:
-        return 0.08
-    if c <= 100e-9:
-        return 0.03
-    if c <= 1e-6:
-        return 0.012
-    if c <= 10e-6:
-        return 0.005
-    return 0.003
+        kind = bulk if isinstance(bulk, str) else "polymer"
+        for c_max, esr in _BULK_ESR.get(kind, _BULK_ESR["polymer"]):
+            if c <= c_max:
+                return esr
+    if c <= _MLCC_ESR[0][0]:
+        return _MLCC_ESR[0][1]
+    if c >= _MLCC_ESR[-1][0]:
+        return _MLCC_ESR[-1][1]
+    for (c0, r0), (c1, r1) in zip(_MLCC_ESR, _MLCC_ESR[1:]):
+        if c <= c1:
+            t = math.log(c / c0) / math.log(c1 / c0)
+            return math.exp(math.log(r0) + t * math.log(r1 / r0))
+    return _MLCC_ESR[-1][1]
 
 
-def default_esl(package: str, bulk: bool = False) -> float:
+def default_esl(package: str, bulk=False, through_hole: bool = False) -> float:
     if bulk:
-        return 2.0e-9
+        kind = bulk if isinstance(bulk, str) else "polymer"
+        if kind == "electrolytic" and through_hole:
+            return 10.0e-9          # the leads and their spacing
+        return _BULK_ESL_NH.get(kind, 2.0) * 1e-9
     return PACKAGE_ESL_NH.get(package, 0.5) * 1e-9
 
 
@@ -128,6 +191,7 @@ class Decap:
     y: float = 0.0
     layer: str = ""
     source: str = "defaults"      # defaults | user | touchstone
+    kind: str = "mlcc"            # mlcc | polymer | tantalum | electrolytic
     notes: list[str] = field(default_factory=list)
     touchstone: Optional[tuple[np.ndarray, np.ndarray]] = None   # f, Z
     mount_detail: dict = field(default_factory=dict)
@@ -153,7 +217,7 @@ class Decap:
         return {"ref": self.ref, "c_uf": round(self.c * 1e6, 6), "esr_mohm": round(self.esr * 1e3, 3),
                 "esl_nh": round(self.esl * 1e9, 4), "mount_nh": round(self.mount_l * 1e9, 4),
                 "mount_mohm": round(self.mount_r * 1e3, 3),
-                "package": self.package, "srf_mhz": round(self.srf_hz / 1e6, 4),
+                "package": self.package, "kind": self.kind, "srf_mhz": round(self.srf_hz / 1e6, 4),
                 "at": [round(self.x, 1), round(self.y, 1)], "layer": self.layer,
                 "model": self.source, "mount": self.mount_detail,
                 **({"notes": self.notes} if self.notes else {})}
