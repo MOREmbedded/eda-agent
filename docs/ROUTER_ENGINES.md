@@ -57,9 +57,9 @@ From his fork's history, the main differences are these:
 - **Layer directions.** It takes a preferred direction per layer by name
   (`layer_dirs`, `dir_strength`), a cost on the outer layers
   (`outer_cost`) and a grid `pitch`. These four are parameters of the
-  routing job (`route_job` in `src/eda_agent/layout/route/job.py`, also
-  started by `design_job_start(kind="layout_route", params=...)`), whose
-  params must carry the board itself too, as a `LayoutBoard` or its dict.
+  routing job (`src/eda_agent/layout/route/job.py`, also started by
+  `design_job_start(kind="layout_route", params=...)`), whose params must
+  carry the board itself too, as a `LayoutBoard` or its dict.
   No tool reads a board into that form, and `pcb_autoroute` does not take
   them, so for now they serve a script that builds its board, as in his
   fork. Only the euan engine reads them; the default engine ignores them
