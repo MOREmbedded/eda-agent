@@ -44,6 +44,30 @@ from .search import MOVES, Window, build_graph, shortest_path
 EPS = 1e-3
 
 
+def _unique_cells(parts, nx: int) -> np.ndarray:
+    """The distinct (y, x) cells in ``parts`` (arrays of (y, x) rows, on a
+    grid ``nx`` cells wide), sorted by row then column as np.unique(axis=0)
+    sorts them. Found through one flat index per cell: np.unique on rows
+    sorts them as records, and on a board with 1,500 vias that took most of
+    a second for each net."""
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return np.zeros((0, 2), dtype=np.int64)
+    flat = np.unique(np.concatenate([p[:, 0].astype(np.int64) * nx + p[:, 1] for p in parts]))
+    return np.stack([flat // nx, flat % nx], axis=1)
+
+
+def _drop_cells(cells: np.ndarray, drop, nx: int) -> np.ndarray:
+    """``cells`` (y, x) less those in ``drop`` (a set or dict of (y, x)
+    keys), in their order. A key past the grid's left or right side (a
+    reused via's cells can reach one past it) is left out: its flat index
+    would name a cell on the other side, a row away."""
+    if not len(cells) or not drop:
+        return cells
+    gone = np.array([y * nx + x for y, x in drop if 0 <= x < nx], dtype=np.int64)
+    return cells[~np.isin(cells[:, 0].astype(np.int64) * nx + cells[:, 1], gone)]
+
+
 @dataclass
 class Terminal:
     pad: int                      # index into board.pads
@@ -613,6 +637,7 @@ class Router:
 
     def _jobs(self) -> list[NetJob]:
         planes = self._plane_masks()
+        self._copper_roots_cache = None
         jobs = []
         index = {id(p): i for i, p in enumerate(self.board.pads)}
         for net, pads in self.board.pads_by_net().items():
@@ -662,7 +687,7 @@ class Router:
                 job.side_bar = self._side_bar(job)
             if self.reuse_vias:
                 spec = self.grid.spec
-                for vx, vy, _d in self._net_vias.get(net, ()):
+                for vx, vy in self._through_vias(net):
                     ci, cj = spec.cell(vx, vy)
                     if 0 <= ci < spec.nx and 0 <= cj < spec.ny:
                         job.reuse[(cj, ci)] = (vx, vy)
@@ -711,23 +736,36 @@ class Router:
 
     def _existing_groups(self, net: str, terms: list, with_vias: bool = False) -> list:
         """The net's terminals grouped by the copper already joining them
-        (join_existing), each with the grid cells of that copper."""
+        (join_existing), each with the grid cells of that copper.
+
+        Pads, tracks and vias are joined as the verdict joins them
+        (drc._joined: copper that touches, a via on the layers it spans).
+        Judged here with a 0.5 mil margin and every via on every layer,
+        copper that stopped short of a pad, or a blind via, counted as a
+        join: the net got no route and the verdict found it open. A join
+        region (layer, net, outline) still takes what has a point in it."""
         from .grid import fill_polygon
         spec = self.grid.spec
         li_of = self.grid.layer_index
         b = self.board
+        roots = self._copper_roots()
         items = []          # (kind, data)
+        keys = []           # the verdict's group of each item, None for a region
         for k, t in enumerate(terms):
             items.append(("t", k))
-        trs = [tr for tr in b.tracks if tr.net == net]
-        vs = [v for v in b.vias if v.net == net]
-        regs = [(l, pts) for l, n, pts in self.join_regions if n == net]
-        for tr in trs:
-            items.append(("tr", tr))
-        for v in vs:
-            items.append(("v", v))
-        for r in regs:
-            items.append(("r", r))
+            keys.append(roots.get(("pad", t.pad)))
+        for i, tr in enumerate(b.tracks):
+            if tr.net == net:
+                items.append(("tr", tr))
+                keys.append(roots.get(("track", i)))
+        for i, v in enumerate(b.vias):
+            if v.net == net:
+                items.append(("v", v))
+                keys.append(roots.get(("via", i)))
+        for l, n_, pts in self.join_regions:
+            if n_ == net:
+                items.append(("r", (l, pts)))
+                keys.append(None)
         n = len(items)
         par = list(range(n))
 
@@ -746,37 +784,8 @@ class Router:
             if kind == "tr":
                 return [((d.x1, d.y1), d.width / 2, {d.layer}), ((d.x2, d.y2), d.width / 2, {d.layer})]
             if kind == "v":
-                return [((d.x, d.y), d.diameter / 2, None)]
+                return [((d.x, d.y), d.diameter / 2, set(b.layers_between(d.low_layer, d.high_layer)))]
             return []
-
-        shp_cache: dict = {}
-
-        def shp_of(it):
-            """(shape, layers) of a pad, track or via; layers None = every layer."""
-            key_ = id(it[1]) if it[0] != "t" else ("t", it[1])
-            if key_ in shp_cache:
-                return shp_cache[key_]
-            kind, d = it
-            if kind == "t":
-                pad = b.pads[terms[d].pad]
-                if pad.is_smd:
-                    out_ = [(pad.shape_on(c_.layer), {c_.layer}) for c_ in pad.copper]
-                else:
-                    out_ = [(pad.shape_on(pad.copper[0].layer), None)]
-            elif kind == "tr":
-                out_ = [(geom.capsule(d.x1, d.y1, d.x2, d.y2, d.width), {d.layer})]
-            elif kind == "v":
-                out_ = [(geom.circle(d.x, d.y, d.diameter), None)]
-            else:
-                out_ = []
-            shp_cache[key_] = out_
-            return out_
-
-        def seg_d(p, a, c):
-            dx, dy = c[0] - a[0], c[1] - a[1]
-            ll = dx * dx + dy * dy
-            u = 0.0 if ll == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / ll))
-            return math.hypot(p[0] - a[0] - u * dx, p[1] - a[1] - u * dy)
 
         def inside(pt, poly):
             x, y = pt
@@ -786,41 +795,21 @@ class Router:
                     c = not c
             return c
 
-        def touch(a, c):
-            if a[0] == "r" or c[0] == "r":
-                rr, o = (a, c) if a[0] == "r" else (c, a)
-                if o[0] == "r":
-                    return False
-                lay, poly = rr[1]
-                return any((ls is None or lay in ls) and inside(pt, poly) for pt, _, ls in pts_of(o))
-            if a[0] == "tr" or c[0] == "tr":
-                tt, o = (a, c) if a[0] == "tr" else (c, a)
-                t_ = tt[1]
-                if o[0] == "tr":
-                    o_ = o[1]
-                    if o_.layer != t_.layer:
-                        return False
-                    return min(seg_d(q, (o_.x1, o_.y1), (o_.x2, o_.y2)) for q in ((t_.x1, t_.y1), (t_.x2, t_.y2))) \
-                        <= (t_.width + o_.width) / 2 + 0.5 or \
-                        min(seg_d(q, (t_.x1, t_.y1), (t_.x2, t_.y2)) for q in ((o_.x1, o_.y1), (o_.x2, o_.y2))) \
-                        <= (t_.width + o_.width) / 2 + 0.5
-                ts = geom.capsule(t_.x1, t_.y1, t_.x2, t_.y2, t_.width)
-                return any((ls is None or t_.layer in ls) and geom.bboxes_near(ts, so, 0.5)
-                           and geom.clearance(ts, so) <= 0.5 for so, ls in shp_of(o))
-            # pads, tracks and vias meet when their real copper meets (a pad as a circle of
-            # max(w, h)/2 joined adjacent fine-pitch pins and pins beside an exposed pad, so
-            # those pins were never routed)
-            for sa, la in shp_of(a):
-                for sc, lc in shp_of(c):
-                    if la is not None and lc is not None and not (la & lc):
-                        continue
-                    if geom.bboxes_near(sa, sc, 0.5) and geom.clearance(sa, sc) <= 0.5:
-                        return True
-            return False
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                if f(i) != f(j) and touch(items[i], items[j]):
+        first: dict = {}
+        for i, key in enumerate(keys):
+            if key is None:
+                continue
+            if key in first:
+                par[f(i)] = f(first[key])
+            else:
+                first[key] = i
+        for i, it in enumerate(items):
+            if it[0] != "r":
+                continue
+            lay, poly = it[1]
+            for j, o in enumerate(items):
+                if o[0] != "r" and f(i) != f(j) and \
+                        any(lay in ls and inside(pt, poly) for pt, _, ls in pts_of(o)):
                     par[f(i)] = f(j)
         groups: dict = {}
         for i, it in enumerate(items):
@@ -841,7 +830,8 @@ class Router:
                         cells.append((li_of[d.layer], cj, ci))
                 elif kind == "v":
                     ci, cj = spec.cell(d.x, d.y)
-                    cells += [(li, cj, ci) for li in range(self.L)]
+                    cells += [(li_of[l], cj, ci) for l in b.layers_between(d.low_layer, d.high_layer)
+                              if l in li_of]
                 elif kind == "r" and d[0] in li_of:
                     m = fill_polygon(spec, [d[1]])
                     ys, xs = np.nonzero(m)
@@ -854,6 +844,36 @@ class Router:
                 out.append((tk, arr))
         # the biggest group seeds the tree
         out.sort(key=lambda g: -(len(g[0]) + len(g[1])))
+        return out
+
+    def _copper_roots(self) -> dict:
+        """(kind, index) -> the group drc._joined puts each pad, track and
+        via of the board in: what its copper joins in the verdict. Worked
+        out once per _jobs(), as the stages lay copper between."""
+        got = self.__dict__.get("_copper_roots_cache")
+        if got is None:
+            from ..drc import _joined, conductive_items
+            items = conductive_items(self.board)
+            uf = _joined(self.board, items)
+            got = {}
+            for n, it in enumerate(items):
+                if it.kind in ("pad", "track", "via"):
+                    got.setdefault((it.kind, it.idx), uf.find(n))
+            self._copper_roots_cache = got
+        return got
+
+    def _through_vias(self, net: str) -> list:
+        """(x, y) of each via of ``net`` on the board that passes every
+        routing layer: the ones reuse_vias may take as a layer change. A
+        blind or buried via joins only the layers it spans; taken as a
+        change between any two, it left the route open."""
+        out = []
+        for v in self.board.vias:
+            if v.net != net:
+                continue
+            span = self.board.layers_between(v.low_layer, v.high_layer)
+            if all(l in span for l in self.grid.layers):
+                out.append((float(v.x), float(v.y)))
         return out
 
     def _in_plane(self, plane: np.ndarray, pad: Pad) -> bool:
@@ -920,8 +940,7 @@ class Router:
                     out[k].append(np.stack([ys + j0, xs + i0], axis=1))
         if not any(out):
             return None
-        return [np.unique(np.concatenate(o), axis=0) if o else np.zeros((0, 2), dtype=np.int64)
-                for o in out]
+        return [_unique_cells(o, spec.nx) for o in out]
 
     def _via_guards(self, job: NetJob) -> None:
         """Keep the net's new vias off what the grid does not show.
@@ -940,19 +959,21 @@ class Router:
         then judges a pad's centre, where the search lays a via in a pad.
         """
         extra = []
+        nx = self.grid.spec.nx
         for v in job.vias:
-            parts = [self._near_holes(v.hole), self._off_grid_copper(job, v.diameter / 2),
-                     self._mask_webs(v)]
-            parts = [c for c in parts if len(c)]
-            if parts and job.reuse:
-                parts = [c[[(int(a), int(b)) not in job.reuse for a, b in c]] for c in parts]
+            webs = self._mask_webs(v)
+            if self.options.pad_vias == "centre" and job.pad_via:
+                # A pad's centre cell, where the search lays the pad's via
+                # at its centre: judged there by _guard_pad_vias.
+                webs = _drop_cells(webs, job.pad_via, nx)
+            parts = [self._near_holes(v.hole), self._off_grid_copper(job, v.diameter / 2), webs]
+            parts = [_drop_cells(c, job.reuse, nx) for c in parts if len(c)]
             extra.append([c for c in parts if len(c)])
         if not any(extra):
             return
         base = job.no_via if job.no_via is not None else \
             [np.zeros((0, 2), dtype=np.int64) for _ in job.vias]
-        job.no_via = [np.unique(np.concatenate([b] + e), axis=0) if e else b
-                      for b, e in zip(base, extra)]
+        job.no_via = [_unique_cells([b] + e, nx) if e else b for b, e in zip(base, extra)]
 
     def _hole_gap(self) -> float:
         return max((rr.values.get("gap", 0.0) for rr in self.rules.of_type("hole_to_hole")),
@@ -980,7 +1001,7 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -1032,7 +1053,7 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             ys, xs = np.nonzero(shape_distance(s, X, Y) < radius - EPS)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -1045,24 +1066,47 @@ class Router:
         track where 5 were required."""
         from ..drc import Item
         keep = self._hidden_keepout_cells(radius)
-        if not self._hidden_items():
+        items = self._hidden_items()
+        if not items:
             return keep
-        spec = self.grid.spec
-        out = [keep] if len(keep) else []
-        for it in self._hidden_items():
+        # Every net asks again, mostly at the same reach: each item's cells
+        # at a reach, and each kind of pair's clearance, are found once.
+        memo = self.__dict__.setdefault("_hidden_memo", ([None] * len(items), {}, {}))
+        facts, gaps, kept = memo
+        disc = geom.circle(0.0, 0.0, 2 * radius)
+        via_facts: dict = {}
+        out = [keep]
+        for k, it in enumerate(items):
             if it.net and it.net == job.name:
                 continue
-            via = Item("via", -1, job.name, it.layer, geom.circle(0.0, 0.0, 2 * radius))
-            reach = radius + self.rules.clearance(via, it, self.board)
-            x0, y0, x1, y1 = it.shape.bbox
-            i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
-            if i0 >= i1 or j0 >= j1:
-                continue
-            X = spec.x(np.arange(i0, i1))[None, :]
-            Y = spec.y(np.arange(j0, j1))[:, None]
-            ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
-            out.append(np.stack([ys + j0, xs + i0], axis=1))
-        return np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+            fv = via_facts.get(it.layer)
+            if fv is None:
+                fv = via_facts[it.layer] = self.rules.facts(
+                    Item("via", -1, job.name, it.layer, disc), self.board)
+            if facts[k] is None:
+                facts[k] = self.rules.facts(it, self.board)
+            gap = gaps.get((fv, facts[k]))
+            if gap is None:
+                gap = gaps[(fv, facts[k])] = self.rules.clearance_of(fv, facts[k])
+            reach = radius + gap
+            cells = kept.get((k, reach))
+            if cells is None:
+                cells = kept[(k, reach)] = self._cells_near(it.shape, reach)
+            out.append(cells)
+        return _unique_cells(out, self.grid.spec.nx)
+
+    def _cells_near(self, s, reach: float) -> np.ndarray:
+        """The cells (y, x) whose centres lie nearer than ``reach`` to the
+        shape ``s``."""
+        spec = self.grid.spec
+        x0, y0, x1, y1 = s.bbox
+        i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+        if i0 >= i1 or j0 >= j1:
+            return np.zeros((0, 2), dtype=np.int64)
+        X = spec.x(np.arange(i0, i1))[None, :]
+        Y = spec.y(np.arange(j0, j1))[:, None]
+        ys, xs = np.nonzero(shape_distance(s, X, Y) < reach - EPS)
+        return np.stack([ys + j0, xs + i0], axis=1)
 
     def _hidden_index(self) -> tuple:
         """What via_clear_of_hidden measures a point against, built once:
@@ -1129,8 +1173,10 @@ class Router:
         pad that may not take a via does not allow). The new via is masked
         like most of the board's vias (drc.usual_via_mask); no rings when
         it is tented on both sides or the mask was not read. This router's
-        vias go through every copper layer, so both sides' openings count;
-        under pad_vias="centre" a surface pad takes one at its centre."""
+        vias go through every copper layer, so both sides' openings count.
+        Under pad_vias="centre" a surface pad takes one at its centre only,
+        which _guard_pad_vias judges: taken anywhere, a via beside a
+        passive's pad could share its opening."""
         cache = self.__dict__.setdefault("_web_rings_cache", {})
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
@@ -1157,7 +1203,7 @@ class Router:
             if web <= 0:
                 continue
             merge = r_open + ev + grow
-            takes = it.kind != "pad" or mode in ("any", "centre") or it.idx in self.via_pads
+            takes = it.kind != "pad" or mode == "any" or it.idx in self.via_pads
             if not takes:
                 pad = self.board.pads[it.idx]
                 takes = not pad.is_smd or (mode == "ic" and not self._is_passive(pad))
@@ -1189,7 +1235,7 @@ class Router:
             ys, xs = np.nonzero(near)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
         if out:
-            cells = np.unique(np.concatenate(out), axis=0)
+            cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -1286,8 +1332,8 @@ class Router:
             return
         empty = np.zeros((0, 2), dtype=np.int64)
         base = job.no_via if job.no_via is not None else [empty for _ in job.vias]
-        job.no_via = [np.unique(np.concatenate([b, np.array(c, dtype=np.int64)]), axis=0)
-                      if c else b for b, c in zip(base, bar)]
+        job.no_via = [_unique_cells([b, np.array(c, dtype=np.int64)], spec.nx) if c else b
+                      for b, c in zip(base, bar)]
 
     def _room_at(self, nid: int, x: float, y: float, most: float) -> float:
         """The largest via radius, up to ``most``, that a via of the net at
@@ -2824,7 +2870,8 @@ class Router:
         neck in its current and its inductance. Each sits one via pitch
         (diameter plus the same-net gap) from the first, joined on each of
         its layers by a stub at the net's width, and is checked exactly
-        against every other net's copper, fixed and routed, on every layer."""
+        against every other net's copper, fixed and routed, on every layer,
+        and by the via guards (via_clear_of_hidden, via_leaves_web)."""
         gap = self.same_net_via_gap if self.same_net_via_gap is not None else self.c
         index = self._routed if self._routed is not None else self._routed_index()
         self._routed = index
@@ -2869,6 +2916,10 @@ class Router:
                         continue
                     if not self._via_pad_ok(job.name, cx, cy, d):
                         continue
+                    nv = Via(cx, cy, d, via.hole, via.low_layer, via.high_layer, job.name)
+                    if not self.via_clear_of_hidden(nv, cx, cy, job.name) or \
+                            self.via_leaves_web(nv, cx, cy):
+                        continue        # the via guards, as for every new via
                     ok = all(self._static_clears(job.id, d, li, (cx, cy), (cx, cy))
                              and self._routed_clears(job.id, d, li, (cx, cy), (cx, cy))
                              for li in range(self.L))
@@ -2880,7 +2931,6 @@ class Router:
                                     for l in layers)
                     if not ok:
                         continue
-                    nv = Via(cx, cy, d, via.hole, via.low_layer, via.high_layer, job.name)
                     out.vias.append(nv)
                     mine.append(nv)
                     for li in range(self.L):

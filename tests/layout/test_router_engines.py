@@ -4,13 +4,17 @@ of them went wrong: a via on copper the grid does not see (a short) or
 in a keep-out drawn on a layer no route uses, or too near a hole, or
 leaving a solder mask sliver, whether the search (at a cell or at a pad's
 centre), a BGA's fan-out or the plane fan-out laid it; a gloss that ran
-through a keep-out or off the board; and a board track the job lost.
+through a keep-out or off the board; a board track the job lost; and
+join_existing or reuse_vias taking for a join what the verdict does not.
+Then Euan's router alone: a via in a pad under pad_vias="centre", and the
+vias it stitches beside a wide net's layer change.
 
 Euan's router failed the via cases until the default router's via guards
-were ported into it, and the gloss cases with its own gloss, which the
-job no longer uses (ours runs for both engines). The default router's
-fan-outs skipped the hidden copper and hole checks its search makes, and
-its gloss missed keep-outs drawn on the Keep-Out layer.
+were ported into it, the gloss cases with its own gloss, which the job no
+longer uses (ours runs for both engines), and the join and reuse cases
+until it judged a join as the verdict does. The default router's fan-outs
+skipped the hidden copper and hole checks its search makes, and its gloss
+missed keep-outs drawn on the Keep-Out layer.
 """
 from __future__ import annotations
 
@@ -199,6 +203,88 @@ def test_a_point_is_measured_against_all_the_grid_does_not_show(engine):
     # The hole gap: 4 + 40 + 5 between the centres, whatever the layers.
     assert not clear(150, 321.5) and clear(150, 320.5)
     assert not clear(150, 321.5, span=["TopLayer"])
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_the_cells_kept_from_hidden_copper_are_those_a_direct_reckoning_finds(engine):
+    """Setting up the jobs, each hidden item's cells at a reach and each
+    pair of objects' clearance are worked out once and kept for the next
+    net. Kept wrongly, a net would get another's clearance; so each net's
+    cells must be exactly those found item by item, rule by rule, over the
+    whole grid. Nets A and B (class HV: 30 mil from anything) and C, a
+    pair rule of 17 mil between C and Z, and on MidLayer1, which no route
+    uses: Z's and B's tracks, an arc, a region and three keep-outs."""
+    import numpy as np
+
+    from eda_agent.layout.drc import Item
+    from eda_agent.layout.route.grid import shape_distance
+
+    b = join._through(150, 550)
+    b.pads += [_pad("Q1", "1", 150, 120, "B"), _pad("Q2", "1", 550, 120, "B"),
+               _pad("Q3", "1", 150, 400, "C"), _pad("Q4", "1", 550, 400, "C")]
+    b.net_classes = {"HV": ["B"]}
+    b.rules.insert(0, Rule("Clearance", "hv", "InNetClass('HV')", "All", 1, True, {"gap": 30.0},
+                           "Clearance Constraint (Gap=30mil) (InNetClass('HV')),(All)"))
+    b.rules.insert(0, Rule("Clearance", "cz", "InNet('C')", "InNet('Z')", 0, True, {"gap": 17.0},
+                           "Clearance Constraint (Gap=17mil) (InNet('C')),(InNet('Z'))"))
+    b.tracks = [Track("MidLayer1", 300, 60, 300, 440, 10.0, "Z"),
+                Track("MidLayer1", 380, 200, 480, 330, 8.0, "B"),
+                Track("MidLayer1", 220, 300, 260, 300, 20.0, "", keepout=True)]
+    b.arcs = [Arc("MidLayer1", 420, 420, 25, 0, 270, 6.0, net="Z"),
+              Arc("MidLayer1", 230, 160, 20, 0, 360, 4.0, keepout=True)]
+    b.regions = [Region("MidLayer1", [(600, 60), (660, 60), (660, 140), (600, 140)], [], "Z"),
+                 Region("MidLayer1", [(600, 300), (650, 300), (650, 350), (600, 350)], [], "",
+                        "keepout", keepout=True)]
+    r = _router(engine, b)
+    spec = r.grid.spec
+    X = spec.x(np.arange(spec.nx))[None, :]
+    Y = spec.y(np.arange(spec.ny))[:, None]
+    jobs = {j.name: j for j in r.jobs}
+    assert set(jobs) == {"A", "B", "C"}
+    seen = set()
+    for name in ("A", "B", "C", "A"):           # A again, after the others
+        job = jobs[name]
+        for v in job.vias:
+            radius = v.diameter / 2
+            got = r._off_grid_copper(job, radius)
+            want = set()
+            for it in r._hidden_items():
+                if it.net == name:
+                    continue
+                via = Item("via", -1, name, it.layer, geom.circle(0.0, 0.0, 2 * radius))
+                gap = r.rules.clearance(via, it, r.board)
+                seen.add(gap)
+                ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < radius + gap - 1e-3)
+                want |= set(zip(ys.tolist(), xs.tolist()))
+            for _layer, s in r._hidden_keepouts():
+                ys, xs = np.nonzero(shape_distance(s, X, Y) < radius - 1e-3)
+                want |= set(zip(ys.tolist(), xs.tolist()))
+            cells = [tuple(c) for c in got.tolist()]
+            assert len(cells) == len(set(cells)), "a cell twice"
+            assert set(cells) == want, (name, len(set(cells) ^ want))
+    assert {6.0, 17.0, 30.0} <= seen, seen
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_cell_sets_are_numpys_and_a_key_off_the_grid_drops_nothing(engine):
+    """The cell sets the jobs are built from: _unique_cells gives what
+    np.unique(axis=0) gives, through one flat index per cell, and
+    _drop_cells ignores a key past the grid's side, whose flat index is
+    a cell on the other side, a row away."""
+    import importlib
+
+    import numpy as np
+    mod = importlib.import_module("eda_agent.layout.route.router" if engine == "default"
+                                  else "eda_agent.layout.route_euan.router")
+    rng = np.random.default_rng(7)
+    nx = 37
+    parts = [rng.integers(0, [50, nx], size=(n, 2)) for n in (0, 5, 300, 1)]
+    want = np.unique(np.concatenate([p for p in parts if len(p)]), axis=0)
+    assert np.array_equal(mod._unique_cells(parts, nx), want)
+    assert mod._unique_cells([parts[0]], nx).shape == (0, 2)
+    cells = np.array([[0, nx - 1], [1, 0], [2, 5]])
+    kept = mod._drop_cells(cells, {(1, -1), (0, nx), (2, 5)}, nx)
+    assert kept.tolist() == [[0, nx - 1], [1, 0]]
 
 
 MASK_RULES = [Rule("Sliver", "mask_sliver", "All", "All", 1, True, {},
@@ -560,3 +646,106 @@ def test_old_pours_come_off_by_outline_and_for_euan_by_net_too(engine, monkeypat
     # Copper of another GND polygon there, P2, whose outline was not read.
     other = _run(engine, monkeypatch, board("polygon:P2"))
     assert other["summary"]["old_pours"] == (["BottomLayer:GND"] if engine == "euan" else [])
+
+
+@pytest.mark.parametrize("case", ("touching", "short", "blind"))
+@pytest.mark.parametrize("engine", ENGINES)
+def test_join_existing_takes_as_joined_what_the_verdict_does(engine, case, monkeypatch):
+    """join_existing routes only what the board's copper leaves apart, and
+    copper joins what the verdict says it joins. A track ending 0.4 mil
+    short of a pad, or two tracks meeting at a blind via that misses one
+    of their layers, joins nothing: Euan's router took both for joins (a
+    0.5 mil margin, every via on every layer), routed nothing and the
+    verdict found the net open. A track that reaches the pad is a join."""
+    def board():
+        if case == "blind":
+            b = join._through(150, 550)
+            b.vias = [Via(350, 250, 20, 10, "TopLayer", "MidLayer1", "A")]
+            b.tracks = [Track("TopLayer", 150, 250, 350, 250, 6.0, "A"),
+                        Track("BottomLayer", 550, 250, 350, 250, 6.0, "A")]
+            return b
+        b = _board()
+        b.pads = [_pad("R1", "1", 100, 200, "A"), _pad("R2", "1", 500, 200, "A")]
+        # R2's copper starts at x=490; the track's round end reaches 3 mil
+        # past its last point.
+        short = 0.4 if case == "short" else 0.0
+        b.tracks = [Track("TopLayer", 100, 200, 490 - short - 3.0, 200, 6.0, "A")]
+        return b
+    joined = case == "touching"
+    assert run_drc(board()).completion == (1.0 if joined else 0.0)
+    res = _run(engine, monkeypatch, board(), stages={"join_existing": True})
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert bool(res["tracks"]) != joined
+
+
+@pytest.mark.parametrize("span", (("TopLayer", "MidLayer1"), ("MidLayer2", "BottomLayer"),
+                                  ("TopLayer", "BottomLayer")))
+@pytest.mark.parametrize("engine", ENGINES)
+def test_reuse_vias_takes_only_a_via_through_every_layer(engine, span, monkeypatch):
+    """reuse_vias: a route may change layer at a via of its net already
+    on the board, but only one through every routing layer. Euan's router
+    took a blind or buried via for a change between any two layers, laid
+    no via and left the net open."""
+    b = join._through(150, 550)
+    b.vias = [Via(350, 250, 20, 10, span[0], span[1], "A")]
+    res = _run(engine, monkeypatch, b, stages={"reuse_vias": True})
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert bool(res["vias"]) != (span == ("TopLayer", "BottomLayer"))
+
+
+# -- Euan's router only -------------------------------------------------------
+
+def test_centre_mode_puts_a_via_in_a_pad_at_its_centre_only(monkeypatch):
+    """pad_vias="centre": a surface pad takes a via at its centre, which
+    the fab notes ask to fill and cap (via_in_pad); anywhere else a via
+    keeps the mask web from the pad's opening. When any via could share a
+    pad's opening, one stood 1.9 mil off a resistor's pad, its opening
+    run into the pad's, and no note asked to fill it."""
+    res = _run("euan", monkeypatch, webs._board(), stages={"pad_vias": "centre"})
+    assert res["summary"]["completion"] == 1.0
+    assert res["vias"], "the board needs a via, or the test proves nothing"
+    in_pad = {(v["x"], v["y"]) for v in res["via_in_pad"]}
+    b = webs._board()
+    # Each of A's resistor pads takes its via, at its centre.
+    assert {(p.x, p.y) for p in b.pads if p.net == "A"} <= in_pad, res["vias"]
+    for v in res["vias"]:
+        disc = geom.circle(v["x"], v["y"], v["size"])
+        for p in b.pads:
+            if (p.x, p.y) == (v["x"], v["y"]) and (p.x, p.y) in in_pad:
+                continue
+            gap = geom.clearance(disc, p.shape_on("TopLayer"))
+            assert gap >= 4 + 4 + 10 - 1e-6, (p.comp, p.name, round(gap, 2))
+
+
+@pytest.mark.parametrize("kind", ("copper", "keep-out"))
+def test_stitched_power_vias_keep_the_via_guards(kind):
+    """power_vias, in Euan's package (the job does not turn it on): the
+    vias stitched beside a wide net's layer change keep off what the grid
+    does not show, as every new via does. They were laid on another net's
+    copper on an excluded layer, a short, and in a keep-out drawn there."""
+    from eda_agent.layout.model import Layer, LayoutBoard
+    from eda_agent.layout.route_euan.router import Router
+
+    b = LayoutBoard(name="p", outline=[(0, 0), (700, 0), (700, 500), (0, 500)],
+                    layers=[Layer(n, "signal", i) for i, n in enumerate(
+                        ("TopLayer", "MidLayer1", "MidLayer2", "BottomLayer"))],
+                    rules=[Rule("Clearance", "0", "All", "All", 1, True, {"gap": 6.0},
+                                "Clearance Constraint (Gap=6mil) (All),(All)"),
+                           Rule("Width", "1", "All", "All", 1, True, {},
+                                "Width Constraint (Min=4mil) (Max=60mil) (Preferred=40mil) (All)")])
+    b.pads = [Pad("P1", "1", 150, 250, net="P", copper=[PadCopper("TopLayer", "rect", 60, 60)]),
+              Pad("P2", "1", 550, 250, net="P", copper=[PadCopper("BottomLayer", "rect", 60, 60)])]
+    window = [(320, 220), (380, 220), (380, 280), (320, 280)]
+    b.regions = [_hidden(kind, "MidLayer1", [(20, 20), (680, 20), (680, 480), (20, 480)],
+                         [window])]
+    r = Router(b, exclude_layers=frozenset({"MidLayer1"}), power_vias=20.0, pitch=5)
+    r.run()
+    out = r.apply()
+    v = verdict(out)
+    assert v["report"].completion == 1.0
+    assert not v["violations"], [x.as_dict() for x in v["violations"][:2]]
+    vias = [x for x in out.vias if x.net == "P"]
+    assert all(330 <= x.x <= 370 and 230 <= x.y <= 270 for x in vias), \
+        [(x.x, x.y) for x in vias]
+    if kind == "keep-out":
+        assert len(vias) > 1, "the stitching must have laid a via, or this proves nothing"

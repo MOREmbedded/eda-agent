@@ -44,6 +44,30 @@ from .search import MOVES, Window, build_graph, shortest_path
 EPS = 1e-3
 
 
+def _unique_cells(parts, nx: int) -> np.ndarray:
+    """The distinct (y, x) cells in ``parts`` (arrays of (y, x) rows, on a
+    grid ``nx`` cells wide), sorted by row then column as np.unique(axis=0)
+    sorts them. Found through one flat index per cell: np.unique on rows
+    sorts them as records, and on a board with 1,500 vias that took most of
+    a second for each net."""
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return np.zeros((0, 2), dtype=np.int64)
+    flat = np.unique(np.concatenate([p[:, 0].astype(np.int64) * nx + p[:, 1] for p in parts]))
+    return np.stack([flat // nx, flat % nx], axis=1)
+
+
+def _drop_cells(cells: np.ndarray, drop, nx: int) -> np.ndarray:
+    """``cells`` (y, x) less those in ``drop`` (a set or dict of (y, x)
+    keys), in their order. A key past the grid's left or right side (a
+    reused via's cells can reach one past it) is left out: its flat index
+    would name a cell on the other side, a row away."""
+    if not len(cells) or not drop:
+        return cells
+    gone = np.array([y * nx + x for y, x in drop if 0 <= x < nx], dtype=np.int64)
+    return cells[~np.isin(cells[:, 0].astype(np.int64) * nx + cells[:, 1], gone)]
+
+
 @dataclass
 class Terminal:
     pad: int                      # index into board.pads
@@ -654,10 +678,7 @@ class Router:
         # is reused (reuse_vias) none is laid, so none is kept out.
         if not self.options.legacy():
             for k, v in enumerate(job.vias):
-                cells = self._near_holes(v.hole)
-                if len(cells) and job.reuse:
-                    cells = np.array([c for c in cells.tolist() if tuple(c) not in job.reuse],
-                                     dtype=np.int64).reshape(-1, 2)
+                cells = _drop_cells(self._near_holes(v.hole), job.reuse, spec.nx)
                 if len(cells):
                     out[k].append(cells)
                 off = self._off_grid_copper(job, v.diameter / 2)
@@ -690,8 +711,7 @@ class Router:
                     out[k].append(np.stack([ys + j0, xs + i0], axis=1))
         if not any(out):
             return None
-        return [np.unique(np.concatenate(o), axis=0) if o else np.zeros((0, 2), dtype=np.int64)
-                for o in out]
+        return [_unique_cells(o, spec.nx) for o in out]
 
     def _hole_gap(self) -> float:
         """The board's hole to hole clearance, 0 where it sets none."""
@@ -720,7 +740,7 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -792,7 +812,7 @@ class Router:
             ys, xs = np.nonzero(near)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
         if out:
-            cells = np.unique(np.concatenate(out), axis=0)
+            cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -865,7 +885,7 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             ys, xs = np.nonzero(shape_distance(s, X, Y) < radius - EPS)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
-        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cells = _unique_cells(out, spec.nx)
         cache[key] = cells
         return cells
 
@@ -878,24 +898,47 @@ class Router:
         track where 5 were required."""
         from ..drc import Item
         keep = self._hidden_keepout_cells(radius)
-        if not self._hidden_items():
+        items = self._hidden_items()
+        if not items:
             return keep
-        spec = self.grid.spec
-        out = [keep] if len(keep) else []
-        for it in self._hidden_items():
+        # Every net asks again, mostly at the same reach: each item's cells
+        # at a reach, and each kind of pair's clearance, are found once.
+        memo = self.__dict__.setdefault("_hidden_memo", ([None] * len(items), {}, {}))
+        facts, gaps, kept = memo
+        disc = geom.circle(0.0, 0.0, 2 * radius)
+        via_facts: dict = {}
+        out = [keep]
+        for k, it in enumerate(items):
             if it.net and it.net == job.name:
                 continue
-            via = Item("via", -1, job.name, it.layer, geom.circle(0.0, 0.0, 2 * radius))
-            reach = radius + self.rules.clearance(via, it, self.board)
-            x0, y0, x1, y1 = it.shape.bbox
-            i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
-            if i0 >= i1 or j0 >= j1:
-                continue
-            X = spec.x(np.arange(i0, i1))[None, :]
-            Y = spec.y(np.arange(j0, j1))[:, None]
-            ys, xs = np.nonzero(shape_distance(it.shape, X, Y) < reach - EPS)
-            out.append(np.stack([ys + j0, xs + i0], axis=1))
-        return np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+            fv = via_facts.get(it.layer)
+            if fv is None:
+                fv = via_facts[it.layer] = self.rules.facts(
+                    Item("via", -1, job.name, it.layer, disc), self.board)
+            if facts[k] is None:
+                facts[k] = self.rules.facts(it, self.board)
+            gap = gaps.get((fv, facts[k]))
+            if gap is None:
+                gap = gaps[(fv, facts[k])] = self.rules.clearance_of(fv, facts[k])
+            reach = radius + gap
+            cells = kept.get((k, reach))
+            if cells is None:
+                cells = kept[(k, reach)] = self._cells_near(it.shape, reach)
+            out.append(cells)
+        return _unique_cells(out, self.grid.spec.nx)
+
+    def _cells_near(self, s, reach: float) -> np.ndarray:
+        """The cells (y, x) whose centres lie nearer than ``reach`` to the
+        shape ``s``."""
+        spec = self.grid.spec
+        x0, y0, x1, y1 = s.bbox
+        i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+        if i0 >= i1 or j0 >= j1:
+            return np.zeros((0, 2), dtype=np.int64)
+        X = spec.x(np.arange(i0, i1))[None, :]
+        Y = spec.y(np.arange(j0, j1))[:, None]
+        ys, xs = np.nonzero(shape_distance(s, X, Y) < reach - EPS)
+        return np.stack([ys + j0, xs + i0], axis=1)
 
     def _hidden_index(self) -> tuple:
         """What via_clear_of_hidden measures a point against, built once:
@@ -1040,8 +1083,8 @@ class Router:
             return
         empty = np.zeros((0, 2), dtype=np.int64)
         base = job.no_via if job.no_via is not None else [empty for _ in job.vias]
-        job.no_via = [np.unique(np.concatenate([b, np.array(c, dtype=np.int64)]), axis=0)
-                      if c else b for b, c in zip(base, bar)]
+        job.no_via = [_unique_cells([b, np.array(c, dtype=np.int64)], spec.nx) if c else b
+                      for b, c in zip(base, bar)]
 
     def _room_at(self, nid: int, x: float, y: float, most: float) -> float:
         """The largest via radius, up to ``most``, that a via of the net at

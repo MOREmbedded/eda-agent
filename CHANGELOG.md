@@ -22,7 +22,11 @@ maturity classification for every tool.
   `eda-agent router-show` says which engine is in force and why. The
   default engine stays the default; what this work found wrong in it is
   under Fixed. Both engines' results go through the same verdict and our
-  gloss, and the default router's via guards were ported into his. A
+  gloss, and the default router's via guards were ported into his.
+  Where his router took for a join what the verdict does not
+  (`join_existing`, `reuse_vias` through a blind via), or let any via
+  share a pad's solder mask opening under `pad_vias="centre"`, it no
+  longer does. A
   setting that cannot be used routes with the default engine, and his
   router's own job parameters are range-checked before anything runs.
   `python -m eda_agent.layout.bench_run --fixtures DIR --router euan`
@@ -241,6 +245,15 @@ maturity classification for every tool.
   count. A box gap is never larger than the true distance, so no reported
   pair is skipped. The Python path on the 10 mil benchmark went from 184 s
   to 160 s.
+
+- **The router sets up its jobs faster on boards with planes or excluded
+  layers.** Each net's via guards worked out every item on those layers
+  again: its clearance to the net's via and the grid cells it bars. Both
+  are now worked out once and kept for the next net, and the barred cells
+  are merged through one index per cell. Same cells for every net and via
+  style, in the same order (checked on 792 jobs with both engines, and
+  against a direct reckoning in the tests). On a board with 1,500 vias of
+  other nets and two planes, setting up went from 26 s to 6.7 s.
 
 ### Removed
 

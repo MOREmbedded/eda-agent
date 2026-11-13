@@ -114,9 +114,73 @@ router knows fails the same way on both engines.
 `tests/layout/test_router_engines.py` runs every one of these cases on
 both engines, and a seeded break of each guard makes it fail.
 
+## Fixed in his router
+
+Besides the guards, four things in his router took for a join what the
+verdict does not, or laid a via where it should not. Each has a test that
+fails on his version.
+
+- **`join_existing`** takes pads, tracks and vias as joined where the
+  verdict does: copper that touches, and a via on the layers it spans.
+  With his 0.5 mil margin and every via on every layer, a track that
+  stopped short of a pad, or two tracks meeting at a blind via, counted
+  as a join: the net was not routed, and the verdict found it open.
+- **`reuse_vias`** takes a via of the net already on the board as a layer
+  change only when it goes through every routing layer, as ours does. A
+  blind or buried via was taken for a change between any two layers, and
+  the route was left open.
+- **`pad_vias="centre"`** puts a via in a pad at its centre only, where
+  the fab notes ask for it to be filled and capped. Any via could share a
+  pad's solder mask opening before, so one stood 1.9 mil off a resistor's
+  pad, its opening run into the pad's, and no note named it.
+- **Stitched vias** (`power_vias`, in his package only) keep the via
+  guards too. They could land on another net's copper on an excluded
+  layer.
+
 ## How they compare
 
-<!-- BENCH-TABLE -->
+Twelve synthetic boards, each routed by both engines with the same
+rules: a 6 mil gap, 6 to 10 mil tracks (6 preferred) and 18 to 24 mil
+vias with 8 to 12 mil holes (20/10 preferred).
+
+- **Mixed boards**: a QFN-32, two SOIC-8s, an 8-pin header and 18 chip
+  parts, wired as GND, +3V3 and 31 two-pad signal nets between nearby
+  pads. The boards with planes add GND and +3V3 pours on the inner
+  layers.
+- **BGA boards**: an 8 x 8 ball array at 0.8 mm pitch, its balls wired
+  out to 40 chip parts round the edge, with a GND pour on MidLayer1.
+
+The figures are totals over three seeds of each board.
+
+| Boards (3 of each) | Engine | Completion | Connections left | Violations added | Vias | Track length (in) | Time (s) |
+|---|---|---|---|---|---|---|---|
+| Mixed, 2 layers | default | 100.0% | 0 | 0 | 178 | 79.7 | 14 |
+|  | euan | 100.0% | 0 | 0 | 178 | 79.7 | 15 |
+| Mixed, 4 layers | default | 100.0% | 0 | 0 | 145 | 78.2 | 11 |
+|  | euan | 100.0% | 0 | 0 | 145 | 78.2 | 11 |
+| Mixed, 4 layers with planes | default | 100.0% | 0 | 0 | 166 | 57.7 | 12 |
+|  | euan | 100.0% | 0 | 0 | 168 | 58.1 | 12 |
+| 8 x 8 BGA, 4 layers | default | 83.5% | 44 | 0 | 411 | 92.3 | 198 |
+|  | euan | 83.5% | 44 | 0 | 413 | 93.4 | 198 |
+
+- On the mixed boards both engines lay the same copper, except on the
+  boards with planes, where Euan's router laid 2 more vias and 0.4 inch
+  more track in total.
+- Neither engine connects every BGA ball. At 0.8 mm pitch even the rule's
+  smallest via (18 mil) does not fit between four balls with a 6 mil gap,
+  which makes these boards a stress case. Both engines leave 44 of the 267
+  connections (16, 14 and 14 for ours; 16, 15 and 13 for Euan's).
+- One board of each mixed kind has two pad clearance violations before
+  any routing (a chip part's pads touch an SOIC pad). The table counts
+  only what the routers added: nothing.
+- Times are wall-clock seconds on a 4-core cloud machine routing two
+  boards at once. Compare the engines with each other, not with your PC.
+
+`python scripts/bench_router_engines.py` builds these boards, routes them
+with both engines and prints this table. `python -m
+eda_agent.layout.bench_run --fixtures DIR --router euan` runs the
+benchmark on your own finished boards (LayoutBoard JSON files in `DIR`)
+with Euan's router (`default` is the default).
 
 ## Known limits (both engines)
 
@@ -133,3 +197,9 @@ both engines, and a seeded break of each guard makes it fail.
   them.
 - With every stage switch off, the default engine's vias skip the via
   guards (see "Every stage switch off" above).
+- A pad of a plane net whose copper already ends on a via inside the
+  plane counts as joined to it, even when that via is blind and stops
+  short of the plane's layer, and the router leaves the pad. With a pour
+  taken as a plane the verdict reports the pad unrouted; on an internal
+  plane layer the verdict also takes every via of the plane's net as
+  joined to the plane.
