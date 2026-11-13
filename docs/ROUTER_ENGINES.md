@@ -44,6 +44,9 @@ From his fork's history, the main differences are these:
 - **Via in a pad at its centre only** (`pad_vias="centre"`, written for
   JLC multilayer boards). Only his router has this stage option. The
   routing job takes it in `stages`; `pcb_autoroute` does not offer it.
+  With the default engine the job routes it as `"bga"`, its own default,
+  and its notes say so. A `pad_vias` neither engine knows fails the job
+  before anything runs.
   His fork's other fab via rules (a gap between vias of the same net,
   stitched vias where a wide net changes layer) are in his package, but
   the job does not turn them on.
@@ -54,10 +57,14 @@ From his fork's history, the main differences are these:
 - **Layer directions.** It takes a preferred direction per layer by name
   (`layer_dirs`, `dir_strength`), a cost on the outer layers
   (`outer_cost`) and a grid `pitch`. These four are parameters of the
-  routing job, given through `design_job_start(kind="layout_route",
-  params=...)`; `pcb_autoroute` does not take them. Only the euan engine
-  reads them; the default engine ignores them and its notes list them. A
-  value out of range fails the job before anything runs:
+  routing job (`route_job` in `src/eda_agent/layout/route/job.py`, also
+  started by `design_job_start(kind="layout_route", params=...)`), whose
+  params must carry the board itself too, as a `LayoutBoard` or its dict.
+  No tool reads a board into that form, and `pcb_autoroute` does not take
+  them, so for now they serve a script that builds its board, as in his
+  fork. Only the euan engine reads them; the default engine ignores them
+  and its notes list them. A value out of range fails the job before
+  anything runs:
 
   | Parameter | Takes |
   |---|---|
@@ -66,10 +73,12 @@ From his fork's history, the main differences are these:
   | `outer_cost` | 0.1 to 100 |
   | `layer_dirs` | copper layer names, each to `h` or `v` |
 
-  Below zero, `dir_strength` and `outer_cost` make some of his search's
-  step costs negative, and the shortest path search then ran the server
-  process out of memory; a finer pitch grows the grid with the inverse
-  square.
+  Below -1, `dir_strength` makes a step across a layer's direction cost
+  less than nothing in his global router, and scipy's shortest path
+  search then ran the server process out of memory. Between -1 and 0 it
+  only turns the direction round, which `layer_dirs` says plainly. At an
+  `outer_cost` of 0 or below a step on an outer layer would cost
+  nothing. A finer pitch grows the grid with the inverse square.
 - **Old pours.** Before routing, the job takes each polygon's old poured
   copper off the board, which is repoured after. Both engines match the
   copper to its polygon's outline by layer and source. For Euan's, as
@@ -107,9 +116,13 @@ router knows fails the same way on both engines.
   - leaves the board's solder mask web to every pad and via opening.
 
   Both engines apply these guards wherever a via is laid: in the
-  search, in a BGA's fan-out and in the plane fan-out. A via the search
-  puts in a pad is laid at the pad's centre and checked there, not at
-  the centre of the nearest grid cell, which can be a few mils away.
+  search, in a BGA's fan-out and in the plane fan-out. Their vias go
+  through every copper layer, so the mask openings on both outer layers
+  count, an excluded one's too. A via the search puts in a pad is laid
+  at the pad's centre and checked there, as well as at the centre of the
+  nearest grid cell (a few mils away) as every via of the search is. So
+  something near that cell's centre can keep a via out of a pad whose
+  centre would take it; the via then goes elsewhere.
 
 `tests/layout/test_router_engines.py` runs every one of these cases on
 both engines, and a seeded break of each guard makes it fail.

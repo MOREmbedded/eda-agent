@@ -123,6 +123,25 @@ def test_router_use_writes_the_whole_file_or_nothing(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]     # no temporary left
 
 
+def test_router_use_reports_a_folder_that_takes_no_new_file(tmp_path, monkeypatch, capsys):
+    """The new file is staged beside router.json; where none can be made
+    router-use says so and stops, with no traceback."""
+    from eda_agent import cli, profile
+    path = tmp_path / engine.FILE
+    path.write_text('{"engine": "default"}')
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(engine.tempfile, "mkstemp", refuse)
+    res = engine.write(tmp_path, "euan")
+    assert not res["ok"] and "cannot write" in res["reason"] and "Permission denied" in res["reason"]
+    monkeypatch.setattr(profile, "resolve_profile_dir", lambda: tmp_path)
+    assert cli.cmd_router_use("euan") == 2
+    assert "ERROR: cannot write" in capsys.readouterr().err
+    assert json.loads(path.read_text()) == {"engine": "default"}
+    assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
+
+
 @pytest.mark.parametrize("content", [
     "[" * 30000 + "]" * 30000,                                  # deeper than the parser goes
     " " * (engine.MAX_BYTES + 1) + '{"engine": "euan"}',        # too big to be a setting
@@ -162,8 +181,9 @@ def test_our_stage_switches_become_euans_router_arguments():
 
 
 @pytest.mark.parametrize("key, value, match", [
-    # Below zero his search's step costs go negative, and scipy's Dijkstra
-    # then ran the server process out of memory and aborted it.
+    # Below -1 a move across a layer's direction costs less than nothing
+    # in his global router, and scipy's Dijkstra then ran the server
+    # process out of memory and aborted it.
     ("dir_strength", -1.2, "dir_strength takes 0 to 10, not -1.2"),
     ("dir_strength", float("nan"), "dir_strength takes 0 to 10"),
     ("outer_cost", 0, "outer_cost takes 0.1 to 100, not 0"),
@@ -193,6 +213,35 @@ def test_a_bad_stage_switch_fails_as_it_does_with_the_default_engine():
         euan_kwargs({"exclude_layers": ["Nope"]}, b)
     with pytest.raises(ValueError, match="surface pad"):
         euan_kwargs({"exclude_layers": ["TopLayer"]}, b)
+
+
+@pytest.mark.parametrize("which", engine.ENGINES)
+def test_pad_vias_is_checked_for_the_engine_that_routes(which, monkeypatch):
+    """pad_vias takes 'bga', 'ic' or 'any', and 'centre' with the euan
+    engine. The default engine routes 'centre' as 'bga' and says so; a
+    value neither engine knows fails the job before anything runs."""
+    import eda_agent.layout.route.job as job_mod
+    import eda_agent.layout.route_euan.router as euan
+    where = euan if which == "euan" else job_mod
+    got = []
+    real = where.route_adaptive
+    monkeypatch.setattr(where, "route_adaptive", lambda *a, **k: got.append(k) or real(*a, **k))
+    monkeypatch.setenv(engine.ENV, which)
+    for value in ("everywhere", "", "bga ic"):
+        with pytest.raises(ValueError, match="pad_vias takes 'bga', 'ic' or 'any'"):
+            route_job({"board": _board(), "stages": {"pad_vias": value}})
+    assert not got, "the job failed before the router ran"
+    res = route_job({"board": _board(), "stages": {"pad_vias": "Center"}})
+    assert res["summary"]["completion"] == 1.0
+    noted = [n for n in res["notes"] if "pad_vias" in n]
+    if which == "euan":
+        assert got[-1]["stages"]["pad_vias"] == "centre" and not noted
+    else:
+        assert got[-1]["stages"]["pad_vias"] == "bga"
+        assert noted == ["pad_vias='Center' only steers the euan engine; the default engine "
+                         "routed with 'bga', a via only in a BGA's ball or an exposed pad."]
+    route_job({"board": _board(), "stages": {"pad_vias": None, "bus_lanes": False}})
+    assert got[-1]["stages"] == {"bus_lanes": False}, "None leaves the engine's own default"
 
 
 def test_the_cli_commands_exist(tmp_path, monkeypatch, capsys):

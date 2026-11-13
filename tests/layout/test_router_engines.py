@@ -158,14 +158,17 @@ def test_a_new_via_leaves_no_solder_mask_sliver(engine, monkeypatch):
             assert gap >= 4 + 4 + 10 - 1e-6, (p.comp, p.name, round(gap, 2))
 
 
-def _router(engine, board, excluded=("MidLayer1",)):
-    """The engine's router itself, set up for ``board``, not run."""
+def _router(engine, board, excluded=("MidLayer1",), **stages):
+    """The engine's router itself, set up for ``board`` with these stage
+    options as the job gives them, not run."""
+    stages = {"exclude_layers": tuple(excluded), **stages}
     if engine == "default":
         from eda_agent.layout.route.router import Router
         from eda_agent.layout.route.stages import StageOptions
-        return Router(board, stages=StageOptions(exclude_layers=tuple(excluded)))
+        return Router(board, stages=StageOptions(**stages))
+    from eda_agent.layout.route.job import euan_kwargs
     from eda_agent.layout.route_euan.router import Router
-    return Router(board, exclude_layers=frozenset(excluded))
+    return Router(board, **euan_kwargs(stages)[0])
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -294,21 +297,33 @@ MASK_RULES = [Rule("Sliver", "mask_sliver", "All", "All", 1, True, {},
 PAD_AT = (151.7, 251.3)
 
 
-def _small_pad(hazard=None):
+def _pad_cell(engine):
+    """The centre of the grid cell nearest the small pad's centre, on the
+    engine's own grid: where its cell guards judge a via in the pad."""
+    spec = _router(engine, _small_pad(), excluded=(), pad_vias="any").grid.spec
+    ci, cj = spec.cell(*PAD_AT)
+    return float(spec.x(ci)), float(spec.y(cj))
+
+
+def _small_pad(hazard=None, engine="default"):
     """Net A from a 4 mil pad on top, smaller than a cell, to a pad on the
     bottom, with any pad taking a via: the search's via goes in the small
-    pad, which it lays at the pad's centre, 2.3 mil from the centre of the
-    cell its guards judge. The hazard stands straight on from the cell's
-    centre past the pad's: net Z's via 48 mil from the pad's centre (39
-    mil of hole gap there where 40 are asked, 41.3 at the cell's), or net
-    Q's round pad 37 mil from it (a 9 mil mask web there where 10 are
-    asked, 11.3 at the cell's)."""
+    pad, which it lays at the pad's centre, a few mils from the centre of
+    the cell its guards judge (2.3 mil on today's grid). The hazard stands
+    straight on from the cell's centre past the pad's: net Z's via 48 mil
+    from the pad's centre (39 mil of hole gap there where 40 are asked,
+    more at the cell's), or net Q's round pad 37 mil from it (a 9 mil
+    mask web there where 10 are asked, more at the cell's)."""
     b = join._through(PAD_AT[0], 550, y=PAD_AT[1])
     b.pads[0] = Pad("P1", "1", *PAD_AT, net="A", copper=[PadCopper("TopLayer", "rect", 4, 4)])
-    pitch = 4.164411545494762               # both engines' grid on this board
-    cx, cy = 36 * pitch, 60 * pitch         # the cell nearest the pad's centre
+    if hazard is None:
+        return b
+    cx, cy = _pad_cell(engine)
     dx, dy = PAD_AT[0] - cx, PAD_AT[1] - cy
     d = (dx * dx + dy * dy) ** 0.5
+    # The hazard is 1 mil inside its limit at the pad's centre, so the
+    # cell's centre must lie over 1 mil further from it to pass.
+    assert d > 1.0, f"the pad's centre is {d:.2f} mil from its cell's: nothing to tell apart"
 
     def out(far):
         return PAD_AT[0] + dx / d * far, PAD_AT[1] + dy / d * far
@@ -331,11 +346,25 @@ def test_a_via_in_a_pad_is_judged_where_it_is_laid(engine, hazard, monkeypatch):
     stages = {"pad_vias": "any"}
     plain = _run(engine, monkeypatch, _small_pad(), stages=stages)
     assert [(v["x"], v["y"]) for v in plain["vias"]] == [PAD_AT]
-    assert not verdict(_small_pad(hazard))["violations"]
-    res = _run(engine, monkeypatch, _small_pad(hazard), stages=stages)
+    assert not verdict(_small_pad(hazard, engine))["violations"]
+    # The premise, on the engine's own grid: the via the search would lay
+    # passes the guards at the cell's centre, where the cell guards judge
+    # it, and fails them at the pad's, where it is laid.
+    r = _router(engine, _small_pad(hazard, engine), excluded=(), **stages)
+    spec = r.grid.spec
+    ci, cj = spec.cell(*PAD_AT)
+    cell = (float(spec.x(ci)), float(spec.y(cj)))
+    assert cell == _pad_cell(engine), "the hazard moved the grid"
+    v = {j.name: j for j in r.jobs}["A"].vias[0]
+    assert (v.diameter, v.hole) == (plain["vias"][0]["size"], plain["vias"][0]["hole_size"])
+
+    def fine(x, y):
+        return r.via_clear_of_hidden(v, x, y, "A") and not r.via_leaves_web(v, x, y)
+    assert fine(*cell) and not fine(*PAD_AT)
+    res = _run(engine, monkeypatch, _small_pad(hazard, engine), stages=stages)
     assert res["summary"]["completion"] == 1.0
     assert res["vias"], "the board needs a via, or the test proves nothing"
-    assert not hole_gaps(_written(_small_pad(hazard), res))
+    assert not hole_gaps(_written(_small_pad(hazard, engine), res))
     assert res["summary"]["mask_slivers"] == 0
 
 
@@ -495,6 +524,41 @@ def test_the_plane_fanout_leaves_no_mask_sliver(engine, monkeypatch):
     assert not [v for v in res["vias"] if v["net"] == "GND" and v["y"] == 276.0]
     assert res["summary"]["mask_slivers"] == 0
     assert not verdict(_written(board(), res))["violations"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_new_via_minds_the_mask_on_an_outer_layer_no_route_uses(engine, monkeypatch):
+    """A new via goes through the board, so it opens the mask on both
+    outer layers, the excluded bottom layer too."""
+    def board(mask=True):
+        b = _caps()
+        b.tracks = [Track("TopLayer", x + dx, 235, x + dx, 285, 6.0, net)
+                    for x, net in ((200, "Q"), (400, "P")) for dx in (-22, 22)]
+        # The other net's via 32 mil at 45 degrees from each dog-bone
+        # spot: room for the copper, 4 mil of mask between the openings.
+        # The board's vias are tented on top, so only the bottom openings
+        # count, on the layer the router is told to leave alone.
+        b.vias = [Via(x + 22.63, 276 + 22.63, 20, 10, "TopLayer", "BottomLayer", net)
+                  for x, net in ((200, "Q"), (400, "P"))]
+        for v in b.vias:
+            v.tent_top, v.tent_bottom = True, False
+        if mask:
+            b.rules += MASK_RULES
+        b.meta["mask_read"] = mask
+        return b
+    stages = {"stages": {"plane_fanout": True, "exclude_layers": ["BottomLayer"]}}
+    unmasked = _run(engine, monkeypatch, board(mask=False), **stages)
+    assert sorted((v["x"], v["y"]) for v in unmasked["vias"] if v["net"] == "GND") \
+        == [(200.0, 276.0), (400.0, 276.0)]
+    res = _run(engine, monkeypatch, board(), **stages)
+    assert res["summary"]["completion"] == 1.0
+    assert not [v for v in res["vias"] if v["net"] == "GND" and v["y"] == 276.0]
+    assert res["summary"]["mask_slivers"] == 0
+    out = _written(board(), res)
+    for v in out.vias[2:]:
+        # Judged like the board's own vias, as the job judges them.
+        v.tent_top, v.tent_bottom = True, False
+    assert not verdict(out)["violations"]
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -691,6 +755,32 @@ def test_reuse_vias_takes_only_a_via_through_every_layer(engine, span, monkeypat
     res = _run(engine, monkeypatch, b, stages={"reuse_vias": True})
     assert res["summary"]["completion"] == 1.0, res["unrouted"]
     assert bool(res["vias"]) != (span == ("TopLayer", "BottomLayer"))
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_reused_via_is_not_kept_from_its_own_hole(engine):
+    """reuse_vias: where the net's own through via stands, a route changes
+    layer on it and drills nothing, so the hole to hole gap kept round
+    every hole bars no new via there. Just past it, a new via would be
+    drilled beside the old one and stays barred."""
+    b = join._through(150, 550)
+    b.rules.append(Rule("HoleToHole", "9", "All", "All", 1, True, {},
+                        "Hole To Hole Clearance (Allow Stacked Micro Vias=No) (Gap=40mil) "
+                        "(All),(All)"))
+    b.vias = [Via(350, 250, 20, 10, "TopLayer", "BottomLayer", "A")]
+    r = _router(engine, b, excluded=(), reuse_vias=True)
+    job = {j.name: j for j in r.jobs}["A"]
+    spec = r.grid.spec
+    ci, cj = spec.cell(350, 250)
+    reused = set(job.reuse)
+    assert (cj, ci) in reused
+    past = next((cj, ci + d) for d in range(1, 9) if (cj, ci + d) not in reused)
+    assert float(spec.x(past[1])) - 350 < 40 + 10, "the cell past the via is within the gap"
+    assert job.no_via and len(job.no_via) == len(job.vias)
+    for nv in job.no_via:
+        barred = {tuple(c) for c in nv.tolist()}
+        assert not barred & reused, sorted(barred & reused)
+        assert past in barred
 
 
 # -- Euan's router only -------------------------------------------------------

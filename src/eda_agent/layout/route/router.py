@@ -752,7 +752,9 @@ class Router:
         ``merge`` and ``takes`` (the openings meet and leave none, which a
         pad that may not take a via does not allow). The new via is masked
         like most of the board's vias (drc.usual_via_mask); no rings when
-        it is tented on both sides or the mask was not read."""
+        it is tented on both sides or the mask was not read. This router's
+        vias go through every copper layer, so both sides' openings count,
+        whichever layers it routes on."""
         cache = self.__dict__.setdefault("_web_rings_cache", {})
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
@@ -765,13 +767,12 @@ class Router:
             return rings
         tents, from_hole, manual = usual[:2], usual[2], usual[3]
         order = self.board.copper_layers()
-        span = set(self.board.layers_between(self.grid.layers[0], self.grid.layers[-1]))
         sides = {order[0]: 0, order[-1]: 1}
         r_open = v.hole / 2 if from_hole and v.hole > 0 else v.diameter / 2
         mode = self.options.pad_vias
         for it, grow in mask_openings(self.board, self.rules):
             side = sides.get(it.layer)
-            if side is None or it.layer not in span or tents[side]:
+            if side is None or tents[side]:
                 continue
             via = Item("via", -1, "", it.layer, geom.circle(0.0, 0.0, 2 * r_open))
             fv = self.rules.facts(via, self.board)

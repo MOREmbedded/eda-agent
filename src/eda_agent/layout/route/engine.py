@@ -130,12 +130,16 @@ def write(directory: Path, engine: str) -> dict[str, Any]:
                                        "over it would throw away whatever else is in it."}
     data = dict(stored or {})
     data["engine"] = name
-    fd, tmp = tempfile.mkstemp(prefix=".router.", suffix=".tmp", dir=str(directory))
+    tmp = None
     try:
+        # A folder that takes no new file (an access rule that lets the
+        # file be changed but nothing be added) fails here.
+        fd, tmp = tempfile.mkstemp(prefix=".router.", suffix=".tmp", dir=str(directory))
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         replace_with_retry(tmp, path)
     except OSError as exc:
-        discard(tmp)
+        if tmp is not None:
+            discard(tmp)
         return {"ok": False, "reason": f"cannot write {path}: {exc}"}
     return {"ok": True, "path": str(path), "engine": name}

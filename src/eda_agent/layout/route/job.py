@@ -37,11 +37,13 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     if setting["problem"]:
         engine_notes.append(f"The router setting was ignored ({setting['problem']}), so the "
                             "default engine routed.")
+    stages_in, notes = _pad_vias(params.get("stages"), which)
+    engine_notes += notes
     euan_args: dict[str, Any] = {}
     if which == "euan":
         # Before anything runs: a bad switch fails the job as it does with
         # the default engine, rather than routing without it.
-        euan_args, notes = euan_kwargs(params.get("stages"), board, params)
+        euan_args, notes = euan_kwargs(stages_in, board, params)
         engine_notes += notes
     else:
         ignored = sorted(k for k in EUAN_ONLY_PARAMS if params.get(k) is not None)
@@ -69,7 +71,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
     else:
         r = route_adaptive(board, nets=frozenset(nets) if nets else None,
                            planes=bool(params.get("planes", True)),
-                           stages=params.get("stages"),
+                           stages=stages_in,
                            log=live.progress_logger("route"))
         report_of = finish_report
     out = r.apply()
@@ -161,12 +163,15 @@ _EUAN_ROUTER_ARGS = ("neck_pads", "join_existing", "exclude_layers", "reuse_vias
 EUAN_ONLY_PARAMS = ("pitch", "layer_dirs", "dir_strength", "outer_cost")
 
 #: The range each euan-only number is taken in; outside it the job fails
-#: before anything runs. Below zero, dir_strength or outer_cost make some
-#: of his search's step costs negative, and scipy's Dijkstra then ran the
-#: process out of memory and aborted it: the MCP server, which no job
-#: error catches. A pitch finer than the 1.5 mil his router ever picks
-#: itself grows the grid with the inverse square (0.25 mil took 950 MB on
-#: a 15 x 10 mm board).
+#: before anything runs. Below -1, dir_strength makes a step across a
+#: layer's direction cost less than nothing in his global router, whose
+#: tile graph clamps no cost, and scipy's Dijkstra then ran the process
+#: out of memory and aborted it: the MCP server, which no job error
+#: catches. Between -1 and 0 it only turns the direction round, which
+#: layer_dirs says plainly. At an outer_cost of 0 or below a step on an
+#: outer layer would cost nothing. A pitch finer than the 1.5 mil his
+#: router ever picks itself grows the grid with the inverse square (0.25
+#: mil took 950 MB on a 15 x 10 mm board).
 EUAN_RANGES = {"pitch": (1.5, 25.0), "dir_strength": (0.0, 10.0), "outer_cost": (0.1, 100.0)}
 
 
@@ -198,6 +203,36 @@ def _euan_param(key: str, value: Any, board: LayoutBoard | None) -> Any:
                 else f"{lo:g} to {hi:g}")
         raise ValueError(f"{key} takes {span}, not {value!r}")
     return number
+
+
+#: Where a via may go into a pad (the stage option pad_vias), by engine.
+PAD_VIAS = {"default": ("bga", "ic", "any"), "euan": ("bga", "ic", "any", "centre")}
+
+
+def _pad_vias(stages: Any, which: str) -> tuple[Any, list[str]]:
+    """``stages`` with its pad_vias as the engine that routes takes it,
+    and notes. A value neither engine knows fails the job before anything
+    runs. The euan engine's "centre" is "bga" to the default engine (its
+    own default, which its fallback may widen to "ic"), and a note says
+    so: routed as "bga" in silence, the person was never told that the
+    option asked for was not applied.
+    """
+    if not isinstance(stages, dict) or "pad_vias" not in stages:
+        return stages, []
+    raw = stages["pad_vias"]
+    if raw is None:                 # not given: the engine's own default
+        return {k: v for k, v in stages.items() if k != "pad_vias"}, []
+    word = str(raw).strip().lower()
+    word = "centre" if word == "center" else word
+    if word not in PAD_VIAS["euan"]:
+        raise ValueError("pad_vias takes 'bga', 'ic' or 'any', or 'centre' with the euan "
+                         f"engine; not {raw!r}")
+    notes = []
+    if word not in PAD_VIAS.get(which, PAD_VIAS["default"]):
+        notes.append(f"pad_vias={raw!r} only steers the euan engine; the default engine "
+                     "routed with 'bga', a via only in a BGA's ball or an exposed pad.")
+        word = "bga"
+    return {**stages, "pad_vias": word}, notes
 
 
 def euan_kwargs(stages: Any, board: LayoutBoard | None = None,

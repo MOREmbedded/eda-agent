@@ -311,7 +311,17 @@ maturity classification for every tool.
   in a pad at the pad's centre, but checked the hole gap, hidden copper
   and mask web at the centre of the nearest grid cell, up to half a
   cell's diagonal away (3 mil on a 4.2 mil grid). It is now checked at
-  the pad's centre.
+  the pad's centre as well.
+- **New vias keep the mask web on an excluded outer layer.** The router's
+  vias go through every copper layer, but its mask guard counted only
+  the openings on the layers it routes: with the bottom layer excluded,
+  a new via could stand 4 mil of mask from a via opening there where the
+  sliver rule asks for 10. Both outer layers' openings now count.
+- **A `pad_vias` the router does not know fails the routing job.** A
+  misspelt value was routed as `"bga"` without a word; any case, and the
+  spelling `"center"`, are now taken as meant. `"centre"`, which only
+  Euan's router takes, is routed as `"bga"` by the default engine, and
+  the job's notes say so.
 - **The gloss keeps out of every keep-out.** It honoured keep-outs on the
   routed layer only and missed arcs, so it could straighten a route
   through a keep-out drawn as Keep-Out layer tracks (which bar every
