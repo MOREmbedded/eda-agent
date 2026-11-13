@@ -77,9 +77,9 @@ def s_quality(freq: np.ndarray, s: np.ndarray, tol: float) -> dict[str, Any]:
 class EdaAgentEngine(Engine):
     info = EngineInfo(
         "eda-agent", "eda-agent solvers", "core", "Apache-2.0", LIBRARY,
-        ("touchstone-check", "xsection-2d", "line-model", "stackup-plan"),
+        ("touchstone-check", "xsection-2d", "line-model", "stackup-plan", "net-channel"),
         summary="This project's own solvers: the 2D field and eddy-current solvers, "
-                "coupled-line models, the stackup planner and the S-parameter "
+                "coupled-line models, the stackup planner, routed-net channels and the S-parameter "
                 "checks. Always installed; the reference the other engines are "
                 "compared with.",
         strengths=("always available", "every model documented with its accuracy"))
@@ -138,6 +138,19 @@ class EdaAgentEngine(Engine):
                     raise EngineError("a stackup plan needs the stackup input")
                 return si_jobs.run_stackup_plan(dict(job.spec), stackup, Path(folder), progress)
             except ValueError as exc:
+                raise EngineError(str(exc)) from exc
+        if job.kind == "net-channel":
+            from ..si import extract
+            from ..si import net_jobs
+            try:
+                board = json.loads(job.input_path("board").read_text(encoding="utf-8"))
+                stackup = json.loads(job.input_path("stackup").read_text(encoding="utf-8"))
+            except (OSError, ValueError, KeyError) as exc:
+                raise EngineError(f"the board or stackup file could not be read: {exc}") from exc
+            try:
+                return net_jobs.run_net_channel(dict(job.spec), board, stackup, Path(folder),
+                                                progress)
+            except (ValueError, extract.ExtractError) as exc:
                 raise EngineError(str(exc)) from exc
         raise EngineError(f"eda-agent does not run {job.kind} jobs")
 

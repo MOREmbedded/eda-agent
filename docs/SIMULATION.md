@@ -16,7 +16,7 @@ and eye diagrams follow as new job kinds and engines on the same model.
 
 | Engine | License | Runs | Job kinds | Feature |
 |---|---|---|---|---|
-| `eda-agent` | Apache-2.0 | in this process | `touchstone-check`, `xsection-2d`, `line-model`, `stackup-plan` | always installed |
+| `eda-agent` | Apache-2.0 | in this process | `touchstone-check`, `xsection-2d`, `line-model`, `stackup-plan`, `net-channel` | always installed |
 | `scikit-rf` | BSD-3-Clause | in this process | `touchstone-check`, `line-model` (a single microstrip without mask) | `scikit-rf` (`si` extra) |
 | `openems` | GPL-3.0 | as its own program | `em-3d` | `openems` |
 
@@ -33,6 +33,7 @@ program, files in and files out, as openEMS does.
 | `xsection-2d` | none | `calculator`: a PCB toolkit impedance calculator; `inputs`: its inputs | Z0, Er_eff, delay, L and C per length, losses: every number the [calculator](PCB_TOOLKIT.md) gives, from the 2D field solver. |
 | `line-model` | `stackup` (optional): a saved stackup reply, with `layer` | the line: `structure` or `layer`, `width_mils`, `traces`, `gap_mils`, heights, Er, tan d, mask, roughness, `length_mm`, band | Impedances (lossless and lossy), delay, loss, crosstalk, Touchstone file, RLGC matrices: see [Transmission lines](SI_LINES.md). |
 | `stackup-plan` | `stackup`: a saved stackup reply | `se_ohms`, `diff_ohms`, `layers`, laminate and mask settings, `loss_ghz`, `altium_profiles` | Per layer the width for the single-ended target and the pair geometry for each differential target; comparison with Altium's profiles. |
+| `net-channel` | `board`: a saved LayoutBoard; `stackup`: its stackup reply (both from `si_board_snapshot`) | `net` or `pair`, `from_pin`, `to_pin`, `data_rate_gbps`, band, `rise_ps`, `z_target`, limits | The routed net or pair as one channel: S-parameters, TDR, delay, loss at Nyquist, skew, mode conversion, and Altium rules: see [Routed nets and pairs](SI_NETS.md). |
 | `em-3d` | `board`: a saved LayoutBoard; `stackup` (optional): a saved stackup reply | `nets`, `ports`, `f_max_mhz`, `f_min_mhz`, `margin_mils`, `port_ohms`, `max_cells_m`, `threads` | The Touchstone file, plots, and the `touchstone-check` figures of the result. |
 
 Unknown spec keys and inputs are errors, so a misspelt option is never

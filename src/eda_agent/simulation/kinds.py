@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..si.jobs import LINE_SPEC, PLAN_SPEC
+from ..si.net_jobs import NET_SPEC
 from .engine import JobKind
 
 KINDS: dict[str, JobKind] = {k.id: k for k in (
@@ -59,6 +60,14 @@ KINDS: dict[str, JobKind] = {k.id: k for k in (
         "solver; optionally compared with Altium's impedance profiles.",
         inputs={"stackup": "a saved pcb_get_layer_stackup reply (.json)"},
         spec=PLAN_SPEC),
+    JobKind(
+        "net-channel", "Routed net or pair, end to end",
+        "The routed path of a net or differential pair on the board as one channel: "
+        "each trace section from its own cross-section, the vias with their stubs and "
+        "return path, the stubs off the path; S-parameters, TDR, delay, loss and skew.",
+        inputs={"board": "a saved LayoutBoard (.json), e.g. from si_board_snapshot",
+                "stackup": "the board's pcb_get_layer_stackup reply (.json)"},
+        spec=NET_SPEC),
 )}
 
 

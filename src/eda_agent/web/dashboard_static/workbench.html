@@ -2714,14 +2714,15 @@ function paintSimPane() {
     <div class="simgrid"><div><h2 class="wsh">${esc(T("Jobs"))} <small class="sub m">${esc(SIM.jobs.folder || "")}</small></h2>${simJobsTable()}</div><div>${simJobCard()}</div></div></div>`;
 }
 async function simRun(kind, engines, spec, inputs, title) {
-  let job = "";
+  let job = "", failed = false;
   for (const engine of engines) {
     const r = await post("/api/wb/sim/run", {kind, engine, spec, inputs, title});
-    if (!r || !r.ok) { say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); if (!r || !r.job) continue; }
+    if (!r || !r.ok) { failed = true; say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); if (!r || !r.job) continue; }
     job = r.job || job;
   }
   if (job) { SIM.jobId = job; store.set("wb.sim.job", job); }
   await loadSim();
+  if (!failed) say("");  // the "Modelling ..." line ends with the run
 }
 async function simClick(e) {
   const tr = e.target.closest("[data-simjob]");
