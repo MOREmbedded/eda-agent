@@ -23,7 +23,23 @@ maturity classification for every tool.
   default engine is unchanged and stays the default. Both engines' results
   go through the same verdict and our gloss, and the default router's via
   guards were ported into his. `python -m eda_agent.layout.bench_run
-  --router euan` benchmarks it. See [Autorouter engines](docs/ROUTER_ENGINES.md).
+  --router euan` benchmarks it on your own boards, and
+  `scripts/bench_router_engines.py` compares both engines on synthetic
+  ones. See [Autorouter engines](docs/ROUTER_ENGINES.md).
+
+- **PCB toolkit: 44 calculators, a Calculators tab and `pcb_calc
+  kind=toolkit`.** Controlled impedance (microstrip, embedded
+  microstrip, symmetric and offset stripline, dual stripline, coplanar)
+  and differential pairs (edge-coupled, broadside, coplanar) come from a
+  new 2D field solver with solder mask, trapezoidal traces, mixed
+  dielectrics, causal Er(f), dispersion, and conductor loss with
+  roughness; it agrees with the exact conformal-mapping results within
+  0.1 %. Trace and via current come from a thermal model of the board
+  (planes, laminate, convection, radiation) in place of a chart. Also
+  crosstalk, plane-pair capacitance and cavity impedance, PDN target,
+  timing, junction temperature, Ohm's law and passives, padstacks, BGA
+  lands and conversions. The dashboard tab (key 0) fills inputs from the
+  open board's layer stack. See [`docs/PCB_TOOLKIT.md`](docs/PCB_TOOLKIT.md).
 
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own

@@ -202,6 +202,11 @@ pick it up; `eda-agent health` reports the deployed version.
 
 ## Calculators
 
+The field-solver impedance calculators, the trace thermal model and the
+dashboard's Calculators tab are described in [PCB toolkit](PCB_TOOLKIT.md).
+The tools below are the earlier single-formula calculators; both sets
+are reached through `pcb_calc`.
+
 Eleven calculators, each reachable as an MCP tool, and ten of them as a
 CLI verb as well:
 
