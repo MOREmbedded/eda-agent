@@ -1007,6 +1007,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
             "phases-show", "phases-enable", "phases-disable",
+            "router-show", "router-use",
         )),
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
@@ -1496,6 +1497,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop running NPI stages. Answers already recorded are kept "
              "and come back if the stages do.",
     )
+
+    # router-* -- which autorouter engine routing runs use (route/engine.py)
+    router_show_p = subparsers.add_parser(
+        "router-show",
+        help="Which autorouter engine routing runs use (default or euan), "
+             "and which setting decided it.",
+    )
+    router_show_p.add_argument("--json", action="store_true", dest="json_out",
+                               help="Emit machine-readable JSON.")
+    router_use_p = subparsers.add_parser(
+        "router-use",
+        help="Choose the autorouter engine: 'default', or 'euan' for the "
+             "alternative router from Euan's fork (off by default). Writes "
+             "the active profile's router.json.",
+    )
+    router_use_p.add_argument("engine", choices=("default", "euan"),  # = engine.ENGINES
+                              help="default (the usual router) or euan.")
 
     # mode-* -- design modes: presets for the kind of run (design/modes.py)
     subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
@@ -2208,6 +2226,10 @@ def main() -> int:
         return cli.cmd_phases_enable(args.stages)
     if args.command == "phases-disable":
         return cli.cmd_phases_disable()
+    if args.command == "router-show":
+        return cli.cmd_router_show(as_json=args.json_out)
+    if args.command == "router-use":
+        return cli.cmd_router_use(args.engine)
 
     if args.command == "update":
         # --yes is the APPLY half (fast-forward, reinstall, copy scripts,

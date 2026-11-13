@@ -258,6 +258,19 @@ class StageContext:
                 return True
         return False
 
+    def barrel_joins(self, net: str, i: int) -> bool:
+        """Whether the board's own copper already takes pad ``i`` to a via
+        or plated hole of its net that meets its plane, or a pour of its
+        net, on a layer the barrel passes. A blind via short of them
+        joins the pad to neither: counted as joined, the pad got no
+        dog-bone, and the search laid its via later."""
+        r = self.r
+        if net in self.planes and r._barrel_in(net, i):
+            return True
+        return any(lay in span and geom.point_in_poly(x, y, shape)
+                   for x, y, span in r.pad_barrels.get(i, ())
+                   for lay, shape in self.pours.get(net, ()))
+
     def in_own_pour(self, net: str, pad) -> bool:
         """Whether a pour of the pad's own net on its own layer covers it."""
         layers = set(pad.layers())
@@ -356,10 +369,15 @@ class StageContext:
                 if geom.bboxes_near(disc, s, self.web) and \
                         geom.clearance(disc, s) < self.web - EPS:
                     return False
-        # Its solder mask opening leaves the board's web to every other.
-        if not r.options.legacy() and r.via_leaves_web(via, via.x, via.y,
-                                                       pad if in_pad else None):
-            return False
+        if not r.options.legacy():
+            # What the grid does not show: copper on layers no route uses
+            # (a pour taken as a plane, an excluded layer) and the holes
+            # already drilled.
+            if not r.via_clear_of_hidden(via, via.x, via.y, via.net, span):
+                return False
+            # Its solder mask opening leaves the board's web to every other.
+            if r.via_leaves_web(via, via.x, via.y, pad if in_pad else None, via.net):
+                return False
         return True
 
     # -- laying copper -------------------------------------------------------

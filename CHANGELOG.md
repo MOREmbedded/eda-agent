@@ -16,6 +16,28 @@ maturity classification for every tool.
 
 ### Added
 
+- **Euan Mutch's router as an opt-in autorouter engine.** `eda-agent
+  router-use euan` (or `EDA_AGENT_ROUTER=euan`) routes `pcb_autoroute`
+  jobs with the router from his fork (TechAUmNu/eda-agent, Apache-2.0);
+  `eda-agent router-show` says which engine is in force and why. The
+  default engine stays the default; what this work found wrong in it is
+  under Fixed. Both engines' results go through the same verdict and our
+  gloss, and the default router's via guards were ported into his.
+  Where his router took for a join what the verdict does not
+  (`join_existing`, `reuse_vias` through a blind via, or a plane pad
+  "served" by a via that stands outside the plane), or let any via
+  share a pad's solder mask opening under `pad_vias="centre"`, it no
+  longer does. A narrow `neck_pads` branch keeps its width after the
+  pour stage and in the attempt after a plane is given back (it was laid
+  at the net's full width, into another net's clearance), and his coarser
+  grid pitches route clean (see Fixed: a pad smaller than a cell). A
+  setting that cannot be used routes with the default engine, and his
+  router's own job parameters are range-checked before anything runs.
+  `python -m eda_agent.layout.bench_run --fixtures DIR --router euan`
+  benchmarks it on your own boards, and `scripts/bench_router_engines.py`
+  compares both engines on synthetic ones. See
+  [Autorouter engines](docs/ROUTER_ENGINES.md).
+
 - **PCB toolkit: 44 calculators, a Calculators tab and `pcb_calc
   kind=toolkit`.** Controlled impedance (microstrip, embedded
   microstrip, symmetric and offset stripline, dual stripline, coplanar)
@@ -243,6 +265,15 @@ maturity classification for every tool.
   pair is skipped. The Python path on the 10 mil benchmark went from 184 s
   to 160 s.
 
+- **The router sets up its jobs faster on boards with planes or excluded
+  layers.** Each net's via guards worked out every item on those layers
+  again: its clearance to the net's via and the grid cells it bars. Both
+  are now worked out once and kept for the next net, and the barred cells
+  are merged through one index per cell. Same cells for every net and via
+  style, in the same order (checked on 792 jobs with both engines, and
+  against a direct reckoning in the tests). On a board with 1,500 vias of
+  other nets and two planes, setting up went from 26 s to 6.7 s.
+
 ### Removed
 
 - **Upstream's sponsor note is gone from this fork** (`SCRIPT_VERSION`
@@ -282,6 +313,89 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **Fan-out vias keep off copper the router does not see.** A BGA's
+  fan-out and the plane fan-out laid their vias outside the search, so
+  they skipped its hole-to-hole and hidden-copper guards: a fan-out via
+  could land on another net's copper on an excluded layer or a plane
+  layer (a short), or too near a drilled hole. Both now check what the
+  search checks. That check also got faster: it looks only at what lies
+  near the via, so with 3,200 items on a layer no route uses, a clear
+  spot takes 0.05 ms to check instead of 18 ms.
+- **New vias stay out of keep-outs on layers no route uses.** The router
+  draws a keep-out only on the layers it routes (and the Keep-Out
+  layer's on all of them), but a via passes the others too: one could
+  stand in a keep-out drawn on an excluded layer or a pour taken as a
+  plane. The search and both fan-outs now keep out of those.
+- **A via in a pad is checked where it is laid.** The search lays a via
+  in a pad at the pad's centre, but checked the hole gap, hidden copper
+  and mask web at the centre of the nearest grid cell, up to half a
+  cell's diagonal away (3 mil on a 4.2 mil grid). It is now checked at
+  the pad's centre as well.
+- **New vias keep the mask web on an excluded outer layer.** The router's
+  vias go through every copper layer, but its mask guard counted only
+  the openings on the layers it routes: with the bottom layer excluded,
+  a new via could stand 4 mil of mask from a via opening there where the
+  sliver rule asks for 10. Both outer layers' openings now count.
+- **A `pad_vias` the router does not know fails the routing job.** A
+  misspelt value was routed as `"bga"` without a word; any case, and the
+  spelling `"center"`, are now taken as meant, given as a dict or as a
+  `StageOptions` object. `"centre"`, which only Euan's router takes, is
+  routed as `"bga"` by the default engine, and the job's notes say so,
+  and say when its fallback widened that to IC pins.
+- **A new via's mask opening runs together only with its own net's.**
+  Where a pad may take a via (a BGA's ball by default), the mask guard
+  let a new via's opening merge into that pad's opening whatever the
+  pad's net: on a 0.8 mm BGA a dog-bone via stood 7.3 mil from three
+  other nets' balls, its opening one with theirs, no solder dam between
+  them, and the verdict passed it. Openings that already meet count as
+  one, and a new via's may merge only into one whose every pad and via
+  is of its net, each pad one that may take a via, and never where it
+  would join two nets' openings: next to another net's via whose opening
+  ran into that net's pad, a new via shared the pad's opening too. Any
+  other opening keeps the board's mask web.
+- **Stage numbers are range-checked before routing.** A negative
+  `lane_cost` gave the shortest path search negative weights, and the
+  server process ran out of memory and aborted, with no job error; a
+  `lane_depth` of 1e7 mil held a job worker for hours. `lane_cost`,
+  `lane_depth`, `pair_skew`, `pair_width`, `pair_gap`, `fine_pitch` and
+  `bus_min` out of range, or not numbers, now fail the job at once, and
+  so does a number too large to compute with (a 400-digit `lane_cost`
+  passed the check and overflowed mid-job); the engines get each as a
+  plain float.
+- **A differential pair's skew bump can no longer loop for ever.** When
+  a bump had to be cut to its run, rounding could leave it a hair too
+  long, and the same height came back on every pass: the job never
+  returned (seen with a tight `pair_skew`).
+- **A pad smaller than a grid cell is entered from a cell the router
+  keeps clear.** When no cell centre falls in a pad, the track ends at
+  the nearest cell's centre, outside the pad; that cell was taken as
+  all pad copper and left out of the router's own clearance map, so
+  another net could come within clearance of the track end. At Euan's
+  coarser pitches 43 of 1,155 random small-pad boards broke a
+  clearance; none do now. The two cells nearest two such pads of
+  different nets are judged by the tracks that end on them, without the
+  margin a diagonal step needs, and an escape stub from a pad by its own
+  copper rather than a disc round each cell it crosses: random boards of
+  0201 parts at pitch 15 and 20 route 100% and 97.5%, where the first
+  version of this fix left 75% and 52% (and the router before it 89%
+  and 82%, with clearance violations on 12 of 160 boards).
+- **A blind via is no way into a plane or pour beyond its span.** A pad
+  wired to a via that stops short of its net's plane layer was taken as
+  already in the plane, and a pad on a blind via as joined to a pour on
+  a layer the via never reaches: the pad was never routed, and the
+  verdict found the net open. A via now counts only on the layers it
+  passes, in the plane fan-out's count of pads already joined too, and
+  the routing attempt after a plane is given back routes again a pad
+  whose only way in was through that plane.
+- **The DRC verdict joins a plane layer only through vias that reach
+  it.** It took every via of an internal plane layer's net as joined to
+  the plane, so a pad wired to a blind via that stops short of the
+  plane counted as in it while no copper reached it, and a board left
+  that way was reported complete.
+- **The gloss keeps out of every keep-out.** It honoured keep-outs on the
+  routed layer only and missed arcs, so it could straighten a route
+  through a keep-out drawn as Keep-Out layer tracks (which bar every
+  copper layer) or as a ring of arc round a mounting hole.
 - **The `eng_ltspice_*` tools now find LTspice XVII.** They looked for
   LTspice 24 only, while the `sim_*` tools found either; a wrong
   `EDA_AGENT_LTSPICE_EXE` is now reported instead of being ignored.

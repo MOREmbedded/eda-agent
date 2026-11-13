@@ -142,6 +142,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [SPICE models and LTspice](docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
 | [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
 | [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [Autorouter engines](docs/ROUTER_ENGINES.md) | The default router and Euan Mutch's, how to switch, what differs and what both keep |
 | [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 

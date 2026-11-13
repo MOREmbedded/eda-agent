@@ -362,10 +362,14 @@ def even_skew(ctx, plan, budget: float) -> int:
         h = min(h_max, want / gain)
         while h >= 0.5:
             foot = 2 * h + top
-            if foot + 2 * w > length:
-                h = (length - 2 * w - top) / 2
-                if h < 0.5:
+            if foot + 2 * w > length + 1e-9:
+                # As high as the run takes. Without the margin, rounding
+                # could leave that bump a hair too long again, and the same
+                # height came back for ever: the job never returned.
+                fit = (length - 2 * w - top) / 2
+                if fit < 0.5 or fit >= h:
                     break
+                h = fit
                 continue
             s = (length - foot) / 2
             p0 = (a[0] + s * u[0], a[1] + s * u[1])

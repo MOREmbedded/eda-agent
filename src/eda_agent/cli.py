@@ -1320,6 +1320,58 @@ def cmd_phases_disable() -> int:
     return code
 
 
+def cmd_router_show(*, as_json: bool = False) -> int:
+    """Which autorouter engine routing runs use, and what decided it."""
+    from .layout.route import engine
+
+    found = engine.describe()
+    if as_json:
+        import json as _json
+        print(_json.dumps(found, indent=2))
+        return 1 if found["problem"] else 0
+    where = {"environment": f"the {engine.ENV} environment variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets it)",
+             "fallback": "the default, because the setting in force cannot be used"}
+    print(f"Router engine: {found['engine']}  (from {where[found['source']]})")
+    print(f"  Engines: {', '.join(engine.ENGINES)}. 'euan' is the alternative "
+          "router from Euan's fork; off by default.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['problem']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_router_use(name: str) -> int:
+    """Record the autorouter engine in the active profile's router.json."""
+    from . import profile as profile_mod
+    from .layout.route import engine
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print(f"  For one run, no profile needed: set {engine.ENV}="
+              f"{name} in the environment.", file=sys.stderr)
+        return 1
+    result = engine.write(directory, name)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
+        return 2
+    print(f"Router engine '{result['engine']}' recorded in {result['path']}")
+    found = engine.describe(directory)
+    if found["source"] == "environment":
+        print(f"  Note: {engine.ENV}={os.environ.get(engine.ENV, '').strip()} is set here and "
+              "decides for runs started with it; the others take this profile's choice.")
+    elif found["source"] == "fallback":
+        print(f"  Note: {found['problem']}, so runs started with it use the default "
+              f"engine until {engine.ENV} is fixed or unset.")
+    print("  Routing runs that use this profile take it on their next run; no restart "
+          "needed. 'eda-agent router-show' in the design workspace says what is in force "
+          "there.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # perf -- where the time went, from the logs already being written
 # --------------------------------------------------------------------------

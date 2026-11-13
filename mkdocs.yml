@@ -125,6 +125,7 @@ nav:
       - Part sourcing: PART_SOURCING.md
       - EDA backends: BACKENDS.md
       - Engineering tools: ENGINEERING_TOOLS.md
+      - Autorouter engines: ROUTER_ENGINES.md
       - SPICE models and LTspice: SPICE_MODELS.md
       - Token usage: TOKEN_USAGE.md
       - Hardware CI: HARDWARE_CI.md
