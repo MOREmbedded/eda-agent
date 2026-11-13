@@ -743,6 +743,181 @@ def test_perforated_plane_under_a_bga_stays_and_does_not_depend_on_the_grid():
     assert max(z) / min(z) - 1 < 0.04
 
 
+def _sheet_conductance(fill):
+    """Conductance from the left edge to the right of a sheet with the
+    copper share ``fill`` per sample (rows across, columns along), sides
+    closed, in squares: a plain five-point solution, written here
+    independently of the model under test."""
+    import scipy.sparse as sp
+    from scipy.sparse.linalg import spsolve
+    ny, nx = fill.shape
+    idx = np.arange(ny * nx).reshape(ny, nx)
+    gx = 2 * fill[:, :-1] * fill[:, 1:] / np.maximum(fill[:, :-1] + fill[:, 1:], 1e-12)
+    gy = 2 * fill[:-1, :] * fill[1:, :] / np.maximum(fill[:-1, :] + fill[1:, :], 1e-12)
+    a = np.r_[idx[:, :-1].ravel(), idx[:-1, :].ravel()]
+    b = np.r_[idx[:, 1:].ravel(), idx[1:, :].ravel()]
+    g = np.r_[gx.ravel(), gy.ravel()]
+    A = sp.coo_matrix((np.r_[-g, -g], (np.r_[a, b], np.r_[b, a])), shape=(ny * nx,) * 2).tocsr()
+    diag = -np.asarray(A.sum(axis=1)).ravel()
+    left, right = 2 * fill[:, 0], 2 * fill[:, -1]
+    diag[idx[:, 0]] += left
+    diag[idx[:, -1]] += right
+    diag[diag == 0] = 1.0
+    rhs = np.zeros(ny * nx)
+    rhs[idx[:, 0]] = left
+    u = spsolve((A + sp.diags(diag)).tocsc(), rhs)
+    return float((left * (1 - u[idx[:, 0]])).sum()) * nx / ny
+
+
+def _samples(length, width, h):
+    x = (np.arange(int(round(length / h))) + 0.5) * h
+    y = (np.arange(int(round(width / h))) + 0.5) * h
+    return np.meshgrid(x, y)
+
+
+def test_a_sheet_with_round_holes_conducts_as_the_series_says():
+    assert ph.holed_sheet_conductance(0.0) == 1.0
+    assert ph.holed_sheet_conductance(0.2) == pytest.approx(0.6665, abs=2e-4)
+    # holes that touch: nothing more to take away
+    assert ph.holed_sheet_conductance(0.9) == ph.holed_sheet_conductance(math.pi / 4) < 0.05
+    got = ph.holed_sheet_conductance(np.array([0.0, 0.5]))
+    assert got.shape == (2,) and got[1] == pytest.approx(0.3247, abs=2e-4)
+    # one cell of a square array, solved finely: the dilute formula
+    # (1 - v) / (1 + v) is 8 % out at v = 0.6, the series is not
+    for v in (0.2, 0.385, 0.6, 0.684):
+        X, Y = _samples(1.0, 1.0, 1.0 / 240)
+        r = math.sqrt(v / math.pi)
+        fill = ((X - 0.5) ** 2 + (Y - 0.5) ** 2 > r * r).astype(float)
+        assert ph.holed_sheet_conductance(v) == pytest.approx(_sheet_conductance(fill), rel=0.02)
+
+
+def _via_field(kind, pitch=40.0, hole=8.0):
+    """A plane pair pierced all over by vias on a square pitch: of the
+    ground net (antipads in the power plane only), of both nets in a
+    chequerboard (every other antipad in the other plane), or of a signal
+    (the same antipad in both)."""
+    b = bare_board()
+    w, h = round(2000 / pitch) * pitch, round(1600 / pitch) * pitch
+    b.outline = [(0, 0), (w, 0), (w, h), (0, h)]
+    for i in range(int(round(w / pitch))):
+        for j in range(int(round(h / pitch))):
+            net = {"one": "GND", "cheq": "+1V0" if (i + j) % 2 == 0 else "GND",
+                   "same": "SIG"}.get(kind)
+            if net:
+                b.vias.append(Via((i + 0.5) * pitch, (j + 0.5) * pitch, hole + 8, hole,
+                                  "TopLayer", "BottomLayer", net))
+    return b
+
+
+@pytest.mark.parametrize("cell", [0.0, 80.0])
+def test_a_field_of_antipads_slows_the_plane_pair_as_a_holed_sheet(cell):
+    # The planes are 4 mil apart and an antipad is 28 mil across: the field
+    # is only where both planes have copper, so the pair is one sheet with
+    # the holes of both. Its first mode falls by sqrt(k / (1 - v)): k the
+    # sheet conductance left by the holes, 1 - v the capacitance left.
+    st = stack_from_stackup(STACKUP)
+    solid = im.find_cavity(_via_field("none"), st, "+1V0", "GND", 1e9, cell)
+    v = math.pi * (8 / 2 + 10) ** 2 / 40.0 ** 2          # hole radius + plane clearance
+    want = solid.first_mode_hz() * math.sqrt(ph.holed_sheet_conductance(v) / (1 - v))
+    assert 0.80 < want / solid.first_mode_hz() < 0.90
+    for kind in ("one", "cheq", "same"):
+        cav = im.find_cavity(_via_field(kind), st, "+1V0", "GND", 1e9, cell)
+        assert (cav.cells == solid.cells).all() and not cav.notes
+        assert cav.capacitance_f == pytest.approx(solid.capacitance_f * (1 - v), rel=0.01)
+        assert cav.first_mode_hz() == pytest.approx(want, rel=0.01)
+
+
+def test_a_part_cell_at_the_copper_edge_stays_joined_to_the_plane():
+    # 1600 mil is 38.4 cells of 41.67: the last row holds a strip of copper
+    # 0.4 of a cell wide and its centre is off the board. The strip is the
+    # plane's own copper, not an island.
+    st = stack_from_stackup(STACKUP)
+    cav = im.find_cavity(_via_field("none"), st, "+1V0", "GND", 1e9)
+    assert cav.cell_mils == pytest.approx(2000 / 48) and cav.cells.shape == (39, 48)
+    assert cav.cells.all() and not cav.notes
+    assert cav.fill[-1, 5] == pytest.approx(0.4, abs=0.01)
+    assert cav.area_mils2 == pytest.approx(2000 * 1600, rel=1e-3)
+    assert cav.first_mode_hz() == pytest.approx(
+        ph.C0 / (2 * 2000 * ph.MIL * math.sqrt(cav.er)), rel=0.005)
+    # a strip across a real gap is still apart: 30 mil of nothing, then copper
+    b = _via_field("none")
+    b.regions += [Region("InternalPlane2", [(0, 0), (2000, 0), (2000, 1560), (0, 1560)], [], "+1V0", "copper"),
+                  Region("InternalPlane2", [(0, 1590), (2000, 1590), (2000, 1600), (0, 1600)], [], "+1V0", "copper")]
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
+    assert cav.area_mils2 == pytest.approx(2000 * 1560, rel=2e-3)
+
+
+def test_antipads_four_mils_apart_still_leave_the_plane_whole():
+    st = stack_from_stackup(STACKUP)
+    solid = im.find_cavity(_via_field("none", 32.0), st, "+1V0", "GND", 1e9, 80.0)
+    cav = im.find_cavity(_via_field("one", 32.0), st, "+1V0", "GND", 1e9, 80.0)
+    v = math.pi * 14 ** 2 / 32.0 ** 2                    # 0.60: webs of 4 mil
+    assert cav.cells.all() and not cav.notes
+    assert cav.first_mode_hz() == pytest.approx(
+        solid.first_mode_hz() * math.sqrt(ph.holed_sheet_conductance(v) / (1 - v)), rel=0.015)
+
+
+def test_a_large_board_is_sampled_as_finely_as_memory_allows_and_says_so(monkeypatch):
+    st = stack_from_stackup(STACKUP)
+    fine = im.find_cavity(_via_field("one"), st, "+1V0", "GND", 1e9, 80.0)
+    monkeypatch.setattr(im, "MAX_SAMPLES", 100_000)      # 2000 x 1600 mil: 5.7 mil samples
+    cav = im.find_cavity(_via_field("one"), st, "+1V0", "GND", 1e9, 80.0)
+    assert any("sampled every" in n and "may read as cut" in n for n in cav.notes)
+    assert cav.first_mode_hz() == pytest.approx(fine.first_mode_hz(), rel=0.03)
+
+
+def _row_of_vias(pitch):
+    b = bare_board()
+    b.outline = [(0, 0), (2000, 0), (2000, 1600), (0, 1600)]
+    for j in range(int(round(1600 / pitch))):
+        b.vias.append(Via(800.0, (j + 0.5) * pitch, 16, 8, "TopLayer", "BottomLayer", "GND"))
+    return b
+
+
+@pytest.mark.parametrize("pitch", [32.0, 40.0])
+def test_a_row_of_antipads_across_the_way_is_a_neck_not_a_field(pitch):
+    # A fence of ground vias from edge to edge, on the line between two
+    # columns of cells: its antipads leave webs of 4 mil (12 mil) in the
+    # power plane. For its share of the cell's area a field of holes would
+    # leave the link at 0.6 and more; the webs are what the current has to
+    # get through. Against a fine solution of the same 80 mil of plane.
+    st = stack_from_stackup(STACKUP)
+    cav = im.find_cavity(_row_of_vias(pitch), st, "+1V0", "GND", 1e9, 80.0)
+    X, Y = _samples(80.0, pitch, 0.25)
+    want = _sheet_conductance(((X - 40) ** 2 + (Y - pitch / 2) ** 2 > 14 ** 2).astype(float))
+    got = cav.link_x[4:-4, 9]
+    assert want < 0.62 and got.max() - got.min() < 0.02 * want
+    assert float(got.mean()) == pytest.approx(want, rel=0.12)
+    # nothing else on the board is touched: the next links are whole, and
+    # along the fence the cells lose the scallops only
+    assert (cav.link_x[4:-4, 7] == 1.0).all() and (cav.link_x[4:-4, 11] == 1.0).all()
+    assert 0.7 < float(cav.link_y[4:-4, 9].mean()) < 0.9
+    assert cav.cells.all() and not cav.notes              # one piece
+
+
+def test_a_split_with_a_bridge_conducts_through_the_bridge():
+    st = stack_from_stackup(STACKUP)
+    b = bare_board()
+    b.outline = [(0, 0), (2000, 0), (2000, 1600), (0, 1600)]
+    # the power plane in two halves 6 mil apart, joined by 20 mil of copper
+    b.regions += [Region("InternalPlane2", [(0, 0), (797, 0), (797, 1600), (0, 1600)], [], "+1V0", "copper"),
+                  Region("InternalPlane2", [(803, 0), (2000, 0), (2000, 1600), (803, 1600)], [], "+1V0", "copper"),
+                  Region("InternalPlane2", [(790, 750), (810, 750), (810, 770), (790, 770)], [], "+1V0", "copper")]
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9, 80.0)
+    lx = cav.link_x[:, 9]
+    assert (np.delete(lx, 9) == 0).all()                  # the slot, everywhere else
+    X, Y = _samples(80.0, 80.0, 0.25)
+    want = _sheet_conductance(np.where((abs(X - 40) < 3) & (abs(Y - 40) > 10), 0.0, 1.0))
+    assert 0.5 < want < 0.6
+    assert lx[9] == pytest.approx(want, rel=0.2)
+    assert cav.cells.all() and not cav.notes              # one piece, through the bridge
+    # and without the bridge the two halves are apart
+    b.regions.pop()
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9, 80.0, near=[(1500, 800)])
+    assert any("2 separate islands" in n for n in cav.notes)
+    assert cav.area_mils2 == pytest.approx(1197 * 1600, rel=0.01)
+
+
 def test_a_slot_through_one_plane_opens_the_cavity_there():
     st = stack_from_stackup(STACKUP)
     b = bare_board()
@@ -846,3 +1021,80 @@ def test_a_pad_joined_to_its_via_through_a_pour():
     want = ph.MU0 * 4.0 * ph.MIL * math.acosh(80.0 / (2 * a)) / math.pi
     assert m["traces_nh"] == pytest.approx(want * 1e9, rel=0.02)
     assert m["fanout_mils"] == [80.0, 0.0] or sorted(m["fanout_mils"]) == [0.0, 80.0]
+
+
+def test_mounting_resistance_is_the_two_barrels_each_to_its_own_plane():
+    # Both vias in the pads, so there is no fan-out: what is left is the
+    # ground barrel down to the ground plane and the power barrel down to
+    # the power plane, which lies the cavity's height further.
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+    b.vias += [via(2000, 1680, "+1V0"), via(2000, 1720, "GND")]
+    st = stack_from_stackup(STACKUP)
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
+    caps, _ = im.build_decaps(b, st, cav, "+1V0", "GND", None, 0.79)
+    m = caps[0].mount_detail
+    assert m["how"] == ["via in pad"] and m["traces_nh"] == 0.0
+    h, d = m["height_mils"], cav.d_mils
+    assert h > 0 and d > 0
+    want = ph.via_barrel_resistance(h, 10.0, 0.79) + ph.via_barrel_resistance(h + d, 10.0, 0.79)
+    assert m["resistance_mohm"] == pytest.approx(want * 1e3, rel=0.01)
+    assert caps[0].mount_r == pytest.approx(want, rel=0.01)
+    assert ph.via_barrel_resistance(h + d, 10.0, 0.79) > 1.5 * ph.via_barrel_resistance(h, 10.0, 0.79)
+
+
+def test_a_blind_via_in_the_pour_that_stops_short_of_the_plane_is_not_a_way_down():
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+    b.vias.append(via(2000, 1720, "GND"))
+    # top to layer 2 only: it never reaches +1V0 on layer 3
+    b.vias.append(Via(2000, 1600, 20, 10, "TopLayer", "InternalPlane1", "+1V0"))
+    b.regions.append(Region("TopLayer", [(1950, 1560), (2050, 1560), (2050, 1692), (1950, 1692)],
+                            [], "+1V0", "pour", source="polygon:P"))
+    caps, notes = _caps(b)
+    m = caps[0].mount_detail
+    assert m.get("assumed") and "through a pour" not in m.get("how", [])
+    assert any("1 nH mounting assumed: C10" in n for n in notes)
+
+
+def test_a_via_by_the_pad_with_no_copper_drawn_to_it_is_taken_and_said():
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+    b.vias += [via(2000, 1645, "+1V0"), via(2000, 1755, "GND")]     # 25 mil off each pad, no track
+    caps, notes = _caps(b)
+    m = caps[0].mount_detail
+    assert m["how"] == ["nearest via"] and "assumed" not in m and m["via_pairs"] == 1
+    assert any("C10.1: no copper path to a via found; the nearest +1V0 via (35 mil)" in n
+               for n in m["notes"])
+    assert any("no copper drawn from a pad to a via" in n and n.endswith("C10") for n in notes)
+
+
+def test_the_nearest_via_is_not_taken_when_it_is_a_neighbours():
+    # C10 has no via of its own; C11, 60 mil along, has both of its. Its
+    # vias are C11's way down, not C10's: C10 is on the assumed 1 nH.
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+    add_cap(b, "C11", 2060, 1700)
+    caps, notes = _caps(b)
+    by = {c.ref: c for c in caps}
+    assert by["C10"].mount_detail.get("assumed") and by["C10"].mount_l == pytest.approx(1e-9)
+    assert by["C11"].mount_detail["via_pairs"] == 1 and "assumed" not in by["C11"].mount_detail
+    assert any("1 nH mounting assumed: C10" in n for n in notes)
+
+
+def test_fan_out_resistance_is_added_to_the_barrels():
+    # The same capacitor with its vias in the pads and with each via 25 mil
+    # off the pad on a 12 mil track: the tracks add their own resistance,
+    # 5 mil of track from the pad's edge to the land's, then the land (20
+    # mil wide) in to the barrel wall, on each side.
+    def mount_r(in_pad):
+        b = bare_board()
+        if in_pad:
+            add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+            b.vias += [via(2000, 1680, "+1V0"), via(2000, 1720, "GND")]
+        else:
+            add_cap(b, "C10", 2000, 1700)
+        return _caps(b)[0][0].mount_r
+    rs = ph.sheet_resistance(1.4)
+    want = 2 * rs * (5.0 / 12.0 + (10.0 - 5.79) / 20.0)
+    assert mount_r(False) - mount_r(True) == pytest.approx(want, rel=0.03)

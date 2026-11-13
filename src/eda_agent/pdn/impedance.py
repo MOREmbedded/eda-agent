@@ -181,6 +181,13 @@ class Cavity:
 
 #: A cell with less overlap of the two planes than this is not a node.
 MIN_OVERLAP = 0.1
+#: A neck this share of what round holes would leave is still taken as
+#: round holes (the fine grid places a hole's edge to about a sample).
+NECK_SLACK = 0.7
+#: The planes are sampled this finely to find clearances and necks, and
+#: with no more samples than this on the largest boards.
+SAMPLE_MILS = 2.0
+MAX_SAMPLES = 40_000_000
 
 
 def _area_fill(board: LayoutBoard, net: str, cell: float):
@@ -207,12 +214,14 @@ def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: floa
     area copper over a ground layer.
 
     Perforated copper (antipads under a BGA) stays in the model as what
-    it is: a cell holds the capacitance of the share of it where both
-    planes have copper, and a link between two cells conducts as a sheet
-    with that share of round holes does. A slot through either plane
-    opens the link, however narrow. When the pair is in several
-    islands the one under most of the points ``near`` (the load's pins)
-    is modelled, else the largest."""
+    it is. The planes are closer than an antipad is wide, so a hole in
+    either plane is a hole in the pair: a cell holds the capacitance of
+    the share of it where both planes have copper, and a link between two
+    cells conducts as a sheet with that share of round holes does. A slot
+    through either plane opens the link, however narrow, and a neck
+    throttles it. When the pair is in several islands the one under most
+    of the points ``near`` (the load's pins) is modelled, else the
+    largest."""
     if stack is None or not stack.layers:
         return None
     from scipy.sparse import coo_matrix
@@ -231,8 +240,8 @@ def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: floa
             d = stack.gap_mils(lp, lg)
             if not d:
                 continue
-            # the two fills as independent: between the bounds
-            # max(0, fp + fg - 1) and min(fp, fg) of the true overlap
+            # to choose the pair, the two fills as independent (the
+            # overlap itself is measured below, on a finer grid)
             over = rp.fill[lp] * rg.fill[lg]
             c = float(over.sum()) / d
             if c > 0 and (best is None or c > best[0]):
@@ -240,52 +249,96 @@ def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: floa
     if best is None:
         return None
     _, lp, lg, over, d = best
+
+    # The pair on a grid fine enough to see a clearance. Between two thin
+    # planes the field, and so the current, is only where BOTH have copper:
+    # a hole in either plane is a hole in the pair (the planes are closer
+    # than an antipad is wide). So the pair is one sheet whose voids are the
+    # union of the two planes' voids.
+    #  * A cell holds the capacitance of its share of that sheet.
+    #  * Round holes smaller than a cell thin the sheet without cutting it:
+    #    a link conducts as a sheet with a square array of round holes of
+    #    that void share does (``ph.holed_sheet_conductance``).
+    #  * A slot is another matter. The narrowest place on the way between
+    #    two cell centres is measured; where it is narrower than round
+    #    holes of that void share leave, the link is throttled by the
+    #    square root of the shortfall, and a slot right across opens it,
+    #    however thin. The square root is what a short neck does (a row of
+    #    antipads nearly touching, a split with a bridge across it): fine
+    #    solutions of both are met within about 15 % from a neck of a
+    #    tenth of the way to none. A long narrow channel conducts less
+    #    than this says.
+    from ..layout.copper_raster import MAX_CELLS, rasterize
+    ny_, nx_ = over.shape
+    ratio = int(min(16, max(4, math.ceil(cell / 12.0))))
+    ratio += ratio % 2
+    while ratio > 4 and nx_ * ny_ * ratio * ratio > MAX_CELLS:
+        ratio -= 2
+    fine = cell / ratio
+    # samples of 2 mil keep a copper web of 4 mil between two antipads
+    # whole; a larger board is sampled as finely as memory allows
+    sample = max(SAMPLE_MILS, math.sqrt(nx_ * ny_ * cell * cell / MAX_SAMPLES))
+    sub = max(2, math.ceil(fine / sample - 1e-9))
+    sample = fine / sub
+    fp_ = rasterize(board, fine, nets=[net], layers=[lp], kinds={"regions", "planes"},
+                    supersample=sub, links=True)
+    fg_ = rasterize(board, fine, nets=[ground], layers=[lg], kinds={"regions", "planes"},
+                    supersample=sub, links=True)
+
+    def on_fine_grid(arr: np.ndarray) -> np.ndarray:
+        big = np.zeros((ny_ * ratio, nx_ * ratio))
+        big[:min(arr.shape[0], big.shape[0]), :min(arr.shape[1], big.shape[1])] = \
+            arr[:big.shape[0], :big.shape[1]]
+        return big
+    # In a fine cell both planes fill in part, the smaller share: exact
+    # where the two are cut by the same hole (a via of another net through
+    # both), and two different holes seldom meet inside one fine cell.
+    copper = on_fine_grid(np.minimum(fp_.fill[lp], fg_.fill[lg]))
+    over = copper.reshape(ny_, ratio, nx_, ratio).mean(axis=(1, 3))
     both = over >= MIN_OVERLAP
     if not both.any():
         return None
+    solid = copper >= 0.5
+    half = ratio // 2
 
-    # How whole each plane is across each link. Round holes smaller than a
-    # cell (antipads, drill holes) thin the sheet without cutting it:
-    # (1 - v) / (1 + v) of a solid sheet for a void share v (Maxwell
-    # Garnett in two dimensions, exact for sparse round holes). A slot is
-    # another matter: it is looked for on a grid fine enough to see a
-    # clearance, and wherever one crosses the whole way between two cell
-    # centres the link is open, however narrow the slot.
-    ratio = int(min(16, max(4, math.ceil(cell / 12.0))))
-    ratio += ratio % 2
-    fine = cell / ratio
-    from ..layout.copper_raster import rasterize
-    ny_, nx_ = over.shape
+    def neck(axis: int) -> np.ndarray:
+        """Open share of the narrowest place between two cells.
 
-    def crossing(net_: str, layer: str) -> tuple[np.ndarray, np.ndarray]:
-        rf = rasterize(board, fine, nets=[net_], kinds={"regions", "planes"},
-                       supersample=int(min(6, max(2, math.ceil(fine / 4.0)))), links=True)
-        out = []
-        for axis, lk in ((0, rf.link_x[layer]), (1, rf.link_y[layer])):
-            big = np.zeros((ny_ * ratio, nx_ * ratio))
-            big[:min(lk.shape[0], big.shape[0]), :min(lk.shape[1], big.shape[1])] = \
-                lk[:big.shape[0], :big.shape[1]]
-            if axis == 0:       # fine links from centre to centre along x, per cell row
-                blk = big[:, ratio // 2:ratio // 2 + (nx_ - 1) * ratio]
-                blk = blk.reshape(ny_, ratio, nx_ - 1, ratio).mean(axis=1)
-            else:
-                blk = big[ratio // 2:ratio // 2 + (ny_ - 1) * ratio, :]
-                blk = blk.reshape(ny_ - 1, ratio, nx_, ratio).mean(axis=3).transpose(0, 2, 1)
-            out.append(blk.min(axis=-1))   # the narrowest place on the way
-        return out[0], out[1]
-    cross = {lp: crossing(net, lp), lg: crossing(ground, lg)}
+        Each fine row across the way is followed from one cell's centre
+        to the next. Where a cell's centre is off the copper (a part cell
+        at the copper's edge, an antipad on the centre) the row starts at
+        the copper nearest the centre instead: the cell is its copper,
+        wherever in the cell that lies. A gap further on is a gap."""
+        lk_p = fp_.link_x[lp] if axis == 0 else fp_.link_y[lp]
+        lk_g = fg_.link_x[lg] if axis == 0 else fg_.link_y[lg]
+        lk = on_fine_grid(np.minimum(lk_p, lk_g))       # link k joins fine cells k and k + 1
+        cu = solid
+        n_al, n_ac = nx_, ny_
+        if axis == 1:
+            lk, cu, n_al, n_ac = lk.T, solid.T, ny_, nx_
+        c = cu.reshape(n_ac * ratio, n_al, ratio)
+        left, right = c[..., :half][..., ::-1], c[..., half:]
+        # empty fine cells between the centre and the copper, each way
+        dl = np.where(left.any(-1), left.argmax(-1), ratio)
+        dr = np.where(right.any(-1), right.argmax(-1), ratio)
+        k = np.arange(ratio)
+        off = (dl > 0) | (dr > 0)
+        to_right = ((off & (dr < ratio) & (dr <= dl))[..., None]
+                    & (k >= half - 1) & (k <= (half + dr - 1)[..., None]))
+        to_left = ((off & (dl < dr))[..., None]
+                   & (k >= (half - 1 - dl)[..., None]) & (k <= half - 1))
+        lk = np.maximum(lk, (to_right | to_left).reshape(n_ac * ratio, n_al * ratio))
+        blk = lk[:, half:half + (n_al - 1) * ratio]
+        out = blk.reshape(n_ac, ratio, n_al - 1, ratio).mean(axis=1).min(axis=-1)
+        return out if axis == 0 else out.T
 
     def links(axis: int) -> np.ndarray:
-        ks = []
-        for raster, layer in ((rp, lp), (rg, lg)):
-            f = raster.fill[layer]
-            pair = ((f[:, :-1] + f[:, 1:]) if axis == 0 else (f[:-1, :] + f[1:, :])) / 2.0
-            void = np.clip(1.0 - pair, 0.0, 1.0)
-            ks.append(np.minimum((1.0 - void) / (1.0 + void), cross[layer][axis]))
-        kp, kg = ks
-        ok = (kp > 0) & (kg > 0)
-        # the two planes' sheets carry the same current: their shares in series
-        k = np.where(ok, 2.0 * kp * kg / np.where(ok, kp + kg, 1.0), 0.0)
+        pair = ((over[:, :-1] + over[:, 1:]) if axis == 0 else (over[:-1, :] + over[1:, :])) / 2.0
+        void = np.clip(1.0 - pair, 0.0, 1.0)
+        k = ph.holed_sheet_conductance(void)
+        # what a square array of round holes of this void share leaves open
+        round_neck = np.maximum(1.0 - 2.0 * np.sqrt(void / np.pi), 0.05)
+        k = k * np.sqrt(np.clip(neck(axis) / (NECK_SLACK * round_neck), 0.0, 1.0))
         a_, b_ = (both[:, :-1], both[:, 1:]) if axis == 0 else (both[:-1, :], both[1:, :])
         return np.where(a_ & b_, np.clip(k, 0.0, 1.0), 0.0)
     lx, ly = links(0), links(1)
@@ -297,6 +350,9 @@ def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: floa
     n_isl, lab = connected_components(
         coo_matrix((np.ones(ea.size), (ea, eb)), shape=(n_all, n_all)), directed=False)
     notes = []
+    if sample > 1.5 * SAMPLE_MILS:
+        notes.append(f"the planes are sampled every {sample:.1f} mil (a large board): a copper "
+                     f"web under {2 * sample:.0f} mil between two antipads may read as cut")
     if n_isl > 1:
         area = np.bincount(lab, weights=over[both], minlength=n_isl)
         keep = int(np.argmax(area))
@@ -517,6 +573,7 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
     if board is not None and copper is None:
         copper = Copper(board, stack, plating)
     assumed: list[str] = []
+    guessed: list[str] = []
     for ref, pw, gn in found:
         if ref in excl:
             continue
@@ -564,8 +621,14 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
             d.mount_r = mt["_r"]
             if mt.get("assumed"):
                 assumed.append(ref)
+            elif "nearest via" in mt.get("how", []):
+                guessed.append(ref)
         d.mount_detail = {k: v for k, v in mt.items() if not k.startswith("_")}
         caps.append(d)
+    if guessed:
+        notes.append(f"{len(guessed)} capacitor(s) with no copper drawn from a pad to a via: "
+                     f"the nearest via of the net is taken as theirs: {', '.join(guessed[:8])}"
+                     + (" ..." if len(guessed) > 8 else ""))
     if assumed:
         notes.append(f"{len(assumed)} capacitor(s) with no via found by their pads, "
                      f"1 nH mounting assumed: {', '.join(assumed[:8])}"

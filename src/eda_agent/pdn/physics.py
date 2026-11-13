@@ -163,6 +163,26 @@ def lattice_capacity_radius(cells) -> float:
     return PEACEMAN * math.exp(2.0 * math.pi * u0)
 
 
+def holed_sheet_conductance(void):
+    """Sheet conductance left by round holes taking the share ``void`` of
+    the area, as a fraction of the solid sheet.
+
+    Rayleigh's series for a square array, with the terms of Perrins,
+    McKenzie and McPhedran (Proc. R. Soc. A 369, 1979) for holes::
+
+        1 - 2 v / (1 + v - 0.305827 v^4 / (1 - 1.402958 v^8) - 0.013362 v^8)
+
+    Within 1 % of a fine numerical solution up to v = 0.7 (antipads 94 %
+    of the pitch across); holes touch at v = pi / 4.
+    """
+    import numpy as np
+    v = np.clip(np.asarray(void, dtype=float), 0.0, math.pi / 4.0)
+    v4 = v ** 4
+    v8 = v4 * v4
+    out = 1.0 - 2.0 * v / (1.0 + v - 0.305827 * v4 / (1.0 - 1.402958 * v8) - 0.013362 * v8)
+    return out if out.ndim else float(out)
+
+
 def cavity_port_inductance(cavity_mils: float, via_radius_mils: float,
                            cell_mils: float) -> float:
     """The inductance a via of radius r adds inside a plane cavity of

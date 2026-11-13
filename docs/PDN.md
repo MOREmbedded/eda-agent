@@ -142,12 +142,20 @@ The tool reports every band where |Z| at the load is above it.
   spreading inductance and the position of every capacitor are therefore in
   the curve. When the copper falls into separate islands, the island under
   the load is the one solved.
-- **Perforated planes.** Under a BGA the antipads take copper away. A cell's
-  capacitance follows the copper both planes really have there, and its
-  links follow the Maxwell-Garnett rule for round holes, (1 − v)/(1 + v)
-  for a void fraction v. A slot that cuts a cell through is found on a finer
-  raster and opens the link. The inductance of a via field therefore rises
-  as it should.
+- **Perforated planes.** Under a BGA the antipads take copper away. The two
+  planes are closer together than an antipad is wide, so the field is only
+  where both planes have copper: a hole in either plane is a hole in the
+  pair. The planes are sampled every 2 mil for this. A cell holds the
+  capacitance of the copper both planes have there. A link conducts as a
+  sheet with a square array of round holes of that void share does
+  (Rayleigh's series with the terms of Perrins, McKenzie and McPhedran),
+  so the inductance of a via field rises as it should. Where the copper
+  between two cells is narrower than round holes would leave it (a row of
+  antipads nearly touching, a split with a bridge across it), the link is
+  throttled by the square root of the shortfall, and a slot right across
+  opens it, however thin. A copper web under 4 mil between two antipads
+  may read as cut; on a very large board the sampling is coarser, and the
+  result says so.
 - **Copper loss** uses the exact surface impedance of a slab,
   Zs = (γ/σ)·coth(γt), which is the DC sheet resistance at low frequency and
   the skin-effect value at high frequency.
@@ -251,6 +259,10 @@ error.
 | Two-capacitor anti-resonance | 1 / (2π√(L·C_series)) | under 1 % |
 | N dog-bone vias in parallel | 1/N of one, by hand | under 2 % |
 | First mode of a rectangular pair | c / (2L√εr), from the eigen-solve | under 1 % |
+| Sheet conductance left by round holes, void share 0.2 to 0.68 | fine numerical solution of one cell of the array | under 2 % |
+| First mode of a pair pierced all over by antipads (in one plane, in both in turn, in both at once) | solid pair × √(k / (1 − v)) | under 1 % with webs of 12 mil, 1.5 % with webs of 4 mil |
+| A row of antipads across the way, webs of 4 and 12 mil | fine numerical solution of the same copper | within 12 % of the link |
+| A split with a 20 mil bridge | fine numerical solution of the same copper | within 20 % of the link |
 
 ### What it does not do
 
