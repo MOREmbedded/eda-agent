@@ -160,6 +160,45 @@ _EUAN_ROUTER_ARGS = ("neck_pads", "join_existing", "exclude_layers", "reuse_vias
 #: the cost of the outer layers.
 EUAN_ONLY_PARAMS = ("pitch", "layer_dirs", "dir_strength", "outer_cost")
 
+#: The range each euan-only number is taken in; outside it the job fails
+#: before anything runs. Below zero, dir_strength or outer_cost make some
+#: of his search's step costs negative, and scipy's Dijkstra then ran the
+#: process out of memory and aborted it: the MCP server, which no job
+#: error catches. A pitch finer than the 1.5 mil his router ever picks
+#: itself grows the grid with the inverse square (0.25 mil took 950 MB on
+#: a 15 x 10 mm board).
+EUAN_RANGES = {"pitch": (1.5, 25.0), "dir_strength": (0.0, 10.0), "outer_cost": (0.1, 100.0)}
+
+
+def _euan_param(key: str, value: Any, board: LayoutBoard | None) -> Any:
+    """A euan-only job param as his router takes it, None for pitch 0
+    (his router's own pitch), or ValueError."""
+    if key == "layer_dirs":
+        if not isinstance(value, dict):
+            raise ValueError("layer_dirs takes each layer's name to 'h' or 'v'")
+        dirs = {}
+        for layer, way in value.items():
+            word = str(way).strip().lower()
+            if word not in ("h", "v", "horizontal", "vertical"):
+                raise ValueError(f"layer_dirs gives {layer!r} {way!r}; it takes 'h' or 'v'")
+            dirs[str(layer)] = word[0]
+        unknown = set(dirs) - set(board.copper_layers()) if board is not None else set()
+        if unknown:
+            raise ValueError(f"layer_dirs names no copper layer: {sorted(unknown)}")
+        return dirs
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} takes a number, not {value!r}") from None
+    if key == "pitch" and number == 0:
+        return None
+    lo, hi = EUAN_RANGES[key]
+    if not lo <= number <= hi:                  # NaN fails this as well
+        span = (f"{lo:g} to {hi:g} mil, or 0 for the router's own" if key == "pitch"
+                else f"{lo:g} to {hi:g}")
+        raise ValueError(f"{key} takes {span}, not {value!r}")
+    return number
+
 
 def euan_kwargs(stages: Any, board: LayoutBoard | None = None,
                 params: dict | None = None) -> tuple[dict[str, Any], list[str]]:
@@ -185,7 +224,9 @@ def euan_kwargs(stages: Any, board: LayoutBoard | None = None,
     for key in EUAN_ONLY_PARAMS:
         value = (params or {}).get(key)
         if value is not None:
-            kwargs[key] = dict(value) if key == "layer_dirs" else float(value)
+            value = _euan_param(key, value, board)
+            if value is not None:
+                kwargs[key] = value
     if not isinstance(stages, dict):
         kwargs["stages"] = stages
         return kwargs, notes

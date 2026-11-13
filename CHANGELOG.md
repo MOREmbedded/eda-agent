@@ -20,12 +20,15 @@ maturity classification for every tool.
   router-use euan` (or `EDA_AGENT_ROUTER=euan`) routes `pcb_autoroute`
   jobs with the router from his fork (TechAUmNu/eda-agent, Apache-2.0);
   `eda-agent router-show` says which engine is in force and why. The
-  default engine is unchanged and stays the default. Both engines' results
-  go through the same verdict and our gloss, and the default router's via
-  guards were ported into his. `python -m eda_agent.layout.bench_run
-  --router euan` benchmarks it on your own boards, and
-  `scripts/bench_router_engines.py` compares both engines on synthetic
-  ones. See [Autorouter engines](docs/ROUTER_ENGINES.md).
+  default engine stays the default; what this work found wrong in it is
+  under Fixed. Both engines' results go through the same verdict and our
+  gloss, and the default router's via guards were ported into his. A
+  setting that cannot be used routes with the default engine, and his
+  router's own job parameters are range-checked before anything runs.
+  `python -m eda_agent.layout.bench_run --fixtures DIR --router euan`
+  benchmarks it on your own boards, and `scripts/bench_router_engines.py`
+  compares both engines on synthetic ones. See
+  [Autorouter engines](docs/ROUTER_ENGINES.md).
 
 - **PCB toolkit: 44 calculators, a Calculators tab and `pcb_calc
   kind=toolkit`.** Controlled impedance (microstrip, embedded
@@ -283,11 +286,23 @@ maturity classification for every tool.
   they skipped its hole-to-hole and hidden-copper guards: a fan-out via
   could land on another net's copper on an excluded layer or a plane
   layer (a short), or too near a drilled hole. Both now check what the
-  search checks.
-- **The gloss keeps out of keep-outs drawn on the Keep-Out layer.** It
-  honoured keep-outs on the routed layer only, so it could straighten a
-  route through a keep-out drawn as Keep-Out layer tracks, which bar
-  every copper layer.
+  search checks. That check also got faster: it looks only at what lies
+  near the via, so with 3,200 items on a layer no route uses, a clear
+  spot takes 0.05 ms to check instead of 18 ms.
+- **New vias stay out of keep-outs on layers no route uses.** The router
+  draws a keep-out only on the layers it routes (and the Keep-Out
+  layer's on all of them), but a via passes the others too: one could
+  stand in a keep-out drawn on an excluded layer or a pour taken as a
+  plane. The search and both fan-outs now keep out of those.
+- **A via in a pad is checked where it is laid.** The search lays a via
+  in a pad at the pad's centre, but checked the hole gap, hidden copper
+  and mask web at the centre of the nearest grid cell, up to half a
+  cell's diagonal away (3 mil on a 4.2 mil grid). It is now checked at
+  the pad's centre.
+- **The gloss keeps out of every keep-out.** It honoured keep-outs on the
+  routed layer only and missed arcs, so it could straighten a route
+  through a keep-out drawn as Keep-Out layer tracks (which bar every
+  copper layer) or as a ring of arc round a mounting hole.
 - **The `eng_ltspice_*` tools now find LTspice XVII.** They looked for
   LTspice 24 only, while the `sim_*` tools found either; a wrong
   `EDA_AGENT_LTSPICE_EXE` is now reported instead of being ignored.

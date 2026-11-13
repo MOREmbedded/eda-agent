@@ -608,6 +608,8 @@ class Router:
             job.reuse = self._reuse_cells(net)
             job.no_via = self._no_via_cells(job, [index[id(p)] for p in pads])
             self._pad_vias(job)
+            if not self.options.legacy():
+                self._guard_pad_vias(job)
             jobs.append(job)
         jobs.sort(key=self._order)
         return jobs
@@ -825,17 +827,61 @@ class Router:
                                if it.layer in off and it.kind != "plane"] if off else []
         return self._off_items
 
+    def _hidden_keepouts(self) -> list:
+        """Keep-outs drawn on a signal layer no route uses (an excluded
+        layer, a pour taken as a plane), as (layer, shape): the grid draws
+        a keep-out only on its own layers (the Keep-Out layer's on all of
+        them), yet a new via passes the others too and may not stand in
+        one."""
+        if not hasattr(self, "_off_keepouts"):
+            b = self.board
+            off = {l for l in b.signal_layers() if l not in self.grid.layer_index}
+            out: list = []
+            if off:
+                out += [(t.layer, t.shape()) for t in b.tracks if t.keepout and t.layer in off]
+                out += [(a.layer, s) for a in b.arcs if a.keepout and a.layer in off
+                        for s in a.shapes()]
+                out += [(r.layer, r.shape()) for r in b.regions
+                        if r.kind not in ("pour_boundary", "cutout", "plane")
+                        and (r.kind == "keepout" or r.keepout) and r.layer in off]
+            self._off_keepouts = out
+        return self._off_keepouts
+
+    def _hidden_keepout_cells(self, radius: float) -> np.ndarray:
+        """The cells (y, x) where a via of this radius would stand in one
+        of _hidden_keepouts; touching one is allowed, as in the grid."""
+        cache = self.__dict__.setdefault("_keepout_cells_cache", {})
+        key = round(radius, 4)
+        if key in cache:
+            return cache[key]
+        spec = self.grid.spec
+        out = []
+        for _layer, s in self._hidden_keepouts():
+            x0, y0, x1, y1 = s.bbox
+            i0, j0, i1, j1 = spec.window(x0 - radius, y0 - radius, x1 + radius, y1 + radius)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            X = spec.x(np.arange(i0, i1))[None, :]
+            Y = spec.y(np.arange(j0, j1))[:, None]
+            ys, xs = np.nonzero(shape_distance(s, X, Y) < radius - EPS)
+            out.append(np.stack([ys + j0, xs + i0], axis=1))
+        cells = np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
+        cache[key] = cells
+        return cells
+
     def _off_grid_copper(self, job: NetJob, radius: float) -> np.ndarray:
         """The cells (y, x) where a via of this radius would come within
         the clearance of another net's copper on a signal layer it passes
-        through but the router does not route on (a pour turned plane, an
-        excluded layer): the grid knows nothing of that copper, and a via
-        was laid 1.1 mil from such a track where 5 were required."""
+        through but the router does not route on (a pour taken as a plane,
+        an excluded layer), or stand in a keep-out drawn there: the grid
+        knows nothing of either, and a via was laid 1.1 mil from such a
+        track where 5 were required."""
         from ..drc import Item
+        keep = self._hidden_keepout_cells(radius)
         if not self._hidden_items():
-            return np.zeros((0, 2), dtype=np.int64)
+            return keep
         spec = self.grid.spec
-        out = []
+        out = [keep] if len(keep) else []
         for it in self._hidden_items():
             if it.net and it.net == job.name:
                 continue
@@ -851,32 +897,59 @@ class Router:
             out.append(np.stack([ys + j0, xs + i0], axis=1))
         return np.unique(np.concatenate(out), axis=0) if out else np.zeros((0, 2), dtype=np.int64)
 
+    def _hidden_index(self) -> tuple:
+        """What via_clear_of_hidden measures a point against, built once:
+        the hidden items, the hidden keep-outs and the holes already
+        drilled, each list with its shapes' bounding boxes as an array,
+        and the widest clearance any rule asks. A point is measured only
+        against the boxes it comes near, and a clearance rule looked up
+        only for those."""
+        if not hasattr(self, "_hidden_idx"):
+            from ..drc import drill_holes
+            items, keeps = self._hidden_items(), self._hidden_keepouts()
+            holes = drill_holes(self.board)
+
+            def boxes(shapes) -> np.ndarray:
+                return np.array([s.bbox for s in shapes], dtype=np.float64).reshape(-1, 4)
+            self._hidden_idx = (items, boxes(it.shape for it in items),
+                                keeps, boxes(s for _l, s in keeps),
+                                holes, boxes(it.shape for it in holes),
+                                self.rules.max_clearance())
+        return self._hidden_idx
+
     def via_clear_of_hidden(self, v, x: float, y: float, net: str, span=None) -> bool:
         """A via of style ``v`` and ``net`` at (x, y) clears what the grid
         does not show: _off_grid_copper and _near_holes at one point, for
-        the vias the fan-out and the stages lay outside the search. ``span``
-        is the copper layers it passes, all of them when None."""
-        from ..drc import Item, drill_holes
+        the vias the fan-out and the stages lay outside the search, and
+        for those the search lays at a pad's centre. ``span`` is the
+        copper layers it passes, all of them when None."""
+        from ..drc import Item
+        items, item_box, keeps, keep_box, holes, hole_box, widest = self._hidden_index()
         at_x, at_y = np.array([[x]]), np.array([[y]])
         r = v.diameter / 2
-        for it in self._hidden_items():
+
+        def near(box: np.ndarray, reach: float) -> np.ndarray:
+            return np.flatnonzero((box[:, 0] - reach <= x) & (x <= box[:, 2] + reach)
+                                  & (box[:, 1] - reach <= y) & (y <= box[:, 3] + reach))
+
+        # The boxes first, as far as the widest clearance reaches; the
+        # rule only for what is left.
+        for k in near(item_box, r + widest):
+            it = items[k]
             if (it.net and it.net == net) or (span is not None and it.layer not in span):
                 continue
             via = Item("via", -1, net, it.layer, geom.circle(0.0, 0.0, 2 * r))
             reach = r + self.rules.clearance(via, it, self.board)
-            x0, y0, x1, y1 = it.shape.bbox
-            if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
-                continue
             if float(shape_distance(it.shape, at_x, at_y)[0, 0]) < reach - EPS:
                 return False
-        if not hasattr(self, "_holes"):
-            self._holes = drill_holes(self.board)
+        for k in near(keep_box, r):
+            layer, s = keeps[k]
+            if (span is None or layer in span) and \
+                    float(shape_distance(s, at_x, at_y)[0, 0]) < r - EPS:
+                return False
         reach = v.hole / 2 + self._hole_gap()
-        for it in self._holes:
-            x0, y0, x1, y1 = it.shape.bbox
-            if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
-                continue
-            if float(shape_distance(it.shape, at_x, at_y)[0, 0]) < reach - EPS:
+        for k in near(hole_box, reach):
+            if float(shape_distance(holes[k].shape, at_x, at_y)[0, 0]) < reach - EPS:
                 return False
         return True
 
@@ -941,6 +1014,34 @@ class Router:
                 rows.append((cj, ci, room))
         if rows:
             job.pv_arr = np.array(rows, dtype=np.float64)
+
+    def _guard_pad_vias(self, job: NetJob) -> None:
+        """Bar a via style from a pad's centre cell where that via, laid
+        at the pad's centre as the search lays it there (job.pad_via),
+        would not clear what the grid does not show or would leave a
+        solder mask sliver: the cells' guards judged the cell's centre,
+        up to half a cell's diagonal away. A cell where the net's own via
+        is reused takes no new via and stays free."""
+        if not job.pad_via:
+            return
+        spec = self.grid.spec
+        bar: list = [[] for _ in job.vias]
+        for t in job.terminals:
+            pad = self.board.pads[t.pad]
+            ci, cj = spec.cell(pad.x, pad.y)
+            got = job.pad_via.get((cj, ci))
+            if got is None or got[:2] != (pad.x, pad.y) or (cj, ci) in job.reuse:
+                continue
+            for k, v in enumerate(job.vias):
+                if not self.via_clear_of_hidden(v, pad.x, pad.y, job.name) or \
+                        self.via_leaves_web(v, pad.x, pad.y, t.pad):
+                    bar[k].append((cj, ci))
+        if not any(bar):
+            return
+        empty = np.zeros((0, 2), dtype=np.int64)
+        base = job.no_via if job.no_via is not None else [empty for _ in job.vias]
+        job.no_via = [np.unique(np.concatenate([b, np.array(c, dtype=np.int64)]), axis=0)
+                      if c else b for b, c in zip(base, bar)]
 
     def _room_at(self, nid: int, x: float, y: float, most: float) -> float:
         """The largest via radius, up to ``most``, that a via of the net at

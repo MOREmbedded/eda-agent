@@ -1331,7 +1331,8 @@ def cmd_router_show(*, as_json: bool = False) -> int:
         return 1 if found["problem"] else 0
     where = {"environment": f"the {engine.ENV} environment variable",
              "profile": found["path"] or "the active profile",
-             "default": "the default (no profile or variable sets it)"}
+             "default": "the default (no profile or variable sets it)",
+             "fallback": "the default, because the setting in force cannot be used"}
     print(f"Router engine: {found['engine']}  (from {where[found['source']]})")
     print(f"  Engines: {', '.join(engine.ENGINES)}. 'euan' is the alternative "
           "router from Euan's fork; off by default.")
@@ -1358,9 +1359,13 @@ def cmd_router_use(name: str) -> int:
         print(f"ERROR: {result['reason']}", file=sys.stderr)
         return 2
     print(f"Router engine '{result['engine']}' recorded in {result['path']}")
-    if os.environ.get(engine.ENV):
-        print(f"  Note: {engine.ENV}={os.environ[engine.ENV]} is set and "
-              "overrules it.")
+    found = engine.describe(directory)
+    if found["source"] == "environment":
+        print(f"  Note: {engine.ENV}={os.environ.get(engine.ENV, '').strip()} is set here and "
+              "decides for runs started with it; the others take this profile's choice.")
+    elif found["source"] == "fallback":
+        print(f"  Note: {found['problem']}, so runs started with it use the default "
+              f"engine until {engine.ENV} is fixed or unset.")
     print("  Routing runs that use this profile take it on their next run; no restart "
           "needed. 'eda-agent router-show' in the design workspace says what is in force "
           "there.")

@@ -181,6 +181,10 @@ class _Copper:
         for t in board.tracks:
             if t.keepout:
                 self.keepouts.setdefault(t.layer, []).append(t.shape())
+        # A keep-out ring round a mounting hole is often an arc.
+        for a in board.arcs:
+            if a.keepout:
+                self.keepouts.setdefault(a.layer, []).extend(a.shapes())
         for r in board.regions:
             if r.kind == "keepout" or r.keepout:
                 self.keepouts.setdefault(r.layer, []).append(r.shape())
