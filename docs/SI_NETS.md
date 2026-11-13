@@ -24,7 +24,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
    - The net's tracks, arcs, vias and pads are joined into a graph. A track end connects to a pad or via it lands on, to another track's end, or to the middle of another track on the same layer (a tee).
    - The path is the shortest route between the two pins: the ones given, or the two farthest apart.
    - Every branch off the path is a stub, with its length and the pin it reaches.
-   - Runs on one layer with one width merge into one section.
+   - Runs on one layer with one width merge into one section, except at a tee: the run is cut where a stub leaves, so the stub sits at its own place.
 3. **Pairing.** For a differential pair both nets are walked, then laid side by side.
    - The path is cut into zones between vias.
    - Inside a zone, each stretch of the positive net is matched to the nearest copper of the negative net on its layer.

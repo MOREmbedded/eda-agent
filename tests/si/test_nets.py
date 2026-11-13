@@ -171,12 +171,14 @@ def test_path_sections_vias_and_stub():
     p = extract.net_path(single_net(), "SIG")
     assert (p.start, p.end) == ("U1.1", "U2.1")
     kinds = [(s.kind, s.layer or s.to_layer, round(s.length)) for s in p.sections]
-    assert kinds == [("line", "TopLayer", 1000), ("via", "MidLayer1", 0),
-                     ("line", "MidLayer1", 2000), ("via", "TopLayer", 0),
-                     ("line", "TopLayer", 500)]
+    # the run is cut at the tee, so the stub hangs 600 mil from U1, where it is
+    assert kinds == [("line", "TopLayer", 600), ("line", "TopLayer", 400),
+                     ("via", "MidLayer1", 0), ("line", "MidLayer1", 2000),
+                     ("via", "TopLayer", 0), ("line", "TopLayer", 500)]
     assert len(p.stubs) == 1
     st = p.stubs[0]
     assert st.length == pytest.approx(300) and st.to == "TP1.1" and st.at == 0
+    assert st.xy == pytest.approx((600, 0), abs=0.1)
     assert p.length == pytest.approx(3500)
 
 
@@ -395,21 +397,26 @@ def _length_rule(board, rate=10.0, il=20.0):
     r = run_net_channel({"net": "SIG", "data_rate_gbps": rate, "il_max_db": il, "f_max_ghz": 12,
                          "points": 120}, board.to_dict(), STACKUP, tempfile.mkdtemp())
     rule = next(s for s in r["altium_steps"] if s["args"]["rule_type"] == "length")
-    return rule, {v["check"]: v for v in r["verdicts"]}
+    return rule, {v["check"]: v for v in r["verdicts"]}, r["metrics"]
 
 
-def test_length_budget_does_not_scale_the_stub_with_length():
-    # the same 300 mil stub on a short and a long route: the budget is a
-    # fact about the lines' loss and the fixed cost of vias and the stub, so
-    # it must not move with the route (scaling the whole loss by the routed
-    # length moves it by over 30 % here)
-    a, checks = _length_rule(single_net(inner=2000), rate=6.0)
-    b, _ = _length_rule(single_net(inner=5000), rate=6.0)
-    assert a["args"]["max_value"] == pytest.approx(b["args"]["max_value"], rel=0.03)
-    assert "notches at" in a["why"] and "per 1000 mil" in a["why"]
+def test_length_budget_spends_headroom_at_the_lines_loss():
+    # vias, the stub and mismatch cost a fixed 0.6 dB here; scaling the
+    # whole loss by length would charge it again for every extra mil
+    rule, checks, m = _length_rule(single_net(inner=2000), rate=6.0)
+    L = m["length_mils"]["value"]
+    il, line = m["insertion_loss_db"]["value"], m["line_loss_db"]["value"]
+    assert il - line > 0.3
+    want = L + (20 - il) / (line / L)
+    assert rule["args"]["max_value"] == pytest.approx(want, rel=5e-3)
+    assert rule["args"]["max_value"] > 1.2 * 20 / il * L
+    # and it moves little with the route
+    other, _, _ = _length_rule(single_net(inner=5000), rate=6.0)
+    assert other["args"]["max_value"] == pytest.approx(rule["args"]["max_value"], rel=0.1)
+    assert "per 1000 mil" in rule["why"] and "notches at" in rule["why"]
     stub = checks["stub resonance"]
     assert stub["pass"] is False and "300 mil trace stub" in stub["detail"]
-    _, slow = _length_rule(single_net(inner=2000), rate=2.0)
+    _, slow, _ = _length_rule(single_net(inner=2000), rate=2.0)
     assert slow["stub resonance"]["pass"] is True
 
 
