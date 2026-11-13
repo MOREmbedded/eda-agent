@@ -224,3 +224,56 @@ def test_capacitor_kinds_reach_the_reply_and_the_csv(tools, saved):
     head = rows[0].split(",")
     c1 = next(r for r in rows if r.startswith("C1,")).split(",")
     assert c1[head.index("kind")] == "polymer"
+
+
+def test_on_a_live_board_values_missing_from_comments_come_from_the_project(tools, monkeypatch):
+    from eda_agent.emc.stack import stack_from_stackup
+    from eda_agent.tools import pdn as tp
+
+    board = plane_board()
+    for c in board.components:
+        if c.ref in ("C10", "C11", "C12", "C13"):
+            c.comment = "CAP CER SMD 0402"
+    asked = []
+
+    async def live(expect_file, board_json_path, stackup_json_path):
+        return board, stack_from_stackup(STACKUP), "live"
+
+    class Bridge:
+        fail = False
+
+        async def send_command_async(self, command, params, timeout=None):
+            asked.append((command, params))
+            if self.fail:
+                raise RuntimeError("no project open")
+            return {"components": [
+                {"designator": "C10", "parameters": {"Value": "100nF"}},
+                {"designator": "C11", "parameters": {"Value": "10V"}},
+                {"designator": "C12", "parameters": [{"name": "Capacitance", "value": "1uF"}]},
+                {"designator": "C99", "parameters": {"Value": "1uF"}}]}
+
+    bridge = Bridge()
+    monkeypatch.setattr(tp, "_load_board", live)
+    monkeypatch.setattr(tp, "get_bridge", lambda: bridge)
+    args = {"net": "+1V0", "load": {"ref": "U2"}, "target_mohm": 15.0, "mode": "lumped",
+            "points": 61, "write_files": False, "expect_file": "pdn.PcbDoc"}
+    out = _call(tools, "sim_pdn_impedance", args)
+    assert out["ok"] and out["source"] == "live"
+    assert asked == [("project.get_component_info_batch",
+                      {"designators": "C10~~C11~~C12~~C13", "with_pin_nets": "false"})]
+    got = {d["ref"]: d for d in out["decaps"]}
+    assert sorted(got) == ["C1", "C10", "C12"]
+    assert got["C10"]["c_uf"] == pytest.approx(0.1) and got["C12"]["c_uf"] == pytest.approx(1.0)
+    assert "value from the parameter 'Capacitance'" in got["C12"]["notes"]
+    assert sum("no capacitance in its comment" in n for n in out["notes"]) == 2     # C11, C13
+    # nothing to ask when the caller gave every value
+    asked.clear()
+    out = _call(tools, "sim_pdn_impedance", {**args, "decaps": [
+        {"ref": r, "c_uf": 0.1} for r in ("C10", "C11", "C12", "C13")]})
+    assert out["ok"] and asked == [] and len(out["decaps"]) == 5
+    # the project cannot be read: the run stands and says so
+    bridge.fail = True
+    out = _call(tools, "sim_pdn_impedance", args)
+    assert out["ok"] and [d["ref"] for d in out["decaps"]] == ["C1"]
+    assert any("4 capacitor(s) have no value in the comment" in n
+               and "RuntimeError: no project open" in n for n in out["notes"])

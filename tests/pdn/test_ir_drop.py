@@ -621,6 +621,14 @@ def test_reply_is_plain_json_with_no_nan_and_lists_the_worst_pins_only():
     assert s["pins"][0]["pad"] == s["worst_pin"]
     assert s["worst_pin_volts"] <= s["best_pin_volts"]
     assert any("not connected to any source" in n for n in res["notes"])
+    assert any(n.startswith("0.040 in2 of +1V0 copper") for n in res["notes"])
+    # a speck that would print as 0.000 in2 is not worth a note
+    b.regions[-1] = Region("TopLayer", [(100, 100), (115, 100), (115, 115), (100, 115)],
+                           [], "+1V0", "pour")
+    res = ir.analyse_net(b, "+1V0", stack_from_stackup(STACKUP),
+                         [{"ref": "U1", "volts": 1.0}], [{"ref": "U2", "amps": 2.0}],
+                         cell_mils=10, check_convergence=False, limit=2)
+    assert not any("not connected to any source" in n for n in res["notes"])
 
 
 def test_public_result_has_no_working_arrays_and_no_nan():
