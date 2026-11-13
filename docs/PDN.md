@@ -165,7 +165,9 @@ The tool reports every band where |Z| at the load is above it.
 - **Capacitors** are found on the board: parts with pads on both nets whose
   designator is a capacitor's (`C1`, `CB3`, not `CN1` or `CR2`) or whose
   comment reads as a capacitance. A part number such as `1N4148` is not a
-  value. Where the comment is not the value (`CAP CER SMD 0402`), a live
+  value. A four-pad feedthrough capacitor (rail, one other net, ground
+  twice) is counted for its value to ground; other arrays are named and
+  left out unless given in `decaps`. Where the comment is not the value (`CAP CER SMD 0402`), a live
   run reads it from the part's parameters in the open project: `Value`,
   `Val`, `Capacitance`, `Cap` or `C` first, then any parameter with
   "value" or "capacit" in its name. A run on a saved board has no
