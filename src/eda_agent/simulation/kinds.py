@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..si.jobs import LINE_SPEC, PLAN_SPEC
 from .engine import JobKind
 
 KINDS: dict[str, JobKind] = {k.id: k for k in (
@@ -43,6 +44,21 @@ KINDS: dict[str, JobKind] = {k.id: k for k in (
               "max_cells_m": ("number", False, "refuse models above this many "
                               "million cells (default 20)"),
               "threads": ("number", False, "solver threads; 0 lets it choose")}),
+    JobKind(
+        "line-model", "Transmission line, wideband",
+        "Frequency-dependent RLGC of one trace or coupled traces (eddy-current R and L, "
+        "causal dielectrics, roughness), their impedances, delay and loss, and the "
+        "S-parameters of a length of line.",
+        inputs={"stackup": "a saved pcb_get_layer_stackup reply (.json), optional: "
+                           "with spec.layer it sets the cross-section"},
+        spec=LINE_SPEC),
+    JobKind(
+        "stackup-plan", "Stackup impedance plan",
+        "For every signal layer of a stackup, the trace width for a single-ended "
+        "target and the pair geometry for differential targets, from the field "
+        "solver; optionally compared with Altium's impedance profiles.",
+        inputs={"stackup": "a saved pcb_get_layer_stackup reply (.json)"},
+        spec=PLAN_SPEC),
 )}
 
 

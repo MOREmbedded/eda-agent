@@ -71,6 +71,7 @@ _CATEGORY_BY_PREFIX = (
     ("audit_", "audit"),
     ("design_", "design"),
     ("sim_", "simulation"),
+    ("si_", "simulation"),
     ("route_", "routing"),
     ("tool_", "meta"),
     ("part_", "parts"),

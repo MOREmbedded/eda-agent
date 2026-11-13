@@ -106,6 +106,7 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
 | 🌡️ **Thermal analysis** | Board temperatures and hotspots from part powers (`sim_thermal_analysis`): 3D conduction in the real copper, vias and laminate, convection and radiation, heat maps per layer, a grid-convergence error estimate. See [Thermal analysis](docs/THERMAL.md) |
 | 🧪 **Simulation engines** | One job model for every simulator: this project's own solvers, scikit-rf and openEMS today, plugins tomorrow. Each engine's answer is kept beside the others and compared (`sim_job_run`, `sim_job_compare`, the dashboard's Simulation page). See [Simulation engines](docs/SIMULATION.md) |
+| 📶 **Signal integrity: lines** | Wideband models of traces and pairs from the real stackup: R and L from an eddy-current solve with the planes, causal dielectrics, copper roughness, coupled-line S-parameters and crosstalk (`si_line_model`). A stackup planner gives every layer's width and pair gap for target impedances and checks or writes Altium's impedance profiles (`si_stackup_plan`). See [Transmission lines](docs/SI_LINES.md) |
 | 🧩 **Features and dependencies** | `eda-agent install-deps --all` installs every optional part in one command; `eda-agent features` and the dashboard's Features page show what is installed, its version and license, and switch engines on and off. See [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) |
 | 🔋 **Power integrity (PDN)** | DC IR drop and current density on the real copper (`sim_pdn_ir_drop`), AC impedance against a target with a field-solved plane pair and every capacitor's mounting (`sim_pdn_impedance`). See [PDN analysis](docs/PDN.md) |
 | 🤖 **Guided design runs** | Spec to board, reference redraw, dev-kit derivative. See [Design modes](docs/DESIGN_MODES.md) and [Autonomous design](docs/AUTONOMOUS_DESIGN.md) |
@@ -142,6 +143,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
 | [Thermal analysis](docs/THERMAL.md) | Board temperatures, hotspots and junction margins from part powers, with the model and its validation |
 | [Simulation engines](docs/SIMULATION.md) | Engines, jobs, comparing answers, writing an engine plugin |
+| [Transmission lines](docs/SI_LINES.md) | Wideband line models (eddy-current R and L, causal dielectrics, roughness, coupled lines) and the stackup planner |
 | [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) | What each optional part offers and needs, the one-command installer, the Features page |
 | [PDN analysis](docs/PDN.md) | DC IR drop, current density, and AC impedance against a target impedance |
 | [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |

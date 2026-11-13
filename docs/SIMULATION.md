@@ -7,16 +7,17 @@ engine's answer is kept beside the others so they can be compared. Two
 independent engines that agree are a second opinion; two that disagree
 are a warning no single tool can give.
 
-This is the base the signal-integrity work builds on: transmission-line
-models, net S-parameters, IBIS time-domain simulation and eye diagrams
-arrive as new job kinds and engines on the same model.
+This is the base the signal-integrity work builds on. Transmission-line
+models and the stackup planner ([Transmission lines](SI_LINES.md)) are
+the first job kinds on it; net S-parameters, IBIS time-domain simulation
+and eye diagrams follow as new job kinds and engines on the same model.
 
 ## Engines
 
 | Engine | License | Runs | Job kinds | Feature |
 |---|---|---|---|---|
-| `eda-agent` | Apache-2.0 | in this process | `touchstone-check`, `xsection-2d` | always installed |
-| `scikit-rf` | BSD-3-Clause | in this process | `touchstone-check` | `scikit-rf` (`si` extra) |
+| `eda-agent` | Apache-2.0 | in this process | `touchstone-check`, `xsection-2d`, `line-model`, `stackup-plan` | always installed |
+| `scikit-rf` | BSD-3-Clause | in this process | `touchstone-check`, `line-model` (a single microstrip without mask) | `scikit-rf` (`si` extra) |
 | `openems` | GPL-3.0 | as its own program | `em-3d` | `openems` |
 
 An engine is offered only when its feature is installed and switched on
@@ -30,6 +31,8 @@ program, files in and files out, as openEMS does.
 |---|---|---|---|
 | `touchstone-check` | `touchstone`: an `.sNp` file | `tolerance` (default 1e-3) | Passivity (largest singular value of S over the band, and where), reciprocity (largest \|Sij - Sji\|), worst return loss, S21 at the top frequency and at its worst, verdicts. |
 | `xsection-2d` | none | `calculator`: a PCB toolkit impedance calculator; `inputs`: its inputs | Z0, Er_eff, delay, L and C per length, losses: every number the [calculator](PCB_TOOLKIT.md) gives, from the 2D field solver. |
+| `line-model` | `stackup` (optional): a saved stackup reply, with `layer` | the line: `structure` or `layer`, `width_mils`, `traces`, `gap_mils`, heights, Er, tan d, mask, roughness, `length_mm`, band | Impedances (lossless and lossy), delay, loss, crosstalk, Touchstone file, RLGC matrices: see [Transmission lines](SI_LINES.md). |
+| `stackup-plan` | `stackup`: a saved stackup reply | `se_ohms`, `diff_ohms`, `layers`, laminate and mask settings, `loss_ghz`, `altium_profiles` | Per layer the width for the single-ended target and the pair geometry for each differential target; comparison with Altium's profiles. |
 | `em-3d` | `board`: a saved LayoutBoard; `stackup` (optional): a saved stackup reply | `nets`, `ports`, `f_max_mhz`, `f_min_mhz`, `margin_mils`, `port_ohms`, `max_cells_m`, `threads` | The Touchstone file, plots, and the `touchstone-check` figures of the result. |
 
 Unknown spec keys and inputs are errors, so a misspelt option is never

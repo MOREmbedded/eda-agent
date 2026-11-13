@@ -16,6 +16,19 @@ maturity classification for every tool.
 
 ### Added
 
+- **Signal integrity: transmission lines and a stackup planner.** New
+  package `eda_agent.si`. A 2D eddy-current solver gives R(f) and L(f)
+  of traces and their reference planes with skin and proximity effect
+  from DC up; the field solver gives C(f) and G(f) with causal
+  Djordjevic-Sarkar dielectrics (mask included); Huray, Hammerstad or
+  Groisse roughness; exact modal S-parameters of coupled lines with
+  mixed mode and crosstalk. New job kinds `line-model` (also on
+  scikit-rf, as a closed-form check of a single microstrip) and
+  `stackup-plan`; new tools `si_line_model` and `si_stackup_plan` (widths
+  and pair gaps per layer for target impedances, compared with or written
+  as Altium impedance profiles); a Transmission line form, plots and
+  result files on the dashboard's Simulation page. See
+  [docs/SI_LINES.md](docs/SI_LINES.md).
 - **Thermal analysis.** `sim_thermal_analysis` solves a board's steady
   temperature field in three dimensions from the power each part
   dissipates: the real copper of every layer (pours, planes with their

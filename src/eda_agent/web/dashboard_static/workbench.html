@@ -359,6 +359,8 @@ h2.ftgroup { margin-top:var(--s3); }
 .simgrid { display:grid; grid-template-columns:minmax(300px, 0.9fr) minmax(360px, 1.1fr); gap:var(--s4); align-items:start; }
 @media (max-width: 1100px) { .simgrid { grid-template-columns:1fr; } }
 .simwrap > .wsgrid { margin-bottom:var(--s4); } .simnew { margin-bottom:var(--s4); } .simrow { display:flex; gap:6px; } .simrow input { flex:1; min-width:0; font:12px var(--mono); }
+.simline { display:grid; grid-template-columns:repeat(auto-fill, minmax(185px, 1fr)); gap:8px 12px; margin:8px 0; } .simline label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--ink2); } .simline input, .simline select { font:12px var(--mono); min-width:0; }
+.simfiles { margin:8px 0; } .simplot { max-width:100%; border-radius:6px; display:block; margin-bottom:6px; } .simfiles a { margin-right:10px; }
 .simpicks { display:flex; gap:var(--s4); flex-wrap:wrap; }
 .simjob h3 small { color:var(--ink3); } table.simcmp td { cursor:default; } table.simcmp td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
 .simrun { border-top:1px solid var(--rule2); margin-top:8px; padding-top:4px; } .simrun h4 { display:flex; gap:6px; align-items:baseline; }
@@ -2608,7 +2610,21 @@ function featuresSideBlock() {
 // Simulation engines and jobs (eda_agent.simulation): one folder per problem,
 // one run per engine, the answers side by side.
 const SIM = {eng: null, jobs: null, job: null, jobId: store.get("wb.sim.job", ""), timer: 0,
-             path: store.get("wb.sim.path", ""), pick: store.get("wb.sim.pick", {"eda-agent": true, "scikit-rf": true})};
+             path: store.get("wb.sim.path", ""), pick: store.get("wb.sim.pick", {"eda-agent": true, "scikit-rf": true}),
+             line: Object.assign({structure: "microstrip", traces: "1", width_mils: "6", gap_mils: "6", copper_mils: "1.4", h_mils: "4",
+                                  h_below_mils: "5", h_above_mils: "5", er: "4.2", tand: "0.02", mask_mils: "0", foil: "smooth",
+                                  length_mm: "100", f_max_ghz: "20"}, store.get("wb.sim.line", {}))};
+// The line form: [spec key, label, choices]; a field shows only for the
+// structure it belongs to.
+const SIM_LINE = [
+  ["structure", "Structure", [["microstrip", "Microstrip (outer layer)"], ["stripline", "Stripline (inner layer)"]]],
+  ["traces", "Traces", [["1", "Single"], ["2", "Pair"]]],
+  ["width_mils", "Width (mil)"], ["gap_mils", "Gap (mil)", null, "pair"], ["copper_mils", "Copper (mil)"],
+  ["h_mils", "Height to plane (mil)", null, "microstrip"], ["h_below_mils", "Height below (mil)", null, "stripline"],
+  ["h_above_mils", "Height above (mil)", null, "stripline"], ["er", "Er"], ["tand", "Loss tangent"],
+  ["mask_mils", "Solder mask (mil)", null, "microstrip"],
+  ["foil", "Copper roughness", [["smooth", "Smooth"], ["std", "STD"], ["rtf", "RTF"], ["vlp", "VLP"], ["hvlp", "HVLP"]]],
+  ["length_mm", "Length (mm)"], ["f_max_ghz", "Up to (GHz)"]];
 const simState = s => T({queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled"}[s] || "Unknown");
 const simPill = s => ({done: "ok", failed: "bad", running: "warn", queued: "warn"}[s] || "");
 function simFmt(v, unit) {
@@ -2653,7 +2669,7 @@ function simJobCard() {
   const cmp = J.compare || {}, rows = cmp.metrics || [];
   const kindEngines = ((SIM.eng.kinds || []).find(k => k.id === J.kind) || {}).engines || [];
   const avail = Object.fromEntries((SIM.eng.engines || []).map(e => [e.id, e.available]));
-  const more = kindEngines.filter(n => !runs[n] && avail[n]);
+  const more = kindEngines.filter(n => !runs[n] && avail[n] && (!J.runnable || J.runnable.includes(n)));
   const status = names.map(n => {
     const r = runs[n], res = r.results || {};
     const ver = (res.verdicts || []).map(v => `<li><span class="pill ${v.pass ? "ok" : "bad"}">${esc(v.pass ? T("Pass") : T("Fail"))}</span> ${esc(v.check)}: ${esc(v.detail || "")}</li>`).join("");
@@ -2662,14 +2678,21 @@ function simJobCard() {
       ${r.state === "running" ? ` <span class="spin"></span> <small class="sub">${esc(r.message || "")}</small>` : ""}</h4>
       ${r.error ? `<p class="bad">${esc(r.error)}</p>` : ""}${ver ? `<ul class="notes">${ver}</ul>` : ""}${notes ? `<ul class="notes">${notes}</ul>` : ""}</div>`;
   }).join("");
-  const single = names.length === 1 && runs[names[0]].results ? Object.entries(runs[names[0]].results.metrics || {}) : [];
+  const r0 = names.length === 1 ? runs[names[0]].results : null;
+  const single = r0 ? (r0.metric_order || Object.keys(r0.metrics || {})).filter(k => (r0.metrics || {})[k]).map(k => [k, r0.metrics[k]]) : [];
   const table = rows.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th>${cmp.engines.map(n => `<th>${esc(n)}</th>`).join("")}<th>${esc(T("Spread"))}</th></tr></thead><tbody>
       ${rows.map(r => `<tr><td>${esc(r.label || r.metric)}</td>${cmp.engines.map(n => `<td class="v">${n in r.values ? simFmt(r.values[n], r.unit) : "-"}</td>`).join("")}<td><span class="pill ${r.agree ? "ok" : "bad"}">${esc((100 * r.spread).toFixed(r.spread < 0.001 ? 3 : 1) + " %")}</span></td></tr>`).join("")}</tbody></table>`
     : single.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th><th>${esc(names[0])}</th></tr></thead><tbody>${single.map(([k, m]) => `<tr><td>${esc(m.label || k)}</td><td class="v">${m.display ? esc(m.display) : simFmt(m.value, m.unit)}</td></tr>`).join("")}</tbody></table>` : "";
   const verdict = rows.length ? (cmp.agree ? `<div class="result ok">${esc(T("The engines agree within {0} %.", num(100 * cmp.rel_tol, 1)))}</div>`
     : `<div class="result fail">${esc(T("The engines disagree: see the rows marked in red."))}</div>`) : "";
+  const files = names.map(n => {
+    const fl = ((runs[n].results || {}).files) || {}, url = f => "/api/wb/sim/file/" + encodeURIComponent(J.id) + "/" + encodeURIComponent(n) + "/" + encodeURIComponent(f);
+    const img = fl.plot ? `<img class="simplot" src="${esc(url(fl.plot))}" alt="${esc(T("S-parameters"))}">` : "";
+    const links = Object.entries(fl).filter(([k]) => k !== "plot").map(([k, f]) => `<a href="${esc(url(f))}" download>${esc(f)}</a>`).join(" ");
+    return img || links ? `<div class="simfiles">${img}${links ? `<p class="m">${esc(T("Files"))}: ${links}</p>` : ""}</div>` : "";
+  }).join("");
   return `<div class="card simjob"><h3>${esc(J.title)} <small>${esc(J.kind)}</small><span class="sp"></span>${more.map(n => `<button data-simrun="${esc(n)}">${esc(T("Run on {0}", n))}</button>`).join(" ")}</h3>
-    <p class="m">${esc(J.folder)}</p>${verdict}${table}${status}</div>`;
+    <p class="m">${esc(J.folder)}</p>${verdict}${table}${files}${status}</div>`;
 }
 function paintSimPane() {
   const pane = $("#pane"); pane.hidden = false;
@@ -2685,6 +2708,9 @@ function paintSimPane() {
     <form class="card simnew" data-simform="1"><p class="hint">${esc(T("Passivity, reciprocity and the main figures of an .sNp file, from each engine you tick: two engines that agree are a second opinion."))}</p>
       <div class="simrow"><input id="simpath" placeholder="${esc(T("Full path of the .sNp file"))}" value="${esc(SIM.path)}" autocomplete="off" aria-label="${esc(T("Full path of the .sNp file"))}"><button class="go" type="submit">${esc(T("Check"))}</button></div>
       <div class="simpicks">${picks}</div></form>
+    <h2 class="wsh">${esc(T("Transmission line"))}</h2>
+    <form class="card simnew" data-simform="line"><p class="hint">${esc(T("Impedance, delay, loss and crosstalk of a trace or a pair, and the S-parameters of a length of it: R and L from an eddy-current solve with the planes, C and G with causal dielectrics. A single microstrip without mask is also checked against scikit-rf's closed form."))}</p>
+      <div class="simline">${simLineFields()}</div><div class="actions"><button class="go" type="submit">${esc(T("Model"))}</button></div></form>
     <div class="simgrid"><div><h2 class="wsh">${esc(T("Jobs"))} <small class="sub m">${esc(SIM.jobs.folder || "")}</small></h2>${simJobsTable()}</div><div>${simJobCard()}</div></div></div>`;
 }
 async function simRun(kind, engines, spec, inputs, title) {
@@ -2708,7 +2734,32 @@ async function simClick(e) {
     return simRun(SIM.job.kind, [b.dataset.simrun], SIM.job.spec || {}, ins, SIM.job.title);
   }
 }
-function simSubmit() {
+function simLineFields() {
+  const L = SIM.line;
+  return SIM_LINE.filter(([k, , , only]) => !only || (only === "pair" ? L.traces === "2" : L.structure === only)).map(([k, label, choices]) => {
+    const input = choices ? `<select data-simline="${k}">${choices.map(([v, l]) => `<option value="${esc(v)}"${L[k] === v ? " selected" : ""}>${esc(T(l))}</option>`).join("")}</select>`
+      : `<input data-simline="${k}" value="${esc(L[k] || "")}" inputmode="decimal" autocomplete="off">`;
+    return `<label>${esc(T(label))}${input}</label>`;
+  }).join("");
+}
+function simLineSubmit() {
+  const L = SIM.line, spec = {structure: L.structure, traces: Number(L.traces), foil: L.foil};
+  for (const [k, , choices, only] of SIM_LINE) {
+    if (choices || ["structure", "traces", "foil"].includes(k)) continue;
+    if (only && (only === "pair" ? L.traces !== "2" : L.structure !== only)) continue;
+    const v = parseFloat(String(L[k] || "").replace(",", "."));
+    if (!isFinite(v)) return say(T("Fill in every number."), true);
+    spec[k] = v;
+  }
+  const engines = ["eda-agent"];
+  if (spec.structure === "microstrip" && spec.traces === 1 && !spec.mask_mils && SIM.pick["scikit-rf"]
+      && (SIM.eng.engines || []).some(e => e.id === "scikit-rf" && e.available)) engines.push("scikit-rf");
+  const title = `${spec.structure} ${spec.traces === 2 ? T("Pair") : T("Single")} ${spec.width_mils} mil`;
+  say(T("Modelling {0}", title));
+  simRun("line-model", engines, spec, {}, title);
+}
+function simSubmit(form) {
+  if (form && form.dataset && form.dataset.simform === "line") return simLineSubmit();
   const path = SIM.path.trim();
   if (!path) return say(T("Give the full path of an .sNp file."), true);
   const engines = Object.keys(SIM.pick).filter(k => SIM.pick[k]);
@@ -2716,8 +2767,18 @@ function simSubmit() {
   say(T("Checking {0}", baseName(path)));
   simRun("touchstone-check", engines, {}, {touchstone: path}, baseName(path));
 }
-function simInput(e) { if (e.target.id === "simpath") { SIM.path = e.target.value; store.set("wb.sim.path", SIM.path); } }
-function simChange(e) { const t = e.target; if (t.dataset && t.dataset.simpick != null) { SIM.pick[t.dataset.simpick] = t.checked; store.set("wb.sim.pick", SIM.pick); } }
+function simInput(e) {
+  if (e.target.id === "simpath") { SIM.path = e.target.value; store.set("wb.sim.path", SIM.path); }
+  if (e.target.dataset && e.target.dataset.simline && e.target.tagName === "INPUT") { SIM.line[e.target.dataset.simline] = e.target.value; store.set("wb.sim.line", SIM.line); }
+}
+function simChange(e) {
+  const t = e.target;
+  if (t.dataset && t.dataset.simpick != null) { SIM.pick[t.dataset.simpick] = t.checked; store.set("wb.sim.pick", SIM.pick); }
+  if (t.dataset && t.dataset.simline && t.tagName === "SELECT") {
+    SIM.line[t.dataset.simline] = t.value; store.set("wb.sim.line", SIM.line);
+    const box = $(".simline"); if (box) box.innerHTML = simLineFields();
+  }
+}
 function simSideBlock() {
   return `<section class="block"><h2>${esc(T("Simulation"))}</h2><p class="hint">${esc(T("Every simulator is an engine: this project's own solvers, scikit-rf, openEMS and any plugin. A job is one problem; each engine's answer is kept beside the others, so they can be compared."))}</p><p class="hint">${esc(T("The AI runs the same jobs with sim_job_run and compares them with sim_job_compare."))}</p></section>`;
 }
@@ -2826,7 +2887,7 @@ $("#pane").addEventListener("input", e => {
   if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
   if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;
 });
-$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); if (S.mode === "sim") return simSubmit(); runTool(e.target); });
+$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); if (S.mode === "sim") return simSubmit(e.target); runTool(e.target); });
 $("#pane").addEventListener("change", e => {
   if (S.mode === "calc") return calcChange(e);
   if (S.mode === "features") return featuresChange(e);

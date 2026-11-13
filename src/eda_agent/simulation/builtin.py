@@ -77,8 +77,9 @@ def s_quality(freq: np.ndarray, s: np.ndarray, tol: float) -> dict[str, Any]:
 class EdaAgentEngine(Engine):
     info = EngineInfo(
         "eda-agent", "eda-agent solvers", "core", "Apache-2.0", LIBRARY,
-        ("touchstone-check", "xsection-2d"),
-        summary="This project's own solvers: the 2D field solver and the S-parameter "
+        ("touchstone-check", "xsection-2d", "line-model", "stackup-plan"),
+        summary="This project's own solvers: the 2D field and eddy-current solvers, "
+                "coupled-line models, the stackup planner and the S-parameter "
                 "checks. Always installed; the reference the other engines are "
                 "compared with.",
         strengths=("always available", "every model documented with its accuracy"))
@@ -122,19 +123,102 @@ class EdaAgentEngine(Engine):
             return {"metrics": metrics, "notes": [res.get("model", "")] + list(res.get("warnings", [])),
                     "accuracy": res.get("accuracy", ""), "references": res.get("references", []),
                     "files": {"calculator": "calculator.json"}}
+        if job.kind in ("line-model", "stackup-plan"):
+            from ..si import jobs as si_jobs
+            stackup = None
+            if "stackup" in job.inputs:
+                try:
+                    stackup = json.loads(job.input_path("stackup").read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise EngineError(f"the stackup file could not be read: {exc}") from exc
+            try:
+                if job.kind == "line-model":
+                    return si_jobs.run_line_model(dict(job.spec), Path(folder), stackup, progress)
+                if stackup is None:
+                    raise EngineError("a stackup plan needs the stackup input")
+                return si_jobs.run_stackup_plan(dict(job.spec), stackup, Path(folder), progress)
+            except ValueError as exc:
+                raise EngineError(str(exc)) from exc
         raise EngineError(f"eda-agent does not run {job.kind} jobs")
 
 
 class ScikitRfEngine(Engine):
     info = EngineInfo(
         "scikit-rf", "scikit-rf", "scikit-rf", "BSD-3-Clause", LIBRARY,
-        ("touchstone-check",),
-        summary="The scikit-rf project's Touchstone reader (1.x and 2.0) and network "
-                "checks: an independent second opinion.",
+        ("touchstone-check", "line-model"),
+        summary="The scikit-rf project's Touchstone reader (1.x and 2.0), network "
+                "checks and closed-form microstrip model: an independent second opinion.",
         strengths=("Touchstone 2.0", "widely used and tested"),
         homepage="https://scikit-rf.readthedocs.io")
 
+    def check(self, kind, spec, inputs):
+        if kind != "line-model":
+            return []
+        problems = []
+        if str(spec.get("structure", "")).lower() != "microstrip" or spec.get("layer"):
+            problems.append("scikit-rf models a microstrip given by its numbers (structure "
+                            "microstrip, no stackup layer)")
+        if int(spec.get("traces") or 1) != 1:
+            problems.append("scikit-rf's microstrip is a single trace")
+        if float(spec.get("mask_mils") or 0) > 0 or float(spec.get("etch_mils") or 0) > 0:
+            problems.append("scikit-rf's microstrip has no solder mask and no etch")
+        return problems
+
+    def _line(self, job, folder, progress):
+        """Hammerstad-Jensen microstrip with Kirschning-Jansen dispersion."""
+        import skrf
+        from skrf.media import MLine
+        from ..si import jobs as si_jobs
+        from ..si import materials as mat
+        spec = dict(job.spec)
+        problems = self.check(job.kind, spec, {})
+        if problems:
+            raise EngineError("; ".join(problems))
+        from ..units import MM_PER_INCH, MM_PER_MIL
+        mil = MM_PER_MIL / 1000.0
+        m_per_in = MM_PER_INCH / 1000.0
+        lam = mat.laminate(spec.get("laminate") or "", spec.get("er"), spec.get("tand"),
+                           spec["f_spec_ghz"] * 1e9 if spec.get("f_spec_ghz") else None)
+        f = si_jobs.band(spec)
+        f_rep = float(spec.get("f_report_ghz") or 1) * 1e9
+        grid = np.unique(np.concatenate([f, [f_rep]]))
+        progress("closed-form microstrip", 0.3)
+        import warnings
+        with warnings.catch_warnings():
+            # MLine warns that its closed-form conductor loss is out of range
+            # at low frequency; that figure is reported as closed form only.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = MLine(skrf.Frequency.from_f(grid, unit="hz"),
+                        w=float(spec["width_mils"]) * mil, h=float(spec["h_mils"]) * mil,
+                        t=float(spec.get("copper_mils") or 1.4) * mil, ep_r=lam.er, tand=lam.tand,
+                        f_epr_tand=lam.f_spec, rho=mat.RHO_CU, rough=0.0,
+                        z0_port=float(spec.get("z_ref") or 50))
+        k = int(np.argmin(np.abs(grid - f_rep)))
+        gamma = np.asarray(med.gamma)
+        z0 = np.asarray(med.z0)
+        w = 2 * np.pi * grid
+        beta = gamma.imag
+        at = f"at {f_rep / 1e9:g} GHz"
+        loss = 8.685889638 * gamma.real * m_per_in
+        metrics = {
+            "z0_ohms": metric(round(float(z0[k].real), 4), "ohm", f"Characteristic impedance {at}"),
+            "er_eff": metric(round(float((beta[k] / (w[k] / 299792458.0)) ** 2), 5), "",
+                             f"Effective Er {at}"),
+            "delay_ps_per_in": metric(round(float(beta[k] / w[k] * m_per_in * 1e12), 4), "ps/in",
+                                      f"Delay {at}"),
+            # Closed-form loss under its own name: shown, not compared, since
+            # it is a different model of the copper (no proximity, no plane).
+            "loss_db_per_in_closed_form": metric(round(float(loss[k]), 5), "dB/in",
+                                                 f"Loss {at}, closed form"),
+        }
+        return {"metrics": metrics,
+                "notes": [f"scikit-rf {skrf.__version__} MLine: Hammerstad-Jensen, "
+                          "Kirschning-Jansen dispersion, Djordjevic-Svensson dielectric, "
+                          "smooth copper"]}
+
     def run(self, job, folder, progress):
+        if job.kind == "line-model":
+            return self._line(job, folder, progress)
         import skrf
         progress("reading with scikit-rf", 0.1)
         try:

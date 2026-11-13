@@ -43,6 +43,7 @@ from .emc import register_emc_tools
 from .thermal import register_thermal_tools
 from .pdn import register_pdn_tools
 from .simulation import register_simulation_tools
+from .si import register_si_tools
 from .design import register_design_tools
 from .render import register_render_tools
 from .audit import register_audit_tools
@@ -255,6 +256,7 @@ def register_all_tools(mcp):
     register_thermal_tools(mcp)
     register_pdn_tools(mcp)
     register_simulation_tools(mcp)
+    register_si_tools(mcp)
     register_design_tools(mcp)
     register_render_tools(mcp)
     register_audit_tools(mcp)
@@ -494,6 +496,7 @@ __all__ = [
     "register_emc_tools",
     "register_thermal_tools",
     "register_pdn_tools",
+    "register_si_tools",
     "register_simulation_tools",
     "register_design_tools",
     "register_render_tools",
