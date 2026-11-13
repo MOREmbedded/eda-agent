@@ -29,6 +29,25 @@ maturity classification for every tool.
   as Altium impedance profiles); a Transmission line form, plots and
   result files on the dashboard's Simulation page. See
   [docs/SI_LINES.md](docs/SI_LINES.md).
+- **Thermal analysis.** `sim_thermal_analysis` solves a board's steady
+  temperature field in three dimensions from the power each part
+  dissipates: the real copper of every layer (pours, planes with their
+  antipads, tracks and pads with their exact areas), every plated hole,
+  the laminate's anisotropic conduction, natural or forced convection
+  and radiation from both faces, the edges and part cases. It reports
+  the peak, hotspots with the nearest part, each powered part's pad,
+  junction and case temperature against `tj_max_c`, the hottest
+  unpowered parts, a heat balance and, with `refine`, a grid-convergence
+  error estimate, and writes a heat map per layer. It takes the Joule
+  heat map of an IR-drop run as an extra source. Checked against exact
+  solutions (series slab, Bessel fin, Fourier spreading series,
+  convection and radiation balance, via arrays). Copper that does not
+  touch is kept apart inside a grid cell (a pad and the pour round it, a
+  via in another net's pour), so the answer does not depend on the cell
+  size resolving the clearances. Each run also writes a picture of the
+  copper as it was solved. See [`docs/THERMAL.md`](docs/THERMAL.md).
+  Run live on one populated six-layer board read from Altium.
+
 - **Features and dependencies, and a one-command installer.** One
   registry (`eda_agent.features`) describes every optional part: the pip
   extras, the Rust wheels built from this repository, the programs some

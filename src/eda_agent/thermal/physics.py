@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
 
 #: Stefan-Boltzmann constant, W/m^2/K^4.
 SIGMA = 5.670374419e-8
@@ -106,40 +109,41 @@ G = 9.80665             # m/s^2
 
 @dataclass(frozen=True)
 class Air:
-    T: float        # K
-    rho: float      # kg/m^3
-    mu: float       # Pa s
-    k: float        # W/m/K
+    """Dry air properties; every field may be a float or a numpy array."""
+
+    T: Any          # K
+    rho: Any        # kg/m^3
+    mu: Any         # Pa s
+    k: Any          # W/m/K
     cp: float       # J/kg/K
 
     @property
-    def nu(self) -> float:
+    def nu(self):
         return self.mu / self.rho
 
     @property
-    def alpha(self) -> float:
+    def alpha(self):
         return self.k / (self.rho * self.cp)
 
     @property
-    def pr(self) -> float:
+    def pr(self):
         return self.mu * self.cp / self.k
 
 
-def air(T: float, pressure_pa: float = P_ATM) -> Air:
-    """Dry air at ``T`` kelvin. Sutherland for mu and k."""
-    T = max(T, 150.0)
+def air(T, pressure_pa: float = P_ATM) -> Air:
+    """Dry air at ``T`` kelvin (float or array). Sutherland for mu and k."""
+    T = np.maximum(T, 150.0)
     mu = 1.716e-5 * (T / T0) ** 1.5 * (T0 + 110.4) / (T + 110.4)
     k = 0.02414 * (T / T0) ** 1.5 * (T0 + 194.0) / (T + 194.0)
     rho = pressure_pa / (R_AIR * T)
     return Air(T, rho, mu, k, CP_AIR)
 
 
-def rayleigh(t_surf_k: float, t_amb_k: float, length_m: float,
-             pressure_pa: float = P_ATM) -> tuple[float, Air]:
+def rayleigh(t_surf_k, t_amb_k: float, length_m, pressure_pa: float = P_ATM):
     """Ra at the film temperature, and the film air."""
     film = air(0.5 * (t_surf_k + t_amb_k), pressure_pa)
     beta = 1.0 / t_amb_k  # ideal gas, evaluated at ambient (common practice)
-    dT = abs(t_surf_k - t_amb_k)
+    dT = np.abs(t_surf_k - t_amb_k)
     ra = G * beta * dT * length_m ** 3 / (film.nu * film.alpha)
     return ra, film
 
@@ -149,59 +153,111 @@ def rayleigh(t_surf_k: float, t_amb_k: float, length_m: float,
 # ---------------------------------------------------------------------------
 
 ORIENTATIONS = ("up", "down", "vertical")
+#: Laminar to turbulent transition of a flat plate in parallel flow.
+RE_TRANSITION = 5.0e5
 
 
-def nusselt_natural(ra: float, pr: float, orientation: str) -> float:
-    """Average Nusselt number of an isothermal plate in still air."""
-    ra = max(ra, 0.0)
+def nusselt_natural(ra, pr, orientation: str):
+    """Average Nusselt number of an isothermal plate in still air.
+
+    ``orientation`` is the way the HOT face looks: ``up``, ``down`` or
+    ``vertical``. ``ra`` and ``pr`` may be arrays."""
+    ra = np.maximum(ra, 0.0)
     if orientation == "vertical":
         return (0.825 + 0.387 * ra ** (1 / 6)
                 / (1 + (0.492 / pr) ** (9 / 16)) ** (8 / 27)) ** 2
     if orientation == "up":
-        nu = 0.54 * ra ** 0.25 if ra < 1e7 else 0.15 * ra ** (1 / 3)
+        nu = np.where(ra < 1e7, 0.54 * ra ** 0.25, 0.15 * ra ** (1 / 3))
     elif orientation == "down":
         nu = 0.52 * ra ** 0.2
     else:
         raise ValueError(f"orientation must be one of {ORIENTATIONS}")
-    return max(nu, 1.0)
+    nu = np.maximum(nu, 1.0)
+    return float(nu) if np.ndim(nu) == 0 else nu
 
 
-def nusselt_forced(re: float, pr: float) -> float:
-    """Average Nusselt number of a plate in parallel flow."""
-    if re <= 0:
-        return 0.0
-    if re < 5e5:
-        return 0.664 * re ** 0.5 * pr ** (1 / 3)
-    return max((0.037 * re ** 0.8 - 871.0) * pr ** (1 / 3), 0.664 * 5e5 ** 0.5 * pr ** (1 / 3))
+def nusselt_forced(re, pr):
+    """Average Nusselt number of a plate in parallel flow, from its
+    leading edge: laminar to Re 5e5, then the mixed boundary layer."""
+    re = np.maximum(re, 0.0)
+    lam = 0.664 * re ** 0.5 * pr ** (1 / 3)
+    turb = (0.037 * re ** 0.8 - 871.0) * pr ** (1 / 3)
+    nu = np.where(re < RE_TRANSITION, lam, np.maximum(turb, lam * 0.0 + 0.664 * RE_TRANSITION ** 0.5
+                                                      * pr ** (1 / 3)))
+    return float(nu) if np.ndim(nu) == 0 else nu
 
 
-def h_convection(t_surf_c: float, t_amb_c: float, length_m: float,
-                 orientation: str = "up", velocity_ms: float = 0.0,
-                 flow_length_m: float = 0.0, pressure_pa: float = P_ATM) -> float:
+def h_natural(t_surf_c, t_amb_c: float, length_m, orientation: str = "up",
+              pressure_pa: float = P_ATM):
+    """Natural convection coefficient, W/m^2/K, of a face at ``t_surf_c``.
+
+    ``orientation`` says which way the face looks. A face colder than the
+    air swaps ``up`` and ``down`` (a cold plate facing up is stably
+    stratified, like a hot plate facing down). Arrays are accepted for the
+    temperature and the length."""
+    if orientation not in ORIENTATIONS:
+        raise ValueError(f"orientation must be one of {ORIENTATIONS}")
+    ts, ta = np.asarray(t_surf_c, dtype=float) + T0, t_amb_c + T0
+    ra, film = rayleigh(ts, ta, length_m, pressure_pa)
+    if orientation == "vertical":
+        nu = nusselt_natural(ra, film.pr, "vertical")
+    else:
+        hot = ts >= ta
+        same = nusselt_natural(ra, film.pr, orientation)
+        other = nusselt_natural(ra, film.pr, "down" if orientation == "up" else "up")
+        nu = np.where(hot, same, other)
+    h = nu * film.k / length_m
+    return float(h) if np.ndim(h) == 0 else h
+
+
+def h_forced(t_surf_c, t_amb_c: float, velocity_ms: float, flow_length_m,
+             pressure_pa: float = P_ATM):
+    """Average forced-convection coefficient over the first
+    ``flow_length_m`` of a plate from its leading edge, W/m^2/K."""
+    ts, ta = np.asarray(t_surf_c, dtype=float) + T0, t_amb_c + T0
+    film = air(0.5 * (ts + ta), pressure_pa)
+    lf = np.maximum(flow_length_m, 1e-9)
+    re = velocity_ms * lf / film.nu
+    h = nusselt_forced(re, film.pr) * film.k / lf
+    return float(h) if np.ndim(h) == 0 else h
+
+
+def h_mixed(h_nat, h_for):
+    """Churchill's rule for natural and forced convection acting together."""
+    return (np.abs(h_nat) ** 3 + np.abs(h_for) ** 3) ** (1 / 3)
+
+
+def h_convection(t_surf_c, t_amb_c: float, length_m, orientation: str = "up",
+                 velocity_ms: float = 0.0, flow_length_m: float = 0.0,
+                 pressure_pa: float = P_ATM):
     """Average convection coefficient, W/m^2/K, of one board face.
 
     ``length_m``: the natural-convection length (A/P for a horizontal
     face, the height for a vertical one). ``velocity_ms`` > 0 adds forced
     flow along ``flow_length_m`` (default ``length_m``), combined with the
     natural part by Churchill's cube rule."""
-    ts, ta = t_surf_c + T0, t_amb_c + T0
-    if length_m <= 0:
+    if np.any(np.asarray(length_m) <= 0):
         raise ValueError("length_m must be > 0")
-    ra, film = rayleigh(ts, ta, length_m, pressure_pa)
-    nu_n = nusselt_natural(ra, film.pr, orientation)
-    h_n = nu_n * film.k / length_m
+    h_n = h_natural(t_surf_c, t_amb_c, length_m, orientation, pressure_pa)
     if velocity_ms <= 0:
         return h_n
-    lf = flow_length_m or length_m
-    re = velocity_ms * lf / film.nu
-    h_f = nusselt_forced(re, film.pr) * film.k / lf
-    return (h_n ** 3 + h_f ** 3) ** (1 / 3)
+    h_f = h_forced(t_surf_c, t_amb_c, velocity_ms, flow_length_m or length_m, pressure_pa)
+    h = h_mixed(h_n, h_f)
+    return float(h) if np.ndim(h) == 0 else h
 
 
-def h_radiation(t_surf_c: float, t_amb_c: float, emissivity: float = EMISSIVITY_MASK) -> float:
-    """Linearised radiation coefficient to large surroundings, W/m^2/K."""
-    ts, ta = t_surf_c + T0, t_amb_c + T0
-    return emissivity * SIGMA * (ts * ts + ta * ta) * (ts + ta)
+def h_radiation(t_surf_c, t_amb_c: float, emissivity: float = EMISSIVITY_MASK):
+    """Linearised radiation coefficient to large surroundings, W/m^2/K:
+    ``h_r (Ts - Ta)`` is exactly ``eps sigma (Ts^4 - Ta^4)``."""
+    ts, ta = np.asarray(t_surf_c, dtype=float) + T0, t_amb_c + T0
+    h = emissivity * SIGMA * (ts * ts + ta * ta) * (ts + ta)
+    return float(h) if np.ndim(h) == 0 else h
+
+
+def pressure_at_altitude(altitude_m: float) -> float:
+    """Standard-atmosphere pressure, Pa, up to 11 km (ISO 2533)."""
+    h = min(max(float(altitude_m), -500.0), 11_000.0)
+    return P_ATM * (1.0 - 2.25577e-5 * h) ** 5.25588
 
 
 def plate_length(area_m2: float, perimeter_m: float) -> float:

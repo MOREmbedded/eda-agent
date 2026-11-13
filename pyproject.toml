@@ -49,6 +49,10 @@ dependencies = [
     # The board layout engine (layout/): distance transforms, sparse
     # solves and graph searches for the placer, router and pours.
     "scipy>=1.10,<2",
+    # Algebraic multigrid for the thermal solver (thermal/solver.py): the
+    # preconditioner that makes a board of a million unknowns solve in
+    # seconds. MIT. The solver falls back to a direct solve without it.
+    "pyamg>=5.0,<6",
     # Text search in datasheet PDFs (design/datasheet_search.py): finds the
     # page a manufacturer's land pattern is on. Pure Python, BSD.
     "pypdf>=4,<7",

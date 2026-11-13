@@ -220,6 +220,9 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_EM_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\em`",
            "Where each openEMS field-solver run (`sim_em_build_model`) gets "
            "its own folder. Runs can be large: point it at a drive with room."),
+    EnvVar("EDA_AGENT_THERMAL_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\thermal`",
+           "Where each `sim_thermal_analysis` run writes its heat maps, fields "
+           "and report, one folder per run."),
     EnvVar("EDA_AGENT_PDN_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\pdn`",
            "Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, "
            "curves and SPICE decks, one folder per run."),

@@ -54,6 +54,16 @@ DEFAULT_PLANE_CLEARANCE_MILS = 10.0
 #: Hard cap on cells per layer, so a tiny cell on a large board cannot
 #: take the machine's memory. The caller is told to coarsen.
 MAX_CELLS = 4_000_000
+#: ``supersample=0``: the sample pitch a conduction model wants, mils. The
+#: narrowest copper web and clearance on a board are 3 to 4 mil; a web is
+#: told from a cut only when it is more than a sample wide, so a coarser
+#: sample reads the web between two antipads of a BGA field as cut and the
+#: plane under the BGA as open.
+SAMPLE_MILS = 2.0
+#: ... and the most samples one layer may take for it (float32 each, and a
+#: few times that while the links are made). A board too large for
+#: ``SAMPLE_MILS`` gets the finest pitch that fits.
+MAX_SAMPLES = 16_000_000
 
 
 #: Region kinds that are not copper: a polygon cutout, a keepout, and a
@@ -81,6 +91,48 @@ class Barrel:
     comp: str = ""
     pin: str = ""
     diameter_mils: float = 0.0    # land diameter (vias) or the pad's larger side
+
+
+#: ``Islands.slot`` of a sample that is no island's copper.
+NO_ISLAND = 255
+
+
+@dataclass
+class Islands:
+    """The separate pieces of copper of one layer, cell by cell
+    (``rasterize(islands=True)``).
+
+    A cell of a conduction grid is one node, one temperature or voltage.
+    A pad and the pour round it, two tracks side by side, a via land in
+    another net's pour: copper that does not touch, lying in one cell,
+    would be joined by that node. Here each cell's copper is split by
+    island (copper connected at the sample pitch, a gap being what
+    ``_open_gaps`` calls one). The island with the most copper in the
+    cell stays the cell's own node (``label_main``, ``fill_main``,
+    ``edge_main``); every other island there is a piece, a node of its
+    own. ``slice_x`` / ``slice_y`` of the raster then describe the main
+    islands alone, and ``link_*`` joins a piece to the same island in
+    the next cell.
+
+    A node is named by a code: the flat cell index ``iy * nx + ix`` for
+    a cell's main island, ``nx * ny + k`` for piece ``k``."""
+
+    label_main: np.ndarray        # (ny, nx) int32, 0: no copper
+    fill_main: np.ndarray         # (ny, nx) area fraction of the main island
+    edge_main: np.ndarray         # (ny, nx) its edge length, mils
+    start: np.ndarray             # (ny*nx + 1,): pieces of cell c are start[c]..start[c+1]
+    label: np.ndarray             # (F,) island of each piece
+    fill: np.ndarray              # (F,) area fraction of the piece's cell
+    edge_mils: np.ndarray         # (F,)
+    slot: np.ndarray              # (ny*s, nx*s) uint8: 0 main, k: piece k of the cell
+    link_a: np.ndarray            # (L,) node codes joined through copper of one island,
+    link_b: np.ndarray            # at least one of the two a piece
+    link_w: np.ndarray            # (L,) width of the joint over the distance it spans
+
+    @property
+    def cell(self) -> np.ndarray:
+        """Flat cell index of each piece."""
+        return np.repeat(np.arange(len(self.start) - 1), np.diff(self.start))
 
 
 @dataclass
@@ -116,6 +168,62 @@ class CopperRaster:
     #: Only with ``links=True``: length of copper edge inside each cell,
     #: mils, ``edge_mils[layer]`` shaped (ny, nx).
     edge_mils: dict[str, np.ndarray] = field(default_factory=dict)
+    #: Only with ``islands=True``: per layer, the copper split by island.
+    islands: dict[str, Islands] = field(default_factory=dict)
+
+    def island_at(self, layer: str, x: float, y: float) -> tuple[int, int]:
+        """(island label, node code) of the copper at a point of
+        ``layer``; (0, -1) where there is none or off the grid."""
+        isl = self.islands[layer]
+        p = self.cell_mils / self.supersample
+        i = int(math.floor((x - self.x0) / p))
+        j = int(math.floor((y - self.y0) / p))
+        if not (0 <= i < self.nx * self.supersample and 0 <= j < self.ny * self.supersample):
+            return 0, -1
+        k = int(isl.slot[j, i])
+        if k == NO_ISLAND:
+            return 0, -1
+        c = (j // self.supersample) * self.nx + i // self.supersample
+        if k == 0:
+            return int(isl.label_main.flat[c]), c
+        f = int(isl.start[c]) + k - 1
+        return int(isl.label[f]), self.nx * self.ny + f
+
+    def island_nodes(self, layer: str, shape: geom.Shape) -> dict[int, float]:
+        """Node code -> area (mils^2) of the island ``shape`` lies on.
+
+        The island is the one that holds most of the shape's area; its
+        copper under the shape is counted node by node. Empty when the
+        shape has no copper under it."""
+        isl = self.islands[layer]
+        s = self.supersample
+        p = self.cell_mils / s
+        got = _cover(shape, self.x0, self.y0, p, self.nx * s, self.ny * s)
+        if got is None:
+            return {}
+        i0, j0, cov = got
+        jj, ii = np.nonzero(cov > 0.0)
+        if not len(jj):
+            return {}
+        w = cov[jj, ii].astype(float)
+        jj, ii = jj + j0, ii + i0
+        slot = isl.slot[jj, ii].astype(np.int64)
+        cell = (jj // s) * self.nx + ii // s
+        on = slot != NO_ISLAND
+        if not on.any():
+            return {}
+        w, slot, cell = w[on], slot[on], cell[on]
+        main = slot == 0
+        piece = np.where(main, 0, isl.start[cell] + slot - 1)
+        label = np.where(main, isl.label_main.flat[cell],
+                         isl.label[piece] if len(isl.label) else 0)
+        labels, inv = np.unique(label, return_inverse=True)
+        best = labels[int(np.argmax(np.bincount(inv, weights=w)))]
+        sel = label == best
+        code = np.where(main, cell, self.nx * self.ny + piece)[sel]
+        codes, inv = np.unique(code, return_inverse=True)
+        area = np.bincount(inv, weights=w[sel]) * p * p
+        return {int(c): float(a) for c, a in zip(codes, area)}
 
     def cell_of(self, x: float, y: float) -> tuple[int, int]:
         """(ix, iy) of the cell holding the point, clamped to the grid."""
@@ -177,10 +285,24 @@ class CopperRaster:
         if layer not in self.slice_x:
             raise ValueError("rasterize(..., links=True) to get link conductivities")
         out = []
+        trim = layer in self.islands
         for f in (self.slice_x[layer], self.slice_y[layer]):
             k = k_copper * f + k_between * (1.0 - f)
             with np.errstate(divide="ignore"):
                 r = np.where(k > 0, 1.0 / np.where(k > 0, k, 1.0), np.inf)
+            if trim and f.shape[-1] > 1:
+                # With islands a cell's node is its main island, wherever
+                # in the cell that lies. The way from the cell's centre to
+                # where the island begins is not part of the path: a pad
+                # that stops short of the centre is still joined to its
+                # other half in the next cell. A half with no copper at
+                # all stays a cut.
+                n1 = f.shape[-1] - f.shape[-1] // 2
+                empty = f <= 0.0
+                a, b = empty[..., :n1], empty[..., n1:][..., ::-1]
+                lead = np.logical_and.accumulate(a, axis=-1) & ~a.all(axis=-1, keepdims=True)
+                tail = np.logical_and.accumulate(b, axis=-1) & ~b.all(axis=-1, keepdims=True)
+                r = np.where(np.concatenate([lead, tail[..., ::-1]], axis=-1), 0.0, r)
             rs = r.mean(axis=-1)
             out.append(np.where(np.isfinite(rs), 1.0 / np.where(rs > 0, rs, 1.0), 0.0))
         return out[0], out[1]
@@ -256,9 +378,12 @@ class _Canvas:
         link_y = (runs == s).reshape(ny - 1, nx, s).mean(axis=2) if ny > 1 else np.zeros((0, nx))
         return link_x, link_y
 
-    def slices(self, s: int, nx: int, ny: int) -> tuple[np.ndarray, np.ndarray]:
+    def slices(self, s: int, nx: int, ny: int, open_x: Optional[np.ndarray] = None,
+               open_y: Optional[np.ndarray] = None) -> tuple[np.ndarray, np.ndarray]:
         """Copper fraction of each of the ``s`` slices across the way from
         one cell centre to the next: (ny, nx - 1, s) and (ny - 1, nx, s).
+        ``open_x`` / ``open_y``: the coverage with its gaps along x and
+        along y opened, when the caller has them already.
 
         A sample's coverage says how much of it is copper, not which way
         the copper runs through it. A track's edge leaves a row of partly
@@ -270,9 +395,11 @@ class _Canvas:
         counts as no copper for conduction in that direction. So a gap is
         open even when it is narrower than a sample."""
         h = s // 2
-        col = _open_gaps(self.a, 1).reshape(ny, s, nx * s).mean(axis=1)    # (ny, nx*s)
+        ox = _open_gaps(self.a, 1) if open_x is None else open_x
+        oy = _open_gaps(self.a, 0) if open_y is None else open_y
+        col = ox.reshape(ny, s, nx * s).mean(axis=1)                       # (ny, nx*s)
         sx = np.ascontiguousarray(col[:, h:(nx - 1) * s + h].reshape(ny, nx - 1, s))
-        row = _open_gaps(self.a, 0).reshape(ny * s, nx, s).mean(axis=2)    # (ny*s, nx)
+        row = oy.reshape(ny * s, nx, s).mean(axis=2)                       # (ny*s, nx)
         sy = np.ascontiguousarray(
             row[h:(ny - 1) * s + h, :].reshape(ny - 1, s, nx).transpose(0, 2, 1))
         return sx, sy
@@ -292,8 +419,177 @@ class _Canvas:
         return g.reshape(ny, s, nx, s).sum(axis=(1, 3), dtype=np.float64) * self.p
 
 
+    def islands(self, s: int, nx: int, ny: int
+                ) -> tuple[Islands, np.ndarray, np.ndarray]:
+        """The layer's copper split by island in each cell (``Islands``)
+        and the slices (as ``slices``) of the cells' main islands.
+
+        Two samples belong to one island when a path of samples holding
+        copper joins them, a gap sample (``_open_gaps``, along either
+        axis) holding none: the same rule that opens a gap for
+        conduction, so what conducts is one island and what is one island
+        conducts."""
+        from scipy import ndimage
+
+        a = self.a
+        ox, oy = _open_gaps(a, 1), _open_gaps(a, 0)
+        lab, n_lab = ndimage.label((ox > _ISLAND_MIN) & (oy > _ISLAND_MIN))
+        lab = lab.astype(np.int32, copy=False)
+        if n_lab:
+            # a speck of less than one sample of copper is rounding left
+            # by a cut, not an island
+            speck = np.bincount(lab.ravel(), weights=a.ravel(), minlength=n_lab + 1) < 1.0
+            speck[0] = False
+            if speck.any():
+                lab[speck[lab]] = 0
+        ncell = nx * ny
+        fill = self.cells(s, nx, ny)
+        edge = self.edges(s, nx, ny)
+        lab4 = lab.reshape(ny, s, nx, s)
+        hi = lab4.max(axis=(1, 3))
+        lo = np.where(lab4 > 0, lab4, n_lab + 1).min(axis=(1, 3))
+        multi = (hi > 0) & (lo != hi)
+        label_main = hi.astype(np.int32)
+        slot = np.where(lab > 0, 0, NO_ISLAND).astype(np.uint8)
+        a4 = a.reshape(ny, s, nx, s)
+        # centre of the copper of each cell, in samples from its corner
+        w_cell = np.maximum(a4.sum(axis=(1, 3), dtype=np.float64), 1e-12)
+        off = np.arange(s) + 0.5
+        cen_x = (a4.sum(axis=1, dtype=np.float64) * off).sum(axis=-1) / w_cell
+        cen_y = (a4.sum(axis=3, dtype=np.float64) * off[None, :, None]).sum(axis=1) / w_cell
+
+        start = np.zeros(ncell + 1, dtype=np.int64)
+        f_label = np.zeros(0, dtype=np.int32)
+        f_fill = np.zeros(0)
+        f_edge = np.zeros(0)
+        f_cx = np.zeros(0)
+        f_cy = np.zeros(0)
+        my, mx = np.nonzero(multi)
+        if len(my):
+            k_cells = len(my)
+            lb = lab4[my, :, mx, :].reshape(k_cells, s * s).astype(np.int64)
+            ab = a4[my, :, mx, :].reshape(k_cells, s * s).astype(np.float64)
+            # the edge a square of four samples holds goes to the island in it
+            g = np.zeros(a.shape, dtype=np.float32)
+            d1 = a[1:, 1:] - a[:-1, :-1]
+            d2 = a[1:, :-1] - a[:-1, 1:]
+            g[:-1, :-1] = np.sqrt((d1 * d1 + d2 * d2) / 2.0)
+            gl = lab.copy()
+            np.maximum(gl[:-1, :], lab[1:, :], out=gl[:-1, :])
+            np.maximum(gl[:, :-1], lab[:, 1:], out=gl[:, :-1])
+            np.maximum(gl[:-1, :-1], lab[1:, 1:], out=gl[:-1, :-1])
+            gb = g.reshape(ny, s, nx, s)[my, :, mx, :].reshape(k_cells, s * s)
+            glb = gl.reshape(ny, s, nx, s)[my, :, mx, :].reshape(k_cells, s * s).astype(np.int64)
+            del g, gl
+            base = np.arange(k_cells)[:, None] * (n_lab + 1)
+            key = (base + lb).ravel()
+            on = lb.ravel() > 0
+            keys, inv = np.unique(key[on], return_inverse=True)
+            area = np.bincount(inv, weights=ab.ravel()[on], minlength=len(keys))
+            count = np.bincount(inv, minlength=len(keys)).astype(float)
+            sx_ = np.tile(np.tile(off, s), k_cells)[on]
+            sy_ = np.tile(np.repeat(off, s), k_cells)[on]
+            px = np.bincount(inv, weights=sx_, minlength=len(keys)) / count
+            py = np.bincount(inv, weights=sy_, minlength=len(keys)) / count
+            gkey = (base + glb).ravel()
+            gpos = np.searchsorted(keys, gkey)
+            gpos[gpos >= len(keys)] = 0
+            gok = keys[gpos] == gkey
+            p_edge = np.bincount(gpos[gok], weights=gb.ravel()[gok].astype(np.float64),
+                                 minlength=len(keys)) * self.p
+            k_of = keys // (n_lab + 1)
+            l_of = (keys % (n_lab + 1)).astype(np.int32)
+            order = np.lexsort((-area, k_of))            # by cell, the largest first
+            k_of, l_of, area, px, py, p_edge = (v[order] for v in
+                                                (k_of, l_of, area, px, py, p_edge))
+            first = np.r_[True, k_of[1:] != k_of[:-1]]
+            rank = np.arange(len(k_of)) - np.maximum.accumulate(
+                np.where(first, np.arange(len(k_of)), 0))
+            flat = my[k_of] * nx + mx[k_of]
+            label_main.flat[flat[first]] = l_of[first]
+            cen_x.flat[flat[first]] = px[first]
+            cen_y.flat[flat[first]] = py[first]
+            keep = (~first) & (rank < NO_ISLAND)
+            # samples -> slot: rank of their island in the cell
+            rank_of_key = np.empty(len(keys), dtype=np.int64)
+            rank_of_key[order] = np.minimum(rank, NO_ISLAND)
+            sl = np.full(lb.shape, NO_ISLAND, dtype=np.uint8).ravel()
+            sl[on] = rank_of_key[inv]
+            slot.reshape(ny, s, nx, s)[my, :, mx, :] = sl.reshape(k_cells, s, s)
+            # pieces, grouped by cell (my, mx come in flat order already)
+            f_cell = flat[keep]
+            f_label, f_fill = l_of[keep], area[keep] / (s * s)
+            f_edge, f_cx, f_cy = p_edge[keep], px[keep], py[keep]
+            start[1:] = np.cumsum(np.bincount(f_cell, minlength=ncell))
+        f_cell = np.repeat(np.arange(ncell), np.diff(start))
+        fill_main = fill - np.bincount(f_cell, weights=f_fill, minlength=ncell).reshape(ny, nx)
+        edge_main = edge - np.bincount(f_cell, weights=f_edge, minlength=ncell).reshape(ny, nx)
+        fill_main = np.where(label_main > 0, np.maximum(fill_main, 0.0), fill)
+        edge_main = np.maximum(edge_main, 0.0)
+
+        # joints between a piece and the same island in the next cell
+        la, lb_, lw = [], [], []
+        cxf, cyf = cen_x.ravel(), cen_y.ravel()
+
+        def joints(lab_a, lab_b, slot_a, slot_b, cell_a, step, along_x):
+            same = (lab_a == lab_b) & (lab_a > 0) & ((slot_a > 0) | (slot_b > 0)) \
+                & (slot_a != NO_ISLAND) & (slot_b != NO_ISLAND)
+            if not same.any():
+                return
+            ca = cell_a[same]
+            cb = ca + step
+            sa, sb = slot_a[same].astype(np.int64), slot_b[same].astype(np.int64)
+            na = np.where(sa == 0, ca, ncell + start[ca] + sa - 1)
+            nb = np.where(sb == 0, cb, ncell + start[cb] + sb - 1)
+            pair, inv = np.unique(na * (ncell + len(f_label) + 1) + nb, return_inverse=True)
+            width = np.bincount(inv).astype(float)
+            na = pair // (ncell + len(f_label) + 1)
+            nb = pair % (ncell + len(f_label) + 1)
+
+            def centre(node):
+                piece = node >= ncell
+                k = np.where(piece, node - ncell, 0)
+                c = np.where(piece, 0, node)
+                if along_x:
+                    return np.where(piece, f_cx[k] if len(f_cx) else 0.0, cxf[c])
+                return np.where(piece, f_cy[k] if len(f_cy) else 0.0, cyf[c])
+
+            dist = np.maximum(centre(nb) + s - centre(na), 1.0)
+            la.append(na); lb_.append(nb); lw.append(width / dist)
+
+        if len(f_label):
+            if nx > 1:
+                rows = np.repeat(np.arange(ny * s) // s, nx - 1).reshape(ny * s, nx - 1)
+                cell_a = rows * nx + np.arange(nx - 1)[None, :]
+                joints(lab[:, s - 1:-1:s], lab[:, s::s], slot[:, s - 1:-1:s], slot[:, s::s],
+                       cell_a, 1, True)
+            if ny > 1:
+                colc = np.tile(np.arange(nx * s) // s, (ny - 1, 1))
+                cell_a = np.arange(ny - 1)[:, None] * nx + colc
+                joints(lab[s - 1:-1:s, :], lab[s::s, :], slot[s - 1:-1:s, :], slot[s::s, :],
+                       cell_a, nx, False)
+        cat = (lambda v, t: np.concatenate(v) if v else np.zeros(0, dtype=t))
+        isl = Islands(label_main, fill_main, edge_main, start, f_label, f_fill, f_edge, slot,
+                      cat(la, np.int64), cat(lb_, np.int64), cat(lw, float))
+
+        # the main islands' slices: pieces taken out, and no copper link
+        # between two cells whose main islands differ
+        piece = (slot > 0) & (slot != NO_ISLAND)
+        ox[piece] = 0.0
+        oy[piece] = 0.0
+        sx, sy = self.slices(s, nx, ny, ox, oy)
+        lm = label_main
+        if nx > 1:
+            sx[(lm[:, :-1] != lm[:, 1:]) & (lm[:, :-1] > 0) & (lm[:, 1:] > 0)] = 0.0
+        if ny > 1:
+            sy[(lm[:-1, :] != lm[1:, :]) & (lm[:-1, :] > 0) & (lm[1:, :] > 0)] = 0.0
+        return isl, sx, sy
+
+
 #: A sample this much short of the copper on both sides of it is a gap.
 _GAP_DIP = 0.02
+#: A sample with less copper than this is part of no island.
+_ISLAND_MIN = 0.01
 
 
 def _open_gaps(a: np.ndarray, axis: int) -> np.ndarray:
@@ -633,6 +929,15 @@ def _unpoured(board: LayoutBoard, want: list[str], keep) -> list[str]:
             f"left out (repour them in the PCB editor): {', '.join(empty[:6])}{more}"]
 
 
+def fine_supersample(cell_mils: float, cells: int, sample_mils: float = SAMPLE_MILS,
+                     max_samples: int = MAX_SAMPLES) -> int:
+    """Samples per cell side for a sample pitch of ``sample_mils``, as
+    far as ``max_samples`` on a grid of ``cells`` allows; never under 4."""
+    want = int(math.ceil(cell_mils / sample_mils - 1e-9))
+    room = int(math.sqrt(max_samples / max(1, cells)))
+    return max(4, min(want, room))
+
+
 def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
               nets: Optional[Iterable[str]] = None,
               layers: Optional[Iterable[str]] = None,
@@ -641,14 +946,17 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
               margin_cells: int = 0,
               kinds: Optional[Iterable[str]] = None,
               links: bool = False,
-              bounds: Optional[tuple[float, float, float, float]] = None) -> CopperRaster:
+              bounds: Optional[tuple[float, float, float, float]] = None,
+              islands: bool = False) -> CopperRaster:
     """The board's copper as fill fractions on a ``cell_mils`` grid.
 
     ``nets``: only copper of these nets. ``layers``: only these copper
     layers (default all, top first). ``supersample``: samples per cell
     side; it sets how finely a pour's edge and a gap are placed (to half
     a sample), not the area of tracks, circles and rectangles, which is
-    exact. ``kinds``: paint only these object kinds, a subset of
+    exact. 0 picks it for conduction: a sample of ``SAMPLE_MILS`` or the
+    finest that keeps a layer under ``MAX_SAMPLES``, and at least 4 per
+    cell (``fine_supersample``). ``kinds``: paint only these object kinds, a subset of
     ``KINDS`` (default all); an IR-drop model that treats tracks as exact
     1D resistors leaves ``tracks`` and ``arcs`` out. Drill holes are
     always cut. ``links`` also fills ``link_x`` / ``link_y``, the copper's
@@ -657,14 +965,16 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     cell), ``slice_x`` / ``slice_y`` (``CopperRaster.link_conductivity``)
     and ``edge_mils``. ``bounds``: (x0, y0, x1, y1) in mils, the
     rectangle to grid instead of the board's extent (a window of the
-    board at a finer cell)."""
+    board at a finer cell). ``islands`` (with ``links``) also splits
+    each cell's copper by island (``Islands``): ``slice_x`` / ``slice_y``
+    then describe the cells' main islands only, and ``fill`` stays the
+    whole copper of the cell."""
     kind_set = set(KINDS) if kinds is None else set(kinds)
     unknown = kind_set - set(KINDS)
     if unknown:
         raise ValueError(f"unknown kinds {sorted(unknown)}; use {list(KINDS)}")
     if cell_mils <= 0:
         raise ValueError("cell_mils must be > 0")
-    s = max(1, int(supersample))
     order = board.copper_layers() or ["TopLayer", "BottomLayer"]
     want = [l for l in order if layers is None or l in set(layers)]
     net_set = None if nets is None else {n for n in nets}
@@ -678,6 +988,8 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     if nx * ny > MAX_CELLS:
         raise ValueError(f"{nx} x {ny} cells is too fine for this board; "
                          f"use a larger cell_mils")
+    s = int(supersample)
+    s = fine_supersample(cell_mils, nx * ny) if s <= 0 else s
     pitch = cell_mils / s
     clear = plane_clearance_mils
     notes = []
@@ -719,6 +1031,7 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
     slice_x: dict[str, np.ndarray] = {}
     slice_y: dict[str, np.ndarray] = {}
     edge_mils: dict[str, np.ndarray] = {}
+    isl: dict[str, Islands] = {}
     for layer in want:
         lk = kinds.get(layer)
         is_plane = lk is not None and lk.kind == "plane"
@@ -779,14 +1092,17 @@ def rasterize(board: LayoutBoard, cell_mils: float = 25.0,
         fill[layer] = c.cells(s, nx, ny)
         if links:
             link_x[layer], link_y[layer] = c.links(s, nx, ny)
-            slice_x[layer], slice_y[layer] = c.slices(s, nx, ny)
+            if islands:
+                isl[layer], slice_x[layer], slice_y[layer] = c.islands(s, nx, ny)
+            else:
+                slice_x[layer], slice_y[layer] = c.slices(s, nx, ny)
             edge_mils[layer] = c.edges(s, nx, ny)
 
     raster = CopperRaster(x0, y0, cell_mils, nx, ny, want, mask, fill,
                           nets=sorted(net_set) if net_set is not None else None,
                           plane_clearance_mils=clear, supersample=s, notes=notes,
                           kinds=sorted(kind_set), link_x=link_x, link_y=link_y,
-                          slice_x=slice_x, slice_y=slice_y, edge_mils=edge_mils)
+                          slice_x=slice_x, slice_y=slice_y, edge_mils=edge_mils, islands=isl)
     for (hx, hy, hole, span, hnet, kind, comp, pin, land) in holes:
         if not keep(hnet):
             continue
