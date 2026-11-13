@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from eda_agent.layout.model import (
-    Component, Layer, LayoutBoard, Pad, PadCopper, Region, Track, Via,
+    Component, Layer, LayoutBoard, Pad, PadCopper, Track, Via,
 )
 
 #: 4-layer stack: Top / GND (4 mil below) / PWR (40 mil core) / Bottom.

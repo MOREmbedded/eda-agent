@@ -39,7 +39,6 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..layout import geom
 from ..layout.model import LayoutBoard, Pad
 from . import physics as ph
 from .decap import (BULK_KINDS, Decap, bulk_kind, default_esl, default_esr,
@@ -532,7 +531,7 @@ def find_decaps(board: LayoutBoard, net: str, ground: str, also=(),
         elif skipped is not None:
             skipped.append(f"{ref}: {len(pads)} pads, also on {', '.join(others[:3])}"
                            + (" ..." if len(others) > 3 else "")
-                           + f" (an array?); not counted: pass it in decaps to count it")
+                           + " (an array?); not counted: pass it in decaps to count it")
     return out
 
 

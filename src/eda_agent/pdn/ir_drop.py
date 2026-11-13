@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import numpy as np
 

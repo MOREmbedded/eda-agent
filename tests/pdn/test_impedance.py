@@ -845,6 +845,14 @@ def test_a_part_cell_at_the_copper_edge_stays_joined_to_the_plane():
                   Region("InternalPlane2", [(0, 1590), (2000, 1590), (2000, 1600), (0, 1600)], [], "+1V0", "copper")]
     cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
     assert cav.area_mils2 == pytest.approx(2000 * 1560, rel=2e-3)
+    # the same at the other side of a cell: a plane that starts 30 mil in
+    b = _via_field("none")
+    b.regions.append(Region("InternalPlane2", [(0, 30), (2000, 30), (2000, 1600), (0, 1600)],
+                            [], "+1V0", "copper"))
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
+    assert cav.cells.all() and not cav.notes
+    assert cav.fill[0, 5] == pytest.approx(0.28, abs=0.01)
+    assert cav.area_mils2 == pytest.approx(2000 * 1570, rel=1e-3)
 
 
 def test_antipads_four_mils_apart_still_leave_the_plane_whole():
@@ -863,6 +871,11 @@ def test_a_large_board_is_sampled_as_finely_as_memory_allows_and_says_so(monkeyp
     monkeypatch.setattr(im, "MAX_SAMPLES", 100_000)      # 2000 x 1600 mil: 5.7 mil samples
     cav = im.find_cavity(_via_field("one"), st, "+1V0", "GND", 1e9, 80.0)
     assert any("sampled every" in n and "may read as cut" in n for n in cav.notes)
+    assert cav.first_mode_hz() == pytest.approx(fine.first_mode_hz(), rel=0.03)
+    # and the fine grid itself stays inside the raster's limit
+    from eda_agent.layout import copper_raster
+    monkeypatch.setattr(copper_raster, "MAX_CELLS", 20_000)   # 500 cells x 8 x 8 would be 32 000
+    cav = im.find_cavity(_via_field("one"), st, "+1V0", "GND", 1e9, 80.0)
     assert cav.first_mode_hz() == pytest.approx(fine.first_mode_hz(), rel=0.03)
 
 
