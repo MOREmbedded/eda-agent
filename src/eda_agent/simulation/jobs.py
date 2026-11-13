@@ -104,6 +104,63 @@ def make_id(kind: str, spec: dict[str, Any], input_hashes: dict[str, str]) -> st
     return f"{_safe(kind)}-{digest[:12]}"
 
 
+def _provenance(path: Path, root: Path) -> dict[str, str]:
+    """Where an input came from, when it is another job's output or a
+    board snapshot: the edges of the job graph."""
+    try:
+        rel = path.resolve().relative_to(Path(root).resolve())
+    except (ValueError, OSError):
+        return {}
+    parts = rel.parts
+    if len(parts) >= 2 and parts[0] == "_snapshots":
+        return {"from_snapshot": parts[1]}
+    if len(parts) >= 2 and (Path(root) / parts[0] / "job.json").is_file():
+        return {"from_job": parts[0]}
+    return {}
+
+
+def lineage(job_id: str, base: Optional[Path] = None) -> dict[str, Any]:
+    """The job's place in the graph: the jobs and snapshots its inputs
+    came from (with each snapshot's staleness), and the jobs that used
+    its outputs."""
+    root = base or jobs_dir()
+    job = load(root / job_id)
+    if job is None:
+        raise KeyError(f"no job {job_id}")
+    parents, snaps = [], []
+    for role, meta in job.inputs.items():
+        if meta.get("from_job"):
+            pj = load(root / meta["from_job"])
+            parents.append({"role": role, "job": meta["from_job"],
+                            "title": pj.title if pj else meta["from_job"],
+                            "kind": pj.kind if pj else ""})
+        if meta.get("from_snapshot") and not any(s["snapshot"] == meta["from_snapshot"]
+                                                 for s in snaps):
+            entry: dict[str, Any] = {"role": role, "snapshot": meta["from_snapshot"]}
+            try:
+                from ..si import snapshot as _snap
+                rec = _snap.load(meta["from_snapshot"])
+                st = _snap.status(rec)
+                entry.update(stale=st.get("stale"), why=st.get("why"),
+                             source=rec.get("source_file", ""))
+            except Exception:  # noqa: BLE001 - a missing snapshot is just unknown
+                entry["stale"] = None
+            snaps.append(entry)
+    children = []
+    if root.is_dir():
+        for d in root.iterdir():
+            other = load(d) if d.is_dir() and d.name != job_id else None
+            if other is None:
+                continue
+            for role, meta in other.inputs.items():
+                if meta.get("from_job") == job_id:
+                    children.append({"role": role, "job": other.id, "title": other.title,
+                                     "kind": other.kind})
+    children.sort(key=lambda c: c["job"])
+    return {"parents": parents, "snapshots": snaps, "children": children,
+            "stale": any(s.get("stale") for s in snaps)}
+
+
 def create(kind: str, spec: dict[str, Any], inputs: Optional[dict[str, str]] = None,
            title: str = "", base: Optional[Path] = None) -> Job:
     """The job for this problem: made when new, found when it exists."""
@@ -129,7 +186,8 @@ def create(kind: str, spec: dict[str, Any], inputs: Optional[dict[str, str]] = N
         if role in ("touchstone",) or path.suffix.lower().startswith(".s"):
             name = _safe(path.name)
         shutil.copyfile(path, root / "inputs" / name)
-        meta_inputs[role] = {"file": name, "sha256": hashes[role], "name": path.name}
+        meta_inputs[role] = {"file": name, "sha256": hashes[role], "name": path.name,
+                             **_provenance(path, base or jobs_dir())}
     job = Job(jid, kind, title or kind, spec, meta_inputs, time.time(), root)
     write_json(root / "job.json", job.to_dict())
     return job

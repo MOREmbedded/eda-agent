@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "Länge (mm)",
- "Up to (GHz)": "Bis (GHz)"
+ "Up to (GHz)": "Bis (GHz)",
+ "Made from": "Erstellt aus",
+ "Used by": "Verwendet von",
+ "board snapshot {0}": "Platinen-Snapshot {0}",
+ "stale": "veraltet",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "Die Platine wurde seit dem Snapshot dieses Jobs geändert: neuen Snapshot erstellen und erneut ausführen."
 }

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..si.jobs import LINE_SPEC, PLAN_SPEC
+from ..si.board_jobs import BOARD_SPEC
 from ..si.eye_jobs import EYE_SPEC
 from ..si.net_jobs import NET_SPEC
 from .engine import JobKind
@@ -76,6 +77,14 @@ KINDS: dict[str, JobKind] = {k.id: k for k in (
         "channel as a passive subcircuit with an LTspice symbol.",
         inputs={"touchstone": "the channel's .s2p or .s4p (e.g. from a net-channel job)"},
         spec=EYE_SPEC),
+    JobKind(
+        "board-si", "Board signal integrity",
+        "Every high-speed net and pair of a board checked against its target's limits "
+        "(impedance, loss, return loss, skew, stub resonance, and optionally the eye), with "
+        "each failure placed on the board, a findings file and a report.",
+        inputs={"board": "a saved LayoutBoard (.json), e.g. from si_board_snapshot",
+                "stackup": "the board's pcb_get_layer_stackup reply (.json)"},
+        spec=BOARD_SPEC),
 )}
 
 

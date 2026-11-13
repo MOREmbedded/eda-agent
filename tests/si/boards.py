@@ -68,3 +68,21 @@ def pair_board(length: float = 2000, gap: float = 5, w: float = 4, skew: float =
     b.vias += [via(-30, -40, "GND"), via(length + 30, -40, "GND")]
     b.diff_pairs = [DiffPair("D", "D_P", "D_N")]
     return b
+
+
+def mixed_board() -> LayoutBoard:
+    """pair_board() with single_net() (stub and all) 3000 mil above it."""
+    b = pair_board(skew=0)
+    s = single_net(with_stub=True)
+    for p in s.pads:
+        p.y += 3000
+    for v in s.vias:
+        v.y += 3000
+    for t in s.tracks:
+        t.y1 += 3000
+        t.y2 += 3000
+    b.pads += s.pads
+    b.vias += s.vias
+    b.tracks += s.tracks
+    b.net_classes = {"FAST": ["SIG"], "PAIRS": ["D_P", "D_N"]}
+    return b

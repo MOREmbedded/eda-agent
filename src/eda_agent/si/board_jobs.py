@@ -1,0 +1,504 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Board SI: every high-speed net of a board, checked and reported.
+
+A ``board-si`` job takes the board snapshot once and runs the routed-net
+channel (:mod:`.net_jobs`) on each net or pair it is asked about, with
+the limits of its target, and optionally the eye (:mod:`.eye_jobs`).
+What fails becomes a *finding*: the net, the check, the value against the
+limit, and *where on the board* it is:
+
+* an impedance fault at the place the TDR sees it: the round-trip time to
+  the TDR's worst point, halved and divided by the delay per mil, walked
+  along the routed path;
+* a stub at the point it leaves the path, a via stub at its via;
+* a loss, skew or eye fault at the driving pin.
+
+The findings go to ``findings.json`` (for the dashboard and for Altium
+markers), ``summary.csv`` and a self-contained ``report.html``.
+"""
+from __future__ import annotations
+
+import base64
+import csv
+import fnmatch
+import html
+import json
+import math
+import re
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+
+from ..layout.model import LayoutBoard
+from . import extract
+from .jobs import _metric, _num
+from .net_jobs import NET_SPEC, run_net_channel
+
+#: Keys a target may carry: the net job's limits and models, and the eye's.
+_NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
+_EYE_KEYS = {"rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
+             "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
+_TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui"} | _NET_KEYS | _EYE_KEYS
+
+BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
+    "targets": ("list", False, "what to check: a list of {match (net or pair name glob) or "
+                               "class (an Altium net class), kind (pair or net), and limits: "
+                               "data_rate_gbps, z_target, z_tol_pct, il_max_db, rl_min_db, "
+                               "skew_max_ps, stub_margin, eye, eye_min_mv, eye_min_ui, and the "
+                               "eye's driver and receiver}; default every differential pair"),
+    "data_rate_gbps": ("number", False, "data rate where a target gives none"),
+    "eye": ("bool", False, "also run the eye of every item (default false)"),
+    "max_items": ("number", False, "most nets and pairs checked in one job (default 40)"),
+    "workers": ("number", False, "items solved at once (default 4)"),
+    "f_max_ghz": ("number", False, "top of the band (default 3x the highest Nyquist, at least 10)"),
+    "points": ("number", False, "frequency points (default 200)"),
+    "temperature_c": ("number", False, "copper temperature of every trace"),
+    "thermal_npz": ("text", False, "a thermal analysis' result.npz: copper temperature by place"),
+    "tand": ("number", False, "loss tangent of every dielectric (default 0.02)"),
+    "foil": ("text", False, "copper roughness preset"),
+    "mask_mils": ("number", False, "solder mask on outer layers"),
+    "etch_mils": ("number", False, "etch narrowing of the top face"),
+}
+
+#: Checks whose failure is a warning rather than an error.
+WARNING_CHECKS = {"return loss", "reciprocity"}
+
+
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name)[:60] or "item"
+
+
+def select(board: LayoutBoard, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The items to check: (kind, name, the target's settings). Each net
+    or pair is taken by the first target that matches it."""
+    pairs = {d.name: d for d in board.diff_pairs}
+    in_pair = {n for d in board.diff_pairs for n in (d.positive, d.negative)}
+    nets = [n for n in board.nets() if n]
+    targets = list(spec.get("targets") or [])
+    if not targets:
+        if not pairs:
+            raise ValueError("the board has no differential pairs; name what to check in "
+                             "targets (match a net or pair name, or an Altium net class)")
+        targets = [{"match": "*", "kind": "pair"}]
+    out: list[dict[str, Any]] = []
+    taken: set[tuple[str, str]] = set()
+    for i, tg in enumerate(targets):
+        if not isinstance(tg, dict):
+            raise ValueError(f"target {i + 1} is not an object")
+        bad = set(tg) - _TARGET_KEYS
+        if bad:
+            raise ValueError(f"target {i + 1}: unknown keys {', '.join(sorted(bad))}")
+        kind = str(tg.get("kind") or "").lower()
+        if kind not in ("", "pair", "net"):
+            raise ValueError(f"target {i + 1}: kind is pair or net")
+        if tg.get("class"):
+            cls = str(tg["class"])
+            members = next((v for k, v in board.net_classes.items() if k.lower() == cls.lower()),
+                           None)
+            if members is None:
+                raise ValueError(f"target {i + 1}: no net class {cls!r}; classes: "
+                                 f"{', '.join(sorted(board.net_classes)) or 'none'}")
+            names_p = [p for p, d in pairs.items() if d.positive in members and d.negative in members]
+            names_n = [n for n in members if n not in in_pair]
+        else:
+            pat = str(tg.get("match") or "*")
+            names_p = [p for p in pairs if fnmatch.fnmatchcase(p.upper(), pat.upper())]
+            names_n = [n for n in nets if n not in in_pair
+                       and fnmatch.fnmatchcase(n.upper(), pat.upper())]
+        if kind == "net":
+            names_p = []
+        if kind == "pair":
+            names_n = []
+        for k, names in (("pair", names_p), ("net", names_n)):
+            for name in sorted(names):
+                if (k, name) in taken:
+                    continue
+                taken.add((k, name))
+                out.append({"kind": k, "name": name, "target": i + 1, "settings": dict(tg)})
+    return out
+
+
+def _walk(path: extract.NetPath, one_way_s: float, tpd: dict[str, float], per_mil: float
+          ) -> Optional[tuple[float, float, str, float]]:
+    """The point a signal reaches ``one_way_s`` after leaving the start
+    pin: each trace section at its own delay per mil (``tpd``, keyed as
+    the net model names its cross-sections; ``per_mil`` where a section
+    has none), vias taken as instant. Returns x, y, layer and the
+    distance in mils."""
+    left = max(one_way_s, 0.0)
+    dist = 0.0
+    last = None
+    for s in path.sections:
+        if s.kind != "line" or len(s.pts) < 2:
+            continue
+        rate = tpd.get(f"{s.layer} {round(s.width, 2):g} mil", per_mil)
+        for a, b in zip(s.pts, s.pts[1:]):
+            d = math.dist(a, b)
+            last = (b[0], b[1], s.layer, dist + d)
+            if left <= d * rate:
+                u = left / (d * rate) if d else 0.0
+                return (a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1]), s.layer,
+                        dist + u * d)
+            left -= d * rate
+            dist += d
+    return last
+
+
+def _pin_xy(board: LayoutBoard, key: str) -> Optional[tuple[float, float]]:
+    for p in board.pads:
+        if p.key == key:
+            return (p.x, p.y)
+    return None
+
+
+def _tdr_fault(folder: Path, z_target: float, rise_s: float, delay_s: float
+               ) -> Optional[tuple[float, float]]:
+    """(one-way time to the TDR's fault, its impedance). The TDR's time
+    axis has the edge's 50 % point at the pad at t = 0, so a fault seen
+    at t lies t / 2 down the line."""
+    try:
+        data = np.loadtxt(folder / "tdr.csv", delimiter=",", skiprows=1)
+    except (OSError, ValueError):
+        return None
+    t = data[:, 0] * 1e-12
+    z = data[:, 1]
+    inside = (t > 0.5 * rise_s) & (t < 2 * delay_s)
+    if not inside.any():
+        return None
+    dev = np.abs(z[inside] - z_target)
+    worst = int(np.argmax(dev))
+    # the fault starts where the TDR first moves half way to its worst
+    # value: a tee or a long low-impedance stretch holds its dip until the
+    # far side's reflection returns, so the worst point is its end
+    k = worst
+    while k > 0 and dev[k - 1] >= 0.5 * dev[worst]:
+        k -= 1
+    return float(t[inside][k]) / 2, float(z[inside][worst])
+
+
+def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: dict[str, Any],
+            folder: Path, rise_s: float, z_target: float, paths) -> dict[str, Any]:
+    path = paths[1] if item["kind"] == "pair" else paths[0]
+    start = _pin_xy(board, path.start) if path is not None else None
+    where: dict[str, Any] = {}
+    if start is not None:
+        where = {"at_mils": [round(start[0], 2), round(start[1], 2)], "where": f"at {path.start}"}
+    if path is None:
+        return where
+    if v["check"] == "impedance" and "delay_ps" in res["metrics"] and path.length:
+        delay = res["metrics"]["delay_ps"]["value"] * 1e-12
+        hit = _tdr_fault(folder, z_target, rise_s, delay)
+        try:
+            xs = json.loads((folder / "sections.json").read_text(encoding="utf-8"))
+            tpd = {k: v2["delay_ps_per_in"] * 1e-12 / 1000
+                   for k, v2 in xs.get("cross_sections", {}).items() if "delay_ps_per_in" in v2}
+        except (OSError, ValueError, KeyError):
+            tpd = {}
+        if hit is not None:
+            one_way, z = hit
+            pt = _walk(path, one_way, tpd, delay / path.length)
+            if pt is not None:
+                where = {"at_mils": [round(pt[0], 2), round(pt[1], 2)], "layer": pt[2],
+                         "where": f"{pt[3]:.0f} mil from {path.start} (TDR {z:.1f} ohm)"}
+    elif v["check"] == "stub resonance":
+        blocks = res.get("figures", {}).get("blocks", [])
+        worst = min((b for b in blocks if b.get("stub_resonance_ghz")),
+                    key=lambda b: b["stub_resonance_ghz"], default=None)
+        if worst is not None and worst.get("kind") == "stub" and worst.get("at_mils"):
+            where = {"at_mils": worst["at_mils"], "layer": worst.get("layer", ""),
+                     "where": f"stub of {worst.get('length_mils', 0):.0f} mil"
+                              + (f" to {worst['to']}" if worst.get("to") else "")}
+        elif worst is not None and worst.get("via") is not None:
+            via = board.vias[int(worst["via"])]
+            where = {"at_mils": [round(via.x, 2), round(via.y, 2)],
+                     "where": f"via stub of {worst.get('stub_mils', 0):.0f} mil"}
+    return where
+
+
+def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points: int
+               ) -> dict[str, Any]:
+    s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
+    for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils"):
+        if k in spec and k not in s:
+            s[k] = spec[k]
+    if "data_rate_gbps" not in s and spec.get("data_rate_gbps") is not None:
+        s["data_rate_gbps"] = spec["data_rate_gbps"]
+    s.setdefault("f_max_ghz", f_max)
+    s.setdefault("points", points)
+    s["rules"] = False
+    s["pair" if item["kind"] == "pair" else "net"] = item["name"]
+    return s
+
+
+def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: dict,
+         board: LayoutBoard, folder: Path, f_max: float, points: int) -> dict[str, Any]:
+    sub = folder / "items" / _safe(f"{item['kind']}_{item['name']}")
+    s = _item_spec(item, spec, f_max, points)
+    out: dict[str, Any] = {"kind": item["kind"], "name": item["name"], "target": item["target"],
+                           "folder": str(sub.relative_to(folder)), "findings": []}
+    try:
+        res = run_net_channel(s, board_data, stackup, sub)
+    except Exception as exc:  # noqa: BLE001 - one bad net must not stop the board
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["findings"].append({"check": "modelled", "severity": "warning",
+                                "detail": f"not modelled: {exc}"})
+        return out
+    out["metrics"] = {k: v["value"] for k, v in res["metrics"].items()}
+    out["verdicts"] = res["verdicts"]
+    out["files"] = {k: f"{out['folder']}/{v}" for k, v in res.get("files", {}).items()}
+    pair = item["kind"] == "pair"
+    try:
+        if pair:
+            pos, neg = extract.find_pair(board, item["name"])
+            pp = extract.pair_path(board, item["name"], pos, neg)
+            paths = (None, pp.p)
+        else:
+            paths = (extract.net_path(board, item["name"]), None)
+    except Exception:  # noqa: BLE001
+        paths = (None, None)
+    z_ref = float(s.get("z_ref", 50))
+    z_target = float(s.get("z_target", 2 * z_ref if pair else z_ref))
+    rise = float(s.get("rise_ps", 35)) * 1e-12
+    want_eye = bool(item["settings"].get("eye", spec.get("eye", False)))
+    if want_eye and s.get("data_rate_gbps"):
+        from . import eye_jobs
+        es = {k: v for k, v in item["settings"].items() if k in _EYE_KEYS}
+        es["data_rate_gbps"] = s["data_rate_gbps"]
+        es["repeats"] = 1
+        try:
+            ts = sub / res["files"]["touchstone"]
+            er = eye_jobs.run_convolution(es, ts, sub / "eye")
+            em = {k: v["value"] for k, v in er["metrics"].items()}
+            out["metrics"].update({f"eye_{k}" if not k.startswith(("eye", "worst")) else k: v
+                                   for k, v in em.items() if k != "insertion_loss_db_at_nyquist"})
+            if "plot" in er.get("files", {}):
+                out["files"]["eye"] = f"{out['folder']}/eye/{er['files']['plot']}"
+            lim_mv = item["settings"].get("eye_min_mv")
+            lim_ui = item["settings"].get("eye_min_ui")
+            h, w = em["eye_height_mv"], em["eye_width_ui"]
+            ok = h > (float(lim_mv) if lim_mv is not None else 0.0) and \
+                (lim_ui is None or w >= float(lim_ui))
+            need = []
+            if lim_mv is not None:
+                need.append(f"{float(lim_mv):g} mV")
+            if lim_ui is not None:
+                need.append(f"{float(lim_ui):g} UI")
+            out["verdicts"].append({"check": "eye", "pass": bool(ok),
+                                    "detail": f"{h:.1f} mV by {w:.3f} UI"
+                                              + (f", {' and '.join(need)} needed" if need
+                                                 else ", must be open")})
+        except Exception as exc:  # noqa: BLE001
+            out["findings"].append({"check": "eye", "severity": "warning",
+                                    "detail": f"eye not computed: {exc}"})
+    for v in out["verdicts"]:
+        if v["pass"]:
+            continue
+        f = {"check": v["check"],
+             "severity": "warning" if v["check"] in WARNING_CHECKS else "error",
+             "detail": v["detail"]}
+        f.update(_locate(board, item, v, res, sub, rise, z_target, paths))
+        out["findings"].append(f)
+    return out
+
+
+def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict],
+                 folder: Path, progress=None, snapshot: str = "") -> dict[str, Any]:
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    say = progress or (lambda *_: None)
+    if not stackup:
+        raise ValueError("board SI needs the board's stackup")
+    board = LayoutBoard.from_dict(board_data)
+    items = select(board, spec)
+    if not items:
+        raise ValueError("no net or pair matches the targets")
+    cap = int(_num(spec, "max_items", 40))
+    skipped = items[cap:]
+    items = items[:cap]
+    rates = [float(it["settings"].get("data_rate_gbps", spec.get("data_rate_gbps") or 0))
+             for it in items]
+    for it, r in zip(items, rates):
+        if r <= 0:
+            raise ValueError(f"{it['kind']} {it['name']}: no data rate (give data_rate_gbps "
+                             "in its target or for the job)")
+    f_max = _num(spec, "f_max_ghz", max(10.0, 1.5 * max(rates)))
+    points = int(_num(spec, "points", 200))
+    workers = max(1, min(int(_num(spec, "workers", 4)), 8))
+    say(f"checking {len(items)} nets and pairs", 0.02)
+    done = [0]
+
+    def work(it):
+        r = _one(it, spec, board_data, stackup, board, folder, f_max, points)
+        done[0] += 1
+        say(f"{it['kind']} {it['name']}", 0.05 + 0.85 * done[0] / len(items))
+        return r
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(work, items))
+
+    findings = []
+    for r in results:
+        for f in r["findings"]:
+            findings.append({"id": f"F{len(findings) + 1}", "kind": r["kind"], "item": r["name"],
+                             "folder": r["folder"], **f})
+    order = {"error": 0, "warning": 1}
+    findings.sort(key=lambda f: (order.get(f["severity"], 2), f["item"], f["check"]))
+    for i, f in enumerate(findings):
+        f["id"] = f"F{i + 1}"
+    errors = sum(f["severity"] == "error" for f in findings)
+    warnings = sum(f["severity"] == "warning" for f in findings)
+    failed = sorted({f["item"] for f in findings if f["severity"] == "error"})
+    data = {"board": board.name, "snapshot": snapshot, "items": results, "findings": findings,
+            "skipped": [f"{it['kind']} {it['name']}" for it in skipped]}
+    (folder / "findings.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
+    _summary_csv(folder / "summary.csv", results)
+    say("report", 0.95)
+    (folder / "report.html").write_text(report_html(data, folder), encoding="utf-8")
+
+    m: dict[str, Any] = {
+        "items_checked": _metric(len(results), "", "Nets and pairs checked"),
+        "items_failed": _metric(len(failed), "", "Nets and pairs with an error"),
+        "errors": _metric(errors, "", "Findings that fail a limit"),
+        "warnings": _metric(warnings, "", "Findings to look at"),
+    }
+    il = [r["metrics"]["insertion_loss_db"] for r in results if "metrics" in r]
+    if il:
+        m["worst_insertion_loss_db"] = _metric(round(max(il), 3), "dB",
+                                               "Highest insertion loss at Nyquist")
+    eyes = [r["metrics"]["eye_height_mv"] for r in results
+            if "metrics" in r and "eye_height_mv" in r["metrics"]]
+    if eyes:
+        m["smallest_eye_mv"] = _metric(round(min(eyes), 2), "mV", "Smallest eye height")
+    verdicts = [{"check": f"{r['kind']} {r['name']}",
+                 "pass": not any(f["severity"] == "error" for f in r["findings"]),
+                 "detail": "; ".join(f"{f['check']}: {f['detail']}" for f in r["findings"]
+                                     if f["severity"] == "error") or "within its limits"}
+                for r in results]
+    notes = [f"{len(results)} items, each a net-channel model with its target's limits; "
+             "findings are placed where the TDR, the stub or the driving pin puts them"]
+    if skipped:
+        notes.append(f"{len(skipped)} more items matched but were not checked (max_items "
+                     f"{cap}): {', '.join(data['skipped'][:10])}"
+                     + (" ..." if len(skipped) > 10 else ""))
+    return {"metrics": m, "verdicts": verdicts, "notes": notes,
+            "files": {"report": "report.html", "findings": "findings.json",
+                      "summary": "summary.csv"},
+            "figures": {"findings": findings}}
+
+
+def _summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
+    keys = ["insertion_loss_db", "return_loss_db", "line_loss_db", "delay_ps", "tdr_min_ohms",
+            "tdr_max_ohms", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
+            "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["kind", "name", "errors", "warnings"] + keys)
+        for r in results:
+            mm = r.get("metrics", {})
+            w.writerow([r["kind"], r["name"],
+                        sum(f["severity"] == "error" for f in r["findings"]),
+                        sum(f["severity"] == "warning" for f in r["findings"])]
+                       + [mm.get(k, "") for k in keys])
+
+
+_CSS = """
+:root{--bg:#fff;--fg:#1d1f23;--mut:#5d6470;--line:#d9dde3;--err:#b42318;--warn:#a15c07;
+--ok:#1a7f37;--card:#f6f7f9}
+@media (prefers-color-scheme:dark){:root{--bg:#15171a;--fg:#e6e8eb;--mut:#9aa1ab;
+--line:#2c3036;--err:#ff7b72;--warn:#e3b341;--ok:#56d364;--card:#1c1f23}}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;margin:0;
+padding:24px 16px;max-width:1100px;margin:auto}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
+.mut{color:var(--mut)}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:600}.num{text-align:right;font-variant-numeric:tabular-nums}
+.error{color:var(--err);font-weight:600}.warning{color:var(--warn);font-weight:600}
+.ok{color:var(--ok)}.tiles{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+.tile{background:var(--card);border-radius:8px;padding:10px 14px;min-width:120px}
+.tile b{display:block;font-size:22px}details{margin:6px 0}
+img{max-width:100%;border-radius:6px;background:#fff}.wrap{overflow-x:auto}
+"""
+
+
+def _img(folder: Path, rel: Optional[str]) -> str:
+    if not rel:
+        return ""
+    p = folder / rel
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return f'<img alt="{html.escape(rel)}" src="data:image/png;base64,{data}">'
+
+
+def report_html(data: dict[str, Any], folder: Path) -> str:
+    e = html.escape
+    items = data["items"]
+    findings = data["findings"]
+    errs = sum(f["severity"] == "error" for f in findings)
+    warns = sum(f["severity"] == "warning" for f in findings)
+    failed = len({f["item"] for f in findings if f["severity"] == "error"})
+    out = [f"<!doctype html><html lang=en><head><meta charset=utf-8>"
+           f"<meta name=viewport content='width=device-width,initial-scale=1'>"
+           f"<title>Board SI report</title><style>{_CSS}</style></head><body>",
+           f"<h1>Board SI report: {e(data['board'] or 'board')}</h1>",
+           f"<div class=mut>snapshot {e(data.get('snapshot') or 'from files')}</div>",
+           "<div class=tiles>",
+           f"<div class=tile><b>{len(items)}</b><span class=mut>checked</span></div>",
+           f"<div class=tile><b class={'error' if failed else 'ok'}>{failed}</b>"
+           f"<span class=mut>failing</span></div>",
+           f"<div class=tile><b>{errs}</b><span class=mut>errors</span></div>",
+           f"<div class=tile><b>{warns}</b><span class=mut>warnings</span></div></div>"]
+    out.append("<h2>Findings</h2>")
+    if findings:
+        out.append("<div class=wrap><table><tr><th>ID</th><th>Severity</th><th>Item</th>"
+                   "<th>Check</th><th>Detail</th><th>Where</th></tr>")
+        for f in findings:
+            at = f.get("at_mils")
+            where = e(f.get("where", ""))
+            if at:
+                where += f" <span class=mut>({at[0]:.0f}, {at[1]:.0f} mil"
+                where += f", {e(f['layer'])})" if f.get("layer") else ")"
+                where += "</span>"
+            out.append(f"<tr><td>{e(f['id'])}</td><td class={e(f['severity'])}>"
+                       f"{e(f['severity'])}</td><td>{e(f['kind'])} {e(f['item'])}</td>"
+                       f"<td>{e(f['check'])}</td><td>{e(f['detail'])}</td><td>{where}</td></tr>")
+        out.append("</table></div>")
+    else:
+        out.append("<p class=ok>Every net and pair is within its limits.</p>")
+    cols = [("insertion_loss_db", "IL dB"), ("return_loss_db", "RL dB"), ("delay_ps", "delay ps"),
+            ("tdr_min_ohms", "TDR min"), ("tdr_max_ohms", "TDR max"), ("skew_ps", "skew ps"),
+            ("stub_resonance_ghz", "stub GHz"), ("eye_height_mv", "eye mV")]
+    out.append("<h2>Nets and pairs</h2><div class=wrap><table><tr><th>Item</th><th>Status</th>"
+               + "".join(f"<th class=num>{e(c)}</th>" for _, c in cols) + "</tr>")
+    for r in items:
+        mm = r.get("metrics", {})
+        bad = [f for f in r["findings"] if f["severity"] == "error"]
+        status = (f"<span class=error>{len(bad)} error{'s' if len(bad) != 1 else ''}</span>"
+                  if bad else ("<span class=warning>not modelled</span>" if "error" in r
+                               else "<span class=ok>pass</span>"))
+        cells = "".join(f"<td class=num>{mm[k]:.4g}</td>" if isinstance(mm.get(k), (int, float))
+                        else "<td class=num>-</td>" for k, _ in cols)
+        out.append(f"<tr><td>{e(r['kind'])} {e(r['name'])}</td><td>{status}</td>{cells}</tr>")
+    out.append("</table></div><h2>Details</h2>")
+    for r in items:
+        files = r.get("files", {})
+        out.append(f"<details><summary>{e(r['kind'])} {e(r['name'])}</summary>")
+        for v in r.get("verdicts", []):
+            cls = "ok" if v["pass"] else "error"
+            out.append(f"<div><span class={cls}>{'pass' if v['pass'] else 'fail'}</span> "
+                       f"{e(v['check'])}: {e(v['detail'])}</div>")
+        if r.get("error"):
+            out.append(f"<div class=warning>{e(r['error'])}</div>")
+        out.append(_img(folder, files.get("plot")))
+        out.append(_img(folder, files.get("eye")))
+        out.append("</details>")
+    if data.get("skipped"):
+        out.append(f"<p class=mut>Not checked (over max_items): {e(', '.join(data['skipped']))}</p>")
+    out.append("</body></html>")
+    return "\n".join(out)
+
+
+__all__ = ["BOARD_SPEC", "select", "run_board_si", "report_html"]

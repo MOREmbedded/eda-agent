@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "Длина (mm)",
- "Up to (GHz)": "До (GHz)"
+ "Up to (GHz)": "До (GHz)",
+ "Made from": "Создано из",
+ "Used by": "Используется в",
+ "board snapshot {0}": "снимок платы {0}",
+ "stale": "устарел",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "Плата изменилась после снимка этого задания: сделайте новый снимок и запустите снова."
 }

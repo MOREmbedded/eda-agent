@@ -1,0 +1,252 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Board SI: selection, located findings, the report, the thermal link,
+the job graph and the Altium marks."""
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import os
+import time
+
+import numpy as np
+import pytest
+from mcp.server.fastmcp import FastMCP
+
+from eda_agent import simulation as sim
+from eda_agent.emc.stack import stack_from_stackup
+from eda_agent.si import board_jobs, extract, net_model
+from eda_agent.si import snapshot as snap
+from eda_agent.si import thermal_link as th
+from eda_agent.simulation import jobs as _jobs
+
+from .boards import STACKUP, mixed_board, pair_board, single_net
+from .test_nets import _rlgc
+
+
+@pytest.fixture(autouse=True)
+def sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDA_AGENT_SIM_JOBS", str(tmp_path / "jobs"))
+    monkeypatch.setenv("EDA_AGENT_FEATURES_FILE", str(tmp_path / "features.json"))
+    monkeypatch.setattr(sim, "_loaded", None)
+
+
+# -- thermal link -------------------------------------------------------------------------
+
+def test_hot_copper_scales_dc_fully_and_skin_by_the_square_root():
+    f = np.concatenate([[1e3], np.geomspace(1e6, 1e11, 40)])
+    r = _rlgc(f)
+    # make R(f) a real skin-effect curve: R_dc below, sqrt(f) far above
+    R = np.array([3.0 * math.sqrt(1 + (x / 5e6)) for x in f])
+    r.R[:, 0, 0] = R
+    hot = th.scale_r(r, 120.0)
+    s = 1 + th.ALPHA_CU * 100
+    assert hot.R[0, 0, 0] / R[0] == pytest.approx(s, rel=1e-4)
+    assert hot.R[-1, 0, 0] / R[-1] == pytest.approx(math.sqrt(s), rel=5e-3)
+    assert th.scale_r(r, 20.0) is r
+    assert np.array_equal(hot.L, r.L) and np.array_equal(hot.G, r.G)
+    with pytest.raises(ValueError):
+        th.scale_r(r, -300)
+
+
+def _npz(tmp_path, hot_c, cold_c=25.0):
+    """A temperature map: the top layer hot left of x = 800, cool elsewhere."""
+    x0, y0, cell = -100.0, -100.0, 10.0
+    nx, ny = 300, 60
+    top = np.full((ny, nx), cold_c, dtype=np.float32)
+    top[:, : int((800 - x0) / cell)] = hot_c
+    path = tmp_path / "result.npz"
+    np.savez_compressed(path, x0=x0, y0=y0, cell_mils=cell,
+                        layers=np.array(["TopLayer", "MidLayer1"]), ambient_c=25.0,
+                        T_TopLayer=top, T_MidLayer1=np.full((ny, nx), cold_c, np.float32))
+    return str(path)
+
+
+def test_temperature_map_is_sampled_along_each_section(tmp_path):
+    t = th.Temperatures(npz=_npz(tmp_path, 100.0))
+    assert t.along("TopLayer", [(0, 0), (600, 0)]) == pytest.approx(100.0)
+    assert t.along("TopLayer", [(1000, 0), (1500, 0)]) == pytest.approx(25.0)
+    mixed = t.along("TopLayer", [(600, 0), (1000, 0)])
+    assert 25 < mixed < 100
+    assert t.along("Nowhere", [(0, 0), (10, 0)]) is None
+    assert th.Temperatures(uniform_c=50).along("Nowhere", []) == 50
+
+
+def test_a_hot_board_loses_more_and_only_where_it_is_hot(tmp_path):
+    b = single_net(with_stub=False)
+    stack = stack_from_stackup(STACKUP, b.layers)
+    p = extract.net_path(b, "SIG")
+    f = np.linspace(0.1e9, 10e9, 100)
+    cold = net_model.single(b, stack, p, f)
+    same = net_model.single(b, stack, p, f, temps=th.Temperatures(uniform_c=20.0))
+    assert np.allclose(same.s, cold.s, atol=1e-12)
+    hot = net_model.single(b, stack, p, f, temps=th.Temperatures(npz=_npz(tmp_path, 105.0, 20.0)))
+    k = 60
+    gain = hot.line_loss_db[k] - cold.line_loss_db[k]
+    assert gain > 0
+    # only the first 1000 mil of top layer (600 hot, 400 half) heated: compare with
+    # every trace at 105 degC, which must lose more
+    all_hot = net_model.single(b, stack, p, f, temps=th.Temperatures(uniform_c=105.0))
+    assert all_hot.line_loss_db[k] - cold.line_loss_db[k] > 1.5 * gain
+    assert any("copper at" in n for n in hot.notes)
+    assert abs(hot.s[k, 1, 0]) < abs(cold.s[k, 1, 0])
+
+
+# -- selection ----------------------------------------------------------------------------
+
+def test_targets_select_by_pattern_class_and_kind():
+    b = mixed_board()
+    items = board_jobs.select(b, {})
+    assert [(i["kind"], i["name"]) for i in items] == [("pair", "D")]
+    items = board_jobs.select(b, {"targets": [{"class": "fast", "data_rate_gbps": 5},
+                                              {"match": "*", "data_rate_gbps": 1}]})
+    got = {(i["kind"], i["name"]): i["target"] for i in items}
+    assert got[("net", "SIG")] == 1                      # the first target wins
+    assert got[("pair", "D")] == 2
+    assert ("net", "D_P") not in got                     # a pair's nets are the pair
+    only = board_jobs.select(b, {"targets": [{"match": "*", "kind": "net"}]})
+    assert {i["kind"] for i in only} == {"net"}
+    with pytest.raises(ValueError, match="no net class"):
+        board_jobs.select(b, {"targets": [{"class": "NOPE"}]})
+    with pytest.raises(ValueError, match="unknown keys"):
+        board_jobs.select(b, {"targets": [{"match": "*", "il_max": 3}]})
+    with pytest.raises(ValueError, match="no differential pairs"):
+        board_jobs.select(single_net(), {})
+
+
+# -- the job ---------------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def board_run(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("board")
+    spec = {"targets": [{"match": "D", "kind": "pair", "data_rate_gbps": 8, "eye": True,
+                         "eye_min_mv": 900},
+                        {"class": "FAST", "data_rate_gbps": 6, "il_max_db": 20}],
+            "points": 120, "f_max_ghz": 12, "workers": 2}
+    res = board_jobs.run_board_si(spec, mixed_board().to_dict(), STACKUP, folder,
+                                  snapshot="test")
+    return res, folder
+
+
+def test_findings_are_placed_where_the_faults_are(board_run):
+    res, _ = board_run
+    fs = res["figures"]["findings"]
+    by = {(f["item"], f["check"]): f for f in fs}
+    tee = by[("SIG", "impedance")]
+    # the 300 mil test-point stub leaves the top run 600 mil from U1.1 (at y = 3000)
+    assert tee["at_mils"][1] == pytest.approx(3000, abs=1)
+    assert tee["at_mils"][0] == pytest.approx(600, abs=45)
+    assert tee["layer"] == "TopLayer"
+    stub = by[("SIG", "stub resonance")]
+    assert stub["at_mils"] == pytest.approx([600, 3000], abs=0.5) and "TP1.1" in stub["where"]
+    skew = by[("D", "skew")]
+    assert skew["at_mils"] == pytest.approx([-50, 0], abs=0.5) and skew["where"] == "at U1.P"
+    eye = by[("D", "eye")]
+    assert eye["severity"] == "error" and "900 mV needed" in eye["detail"]
+    assert [f["id"] for f in fs] == [f"F{i + 1}" for i in range(len(fs))]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["items_checked"] == 2 and m["items_failed"] == 2
+    assert m["errors"] == sum(f["severity"] == "error" for f in fs)
+    assert 0 < m["smallest_eye_mv"] < 900
+
+
+def test_report_and_files(board_run):
+    res, folder = board_run
+    data = json.loads((folder / "findings.json").read_text())
+    assert data["snapshot"] == "test" and len(data["items"]) == 2
+    page = (folder / "report.html").read_text()
+    for f in res["figures"]["findings"]:
+        assert f">{f['id']}<" in page
+    assert page.count("data:image/png;base64,") >= 2 and "<script" not in page
+    rows = (folder / "summary.csv").read_text().splitlines()
+    assert rows[0].startswith("kind,name,errors,warnings") and len(rows) == 3
+
+
+def test_a_net_that_cannot_be_modelled_is_a_warning(tmp_path):
+    b = mixed_board()
+    b.tracks = [t for t in b.tracks if t.net != "SIG"]          # pads only: nothing routed
+    res = board_jobs.run_board_si({"targets": [{"match": "SIG", "data_rate_gbps": 5}],
+                                   "points": 60, "f_max_ghz": 8}, b.to_dict(), STACKUP, tmp_path)
+    fs = res["figures"]["findings"]
+    assert len(fs) == 1 and fs[0]["severity"] == "warning" and fs[0]["check"] == "modelled"
+    with pytest.raises(ValueError, match="no data rate"):
+        board_jobs.run_board_si({"targets": [{"match": "SIG"}]}, b.to_dict(), STACKUP, tmp_path)
+
+
+# -- the job graph -----------------------------------------------------------------------------
+
+def test_lineage_links_snapshot_channel_and_eye(tmp_path):
+    pcb = tmp_path / "t.PcbDoc"
+    pcb.write_text("x")
+    rec = snap.save(single_net(with_stub=False), STACKUP, str(pcb))
+    r = sim.submit("net-channel", "eda-agent", {"net": "SIG", "data_rate_gbps": 6,
+                                               "f_max_ghz": 10, "points": 100},
+                   {"board": rec["board"], "stackup": rec["stackup"]}, "chan", True)
+    ts = sorted(_jobs.get(r["job"]).work_folder("eda-agent").glob("channel.s*p"))[0]
+    e = sim.submit("channel-eye", "eda-agent", {"data_rate_gbps": 6, "repeats": 1},
+                   {"touchstone": str(ts)}, "eye", True)
+    up = _jobs.lineage(r["job"])
+    assert [s["snapshot"] for s in up["snapshots"]] == [rec["id"]]
+    assert up["snapshots"][0]["stale"] is False and not up["stale"]
+    assert [c["job"] for c in up["children"]] == [e["job"]]
+    down = _jobs.lineage(e["job"])
+    assert [p["job"] for p in down["parents"]] == [r["job"]] and not down["snapshots"]
+    os.utime(pcb, (time.time() + 10, time.time() + 10))
+    assert _jobs.lineage(r["job"])["stale"] is True
+    with pytest.raises(KeyError):
+        _jobs.lineage("nope")
+
+
+# -- the tool and Altium -----------------------------------------------------------------------
+
+class _Bridge:
+    def __init__(self):
+        self.sent = []
+
+    async def send_command_async(self, command, params, timeout=None):
+        self.sent.append((command, dict(params)))
+        return {"success": True}
+
+
+def _call(m, name, args):
+    out = asyncio.run(m.call_tool(name, args))
+    blocks = out[0] if isinstance(out, tuple) else out
+    return json.loads(blocks[0].text)
+
+
+def test_tool_marks_failing_nets_in_altium(tmp_path, monkeypatch):
+    import eda_agent.bridge as bridge_mod
+    from eda_agent.tools.si import register_si_tools
+    br = _Bridge()
+    monkeypatch.setattr(bridge_mod, "get_bridge", lambda: br)
+    m = FastMCP("t")
+    register_si_tools(m)
+    bp, sp = tmp_path / "b.json", tmp_path / "s.json"
+    pair_board(skew=0).save(bp)
+    sp.write_text(json.dumps(STACKUP))
+    out = _call(m, "si_board_check", {"board_json_path": str(bp), "stackup_json_path": str(sp),
+                                      "options": {"data_rate_gbps": 8, "points": 80,
+                                                  "f_max_ghz": 8},
+                                      "mark": "text", "marker_layer": "Mechanical13"})
+    assert out["ok"], out
+    assert out["report"].endswith("report.html") and os.path.isfile(out["report"])
+    hl = [p for c, p in br.sent if c == "generic.highlight_net"]
+    assert [p["net_name"] for p in hl] == ["D_P", "D_N"]
+    assert hl[0]["clear_existing"] == "true" and hl[1]["clear_existing"] == "false"
+    texts = [p for c, p in br.sent if c == "pcb.place_text"]
+    errs = [f for f in out["findings"] if f["severity"] == "error"]
+    assert len(texts) == len(errs) and all(p["layer"] == "Mechanical13" for p in texts)
+    assert texts[0]["text"].startswith("SI F1 ")
+    # a stale snapshot: results, but no text written on the board
+    pcb = tmp_path / "b.PcbDoc"
+    pcb.write_text("x")
+    from eda_agent.layout.model import LayoutBoard
+    rec = snap.save(LayoutBoard.load(str(bp)), STACKUP, str(pcb))
+    os.utime(pcb, (time.time() + 10, time.time() + 10))
+    br.sent.clear()
+    stale = _call(m, "si_board_check", {"snapshot": rec["id"], "mark": "text",
+                                        "options": {"data_rate_gbps": 8, "points": 80,
+                                                    "f_max_ghz": 8}})
+    assert stale["snapshot"]["stale"] is True and "changed" in stale["marked"]["error"]
+    assert not br.sent
+    assert _call(m, "si_board_check", {"mark": "paint"})["ok"] is False

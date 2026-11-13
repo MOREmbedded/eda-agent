@@ -102,6 +102,7 @@ Each run works out `pcb_create_design_rule` calls:
   - `data_rate_gbps`, `f_max_ghz`, `points`, `rise_ps`;
   - `z_ref`, `z_target`, `z_tol_pct`;
   - `il_max_db`, `rl_min_db`, `skew_max_ps`, `stub_margin`;
+  - `temperature_c` or `thermal_npz` (hot copper loses more: see [Board signal integrity](SI_BOARD.md#copper-temperature));
   - `tand`, `foil`, `mask_mils`, `etch_mils`;
   - `rules`.
 

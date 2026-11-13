@@ -43,6 +43,9 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
     "rl_min_db": ("number", False, "required return loss up to Nyquist (no check if absent)"),
     "skew_max_ps": ("number", False, "allowed intra-pair skew (default 5 % of a unit interval "
                                      "when data_rate_gbps is given)"),
+    "temperature_c": ("number", False, "copper temperature of every trace (default 20 degC)"),
+    "thermal_npz": ("text", False, "a thermal analysis' result.npz: each trace takes the copper "
+                                   "temperature along it"),
     "stub_margin": ("number", False, "a stub's first notch must lie this many times above "
                                      "Nyquist (default 2; needs data_rate_gbps)"),
     "tand": ("number", False, "loss tangent of every dielectric (default 0.02)"),
@@ -88,6 +91,16 @@ def _plot(path: Path, f, curves, t, tdr, z_target, title: str,
     return True
 
 
+def _temperatures(spec: dict[str, Any]):
+    from .thermal_link import Temperatures
+    npz = str(spec.get("thermal_npz") or "").strip()
+    uniform = spec.get("temperature_c")
+    uniform = None if uniform in (None, "") else float(uniform)
+    if npz and not Path(npz).is_file():
+        raise ValueError(f"thermal_npz {npz} is not a file")
+    return Temperatures(uniform, npz or None) if (npz or uniform is not None) else None
+
+
 def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[dict],
                     folder: Path, progress=None) -> dict[str, Any]:
     folder = Path(folder)
@@ -107,19 +120,20 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
     f_nyq = float(rate) * 1e9 / 2 if rate else f_max / 4
     rise = _num(spec, "rise_ps", 35) * 1e-12
     z_ref = _num(spec, "z_ref", 50)
+    temps = _temperatures(spec)
     say("finding the routed path", 0.05)
     if spec.get("pair"):
         pos, neg = extract.find_pair(board, str(spec["pair"]))
         name = next((d.name for d in board.diff_pairs if d.positive == pos), str(spec["pair"]))
         path = extract.pair_path(board, name, pos, neg)
         say("solving the cross-sections and the channel", 0.15)
-        model = net_model.pair(board, stack, path, f, opt, z_ref=z_ref)
+        model = net_model.pair(board, stack, path, f, opt, z_ref=z_ref, temps=temps)
         label = f"pair {name}"
     elif spec.get("net"):
         path = extract.net_path(board, str(spec["net"]), str(spec.get("from_pin") or ""),
                                 str(spec.get("to_pin") or ""))
         say("solving the cross-sections and the channel", 0.15)
-        model = net_model.single(board, stack, path, f, opt, z_ref=z_ref)
+        model = net_model.single(board, stack, path, f, opt, z_ref=z_ref, temps=temps)
         label = f"net {path.net}"
     else:
         raise ValueError("give a net or a pair")

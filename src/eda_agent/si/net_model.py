@@ -25,6 +25,7 @@ from ..layout.model import LayoutBoard
 from . import channel as ch
 from . import planner
 from . import rlgc as _rlgc
+from . import thermal_link as _thermal
 from . import via as _via
 from .extract import NetPath, PairPath
 from .mtl import mixed_mode
@@ -62,8 +63,24 @@ class _Lines:
         self.opt, self.f, self.res = opt, f, resolution
         self.cache: dict[tuple, _rlgc.RLGC] = {}
         self.summary: dict[str, Any] = {}
+        self.temps_used: list[float] = []
 
-    def get(self, layer: str, width_mils: float, gap_mils: Optional[float] = None) -> _rlgc.RLGC:
+    def get(self, layer: str, width_mils: float, gap_mils: Optional[float] = None,
+            temp_c: Optional[float] = None) -> _rlgc.RLGC:
+        """The cross-section's RLGC; at ``temp_c`` when given (the copper
+        loss scaled by :func:`.thermal_link.scale_r`)."""
+        base = self._get(layer, width_mils, gap_mils)
+        if temp_c is None:
+            return base
+        key = (layer, round(width_mils, 2), None if gap_mils is None else round(gap_mils, 2),
+               round(float(temp_c), 1))
+        if key not in self.cache:
+            self.cache[key] = _thermal.scale_r(base, key[3])
+            self.temps_used.append(key[3])
+        return self.cache[key]
+
+    def _get(self, layer: str, width_mils: float, gap_mils: Optional[float] = None
+             ) -> _rlgc.RLGC:
         key = (layer, round(width_mils, 2), None if gap_mils is None else round(gap_mils, 2))
         if key not in self.cache:
             if layer not in self.info:
@@ -187,12 +204,28 @@ def _via_block(board, stack, lines, opt, f, idx, a, b, label) -> tuple[np.ndarra
     return mats, info
 
 
+def _temp_note(lines: _Lines, temps) -> list[str]:
+    if temps is None or not temps.active:
+        return []
+    if not lines.temps_used:
+        return [f"copper temperature from {temps.source}: no trace of the path lies on its "
+                "maps; the lines are at 20 degC"]
+    lo, hi = min(lines.temps_used), max(lines.temps_used)
+    span = f"{lo:.1f} degC" if hi - lo < 0.05 else f"{lo:.1f} to {hi:.1f} degC"
+    return [f"copper at {span} (from {temps.source}): resistance scaled from 20 degC, "
+            "fully at DC and by the square root in the skin-effect regime"]
+
+
 def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
            opt: Optional[planner.Options] = None, resolution: float = 30.0,
-           z_ref: float = 50.0) -> Model:
+           z_ref: float = 50.0, temps=None) -> Model:
+    """The routed net as a 2-port. ``temps`` (a
+    :class:`.thermal_link.Temperatures`) heats each section's copper."""
     opt = opt or planner.Options()
     f = np.asarray(f, dtype=float)
     lines = _Lines(stack, opt, f, resolution)
+    tc = (lambda layer, pts=(): temps.along(layer, pts)) if temps is not None and temps.active \
+        else (lambda layer, pts=(): None)
     chan = ch.Channel(f, 1)
     blocks: list[dict[str, Any]] = []
     notes = list(path.notes)
@@ -202,7 +235,7 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
     def stubs_after(i: int) -> None:
         for s in path.stubs:
             if s.at == i:
-                r = lines.get(s.layer, s.width)
+                r = lines.get(s.layer, s.width, temp_c=tc(s.layer, [s.xy] if s.xy else []))
                 chan.add(ch.stub_block(r, s.length * MIL, f"stub {s.length:.0f} mil"))
                 fq = quarter_wave_hz(r, s.length)
                 blocks.append({"kind": "stub", **s.to_dict(),
@@ -211,7 +244,7 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
     stubs_after(-1)
     for i, sec in enumerate(path.sections):
         if sec.kind == "line":
-            r = lines.get(sec.layer, sec.width)
+            r = lines.get(sec.layer, sec.width, temp_c=tc(sec.layer, sec.pts))
             chan.add(ch.line_block(r, sec.length * MIL, sec.layer))
             blocks.append(sec.to_dict())
             loss = loss + line_loss_db(r, sec.length)
@@ -223,6 +256,7 @@ def single(board: LayoutBoard, stack: Stack, path: NetPath, f: Sequence[float],
             blocks.append({**sec.to_dict(), **_via_summary(info)})
             notes.extend(info["notes"])
         stubs_after(i)
+    notes += _temp_note(lines, temps)
     return Model(f, chan.s(z_ref), 1, z_ref, blocks, lines.summary, notes, loss, line_mils)
 
 
@@ -234,24 +268,40 @@ def _via_summary(info: dict[str, Any]) -> dict[str, Any]:
             "return_loop_nh": round(info["return_l_h"] * 1e9, 3)}
 
 
-def _chain(lines: _Lines, pieces: Sequence[Sequence[Any]], scale: float, f) -> np.ndarray:
+def _chain(lines: _Lines, pieces: Sequence[Sequence[Any]], scale: float, f, tc=None
+           ) -> np.ndarray:
     """Per-frequency 2x2 chain of single lines (layer, width, length)."""
     out = np.broadcast_to(np.eye(2, dtype=complex), (len(f), 2, 2)).copy()
     for layer, w, L in pieces:
         if L * scale <= 0:
             continue
-        r = lines.get(layer, w)
+        r = lines.get(layer, w, temp_c=tc(layer) if tc else None)
         out = out @ ch.line_block(r, L * scale * MIL).mats
     return out
 
 
 def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
          opt: Optional[planner.Options] = None, resolution: float = 30.0,
-         z_ref: float = 50.0) -> Model:
-    """Single-ended 4-port of a pair (ports P near, N near, P far, N far)."""
+         z_ref: float = 50.0, temps=None) -> Model:
+    """Single-ended 4-port of a pair (ports P near, N near, P far, N far).
+    ``temps`` heats the copper: a coupled stretch takes the temperature
+    along the positive net's copper on its layer."""
     opt = opt or planner.Options()
     f = np.asarray(f, dtype=float)
     lines = _Lines(stack, opt, f, resolution)
+    if temps is not None and temps.active:
+        by_layer: dict[str, list] = {}
+        for s in pp.p.sections:
+            if s.kind == "line":
+                by_layer.setdefault(s.layer, []).extend(s.pts)
+        cache_t: dict[str, Optional[float]] = {}
+
+        def tc(layer):
+            if layer not in cache_t:
+                cache_t[layer] = temps.along(layer, by_layer.get(layer, []))
+            return cache_t[layer]
+    else:
+        tc = None
     chan = ch.Channel(f, 2)
     blocks: list[dict[str, Any]] = []
     notes = list(pp.notes) + list(pp.p.notes)
@@ -264,17 +314,18 @@ def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
         for side in ("uncoupled_p", "uncoupled_n"):
             for layer, w, L in zone[side]:
                 if L * half > 0:
-                    acc["loss"] = acc["loss"] + 0.5 * line_loss_db(lines.get(layer, w), L * half)
+                    acc["loss"] = acc["loss"] + 0.5 * line_loss_db(
+                        lines.get(layer, w, temp_c=tc(layer) if tc else None), L * half)
                     acc["mils"] += 0.5 * L * half
-        a = _chain(lines, zone["uncoupled_p"], half, f)
-        b = _chain(lines, zone["uncoupled_n"], half, f)
+        a = _chain(lines, zone["uncoupled_p"], half, f, tc)
+        b = _chain(lines, zone["uncoupled_n"], half, f, tc)
         mats = np.stack([ch.per_conductor([a[k], b[k]]) for k in range(len(f))])
         chan.add(ch.Block("line", label, mats))
 
     for j, zone in enumerate(pp.zones):
         uncoupled(zone, 0.5, "breakout")
         for layer, w, gap, L in zone["coupled"]:
-            r = lines.get(layer, w, gap)
+            r = lines.get(layer, w, gap, temp_c=tc(layer) if tc else None)
             chan.add(ch.line_block(r, L * MIL, layer))
             acc["loss"] = acc["loss"] + line_loss_db(r, L, odd=True)
             acc["mils"] += L
@@ -298,6 +349,7 @@ def pair(board: LayoutBoard, stack: Stack, pp: PairPath, f: Sequence[float],
         notes.append("stubs on a pair's nets are listed but not modelled")
     notes.append("the vias of a pair are modelled uncoupled; their coupling lowers the "
                  "differential via impedance a little")
+    notes += _temp_note(lines, temps)
     return Model(f, chan.s(z_ref), 2, z_ref, blocks, lines.summary, sorted(set(notes)),
                  acc["loss"], acc["mils"])
 

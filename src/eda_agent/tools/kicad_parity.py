@@ -590,6 +590,7 @@ GAPS: dict[str, str] = {
     "si_channel_eye": "works on Touchstone files; registered with the Altium suite, not yet on the KiCad surface",
     "si_spice_model": "as si_channel_eye",
     "si_ibis_models": "as si_channel_eye",
+    "si_board_check": "as si_board_snapshot",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",
     "pcb_audit_placement_plan": "not ported",
