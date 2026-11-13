@@ -80,6 +80,8 @@ def _run(kind: str, engines: list[str], spec: dict, inputs: dict, title: str, fo
 
 def register_si_tools(mcp) -> None:
     _register_si_net_tools(mcp)
+    _register_si_time_tools(mcp)
+    _ibis_models_tool(mcp)
 
     @mcp.tool()
     async def si_line_model(spec: dict, engines: Optional[list[str]] = None, stackup_file: str = "",
@@ -384,3 +386,184 @@ def _register_si_net_tools(mcp) -> None:
             return reply
         except Exception as exc:  # noqa: BLE001
             return _failed(exc)
+
+
+def _channel_file(touchstone_file: str, net_job: str) -> str:
+    """The .sNp of a channel: a file, or the one a net-channel job wrote."""
+    if touchstone_file:
+        return touchstone_file
+    if not net_job:
+        raise ValueError("pass touchstone_file or net_job (a net-channel job id)")
+    from ..simulation import jobs as _jobs
+    try:
+        job = _jobs.get(net_job)
+    except (KeyError, ValueError, OSError):
+        job = None
+    if job is None or job.kind != "net-channel":
+        raise ValueError(f"{net_job} is not a net-channel job")
+    folder = job.work_folder("eda-agent")
+    found = sorted(folder.glob("channel.s*p"))
+    if not found:
+        raise ValueError(f"job {net_job} has no channel file yet; run it first")
+    return str(found[0])
+
+
+def _register_si_time_tools(mcp) -> None:
+
+    @mcp.tool()
+    async def si_channel_eye(data_rate_gbps: float, touchstone_file: str = "", net_job: str = "",
+                             engines: Optional[list[str]] = None, options: Optional[dict] = None,
+                             title: str = "", force: bool = False) -> dict[str, Any]:
+        """Eye diagram of a channel, by convolution and in SPICE.
+
+        The channel is a 2-port line or a 4-port pair (ports 1, 2 near P
+        and N; 3, 4 far), from a file or from a si_net_channel job. The
+        ``eda-agent`` engine convolves its pulse response with a PRBS
+        pattern and adds the worst-case eye (peak distortion analysis:
+        no pattern can close it further). The ``spice`` engine fits the
+        channel as a passive rational macromodel, keeps it as
+        ``channel.sub`` with an LTspice symbol ``channel.asy``, and runs
+        the same pattern in ngspice or LTspice; it also reports how far
+        the circuit simulator's waveform is from the convolution's.
+
+        Args:
+            data_rate_gbps: NRZ data rate.
+            touchstone_file: the channel's .s2p or .s4p; or ``net_job``: a
+                net-channel job id (its channel file is used).
+            engines: default ["eda-agent", "spice"] (spice when ngspice or
+                LTspice is installed).
+            options: rise_ps (0.3 UI), amplitude_mv (800, differential
+                for a pair), prbs (7, 9, 11, 15), repeats (2),
+                samples_per_ui (32), spice_oversample (4), simulator (auto,
+                ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
+                tx_model (an IBIS driver: its output resistance, C_comp,
+                edge and swing), rx_ibis and rx_model (an IBIS receiver:
+                its C_comp, high impedance), or tx_r_ohms, tx_c_pf,
+                rx_r_ohms (a number or "open"), rx_c_pf. Both ends are the
+                reference impedance by default.
+            title: a name for the job list.
+            force: run again even when results exist.
+
+        Returns:
+            ``results`` per engine (eye height and width, worst-case eye,
+            files: eye.png, waveform.csv, channel.sub, channel.asy),
+            ``compare`` of the two engines, ``job`` and ``folder``.
+        """
+        try:
+            path = _channel_file(touchstone_file, net_job)
+            spec: dict[str, Any] = dict(options or {})
+            spec["data_rate_gbps"] = float(data_rate_gbps)
+            if engines is None:
+                from .. import simulation as sim
+                engines = ["eda-agent"]
+                try:
+                    if sim.engine_status(sim.get_engine("spice")).get("available"):
+                        engines.append("spice")
+                except KeyError:
+                    pass
+            return await asyncio.to_thread(_run, "channel-eye", list(engines), spec,
+                                           {"touchstone": path},
+                                           title or f"eye {data_rate_gbps:g} Gb/s", bool(force))
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+    @mcp.tool()
+    async def si_spice_model(touchstone_file: str = "", net_job: str = "", name: str = "channel",
+                             out_folder: str = "", fit_tol: float = 2e-3) -> dict[str, Any]:
+        """A Touchstone channel as a passive SPICE subcircuit for LTspice or ngspice.
+
+        Fits the S-parameters with common poles (relaxed vector fitting),
+        enforces passivity, and writes ``<name>.sub`` (resistors,
+        capacitors and linear controlled sources only, so every SPICE
+        runs it) and an LTspice symbol ``<name>.asy``. Place the symbol in
+        an LTspice schematic with real driver and receiver models to see
+        the channel as the board has it.
+
+        Args:
+            touchstone_file: a .sNp; or ``net_job``: a net-channel job id.
+            name: the subcircuit's name.
+            out_folder: where to write; default beside the Touchstone file.
+            fit_tol: RMS error allowed for the fit.
+
+        Returns:
+            ``files``, ``poles``, ``rms_error``, ``passivity`` (largest
+            singular value before and after enforcement), ``ports`` (the
+            subcircuit's pin order).
+        """
+        try:
+            import re
+            from pathlib import Path
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,40}", name or ""):
+                return {"ok": False, "error": "name is a SPICE identifier (letters, digits, _)"}
+            path = Path(_channel_file(touchstone_file, net_job))
+            from ..si import eye_jobs, vectfit
+
+            def work():
+                f, s, z0 = eye_jobs.load_channel(path) if path.suffix.lower() in (".s2p", ".s4p") \
+                    else _any_ports(path)
+                keep = f > 0
+                model = vectfit.macromodel(f[keep], s[keep], fit_tol)
+                folder = Path(out_folder) if out_folder else path.parent
+                folder.mkdir(parents=True, exist_ok=True)
+                files = eye_jobs.write_model(model, folder, name, z0)
+                return model, {k: str(folder / v) for k, v in files.items()}
+
+            model, files = await asyncio.to_thread(work)
+            ports = (["p_near", "n_near", "p_far", "n_far"] if model.ports == 4
+                     else [f"port{i + 1}" for i in range(model.ports)])
+            return {"ok": True, "files": files, "poles": len(model.poles),
+                    "rms_error": model.info["rms_error_after_enforcement"],
+                    "passivity": {"before": model.info["passivity_before"],
+                                  "after": model.info["passivity_after"]},
+                    "ports": ports + ["ref"]}
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+
+def _ibis_models_tool(mcp) -> None:
+
+    @mcp.tool()
+    async def si_ibis_models(ibis_file: str) -> dict[str, Any]:
+        """The buffer models of an IBIS file, reduced for a channel eye.
+
+        For each [Model]: its type, C_comp (typ, min, max), supply, and
+        for a driver the output resistance (slope of the pull-down and
+        pull-up V-I tables at 0 V), the 10-90 % edge and the swing from
+        [Ramp]. Pass a model's name as tx_model or rx_model to
+        si_channel_eye with the same file as tx_ibis or rx_ibis.
+
+        Args:
+            ibis_file: an .ibs file.
+
+        Returns:
+            ``models``: name, model_type, c_comp_f, voltage, and
+            ``driver`` figures where the model has V-I tables or a ramp.
+        """
+        try:
+            from ..si import ibis
+
+            def work():
+                out = []
+                for m in ibis.read(ibis_file).values():
+                    row = m.to_dict()
+                    d = ibis.driver(m)
+                    if len(d) > 1 and (m.pulldown or m.pullup or m.ramp_r or m.ramp_f):
+                        row["driver"] = d
+                    out.append(row)
+                return out
+
+            models = await asyncio.to_thread(work)
+            if not models:
+                return {"ok": False, "error": "no [Model] in the file"}
+            return {"ok": True, "file": ibis_file, "models": models}
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+
+def _any_ports(path):
+    import numpy as np
+    from ..emc.touchstone import read_touchstone
+    data = read_touchstone(path)
+    f = np.asarray(data["freq_hz"], dtype=float)
+    s = np.asarray(data["s"], dtype=complex).reshape(len(f), data["ports"], data["ports"])
+    return f, s, float(data["z0"])
