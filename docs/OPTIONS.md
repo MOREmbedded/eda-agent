@@ -18,6 +18,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_BACKEND` | altium | Which EDA tool to drive: `altium`, `kicad`, `easyeda`, or `both` (Altium and KiCad together). Same as `--backend`. |
 | `EDA_AGENT_TOOLSET` | full | `minimal` advertises only `tool_catalog` and `tool_invoke`, for MCP clients that cap the tool count. Every tool stays reachable. Same as `--toolset`. |
 | `EDA_AGENT_COMPUTE` | python | `python`, `rust` or `auto`: which implementation runs the CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as `--compute`. |
+| `EDA_AGENT_ROUTER` | the profile's `router.json`, else `default` | Which autorouter engine routing runs use: `default`, or `euan` for the alternative router from Euan's fork (off unless set). Overrules `eda-agent router-use`. |
 | `EDA_AGENT_REMINDER_EVERY` | 10 | How often `app_ping` / `app_attach` repeat the datasheet-first reminder: on the first call, then every Nth. `1` sends it every time. |
 | `EDA_AGENT_HEADLESS_REVIEW` | off | `1` enables the offline review, BOM and netlist commands and tools that read `.SchDoc`/`.PrjPcb` files with no Altium running. Same as `--offline` on those commands. |
 
@@ -108,6 +109,9 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_EM_RUNS` | `%USERPROFILE%\EDA Agent\em` | Where each openEMS field-solver run (`sim_em_build_model`) gets its own folder. Runs can be large: point it at a drive with room. |
 | `EDA_AGENT_THERMAL_RUNS` | `%USERPROFILE%\EDA Agent\thermal` | Where each `sim_thermal_analysis` run writes its heat maps, fields and report, one folder per run. |
 | `EDA_AGENT_PDN_RUNS` | `%USERPROFILE%\EDA Agent\pdn` | Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, curves and SPICE decks, one folder per run. |
+| `EDA_AGENT_SIM_JOBS` | `%USERPROFILE%\EDA Agent\jobs` | Where simulation jobs (`sim_job_run`, the dashboard's Simulation page) keep their folders: one per problem, one subfolder per engine. |
+| `EDA_AGENT_ENGINES_DIR` | `%USERPROFILE%\EDA Agent\engines` | Where engines that run in their own Python environment are installed (`eda-agent install-deps`); install logs go beside it. |
+| `EDA_AGENT_FEATURES_FILE` | `%USERPROFILE%\.eda-agent\features.json` | Which switchable features (simulation engines) are turned off (`eda-agent features --off`, the dashboard's Features page). |
 | `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` and `PYTHONPATH` for the solver run. |
 | `EDA_AGENT_OPENEMS_PYTHON` | this Python, then `python` on PATH | A Python that can `import openEMS`, used to run the solver. |
 
@@ -295,6 +299,32 @@ Print where the EasyEDA extension source is (path), or build the .eext to import
 | `action` | `path`, `build` |  |
 | `--out` | `DIR` | Folder to build in. An installed copy is built beside the default workspace unless this is given; a checkout builds in place. |
 
+### Features and dependencies
+
+#### `eda-agent features`
+
+List features and dependencies: installed, missing, versions
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--deep` | switch | Also run the slow checks (openEMS import, versions of programs). |
+| `--json` | switch | Machine-readable output. |
+| `--on` | `FEATURE` | Switch a switchable feature (an engine) on. |
+| `--off` | `FEATURE` | Switch a switchable feature (an engine) off. |
+
+#### `eda-agent install-deps`
+
+Install what features need (all of them with --all)
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `FEATURE` | `FEATURE` | Features to install (see `eda-agent features`). |
+| `--all` | switch | Every feature except the development ones. |
+| `--dev` | switch | With --all, include the test suite and website tools. |
+| `--dry-run` | switch | Show the plan and change nothing. |
+| `--yes`, `-y` | switch | Do not ask before installing. |
+| `--json` | switch | Machine-readable output. |
+
 ### Diagnostics
 
 #### `eda-agent doctor`
@@ -467,6 +497,22 @@ Run the named NPI stages, or all five when none are named. Writes the active pro
 Stop running NPI stages. Answers already recorded are kept and come back if the stages do.
 
 No arguments.
+
+#### `eda-agent router-show`
+
+Which autorouter engine routing runs use (default or euan), and which setting decided it.
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--json` | switch | Emit machine-readable JSON. |
+
+#### `eda-agent router-use`
+
+Choose the autorouter engine: 'default', or 'euan' for the alternative router from Euan's fork (off by default). Writes the active profile's router.json.
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `engine` | `default`, `euan` | default (the usual router) or euan. |
 
 ### Design modes
 

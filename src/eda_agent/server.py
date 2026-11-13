@@ -994,6 +994,9 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "serve", "start", "install-scripts", "scripts-path", "relaunch",
             "update", "easyeda-extension",
         )),
+        ("Features and dependencies", (
+            "features", "install-deps",
+        )),
         ("Diagnostics", (
             "doctor", "health", "perf", "compute-status",
         )),
@@ -1007,6 +1010,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
             "phases-show", "phases-enable", "phases-disable",
+            "router-show", "router-use",
         )),
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
@@ -1291,6 +1295,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of the text report.",
     )
 
+    # features -- what is installed, what each feature offers and needs
+    feat_p = subparsers.add_parser(
+        "features",
+        help="List features and dependencies: installed, missing, versions",
+    )
+    feat_p.add_argument("--deep", action="store_true",
+                        help="Also run the slow checks (openEMS import, versions of programs).")
+    feat_p.add_argument("--json", action="store_true", help="Machine-readable output.")
+    feat_p.add_argument("--on", metavar="FEATURE", default="",
+                        help="Switch a switchable feature (an engine) on.")
+    feat_p.add_argument("--off", metavar="FEATURE", default="",
+                        help="Switch a switchable feature (an engine) off.")
+
+    # install-deps -- one command that installs what features need
+    inst_p = subparsers.add_parser(
+        "install-deps",
+        help="Install what features need (all of them with --all)",
+        epilog=("Python packages go into this Python with pip, one call per "
+                "feature; the Rust wheels are built from this checkout when "
+                "cargo is present; GPL engines get their own environment. "
+                "Programs such as openEMS and LTspice cannot be installed "
+                "this way: their steps are printed. `eda-agent features` "
+                "lists the feature names."),
+    )
+    inst_p.add_argument("names", nargs="*", metavar="FEATURE",
+                        help="Features to install (see `eda-agent features`).")
+    inst_p.add_argument("--all", action="store_true", dest="everything",
+                        help="Every feature except the development ones.")
+    inst_p.add_argument("--dev", action="store_true",
+                        help="With --all, include the test suite and website tools.")
+    inst_p.add_argument("--dry-run", action="store_true",
+                        help="Show the plan and change nothing.")
+    inst_p.add_argument("--yes", "-y", action="store_true",
+                        help="Do not ask before installing.")
+    inst_p.add_argument("--json", action="store_true", help="Machine-readable output.")
+
     # compute-status -- which A* implementation would run, and why
     subparsers.add_parser(
         "compute-status",
@@ -1496,6 +1536,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop running NPI stages. Answers already recorded are kept "
              "and come back if the stages do.",
     )
+
+    # router-* -- which autorouter engine routing runs use (route/engine.py)
+    router_show_p = subparsers.add_parser(
+        "router-show",
+        help="Which autorouter engine routing runs use (default or euan), "
+             "and which setting decided it.",
+    )
+    router_show_p.add_argument("--json", action="store_true", dest="json_out",
+                               help="Emit machine-readable JSON.")
+    router_use_p = subparsers.add_parser(
+        "router-use",
+        help="Choose the autorouter engine: 'default', or 'euan' for the "
+             "alternative router from Euan's fork (off by default). Writes "
+             "the active profile's router.json.",
+    )
+    router_use_p.add_argument("engine", choices=("default", "euan"),  # = engine.ENGINES
+                              help="default (the usual router) or euan.")
 
     # mode-* -- design modes: presets for the kind of run (design/modes.py)
     subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
@@ -1950,6 +2007,13 @@ def main() -> int:
     requested_compute = getattr(args, "compute", None)
     if requested_compute:
         os.environ["EDA_AGENT_COMPUTE"] = requested_compute
+    if args.command == "features":
+        return cli.cmd_features(deep=args.deep, as_json=args.json,
+                                on=args.on, off=args.off)
+    if args.command == "install-deps":
+        return cli.cmd_install_deps(args.names, everything=args.everything,
+                                    dev=args.dev, dry_run=args.dry_run,
+                                    assume_yes=args.yes, as_json=args.json)
     if args.command == "compute-status":
         from . import compute as _compute
         st = _compute.status()
@@ -2208,6 +2272,10 @@ def main() -> int:
         return cli.cmd_phases_enable(args.stages)
     if args.command == "phases-disable":
         return cli.cmd_phases_disable()
+    if args.command == "router-show":
+        return cli.cmd_router_show(as_json=args.json_out)
+    if args.command == "router-use":
+        return cli.cmd_router_use(args.engine)
 
     if args.command == "update":
         # --yes is the APPLY half (fast-forward, reinstall, copy scripts,

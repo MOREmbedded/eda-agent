@@ -35,7 +35,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..drc import pads_on_a_barrel
 from ..model import LayoutBoard, Track, Via
 from .grid import inner_depth
 
@@ -162,7 +161,11 @@ def _choose(router, job, bga: BGA, pad, placed):
             if any(math.hypot(x - px, y - py) < r + pr + router.c - EPS
                    for px, py, pr, net in placed if net != job.name):
                 continue
-            if router.via_leaves_web(style, x, y):
+            if router.via_leaves_web(style, x, y, net=job.name):
+                continue
+            # Copper the grid does not show and the holes already drilled.
+            if not router.options.legacy() and \
+                    not router.via_clear_of_hidden(style, x, y, job.name):
                 continue
             if not stub or _stub_clear(router, job, pad, x, y):
                 return x, y, style, stub
@@ -302,10 +305,6 @@ def plane_fanout(ctx) -> None:
                     and board.pads[q].is_smd and _stub_to(ctx, q, e):
                 rep["exposed_pad_stubs"] = rep.get("exposed_pad_stubs", 0) + 1
     todo = []
-    # Pads the board's own copper already takes to a via of their net.
-    on_barrel = getattr(r, "pad_barrels", None)
-    if on_barrel is None:
-        on_barrel = pads_on_a_barrel(board)
     for net, pads in pads_of.items():
         if not ctx.routed(net) or not ctx.joined_elsewhere(net):
             continue
@@ -314,7 +313,7 @@ def plane_fanout(ctx) -> None:
             if (not p.is_smd or not p.copper or i in r.via_pads or i in r.laid_via
                     or i in r.laid_joined):
                 continue
-            if i in on_barrel:
+            if ctx.barrel_joins(net, i):
                 rep["already_joined"] = rep.get("already_joined", 0) + 1
                 continue
             if net not in ctx.planes and ctx.in_own_pour(net, p):

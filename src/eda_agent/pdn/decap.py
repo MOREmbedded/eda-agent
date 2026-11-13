@@ -89,6 +89,34 @@ def parse_capacitance(text: str) -> Optional[float]:
     return v
 
 
+#: Parameter names that hold a capacitor's value when its comment does
+#: not, most likely first.
+_VALUE_NAMES = ("value", "val", "capacitance", "cap", "c")
+
+
+def capacitance_from_parameters(parameters) -> Optional[tuple[float, str]]:
+    """(farads, parameter name) from a part's parameters, for a part whose
+    comment is not its value (a comment such as "CAP CER SMD 0402"). Takes
+    a {name: value} mapping or a list of {name, value}. A parameter named
+    as a value comes first, then any whose name has "value" or "capacit"
+    in it; None when none of them reads as a capacitance."""
+    if isinstance(parameters, dict):
+        items = [(str(k), v) for k, v in parameters.items()]
+    else:
+        items = [(str(row.get("name", "")), row.get("value"))
+                 for row in (parameters or []) if isinstance(row, dict)]
+    named = {name.strip().lower(): (name, value) for name, value in reversed(items)}
+    order = [named[k] for k in _VALUE_NAMES if k in named]
+    order += [(name, value) for name, value in items
+              if name.strip().lower() not in _VALUE_NAMES
+              and ("value" in name.lower() or "capacit" in name.lower())]
+    for name, value in order:
+        c = parse_capacitance(value) if value not in (None, "") else None
+        if c:
+            return c, name
+    return None
+
+
 def is_capacitor_ref(ref: str) -> bool:
     return bool(_CAP_REF.match(ref or ""))
 

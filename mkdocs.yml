@@ -120,12 +120,15 @@ nav:
       - EMI/EMC and RF field solving: EMC_RF.md
       - Thermal analysis: THERMAL.md
       - PDN analysis: PDN.md
+      - Simulation engines: SIMULATION.md
+      - Features and dependencies: FEATURES_AND_DEPENDENCIES.md
       - Design modes: DESIGN_MODES.md
       - Autonomous design: AUTONOMOUS_DESIGN.md
       - NPI phase gates: NPI_PHASE_GATES.md
       - Part sourcing: PART_SOURCING.md
       - EDA backends: BACKENDS.md
       - Engineering tools: ENGINEERING_TOOLS.md
+      - Autorouter engines: ROUTER_ENGINES.md
       - SPICE models and LTspice: SPICE_MODELS.md
       - Token usage: TOKEN_USAGE.md
       - Hardware CI: HARDWARE_CI.md

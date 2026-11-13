@@ -106,6 +106,28 @@ def test_a_split_plane_joins_a_through_hole_pad_of_its_net_and_not_a_surface_pad
     assert run_drc(b).unrouted == {"VCC": 1}, "a surface pad never reaches a plane"
 
 
+def test_a_plane_layer_meets_only_the_vias_that_reach_it():
+    """Two GND pads on top, each wired to a GND via over the GND plane on
+    InternalPlane1. A through via meets the plane; a blind via from Top to
+    MidLayer1 stops short of it and joins nothing there. Every via of the
+    plane's net was once taken as joined, so the pad on the blind via
+    counted as in the plane."""
+    b = _board(layers=("TopLayer", "MidLayer1"), planes=[("InternalPlane1", "GND")])
+    b.layers.append(Layer("BottomLayer", "signal", 3))
+    b.pads = [_smd("C1", "1", 100, 100, "GND"), _smd("C2", "1", 500, 100, "GND")]
+    b.tracks = [Track("TopLayer", 100, 100, 100, 200, 6, "GND"),
+                Track("TopLayer", 500, 100, 500, 200, 6, "GND")]
+    b.vias = [Via(100, 200, 20, 10, "TopLayer", "MidLayer1", "GND"),
+              Via(500, 200, 20, 10, "TopLayer", "BottomLayer", "GND")]
+    assert [l.name for l in b.layers] == ["TopLayer", "MidLayer1", "InternalPlane1",
+                                          "BottomLayer"]
+    assert run_drc(b).unrouted == {"GND": 1}
+    b.vias[0] = Via(100, 200, 20, 10, "TopLayer", "BottomLayer", "GND")
+    assert run_drc(b).unrouted == {}, "both through vias meet the plane"
+    b.vias[0] = Via(100, 200, 20, 10, "TopLayer", "InternalPlane1", "GND")
+    assert run_drc(b).unrouted == {}, "a blind via down to the plane meets it"
+
+
 # ---------------------------------------------------------------------------
 # Clearance
 # ---------------------------------------------------------------------------

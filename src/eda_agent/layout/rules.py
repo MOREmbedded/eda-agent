@@ -363,7 +363,11 @@ class RuleSet:
     # -- the questions engines ask -------------------------------------------
 
     def clearance(self, a, b, board: LayoutBoard) -> float:
-        rr = self.binary("clearance", self.facts(a, board), self.facts(b, board))
+        return self.clearance_of(self.facts(a, board), self.facts(b, board))
+
+    def clearance_of(self, fa: ObjectFacts, fb: ObjectFacts) -> float:
+        """clearance() for two objects' facts, for a caller that keeps them."""
+        rr = self.binary("clearance", fa, fb)
         return rr.values.get("gap", 0.0) if rr else self.default_clearance()
 
     def default_clearance(self) -> float:

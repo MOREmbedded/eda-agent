@@ -17,6 +17,13 @@ listings can be read against each other.
 | `eda-agent update [--check] [--yes] [--no-relaunch]` | Show the new commits on the repository and, once you agree, update this clone, the Altium scripts and the polling loop |
 | `eda-agent easyeda-extension path` / `... build [--out DIR]` | Print where the EasyEDA Pro extension source lives, or build the `.eext` to import into EasyEDA Pro (`build` needs Node.js) |
 
+## Features and dependencies
+
+| Command | Purpose |
+|---|---|
+| `eda-agent features [--deep] [--json] [--on FEATURE] [--off FEATURE]` | Every feature (3D models, SPICE, openEMS, the Rust wheel, the dashboard, the simulation engines...) with its state, and every dependency with its version and license. `--on`/`--off` switch a simulation engine. See [Features and dependencies](FEATURES_AND_DEPENDENCIES.md) |
+| `eda-agent install-deps [FEATURE ...] [--all] [--dev] [--dry-run] [--yes] [--json]` | Install what features need in one command: pip packages into this Python (one call per feature), the Rust wheels built from this checkout when `cargo` is present, GPL engines in their own environment. Programs such as openEMS and LTspice are listed with their install steps. `--dry-run` shows the plan only |
+
 ## Diagnostics
 
 | Command | Purpose |
@@ -55,6 +62,8 @@ listings can be read against each other.
 | `eda-agent phases-show [--json]` | Which [NPI stages](USING_THE_TOOLS.md#npi-phase-gates) are in force, and which setting decided it |
 | `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
+| `eda-agent router-show [--json]` | Which autorouter engine routing runs use (`default` or `euan`), and which setting decided it. See [Autorouter engines](ROUTER_ENGINES.md) |
+| `eda-agent router-use default\|euan` | Choose the engine for the active profile. `euan` is the alternative router from Euan's fork (TechAUmNu); off by default. `EDA_AGENT_ROUTER` overrules it. See [Autorouter engines](ROUTER_ENGINES.md) |
 
 ## Design modes
 

@@ -47,7 +47,12 @@ You need **Windows**, **Python 3.11+** and **Altium Designer** (AD20 or newer is
 git clone https://github.com/MOREmbedded/eda-agent
 cd eda-agent
 python -m pip install -e .
+eda-agent install-deps --all     # optional: every extra feature in one go
 ```
+
+`eda-agent features` shows what is installed and what each feature needs;
+the dashboard's **Features** page does the same with install buttons. See
+[Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md).
 
 **2. Register it with your MCP client**
 
@@ -100,6 +105,8 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 📈 **Simulation** | SPICE model library and LTspice round trip: find models by MPN, check pin maps, export and compare decks. See [SPICE models](docs/SPICE_MODELS.md) |
 | 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
 | 🌡️ **Thermal analysis** | Board temperatures and hotspots from part powers (`sim_thermal_analysis`): 3D conduction in the real copper, vias and laminate, convection and radiation, heat maps per layer, a grid-convergence error estimate. See [Thermal analysis](docs/THERMAL.md) |
+| 🧪 **Simulation engines** | One job model for every simulator: this project's own solvers, scikit-rf and openEMS today, plugins tomorrow. Each engine's answer is kept beside the others and compared (`sim_job_run`, `sim_job_compare`, the dashboard's Simulation page). See [Simulation engines](docs/SIMULATION.md) |
+| 🧩 **Features and dependencies** | `eda-agent install-deps --all` installs every optional part in one command; `eda-agent features` and the dashboard's Features page show what is installed, its version and license, and switch engines on and off. See [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) |
 | 🔋 **Power integrity (PDN)** | DC IR drop and current density on the real copper (`sim_pdn_ir_drop`), AC impedance against a target with a field-solved plane pair and every capacitor's mounting (`sim_pdn_impedance`). See [PDN analysis](docs/PDN.md) |
 | 🤖 **Guided design runs** | Spec to board, reference redraw, dev-kit derivative. See [Design modes](docs/DESIGN_MODES.md) and [Autonomous design](docs/AUTONOMOUS_DESIGN.md) |
 | 🚦 **NPI phase gates** | EVT, DVT and PVT checklists, answered by tools where possible. See [NPI phase gates](docs/NPI_PHASE_GATES.md) |
@@ -134,6 +141,8 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [PCB toolkit calculators](docs/PCB_TOOLKIT.md) | The Calculators tab: field-solver impedance and pairs, trace thermal model, vias, planes, crosstalk, passives, with measured accuracy |
 | [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
 | [Thermal analysis](docs/THERMAL.md) | Board temperatures, hotspots and junction margins from part powers, with the model and its validation |
+| [Simulation engines](docs/SIMULATION.md) | Engines, jobs, comparing answers, writing an engine plugin |
+| [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) | What each optional part offers and needs, the one-command installer, the Features page |
 | [PDN analysis](docs/PDN.md) | DC IR drop, current density, and AC impedance against a target impedance |
 | [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |
 | [Autonomous design](docs/AUTONOMOUS_DESIGN.md) | Driving a full spec-to-board run from any MCP client |
@@ -144,6 +153,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [SPICE models and LTspice](docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
 | [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
 | [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [Autorouter engines](docs/ROUTER_ENGINES.md) | The default router and Euan Mutch's, how to switch, what differs and what both keep |
 | [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 

@@ -163,6 +163,109 @@ def get_default_scripts_dest() -> Path:
 # scripts-path
 # --------------------------------------------------------------------------
 
+def _feature_mark(state: str) -> str:
+    return {"ready": "[x]", "partial": "[~]", "missing": "[ ]", "off": "[-]",
+            "unavailable": "[/]"}.get(state, "[?]")
+
+
+def cmd_features(deep: bool = False, as_json: bool = False,
+                 on: str = "", off: str = "") -> int:
+    """What eda-agent can do here: every feature, its state, and every
+    dependency with its version. --on/--off switch an engine."""
+    import json
+    from .features import report, state
+    if on or off:
+        try:
+            now_off = state.set_switch(on or off, bool(on))
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{on or off} is now {'on' if on else 'off'}"
+              f" (off: {', '.join(sorted(now_off)) or 'none'})")
+        return 0
+    rep = report(deep=deep)
+    if as_json:
+        print(json.dumps(rep, indent=1, default=str))
+        return 0
+    deps = {d["id"]: d for d in rep["dependencies"]}
+    for group in rep["groups"]:
+        print(f"\n{group}")
+        for f in (x for x in rep["features"] if x["group"] == group):
+            print(f"  {_feature_mark(f['state'])} {f['id']:<14} {f['title']}"
+                  + (f"  (missing: {', '.join(f['missing'])})" if f["missing"]
+                     and f["state"] != "ready" else ""))
+            for d_id in f["needs"] + [x for g in f["any_of"] for x in g] + f["adds"]:
+                d = deps[d_id]
+                ver = d.get("version") or ""
+                where = d.get("state")
+                print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
+    print("\n[x] ready  [~] partly  [ ] missing  [-] switched off  [/] not on this machine")
+    missing = [f["id"] for f in rep["features"] if f["state"] == "missing" and not f["dev"]]
+    if missing:
+        print(f"Install them all: eda-agent install-deps --all   "
+              f"(or name some: eda-agent install-deps {missing[0]})")
+    for e in rep["plugin_errors"]:
+        print(f"plugin {e['plugin']}: {e['error']}", file=sys.stderr)
+    return 0
+
+
+def cmd_install_deps(names: list, everything: bool = False, dev: bool = False,
+                     dry_run: bool = False, assume_yes: bool = False,
+                     as_json: bool = False) -> int:
+    """Install what the named features (or all of them) need."""
+    import json
+    from .features import install
+    if not names and not everything:
+        print("name features to install, or --all (see `eda-agent features`)",
+              file=sys.stderr)
+        return 2
+    try:
+        chosen = install.select(names, everything=everything, include_dev=dev)
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    plan = install.plan(chosen)
+    data = plan.to_dict()
+    if as_json and (dry_run or not plan.automatic):
+        print(json.dumps(data, indent=1))
+        return 0
+    if not as_json:
+        if data["already_present"]:
+            print("Already installed: " + ", ".join(data["already_present"]))
+        for st in plan.steps:
+            tag = {"pip": "install", "local": "build", "venv": "install apart",
+                   "manual": "by hand", "skip": "skipped"}[st.kind]
+            print(f"- [{tag}] {st.title}")
+            for cmd in st.to_dict().get("commands", []):
+                print(f"      {cmd}")
+            if st.text:
+                print(f"      {st.text}")
+        if not plan.steps:
+            print("Nothing to install.")
+    if dry_run or not plan.automatic:
+        return 0
+    if not assume_yes:
+        size = data["download_mb"]
+        try:
+            answer = input(f"Run {data['automatic_steps']} install step(s)"
+                           + (f", about {size} MB" if size else "") + "? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing installed.")
+            return 1
+    result = install.execute(plan, on_line=None if as_json else print)
+    if as_json:
+        print(json.dumps(result, indent=1))
+    else:
+        for r in result["steps"]:
+            print(f"{'ok ' if r['ok'] else 'FAILED'} {r['title']} ({r['seconds']} s)")
+        print(f"Log: {result['log']}")
+        if result["manual"]:
+            print("Still to do by hand: " + ", ".join(m["title"] for m in result["manual"]))
+    return 0 if result["ok"] else 1
+
+
 def cmd_scripts_path() -> int:
     """Print the path to the bundled DelphiScript sources."""
     path = get_bundled_scripts_path()
@@ -1318,6 +1421,58 @@ def cmd_phases_disable() -> int:
               "with the stages.")
         print("  Restart the server to drop the tools.")
     return code
+
+
+def cmd_router_show(*, as_json: bool = False) -> int:
+    """Which autorouter engine routing runs use, and what decided it."""
+    from .layout.route import engine
+
+    found = engine.describe()
+    if as_json:
+        import json as _json
+        print(_json.dumps(found, indent=2))
+        return 1 if found["problem"] else 0
+    where = {"environment": f"the {engine.ENV} environment variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets it)",
+             "fallback": "the default, because the setting in force cannot be used"}
+    print(f"Router engine: {found['engine']}  (from {where[found['source']]})")
+    print(f"  Engines: {', '.join(engine.ENGINES)}. 'euan' is the alternative "
+          "router from Euan's fork; off by default.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['problem']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_router_use(name: str) -> int:
+    """Record the autorouter engine in the active profile's router.json."""
+    from . import profile as profile_mod
+    from .layout.route import engine
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print(f"  For one run, no profile needed: set {engine.ENV}="
+              f"{name} in the environment.", file=sys.stderr)
+        return 1
+    result = engine.write(directory, name)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
+        return 2
+    print(f"Router engine '{result['engine']}' recorded in {result['path']}")
+    found = engine.describe(directory)
+    if found["source"] == "environment":
+        print(f"  Note: {engine.ENV}={os.environ.get(engine.ENV, '').strip()} is set here and "
+              "decides for runs started with it; the others take this profile's choice.")
+    elif found["source"] == "fallback":
+        print(f"  Note: {found['problem']}, so runs started with it use the default "
+              f"engine until {engine.ENV} is fixed or unset.")
+    print("  Routing runs that use this profile take it on their next run; no restart "
+          "needed. 'eda-agent router-show' in the design workspace says what is in force "
+          "there.")
+    return 0
 
 
 # --------------------------------------------------------------------------

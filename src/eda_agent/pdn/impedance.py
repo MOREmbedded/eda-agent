@@ -498,13 +498,40 @@ def mount_for(board: LayoutBoard, stack, cav: Optional[Cavity], net: str, ground
     return out
 
 
+def decaps_without_a_value(board: LayoutBoard, net: str, ground: str,
+                           given: Optional[list[dict]] = None) -> list[str]:
+    """Capacitors across the rail whose comment is not a capacitance and
+    for which the caller gave none: the ones worth asking the project's
+    parameters about."""
+    have = {o["ref"] for o in (given or [])
+            if isinstance(o, dict) and o.get("ref") and (o.get("c_uf") or o.get("c_farads"))}
+    out = []
+    for ref, _pw, _gn in find_decaps(board, net, ground):
+        comp = board.component(ref)
+        if ref not in have and parse_capacitance(comp.comment if comp else "") is None:
+            out.append(ref)
+    return out
+
+
+def _shares_ground(pads: list[Pad], net: str, ground: str) -> bool:
+    """A four-pad part with one pad on the rail, one on one other net and
+    two on ground: a feedthrough capacitor (in, out, ground twice) or two
+    capacitors in one body. Either way the rail sees the part's value to
+    ground."""
+    rest = [p.net for p in pads if p.net not in (net, ground)]
+    return (sum(p.net == net for p in pads) == 1 and sum(p.net == ground for p in pads) == 2
+            and len(rest) == 1 and bool(rest[0]))
+
+
 def find_decaps(board: LayoutBoard, net: str, ground: str, also=(),
                 skipped: Optional[list[str]] = None) -> list[tuple[str, list[Pad], list[Pad]]]:
     """Capacitors across the rail and its ground: parts with pads on both
     whose designator is a capacitor's (C1, CB3; not CN1 or CR2) or whose
     comment reads as a capacitance. Two- and three-pad parts are taken,
-    and parts with more pads when all of them are on these two nets (a
-    low-inductance or polymer part with doubled terminals). An array with
+    parts with more pads when all of them are on these two nets (a
+    low-inductance or polymer part with doubled terminals), and a
+    four-pad part with two ground pads and one pad on one other net (a
+    feedthrough capacitor). Any other array with
     other nets on it is not: it is named in ``skipped`` (pass it in
     ``decaps`` to count it). ``also``: designators the caller gave data
     for, taken whatever they look like."""
@@ -526,7 +553,7 @@ def find_decaps(board: LayoutBoard, net: str, ground: str, also=(),
         if not (is_capacitor_ref(ref) or parse_capacitance(comment) is not None):
             continue
         others = sorted({p.net for p in pads if p.net and p.net not in (net, ground)})
-        if len(pads) <= 3 or not others:
+        if len(pads) <= 3 or not others or _shares_ground(pads, net, ground):
             out.append((ref, pw, gn))
         elif skipped is not None:
             skipped.append(f"{ref}: {len(pads)} pads, also on {', '.join(others[:3])}"
@@ -560,8 +587,13 @@ def _kind_of(o: dict, fp: str, comment: str, c: float, th: bool) -> str:
 def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
                  overrides: Optional[list[dict]], plating: float,
                  exclude: Optional[list[str]] = None,
-                 copper: Optional[Copper] = None) -> tuple[list[Decap], list[str]]:
+                 copper: Optional[Copper] = None,
+                 values: Optional[dict] = None) -> tuple[list[Decap], list[str]]:
+    """``values``: {ref: (farads, where it was read)} for parts whose
+    comment is not their value (read from the project's parameters)."""
     notes: list[str] = []
+    values = values or {}
+    from_values: list[str] = []
     over = {o["ref"]: o for o in (overrides or []) if o.get("ref")}
     excl = set(exclude or [])
     caps: list[Decap] = []
@@ -581,6 +613,10 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
         fp = comp.footprint if comp else ""
         o = over.get(ref, {})
         c = o.get("c_farads") or (o.get("c_uf") and o["c_uf"] * 1e-6) or parse_capacitance(comment)
+        where = ""
+        if not c and values.get(ref):
+            c, where = values[ref]
+            from_values.append(ref)
         if not c:
             notes.append(f"{ref}: no capacitance in its comment {comment!r}; skipped "
                          f"(pass it in decaps)")
@@ -598,6 +634,14 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
         typical = [f"{name} {val:g} {unit}" for key, name, val, unit in
                    (("esr_ohms", "ESR", round(esr * 1e3, 1), "mohm"),
                     ("esl_nh", "ESL", round(esl * 1e9, 2), "nH")) if key not in o]
+        if where:
+            d.notes.append(f"value from {where}")
+        mine = [p for p in board.pads if p.comp == ref]
+        if _shares_ground(mine, net, ground):
+            other = next(p.net for p in mine if p.net not in (net, ground))
+            d.notes.append(f"four pads, one on {other}: taken as a feedthrough capacitor or "
+                           f"two in one body, its value to ground counted on {net}; the "
+                           f"path through it to {other} is not modelled")
         if o.get("touchstone"):
             d.touchstone = touchstone_impedance(o["touchstone"], o.get("config", "shunt"))
             d.source = "touchstone"
@@ -624,6 +668,9 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
                 guessed.append(ref)
         d.mount_detail = {k: v for k, v in mt.items() if not k.startswith("_")}
         caps.append(d)
+    if from_values:
+        notes.append(f"{len(from_values)} capacitor(s) with no value in the comment: "
+                     f"the value is read from the part's parameters")
     if guessed:
         notes.append(f"{len(guessed)} capacitor(s) with no copper drawn from a pad to a via: "
                      f"the nearest via of the net is taken as theirs: {', '.join(guessed[:8])}"
@@ -865,7 +912,8 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
             decaps: Optional[list[dict]] = None, exclude: Optional[list[str]] = None,
             vrm: Optional[dict] = None, mode: str = "auto", cell_mils: float = 0.0,
             plating_mils: float = ph.DEFAULT_PLATING_MILS, temp_c: float = 25.0,
-            tand: Optional[float] = None, out_dir=None) -> dict:
+            tand: Optional[float] = None, out_dir=None,
+            cap_values: Optional[dict] = None) -> dict:
     notes: list[str] = []
     if mode not in ("auto", "cavity", "lumped"):
         raise PDNError("mode is auto, cavity or lumped")
@@ -949,7 +997,7 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
             notes.append(f"{net} has no plane facing {ground}: lumped model, no "
                          f"spreading inductance or plane resonance")
     caps, cap_notes = build_decaps(board, stack, cav, net, ground, given, plating_mils,
-                                   exclude, copper)
+                                   exclude, copper, cap_values)
     notes += cap_notes
     if not caps:
         notes.append("no decoupling capacitors found or given")

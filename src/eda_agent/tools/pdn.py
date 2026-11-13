@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from ..bridge import get_bridge
 from .emc import _load_board
 
 __all__ = ["register_pdn_tools"]
@@ -55,6 +56,28 @@ def ir_verdict(res: dict, max_drop_pct: float) -> dict[str, Any]:
     if limit > 0:
         out["pass"] = bool(worst <= limit)
     return out
+
+
+async def _values_from_project(refs: list[str]) -> tuple[dict, str]:
+    """({ref: (farads, where)}, note) for capacitors whose comment is not
+    their value, from the open project's component parameters. Never
+    fails the run: what could not be read is said in the note."""
+    if not refs:
+        return {}, ""
+    from ..pdn.decap import capacitance_from_parameters
+    try:
+        reply = await get_bridge().send_command_async(
+            "project.get_component_info_batch",
+            {"designators": "~~".join(refs), "with_pin_nets": "false"}, timeout=120.0)
+    except Exception as exc:  # noqa: BLE001 - the run goes on without them
+        return {}, (f"{len(refs)} capacitor(s) have no value in the comment and the project's "
+                    f"parameters could not be read ({type(exc).__name__}: {exc})")
+    out = {}
+    for row in (reply or {}).get("components", []) if isinstance(reply, dict) else []:
+        got = capacitance_from_parameters(row.get("parameters"))
+        if got and row.get("designator") in refs:
+            out[row["designator"]] = (got[0], f"the parameter {got[1]!r}")
+    return out, ""
 
 
 def register_pdn_tools(mcp) -> None:
@@ -236,6 +259,10 @@ def register_pdn_tools(mcp) -> None:
         for n in (net, ground):
             if n not in nets:
                 return {"ok": False, "error": f"net {n!r} is not on the board"}
+        cap_values, value_note = {}, ""
+        if source == "live":
+            cap_values, value_note = await _values_from_project(
+                im.decaps_without_a_value(board, net, ground, decaps))
         folder, folder_error = None, ""
         if write_files:
             try:
@@ -249,7 +276,7 @@ def register_pdn_tools(mcp) -> None:
                 ripple_pct=float(ripple_pct), step_amps=float(step_amps),
                 f_min_hz=f_min_hz, f_max_hz=f_max_hz, points=points,
                 decaps=decaps, exclude=exclude, vrm=vrm, mode=mode,
-                tand=float(tan_d) or None, out_dir=folder)
+                tand=float(tan_d) or None, out_dir=folder, cap_values=cap_values)
         except (im.PDNError, ValueError, TypeError) as exc:
             _drop_empty(folder)
             return {"ok": False, "error": str(exc)}
@@ -258,6 +285,8 @@ def register_pdn_tools(mcp) -> None:
             return _failed("sim_pdn_impedance", exc)
         if folder_error:
             res["files_error"] = folder_error
+        if value_note:
+            res["notes"].append(value_note)
         res["ok"] = True
         res["source"] = source
         res["stack_assumed"] = bool(stack.assumed)
