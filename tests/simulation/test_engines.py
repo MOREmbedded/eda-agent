@@ -283,3 +283,27 @@ def test_openems_engine_without_openems_is_unavailable(monkeypatch, tmp_path):
     monkeypatch.setattr(detect, "_which_any", lambda *a: "")
     r = sim.submit("em-3d", "openems", {"nets": ["RF"]}, {"board": str(tmp_path / "x.json")})
     assert not r["ok"] and "not available" in r["error"]
+
+
+def test_a_run_that_finishes_while_being_polled_stays_done(monkeypatch):
+    # The poll read "running", then the worker wrote "done" and ended
+    # before the owner check: the finished result must not become failed.
+    import os
+    import threading
+    r = sim.submit("xsection-2d", "eda-agent", {"calculator": "microstrip"})
+    job = jobs.get(r["job"])
+    assert jobs.runs(job)["eda-agent"]["state"] == "done"
+    ended = threading.Thread(target=lambda: None)
+    ended.start()
+    ended.join()
+    monkeypatch.setitem(sim._threads, f"{job.id}/eda-agent", ended)
+    stale = {"eda-agent": {"state": jobs.RUNNING, "owner_pid": os.getpid()}}
+    real_runs = jobs.runs
+    calls = []
+
+    def runs_once_stale(j):
+        calls.append(1)
+        return stale if len(calls) == 1 else real_runs(j)
+    monkeypatch.setattr(jobs, "runs", runs_once_stale)
+    st = sim.refresh(job.id)
+    assert st["runs"]["eda-agent"]["state"] == "done"

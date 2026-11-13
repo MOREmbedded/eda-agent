@@ -228,11 +228,27 @@ def refresh(job_id: str, engine_id: str = "") -> dict[str, Any]:
                 _jobs.set_status(job.run_folder(name), _jobs.RUNNING,
                                  message=out.get("message", "running"),
                                  **({"progress": out["progress"]} if "progress" in out else {}))
-        elif not _owner_alive(job, name, st):
-            # A library run whose process is gone (eda-agent stopped).
-            _jobs.set_status(job.run_folder(name), _jobs.FAILED,
-                             error="the run was interrupted (eda-agent stopped)")
+        else:
+            _fail_if_orphaned(job, name, st)
     return {"ok": True, **job.to_dict(), "folder": str(job.folder), "runs": _jobs.runs(job)}
+
+
+def _fail_if_orphaned(job: _jobs.Job, name: str, st: dict) -> None:
+    """Mark a library run failed when the process that ran it is gone.
+
+    The owner check comes first and the status is read again after it:
+    a run that finishes between the caller's read and this check has
+    already written its result, and must not be overwritten."""
+    with _lock:
+        if _owner_alive(job, name, st):
+            return
+        folder = job.run_folder(name)
+        now = _jobs.read_json(folder / "status.json") or {}
+        if now.get("state") != _jobs.RUNNING:
+            return
+        # A library run whose process is gone (eda-agent stopped).
+        _jobs.set_status(folder, _jobs.FAILED,
+                         error="the run was interrupted (eda-agent stopped)")
 
 
 def _owner_alive(job: _jobs.Job, name: str, st: dict) -> bool:
