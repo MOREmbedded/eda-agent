@@ -77,7 +77,8 @@ def s_quality(freq: np.ndarray, s: np.ndarray, tol: float) -> dict[str, Any]:
 class EdaAgentEngine(Engine):
     info = EngineInfo(
         "eda-agent", "eda-agent solvers", "core", "Apache-2.0", LIBRARY,
-        ("touchstone-check", "xsection-2d", "line-model", "stackup-plan", "net-channel"),
+        ("touchstone-check", "xsection-2d", "line-model", "stackup-plan", "net-channel",
+         "channel-eye"),
         summary="This project's own solvers: the 2D field and eddy-current solvers, "
                 "coupled-line models, the stackup planner, routed-net channels and the S-parameter "
                 "checks. Always installed; the reference the other engines are "
@@ -152,7 +153,34 @@ class EdaAgentEngine(Engine):
                                                 progress)
             except (ValueError, extract.ExtractError) as exc:
                 raise EngineError(str(exc)) from exc
+        if job.kind == "channel-eye":
+            from ..si import eye_jobs
+            try:
+                return eye_jobs.run_convolution(dict(job.spec), job.input_path("touchstone"),
+                                                Path(folder), progress)
+            except (OSError, ValueError, KeyError) as exc:
+                raise EngineError(str(exc)) from exc
         raise EngineError(f"eda-agent does not run {job.kind} jobs")
+
+
+class SpiceEngine(Engine):
+    info = EngineInfo(
+        "spice", "SPICE (ngspice or LTspice)", "spice", "BSD-3-Clause / freeware (own process)",
+        LIBRARY, ("channel-eye",),
+        summary="The channel fitted as a passive rational macromodel, written as a SPICE "
+                "subcircuit with an LTspice symbol, and run in ngspice or LTspice: a circuit "
+                "simulator's eye beside the convolution's.",
+        strengths=("independent time-domain route", "subcircuit reusable in any schematic"))
+
+    def run(self, job, folder, progress):
+        if job.kind != "channel-eye":
+            raise EngineError(f"spice does not run {job.kind} jobs")
+        from ..si import eye_jobs
+        try:
+            return eye_jobs.run_spice(dict(job.spec), job.input_path("touchstone"),
+                                      Path(folder), progress)
+        except (OSError, ValueError, KeyError) as exc:
+            raise EngineError(str(exc)) from exc
 
 
 class ScikitRfEngine(Engine):
@@ -338,4 +366,5 @@ class OpenEmsEngine(Engine):
             return False
 
 
-BUILTIN: tuple[Engine, ...] = (EdaAgentEngine(), ScikitRfEngine(), OpenEmsEngine())
+BUILTIN: tuple[Engine, ...] = (EdaAgentEngine(), ScikitRfEngine(), OpenEmsEngine(),
+                                SpiceEngine())

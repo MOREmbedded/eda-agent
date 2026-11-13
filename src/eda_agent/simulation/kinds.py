@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..si.jobs import LINE_SPEC, PLAN_SPEC
+from ..si.eye_jobs import EYE_SPEC
 from ..si.net_jobs import NET_SPEC
 from .engine import JobKind
 
@@ -68,6 +69,13 @@ KINDS: dict[str, JobKind] = {k.id: k for k in (
         inputs={"board": "a saved LayoutBoard (.json), e.g. from si_board_snapshot",
                 "stackup": "the board's pcb_get_layer_stackup reply (.json)"},
         spec=NET_SPEC),
+    JobKind(
+        "channel-eye", "Eye diagram of a channel",
+        "The eye of a PRBS pattern through a channel's S-parameters (a 2-port line or a "
+        "4-port pair), its height and width, and the worst-case eye; on SPICE also the "
+        "channel as a passive subcircuit with an LTspice symbol.",
+        inputs={"touchstone": "the channel's .s2p or .s4p (e.g. from a net-channel job)"},
+        spec=EYE_SPEC),
 )}
 
 

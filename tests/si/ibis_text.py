@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+"""A small IBIS file for the tests: a 1.8 V driver of 40 ohm with a
+60 ps 20-80 % edge and 0.6 pF, and an input of 0.4 pF."""
+
+R_OUT = 40.0
+VCC = 1.8
+
+
+def _table(r: float) -> str:
+    rows = []
+    for k in range(-10, 21):
+        v = k * VCC / 10
+        rows.append(f"{v:8.3f}  {v / r:.6e}  {v / (r * 1.2):.6e}  {v / (r * 0.8):.6e}")
+    return "\n".join(rows)
+
+
+TEXT = f"""[IBIS Ver]   5.0
+[File Name]  test.ibs
+[Component]  TESTPART
+[Manufacturer] none
+[Package]
+| typ min max
+R_pkg  0.1  0.08  0.12
+L_pkg  1nH  0.8nH  1.2nH
+C_pkg  0.2pF 0.15pF 0.25pF
+[Pin] signal_name model_name
+1  DQ   DRV18
+2  DIN  RX18
+|
+[Model]  DRV18
+Model_type  Output
+C_comp  0.6pF  0.5pF  0.7pF
+[Voltage Range]  {VCC}  1.7  1.9
+[Pulldown]
+| V  I(typ)  I(min)  I(max)
+{_table(R_OUT)}
+[Pullup]
+{_table(R_OUT)}
+[Ramp]
+| typ min max
+dV/dt_r  1.08/60p  1.0/70p  1.2/50p
+dV/dt_f  1.08/62p  1.0/72p  1.2/52p
+R_load = 50
+|
+[Model]  RX18
+Model_type  Input
+C_comp  0.4pF  0.3pF  0.5pF
+[Voltage Range]  {VCC}  1.7  1.9
+[End]
+"""

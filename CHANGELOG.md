@@ -16,6 +16,17 @@ maturity classification for every tool.
 
 ### Added
 
+- **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
+  and engine `spice`. The `eda-agent` engine convolves a channel's pulse
+  response with a PRBS pattern and adds the worst-case eye by peak
+  distortion analysis; the `spice` engine fits the channel as a passive
+  rational macromodel (relaxed vector fitting, passivity enforcement),
+  writes it as a subcircuit of linear elements with an LTspice symbol, and
+  runs the same pattern in ngspice or LTspice, reporting how far the two
+  routes differ. Drivers and receivers come from IBIS files or explicit
+  values and are the same circuit in both routes. New tools
+  `si_channel_eye`, `si_spice_model` and `si_ibis_models`. See
+  [Eyes and SPICE models](docs/SI_TIME.md).
 - **Signal integrity: routed nets and pairs.** A routed net or differential
   pair is modelled from pin to pin: its path is found in the board's copper
   (tees, stubs and layer changes included), every trace section uses the RLGC
