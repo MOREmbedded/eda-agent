@@ -61,11 +61,15 @@ def test_a_real_outjob_still_runs(monkeypatch, tmp_path):
     bridge = _Bridge()
     asyncio.run(_tools(bridge, monkeypatch)["proj_run_outjob"](
         "Gerber", outjob_path=str(outjob)))
-    assert bridge.sent == ["project.run_outjob"]
+    # The fab check reads which outputs the container writes first.
+    assert bridge.sent[-1] == "project.run_outjob"
+    assert set(bridge.sent[:-1]) <= {"project.get_outjob_containers"}
 
 
 def test_no_path_is_still_allowed(monkeypatch):
     """Omitting the path means "the focused project's first OutJob"."""
     bridge = _Bridge()
     asyncio.run(_tools(bridge, monkeypatch)["proj_run_outjob"]("Gerber"))
-    assert bridge.sent == ["project.run_outjob"]
+    # The fab check reads which outputs the container writes first.
+    assert bridge.sent[-1] == "project.run_outjob"
+    assert set(bridge.sent[:-1]) <= {"project.get_outjob_containers"}

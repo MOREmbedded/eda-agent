@@ -24,8 +24,10 @@ from .application import (
 )
 from .guidance import register_guidance_tools
 from .update import register_update_tools
+from .length_units import register_length_units_tools
 from .uiauto import register_uiauto_tools
 from .project import register_project_tools
+from .convert import register_convert_tools
 from .library import register_library_tools
 from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
@@ -235,6 +237,7 @@ def register_all_tools(mcp):
     register_uiauto_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)
+    register_convert_tools(mcp)
     register_library_tools(mcp)
     register_ipc_batch_tools(mcp)
     register_generic_tools(mcp)
@@ -417,6 +420,8 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     register_meta_tools(mcp)
     # Updating eda-agent itself belongs to no EDA tool either.
     register_update_tools(mcp)
+    # The session's length unit applies to every tool on every backend.
+    register_length_units_tools(mcp)
     # tool_guide answers which tool for which DOCUMENT, and what is proven
     # impossible. That is a different question from tool_catalog's "what is
     # this called", and it is the one that has been getting wrong answers,
@@ -461,6 +466,7 @@ __all__ = [
     "register_uiauto_tools",
     "register_meta_tools",
     "register_update_tools",
+    "register_length_units_tools",
     "register_parts_tools",
     "register_live_tools",
     "register_footprint_tools",
@@ -469,6 +475,7 @@ __all__ = [
     "register_request_prompts",
     "register_mode_prompts",
     "register_project_tools",
+    "register_convert_tools",
     "register_library_tools",
     "register_ipc_batch_tools",
     "register_generic_tools",

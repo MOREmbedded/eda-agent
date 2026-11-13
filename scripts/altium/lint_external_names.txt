@@ -264,12 +264,8 @@ ePolySolid
 ePort
 ePortBidirectional
 ePortInput
-ePortLeft
-ePortLeftRight
-ePortNone
 ePortOutput
 ePortrait
-ePortRight
 ePortUnspecified
 ePowerArrow
 ePowerBar
@@ -501,6 +497,41 @@ TPadViaThermalReliefItem
 TPolySegment
 Trunc
 TStringList
-Write
 WriteLn
 wsMinimized
+
+# Added with the upstream merge of 2026-11-12 (upstream c5aaa46). Altium
+# schematic enums upstream reads and writes live (TArrowKind,
+# TBusTextStyle, TSheetSymbolType, the signal harness object id);
+# upstream's fpc tests stub them with the same names.
+eArrowKind_Arrow
+eArrowKind_ArrowTail
+eArrowKind_RectAndTri
+eArrowKind_Triangle
+eBusTextStyle_Full
+eBusTextStyle_Prefix
+eSheetSymbolType_DesignItem
+eSheetSymbolType_DeviceSheet
+eSheetSymbolType_Normal
+eSignalHarness
+# StatusForm.dfm controls of the Config tab's Lengths in and CHECKS rows.
+lbl_CfgChecksHint
+lbl_CfgUnits
+lbl_CfgUnitsHint
+opt_ChkBodyOff
+opt_ChkBodyOn
+opt_ChkFabOff
+opt_ChkFabOn
+opt_ChkFpOff
+opt_ChkFpOn
+opt_ChkPadOff
+opt_ChkPadOn
+opt_ChkSpiceOff
+opt_ChkSpiceOn
+opt_ChkSymOff
+opt_ChkSymOn
+opt_UnitsMil
+opt_UnitsMm
+# TObjectCreationMode: a schematic object made with the user's Place
+# defaults (Vincent Himpe's blanket fix, upstream PR #318).
+eCreate_GlobalCopy

@@ -295,6 +295,9 @@ PREFERENCES: dict[str, str] = {
     "dialogs": "`manual` leaves dialogs such as the change order for you to "
                "answer, instead of the tool answering them.",
     "usage_stats": "`off` stops counting the tokens each tool call costs.",
+    "length_units": "The unit a new AI session gives and reads lengths in: "
+                    "`mil` (default) or `mm`. Each session may change its "
+                    "own with the `length_units` tool.",
     "theme": "The web dashboard's look: `system`, `light` or `dark`. Set in "
              "the profile only; the Altium panel has no switch for it.",
 }

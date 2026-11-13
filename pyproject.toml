@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eda-agent"
-version = "0.8.1"
+version = "0.8.2"
 description = "MCP server for EDA tool automation, currently supports Altium Designer. Around 730 tools for schematic, PCB, and library ops via DelphiScript bridge."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -77,6 +77,12 @@ dependencies = [
 # when it is absent. Install this extra to get the PNG previews.
 render = [
     "matplotlib>=3.5,<4",
+]
+# Raytraced pictures of a board (pcb_render_3d): eda-agent's own path
+# tracer, built from render-core/. Without it top and bottom views are
+# drawn flat-shaded; the parts also need the models3d extra (CadQuery).
+render3d = [
+    "eda-agent-render>=0.1",
 ]
 # KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). It talks to
 # KiCad's API server with the standard library alone, so this extra is

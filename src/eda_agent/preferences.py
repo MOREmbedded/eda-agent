@@ -27,8 +27,12 @@ call costs (default ``on``; see eda_agent.diag.usage). ``theme`` is how
 the web dashboard looks: ``system`` (the default) follows the operating
 system's light or dark mode, ``light`` and ``dark`` fix it. The Altium panel
 has no switch for the theme; it is set in the profile (the dashboard's
-Settings menu or Workspace view write it there). Each of the others also
-has an environment variable in the AI client's config; for the first two
+Settings menu or Workspace view write it there). ``length_units`` is the
+unit a new AI session gives and reads lengths in, ``mil`` (the default) or
+``mm``; each session may change its own (lengths.py). ``checks_off`` names
+the checks switched off, comma separated (see :data:`CHECKS`; default none:
+every check runs). Each of the others also has an environment variable in
+the AI client's config; for the first two
 the stricter of the two wins, for the third either one turns it on.
 
 The owner profile in effect (see eda_agent.profile) may carry its own
@@ -77,6 +81,7 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "dialogs": ("auto", "manual"),
     "usage_stats": ("on", "off"),
     "theme": ("system", "light", "dark"),
+    "length_units": ("mil", "mm"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -361,3 +366,86 @@ def where_set(key: str, workspace: Optional[Path] = None) -> tuple[str, str]:
                 "The user can change it in that file or in the dashboard's "
                 "Workspace view (Settings).")
     return (_PANEL_WHERE, "The user can change it there.")
+#: The checks the Config tab can switch off, and what each one checks. Every
+#: check is on unless the user turns it off there.
+CHECKS: dict[str, str] = {
+    "footprint_drawing": "the footprint against its datasheet drawing",
+    "symbol_pins": "the symbol's pins against the datasheet pin table",
+    "pins_pads": "the symbol's pin numbers against the footprint's pads",
+    "model_body": "the 3D body against the datasheet outline",
+    "spice_model": "the SPICE model file",
+    "fab_export": "the board and parts against the fab before export",
+}
+
+
+def checks_off(workspace: Optional[Path] = None) -> set[str]:
+    """The checks switched off on the Config tab (names from CHECKS)."""
+    raw = str(_read(workspace).get("checks_off", "") or "").lower()
+    return {n.strip() for n in raw.split(",") if n.strip() in CHECKS}
+
+
+def check_on(name: str, workspace: Optional[Path] = None) -> bool:
+    """True unless check ``name`` is switched off on the Config tab."""
+    if name not in CHECKS:
+        raise KeyError(f"no check named {name!r}")
+    return name not in checks_off(workspace)
+
+
+#: Each check's row on the Config tab, as the panel labels it.
+CHECK_LABELS: dict[str, str] = {
+    "footprint_drawing": "Footprint vs drawing",
+    "symbol_pins": "Symbol vs pin table",
+    "pins_pads": "Symbol pins vs pads",
+    "model_body": "3D body vs drawing",
+    "spice_model": "SPICE model file",
+    "fab_export": "Fab export",
+}
+
+#: When a user may rightly want a part that does not pass the check.
+CHECK_REASONS: dict[str, str] = {
+    "footprint_drawing": ("lands deliberately changed from the vendor's "
+                          "pattern (longer for hand soldering, a house rule)"),
+    "symbol_pins": ("a pin table that is a picture, or names deliberately "
+                    "written another way"),
+    "pins_pads": ("a footprint held in an installed library or vault, or "
+                  "named pads deliberately left off the symbol"),
+    "model_body": ("a deliberately simplified body, or a part with no "
+                   "outline drawing"),
+    "spice_model": ("the user's own model (measured, or written in-house) "
+                    "rather than a vendor's"),
+    "fab_export": ("a limit the fab agreed for this order (a fab with no "
+                   "data here takes fab \"custom\" with the user's own limits "
+                   "instead)"),
+}
+
+
+def check_skipped(name: str) -> dict[str, str]:
+    """What a result carries when check ``name`` was switched off, so a part
+    built without it is never taken for a checked one."""
+    return {"check": name, "skipped": (
+        f"not checked: {CHECKS[name]} is switched off on the Config tab")}
+
+
+def if_the_user_insists(name: str) -> str:
+    """What a refusal by check ``name`` tells the agent to do when the
+    user wants to go ahead anyway."""
+    return (f"Show the user what differs. If they still want it built as it "
+            f"is, ask them to switch \"{CHECK_LABELS[name]}\" off on the Config "
+            f"tab of the Altium panel, then build it again and switch it back "
+            f"on after. Never work around the check another way: not another "
+            f"tool, not an edit after the build. See docs/CONFIG.md.")
+
+
+def checks_guide() -> str:
+    """Every check, what it checks, when a user may want to go ahead, and
+    the switch: the text tool_guide and docs/CONFIG.md give."""
+    rows = "; ".join(
+        f"\"{CHECK_LABELS[n]}\" checks {CHECKS[n]} (a user may want past it "
+        f"for {CHECK_REASONS[n]})" for n in CHECKS)
+    return ("A refused build is the check working: report what differs and "
+            "let the user decide. Only the user switches a check off, on the "
+            "Config tab of the Altium panel; it takes effect on the next "
+            "command, and every result built with it off carries "
+            "\"unchecked\". Never pass a check by another route (a different "
+            "tool, pads or pins placed one by one, an edit after the build). "
+            f"The checks: {rows}.")

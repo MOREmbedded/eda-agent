@@ -135,6 +135,7 @@ nav:
       - All options: OPTIONS.md
       - CLI: CLI.md
       - Configuration: CONFIGURATION.md
+      - The Config tab: CONFIG.md
       - Tool naming: TOOL_NAMING.md
       - SDK coverage: SDK_COVERAGE.md
       - Altium scripting coverage: ALTIUM_SCRIPTING_COVERAGE.md
@@ -149,6 +150,7 @@ nav:
   - Development:
       - Development: DEVELOPMENT.md
       - Release verification: RELEASE_VERIFICATION.md
+      - STEP placement verification: step-placement-verification.md
       - AI field notes on Altium: AI_ALTIUM_FIELD_NOTES.md
       - Altium autonomy runbook: ALTIUM_AUTONOMY_RUNBOOK.md
       - Changelog: https://github.com/MOREmbedded/eda-agent/blob/main/CHANGELOG.md

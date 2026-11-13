@@ -84,12 +84,15 @@
   "aisler": {
    "vendor": "AISLER",
    "country": "DE/NL",
-   "data_file": null,
-   "status": "pending",
+   "data_file": "aisler.json",
+   "status": "data",
    "urls": [
+    "https://community.aisler.net/t/2-layer-1-6mm-35-m-enig-design-rules/3732",
+    "https://community.aisler.net/t/4-layer-35-m-enig-design-rules/3733",
+    "https://community.aisler.net/t/pcb-design-rules/41",
     "https://aisler.net/help/design-rules-and-guidelines"
    ],
-   "note": "The help page now redirects to the community site; find the design-rules article there."
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
   },
   "beta_layout": {
    "vendor": "Beta LAYOUT",
@@ -145,6 +148,76 @@
     "https://www.advancedpcb.com/en-us/solutions/advanced-pcbs/"
    ],
    "note": "Annular ring, hole to hole and mask dam are in a facility table that did not keep its alignment when read."
+  },
+  "advancedpcb": {
+   "vendor": "AdvancedPCB",
+   "country": "US",
+   "data_file": "advancedpcb.json",
+   "status": "data",
+   "urls": [
+    "https://www.advancedpcb.com/getmedia/6c0a8498-98c6-46f5-98c3-897a1d259dd0/AdvancedPCB_Aurora-Facility-Capabilities-2026-Final.pdf"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "allpcb": {
+   "vendor": "ALLPCB",
+   "country": "CN",
+   "data_file": "allpcb.json",
+   "status": "data",
+   "urls": [
+    "https://www.allpcb.com/standard_pcb_manufacturing_capability.html"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "bayareacircuits": {
+   "vendor": "Bay Area Circuits",
+   "country": "US",
+   "data_file": "bayareacircuits.json",
+   "status": "data",
+   "urls": [
+    "https://bayareacircuits.com/pcb-capabilities/"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "epec": {
+   "vendor": "Epec",
+   "country": "US",
+   "data_file": "epec.json",
+   "status": "data",
+   "urls": [
+    "https://www.epectec.com/pcb/board-specifications.html"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "expresspcb": {
+   "vendor": "ExpressPCB",
+   "country": "US",
+   "data_file": "expresspcb.json",
+   "status": "data",
+   "urls": [
+    "https://www.expresspcb.com/expresspcb-manufacturing-specifications/"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "pcbuniverse": {
+   "vendor": "PCB Universe",
+   "country": "US",
+   "data_file": "pcbuniverse.json",
+   "status": "data",
+   "urls": [
+    "https://www.pcbuniverse.com/pcbu_capabilities.php"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
+  },
+  "sierra": {
+   "vendor": "Sierra Circuits",
+   "country": "US",
+   "data_file": "sierra.json",
+   "status": "data",
+   "urls": [
+    "https://www.protoexpress.com/products/rigid-pcb/"
+   ],
+   "note": "Transcribed upstream (salitronic/eda-agent) on 2026-11-08."
   }
  }
 }

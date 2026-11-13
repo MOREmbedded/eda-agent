@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""A symbol's pins are checked against the datasheet's pin table."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from eda_agent.design.pin_table import check_pin_table, norm
+
+
+def _pdf(pages: list[list[str]]) -> bytes:
+    """A minimal PDF, several lines of Helvetica text per page."""
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", None,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for lines in pages:
+        body = " T* ".join(f"({ln}) Tj" for ln in lines)
+        stream = f"BT /F1 10 Tf 14 TL 72 720 Td {body} ET".encode()
+        objs.append(f"<< /Length {len(stream)} >>\nstream\n{stream.decode()}\nendstream")
+        content = len(objs)
+        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    f"/Contents {content} 0 R /Resources << /Font << /F1 3 0 R >> >> >>")
+        kids.append(f"{len(objs)} 0 R")
+    objs[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    out, offsets = b"%PDF-1.4\n", []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n{body}\nendobj\n".encode()
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+_TABLE = [["Electrical characteristics", "VIN max 6 V"],
+          ["Pin Functions", "PIN NAME NO. I/O DESCRIPTION",
+           "VIN 1 I Input supply", "GND 2 - Ground",
+           "EN/UVLO 3 I Enable, active high", "RESET# 4 O Open drain reset",
+           "VOUT 5 O Regulated output", "NC 6 - Not connected",
+           "PG", "7 O Power good"]]
+
+
+@pytest.fixture
+def sheet(tmp_path):
+    pdf = tmp_path / "ldo.pdf"
+    pdf.write_bytes(_pdf(_TABLE))
+    return str(pdf)
+
+
+def _pins(*pairs):
+    return [{"designator": d, "name": n} for d, n in pairs]
+
+
+def test_pins_as_printed_pass_with_the_page_found_by_its_heading(sheet):
+    out = check_pin_table({"path": sheet}, _pins(
+        ("1", "VIN"), ("2", "GND"), ("3", "EN/UVLO"), ("4", "\\R\\E\\S\\E\\T\\"),
+        ("5", "VOUT"), ("6", "NC"), ("7", "PG")))
+    assert out["ok"], out
+    assert out["pages"] == [2] and out["found"] == 7
+
+
+def test_a_swapped_pair_is_refused_and_the_table_rows_shown(sheet):
+    out = check_pin_table({"path": sheet, "page": "2"},
+                          _pins(("1", "GND"), ("2", "VIN"), ("5", "VOUT")))
+    assert not out["ok"]
+    assert [m["pin"] for m in out["missing"]] == ["1", "2"]
+    assert any("VIN 1" in r for r in out["missing"][0]["rows_with_number"])
+    assert "1 GND" in out["reason"]
+
+
+def test_a_page_without_the_table_finds_nothing(sheet):
+    out = check_pin_table({"path": sheet, "page": "1"}, _pins(("1", "VIN")))
+    assert not out["ok"] and out["missing"][0]["pin"] == "1"
+
+
+@pytest.mark.parametrize("datasheet,words", [
+    (None, "give datasheet"),
+    ({"path": "C:/no/such.pdf"}, "names no file"),
+])
+def test_a_missing_datasheet_is_refused(datasheet, words):
+    out = check_pin_table(datasheet, _pins(("1", "VIN")))
+    assert not out["ok"] and words in out["reason"]
+
+
+def test_names_compare_without_overbars_slashes_or_case():
+    assert norm("\\R\\E\\S\\E\\T\\") == norm("RESET#") == norm("/reset") == "RESET"
+    assert norm("VDD_IO") == norm("VDDIO")
+
+
+def test_a_subscripted_name_printed_as_two_words_matches(tmp_path):
+    # #300: ST prints V_CC with a subscript, which the PDF text gives as
+    # "V CC"; the six subscripted STM6601 pins were refused.
+    pdf = tmp_path / "stm6601.pdf"
+    pdf.write_bytes(_pdf([["Pin description", "1 V CC Power supply input",
+                           "3 V REF Precise 1.5 V voltage reference",
+                           "4 PS HOLD PS HOLD input", "7 VCC LO Output for high",
+                           "8 PB OUT Status of PB push-button input"]]))
+    ok = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
+        ("1", "VCC"), ("3", "V_REF"), ("4", "PSHOLD"), ("7", "\VCCLO"),
+        ("8", "PB_OUT")))
+    assert ok["ok"], ok
+    wrong = check_pin_table({"path": str(pdf), "page": "1"}, _pins(
+        ("1", "VREF"), ("3", "VCC"), ("7", "PBOUT")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "3", "7"]
+
+
+def _tool(monkeypatch, checks_off=""):
+    from eda_agent import preferences
+    from eda_agent.tools import library
+
+    sent = []
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append(command)
+            if command == "application.get_active_document":
+                return {"file_path": "C:/lib/Parts.SchLib"}
+            return {"success": True}
+
+    monkeypatch.setattr(library, "get_bridge", lambda: Bridge())
+    monkeypatch.setattr(preferences, "_read",
+                        lambda workspace=None: {"checks_off": checks_off})
+    tools = {}
+
+    class Mcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return deco
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (lambda fn: fn)
+
+    library.register_library_tools(Mcp())
+    return tools, sent
+
+
+def test_the_ic_tool_builds_nothing_from_a_wrong_pin(monkeypatch, sheet):
+    tools, sent = _tool(monkeypatch)
+    out = asyncio.run(tools["lib_create_ic_symbol"](
+        name="LDO", left_pins=_pins(("1", "VIN"), ("3", "EN")),
+        right_pins=_pins(("5", "VOUT")), datasheet={"path": sheet, "page": "2"}))
+    assert not out["ok"] and out["check"] == "symbol_pins"
+    assert out["pin_table"]["missing"][0]["pin"] == "3"
+    assert not any(c.startswith("library.") for c in sent)
+
+
+def test_the_parts_tool_checks_every_part_and_the_shared_pins(monkeypatch, sheet):
+    tools, sent = _tool(monkeypatch)
+    out = asyncio.run(tools["lib_create_symbol_in_parts"](
+        name="LDO", parts=[{"left_pins": _pins(("1", "VIN"))},
+                           {"right_pins": _pins(("5", "VOUT"))}],
+        shared_pins={"left_pins": _pins(("2", "VSS"))},
+        datasheet={"path": sheet, "page": "2"}))
+    assert not out["ok"] and out["pin_table"]["missing"][0]["name"] == "VSS"
+
+
+def test_a_connector_named_by_number_needs_no_table(monkeypatch):
+    tools, sent = _tool(monkeypatch)
+    out = asyncio.run(tools["lib_create_ic_symbol"](
+        name="HDR3", left_pins=_pins(("1", "1"), ("2", "2"), ("3", ""))
+        , right_pins=[]))
+    assert out.get("ok", True) is not False, out
+    assert "number only" in out["pin_table"]["note"]
+
+
+def test_the_panel_can_switch_the_pin_table_check_off(monkeypatch):
+    tools, sent = _tool(monkeypatch, checks_off="symbol_pins")
+    out = asyncio.run(tools["lib_create_ic_symbol"](
+        name="LDO", left_pins=_pins(("1", "VIN")), right_pins=_pins(("5", "VOUT"))))
+    assert out["unchecked"]["check"] == "symbol_pins"
+    assert "library.add_pins" in sent
+
+
+def test_pins_into_a_symbol_just_made_are_checked_too(monkeypatch, sheet):
+    from eda_agent.tools import library
+    monkeypatch.setattr(library, "_NEW_SYMBOL", [])
+    tools, sent = _tool(monkeypatch)
+    asyncio.run(tools["lib_create_symbol"](name="LDO"))
+    bad = asyncio.run(tools["lib_add_pins"](
+        pins=_pins(("1", "GND")), datasheet={"path": sheet, "page": "2"}))
+    assert not bad["ok"] and bad["added"] == 0 and bad["symbol"] == "LDO"
+    assert "library.add_pins" not in sent
+    good = asyncio.run(tools["lib_add_pins"](
+        pins=_pins(("1", "VIN")), datasheet={"path": sheet, "page": "2"}))
+    assert good["pin_table"]["found"] == 1 and "library.add_pins" in sent
+    # Another symbol made current: its pins are edits, not a new build.
+    asyncio.run(tools["lib_set_current_component"](component_name="OLD"))
+    assert asyncio.run(tools["lib_add_pins"](pins=_pins(("9", "X"))))["success"]
+
+
+def test_a_name_wrapped_over_lines_of_its_cell_passes_with_its_number(tmp_path):
+    # A ball map prints long names wrapped in their cells, the pieces on
+    # lines of their own and the number after them (or before them).
+    pdf = tmp_path / "soc.pdf"
+    pdf.write_bytes(_pdf([["Pin Number Order Information", "Pin Name Pin Pin Name Pin",
+                           "VSS_18 T27",
+                           "CAM_CLKN AM32 AUD_FS_A/PWM2_B/BUS_TX_C/",
+                           "SER_CS1_D/IO_P7_d",
+                           "T28",
+                           "LINK_REQN_B/TWI_SDA_C/UA",
+                           "RT3_RX_A/IO_Q0_d",
+                           "A24 VSS_3X D24",
+                           "15 MOSI/SDA SPI MOSI",
+                           "16 MISO/",
+                           "PWRCTL2",
+                           "SPI MISO. PWRCTL2 control"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(
+        ("T28", "AUD_FS_A/PWM2_B/BUS_TX_C/SER_CS1_D/IO_P7_d"),
+        ("A24", "LINK_REQN_B/TWI_SDA_C/UART3_RX_A/IO_Q0_d"),
+        ("D24", "VSS_3X"), ("T27", "VSS_18"), ("16", "MISO/PWRCTL2")))
+    assert ok["ok"], ok
+    # The number has to touch the name: a neighbouring row's wrapped name
+    # does not pass for another pin, nor the other way round.
+    wrong = check_pin_table(ds, _pins(
+        ("AM32", "LINK_REQN_B/TWI_SDA_C/UART3_RX_A/IO_Q0_d"),
+        ("T27", "AUD_FS_A/PWM2_B/BUS_TX_C/SER_CS1_D/IO_P7_d"),
+        ("15", "MISO/PWRCTL2")))
+    assert [m["pin"] for m in wrong["missing"]] == ["AM32", "T27", "15"]
+
+
+def test_a_name_split_by_a_page_break_reads_on_past_the_running_heads(tmp_path):
+    head = ["SoC Datasheet Rev 1.1", "Pin Name Pin Pin Name Pin"]
+    foot = ["Acme Technology Co.,Ltd"]
+    pdf = tmp_path / "soc.pdf"
+    pdf.write_bytes(_pdf([
+        [*head, "Pin Number Order", "VSS_1 A1", "AUD_DIN_A/CORE_AVS/RSTN_B/I", "P30", *foot],
+        [*head, "O_R5_u", "VSS_2 A2", *foot],
+        [*head, "VSS_3 A3", *foot]]))
+    out = check_pin_table({"path": str(pdf), "page": "1-3"}, _pins(
+        ("P30", "AUD_DIN_A/CORE_AVS/RSTN_B/IO_R5_u"), ("A2", "VSS_2")))
+    assert out["ok"], out
+
+
+def test_the_exposed_pad_the_table_lists_without_a_number_passes_once(tmp_path):
+    pdf = tmp_path / "pmic.pdf"
+    pdf.write_bytes(_pdf([["Pin Description", "67 SW8 Switching node", "68 SW9 Switching node",
+                           "Exposed  ePAD Ground"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    for name in ("EPAD", "EP", "GND", "Ground"):
+        out = check_pin_table(ds, _pins(("68", "SW9"), ("69", name)))
+        assert out["ok"], (name, out)
+        assert out["found"] == 2
+    # A number the table prints is that pin's, never the pad's; and only
+    # one pin is taken for the pad.
+    assert not check_pin_table(ds, _pins(("68", "EPAD")))["ok"]
+    two = check_pin_table(ds, _pins(("69", "EPAD"), ("70", "EP")))
+    assert [m["pin"] for m in two["missing"]] == ["70"]
+
+
+def test_pins_numbered_as_a_list_round_a_drawing_pass(tmp_path):
+    # Pins printed as "1. VIN" round the package drawing, two to a line,
+    # a subscripted name split in two; "1.8 V" is a voltage, not pin 1.
+    pdf = tmp_path / "rtc.pdf"
+    pdf.write_bytes(_pdf([["Terminal connections", "1. VIN", "6. V BKP",
+                           "2. CLK 5. VREG", "3. DAT 4 . GND",
+                           "Supply 1.8 V to 5.5 V"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(("1", "VIN"), ("2", "CLK"), ("3", "DAT"),
+                                   ("4", "GND"), ("5", "VREG"), ("6", "VBKP")))
+    assert ok["ok"], ok
+    wrong = check_pin_table(ds, _pins(("1", "VBKP"), ("6", "VIN")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "6"]
+
+
+def test_a_drawing_that_labels_each_pin_number_then_name_passes(tmp_path):
+    # A package drawing gives each pin its number alone and its name on the
+    # next line; a ball map's column number sits over a row of names; the
+    # exposed pad is a note without a number.
+    pdf = tmp_path / "ctl.pdf"
+    pdf.write_bytes(_pdf([["Pin Assignment", "Pin Map", "1",
+                           "LA2 VIN VDD", "1 2 3",
+                           "2", "VIN", "1", "LA2", "3", "VDD", "4", "IRQ_N",
+                           "5", "LB1", "Connect to GND for", "Thermal"]]))
+    ds = {"path": str(pdf), "page": "1"}
+    ok = check_pin_table(ds, _pins(("1", "LA2"), ("2", "VIN"), ("3", "VDD"),
+                                   ("4", "IRQ_N"), ("5", "LB1"), ("6", "GND")))
+    assert ok["ok"], ok
+    # Read name-then-number, every name here would meet the next number.
+    wrong = check_pin_table(ds, _pins(("1", "VIN"), ("2", "VDD"), ("3", "IRQ_N")))
+    assert [m["pin"] for m in wrong["missing"]] == ["1", "2", "3"]
