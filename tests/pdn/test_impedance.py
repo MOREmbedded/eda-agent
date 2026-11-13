@@ -826,3 +826,23 @@ def test_many_capacitors_are_listed_by_kind_and_all_are_in_the_file(tmp_path):
     rows = (tmp_path / "+1V0_pdn_decaps.csv").read_text().splitlines()
     assert len(rows) == 46 and rows[0].startswith("ref,c_uf,")
     assert any(f.endswith("_pdn_impedance.png") for f in r["files"])
+
+
+def test_a_pad_joined_to_its_via_through_a_pour():
+    # The power pad sits in a small top-layer pour with its via 80 mil up
+    # the pour and no track; the ground pad has its via in the pad. The
+    # way through the pour is a strip between two round contacts over the
+    # ground plane 4 mil below: (mu0 h / pi) acosh(d / 2a), a the geometric
+    # mean of the pad's half width and the barrel's wall radius.
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False, ground_via=False)
+    b.vias += [via(2000, 1720, "GND"), via(2000, 1600, "+1V0")]
+    b.regions.append(Region("TopLayer", [(1950, 1560), (2050, 1560), (2050, 1692), (1950, 1692)],
+                            [], "+1V0", "pour", source="polygon:P"))
+    caps, notes = _caps(b)
+    m = caps[0].mount_detail
+    assert sorted(m["how"]) == ["through a pour", "via in pad"] and "assumed" not in m
+    a = math.sqrt(10.0 * (5.0 + 0.79))
+    want = ph.MU0 * 4.0 * ph.MIL * math.acosh(80.0 / (2 * a)) / math.pi
+    assert m["traces_nh"] == pytest.approx(want * 1e9, rel=0.02)
+    assert m["fanout_mils"] == [80.0, 0.0] or sorted(m["fanout_mils"]) == [0.0, 80.0]

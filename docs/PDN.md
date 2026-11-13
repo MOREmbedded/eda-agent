@@ -79,10 +79,10 @@ read as zero.
 budget of 800,000 nodes of the rail's own copper and the grid size the
 board allows. When either limit makes the cell coarser than that, a note
 says so. The tool then solves again on a grid twice as coarse and reports
-`convergence.estimated_error_mv`, the Richardson estimate of what the grid
-still costs. It is an estimate of the grid error only, not of the
-assumptions below. Pass a smaller `cell_mils` when it is larger than you can
-accept.
+the change between the two as `convergence.estimated_error_mv`. The whole
+change is taken as the error the fine grid may still hold, which is on the
+safe side. It is an estimate of the grid error only, not of the assumptions
+below. Pass a smaller `cell_mils` when it is larger than you can accept.
 
 ### What comes back
 

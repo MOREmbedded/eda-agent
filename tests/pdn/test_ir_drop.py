@@ -229,6 +229,16 @@ def test_convergence_estimate_is_reported_and_small_on_a_strip():
     res = ir.analyse_net(b, "P", None, SRC, SNK, cell_mils=5, sink_model="equipotential")
     c = res["convergence"]
     assert c["coarse_cell_mils"] == 10 and c["estimated_error_pct_of_drop"] < 1.0
+    # it is the same board solved on the grid twice as coarse, and the
+    # change between the two, whole, is the error reported
+    coarse = ir.analyse_net(b, "P", None, SRC, SNK, cell_mils=10, sink_model="equipotential",
+                            check_convergence=False)
+    fine_mv, coarse_mv = res["worst"]["drop_mv"], coarse["worst"]["drop_mv"]
+    assert c["coarse_worst_drop_mv"] == pytest.approx(coarse_mv, abs=2e-4)
+    assert c["estimated_error_mv"] == pytest.approx(abs(fine_mv - coarse_mv), abs=2e-4)
+    assert c["estimated_error_pct_of_drop"] == pytest.approx(
+        100 * abs(fine_mv - coarse_mv) / fine_mv, abs=0.011)
+    assert "convergence" not in coarse
 
 
 def test_bad_inputs_are_errors():
@@ -611,3 +621,40 @@ def test_reply_is_plain_json_with_no_nan_and_lists_the_worst_pins_only():
     assert s["pins"][0]["pad"] == s["worst_pin"]
     assert s["worst_pin_volts"] <= s["best_pin_volts"]
     assert any("not connected to any source" in n for n in res["notes"])
+
+
+def test_public_result_has_no_working_arrays_and_no_nan():
+    raw = {"a": float("nan"), "b": [np.float64(1.5), float("inf"), np.int64(3)],
+           "_maps": {"V": np.zeros(3)}, "c": {"_pins": [1], "d": np.float32(0.25), "e": "x"}}
+    out = ir.public(raw)
+    assert out == {"a": None, "b": [1.5, None, 3], "c": {"d": 0.25, "e": "x"}}
+    assert type(out["b"][0]) is float and type(out["b"][2]) is int
+    import json
+    assert "NaN" not in json.dumps(out) and "Infinity" not in json.dumps(out)
+
+
+def test_a_two_pin_sink_shares_equally_or_is_shorted_inside_the_part():
+    # U1's two pins are fed by tracks of 460 and 1460 mil (pad edge to pad edge)
+    b = _board(2000, 400)
+    b.pads += [smd("J1", "1", 200, 100, "P", 40, 40), smd("J1", "2", 200, 300, "P", 40, 40),
+               smd("U1", "1", 700, 100, "P", 40, 40), smd("U1", "2", 1700, 300, "P", 40, 40)]
+    b.tracks += [Track("TopLayer", 200, 100, 700, 100, 10, "P"),
+                 Track("TopLayer", 200, 300, 1700, 300, 10, "P")]
+    per_mil = RHO / (10 * 1.4 * ph.MIL)
+    r1, r2 = per_mil * 460, per_mil * 1460
+    # per pin: half an amp down each, so the far pin is the worst
+    res = ir.analyse_net(b, "P", None, SRC, SNK, cell_mils=5, check_convergence=False)
+    snk = res["sinks"][0]
+    assert snk["worst_pin"] == "U1.2" and snk["pin_count"] == 2
+    assert snk["drop_mv"] == pytest.approx(0.5 * r2 * 1e3, rel=3e-3)
+    volts = {p["pad"]: p["volts"] for p in snk["pins"]}
+    assert 1.0 - volts["U1.1"] == pytest.approx(0.5 * r1, rel=3e-3)
+    # shorted inside the part: one voltage, the current divides as 1 / R
+    res = ir.analyse_net(b, "P", None, SRC, SNK, cell_mils=5, check_convergence=False,
+                         sink_model="equipotential")
+    snk = res["sinks"][0]
+    volts = [p["volts"] for p in snk["pins"]]
+    assert volts[0] == pytest.approx(volts[1], abs=2e-6)
+    assert snk["drop_mv"] == pytest.approx(r1 * r2 / (r1 + r2) * 1e3, rel=3e-3)
+    amps = sorted(t["amps"] for t in res["tracks"])
+    assert amps == pytest.approx(sorted([r2 / (r1 + r2), r1 / (r1 + r2)]), rel=3e-3)
