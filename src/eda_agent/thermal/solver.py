@@ -642,32 +642,43 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
         cov = _fringe_cover(cu.fill, cu.edge_m, FRINGE * aniso * gap, dx * dx)
         return np.where(cu.fill > 0, cov, 1.0)
 
-    # The laminate is one body from face to face. Copper exchanges heat
-    # with it under its own area and the fringe beside it (_fringe_cover);
-    # a cell with no copper on a layer is laminate there and conducts over
-    # its whole area. What an inner layer's copper does not cover lets the
-    # heat pass (``bare``): through that share the laminate above the
-    # layer joins the laminate below it directly, and the columns either
-    # side carry it. An outer layer has nothing beyond it to pass heat to.
+    # The laminate is one body from face to face, and its nodes hold its
+    # mean temperature in each cell: every link between two of them takes
+    # the whole cell. Copper exchanges heat with the laminate next to it
+    # under its own area and the fringe beside it (_fringe_cover); a cell
+    # with no copper on a layer is laminate there too.
+    #
+    # Outer copper, where the parts are, is the source: its heat crosses
+    # the whole gap to the next layer in a tube of that cover, not just
+    # the first sublayer, so the rest of the gap's resistance at the
+    # tube's width in place of the cell's is added to its link. (Narrowing
+    # every link of the column instead leaves the laminate nodes at the
+    # tube's temperature, and they then leak sideways into their
+    # neighbours a second time: a 20 mil pad on 50 mil cells read 32 %
+    # low.) Inner copper lies in the heat's way and gathers it only close
+    # by; what it does not cover lets the heat pass (``bare``), the
+    # laminate above the layer joined to the laminate below it directly.
     gap_of = {pa: (planes[pa + 1].gap_m if pb > pa + 1 else 0.0)
               for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
     c_dn = {pa: end_cover(pa, gap_of[pa]) for pa in cu_planes[:-1]}
     c_up = {pb: end_cover(pb, gap_of[pa]) for pa, pb in zip(cu_planes[:-1], cu_planes[1:])}
-    bare = {p: np.zeros(M) for p in cu_planes}
+    outer = (cu_planes[0], cu_planes[-1])
     for p in cu_planes[1:-1]:
         if planes[p - 1].kind == "diel" and planes[p + 1].kind == "diel":
-            bare[p] = 1.0 - np.maximum(c_up[p], c_dn[p])
-            sel = bare[p] > 1e-9
+            bare = 1.0 - np.maximum(c_up[p], c_dn[p])
+            sel = bare > 1e-9
             if sel.any():
                 r = (planes[p - 1].t_m / (2 * planes[p - 1].kz) + planes[p].t_m / planes[p].k_res
                      + planes[p + 1].t_m / (2 * planes[p + 1].kz))
-                link((p - 1) * M + cells[sel], (p + 1) * M + cells[sel],
-                     (A * bare[p] / r)[sel])
+                link((p - 1) * M + cells[sel], (p + 1) * M + cells[sel], (A * bare / r)[sel])
     for pa, pb in zip(cu_planes[:-1], cu_planes[1:]):
         ca, cb = c_dn[pa], c_up[pb]
-        # The column between two copper layers: the tube that joins their
-        # copper (the narrower end deciding) and what passes each of them.
-        col = np.minimum(1.0, np.minimum(ca, cb) + bare[pa] + bare[pb])
+        if pb == pa + 1:
+            # no laminate between them: copper on copper
+            r = sum(pl.t_m / (2 * np.where(pl.fill > 0, ph.K_COPPER, pl.k_res))
+                    for pl in (planes[pa], planes[pb]))
+            link(pa * M + cells, pb * M + cells, A * np.minimum(ca, cb) / r)
+            continue
         r_gap = sum(planes[p].t_m / planes[p].kz for p in range(pa + 1, pb))
         for p in range(pa, pb):
             r = np.zeros(M)
@@ -676,22 +687,13 @@ def solve(board: LayoutBoard, stack: Stack, raster: CopperRaster,
                     r += pl.t_m / (2 * np.where(pl.fill > 0, ph.K_COPPER, pl.k_res))
                 else:
                     r += pl.t_m / (2 * pl.kz)
-            share = col
-            extra = np.zeros(M)
             for end, c_end, first in ((pa, ca, pa + 1), (pb, cb, pb - 1)):
-                if (p == end or p + 1 == end) and pb > pa + 1:
-                    # Copper narrower than the column meets it over its own
-                    # cover. On an outer layer, where the parts are, the
-                    # copper is the source: it sees the next layer through
-                    # a tube of that width the whole way, so the rest of
-                    # the gap's resistance at the tube's width instead of
-                    # the column's is added to its link. Inner copper lies
-                    # in the heat's way and gathers it only close by.
-                    share = np.minimum(share, c_end)
-                    if end in (cu_planes[0], cu_planes[-1]):
+                if p == end or p + 1 == end:
+                    r = r / c_end
+                    if end in outer:
                         rest = r_gap - planes[first].t_m / (2 * planes[first].kz)
-                        extra = extra + rest * np.maximum(1.0 / c_end - 1.0 / col, 0.0)
-            link(p * M + cells, (p + 1) * M + cells, A / (r / share + extra))
+                        r = r + rest * (1.0 / c_end - 1.0)
+            link(p * M + cells, (p + 1) * M + cells, A / r)
 
     # plated holes
     plating = setup.plating_um * 1e-6

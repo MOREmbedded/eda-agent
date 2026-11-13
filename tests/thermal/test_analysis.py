@@ -33,7 +33,7 @@ PACKAGES = {"U1": {"theta_jb": 12.0, "tj_max_c": 125.0},
 def demo():
     board, stack = demo_board()
     report, result = analyze(board, stack, powers=POWERS, packages=parse_packages(PACKAGES),
-                             cell_mils=25.0, limit_c=60.0)
+                             cell_mils=25.0, limit_c=65.0)
     return board, stack, report, result
 
 
@@ -83,8 +83,8 @@ def test_unpowered_parts_and_the_board_limit(demo):
     hottest = rep["hottest_components"]
     assert [c["ref"] for c in hottest] == ["C5"]               # the only unpowered part
     assert 30.0 < hottest[0]["t_c"] < rep["t_max_c"]
-    assert rep["limit_c"] == 60.0
-    assert "U2" in rep["over_limit"] and "R3" not in rep["over_limit"]
+    assert rep["limit_c"] == 65.0
+    assert rep["over_limit"] == ["U2"]            # the resistors sit near 60 C
 
 
 def test_hotspots_sit_on_the_powered_parts(demo):

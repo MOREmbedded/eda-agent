@@ -394,6 +394,34 @@ def test_heat_crosses_a_partly_covered_inner_layer():
     assert _through_rise("solid", 50.0) == pytest.approx(solid, rel=1e-6)
 
 
+def _small_pad_rise(kind, cell, size=20.0, at=203.0):
+    """Rise of a part with one ``size`` mil pad, 0.1 W, over a bottom face
+    held at 25 C; ``kind`` is what the middle layer 8 mil below holds."""
+    from eda_agent.layout.model import Component
+    board, stack = _three_layer(kind)
+    board.components.append(Component("U1", x=at, y=at, side="top", height=20.0,
+                                      courtyard=rect(at - 30, at - 30, at + 30, at + 30)))
+    board.pads.append(Pad("U1", "1", at, at, net="A",
+                          copper=[PadCopper("TopLayer", "rect", size, size)]))
+    setup = Setup(ambient_c=25.0, radiation=False, h_top=1e-6, h_bottom=1e-6, edges=False)
+    res = _solve(board, stack, cell=cell, powers={"U1": 0.1}, setup=setup,
+                 clamps=[Clamp(0, 0, 400, 400, 25.0, side="bottom", h_contact=1e6)])
+    return _part(res, "U1")["t_pads_c"] - 25.0
+
+
+@pytest.mark.parametrize("kind,rel", [("none", 0.08), ("solid", 0.11), ("tracks", 0.08)])
+def test_a_pad_far_smaller_than_a_cell_keeps_its_temperature(kind, rel):
+    """A 20 mil pad in 50 mil cells, against 2.5 mil cells that resolve it
+    and the fringe beside it: over bare laminate, over a plane 8 mil
+    below, over an inner layer of tracks. The pad's heat crosses the gap
+    in a tube of its own cover; with the laminate nodes held at the tube's
+    temperature they leaked sideways as well and the pad read 32 % low
+    over bare laminate and 21 % low over the plane."""
+    fine = _small_pad_rise(kind, 2.5)
+    assert _small_pad_rise(kind, 50.0) == pytest.approx(fine, rel=rel)
+    assert _small_pad_rise(kind, 12.5) == pytest.approx(fine, rel=rel)
+
+
 def test_a_via_land_sits_at_its_barrel_temperature_on_a_fine_grid():
     """A via's land is the barrel's own copper. On cells smaller than the
     land its cells lie inside the ring where the barrel meets the layer;

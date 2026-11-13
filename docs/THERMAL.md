@@ -91,7 +91,8 @@ unknown, so a four-layer board is several hundred thousand of them.
   are options.
 - A pad smaller than the cells around it is not smeared over them: heat
   leaves through the area under the copper and a fringe beside each edge,
-  from the conformal-mapping result for a strip over a plane.
+  from the conformal-mapping result for a strip over a plane, and crosses
+  to the next layer in a tube of that width.
 - The laminate is one body from face to face. Heat on its way through the
   board passes an inner layer through the laminate between its tracks, and
   a plane through its antipads, also in a cell that holds copper and bare
@@ -135,14 +136,16 @@ The solver is tested against exact solutions (`tests/thermal`):
 | A track as the only path | Its own length over conductivity, width and thickness | 3 % at any cell size |
 | A part on thermal vias, cells from 40 mil down to 5 | The same answer | Within 0.5 K on a 62 K rise |
 | Heat through an inner layer of tracks, 25 mil cells against 5 | The same answer | 4 % |
+| A 20 mil pad in 50 mil cells: on bare laminate, over a plane, over tracks | The same pad on 2.5 mil cells | 8 to 11 % |
 | A BGA's via field, 20 mil cells against 10 | The same answer | 1 % |
 
 `refine=True` solves the board a second time with cells half the size and
 lists how far every temperature moved. That move is the estimate of the
 error left in the finer solution. A part on thermal vias over planes is
-settled to a fraction of a kelvin on the default grid. A small part alone on
-bare laminate is not: its pads are a few cells wide, the reply flags it as
-`under_resolved`, and a smaller `cell_mils` or `refine` settles it.
+settled to a fraction of a kelvin on the default grid. A part whose pads
+are smaller than a few cells is held to about a tenth of its rise by the
+sub-cell models. The reply flags it as `under_resolved`, and a smaller
+`cell_mils` or `refine` settles it.
 
 The grid is rarely what limits the answer. These matter more:
 
