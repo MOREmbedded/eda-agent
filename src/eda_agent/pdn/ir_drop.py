@@ -1333,8 +1333,8 @@ def analyse_net(board: LayoutBoard, net: str, stack, sources: list[dict],
         "notes": notes + [n for n in raster.notes
                           if has_planes or not n.startswith("plane clearance")],
     }
-    if floating_cells:
-        area = floating_cells * raster.cell_mils ** 2 / 1e6
+    area = floating_cells * raster.cell_mils ** 2 / 1e6
+    if area >= 0.0005:              # what the note would print as more than nothing
         result["notes"].append(
             f"{area:.3f} in2 of {net} copper is not connected to any source through "
             f"the net's own copper (islands, or copper joined only through another net) "
