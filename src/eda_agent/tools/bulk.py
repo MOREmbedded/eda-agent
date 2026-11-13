@@ -34,7 +34,8 @@ NO_BULK = frozenset({
     "proj_sync_schematic", "proj_annotate", "pcb_autoroute",
     "pcb_autoroute_apply", "pcb_autoplace", "pcb_autoplace_apply",
     "pcb_repour_polygons", "pcb_save_copy_as", "pcb_build_from_project",
-    "sim_run", "sim_run_deck", "review_design",
+    "sim_run", "sim_run_deck", "review_design", "proj_convert_to_kicad",
+    "length_units",
 })
 
 #: Tools that take their list as their own argument and run it as one
@@ -51,6 +52,26 @@ LIST_NATIVE = frozenset({
 #: Items run one after another, not together, for backends whose transport
 #: takes one request at a time and gathers nothing.
 SEQUENTIAL_PREFIXES = ("easyeda_", "kicad_")
+
+#: Tools that create a symbol and then add its body and pins to "the symbol
+#: just created": the symbol writers take no symbol name. Gathered, every
+#: item's create ran before any item's pins, so all the pins landed on the
+#: last symbol (#263). Their items run one after another.
+SEQUENTIAL_TOOLS = frozenset({
+    "lib_create_ic_symbol", "lib_create_symbol_in_parts",
+    "lib_create_passive_symbol",
+})
+
+#: Arguments that say which document an item acts on. A tool that brings
+#: its document forward and then sends its commands has them run on
+#: whatever is in front: gathered, every item's focus ran first and every
+#: command then went to the last document focused (a pin list read from
+#: two libraries in one call found nothing in either). Items that name
+#: different documents run one after another.
+DOCUMENT_ARGS = frozenset({
+    "library_path", "project_path", "board_path", "document_path",
+    "sheet_path", "sheet", "sheet_name", "schlib_path", "pcblib_path",
+})
 
 ITEMS_DESCRIPTION = (
     "Several at once: a list of this tool's arguments, one dict per item. "
@@ -140,17 +161,43 @@ def with_items(fn: Callable, name: str) -> Callable:
                 if hint and isinstance(result, dict):
                     result["_hint_bulk"] = hint
             return result
-        return await run_bulk(fn, name, items,
-                              {k: v for k, v in kwargs.items()
-                               if not (k in required and v is None)},
-                              defaults)
+        shared = {k: v for k, v in kwargs.items()
+                  if not (k in required and v is None)}
+        # A tool can write some lists as one call of its own; it answers
+        # None for a list it leaves to the item-by-item run.
+        by_list = getattr(fn, "bulk_items", None)
+        if by_list is not None:
+            reply = await by_list(items, shared)
+            if reply is not None:
+                return reply
+        return await run_bulk(fn, name, items, shared, defaults)
 
-    wrapper.__signature__ = sig.replace(parameters=[*advertised, items_param])
+    # A list of items always answers with a dict. A tool that answers a
+    # single call with a list (proj_list_documents) declared only the list,
+    # so the server refused every items reply as not a valid list.
+    returns = sig.return_annotation
+    if returns is not sig.empty and returns is not Any \
+            and typing.get_origin(returns) is not dict and returns is not dict:
+        returns = typing.Union[returns, dict[str, Any]]
+    wrapper.__signature__ = sig.replace(parameters=[*advertised, items_param],
+                                        return_annotation=returns)
     # inspect.signature follows __wrapped__ and would hide ``items``.
     del wrapper.__wrapped__
     # The tool as written, for anything that reads its real defaults.
     wrapper.single = original
     return wrapper
+
+
+def bulk_items_by(handler: Callable) -> Callable:
+    """Give a tool its own writer for some lists of items.
+
+    ``handler(items, shared)`` answers the whole call, or None to run the
+    items one by one as usual. Put it under ``@mcp.tool()``.
+    """
+    def deco(fn: Callable) -> Callable:
+        fn.bulk_items = handler
+        return fn
+    return deco
 
 
 def single(fn: Callable) -> Callable:
@@ -173,7 +220,7 @@ async def run_bulk(fn: Callable, name: str, items: list, shared: dict,
             continue
         calls.append(functools.partial(_call_item, fn, {**common, **item}))
 
-    if name.startswith(SEQUENTIAL_PREFIXES):
+    if name.startswith(SEQUENTIAL_PREFIXES) or name in SEQUENTIAL_TOOLS             or _several_documents(items, common):
         results = []
         for call in calls:
             try:
@@ -193,6 +240,16 @@ async def run_bulk(fn: Callable, name: str, items: list, shared: dict,
     if requests is not None:
         reply["altium_requests"] = requests
     return reply
+
+
+def _several_documents(items: list, common: dict) -> bool:
+    """Whether the items name more than one document between them."""
+    for key in DOCUMENT_ARGS:
+        named = {str({**common, **i}.get(key) or "").strip().lower()
+                 for i in items if isinstance(i, dict)}
+        if len(named) > 1:
+            return True
+    return False
 
 
 async def _call_item(fn: Callable, args: dict) -> Any:
@@ -217,5 +274,13 @@ def _item_result(result: Any) -> Any:
 
 
 def _failed(result: Any) -> bool:
-    return isinstance(result, dict) and (
-        result.get("ok") is False or result.get("success") is False)
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok") is False or result.get("success") is False:
+        return True
+    # A placer that placed nothing and failed something says so in counts:
+    # sch_place_components answered placed 0, failed 1 and was counted a
+    # success.
+    placed, failed = result.get("placed"), result.get("failed")
+    return (isinstance(placed, int) and isinstance(failed, int)
+            and placed == 0 and failed > 0)

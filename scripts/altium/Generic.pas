@@ -96,6 +96,9 @@ Begin
     Else If N = 'note'            Then Result := eNote
     Else If N = 'probe'           Then Result := eProbe
     Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    { A harness connector's entries, and the signal harness drawn from it. }
+    Else If N = 'harnessentry'    Then Result := eHarnessEntry
+    Else If N = 'signalharness'   Then Result := eSignalHarness
     { The objects of a harness wiring diagram. }
     Else If N = 'harnesscomponent' Then Result := eHarnessComponent
     Else If N = 'harnesspin'      Then Result := eHarnessPin
@@ -131,6 +134,7 @@ Begin
             + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, ePolyline, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
+            + 'eHarnessEntry, eSignalHarness, '
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
             + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
@@ -150,7 +154,8 @@ Begin
     If Obj = Nil Then Exit;
     Id := Obj.ObjectId;
     Result := (Id = eWire) Or (Id = eBus) Or (Id = ePolyline)
-        Or (Id = ePolygon) Or (Id = eBezier) Or (Id = eBlanket);
+        Or (Id = ePolygon) Or (Id = eBezier) Or (Id = eBlanket)
+        Or (Id = eSignalHarness);
 End;
 
 { Parse 'x1,y1,x2,y2,...' (mils) into two lists. False when the count is   }
@@ -323,6 +328,7 @@ Begin
         Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
         Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
         Or (Obj.ObjectId = eHarnessConnector) Or (Obj.ObjectId = eProbe)
+        Or (Obj.ObjectId = eHarnessEntry) Or (Obj.ObjectId = eSignalHarness)
         Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
         Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
         Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
@@ -536,7 +542,9 @@ End;
 { types this unit already reads or writes IsSolid on (the symbol dump:       }
 { rectangle, round rectangle, polygon, ellipse; the text frame writer), plus }
 { the polyline (read live) and the types built on them (a note is a text     }
-{ frame, a blanket a polygon). Anything else answers unreadable.             }
+{ frame, a blanket a polygon). Anything else answers unreadable. A sheet    }
+{ symbol too: the file saves IsSolid on it, and it is the Fill Color tick   }
+{ box of its Properties panel (issue #273).                                 }
 Function SchObjectHasIsSolid(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
@@ -544,7 +552,114 @@ Begin
     Result := (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eRoundRectangle)
         Or (Obj.ObjectId = ePolygon) Or (Obj.ObjectId = ePolyline)
         Or (Obj.ObjectId = eEllipse) Or (Obj.ObjectId = eTextFrame)
-        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket);
+        Or (Obj.ObjectId = eNote) Or (Obj.ObjectId = eBlanket)
+        Or (Obj.ObjectId = eSheetSymbol);
+End;
+
+{ Sheet symbol and sheet entry enums as the file spells them, both ways. A  }
+{ name that is none of them answers -1, so the setter can refuse it rather  }
+{ than write a default.                                                      }
+Function SheetSymbolTypeToStr(T : Integer) : String;
+Begin
+    If T = eSheetSymbolType_Normal Then Result := 'Normal'
+    Else If T = eSheetSymbolType_DeviceSheet Then Result := 'DeviceSheet'
+    Else If T = eSheetSymbolType_DesignItem Then Result := 'DesignItem'
+    Else Result := IntToStr(T);
+End;
+
+{ Normal and DeviceSheet only: a DesignItem (Managed) sheet symbol points   }
+{ at a server item, which a type change alone does not supply.              }
+Function SheetSymbolTypeOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If (N = 'normal') Or (N = 'local') Then Result := eSheetSymbolType_Normal
+    Else If (N = 'devicesheet') Or (N = 'device') Then Result := eSheetSymbolType_DeviceSheet
+    Else Result := -1;
+End;
+
+Function BusTextStyleToStr(T : Integer) : String;
+Begin
+    If T = eBusTextStyle_Full Then Result := 'Full'
+    Else If T = eBusTextStyle_Prefix Then Result := 'Prefix'
+    Else Result := IntToStr(T);
+End;
+
+Function BusTextStyleOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'full' Then Result := eBusTextStyle_Full
+    Else If N = 'prefix' Then Result := eBusTextStyle_Prefix
+    Else Result := -1;
+End;
+
+Function ArrowKindToStr(T : Integer) : String;
+Begin
+    If T = eArrowKind_RectAndTri Then Result := 'Block & Triangle'
+    Else If T = eArrowKind_Triangle Then Result := 'Triangle'
+    Else If T = eArrowKind_Arrow Then Result := 'Arrow'
+    Else If T = eArrowKind_ArrowTail Then Result := 'Arrow Tail'
+    Else Result := IntToStr(T);
+End;
+
+Function ArrowKindOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := StringReplace(LowerCase(Trim(S)), ' ', '', -1);
+    If (N = 'block&triangle') Or (N = 'blockandtriangle') Or (N = 'rectandtri') Then
+        Result := eArrowKind_RectAndTri
+    Else If N = 'triangle' Then Result := eArrowKind_Triangle
+    Else If N = 'arrow' Then Result := eArrowKind_Arrow
+    Else If N = 'arrowtail' Then Result := eArrowKind_ArrowTail
+    Else Result := -1;
+End;
+
+{ A sheet entry's Side by name or by the ordinal the reader gives. }
+Function SheetEntrySideOrdinal(S : String) : Integer;
+Var
+    N : String;
+Begin
+    N := LowerCase(Trim(S));
+    If N = 'left' Then Result := eLeftSide
+    Else If N = 'right' Then Result := eRightSide
+    Else If N = 'top' Then Result := eTopSide
+    Else If N = 'bottom' Then Result := eBottomSide
+    Else If (N = IntToStr(eLeftSide)) Or (N = IntToStr(eRightSide))
+         Or (N = IntToStr(eTopSide)) Or (N = IntToStr(eBottomSide)) Then
+        Result := StrToInt(N)
+    Else Result := -1;
+End;
+
+{ Put a sheet entry on its symbol's edge from its Side and DistanceFromTop, }
+{ as the placer does. Setting the two alone leaves the entry's Location    }
+{ where it was until the sheet is reloaded, so a wire drawn meanwhile goes  }
+{ to the old point. The symbol's Location is its top-left corner.           }
+Procedure PositionSheetEntry(Sym : ISch_SheetSymbol; Entry : ISch_SheetEntry);
+Var
+    EdgeX, EdgeY, Dist : Double;
+    Side : Integer;
+Begin
+    Side := Entry.Side;
+    Dist := CoordToMilsF(Entry.DistanceFromTop);
+    EdgeX := CoordToMilsF(Sym.Location.X);
+    EdgeY := CoordToMilsF(Sym.Location.Y);
+    If Side = eLeftSide Then EdgeY := EdgeY - Dist;
+    If Side = eRightSide Then
+    Begin
+        EdgeX := EdgeX + CoordToMilsF(Sym.XSize);
+        EdgeY := EdgeY - Dist;
+    End;
+    If Side = eTopSide Then EdgeX := EdgeX + Dist;
+    If Side = eBottomSide Then
+    Begin
+        EdgeX := EdgeX + Dist;
+        EdgeY := EdgeY - CoordToMilsF(Sym.YSize);
+    End;
+    Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY));
 End;
 
 { Transparent and LineStyle, ALLOWLISTS (an absent member halts the       }
@@ -569,6 +684,19 @@ Begin
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = eBlanket) Or (Obj.ObjectId = eLine)
         Or (Obj.ObjectId = eRectangle);
+End;
+
+{ XSize and YSize, an ALLOWLIST. MEASURED on AD 25.8.1: a generic query     }
+{ of a schematic image asking for XSize raised "Undeclared identifier:      }
+{ XSize" in an error box no Try catches, and the polling loop stopped       }
+{ (issue #267). Only the types this unit already sizes that way carry them: }
+{ the sheet symbol and the harness connector (their placers set XSize /     }
+{ YSize). Anything else answers unreadable / not written.                   }
+Function SchObjectHasSize(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSheetSymbol) Or (Obj.ObjectId = eHarnessConnector);
 End;
 
 { IsHidden belongs to pins and to the complex text types (parameters,
@@ -704,6 +832,7 @@ Begin
     Result := False;
     If Obj = Nil Then Exit;
     Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eHarnessEntry)
         Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
         Or (Obj.ObjectId = eHarnessEntry)
         Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName);
@@ -1306,7 +1435,7 @@ Begin
     Prefix := Copy(PropName, 1, P - 1);
     Field := Copy(PropName, P + 1, 99);
     If (Field <> 'IsHidden') And (Field <> 'Location.X') And (Field <> 'Location.Y')
-        And (Field <> 'Autoposition') And (Field <> 'FontId') Then Exit;
+        And (Field <> 'Autoposition') And (Field <> 'FontId') And (Field <> 'Color') Then Exit;
     If (Prefix = 'Designator') Or (Prefix = 'SheetName') Then Result := 'Designator';
     If Prefix = 'Comment' Then Result := 'Comment';
     If (Prefix = 'Filename') Or (Prefix = 'SheetFileName') Then Result := 'Filename';
@@ -1334,6 +1463,9 @@ Begin
         If Field = 'Location.Y' Then Result := FloatToJsonStr(CoordToMilsF(Lbl.Location.Y));
         If Field = 'Autoposition' Then Result := BoolToJsonStr(Lbl.Autoposition);
         If Field = 'FontId' Then Result := IntToStr(Lbl.FontId);
+        { The label's own colour (the file saves Color on the name and file- }
+        { name records); a colour, like a font, the panel sets per label.     }
+        If Field = 'Color' Then Result := IntToStr(Lbl.Color);
     Except
         RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
         Result := '';
@@ -1357,11 +1489,16 @@ Begin
         { A font id is a positive whole number from the font manager; anything }
         { else is refused, never written as font 1.                            }
         If (Field = 'FontId') And (StrToIntDef(Value, 0) < 1) Then Exit;
+        { A colour is a whole number 0 .. $FFFFFF (BGR); anything else is   }
+        { refused, never written as black.                                  }
+        If (Field = 'Color') And ((StrToIntDef(Value, -1) < 0)
+            Or (StrToIntDef(Value, -1) > 16777215)) Then Exit;
         Flag := (UpperCase(Value) = 'TRUE') Or (Value = '1');
         SchBeginModify(Lbl);
         If Field = 'IsHidden' Then Lbl.IsHidden := Flag;
         If Field = 'Autoposition' Then Lbl.Autoposition := Flag;
         If Field = 'FontId' Then Lbl.FontId := StrToIntDef(Value, 0);
+        If Field = 'Color' Then Lbl.Color := StrToIntDef(Value, 0);
         If (Field = 'Location.X') Or (Field = 'Location.Y') Then
         Begin
             Loc := Lbl.Location;
@@ -2279,6 +2416,8 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
+    SymObj : ISch_SheetSymbol;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -2329,6 +2468,24 @@ Begin
                     Result := FloatToJsonStr(CoordToMilsF(Crn.Y));
             End;
         End
+        { A round rectangle's corner radii live on ISch_RoundRectangle only,
+          so the same narrowing as Corner: never Obj.CornerXRadius on the
+          base interface, which halts the script on any other type
+          (issue #268). }
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerXRadius))
+                Else
+                    Result := FloatToJsonStr(CoordToMilsF(RR.CornerYRadius));
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+
         // String properties (late-bound across all types, primitives only)
         Else If PropName = 'Text'        Then
         Begin
@@ -2599,12 +2756,74 @@ Begin
           DistanceFromTop is in mils, matching Location.X / Location.Y. }
         Else If PropName = 'Side' Then
         Begin
-            If Obj.ObjectId = eSheetEntry Then Result := IntToStr(Obj.Side);
+            If Obj.ObjectId = eSheetEntry Then Result := IntToStr(Obj.Side)
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := IntToStr(HarnessEntryObj.Side);
+            End;
         End
         Else If PropName = 'DistanceFromTop' Then
         Begin
             If Obj.ObjectId = eSheetEntry Then
-                Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop));
+                Result := FloatToJsonStr(CoordToMilsF(Obj.DistanceFromTop))
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := FloatToJsonStr(CoordToMilsF(HarnessEntryObj.DistanceFromTop));
+            End;
+        End
+        { The sheet symbol an entry is on, by its designator (Sheet Name). It }
+        { had no case, so it read empty and the owner had to be guessed from }
+        { document order.                                                    }
+        Else If PropName = 'OwnerSheetSymbol' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                SymObj := Nil;
+                Try SymObj := EntryObj.OwnerSheetSymbol; Except SymObj := Nil; End;
+                If SymObj <> Nil Then
+                Begin
+                    Try Result := SymObj.SheetName.Text; Except NotePropertyDiag('unreadable', PropName); End;
+                End
+                Else
+                    NotePropertyDiag('unreadable', PropName);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        { The rest of a sheet symbol's and a sheet entry's Properties panel,
+          each read through its own typed interface. SymbolType is the
+          panel's Source (Local / Device / Managed); TextStyle is Bus Text
+          Style, kept on every entry; ArrowKind is the entry's Kind and
+          HarnessType its Harness Type. Names, not ordinals, as the file
+          stores them (issue #273). }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            If Obj.ObjectId = eSheetSymbol Then
+            Begin
+                SymObj := Obj;
+                Result := SheetSymbolTypeToStr(SymObj.SymbolType);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then
+                    Result := BusTextStyleToStr(EntryObj.TextStyle)
+                Else If PropName = 'ArrowKind' Then
+                    Result := ArrowKindToStr(EntryObj.ArrowKind)
+                Else
+                    Result := EntryObj.HarnessType;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // Coord properties (returned in mils)
@@ -2659,8 +2878,15 @@ Begin
             PCoord := PinEndY(PCoord, POrient, PLen);
             Result := FloatToJsonStr(CoordToMilsF(PCoord));
         End
-        Else If PropName = 'XSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
-        Else If PropName = 'YSize'       Then Result := FloatToJsonStr(CoordToMilsF(Obj.YSize))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                NotePropertyDiag('unreadable', PropName)
+            Else If PropName = 'XSize' Then
+                Result := FloatToJsonStr(CoordToMilsF(Obj.XSize))
+            Else
+                Result := FloatToJsonStr(CoordToMilsF(Obj.YSize));
+        End
 
         // BoundingRectangle on ISch_Component returns a TCoordRect.
         // Audit code reads X1/Y1/X2/Y2 to detect overlapping component
@@ -2759,7 +2985,6 @@ Begin
         { Readable so obj_select can confirm what it selected. The same
           member Gen_ClearHighlights reads on this interface. }
         Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection)
-
         { Everything above is hand written and wins. What is left reaches }
         { the generated chains, which carry the properties the SDK        }
         { declares and the engine resolves, each one read live before it  }
@@ -2772,8 +2997,8 @@ Begin
         { ISch_GraphicalObject itself, which is what Obj already is, so   }
         { no cast and no type test is needed to read them.                }
         {                                                                 }
-        { Have stays False for a name neither chain carries, which is the }
-        { old behaviour: empty string.                                    }
+        { Have stays False for a name neither chain carries, which is now }
+        { reported as an unknown property, with an empty string.          }
         Else
         Begin
             Have := False;
@@ -2784,11 +3009,65 @@ Begin
             End;
             If Not Have Then
                 Result := GetSchGraphicalGenerated(Obj, PropName, Have);
-            If Not Have Then Result := '';
+            { A name no chain reads came back as a silent blank, the same
+              answer as an empty value: a misspelt or unsupported name
+              looked like a property that is there and empty. Say so
+              (upstream issue #268). }
+            If Not Have Then
+            Begin
+                Result := '';
+                NotePropertyDiag('unknown', PropName);
+            End;
         End;
     Except
         Result := '';
     End;
+End;
+
+{ A parameter whose name or value Altium keeps for itself. A port's CrossRef  }
+{ (the sheets the port reaches, written by the compiler) reads               }
+{ NameIsReadOnly and ValueIsReadOnly true. MEASURED on AD 25.8.1: a Text     }
+{ write landed on it anyway, and a Name write did nothing while reporting    }
+{ success. Altium's own Properties panel refuses both, so the generic layer  }
+{ does too. True when Altium keeps the value (ForValue) or the name.        }
+Function SchParamKeptByAltium(Obj : ISch_GraphicalObject; ForValue : Boolean) : Boolean;
+Var
+    Par : ISch_Parameter;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eParameter Then Exit;
+    Par := Obj;
+    Try
+        If ForValue Then Result := Par.ValueIsReadOnly
+        Else Result := Par.NameIsReadOnly;
+    Except
+        Result := False;
+    End;
+End;
+
+{ Says why a parameter write was not made; False, for WroteOK. }
+Function NoteKeptByAltium(ForValue : Boolean) : Boolean;
+Begin
+    Result := False;
+    If ForValue Then
+        NoteNextStep('Not written: Altium keeps this parameter''s value read-only '
+            + '(a port''s CrossRef is written by the compiler). Its font, colour, '
+            + 'justification and visibility can be set.')
+    Else
+        NoteNextStep('Not written: Altium keeps this parameter''s name read-only '
+            + '(a port''s CrossRef is written by the compiler).');
+End;
+
+{ A port's Style is only its axis: 0 horizontal, 4 vertical. MEASURED on     }
+{ AD 25.8.1: 1-3 and 5-7 are taken and read back, then come back as 0 / 4    }
+{ after a save and reopen; Altium draws a port's arrows from its IOType and  }
+{ the end that is wired (ConnectedEnd), not from Style. Writing 4 turns a    }
+{ horizontal port a quarter turn counterclockwise about its Location (the   }
+{ left end becomes the bottom end); 0 turns it back.                         }
+Function PortStyleKept(Value : String) : Boolean;
+Begin
+    Result := (Value = '0') Or (Value = '4');
 End;
 
 {..............................................................................}
@@ -2796,6 +3075,42 @@ End;
 { Sets a named property on a schematic object from a string value.           }
 { Coordinates are expected in mils. Caller handles BeginModify/EndModify.    }
 {..............................................................................}
+
+{ Move a harness connector to (X, Y). MoveToXY carries its entries, but  }
+{ not the harness type label under it, which stayed at the old place; a   }
+{ MoveByXY of the label by the same offset threw it off the sheet (both   }
+{ measured on AD 26.11). So the label's offset from the connector is read }
+{ first and its Location set from the connector's new one.                }
+Procedure MoveHarnessConnector(Obj : ISch_GraphicalObject; X : TCoord; Y : TCoord);
+Var
+    Harness : ISch_HarnessConnector;
+    TypeLabel : ISch_GraphicalObject;
+    Was, LabelWas : TLocation;
+    HasLabel : Boolean;
+Begin
+    Harness := Obj;
+    Was := Harness.Location;
+    TypeLabel := Nil;
+    Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
+    HasLabel := False;
+    If TypeLabel <> Nil Then
+    Begin
+        Try
+            LabelWas := TypeLabel.Location;
+            HasLabel := True;
+        Except
+            HasLabel := False;
+        End;
+    End;
+    Harness.MoveToXY(X, Y);
+    If HasLabel Then
+    Begin
+        { Point, not fields of a local: a record local that was never   }
+        { read from a property has no fields here ('Undeclared X').      }
+        Try TypeLabel.Location := Point(X + (LabelWas.X - Was.X), Y + (LabelWas.Y - Was.Y));
+        Except NoteWriteFailed('HarnessConnectorType.Location'); End;
+    End;
+End;
 
 Function SetSchProperty(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Integer;
 { Returns: 1 = handled, 0 = unknown property name, -1 = write threw.        }
@@ -2813,6 +3128,9 @@ Var
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    RR : ISch_RoundRectangle;
+    SymObj : ISch_SheetSymbol;
+    EnumVal : Integer;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -2869,6 +3187,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
         End
@@ -2881,6 +3203,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
         End
@@ -2910,6 +3236,21 @@ Begin
                     Crn.Y := MilsToCoordF(StrToFloatDef(Value, 0));
                 L.Corner := Crn;
             End;
+        End
+        // A round rectangle's corner radii, decimal mils, on that type only
+        // (typed local, as Corner above). Read back by the caller's query.
+        Else If (PropName = 'CornerXRadius') Or (PropName = 'CornerYRadius') Then
+        Begin
+            If Obj.ObjectId = eRoundRectangle Then
+            Begin
+                RR := Obj;
+                If PropName = 'CornerXRadius' Then
+                    RR.CornerXRadius := MilsToCoordF(StrToFloatDef(Value, 0))
+                Else
+                    RR.CornerYRadius := MilsToCoordF(StrToFloatDef(Value, 0));
+            End
+            Else
+                Matched := False;
         End
 
         Else If (PropName = 'Vertex.1.X') Or (PropName = 'Vertex.1.Y')
@@ -2944,14 +3285,24 @@ Begin
         Else If PropName = 'Text'        Then
         Begin
             If SchObjectHasText(Obj) Then
-                Obj.Text := Value
+            Begin
+                If SchParamKeptByAltium(Obj, True) Then
+                    WroteOK := NoteKeptByAltium(True)
+                Else
+                    Obj.Text := Value;
+            End
             Else
                 Matched := False;
         End
         Else If PropName = 'Name'        Then
         Begin
             If SchObjectHasName(Obj) Then
-                Obj.Name := Value
+            Begin
+                If SchParamKeptByAltium(Obj, False) Then
+                    WroteOK := NoteKeptByAltium(False)
+                Else
+                    Obj.Name := Value;
+            End
             Else
                 Matched := False;
         End
@@ -3157,8 +3508,75 @@ Begin
             Else
                 NotePropertyDiag('unknown', PropName);
         End
+        { A sheet symbol's Source and a sheet entry's Bus Text Style, Kind and
+          Harness Type, by the names the reader gives (see GetSchProperty).
+          A name that is none of them is refused, never written as a
+          default. }
+        Else If PropName = 'SymbolType' Then
+        Begin
+            EnumVal := SheetSymbolTypeOrdinal(Value);
+            If (Obj.ObjectId = eSheetSymbol) And (EnumVal >= 0) Then
+            Begin
+                SymObj := Obj;
+                SymObj.SymbolType := EnumVal;
+            End
+            Else
+                Matched := False;
+        End
+        Else If (PropName = 'TextStyle') Or (PropName = 'ArrowKind')
+             Or (PropName = 'HarnessType') Then
+        Begin
+            If PropName = 'TextStyle' Then EnumVal := BusTextStyleOrdinal(Value)
+            Else If PropName = 'ArrowKind' Then EnumVal := ArrowKindOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'TextStyle' Then EntryObj.TextStyle := EnumVal
+                Else If PropName = 'ArrowKind' Then EntryObj.ArrowKind := EnumVal
+                Else EntryObj.HarnessType := Value;
+            End
+            Else
+                Matched := False;
+        End
+        { A sheet entry's place on its symbol. Written, then the entry is put
+          on the edge from both, as the placer does: Altium leaves its
+          Location alone until the sheet is reloaded (issue #273). }
+        Else If (PropName = 'Side') Or (PropName = 'DistanceFromTop') Then
+        Begin
+            If PropName = 'Side' Then EnumVal := SheetEntrySideOrdinal(Value)
+            Else EnumVal := 0;
+            If (Obj.ObjectId = eSheetEntry) And (EnumVal >= 0) Then
+            Begin
+                EntryObj := Obj;
+                If PropName = 'Side' Then EntryObj.Side := EnumVal
+                Else EntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
+                SymObj := EntryObj.OwnerSheetSymbol;
+                If SymObj <> Nil Then PositionSheetEntry(SymObj, EntryObj);
+            End
+            { A harness entry sits on its connector by these two alone. }
+            Else If (Obj.ObjectId = eHarnessEntry) And (EnumVal >= 0) Then
+            Begin
+                HarnessEntryObj := Obj;
+                If PropName = 'Side' Then HarnessEntryObj.Side := EnumVal
+                Else HarnessEntryObj.DistanceFromTop := MilsToCoordF(StrToFloatDef(Value, 0));
+            End
+            Else
+                Matched := False;
+        End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
-        Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
+        Else If PropName = 'Style'       Then
+        Begin
+            If (Obj.ObjectId = ePort) And (Not PortStyleKept(Value)) Then
+            Begin
+                WroteOK := False;
+                NoteNextStep('Not written: a port''s Style is only its axis, 0 '
+                    + 'horizontal or 4 vertical; Altium resets any other value '
+                    + 'to one of those when the sheet is reopened.');
+            End
+            Else
+                Obj.Style := StrToIntDef(Value, 0);
+        End
         Else If PropName = 'AutoSize' Then
         Begin
             If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.AutoSize := StrToBool(Value); End
@@ -3215,8 +3633,15 @@ Begin
             Else Matched := False;
         End
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
-        Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0))
+        Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
+        Begin
+            If Not SchObjectHasSize(Obj) Then
+                Matched := False
+            Else If PropName = 'XSize' Then
+                Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
+            Else
+                Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0));
+        End
 
         // Parameter / designator display settings
         Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
@@ -3598,6 +4023,10 @@ Begin
                 Comp := Obj;
                 Comp.MoveToXY(Loc.X, Loc.Y);
             End
+            { A harness connector carries its entries: Location alone read }
+            { back moved while the connector stayed drawn where it was.    }
+            Else If Obj.ObjectId = eHarnessConnector Then
+                MoveHarnessConnector(Obj, Loc.X, Loc.Y)
             Else
                 Obj.Location := Loc;
             NotePropertyWritten(0);
@@ -4195,6 +4624,7 @@ Begin
                         Try
                             Sym.RemoveSchObject(FoundObj);
                             Removed := True;
+                            SchRegisterObject(Sym, FoundObj);
                             Break;
                         Except { not this symbol's entry; try the next } End;
                         Sym := SymIter.NextSchObject;
@@ -4221,12 +4651,18 @@ Begin
                     NoteDeleteFault('removing an object raised an error');
                     Break;
                 End;
+                { The removal is announced, as Altium's own delete example   }
+                { does. Without it the compiled model kept the object: a     }
+                { deleted power port still joined its rail to a new label    }
+                { until the sheet was closed and reopened.                   }
+                SchRegisterObject(SchDoc, FoundObj);
             End;
             Inc(TotalMatched);
             Dec(MaxIter);
         End;
         SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
+        If (SchDoc <> Nil) And (TotalMatched > 0) Then MarkDocDirtyByPath(SchDoc.DocumentName);
         Exit;
     End;
 
@@ -4690,6 +5126,24 @@ Begin
 End;
 
 {..............................................................................}
+{ A scope ParseScope does not know is refused, never read as the active      }
+{ document: a sheet's path given bare used to be answered from whichever     }
+{ sheet was in front, and obj_modify and obj_delete take the same scope.     }
+{ Returns '' when the scope is one of the accepted kinds.                    }
+{..............................................................................}
+
+Function UnknownScopeError(RequestId, Scope, ScopeType : String) : String;
+Begin
+    Result := '';
+    If (ScopeType = 'active_doc') Or (ScopeType = 'project')
+        Or (ScopeType = 'doc') Or (ScopeType = 'lib_component') Then Exit;
+    Result := BuildErrorResponse(RequestId, 'INVALID_SCOPE',
+        'Not a scope: "' + Scope + '". Use active_doc, project, '
+        + 'doc:PATH, project:PATH or lib_component:NAME. Nothing was read or '
+        + 'changed.');
+End;
+
+{..............................................................................}
 { If ScopeType is 'lib_component', switch the active SchLib to the named      }
 { symbol (ScopePath holds the lib-ref) and rewrite ScopeType to 'active_doc'  }
 { so the normal active-doc path then iterates that symbol's primitives. This  }
@@ -4768,6 +5222,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
 
     { A PCB OBJECT TYPE CANNOT HONOUR A SCOPE, so say so before doing         }
     { anything. PCB primitives live on a board and the PCB path below resolves }
@@ -4963,6 +5419,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5118,6 +5576,8 @@ Begin
     ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -5745,10 +6205,12 @@ Begin
         If Note = '' Then
         Begin
             ParseScope(Scope, ScopeType, ScopePath);
+            If UnknownScopeError(RequestId, Scope, ScopeType) <> '' Then
+                Note := 'unknown_scope'
             { A board type edits the active board and nothing else, and the }
             { lib_component step would move a SchLib's current symbol for   }
             { an operation that never reads it.                             }
-            If IsPcb Then
+            Else If IsPcb Then
             Begin
                 If ScopeType <> 'active_doc' Then Note := 'scope_not_supported';
             End
@@ -6062,7 +6524,7 @@ End;
 
 Function Gen_AddSheet(Params : String; RequestId : String) : String;
 Var
-    SheetName : String;
+    SheetName, ProjectPath : String;
     Workspace : IWorkspace;
     Project : IProject;
     NewDocPath : String;
@@ -6071,6 +6533,7 @@ Var
 Begin
     SheetName := ExtractJsonValue(Params, 'name');
     If SheetName = '' Then SheetName := 'NewSheet';
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -6079,10 +6542,34 @@ Begin
         Exit;
     End;
 
-    Project := Workspace.DM_FocusedProject;
+    If ProjectPath <> '' Then
+    Begin
+        Project := FindProjectByPath(Workspace, ProjectPath);
+        If Project = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_OPEN',
+                'Not an open project: ' + ProjectPath + '. Open it with '
+                + 'proj_open first. Nothing was created.');
+            Exit;
+        End;
+    End
+    Else
+        Project := Workspace.DM_FocusedProject;
     If Project = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Exit;
+    End;
+
+    { A free document (a library opened on its own, say) is focused under   }
+    { a project that has no file. The sheet went in as an unsaved document  }
+    { with a bare name, in no project, and the reply said it was added.     }
+    If Not LooksAbsolutePath(Project.DM_ProjectFullPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'The focused document belongs to no project, so there is nowhere '
+            + 'to add the sheet. Name the project with project_path, or bring '
+            + 'one of its documents forward. Nothing was created.');
         Exit;
     End;
 
@@ -6148,11 +6635,14 @@ Begin
     Added := False;
     Try
         Project.DM_AddSourceDocument(NewDocPath);
-        Added := True;
-    Except Added := False; End;
+    Except End;
+    { Read back: the call raising nothing is not the sheet being listed. }
+    Added := ProjectListsDocument(Project, NewDocPath);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"path":"' + EscapeJsonString(NewDocPath) + '"' +
+        '{"success":' + BoolToJsonStr(Saved And Added) +
+        ',"path":"' + EscapeJsonString(NewDocPath) + '"' +
+        ',"project_path":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
         ',"added_to_project":' + BoolToJsonStr(Added) +
         { Written now, or the add is gone after a reopen. }
@@ -8677,6 +9167,342 @@ End;
 
 
 {..............................................................................}
+{ Gen_SheetTemplate - the sheet template (.SchDot) of the active sheet: read  }
+{ it, set it, update it from its file, or remove it, with no dialog.          }
+{                                                                              }
+{ Params: action = get (default) / set / update / remove; template_file (set: }
+{ the .SchDot to apply; update: optional, else the sheet's own file); vault   }
+{ ('true': also read the vault link the sheet carries).                       }
+{                                                                              }
+{ SET and UPDATE run Altium's own Sch:ChangeCurrentTemplate with              }
+{ TemplateSource=Local, FileName and Silent=True. MEASURED (AD 25.8.1): that  }
+{ form applies the template with no dialog (sheet size, title block off, the  }
+{ template graphics, parameters kept). Its menu forms, Sch:UpdateCurrentTemplate }
+{ and Sch:RemoveTemplate, always ask for a scope and then report in a modal,  }
+{ which blocks the loop. A process reports nothing, so every action is read   }
+{ back: the template file name and the template objects on the sheet.         }
+{                                                                              }
+{ REMOVE does what Sch:RemoveTemplate does without its dialogs: the template  }
+{ object (eTemplate, the container of the border / title block graphics, as   }
+{ ExtractTemplate.pas finds it) leaves the sheet and the file name is         }
+{ cleared. Sheet size and the standard title block flag stay as they are.     }
+{..............................................................................}
+
+Function SheetTemplateObject(SchDoc : ISch_Document) : ISch_GraphicalObject;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Result := Nil;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Result := Obj;
+                Break;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+Function SheetTemplateCount(SchDoc : ISch_Document; Var Children : Integer) : Integer;
+Var
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+Begin
+    Result := 0;
+    Children := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                Inc(Result);
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        Inc(Children);
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+End;
+
+{ Each object the sheet's template draws, as its bounding box in mils:       }
+{ [[x1,y1,x2,y2],...]. A converter takes out what lies in these and keeps    }
+{ what the user drew.                                                        }
+Function SheetTemplateBoxes(SchDoc : ISch_Document) : String;
+Var
+    Iter, TplIter : ISch_Iterator;
+    Obj, Child : ISch_GraphicalObject;
+    Box : String;
+Begin
+    Result := '';
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            If Obj.ObjectId = eTemplate Then
+            Begin
+                TplIter := Obj.SchIterator_Create;
+                Try
+                    Child := TplIter.FirstSchObject;
+                    While Child <> Nil Do
+                    Begin
+                        Box := '';
+                        Try
+                            Box := '[' + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y1)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X2)) + ','
+                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y2)) + ']';
+                        Except
+                            Box := '';
+                        End;
+                        If Box <> '' Then
+                        Begin
+                            If Result <> '' Then Result := Result + ',';
+                            Result := Result + Box;
+                        End;
+                        Child := TplIter.NextSchObject;
+                    End;
+                Finally
+                    Obj.SchIterator_Destroy(TplIter);
+                End;
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+    Result := '[' + Result + ']';
+End;
+
+Function SheetTemplateFile(SchDoc : ISch_Document) : String;
+Begin
+    Result := '';
+    Try Result := SchDoc.GetState_TemplateFileName; Except End;
+End;
+
+{ The vault link a sheet set from the server carries. Read only when asked: }
+{ these names are in the script engine's table but not yet proven on        }
+{ ISch_Document, and an unknown one stops the script.                        }
+Function SheetTemplateVaultJson(SchDoc : ISch_Document) : String;
+Var
+    VaultGuid, ItemGuid, RevGuid, VaultHrid, RevHrid : String;
+Begin
+    VaultGuid := '';
+    ItemGuid := '';
+    RevGuid := '';
+    VaultHrid := '';
+    RevHrid := '';
+    Try VaultGuid := SchDoc.TemplateVaultGUID; Except End;
+    Try ItemGuid := SchDoc.TemplateItemGUID; Except End;
+    Try RevGuid := SchDoc.TemplateRevisionGUID; Except End;
+    Try VaultHrid := SchDoc.TemplateVaultHRID; Except End;
+    Try RevHrid := SchDoc.TemplateRevisionHRID; Except End;
+    Result := JsonObj(JsonStr('vault_guid', VaultGuid) + ','
+        + JsonStr('item_guid', ItemGuid) + ','
+        + JsonStr('revision_guid', RevGuid) + ','
+        + JsonStr('vault_hrid', VaultHrid) + ','
+        + JsonStr('revision_hrid', RevHrid));
+End;
+
+Function SheetTemplateJson(SchDoc : ISch_Document; Vault : Boolean) : String;
+Var
+    Count, Children : Integer;
+    TitleBlock, Border : Boolean;
+    Style : Integer;
+Begin
+    Count := SheetTemplateCount(SchDoc, Children);
+    TitleBlock := False;
+    Border := False;
+    Style := -1;
+    Try TitleBlock := SchDoc.TitleBlockOn; Except End;
+    Try Border := SchDoc.BorderOn; Except End;
+    Try Style := SchDoc.SheetStyle; Except End;
+    Result := JsonStr('template_file', SheetTemplateFile(SchDoc)) + ','
+        + JsonInt('template_objects', Count) + ','
+        + JsonInt('template_graphics', Children) + ','
+        + JsonInt('sheet_style', Style) + ','
+        + JsonBool('title_block_on', TitleBlock) + ','
+        + JsonBool('border_on', Border);
+    If Vault Then
+        Result := Result + ',' + JsonRaw('vault', SheetTemplateVaultJson(SchDoc));
+End;
+
+Function Gen_SheetTemplate(Params : String; RequestId : String) : String;
+Var
+    SchDoc, Front : ISch_Document;
+    What, TplFile, Before, After, Data, SheetPath : String;
+    Vault, Ok, Shown : Boolean;
+    PrevView : IServerDocumentView;
+    SheetDoc : IServerDocument;
+    Tpl : ISch_GraphicalObject;
+    Guard, Removed, Count, Children : Integer;
+    LastAddr, ThisAddr : Integer;
+Begin
+    What := LowerCase(ExtractJsonValue(Params, 'action'));
+    If What = '' Then What := 'get';
+    TplFile := ExtractJsonValue(Params, 'template_file');
+    Vault := LowerCase(ExtractJsonValue(Params, 'vault')) = 'true';
+    If (What <> 'get') And (What <> 'set') And (What <> 'update') And (What <> 'remove') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_ACTION',
+            'action is get, set, update or remove');
+        Exit;
+    End;
+    { The named sheet, else the one in front. }
+    SheetPath := ExtractJsonValue(Params, 'file_path');
+    If SheetPath <> '' Then
+    Begin
+        SchDoc := SchDocByPathLoading(SheetPath);
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_FOUND',
+                'No schematic sheet at ' + SheetPath);
+            Exit;
+        End;
+    End
+    Else
+        SchDoc := SchServer.GetCurrentSchDocument;
+    If (SchDoc = Nil) Or (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic sheet is active');
+        Exit;
+    End;
+    Before := SheetTemplateFile(SchDoc);
+    Shown := False;
+    PrevView := Nil;
+    Ok := True;
+    Removed := 0;
+
+    If (What = 'set') Or (What = 'update') Then
+    Begin
+        If (What = 'update') And (TplFile = '') Then TplFile := Before;
+        If TplFile = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_TEMPLATE',
+                'The sheet has no template to update; give template_file');
+            Exit;
+        End;
+        If LowerCase(ExtractFileExt(TplFile)) <> '.schdot' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_A_TEMPLATE',
+                'template_file must be a .SchDot: ' + TplFile);
+            Exit;
+        End;
+        If Not FileExists(TplFile) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND',
+                'No such file: ' + TplFile);
+            Exit;
+        End;
+        { Sch:ChangeCurrentTemplate acts on the sheet in front: a named    }
+        { sheet behind another is brought forward for it, and the view the }
+        { user had is put back afterwards.                                 }
+        Front := SchServer.GetCurrentSchDocument;
+        If (Front = Nil) Or (UpperCase(Front.DocumentName) <> UpperCase(SchDoc.DocumentName)) Then
+        Begin
+            Try PrevView := Client.GetCurrentView; Except PrevView := Nil; End;
+            SheetDoc := Nil;
+            Try SheetDoc := Client.GetDocumentByPath(SchDoc.DocumentName); Except End;
+            If SheetDoc <> Nil Then
+            Begin
+                Try Client.ShowDocument(SheetDoc); Shown := True; Except End;
+            End;
+            Front := SchServer.GetCurrentSchDocument;
+            If (Front = Nil) Or (UpperCase(Front.DocumentName) <> UpperCase(SchDoc.DocumentName)) Then
+            Begin
+                If (PrevView <> Nil) Then
+                Begin
+                    Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+                End;
+                Result := BuildErrorResponse(RequestId, 'SHEET_NOT_SHOWN',
+                    'Could not bring ' + SchDoc.DocumentName + ' forward to apply the template');
+                Exit;
+            End;
+        End;
+        ResetParameters;
+        AddStringParameter('TemplateSource', 'Local');
+        AddStringParameter('FileName', TplFile);
+        AddStringParameter('Silent', 'True');
+        RunProcess('Sch:ChangeCurrentTemplate');
+        If Shown And (PrevView <> Nil) Then
+        Begin
+            Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+        End;
+        SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+        After := SheetTemplateFile(SchDoc);
+        Count := SheetTemplateCount(SchDoc, Children);
+        Ok := (LowerCase(After) = LowerCase(TplFile)) And (Count = 1);
+    End
+    Else If What = 'remove' Then
+    Begin
+        SchBeginEdit(SchDoc, '');
+        Try
+            Guard := 50;
+            LastAddr := 0;
+            While Guard > 0 Do
+            Begin
+                Tpl := SheetTemplateObject(SchDoc);
+                If Tpl = Nil Then Break;
+                ThisAddr := 0;
+                Try ThisAddr := Tpl.I_ObjectAddress; Except End;
+                { The same template found again: the remove did nothing. }
+                If (ThisAddr <> 0) And (ThisAddr = LastAddr) Then Break;
+                LastAddr := ThisAddr;
+                SchDoc.RemoveSchObject(Tpl);
+                SchRegisterObject(SchDoc, Tpl);
+                Inc(Removed);
+                Dec(Guard);
+            End;
+            SchDoc.TemplateFileName := '';
+        Finally
+            SchEndEdit(SchDoc, 'Edit');
+        End;
+        SchDoc.UpdateDocumentProperties;
+        SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+        Count := SheetTemplateCount(SchDoc, Children);
+        After := SheetTemplateFile(SchDoc);
+        Ok := (Count = 0) And (After = '');
+    End;
+
+    Data := JsonStr('sheet', SchDoc.DocumentName)
+        + ',' + JsonStr('action', What)
+        + ',' + JsonBool('applied', Ok)
+        + ',' + JsonStr('template_before', Before);
+    If What = 'remove' Then Data := Data + ',' + JsonInt('removed', Removed);
+    Data := Data + ',' + SheetTemplateJson(SchDoc, Vault);
+    If LowerCase(ExtractJsonValue(Params, 'boxes')) = 'true' Then
+        Data := Data + ',' + JsonRaw('template_boxes', SheetTemplateBoxes(SchDoc));
+    Result := BuildSuccessResponse(RequestId, JsonObj(Data));
+End;
+
+
+{..............................................................................}
 { Place a schematic component instance from a library onto the active sheet.  }
 { Uses ISch_Document.PlaceSchComponent, the verified direct-placement API.   }
 { Params: library_path (.SchLib full path), lib_reference (component name),   }
@@ -10171,11 +10997,16 @@ Begin
     SchPort.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     SchPort.Name := Name;
 
-    // Style: none, left, right, left_right
-    If StyleStr = 'left' Then SchPort.Style := ePortLeft
-    Else If StyleStr = 'right' Then SchPort.Style := ePortRight
-    Else If StyleStr = 'left_right' Then SchPort.Style := ePortLeftRight
-    Else SchPort.Style := ePortNone;
+    { Style is only the axis Altium keeps: 0 horizontal, 4 vertical. The    }
+    { arrows come from IOType and the wired end; 1-3 and 5-7 read back but  }
+    { are 0 / 4 again after a reopen (measured on AD 25.8 and 26.11). The   }
+    { arrow names (none, left, right, left_right) give a horizontal port.   }
+    StyleStr := LowerCase(StyleStr);
+    If (StyleStr = 'vertical') Or (StyleStr = 'top') Or (StyleStr = 'bottom')
+        Or (StyleStr = 'top_bottom') Then
+        SchPort.Style := 4
+    Else
+        SchPort.Style := 0;
 
     // IO Type: unspecified, output, input, bidirectional
     If IOTypeStr = 'output' Then SchPort.IOType := ePortOutput
@@ -10525,6 +11356,8 @@ Begin
     FilterStr := ExtractJsonValue(Params, 'filter');
     Scope := ExtractJsonValue(Params, 'scope');
     ParseScope(Scope, ScopeType, ScopePath);
+    Result := UnknownScopeError(RequestId, Scope, ScopeType);
+    If Result <> '' Then Exit;
 
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
     If ObjTypeInt = -1 Then
@@ -12032,7 +12865,7 @@ Begin
 
         If ((Missing <> ';') Or (Moved <> ';')) And (Not AllowPinChanges) Then
         Begin
-            Try SchDoc.RemoveSchObject(NewComp); Except NoteWriteFailed('swap: take the new symbol back off'); End;
+            Try SchDoc.RemoveSchObject(NewComp); SchRegisterObject(SchDoc, NewComp); Except NoteWriteFailed('swap: take the new symbol back off'); End;
             Result := BuildErrorResponse(RequestId, 'PIN_MISMATCH',
                 'The new symbol''s pins do not land where the old ones did, so '
                 + 'wires would come off them. Nothing was changed. Missing: '
@@ -12041,7 +12874,7 @@ Begin
             Exit;
         End;
 
-        Try SchDoc.RemoveSchObject(OldComp); Except NoteWriteFailed('swap: remove the old symbol'); End;
+        Try SchDoc.RemoveSchObject(OldComp); SchRegisterObject(SchDoc, OldComp); Except NoteWriteFailed('swap: remove the old symbol'); End;
         { The old part is gone, so its UniqueId is free and the stamp sticks;
           AddSchObject remints an id that is still on the sheet. }
         If OldId <> '' Then
@@ -12284,21 +13117,110 @@ End;
 { Gen_PlaceHarnessConnector - Place an ISch_HarnessConnector on the active      }
 { sheet. Harness connectors group a set of wires/buses into a named harness    }
 { so cross-sheet signal bundles can be represented as a single connection.     }
-{ Params: x, y, width, height (mils), harness_type (optional name string)      }
+{ Params: x, y (top left), width, height (mils), harness_type, entries.      }
 {..............................................................................}
+
+{ Entries on a harness connector: Names separated by ';', on Side, the    }
+{ first Pitch from the top and the rest Pitch apart. The add positions an }
+{ entry itself and drops Side and DistanceFromTop, as it does for a sheet }
+{ entry, so both are written again after it and read back. The add also  }
+{ leaves the entry's Location stacked below the sheet origin (measured:   }
+{ 2400,-50 on a connector at 2000,3000), so it is put on the edge from    }
+{ the two, as PositionSheetEntry does for a sheet entry. Returns the      }
+{ entries as placed, as JSON objects; Placed counts the ones that read    }
+{ back where they were asked.                                             }
+Function AddHarnessEntries(Harness : ISch_HarnessConnector; Names : String;
+    SideStr : String; Pitch : Double; Var Placed : Integer) : String;
+Var
+    Rest, EntryName : String;
+    P, K, WantSide, GotSide : Integer;
+    Entry : ISch_HarnessEntry;
+    Dist, GotDist, EdgeX, EdgeY : Double;
+    Corner : TLocation;
+Begin
+    Result := '';
+    Placed := 0;
+    Corner := Harness.Location;
+    If SideStr = 'right' Then WantSide := eRightSide
+    Else If SideStr = 'top' Then WantSide := eTopSide
+    Else If SideStr = 'bottom' Then WantSide := eBottomSide
+    Else WantSide := eLeftSide;
+    Rest := Names;
+    K := 0;
+    While Rest <> '' Do
+    Begin
+        P := Pos(';', Rest);
+        If P > 0 Then
+        Begin
+            EntryName := Trim(Copy(Rest, 1, P - 1));
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            EntryName := Trim(Rest);
+            Rest := '';
+        End;
+        If EntryName = '' Then Continue;
+        Inc(K);
+        Dist := Pitch * K;
+        Entry := SchServer.SchObjectFactory(eHarnessEntry, eCreate_Default);
+        If Entry = Nil Then
+        Begin
+            NoteWriteFailed('HarnessEntry.create');
+            Continue;
+        End;
+        Entry.Name := EntryName;
+        Entry.Side := WantSide;
+        Entry.DistanceFromTop := MilsToCoordF(Dist);
+        Harness.AddAndPositionSchObject(Entry);
+        Try Entry.Side := WantSide; Except NoteWriteFailed('HarnessEntry.Side'); End;
+        Try Entry.DistanceFromTop := MilsToCoordF(Dist); Except NoteWriteFailed('HarnessEntry.DistanceFromTop'); End;
+        EdgeX := CoordToMilsF(Corner.X);
+        EdgeY := CoordToMilsF(Corner.Y);
+        If WantSide = eLeftSide Then EdgeY := EdgeY - Dist
+        Else If WantSide = eRightSide Then
+        Begin
+            EdgeX := EdgeX + CoordToMilsF(Harness.XSize);
+            EdgeY := EdgeY - Dist;
+        End
+        Else If WantSide = eTopSide Then EdgeX := EdgeX + Dist
+        Else
+        Begin
+            EdgeX := EdgeX + Dist;
+            EdgeY := EdgeY - CoordToMilsF(Harness.YSize);
+        End;
+        Try Entry.Location := Point(MilsToCoordF(EdgeX), MilsToCoordF(EdgeY)); Except NoteWriteFailed('HarnessEntry.Location'); End;
+        GotSide := -1;
+        GotDist := -1;
+        Try GotSide := Entry.Side; Except End;
+        Try GotDist := CoordToMilsF(Entry.DistanceFromTop); Except End;
+        If (GotSide = WantSide) And (Abs(GotDist - Dist) < 0.01) Then Inc(Placed);
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '{"name":"' + EscapeJsonString(EntryName) + '"'
+            + ',"distance_from_top":' + FloatToJsonStr(GotDist)
+            + ',"side_as_asked":' + BoolToJsonStr(GotSide = WantSide) + '}';
+    End;
+End;
 
 Function Gen_PlaceHarnessConnector(Params : String; RequestId : String) : String;
 Var
     X, Y, W, H : Double;
-    HarnessType : String;
+    HarnessType, EntryNames, EntrySide, EntriesJson : String;
+    EntryPitch : Double;
+    EntriesPlaced : Integer;
     SchDoc : ISch_Document;
     Harness : ISch_HarnessConnector;
+    TypeLabel : ISch_GraphicalObject;
 Begin
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
     W := StrToFloatDef(ExtractJsonValue(Params, 'width'), 500);
     H := StrToFloatDef(ExtractJsonValue(Params, 'height'), 800);
     HarnessType := ExtractJsonValue(Params, 'harness_type');
+    EntryNames := ExtractJsonValue(Params, 'entries');
+    EntrySide := LowerCase(ExtractJsonValue(Params, 'entry_side'));
+    EntryPitch := StrToFloatDef(ExtractJsonValue(Params, 'entry_pitch'), 100);
+    If EntryPitch <= 0 Then EntryPitch := 100;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -12317,7 +13239,7 @@ Begin
     { ISch_HarnessConnector is an ISch_RectangularGroup -- no Corner property
       (using it raises "Undeclared identifier: Corner", and the local must be
       typed as the derived interface, not ISch_GraphicalObject). Size via
-      XSize/YSize from the bottom-left Location, like ISch_SheetSymbol. }
+      XSize/YSize down and right from the top-left Location (measured: entries at 100 and 200 from the top read Location.Y 1900 and 1800 on a connector at Y 2000). }
     SchBeginEdit(SchDoc, '');
     Harness.Location := Point(MilsToCoordF(X), MilsToCoordF(Y));
     Harness.XSize := MilsToCoordF(W);
@@ -12329,6 +13251,20 @@ Begin
 
     SchDoc.RegisterSchObjectInContainer(Harness);
     SchRegisterObject(SchDoc, Harness);
+    EntriesJson := '';
+    EntriesPlaced := 0;
+    If EntryNames <> '' Then
+        EntriesJson := AddHarnessEntries(Harness, EntryNames, EntrySide,
+            EntryPitch, EntriesPlaced);
+    { The type label is left where Altium happens to put it, off the body }
+    { and once below the sheet, so it goes under the bottom-left corner.  }
+    TypeLabel := Nil;
+    Try TypeLabel := Harness.HarnessConnectorType; Except TypeLabel := Nil; End;
+    If TypeLabel <> Nil Then
+    Begin
+        Try TypeLabel.Location := Point(MilsToCoordF(X), MilsToCoordF(Y - H - 100));
+        Except NoteWriteFailed('HarnessConnectorType.Location'); End;
+    End;
     SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
@@ -12343,7 +13279,68 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y)
         + ',"width":' + FloatToJsonStr(W) + ',"height":' + FloatToJsonStr(H)
-        + ',"harness_type":"' + EscapeJsonString(HarnessType) + '"}');
+        + ',"harness_type":"' + EscapeJsonString(HarnessType) + '"'
+        + ',"entries":[' + EntriesJson + ']'
+        + ',"entries_placed":' + IntToStr(EntriesPlaced) + '}');
+End;
+
+{..............................................................................}
+{ Gen_PlaceSignalHarness - draw a signal harness, the thick line that carries  }
+{ a harness from a harness connector or a harness port to a sheet entry.      }
+{ Params: vertices 'x1,y1,x2,y2,...' (mils, two points or more).              }
+{ Built like a wire: InsertVertex then SetState_Vertex for each point.        }
+{..............................................................................}
+
+Function Gen_PlaceSignalHarness(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Harness : ISch_GraphicalObject;
+    Xs, Ys : TStringList;
+    I, Count : Integer;
+Begin
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    Xs := TStringList.Create;
+    Ys := TStringList.Create;
+    Try
+        If (Not ParseVertexList(ExtractJsonValue(Params, 'vertices'), Xs, Ys))
+            Or (Xs.Count < 2) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VERTICES',
+                'vertices is x1,y1,x2,y2,... in mils, two points or more. Nothing was drawn.');
+            Exit;
+        End;
+        Harness := SchServer.SchObjectFactory(eSignalHarness, eCreate_Default);
+        If Harness = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create signal harness');
+            Exit;
+        End;
+        SchBeginEdit(SchDoc, '');
+        For I := 0 To Xs.Count - 1 Do
+        Begin
+            Harness.InsertVertex := I + 1;
+            Harness.SetState_Vertex(I + 1, Point(MilsToCoordF(StrToFloatDef(Xs[I], 0)),
+                MilsToCoordF(StrToFloatDef(Ys[I], 0))));
+        End;
+        SchDoc.RegisterSchObjectInContainer(Harness);
+        SchRegisterObject(SchDoc, Harness);
+        SchEndEdit(SchDoc, 'Edit');
+        SchDoc.GraphicallyInvalidate;
+        If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+        Count := -1;
+        Try Count := Harness.VerticesCount; Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":' + BoolToJsonStr(Count = Xs.Count)
+            + ',"vertices":' + IntToStr(Count) + ',"asked":' + IntToStr(Xs.Count) + '}');
+    Finally
+        Xs.Free;
+        Ys.Free;
+    End;
 End;
 
 {..............................................................................}
@@ -12503,7 +13500,9 @@ Begin
         + '","part_id":' + IntToStr(PartIdAfter)
         + ',"location_x":' + FloatToJsonStr(CoordToMilsF(CompLoc.X))
         + ',"location_y":' + FloatToJsonStr(CoordToMilsF(CompLoc.Y))
-        + ',"matched":' + IntToStr(Total) + '}');
+        { One copy is changed; the others sharing its designator are counted }
+        { apart, so the count is not read as the number written.             }
+        + ',"changed":1,"same_designator":' + IntToStr(Total) + '}');
 End;
 
 {..............................................................................}
@@ -14775,6 +15774,8 @@ Begin
         End;
 
         ParseScope(Scope, ScopeType, ScopePath);
+        If (FailCode = '') And (UnknownScopeError(RequestId, Scope, ScopeType) <> '') Then
+            FailCode := 'unknown_scope';
         If (FailCode = '') And IsPCB And (ScopeType <> 'active_doc') Then
             FailCode := 'scope_not_supported';
         { EACH OP'S lib_component SCOPE SELECTS ITS OWN SYMBOL. Without this a  }
@@ -15332,7 +16333,7 @@ Function Gen_PlaceSchVaultComponents(Params : String; RequestId : String) : Stri
 Var
     PlaceStr, Op, Remaining, ItemsJson, VaultName, Note : String;
     DesignItemId, Desig, Reason, LoadedId, VaultGuid, ItemGuid, RevGuid : String;
-    OpCount, Placed, Linked, Failed, Kind : Integer;
+    OpCount, Placed, Linked, Failed, Kind, PartId, PartAfter : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
     Raised, AnyRaised, IsPlaced, IsLinked : Boolean;
@@ -15374,6 +16375,12 @@ Begin
             Inc(OpCount);
             DesignItemId := GetBatchField(Op, 'design_item_id');
             Desig := GetBatchField(Op, 'designator');
+            { The part of a multi-part component, as the library placement  }
+            { takes it: part 1 unless asked, written before the add so the  }
+            { loader's own pick (the last part, measured) never lands.      }
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);
+            If PartId < 1 Then PartId := 1;
+            PartAfter := -1;
             IsPlaced := False;
             IsLinked := False;
             Reason := '';
@@ -15406,19 +16413,29 @@ Begin
                 Inc(Failed)
             Else
             Begin
+                Try Comp.SetState_CurrentPartID(PartId); Except { written and checked again on the sheet below } End;
+                Try Comp.CurrentPartID := PartId; Except { written and checked again on the sheet below } End;
                 PutLoadedComponent(SchDoc, Comp,
                     StrToFloatDef(GetBatchField(Op, 'x'), 0),
                     StrToFloatDef(GetBatchField(Op, 'y'), 0),
                     StrToIntDef(GetBatchField(Op, 'rotation'), 0), Desig);
-                Inc(Placed);
+                SetSchPartId(Comp, PartId);
+                Try PartAfter := Comp.CurrentPartID; Except End;
                 IsPlaced := True;
+                If PartAfter = PartId Then Inc(Placed)
+                Else
+                Begin
+                    { On the sheet, but not as the part asked for. }
+                    Inc(Failed);
+                    Reason := 'PART_REFUSED';
+                End;
                 Try LoadedId := Comp.DesignItemId; Except End;
                 Try VaultGuid := Comp.VaultGUID; Except End;
                 Try ItemGuid := Comp.ItemGUID; Except End;
                 Try RevGuid := Comp.RevisionGUID; Except End;
                 IsLinked := (VaultGuid <> '') And (ItemGuid <> '');
                 If IsLinked Then Inc(Linked)
-                Else Reason := 'PLACED_WITHOUT_LINK';
+                Else If Reason = '' Then Reason := 'PLACED_WITHOUT_LINK';
             End;
 
             If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
@@ -15426,6 +16443,7 @@ Begin
                 + ',"design_item_id":"' + EscapeJsonString(DesignItemId) + '"'
                 + ',"placed":' + BoolToJsonStr(IsPlaced)
                 + ',"linked":' + BoolToJsonStr(IsLinked)
+                + ',"part_id":' + IntToStr(PartAfter)
                 + ',"loaded_design_item_id":"' + EscapeJsonString(LoadedId) + '"'
                 + ',"vault_guid":"' + EscapeJsonString(VaultGuid) + '"'
                 + ',"item_guid":"' + EscapeJsonString(ItemGuid) + '"'
@@ -17105,7 +18123,7 @@ Var
     RegionsParts, CompsParts, RegionPoints : TStringList;
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
-    LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
+    LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr, PlatedStr : String;
     BR : TCoordRect;
     I, K, PtCount, EL, EB, ER, ET, Seen : Integer;
     Seg : TPolySegment;
@@ -17273,6 +18291,11 @@ Begin
                 Try
                     If Pad.Component <> Nil Then TextStr := Pad.Component.Name.Text;
                 Except End;
+                { Plating: a picture draws a plated barrel or bare laminate. }
+                PlatedStr := 'true';
+                Try
+                    PlatedStr := BoolToJsonStr(Pad.Plated);
+                Except End;
                 If NumPads > 0 Then PadsParts.Add(',');
                 PadsParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Pad.X)) +
@@ -17284,6 +18307,7 @@ Begin
                     ',"hole_type":"' + EscapeJsonString(HoleStr) + '"' +
                     ',"hole_width":' + FloatToJsonStr(CoordToMilsF(Pad.HoleWidth)) +
                     ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation) +
+                    ',"plated":' + PlatedStr +
                     ',"rotation":' + FloatToJsonStr(Pad.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name":"' + EscapeJsonString(PadName) + '"' +
@@ -19197,6 +20221,7 @@ Begin
         'place_harness_wires': Result := Gen_PlaceHarnessWires(Params, RequestId);
         'set_sheet_size':    Result := Gen_SetSheetSize(Params, RequestId);
         'sheet_options':     Result := Gen_SheetOptions(Params, RequestId);
+        'sheet_template':    Result := Gen_SheetTemplate(Params, RequestId);
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'set_sch_component_parameters': Result := Gen_SetSchComponentParameters(Params, RequestId);
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
@@ -19227,6 +20252,7 @@ Begin
         'relink_components': Result := Gen_RelinkComponents(Params, RequestId);
         'get_constraint_groups':      Result := Gen_GetConstraintGroups(Params, RequestId);
         'place_harness_connector':    Result := Gen_PlaceHarnessConnector(Params, RequestId);
+        'place_signal_harness':       Result := Gen_PlaceSignalHarness(Params, RequestId);
         'place_cross_sheet_connector': Result := Gen_PlaceCrossSheetConnector(Params, RequestId);
         'place_text_frame': Result := Gen_PlaceTextFrame(Params, RequestId);
         'increment_designators': Result := Gen_IncrementDesignators(Params, RequestId);

@@ -176,6 +176,18 @@ def _channel_copy(sym: dict, siblings: list) -> bool:
                for s in siblings)
 
 
+def _harness_member_of(sig: str, other: dict) -> bool:
+    """A harness member and its harness on the other side match.
+
+    The compiled entries of a signal harness come one per member,
+    HARNESS.MEMBER, while the child sheet may offer the harness port
+    alone, and the other way round.
+    """
+    if "." in sig and sig.split(".", 1)[0] in other:
+        return True
+    return any(k.startswith(sig + ".") for k in other)
+
+
 def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
     """What does not join up in a compiled hierarchy: dangling symbols,
     entries and ports without a partner, opposite directions, orphans."""
@@ -198,8 +210,12 @@ def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
             ports = {_signal(p.get("name", "")): p for p in child.get("ports") or []}
             entries = {_signal(e.get("name", "")): e for e in sym.get("entries") or []}
             for sig in sorted(set(entries) - set(ports)):
+                if _harness_member_of(sig, ports):
+                    continue
                 problems.append({"kind": "entry_without_port", "name": sig, **where})
             for sig in sorted(set(ports) - set(entries)):
+                if _harness_member_of(sig, entries):
+                    continue
                 problems.append({"kind": "port_without_entry", "name": sig, **where})
             for sig in sorted(set(entries) & set(ports)):
                 a = _direction(entries[sig].get("io", ""))
@@ -367,12 +383,13 @@ def register_project_tools(mcp):
         project_path: str,
         project_type: str = "PCB",
     ) -> dict[str, Any]:
-        """Create a new Altium project.
+        """Create a new, empty Altium project, made and saved by Altium.
 
-        The file's extension decides what Altium opens it as: .PrjPcb for a
-        PCB project, .PrjHar for a harness project (then add a wiring
-        diagram with app_create_document kind "HarnessWiringDiagram" and a
-        .WirDoc path).
+        The file's extension decides the kind: .PrjPcb a PCB project,
+        .PrjHar a harness project (then add a wiring diagram with
+        app_create_document kind "HarnessWiringDiagram" and a .WirDoc
+        path), .LibPkg an integrated library package. An existing file is
+        refused, never overwritten: open it with proj_open.
 
         Not idempotent. The stub is written to disk and then opened, so
         calling this for a project Altium already has open rewrites the
@@ -380,19 +397,13 @@ def register_project_tools(mcp):
         failed with "No project found". Check proj_list_open first.
 
         Args:
-            project_path: Full path for the new project file (.PrjPcb
-                or .PrjHar)
-            project_type: "PCB" writes a PCB project's default settings;
-                any other value writes a bare project file.
+            project_path: Full path for the new project file.
+            project_type: Not needed; the extension decides the kind.
 
         Returns:
             Dictionary with created project information
         """
-        # Ensure the parent directory exists. The Altium side writes the
-        # project stub with Rewrite(), which throws EInOutError ("Invalid
-        # file name") into a blocking IDE modal when the folder is missing.
-        # Creating it here (the server runs on the same host as Altium)
-        # keeps that modal from ever firing.
+        # The folder is made first so Altium's save has somewhere to go.
         import os
         parent = os.path.dirname(project_path)
         if parent:
@@ -403,7 +414,7 @@ def register_project_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "project.create",
-            {"project_path": project_path, "project_type": project_type},
+            {"project_path": project_path},
         )
         return result
 
@@ -806,6 +817,43 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
+    async def proj_rename_document(
+        document_path: str,
+        new_name: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rename a project document, keeping the project and its sheet
+        symbols pointing at it.
+
+        Altium saves the document under the new name in the same folder
+        (its Save As, unsaved edits included), the project entry follows
+        it, every sheet symbol in the project whose file name names the
+        old file is changed to the new one, and the project is saved and
+        compiled. The old file is left on disk. Refused when the new
+        name exists, changes the extension, or the document is in no
+        open project.
+
+        Args:
+            document_path: Full path of the document.
+            new_name: The new file name (extension optional, same kind).
+            project_path: The project; defaults to the one holding it.
+
+        Returns:
+            ``old_path``, ``new_path``, ``project_path``, ``in_project``,
+            ``old_entry_left``, ``entry_moved_last`` (Altium did not move
+            the entry, so it was added again at the end),
+            ``sheet_symbols`` changed (sheet and new file name),
+            ``sheet_symbols_not_changed``, ``project_saved``; ``success``
+            when the project lists only the new name and every symbol
+            took the change.
+        """
+        params = {"document_path": document_path, "new_name": new_name}
+        if project_path:
+            params["project_path"] = project_path
+        return await get_bridge().send_command_async(
+            "project.rename_document", params)
+
+    @mcp.tool()
     async def proj_get_parameters(
         project_path: Optional[str] = None,
     ) -> list[dict[str, Any]]:
@@ -1057,6 +1105,8 @@ def register_project_tools(mcp):
         output_dir: str,
         lcsc_parameter: str = "",
         name: str = "",
+        not_placed: Optional[list[str]] = None,
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Write the BOM and pick-and-place (CPL) files JLCPCB assembly takes.
 
@@ -1078,6 +1128,12 @@ def register_project_tools(mcp):
                 tries "LCSC Part #", "LCSC Part Number", "LCSC", "LCSC Part",
                 "JLCPCB Part #".
             name: file name stem; default the board's name.
+            not_placed: designators meant to be left off the assembly
+                (fitted by hand, not fitted). Any other part without an
+                LCSC number refuses the export.
+            board_path: the .PcbDoc to export. Empty uses the only open
+                board; with several open the export is refused until one
+                is named.
 
         Returns:
             ``bom_path``, ``cpl_path``, ``parts``, ``bom_rows``,
@@ -1089,6 +1145,9 @@ def register_project_tools(mcp):
         from collections import OrderedDict
 
         bridge = get_bridge()
+        board_doc, problem = await _the_board(bridge, board_path)
+        if problem:
+            return {"ok": False, "reason": problem}
         coords = await bridge.send_command_async("pcb.export_coordinates", {})
         comps = [c for c in (coords or {}).get("placements", [])
                  if isinstance(c, dict) and c.get("designator")]
@@ -1127,6 +1186,20 @@ def register_project_tools(mcp):
             key = (str(c.get("comment", "")), str(c.get("footprint", "")), part)
             groups.setdefault(key, []).append(ref)
 
+        from ..preferences import check_on, check_skipped, if_the_user_insists
+        checking = check_on("fab_export")
+        left_off = {str(d).strip().upper() for d in (not_placed or []) if str(d).strip()}
+        unexplained = [r for r in missing if r.upper() not in left_off]
+        if checking and unexplained:
+            return {"ok": False, "check": "fab_export",
+                    "if_the_user_insists": if_the_user_insists("fab_export"),
+                    "without_lcsc": unexplained, "reason": (
+                        f"{len(unexplained)} part(s) have no LCSC number in "
+                        f"{' / '.join(keys)}: {', '.join(unexplained[:30])}. JLC "
+                        "would leave them unplaced without saying so. Add the "
+                        "number, or name the parts meant to be left off (fitted "
+                        "by hand, not fitted) in not_placed. Nothing was written.")}
+
         stem = name or os.path.splitext(
             str((coords or {}).get("board_name") or "board"))[0] or "board"
         os.makedirs(output_dir, exist_ok=True)
@@ -1146,9 +1219,13 @@ def register_project_tools(mcp):
                 side = "Bottom" if str(c.get("side", "")).lower().startswith("b") else "Top"
                 w.writerow([c["designator"], f"{x:.4f}mm", f"{y:.4f}mm", side,
                             f"{float(c.get('rotation', 0)) % 360:g}"])
-        out = {"ok": True, "bom_path": bom_path, "cpl_path": cpl_path,
+        out = {"ok": True, "board": board_doc, "bom_path": bom_path, "cpl_path": cpl_path,
                "parts": len(comps), "bom_rows": len(groups),
                "without_lcsc": missing, "origin_mils": [ox, oy]}
+        if not checking:
+            out["unchecked"] = check_skipped("fab_export")
+        elif left_off:
+            out["not_placed"] = sorted(left_off)
         if missing:
             out["note"] = (f"{len(missing)} parts have no LCSC number in "
                            f"{' / '.join(keys)}; JLC leaves them unplaced")
@@ -2072,6 +2149,10 @@ def register_project_tools(mcp):
         container_name: str,
         outjob_path: str = "",
         fresh_window_seconds: float = 5.0,
+        fab: str = "",
+        fab_tier: str = "standard",
+        outer_oz: float = 1.0,
+        fab_limits: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Execute a specific output container from an OutJob file.
 
@@ -2100,29 +2181,43 @@ def register_project_tools(mcp):
             fresh_window_seconds: files modified up to this many seconds
                 before the run started still count as written, for file
                 systems with coarse timestamps. Default 5s.
+            fab, fab_tier, outer_oz: the fab the files go to
+                (design_list_fab_vendors), its tier and the finished outer
+                copper in oz. A container writing Gerber, NC drill, ODB++
+                or IPC-2581 is not run until the board is inside that
+                fab's published limits (``fab_check``).
+            fab_limits: with fab "custom", the user's own figures in mils
+                (min_track, min_gap, min_drill, min_annular_ring,
+                min_hole_to_hole, min_mask_sliver, copper_to_edge;
+                copper_layer_counts a list), for a fab with no data here.
 
         Returns:
             ``success``, ``container_name``, ``container_type``,
             ``output_dir``, ``output_dir_exists``, ``files_written`` (a
-            count), ``written`` (up to 50 paths), and ``reason`` when
-            nothing was written.
+            count), ``written`` (up to 50 paths), ``fab_check``, and
+            ``reason`` when nothing was written.
         """
         import os as _os
         import time as _time
 
+        # MEASURED: Altium opens a path that is not there as a NEW, empty
+        # OutJob and focuses it, so the run failed and left a phantom
+        # document active that every later tool then refused to work on.
+        # Checked first, while the path is still a string and before the
+        # fab check asks Altium anything about it.
+        if outjob_path and not _os.path.isfile(outjob_path):
+            return {"success": False, "container_name": container_name,
+                    "outjob_path": outjob_path, "reason": (
+                        f"{outjob_path} is not a file; Altium would open "
+                        "a new empty OutJob at that path and focus it. "
+                        "Nothing was run.")}
         bridge = get_bridge()
+        refusal, checked = await _fab_gate(bridge, outjob_path, [container_name],
+                                           fab, fab_tier, outer_oz, fab_limits)
+        if refusal:
+            return {"success": False, "container_name": container_name, **refusal}
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
-            # MEASURED: Altium opens a path that is not there as a NEW,
-            # empty OutJob and focuses it, so the run failed and left a
-            # phantom document active that every later tool then refused
-            # to work on. Checked here, where the path is still a string.
-            if not _os.path.isfile(outjob_path):
-                return {"success": False, "container_name": container_name,
-                        "outjob_path": outjob_path, "reason": (
-                            f"{outjob_path} is not a file; Altium would open "
-                            "a new empty OutJob at that path and focus it. "
-                            "Nothing was run.")}
             params["outjob_path"] = outjob_path
             busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
             if busy:
@@ -2134,7 +2229,125 @@ def register_project_tools(mcp):
                             "Nothing was run.")}
         started_at = _time.time()
         result = await _send_run(bridge, params, 120.0)
-        return _judge_outjob_run(result, started_at, fresh_window_seconds)
+        judged = _judge_outjob_run(result, started_at, fresh_window_seconds)
+        if isinstance(judged, dict) and checked:
+            judged = {**judged, **checked}
+        return judged
+
+    async def _the_board(bridge, board_path):
+        """``(board, problem)``: the board a board-wide export reads, brought
+        forward. Altium otherwise answers from whichever board it resolves,
+        and with two open an export of one came out with the other's parts."""
+        from ..bridge.exceptions import AltiumError
+
+        if not board_path:
+            try:
+                docs = await bridge.send_command_async("application.get_open_documents", {})
+            except AltiumError as e:
+                return "", f"the open documents could not be listed: {e}"
+            docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+            boards = sorted({str(d.get("file_path") or "") for d in docs
+                             if isinstance(d, dict)
+                             and str(d.get("file_path") or "").lower().endswith(".pcbdoc")})
+            if not boards:
+                return "", "no board is open"
+            if len(boards) > 1:
+                return "", ("several boards are open; name the one to export with "
+                            "board_path: " + "; ".join(boards))
+            board_path = boards[0]
+        try:
+            await bridge.send_command_async("pcb.focus_board", {"board_path": board_path},
+                                            timeout=120.0)
+        except AltiumError as e:
+            return "", f"could not bring {board_path} forward: {e}"
+        return board_path, ""
+
+    async def _outjob_board(bridge, outjob_path):
+        """The .PcbDoc of the open project that lists ``outjob_path``, as
+        Altium holds it, or ""."""
+        from ..bridge.exceptions import AltiumError
+
+        want = str(outjob_path or "").lower()
+        if not want:
+            return ""
+        try:
+            listing = await bridge.send_command_async("project.get_open_projects", {})
+        except AltiumError:
+            return ""
+        projects = (listing or {}).get("projects") or [] if isinstance(listing, dict) else []
+        for proj in projects:
+            prj = str((proj or {}).get("project_path") or "")
+            if not prj.lower().endswith(".prjpcb"):
+                continue
+            try:
+                docs = await bridge.send_command_async(
+                    "project.get_documents", {"project_path": prj})
+            except AltiumError:
+                continue
+            docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+            paths = [str((d or {}).get("file_path") or "") for d in docs if isinstance(d, dict)]
+            if any(p.lower() == want for p in paths):
+                boards = [p for p in paths if p.lower().endswith(".pcbdoc")]
+                return boards[0] if boards else ""
+        return ""
+
+    async def _fab_gate(bridge, outjob_path, containers, fab, fab_tier, outer_oz,
+                        fab_limits=None):
+        """``(refusal, note)`` for containers about to write fab files: the
+        board checked against ``fab`` first. Nothing to check when no
+        container writes a fab output."""
+        from ..design.fab_check import check_board
+        from ..design import fab_library
+        from ..export.outjob_outputs import fab_kinds
+        from ..bridge.exceptions import AltiumError
+        from ..preferences import check_on, check_skipped, if_the_user_insists
+
+        if not check_on("fab_export"):
+            return None, {"unchecked": check_skipped("fab_export")}
+        try:
+            listing = await bridge.send_command_async(
+                "project.get_outjob_containers",
+                {"outjob_path": outjob_path} if outjob_path else {}, timeout=30.0)
+        except AltiumError:
+            listing = {}
+        listing = listing if isinstance(listing, dict) else {}
+        path = str(listing.get("outjob_path") or outjob_path or "")
+        kinds = fab_kinds(listing.get("containers") or [], containers)
+        if not kinds:
+            return None, {}
+        hint = if_the_user_insists("fab_export")
+        if not str(fab or "").strip():
+            return {"check": "fab_export", "if_the_user_insists": hint,
+                    "fab_outputs": kinds, "reason": (
+                        f"these outputs ({', '.join(kinds)}) are what a fab builds "
+                        "from: name the fab (fab=...) so the board is checked "
+                        "against its published limits first. Fabs with data: "
+                        + ", ".join(v["vendor"] for v in fab_library.list_vendors())
+                        + "; or fab 'custom' with fab_limits, your own figures")}, {}
+        board = await _outjob_board(bridge, path)
+        if board:
+            try:
+                await bridge.send_command_async("pcb.focus_board", {"board_path": board})
+            except AltiumError as e:
+                return {"check": "fab_export", "if_the_user_insists": hint,
+                        "reason": f"could not bring {board} forward to check it: {e}"}, {}
+        try:
+            stats = await bridge.send_command_async("pcb.get_fab_stats", {}, timeout=120.0)
+            rules = await bridge.send_command_async("pcb.get_design_rules", {}, timeout=120.0)
+        except AltiumError as e:
+            return {"check": "fab_export", "if_the_user_insists": hint,
+                    "reason": f"the board could not be read to check it: {e}"}, {}
+        checked = check_board(stats if isinstance(stats, dict) else {},
+                              (rules or {}).get("rules") or [] if isinstance(rules, dict) else [],
+                              fab, tier=fab_tier, outer_oz=outer_oz,
+                              limits=fab_limits)
+        checked["board"] = board or str((rules or {}).get("board_path") or "") \
+            if isinstance(rules, dict) else board
+        checked["fab_outputs"] = kinds
+        if not checked["ok"]:
+            return {"check": "fab_export", "if_the_user_insists": hint,
+                    "fab_check": checked, "reason": checked["reason"]}, {}
+        return None, {"fab_check": checked}
 
     def _locked_outputs(output_dir):
         """Files in a container's output folder another program holds
@@ -2351,6 +2564,10 @@ def register_project_tools(mcp):
         outjob_path: str = "",
         include_files: bool = True,
         fresh_window_seconds: float = 5.0,
+        fab: str = "",
+        fab_tier: str = "standard",
+        outer_oz: float = 1.0,
+        fab_limits: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Run every container in an OutJob and report what each produced.
 
@@ -2364,6 +2581,9 @@ def register_project_tools(mcp):
             include_files: List each container's files (default True).
             fresh_window_seconds: Files modified up to this long before a
                 container started still count as new. Default 5 s.
+            fab, fab_tier, outer_oz: as proj_run_outjob; nothing runs
+                when a container writes fab files and the board is
+                outside the fab's limits.
 
         Returns:
             Dict with ``ok``, ``outjob_path``, ``containers_run``
@@ -2387,6 +2607,12 @@ def register_project_tools(mcp):
         if not containers:
             return {"ok": True, "containers_run": [], "results": [],
                     "reason": "no containers in OutJob"}
+        names = [c.get("name") if isinstance(c, dict) else str(c) for c in containers]
+        refusal, checked = await _fab_gate(
+            bridge, outjob_path or str(listing.get("outjob_path") or ""),
+            [n for n in names if n], fab, fab_tier, outer_oz, fab_limits)
+        if refusal:
+            return {"ok": False, "containers_run": [], "results": [], **refusal}
 
         per_container: list[dict[str, Any]] = []
         for c in containers:
@@ -2445,6 +2671,7 @@ def register_project_tools(mcp):
             ),
             "containers_run": [r["container"] for r in per_container],
             "results": per_container,
+            **checked,
         }
 
     @mcp.tool()
@@ -2453,6 +2680,10 @@ def register_project_tools(mcp):
         include_step: bool = False,
         include_dxf: bool = False,
         fresh_window_seconds: float = 5.0,
+        fab: str = "",
+        fab_tier: str = "standard",
+        outer_oz: float = 1.0,
+        fab_limits: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Generate a fabrication package from an OutJob (Gerbers, NC drill,
         IPC-356, pick-and-place, assembly, BOM) and report every file produced.
@@ -2469,6 +2700,8 @@ def register_project_tools(mcp):
             include_dxf: also export a DXF of the active PCB.
             fresh_window_seconds: files modified within this window before a
                 container ran still count as newly produced.
+            fab, fab_tier, outer_oz: as proj_run_outjob; nothing is
+                generated while the board is outside the fab's limits.
 
         Returns:
             {"ok", "outjob_path", "containers_run", "results" (per-container
@@ -2494,7 +2727,12 @@ def register_project_tools(mcp):
                 "reason": "no OutJob containers found; create and configure an "
                 "OutJob (Gerber, NC drill, etc.) before generating a fab package",
             }
-
+        names = [c.get("name") if isinstance(c, dict) else str(c) for c in containers]
+        refusal, checked = await _fab_gate(
+            bridge, outjob_path or str(listing.get("outjob_path") or ""),
+            [n for n in names if n], fab, fab_tier, outer_oz, fab_limits)
+        if refusal:
+            return {"ok": False, "containers_run": [], "results": [], **refusal}
         per_container: list[dict[str, Any]] = []
         all_files: list[str] = []
         for c in containers:
@@ -2583,6 +2821,7 @@ def register_project_tools(mcp):
             "results": per_container,
             "extras": extras,
             "all_files": sorted(set(all_files)),
+            **checked,
         }
 
     # ------------------------------------------------------------------
@@ -3207,6 +3446,12 @@ def register_project_tools(mcp):
         ``ports`` and ``sheet_symbols`` with their ``entries``, and the
         ``problems``: a missing child, an entry without a port or a port
         without an entry, opposite directions, an orphan sheet.
+
+        Each port and entry gives ``net``, the net's name on its own sheet,
+        and ``physical``: per copy of the sheet (one per channel), the
+        ``instance`` and the ``net`` it joins across the project. They
+        differ when a name from another sheet wins. ``x`` / ``y`` (mils)
+        tell apart items of one name.
 
         Args:
             project_path: The .PrjPcb. Default: the focused project.

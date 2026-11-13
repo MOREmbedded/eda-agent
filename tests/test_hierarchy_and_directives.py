@@ -158,6 +158,20 @@ def test_no_erc_options_are_sent_only_when_given(monkeypatch):
             args["active"]) == ("3", "1", "false", "true")
 
 
+def test_no_erc_reply_drops_the_lists_a_suppress_all_marker_ignores(monkeypatch):
+    # #297: every marker echoed ~3 KB of error kinds and connection pairs.
+    big = {"success": True, "x": 1, "y": 2, "symbol": 0, "active": True,
+           "error_kinds": "x" * 500, "connection_pairs": "y" * 3000}
+    out, _ = _gen(monkeypatch, "sch_place_no_erc",
+                  reply={**big, "suppress_all": True}, x=1, y=2)
+    assert "error_kinds" not in out and "connection_pairs" not in out
+    assert out["suppress_all"] is True and out["x"] == 1
+    out, _ = _gen(monkeypatch, "sch_place_no_erc",
+                  reply={**big, "suppress_all": False}, x=1, y=2,
+                  suppress_all=False, error_kinds="a")
+    assert out["error_kinds"] and out["connection_pairs"]
+
+
 def test_compile_mask_sends_its_box(monkeypatch):
     _, sent = _gen(monkeypatch, "sch_place_compile_mask", x1=500, y1=400,
                    x2=100, y2=900, collapsed=True)
@@ -185,3 +199,19 @@ def test_a_template_replica_keeps_its_specific_suppression():
     body = body[:body.index("\nEnd;")]
     assert "If TemplateId = '' Then ApplyNoErcDefaults(NoERC);" in body
     assert body.count("ApplyNoErcDefaults(") == 1
+def test_harness_members_match_their_harness_port():
+    """The compiled entries of a signal harness come one per member; the
+    child sheet offers the harness port. Neither side is missing."""
+    from eda_agent.tools.project import hierarchy_problems
+    sheets = [
+        {"file": "Top.SchDoc", "parents": [], "ports": [], "sheet_symbols": [
+            {"sheet_name": "U_Hub", "file": "Hub.SchDoc", "child_sheets": 1,
+             "entries": [{"name": "EXT_USB.USB+"}, {"name": "EXT_USB.USB-"},
+                         {"name": "I2C"}, {"name": "LOST.SCL"}]}]},
+        {"file": "Hub.SchDoc", "parents": ["Top.SchDoc"],
+         "ports": [{"name": "EXT_USB"}, {"name": "I2C.SDA"}, {"name": "SPARE"}],
+         "sheet_symbols": []},
+    ]
+    found = {(p["kind"], p.get("name")) for p in hierarchy_problems(sheets, "Top.SchDoc")}
+    assert found == {("entry_without_port", "LOST.SCL"),
+                     ("port_without_entry", "SPARE")}

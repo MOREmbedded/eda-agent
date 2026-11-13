@@ -162,6 +162,7 @@ The Config tab on the Altium status window writes these to `preferences.json` in
 | `dialogs` | `auto`, `manual` |  | `manual` leaves dialogs such as the change order for you to answer, instead of the tool answering them. |
 | `usage_stats` | `on`, `off` |  | `off` stops counting the tokens each tool call costs. |
 | `theme` | `system`, `light`, `dark` |  | The web dashboard's look: `system`, `light` or `dark`. Set in the profile only; the Altium panel has no switch for it. |
+| `length_units` | `mil`, `mm` |  | The unit a new AI session gives and reads lengths in: `mil` (default) or `mm`. Each session may change its own with the `length_units` tool. |
 | `default_mode` | a design mode name | | Profile only: the design mode a run uses when it names none. |
 
 ## `workspace.json`

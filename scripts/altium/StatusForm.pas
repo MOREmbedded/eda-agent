@@ -565,6 +565,10 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'The unit the AI gives and reads lengths in: coordinates, widths, '
+        + 'clearances, thicknesses. Each AI session starts in this unit and '
+        + 'may change its own; every reply says which unit it is in.';
+    SetTip(lbl_CfgUnits, Tip);  SetTip(opt_UnitsMil, Tip);  SetTip(opt_UnitsMm, Tip);
     Tip := 'What happens to a dialog a tool opens, such as the Engineering '
         + 'Change Order or the Teardrops options. Automatic: the AI answers '
         + 'it as the tool was asked, then reads the result back. Manual: the '
@@ -858,6 +862,7 @@ Begin
     OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
     OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
     OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(opt_UnitsMil);  OwnPanelColours(opt_UnitsMm);
     OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
     OwnPanelColours(sep_Cfg3);
     OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
@@ -956,6 +961,71 @@ Begin
 End;
 
 
+{ A check on the Config tab is off when its name is in ChecksOff. }
+Function CheckIsOff(CheckName : String) : Boolean;
+Begin
+    Result := Pos(',' + CheckName + ',', ',' + ChecksOff + ',') > 0;
+End;
+
+{ The checks on the Config tab: On is the default, Off shows amber, and the }
+{ hint names every check that is off.                                      }
+Procedure PaintChecks(Dummy : Integer);
+Var
+    Off : String;
+Begin
+    Try
+        Off := '';
+        PaintOption(opt_ChkFpOn, Not CheckIsOff('footprint_drawing'));
+        PaintWarnOption(opt_ChkFpOff, CheckIsOff('footprint_drawing'));
+        If CheckIsOff('footprint_drawing') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'footprints vs drawing';
+        End;
+        PaintOption(opt_ChkSymOn, Not CheckIsOff('symbol_pins'));
+        PaintWarnOption(opt_ChkSymOff, CheckIsOff('symbol_pins'));
+        If CheckIsOff('symbol_pins') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'symbols vs pin table';
+        End;
+        PaintOption(opt_ChkPadOn, Not CheckIsOff('pins_pads'));
+        PaintWarnOption(opt_ChkPadOff, CheckIsOff('pins_pads'));
+        If CheckIsOff('pins_pads') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'pins vs pads';
+        End;
+        PaintOption(opt_ChkBodyOn, Not CheckIsOff('model_body'));
+        PaintWarnOption(opt_ChkBodyOff, CheckIsOff('model_body'));
+        If CheckIsOff('model_body') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + '3D bodies vs drawing';
+        End;
+        PaintOption(opt_ChkSpiceOn, Not CheckIsOff('spice_model'));
+        PaintWarnOption(opt_ChkSpiceOff, CheckIsOff('spice_model'));
+        If CheckIsOff('spice_model') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'SPICE model files';
+        End;
+        PaintOption(opt_ChkFabOn, Not CheckIsOff('fab_export'));
+        PaintWarnOption(opt_ChkFabOff, CheckIsOff('fab_export'));
+        If CheckIsOff('fab_export') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'fab exports';
+        End;
+        If Off = '' Then
+            lbl_CfgChecksHint.Caption := 'Every check runs before a part is '
+                + 'built or fab files are written.'
+        Else
+            lbl_CfgChecksHint.Caption := 'Off: ' + Off + '. Those run without '
+                + 'the check, and each result says it was skipped.';
+    Except End;
+End;
+
 { The agent and view settings on the Config tab, with what each does. }
 Procedure PaintAgentSettings(Dummy : Integer);
 Begin
@@ -997,6 +1067,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_UnitsMil, LengthUnits <> 'mm');
+        PaintOption(opt_UnitsMm, LengthUnits = 'mm');
+        If LengthUnits = 'mm' Then
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in millimetres.'
+        Else
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in mils.';
         PaintOption(opt_EcoAuto, DialogMode <> 'manual');
         PaintOption(opt_EcoManual, DialogMode = 'manual');
         If DialogMode = 'manual' Then
@@ -1013,6 +1091,7 @@ Begin
         Else
             lbl_CfgStatsHint.Caption := 'Each tool call''s token cost is '
                 + 'estimated and kept per workspace. See the Stats tab.';
+        PaintChecks(0);
     Except End;
 End;
 
@@ -1508,6 +1587,7 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'length_units' Then LengthUnits := Choice
         Else If Setting = 'dialogs' Then DialogMode := Choice
         Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
@@ -1557,6 +1637,90 @@ Begin ChooseAgentSetting('usage_stats', 'on'); End;
 
 Procedure opt_StatsOffClick(Sender : TObject);
 Begin ChooseAgentSetting('usage_stats', 'off'); End;
+Procedure opt_UnitsMilClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mil'); End;
+
+Procedure opt_UnitsMmClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mm'); End;
+
+{ A check switched on or off on the Config tab, stored at once. }
+Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);
+Var
+    Rest, Item, Kept : String;
+    P : Integer;
+Begin
+    Try
+        Kept := '';
+        Rest := ChecksOff;
+        While Rest <> '' Do
+        Begin
+            P := Pos(',', Rest);
+            If P = 0 Then
+            Begin
+                Item := Rest;
+                Rest := '';
+            End
+            Else
+            Begin
+                Item := Copy(Rest, 1, P - 1);
+                Rest := Copy(Rest, P + 1, Length(Rest));
+            End;
+            If (Item <> '') And (Item <> CheckName) Then
+            Begin
+                If Kept <> '' Then Kept := Kept + ',';
+                Kept := Kept + Item;
+            End;
+        End;
+        If Not TurnOn Then
+        Begin
+            If Kept <> '' Then Kept := Kept + ',';
+            Kept := Kept + CheckName;
+        End;
+        ChecksOff := Kept;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        If TurnOn Then
+            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' on')
+        Else
+            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' off');
+    Except End;
+End;
+
+Procedure opt_ChkFpOnClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', True); End;
+
+Procedure opt_ChkFpOffClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', False); End;
+
+Procedure opt_ChkSymOnClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', True); End;
+
+Procedure opt_ChkSymOffClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', False); End;
+
+Procedure opt_ChkPadOnClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', True); End;
+
+Procedure opt_ChkPadOffClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', False); End;
+
+Procedure opt_ChkBodyOnClick(Sender : TObject);
+Begin ChooseCheck('model_body', True); End;
+
+Procedure opt_ChkBodyOffClick(Sender : TObject);
+Begin ChooseCheck('model_body', False); End;
+
+Procedure opt_ChkSpiceOnClick(Sender : TObject);
+Begin ChooseCheck('spice_model', True); End;
+
+Procedure opt_ChkSpiceOffClick(Sender : TObject);
+Begin ChooseCheck('spice_model', False); End;
+
+Procedure opt_ChkFabOnClick(Sender : TObject);
+Begin ChooseCheck('fab_export', True); End;
+
+Procedure opt_ChkFabOffClick(Sender : TObject);
+Begin ChooseCheck('fab_export', False); End;
 
 
 { ============================================================================ }
@@ -1656,7 +1820,7 @@ Begin
     Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
         + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
         + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
-        + ', the first board of the open projects."';
+        + ', the one board of the open projects it could mean."';
     If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
@@ -1680,6 +1844,11 @@ Begin
     If (Command = 'application.create_document') Or (Command = 'generic.add_sheet') Then
     Begin
         Result := SavingOffError(RequestId, 'A new document is created by writing its file.');
+        Exit;
+    End;
+    If Command = 'project.rename_document' Then
+    Begin
+        Result := SavingOffError(RequestId, 'A rename is made by saving the document under its new name.');
         Exit;
     End;
     If (Command = 'pcb.make_library') Or (Command = 'pcb.make_pad_via_library') Then
