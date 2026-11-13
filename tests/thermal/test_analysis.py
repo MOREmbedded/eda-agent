@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -54,8 +56,11 @@ def test_report_has_what_a_designer_reads(demo):
     assert rep["balance"]["error_pct"] < 1e-4
     assert rep["grid"]["cell_mils"] == 25.0 and rep["grid"]["auto"] is False
     assert rep["grid"]["converged"] and rep["grid"]["unknowns"] > rep["grid"]["cells"]
-    assert rep["stackup"] == {"assumed": False, "thickness_mils": pytest.approx(60.0, abs=0.1),
-                              "layers": 4}
+    # the thickness is the board's, copper and all: 60 mil of laminate, four 1.4 mil foils
+    assert rep["stackup"] == {"assumed": False, "thickness_mils": pytest.approx(65.6, abs=0.1),
+                              "dielectric_mils": pytest.approx(60.0, abs=0.1), "layers": 4}
+    assert rep["grid"]["supersample"] == 13 and rep["grid"]["sample_mils"] == pytest.approx(1.923)
+    assert rep["grid"]["raster_s"] > 0 and rep["grid"]["solve_s"] > 0
     assert rep["setup"]["orientation"] == "horizontal" and "h_top" not in rep["setup"]
     assert set(rep["convection"]) == {"top", "bottom"}
     json.dumps(rep)                                            # plain JSON all the way down
@@ -252,6 +257,65 @@ def test_heat_maps_are_written_per_layer_with_one_scale(demo, tmp_path):
     assert one.is_file()
 
 
+def test_the_copper_picture_shows_the_copper_the_solver_saw(demo, tmp_path):
+    """Dark where the layer is copper, white where it is not, the same
+    way up as the board: the pour of the demo board lies left of centre,
+    the right half of the top layer is bare but for the parts."""
+    from PIL import Image
+
+    from eda_agent.thermal.render import render_copper, render_copper_all
+
+    from eda_agent.layout.model import Region
+
+    board, stack = demo_board()
+    board.regions.append(Region("TopLayer", rect(100, 100, 500, 300), net="GND", kind="pour"))
+    _, res = analyze(board, stack, powers={"U1": 1.0}, cell_mils=50.0)
+    files = render_copper_all(res, board, tmp_path)
+    assert list(files) == res.raster.layers
+    assert all(Path(p).name.startswith("copper_") for p in files.values())
+
+    def shade(layer, x, y):
+        path = render_copper(res, board, layer, tmp_path / f"{layer}.png", width_px=1248)
+        with Image.open(path) as im:
+            px = np.asarray(im).astype(float)
+        r = res.raster
+        scale = (1248 - 48) / r.nx
+        col = 24 + (x - r.x0) / r.cell_mils * scale
+        row = 64 + r.ny * scale - (y - r.y0) / r.cell_mils * scale
+        return px[int(row), int(col)].sum()
+
+    white, dark = 3 * 250, 3 * 100
+    assert shade("TopLayer", 300.0, 200.0) < dark               # the pour, bottom left
+    assert shade("TopLayer", 300.0, 1800.0) > white             # +y is up: bare above it
+    assert shade("TopLayer", 2700.0, 200.0) > white             # and bare to its right
+    assert shade("InternalPlane1", 2700.0, 1800.0) < dark       # a solid plane everywhere
+
+
+def test_a_hot_spot_inside_a_part_names_that_part():
+    """The nearest part is the one whose outline is nearest, not the one
+    whose centre is: a spot at the end of a long part belongs to it even
+    with a small part's centre closer by."""
+    from eda_agent.layout.model import Component
+    from eda_agent.thermal.analysis import _nearest_component, _outline_distance
+
+    board, _ = demo_board()
+    board.components = [
+        Component("U9", x=1000.0, y=1000.0, courtyard=rect(600, 900, 1400, 1100)),
+        Component("R9", x=1420.0, y=1150.0, courtyard=rect(1400, 1130, 1440, 1170)),
+        Component("Q9", x=1385.0, y=1000.0),                    # no outline: by its centre
+        Component("U8", x=1380.0, y=1000.0, side="bottom",
+                  courtyard=rect(1300, 900, 1460, 1100))]
+    assert _nearest_component(board, 1380.0, 1080.0, "top") == ("U9", 0.0)
+    ref, d = _nearest_component(board, 1380.0, 1125.0, "top")
+    assert ref == "R9" and d == pytest.approx(math.hypot(20.0, 5.0))
+    assert _nearest_component(board, 1380.0, 1080.0, "bottom") == ("U8", 0.0)
+    assert _nearest_component(board, 0.0, 0.0, "inner") == ("", 0.0)
+    square = rect(0, 0, 10, 10)
+    assert _outline_distance(square, 5.0, 5.0) == 0.0
+    assert _outline_distance(square, 13.0, 14.0) == pytest.approx(5.0)
+    assert _outline_distance(square, 5.0, -2.0) == pytest.approx(2.0)
+
+
 def test_the_hottest_spot_is_the_brightest_part_of_the_map(demo, tmp_path):
     from PIL import Image
 
@@ -317,7 +381,9 @@ def test_run_merges_an_inputs_file_with_arguments(tmp_path):
 
     files = tr.write_files(rep, res, board, tmp_path / "run", used)
     names = sorted(p.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] for p in files)
-    assert names == ["inputs.json", "report.json", "result.npz",
+    assert names == ["copper_BottomLayer.png", "copper_InternalPlane1.png",
+                     "copper_InternalPlane2.png", "copper_TopLayer.png",
+                     "inputs.json", "report.json", "result.npz",
                      "thermal_BottomLayer.png", "thermal_InternalPlane1.png",
                      "thermal_InternalPlane2.png", "thermal_TopLayer.png"]
     assert json.loads((tmp_path / "run" / "report.json").read_text())["t_max_c"] == rep["t_max_c"]
@@ -379,7 +445,7 @@ def test_tool_on_a_saved_board(tools, tmp_path):
     assert out["stackup"]["assumed"] is False and out["pass"] is False
     assert out["over_tj_max"] == ["U2"] and len(out["hotspots"]) <= 3
     assert out["run_dir"].startswith(str(tmp_path / "runs"))
-    assert len(out["files"]) == 7 and all(__import__("os").path.isfile(f) for f in out["files"])
+    assert len(out["files"]) == 11 and all(__import__("os").path.isfile(f) for f in out["files"])
     assert any("steady state" in a for a in out["assumptions"])
 
     # no stackup: a 1.6 mm FR-4 board is assumed and the reply says so
@@ -436,7 +502,8 @@ def test_a_stackup_with_no_dielectric_is_filled_in_and_said_so():
     rep, _ = analyze(board, bare, powers={"U1": 1.0}, cell_mils=50.0)
     ref, _ = analyze(board, usable_stack(bare), powers={"U1": 1.0}, cell_mils=50.0)
     assert rep["t_max_c"] == ref["t_max_c"] and rep["stackup"]["assumed"] is True
-    assert rep["stackup"]["thickness_mils"] == pytest.approx(63.0, abs=0.1)
+    assert rep["stackup"]["dielectric_mils"] == pytest.approx(63.0, abs=0.1)
+    assert rep["stackup"]["thickness_mils"] == pytest.approx(63.0 + 4 * 1.4, abs=0.1)
     assert any("Set the layer stack" in n for n in rep["notes"])
 
     # one height missing: only that one is assumed, the stack stays the board's own

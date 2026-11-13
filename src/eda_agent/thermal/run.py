@@ -183,13 +183,15 @@ def run(board: LayoutBoard, stack: Stack, *,
 
 def write_files(report: dict, result: Result, board: LayoutBoard, folder: str | Path,
                 used: Optional[dict] = None) -> list[str]:
-    """Heat maps (one PNG per copper layer, one scale), ``result.npz``
-    (the fields), ``report.json`` and ``inputs.json`` into ``folder``."""
-    from .render import render_all, save_npz
+    """Heat maps (one PNG per copper layer, one scale), the copper as
+    solved (one PNG per copper layer), ``result.npz`` (the fields),
+    ``report.json`` and ``inputs.json`` into ``folder``."""
+    from .render import render_all, render_copper_all, save_npz
 
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     files = list(render_all(result, board, folder).values())
+    files += list(render_copper_all(result, board, folder).values())
     files.append(str(save_npz(result, folder / "result.npz")))
     (folder / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     files.append(str(folder / "report.json"))

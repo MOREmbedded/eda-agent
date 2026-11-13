@@ -34,6 +34,9 @@ _BG = (250, 250, 250)
 _INK = (30, 30, 30)
 _OUTLINE = (20, 20, 20)
 _PART = (235, 235, 235)
+_PART_ON_COPPER = (40, 110, 200)
+_COPPER_NONE = np.array([255.0, 255.0, 255.0])
+_COPPER_FULL = np.array([150.0, 75.0, 20.0])
 
 
 def palette(n: int = 256) -> np.ndarray:
@@ -180,6 +183,71 @@ def render_all(result: Result, board: LayoutBoard, folder: str | Path,
     for n in names:
         safe = "".join(ch if ch.isalnum() else "_" for ch in n)
         out[n] = str(render_layer(result, board, n, Path(folder) / f"thermal_{safe}.png", rng))
+    return out
+
+
+def render_copper(result: Result, board: LayoutBoard, layer: str, path: str | Path,
+                  width_px: int = 1400) -> Path:
+    """Write the copper the solver saw on ``layer`` to ``path``: each
+    cell shaded by the share of it that is copper (white none, dark
+    full), with the board outline and, on the outer layers, the parts.
+    It is there to be compared by eye with the layer in the PCB editor."""
+    from PIL import Image, ImageDraw
+
+    raster = result.raster
+    fill = np.clip(raster.fill[layer], 0.0, 1.0)
+    inside = raster.mask > 0
+    ny, nx = fill.shape
+    shade = _COPPER_NONE + (_COPPER_FULL - _COPPER_NONE) * fill[..., None]
+    rgb = shade.round().astype(np.uint8)
+    rgb[~inside] = _BG
+
+    margin, head = 24, 64
+    scale = max(1.0, (width_px - 2 * margin) / nx)
+    map_w, map_h = int(round(nx * scale)), int(round(ny * scale))
+    field = Image.fromarray(rgb[::-1], "RGB").resize((map_w, map_h), Image.NEAREST)
+    img = Image.new("RGB", (map_w + 2 * margin, map_h + head + margin), _BG)
+    img.paste(field, (margin, head))
+    d = ImageDraw.Draw(img)
+
+    def ring(points, colour, width=1):
+        pts = [(margin + (x - raster.x0) / raster.cell_mils * scale,
+                head + map_h - (y - raster.y0) / raster.cell_mils * scale)
+               for x, y in points]
+        if len(pts) >= 2:
+            d.line(pts + [pts[0]], fill=colour, width=width)
+
+    side = BOTTOM if (layer == raster.layers[-1] and len(raster.layers) > 1) else "top"
+    if layer in (raster.layers[0], raster.layers[-1]):
+        for c in board.components:
+            if c.side == side and len(c.courtyard) >= 3:
+                ring(c.courtyard, _PART_ON_COPPER)
+    if len(board.outline) >= 3:
+        ring(board.outline, _OUTLINE, 2)
+    for cut in board.cutouts:
+        if len(cut) >= 3:
+            ring(cut, _OUTLINE, 2)
+    share = float(fill[inside].sum() / max(inside.sum(), 1))
+    d.text((margin, 10), f"{board.name or 'board'}  {layer}  copper as solved",
+           fill=_INK, font=_font(22))
+    d.text((margin, 38), f"copper {100 * share:.1f} % of the board   "
+                         f"cell {raster.cell_mils:g} mil   sampled at "
+                         f"{raster.cell_mils / raster.supersample:.2g} mil",
+           fill=_INK, font=_font(15))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "PNG", optimize=True)
+    return path
+
+
+def render_copper_all(result: Result, board: LayoutBoard, folder: str | Path,
+                      layers: Optional[list[str]] = None) -> dict[str, str]:
+    """``render_copper`` of ``layers`` (default: every copper layer) into
+    ``folder``; returns {layer: path}."""
+    out = {}
+    for n in layers or list(result.raster.layers):
+        safe = "".join(ch if ch.isalnum() else "_" for ch in n)
+        out[n] = str(render_copper(result, board, n, Path(folder) / f"copper_{safe}.png"))
     return out
 
 

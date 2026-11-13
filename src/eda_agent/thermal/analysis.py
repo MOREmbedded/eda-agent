@@ -20,6 +20,7 @@ matter more.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -29,6 +30,7 @@ import numpy as np
 from ..emc.stack import CopperLayer, Dielectric, Stack, assumed_stack
 from ..layout.copper_raster import MAX_CELLS, CopperRaster, rasterize
 from ..layout.model import BOTTOM, LayoutBoard
+from .physics import MIL
 from .solver import Clamp, HeatArea, Package, Result, Setup, match_powers, solve
 
 #: Cells the automatic grid aims for: a second or two per solve.
@@ -202,16 +204,37 @@ def parse_packages(raw: Optional[dict]) -> dict[str, Package]:
     return out
 
 
+def _outline_distance(points: list, x: float, y: float) -> float:
+    """Distance from (x, y) to a closed outline; 0 inside it."""
+    n = len(points)
+    inside = False
+    best = math.inf
+    for i in range(n):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % n]
+        if (y0 > y) != (y1 > y) and x < x0 + (y - y0) * (x1 - x0) / (y1 - y0):
+            inside = not inside
+        dx, dy = x1 - x0, y1 - y0
+        q = dx * dx + dy * dy
+        u = 0.0 if q <= 0 else min(1.0, max(0.0, ((x - x0) * dx + (y - y0) * dy) / q))
+        best = min(best, math.hypot(x - x0 - u * dx, y - y0 - u * dy))
+    return 0.0 if inside else best
+
+
 def _nearest_component(board: LayoutBoard, x: float, y: float, side: str
                        ) -> tuple[str, float]:
-    best, best_d = "", math.inf
+    """The part on ``side`` whose outline is nearest to (x, y), and how
+    far its outline is (0 inside it). A part with no outline counts by
+    its centre; among parts that hold the point the nearest centre wins."""
+    best, best_key = "", (math.inf, math.inf)
     for c in board.components:
         if c.side != side:
             continue
-        d = math.hypot(c.x - x, c.y - y)
-        if d < best_d:
-            best, best_d = c.ref, d
-    return best, (best_d if best else 0.0)
+        centre = math.hypot(c.x - x, c.y - y)
+        d = _outline_distance(c.courtyard, x, y) if len(c.courtyard) >= 3 else centre
+        if (d, centre) < best_key:
+            best, best_key = c.ref, (d, centre)
+    return best, (best_key[0] if best else 0.0)
 
 
 def find_hotspots(result: Result, board: LayoutBoard, limit: int = 10) -> list[dict]:
@@ -288,7 +311,9 @@ def _layer_rows(result: Result) -> list[dict]:
 
 def _solve_once(board, stack, cell_mils, powers, packages, setup, heat_areas, clamps,
                 extra_heat_w, report_parts, heat_maps=None) -> Result:
+    t0 = time.perf_counter()
     raster = rasterize(board, cell_mils=cell_mils, links=True, supersample=0)
+    raster_s = time.perf_counter() - t0
     extra = {k: np.asarray(v, dtype=float) for k, v in (extra_heat_w or {}).items()}
     notes = []
     for hm in heat_maps or []:
@@ -300,9 +325,14 @@ def _solve_once(board, stack, cell_mils, powers, packages, setup, heat_areas, cl
         if lost > 1e-9:
             notes.append(f"{lost:.3g} W of the heat map lies outside the board's grid "
                          f"and is dropped")
+    t0 = time.perf_counter()
     result = solve(board, stack, raster, powers=powers, packages=packages, setup=setup,
                    extra_heat_w=extra or None, heat_areas=heat_areas, clamps=clamps,
                    report_parts=report_parts)
+    result.solver.update(
+        supersample=raster.supersample,
+        sample_mils=round(raster.cell_mils / raster.supersample, 3),
+        raster_s=round(raster_s, 2), solve_s=round(time.perf_counter() - t0, 2))
     result.notes += notes
     return result
 
@@ -393,7 +423,8 @@ def analyze(board: LayoutBoard, stack: Stack,
                  "ny": result.raster.ny, **result.solver},
         "setup": {k: v for k, v in asdict(setup).items() if v is not None},
         "stackup": {"assumed": stack.assumed,
-                    "thickness_mils": round(stack.thickness_mils, 2),
+                    "thickness_mils": round(sum(pl.t_m for pl in result.planes) / MIL, 2),
+                    "dielectric_mils": round(stack.thickness_mils, 2),
                     "layers": len(stack.layers)},
         "notes": notes + list(stack.notes),
     }

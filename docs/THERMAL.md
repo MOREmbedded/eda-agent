@@ -36,13 +36,15 @@ The reply:
 | `t_max_c`, `t_max_layer`, `t_max_at_mils`, `rise_max_k` | The peak and where it is |
 | `pass`, `over_tj_max`, `over_limit` | False when a junction is over its `tj_max_c`, or a part's board temperature is over `limit_c`. Null when neither was given: there is nothing to judge against |
 | `parts` | Each powered part: pad, junction and case temperature, margin to `tj_max_c`, hottest first |
-| `hotspots` | Local maxima of the two outer layers, each with the nearest part |
+| `hotspots` | Local maxima of the two outer layers, each with the part whose outline is nearest (distance 0 inside it) |
 | `hottest_components` | The warmest parts that dissipate nothing themselves: the electrolytic next to the regulator |
 | `layers` | Maximum, mean and minimum of every copper layer, and its copper fraction |
 | `balance` | Power in against every way out (convection and radiation from each face, the edges, part cases, heatsinks, clamps). It closes to solver precision, and it is the first check of a run |
 | `convection` | The coefficients that came out for each face |
+| `grid` | Cell size, cells, unknowns, the solver and its iterations, the pitch the copper was sampled at (`sample_mils`), and the seconds the raster and the solve took |
+| `stackup` | Whether it was assumed, the board thickness as solved (copper and laminate) and the laminate alone |
 | `refinement` | With `refine=True`: how far each number moved on a grid twice as fine |
-| `files`, `run_dir` | One PNG heat map per copper layer on one colour scale, `result.npz` with the fields, `report.json`, `inputs.json` |
+| `files`, `run_dir` | One PNG heat map per copper layer on one colour scale, one PNG of each layer's copper as solved, `result.npz` with the fields, `report.json`, `inputs.json` |
 | `notes`, `assumptions` | Everything that was assumed or left out |
 
 ## What surrounds the board
@@ -188,6 +190,7 @@ Each run gets a folder under `EDA_AGENT_THERMAL_RUNS` (default
 | File | Content |
 |---|---|
 | `thermal_<layer>.png` | Heat map of the layer, part outlines, a label on each powered part, a cross on the peak, a scale in degrees C. All layers share one scale |
+| `copper_<layer>.png` | The copper the solver saw on the layer: each cell shaded by the share of it that is copper, with the board outline and the parts. Compare it with the layer in the PCB editor: a pour that is missing here was not read |
 | `result.npz` | `T_<layer>` arrays (degrees C, NaN outside the board) with `x0`, `y0`, `cell_mils` |
 | `report.json` | The full reply |
 | `inputs.json` | The inputs as used |
