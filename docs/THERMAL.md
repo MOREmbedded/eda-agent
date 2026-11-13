@@ -158,7 +158,12 @@ error left in the finer solution. A part on thermal vias over planes is
 settled to a fraction of a kelvin on the default grid. A part whose pads
 are smaller than a few cells is held to about a tenth of its rise by the
 sub-cell models. The reply flags it as `under_resolved`, and a smaller
-`cell_mils` or `refine` settles it.
+`cell_mils` or `refine` settles it. A fine-pitch part (pads under 20 mil wide,
+under 10 mil apart) with no thermal pad moves by up to a tenth of its rise
+between 25 and 8 mil cells for the same reason: on a real six-layer board
+a 24-pin part at 25.6 mil pitch read 16.2 K over ambient at 25 mil cells and
+17.5 K at 8 mil, while a 16-pin part at 50 mil pitch beside it stayed
+within 1 K on a 35 K rise.
 
 The grid is rarely what limits the answer. These matter more:
 
