@@ -78,7 +78,7 @@ class EdaAgentEngine(Engine):
     info = EngineInfo(
         "eda-agent", "eda-agent solvers", "core", "Apache-2.0", LIBRARY,
         ("touchstone-check", "xsection-2d", "line-model", "stackup-plan", "net-channel",
-         "channel-eye"),
+         "channel-eye", "board-si"),
         summary="This project's own solvers: the 2D field and eddy-current solvers, "
                 "coupled-line models, the stackup planner, routed-net channels and the S-parameter "
                 "checks. Always installed; the reference the other engines are "
@@ -152,6 +152,19 @@ class EdaAgentEngine(Engine):
                 return net_jobs.run_net_channel(dict(job.spec), board, stackup, Path(folder),
                                                 progress)
             except (ValueError, extract.ExtractError) as exc:
+                raise EngineError(str(exc)) from exc
+        if job.kind == "board-si":
+            from ..si import board_jobs
+            try:
+                board = json.loads(job.input_path("board").read_text(encoding="utf-8"))
+                stackup = json.loads(job.input_path("stackup").read_text(encoding="utf-8"))
+            except (OSError, ValueError, KeyError) as exc:
+                raise EngineError(f"the board or stackup file could not be read: {exc}") from exc
+            snap = "board " + str(job.inputs.get("board", {}).get("sha256", ""))[:12]
+            try:
+                return board_jobs.run_board_si(dict(job.spec), board, stackup, Path(folder),
+                                               progress, snapshot=snap)
+            except ValueError as exc:
                 raise EngineError(str(exc)) from exc
         if job.kind == "channel-eye":
             from ..si import eye_jobs

@@ -360,6 +360,8 @@ h2.ftgroup { margin-top:var(--s3); }
 @media (max-width: 1100px) { .simgrid { grid-template-columns:1fr; } }
 .simwrap > .wsgrid { margin-bottom:var(--s4); } .simnew { margin-bottom:var(--s4); } .simrow { display:flex; gap:6px; } .simrow input { flex:1; min-width:0; font:12px var(--mono); }
 .simline { display:grid; grid-template-columns:repeat(auto-fill, minmax(185px, 1fr)); gap:8px 12px; margin:8px 0; } .simline label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--ink2); } .simline input, .simline select { font:12px var(--mono); min-width:0; }
+.simgraph { margin:6px 0 10px; display:grid; gap:4px; } .simgraph .m { margin-right:6px; }
+.simlink { background:none; border:0; padding:0; color:var(--blue); cursor:pointer; text-decoration:underline; font:inherit; }
 .simfiles { margin:8px 0; } .simplot { max-width:100%; border-radius:6px; display:block; margin-bottom:6px; } .simfiles a { margin-right:10px; }
 .simpicks { display:flex; gap:var(--s4); flex-wrap:wrap; }
 .simjob h3 small { color:var(--ink3); } table.simcmp td { cursor:default; } table.simcmp td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
@@ -2688,11 +2690,23 @@ function simJobCard() {
   const files = names.map(n => {
     const fl = ((runs[n].results || {}).files) || {}, url = f => "/api/wb/sim/file/" + encodeURIComponent(J.id) + "/" + encodeURIComponent(n) + "/" + encodeURIComponent(f);
     const img = fl.plot ? `<img class="simplot" src="${esc(url(fl.plot))}" alt="${esc(T("S-parameters"))}">` : "";
-    const links = Object.entries(fl).filter(([k]) => k !== "plot").map(([k, f]) => `<a href="${esc(url(f))}" download>${esc(f)}</a>`).join(" ");
+    const links = Object.entries(fl).filter(([k]) => k !== "plot").map(([k, f]) => /\.html$/i.test(f)
+      ? `<a href="${esc(url(f))}" target="_blank" rel="noopener">${esc(f)}</a>` : `<a href="${esc(url(f))}" download>${esc(f)}</a>`).join(" ");
     return img || links ? `<div class="simfiles">${img}${links ? `<p class="m">${esc(T("Files"))}: ${links}</p>` : ""}</div>` : "";
   }).join("");
   return `<div class="card simjob"><h3>${esc(J.title)} <small>${esc(J.kind)}</small><span class="sp"></span>${more.map(n => `<button data-simrun="${esc(n)}">${esc(T("Run on {0}", n))}</button>`).join(" ")}</h3>
-    <p class="m">${esc(J.folder)}</p>${verdict}${table}${files}${status}</div>`;
+    <p class="m">${esc(J.folder)}</p>${simLineage(J.lineage)}${verdict}${table}${files}${status}</div>`;
+}
+function simLineage(L) {
+  if (!L) return "";
+  const job = x => `<button class="link simlink" data-simjob="${esc(x.job)}" title="${esc(x.job)}">${esc(x.title)}</button> <small class="sub">${esc(x.kind)}</small>`;
+  const snap = s => `<span class="pill ${s.stale ? "bad" : s.stale === false ? "ok" : ""}" title="${esc(s.why || s.source || "")}">${esc(T("board snapshot {0}", s.snapshot.slice(0, 10)))}${s.stale ? " · " + esc(T("stale")) : ""}</span>`;
+  const from = [...(L.snapshots || []).map(snap), ...(L.parents || []).map(job)];
+  const used = (L.children || []).map(job);
+  if (!from.length && !used.length) return "";
+  return `<div class="simgraph">${from.length ? `<div><span class="m">${esc(T("Made from"))}</span> ${from.join(" ")}</div>` : ""}
+    ${used.length ? `<div><span class="m">${esc(T("Used by"))}</span> ${used.join(" ")}</div>` : ""}
+    ${L.stale ? `<div class="result fail">${esc(T("The board changed since this job's snapshot: take a new snapshot and run it again."))}</div>` : ""}</div>`;
 }
 function paintSimPane() {
   const pane = $("#pane"); pane.hidden = false;

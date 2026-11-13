@@ -161,6 +161,11 @@ def register(app: Flask) -> None:
             except Exception:  # noqa: BLE001 - a check that fails is a no
                 pass
         out["runnable"] = runnable
+        from ..simulation import jobs as _jobs
+        try:
+            out["lineage"] = _jobs.lineage(job_id)
+        except Exception:  # noqa: BLE001 - the graph is extra
+            out["lineage"] = None
         return jsonify(out)
 
     @app.route("/api/wb/sim/file/<job_id>/<engine>/<name>")
@@ -178,7 +183,9 @@ def register(app: Flask) -> None:
         path = job.work_folder(engine) / name
         if not path.is_file():
             abort(404)
-        return send_file(path, as_attachment=not name.lower().endswith(".png"), download_name=name)
+        # plots and the job's own HTML report open in the browser
+        inline = name.lower().endswith((".png", ".html"))
+        return send_file(path, as_attachment=not inline, download_name=name)
 
     @app.route("/api/wb/sim/run", methods=["POST"])
     def wb_sim_run() -> Response:

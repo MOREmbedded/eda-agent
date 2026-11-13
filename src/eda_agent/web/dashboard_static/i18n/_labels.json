@@ -1024,5 +1024,10 @@
 "VLP",
 "HVLP",
 "Length (mm)",
-"Up to (GHz)"
+"Up to (GHz)",
+"Made from",
+"Used by",
+"board snapshot {0}",
+"stale",
+"The board changed since this job's snapshot: take a new snapshot and run it again."
 ]

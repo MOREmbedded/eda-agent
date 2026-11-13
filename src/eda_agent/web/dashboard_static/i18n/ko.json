@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "길이 (mm)",
- "Up to (GHz)": "최대 (GHz)"
+ "Up to (GHz)": "최대 (GHz)",
+ "Made from": "생성 원본",
+ "Used by": "사용처",
+ "board snapshot {0}": "보드 스냅샷 {0}",
+ "stale": "오래됨",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "이 작업의 스냅샷 이후 보드가 변경되었습니다. 새 스냅샷을 만들고 다시 실행하세요."
 }

@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "Longueur (mm)",
- "Up to (GHz)": "Jusqu'à (GHz)"
+ "Up to (GHz)": "Jusqu'à (GHz)",
+ "Made from": "Issu de",
+ "Used by": "Utilisé par",
+ "board snapshot {0}": "instantané de carte {0}",
+ "stale": "périmé",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "La carte a changé depuis l'instantané de cette tâche : prenez un nouvel instantané et relancez-la."
 }

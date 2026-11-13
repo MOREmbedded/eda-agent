@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "長さ (mm)",
- "Up to (GHz)": "上限 (GHz)"
+ "Up to (GHz)": "上限 (GHz)",
+ "Made from": "作成元",
+ "Used by": "使用先",
+ "board snapshot {0}": "基板スナップショット {0}",
+ "stale": "古い",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "このジョブのスナップショット以降に基板が変更されました。新しいスナップショットを取得して再実行してください。"
 }

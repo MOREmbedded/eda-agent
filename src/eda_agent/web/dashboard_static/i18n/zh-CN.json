@@ -1021,5 +1021,10 @@
  "VLP": "VLP",
  "HVLP": "HVLP",
  "Length (mm)": "长度 (mm)",
- "Up to (GHz)": "最高 (GHz)"
+ "Up to (GHz)": "最高 (GHz)",
+ "Made from": "来源",
+ "Used by": "被使用于",
+ "board snapshot {0}": "电路板快照 {0}",
+ "stale": "已过期",
+ "The board changed since this job's snapshot: take a new snapshot and run it again.": "自此作业的快照以来电路板已更改：请重新拍摄快照并再次运行。"
 }

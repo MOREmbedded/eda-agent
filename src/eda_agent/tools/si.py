@@ -82,6 +82,7 @@ def register_si_tools(mcp) -> None:
     _register_si_net_tools(mcp)
     _register_si_time_tools(mcp)
     _ibis_models_tool(mcp)
+    _register_si_board_tools(mcp)
 
     @mcp.tool()
     async def si_line_model(spec: dict, engines: Optional[list[str]] = None, stackup_file: str = "",
@@ -556,6 +557,138 @@ def _ibis_models_tool(mcp) -> None:
             if not models:
                 return {"ok": False, "error": "no [Model] in the file"}
             return {"ok": True, "file": ibis_file, "models": models}
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+
+async def mark_findings(findings: list[dict[str, Any]], board_nets: dict[str, list[str]],
+                        mode: str, layer: str, height: float = 40.0) -> dict[str, Any]:
+    """Show board-SI findings in Altium: highlight the failing nets, and
+    with ``mode="text"`` put each finding's id and check as a text on
+    ``layer`` where the finding is. Only errors are marked."""
+    from ..bridge import get_bridge
+    bridge = get_bridge()
+    errs = [f for f in findings if f.get("severity") == "error"]
+    nets: list[str] = []
+    for f in errs:
+        for n in board_nets.get(f"{f['kind']} {f['item']}", [f["item"]]):
+            if n not in nets:
+                nets.append(n)
+    out: dict[str, Any] = {"highlighted": [], "texts": [], "errors": []}
+    for i, n in enumerate(nets):
+        r = await bridge.send_command_async(
+            "generic.highlight_net", {"net_name": n, "clear_existing": "true" if i == 0 else "false",
+                                      "context": "pcb"})
+        (out["highlighted"] if not (isinstance(r, dict) and r.get("error")) else out["errors"]
+         ).append(n if not (isinstance(r, dict) and r.get("error")) else f"{n}: {r.get('error')}")
+    if mode == "text":
+        for f in errs:
+            at = f.get("at_mils")
+            if not at:
+                continue
+            label = f"SI {f['id']} {f['check']}"
+            r = await bridge.send_command_async("pcb.place_text", {
+                "text": label, "x": str(at[0]), "y": str(at[1]), "layer": layer,
+                "height": str(height), "rotation": "0"})
+            if isinstance(r, dict) and r.get("error"):
+                out["errors"].append(f"{f['id']}: {r.get('error')}")
+            else:
+                out["texts"].append({"id": f["id"], "at_mils": at, "text": label})
+    return out
+
+
+def _register_si_board_tools(mcp) -> None:
+
+    @mcp.tool()
+    async def si_board_check(snapshot: str = "", expect_file: str = "",
+                             board_json_path: str = "", stackup_json_path: str = "",
+                             targets: Optional[list[dict]] = None,
+                             options: Optional[dict] = None, mark: str = "none",
+                             marker_layer: str = "Mechanical13", title: str = "",
+                             force: bool = False) -> dict[str, Any]:
+        """Check every high-speed net and pair of a board, and place each fault on it.
+
+        Each net or pair the targets name is modelled end to end (as
+        si_net_channel does) and checked against its target's limits:
+        impedance, insertion and return loss, skew, stub resonance, and
+        optionally the eye. A failure becomes a finding placed where it is:
+        an impedance fault where the TDR sees it (walked along the routed
+        path at each section's own delay), a stub where it leaves the path,
+        a via stub at its via, other faults at the driving pin. Writes
+        report.html (self-contained), findings.json and summary.csv.
+
+        Args:
+            snapshot: an id from si_board_snapshot (preferred); or
+                expect_file (read the open board live) or board_json_path
+                and stackup_json_path.
+            targets: a list of {match: net or pair name glob, or class: an
+                Altium net class; kind: "pair" or "net"; data_rate_gbps,
+                z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
+                stub_margin; eye: true to add the eye, eye_min_mv,
+                eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
+                is taken by the first target that matches it. Default: every
+                differential pair.
+            options: data_rate_gbps (for targets without one), eye,
+                max_items (40), workers (4), f_max_ghz, points (200),
+                temperature_c or thermal_npz (a thermal analysis'
+                result.npz: hot copper loses more), tand, foil, mask_mils,
+                etch_mils.
+            mark: "none"; "highlight" highlights the failing nets in
+                Altium; "text" also writes each error's id and check as
+                text on ``marker_layer`` at its place (changes the board;
+                only when the user asked for it, and never from a stale
+                snapshot).
+            marker_layer: the layer for "text" markers.
+            title: a name for the job list.
+            force: solve again even when results exist.
+
+        Returns:
+            ``metrics`` (items checked and failing, errors, warnings),
+            ``findings`` (id, severity, item, check, detail, at_mils, where),
+            ``report`` (the HTML file), ``marked`` when marking ran,
+            ``snapshot`` with ``stale``, ``job`` and ``folder``.
+        """
+        if mark not in ("none", "highlight", "text"):
+            return {"ok": False, "error": "mark is none, highlight or text"}
+        try:
+            rec = await _snapshot_from_args(snapshot, expect_file, board_json_path,
+                                            stackup_json_path)
+            if not rec.get("has_stackup"):
+                return {"ok": False, "error": "the snapshot has no stackup; take it again "
+                        "with stackup_json_path or with the board open in Altium",
+                        "snapshot": rec["id"]}
+            spec: dict[str, Any] = dict(options or {})
+            if targets:
+                spec["targets"] = list(targets)
+            out = await asyncio.to_thread(
+                _run, "board-si", ["eda-agent"], spec,
+                {"board": rec["board"], "stackup": rec["stackup"]},
+                title or "board SI", bool(force))
+            res = (out.get("results") or {}).get("eda-agent") or {}
+            findings = (res.get("figures") or {}).get("findings", [])
+            folder = out.get("folder") or ""
+            reply: dict[str, Any] = {
+                "ok": bool(res), "job": out.get("job"), "folder": folder,
+                "snapshot": {"id": rec["id"], "stale": rec.get("stale"), "why": rec.get("why")},
+                "metrics": res.get("metrics", {}), "verdicts": res.get("verdicts", []),
+                "findings": findings, "notes": res.get("notes", []),
+                "files": res.get("files", {})}
+            if out.get("errors"):
+                reply["errors"] = out["errors"]
+            if res:
+                from ..simulation import jobs as _jobs
+                work = _jobs.get(out["job"]).work_folder("eda-agent")
+                reply["report"] = str(work / "report.html")
+            if mark != "none" and findings:
+                if mark == "text" and rec.get("stale"):
+                    reply["marked"] = {"error": "no markers written: the board changed since "
+                                                "the snapshot"}
+                    return reply
+                from ..layout.model import LayoutBoard
+                board = await asyncio.to_thread(LayoutBoard.load, rec["board"])
+                nets = {f"pair {d.name}": [d.positive, d.negative] for d in board.diff_pairs}
+                reply["marked"] = await mark_findings(findings, nets, mark, marker_layer)
+            return reply
         except Exception as exc:  # noqa: BLE001
             return _failed(exc)
 

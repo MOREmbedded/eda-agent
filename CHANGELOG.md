@@ -16,6 +16,17 @@ maturity classification for every tool.
 
 ### Added
 
+- **Signal integrity: the whole board.** New job kind `board-si` and tool
+  `si_board_check`: every high-speed net and pair, chosen by name or Altium
+  net class, checked against its own limits (impedance, loss, return loss,
+  skew, stub resonance, eye). Each failure is placed on the board: an
+  impedance fault where the TDR sees it, walked along the route at each
+  section's own delay; a stub at its tee. Results go to a self-contained
+  `report.html`, `findings.json` and `summary.csv`, and the failing nets are
+  highlighted in Altium (with optional marker text). Trace loss follows the
+  copper temperature, uniform or from a thermal analysis' map. Jobs record
+  the snapshot and jobs their inputs came from; the Simulation page shows
+  that graph and marks results stale once the board is saved.
 - **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
   and engine `spice`. The `eda-agent` engine convolves a channel's pulse
   response with a PRBS pattern and adds the worst-case eye by peak
