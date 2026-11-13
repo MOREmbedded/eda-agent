@@ -16,6 +16,32 @@ maturity classification for every tool.
 
 ### Added
 
+- **Features and dependencies, and a one-command installer.** One
+  registry (`eda_agent.features`) describes every optional part: the pip
+  extras, the Rust wheels built from this repository, the programs some
+  tools drive (openEMS, LTspice, ngspice, KiCad, FreeCAD, pcb-toolkit)
+  and the simulation engines, each with its license and what it offers.
+  `eda-agent features` shows what is installed with versions;
+  `eda-agent install-deps --all` (or named features) installs the rest
+  after showing its plan, one pip call per feature, GPL engines in their
+  own environment, and prints the steps for programs. The same in the
+  dashboard's new **Features** page (install buttons with live output,
+  engine switches) and the `app_features` / `app_install_features` tools.
+  New extra `si` (scikit-rf). New settings `EDA_AGENT_ENGINES_DIR`,
+  `EDA_AGENT_FEATURES_FILE`.
+- **Simulation engines and jobs.** Every simulator is an engine behind
+  one job model (`eda_agent.simulation`): a job is a folder named by a
+  hash of the problem, each engine writes normalised results beside its
+  own files, and `sim_job_compare` sets the answers side by side. Engines
+  today: this project's solvers (S-parameter quality checks, the 2D
+  field solver), scikit-rf, and openEMS (run as its own process, as
+  before). Job kinds: `touchstone-check`, `xsection-2d`, `em-3d`. Tools
+  `sim_engines`, `sim_job_run`, `sim_job_status`, `sim_job_compare`,
+  `sim_jobs`; the dashboard's new **Simulation** page. Other packages add
+  engines and features through the `eda_agent.engines` and
+  `eda_agent.features` entry points. New setting `EDA_AGENT_SIM_JOBS`.
+  First step of the signal-integrity work (docs/SIMULATION.md).
+
 - **Euan Mutch's router as an opt-in autorouter engine.** `eda-agent
   router-use euan` (or `EDA_AGENT_ROUTER=euan`) routes `pcb_autoroute`
   jobs with the router from his fork (TechAUmNu/eda-agent, Apache-2.0);

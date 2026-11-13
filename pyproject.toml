@@ -68,6 +68,8 @@ dependencies = [
     # Altium's IPC footprint batch templates are Excel 97 .xls files
     # (design/ipc_templates.py reads their columns and legends).
     "xlrd>=2.0,<3",
+    # Version checks of optional dependencies (eda-agent features).
+    "packaging>=21",
 ]
 
 [project.optional-dependencies]
@@ -112,6 +114,12 @@ pdf = [
 models3d = [
     "cadquery>=2.4",
 ]
+# Signal integrity and RF network work (simulation engine "scikit-rf"):
+# Touchstone, network algebra and vector fitting from scikit-rf, BSD-3.
+# Imported only by that engine; without it the built-in engine answers.
+si = [
+    "scikit-rf>=1.0,<3",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -124,6 +132,9 @@ dev = [
     # The dashboard tests import the Flask app, so dev pulls the web extra
     # for the same reason.
     "flask>=3.0",
+    # The simulation tests compare the built-in engine with scikit-rf, so
+    # dev pulls the si extra too.
+    "scikit-rf>=1.0,<3",
 ]
 # The local web dashboard. Flask is the only runtime dep; the rest is
 # stdlib.

@@ -345,6 +345,23 @@ table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { t
 .tkout svg text { font:10px var(--mono); fill:var(--ink3); }
 .tkout.busy .tkfig b { color:var(--ink3); }
 @media (min-width: 821px) { #app[data-mode="calc"] { grid-template-columns:268px 1fr 0; } #app[data-mode="calc"] #side { display:none; } }
+/* Features and Simulation: wide panes of cards. */
+@media (min-width: 821px) { #app[data-mode="features"], #app[data-mode="sim"] { grid-template-columns:0 1fr 300px; } #app[data-mode="features"] #nav, #app[data-mode="sim"] #nav { display:none; } }
+.ftgrid { grid-template-columns:repeat(auto-fill, minmax(400px, 1fr)); margin-bottom:var(--s4); }
+.ftcard.ready { box-shadow:inset 3px 0 0 var(--green); } .ftcard.missing { box-shadow:inset 3px 0 0 var(--red); }
+.ftcard.partial { box-shadow:inset 3px 0 0 var(--amber); } .ftcard.off, .ftcard.unavailable { background:var(--paper2); }
+.ftcard h3 .pill { font-weight:400; } .ftsw { margin:0; font-size:12px; }
+.ftcard table.ftdeps { margin-top:8px; table-layout:fixed; } .ftdeps th:nth-child(2) { width:104px; } .ftdeps th:nth-child(3) { width:78px; } .ftdeps th:nth-child(4) { width:28%; }
+.ftdeps td { overflow-wrap:anywhere; } .ftdeps details { margin-top:3px; font-size:12px; }
+.ftplan { margin-top:8px; padding:8px 10px; border:1px dashed var(--blue); border-radius:4px; background:var(--paper2); }
+.ftplan pre.small { margin:4px 0; } .ftlog { margin-bottom:var(--s3); border-color:var(--blue); }
+h2.ftgroup { margin-top:var(--s3); }
+.simgrid { display:grid; grid-template-columns:minmax(300px, 0.9fr) minmax(360px, 1.1fr); gap:var(--s4); align-items:start; }
+@media (max-width: 1100px) { .simgrid { grid-template-columns:1fr; } }
+.simwrap > .wsgrid { margin-bottom:var(--s4); } .simnew { margin-bottom:var(--s4); } .simrow { display:flex; gap:6px; } .simrow input { flex:1; min-width:0; font:12px var(--mono); }
+.simpicks { display:flex; gap:var(--s4); flex-wrap:wrap; }
+.simjob h3 small { color:var(--ink3); } table.simcmp td { cursor:default; } table.simcmp td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
+.simrun { border-top:1px solid var(--rule2); margin-top:8px; padding-top:4px; } .simrun h4 { display:flex; gap:6px; align-items:baseline; }
 @container (max-width: 980px) { .tk { grid-template-columns:200px minmax(0, 1fr); } .tkout { grid-column:2; } }
 @container (max-width: 640px) { .tk { grid-template-columns:minmax(0, 1fr); } .tkout { grid-column:1; } .tklist { position:static; max-height:240px; } }
 .uchart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:var(--s2) 0 var(--s3); }
@@ -481,6 +498,8 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
       <button data-mode="workspace" title="The profile in effect: its design rules, ERC sets and templates (8)">Workspace</button>
       <button data-mode="usage" title="Tokens the AI spent on the EDA tools, estimated (9)">Usage</button>
       <button data-mode="calc" title="PCB calculators: impedance, trace current, vias, planes and more (0)">Calculators</button>
+      <button data-mode="sim" title="Simulation engines and jobs, with each engine's answer side by side">Simulation</button>
+      <button data-mode="features" title="Features and dependencies: what is installed, what each part offers, install and switch">Features</button>
     </nav>
     <div class="end">
       <button id="wsbtn" data-src="none" title="Which profile the tools work under"><span class="dot" aria-hidden="true"></span><span id="wsname">Profile</span></button>
@@ -645,8 +664,10 @@ const num = (v, d) => v == null || v === "" ? "-" : Number(v).toLocaleString(LAN
 const store = {get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
 const baseName = p => String(p || "").split(/[\\/]/).pop();
-const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage", "calc"];
-const PANE_MODES = ["library", "tools", "workspace", "usage", "calc"];
+const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage", "calc", "sim", "features"];
+const PANE_MODES = ["library", "tools", "workspace", "usage", "calc", "sim", "features"];
+/* Modes that change the page's grid: a change into or out of one re-measures the sheet. */
+const WIDE_MODES = ["calc", "sim", "features"];
 
 const S = {
   mode: store.get("wb.mode", "place"), list: store.get("wb.list", "parts"),
@@ -984,6 +1005,8 @@ function paintTools() {
   else if (S.mode === "workspace") html = workspaceSideBlock();
   else if (S.mode === "usage") html = usageSideBlock();
   else if (S.mode === "calc") html = calcSideBlock();
+  else if (S.mode === "features") html = featuresSideBlock();
+  else if (S.mode === "sim") html = simSideBlock();
   const el = $("#tools");
   if (el.dataset.html === html) return;
   const keep = {};
@@ -1248,6 +1271,8 @@ function paintPane() {
   if (S.mode === "workspace") return paintWorkspacePane();
   if (S.mode === "usage") return paintUsagePane();
   if (S.mode === "calc") return paintCalcPane();
+  if (S.mode === "features") return paintFeaturesPane();
+  if (S.mode === "sim") return paintSimPane();
   if (pane.hidden) return;
   if (S.libView === "find") return paintFindPane();
   const L = S.lib || {};
@@ -2449,6 +2474,254 @@ $("#follow").addEventListener("change", async e => {
   say(e.target.checked ? T("Following the board in front.") : T("Staying on this board."));
 });
 
+/* ================================================================ features and dependencies */
+// What this installation can do (eda_agent.features): every feature with its
+// state, every dependency with its version and license, the installer that
+// `eda-agent install-deps` runs, and the on/off switch of the engines.
+const FT = {rep: null, busy: false, timer: 0, plan: null, planFor: "", deep: false};
+const ftState = s => T({ready: "Ready", partial: "Partly ready", missing: "Not installed", off: "Switched off", unavailable: "Not for this machine"}[s] || "Unknown");
+const ftDepState = s => T({present: "Installed", missing: "Missing", outdated: "Wrong version", unsupported: "Not for this machine"}[s] || "Unknown");
+const ftKind = k => T({python: "Python package", local: "Built from this repository", venv: "Own environment", program: "Program"}[k] || "Unknown");
+const ftPill = s => ({ready: "ok", present: "ok", partial: "warn", outdated: "warn", missing: "bad", off: "", unavailable: "", unsupported: ""}[s] || "");
+async function loadFeatures(deep) {
+  FT.busy = true; if (S.mode === "features") paintPane();
+  const r = await get("/api/wb/features" + (deep ? "?deep=1" : ""));
+  FT.rep = r || {ok: false}; FT.busy = false; if (r) FT.deep = !!deep;
+  if (S.mode === "features") paintPane();
+  if (S.mode === "sim" && SIM.eng) loadSim();
+  if (FT.rep.install && FT.rep.install.running) ftPoll();
+}
+function ftPoll() {
+  clearTimeout(FT.timer);
+  FT.timer = setTimeout(async () => {
+    const st = await get("/api/wb/features/install");
+    if (!st || !FT.rep) return ftPoll();
+    FT.rep.install = st;
+    if (st.running) { paintFtLog(); return ftPoll(); }
+    const ok = st.result && st.result.ok;
+    say(ok ? T("Installed. The features below are checked again.") : T("The install did not finish: see its log."), !ok);
+    loadFeatures(false);
+  }, 900);
+}
+function ftLogHtml() {
+  const st = FT.rep && FT.rep.install;
+  if (!st || (!st.running && !st.result)) return "";
+  const res = st.result, steps = (res && res.steps) || [];
+  const head = st.running ? `<span class="spin"></span> ${esc(T("Installing: {0}", (st.features || []).join(", ")))}`
+    : res.ok ? `<span class="good">${esc(T("Last install finished"))}</span>` : `<span class="bad">${esc(T("Last install failed"))}</span>`;
+  const rows = steps.map(s => `<li><span class="pill ${s.ok ? "ok" : "bad"}">${esc(s.ok ? T("Done") : T("Failed"))}</span> ${esc(s.title)} <small class="sub">${esc(T("{0} s", s.seconds))}</small></li>`).join("");
+  return `<div class="card ftlog"><h3>${head}<span class="sp"></span>${res && res.log ? `<small class="m">${esc(res.log)}</small>` : ""}</h3>
+    ${rows ? `<ul class="notes">${rows}</ul>` : ""}<pre class="small">${esc((st.lines || []).slice(-60).join("\n"))}</pre></div>`;
+}
+function paintFtLog() { const el = document.querySelector("#pane .ftlog"); if (el) el.outerHTML = ftLogHtml(); else if (S.mode === "features") paintPane(); }
+function ftPlanHtml(fid) {
+  if (FT.planFor !== fid || !FT.plan) return "";
+  const p = FT.plan;
+  const steps = (p.steps || []).map(s => `<li><b>${esc(T({pip: "Install", local: "Build", venv: "Install apart", manual: "By hand", skip: "Skipped"}[s.kind] || "Install"))}</b> ${esc(s.title)}${(s.commands || []).map(c => `<pre class="small">${esc(c)}</pre>`).join("")}${s.text ? `<div class="hint">${esc(s.text)}</div>` : ""}</li>`).join("");
+  const auto = p.automatic_steps || 0;
+  return `<div class="ftplan">${steps ? `<ul class="notes">${steps}</ul>` : `<p class="hint">${esc(T("Nothing to install."))}</p>`}
+    <div class="actions">${auto ? `<button class="go" data-ftgo="${esc(fid)}">${esc(p.download_mb ? T("Install now (about {0} MB)", p.download_mb) : T("Install now"))}</button>` : ""}<button data-ftcancel="1">${esc(T("Close"))}</button></div></div>`;
+}
+function ftDeps(f, deps) {
+  const ids = [...f.needs, ...f.any_of.flat(), ...f.adds];
+  if (!ids.length) return "";
+  const alt = new Set(f.any_of.flat()), add = new Set(f.adds);
+  const rows = ids.map(id => {
+    const d = deps[id]; if (!d) return "";
+    const role = alt.has(id) ? T("one of") : add.has(id) ? T("adds to it") : "";
+    const how = d.state !== "present" && d.manual ? `<details><summary>${esc(T("How to install"))}</summary><p class="hint">${esc(d.manual)}</p>${d.url ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>` : ""}</details>` : "";
+    return `<tr><td><b>${esc(d.title)}</b>${role ? ` <small class="sub">${esc(role)}</small>` : ""}<div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}</div>${how}</td>
+      <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
+      <td class="n">${esc(d.version || "")}</td><td class="m" title="${esc(d.license)}">${esc(d.license)}</td></tr>`;
+  }).join("");
+  return `<table class="grid ftdeps"><thead><tr><th>${esc(T("Needs"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function ftCard(f, deps, running) {
+  const canInstall = !f.core && (f.state === "missing" || f.state === "partial" || (f.state === "off" && f.missing.length));
+  const sw = f.switchable ? `<label class="check ftsw" title="${esc(T("An engine that is off is not offered for simulation jobs"))}"><input type="checkbox" data-ftswitch="${esc(f.id)}"${f.state !== "off" ? " checked" : ""}> ${esc(T("On"))}</label>` : "";
+  return `<div class="card ftcard ${esc(f.state)}" id="ft-${esc(f.id)}"><h3>${esc(f.title)} <span class="pill ${ftPill(f.state)}">${esc(ftState(f.state))}</span><span class="sp"></span>${sw}
+      ${canInstall ? `<button data-ftplan="${esc(f.id)}"${running ? " disabled" : ""}>${esc(T("Install"))}</button>` : ""}</h3>
+    <p class="hint">${esc(f.summary)}</p>
+    ${f.detail ? `<p class="hint bad">${esc(f.detail)}</p>` : ""}
+    ${f.offers.length ? `<h4>${esc(T("Offers"))}</h4><ul class="notes">${f.offers.map(o => `<li>${esc(o)}</li>`).join("")}</ul>` : ""}
+    ${ftDeps(f, deps)}
+    ${ftPlanHtml(f.id)}
+    ${f.core ? "" : `<div class="sub2 hint">${f.extra ? `<span class="m">pip install eda-agent[${esc(f.extra)}]</span> · ` : ""}<span class="m">eda-agent install-deps ${esc(f.id)}</span>${f.docs ? ` · <span class="m">${esc(f.docs)}</span>` : ""}</div>`}</div>`;
+}
+function paintFeaturesPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  const R = FT.rep;
+  if (!R) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!R.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  const deps = Object.fromEntries((R.dependencies || []).map(d => [d.id, d]));
+  const c = R.counts || {}, running = !!(R.install && R.install.running);
+  const fig = (label, v, cls) => `<div><span>${esc(label)}</span><b class="${cls || ""}">${num(v || 0)}</b></div>`;
+  const missingAny = (R.features || []).some(f => !f.dev && (f.state === "missing" || f.state === "partial"));
+  const groups = (R.groups || []).map(g => {
+    const cards = R.features.filter(f => f.group === g).map(f => ftCard(f, deps, running)).join("");
+    return `<h2 class="wsh ftgroup">${esc(g)}</h2><div class="wsgrid ftgrid">${cards}</div>`;
+  }).join("");
+  const errs = (R.plugin_errors || []).map(e => `<li>${esc(e.plugin)}: ${esc(e.error)}</li>`).join("");
+  pane.innerHTML = `<div class="ftwrap"><div class="panehead"><div class="figures">
+      ${fig(T("Ready"), (c.ready || 0) + (c.partial || 0), "good")}${fig(T("Not installed"), c.missing, c.missing ? "bad" : "")}${fig(T("Switched off"), c.off)}${fig(T("Not for this machine"), c.unavailable)}
+    </div><span class="sp"></span>
+    <button data-ftdeep="1"${FT.busy ? " disabled" : ""} title="${esc(T("Also ask openEMS and the programs for their versions; takes a few seconds"))}">${FT.busy ? `<span class="spin"></span> ` : ""}${esc(T("Check thoroughly"))}</button>
+    ${missingAny ? `<button class="go" data-ftplan="all"${running ? " disabled" : ""}>${esc(T("Install everything missing"))}</button>` : ""}</div>
+    <p class="hint">${esc(T("The same list and installer from a terminal: {0}. Python packages go into the Python eda-agent runs in; GPL programs run apart from it.", "eda-agent features, eda-agent install-deps --all"))}</p>
+    ${FT.planFor === "all" ? `<div class="card">${ftPlanHtml("all")}</div>` : ""}
+    ${ftLogHtml()}
+    ${errs ? `<div class="result fail">${esc(T("Some plugins could not be loaded:"))}<ul>${errs}</ul></div>` : ""}
+    ${groups}
+    <p class="hint">${esc(T("Engines are installed under {0}; switches are kept in {1}.", R.engines_dir, R.state_file))}</p></div>`;
+}
+async function featuresClick(e) {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.ftdeep) return loadFeatures(true);
+  if (b.dataset.ftcancel) { FT.plan = null; FT.planFor = ""; return paintPane(); }
+  if (b.dataset.ftplan) {
+    const fid = b.dataset.ftplan; b.disabled = true;
+    const r = await post("/api/wb/features/plan", fid === "all" ? {all: true} : {features: [fid]});
+    if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+    FT.plan = r.plan; FT.planFor = fid; return paintPane();
+  }
+  if (b.dataset.ftgo) {
+    const fid = b.dataset.ftgo; b.disabled = true;
+    const r = await post("/api/wb/features/install", fid === "all" ? {all: true} : {features: [fid]});
+    if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+    FT.plan = null; FT.planFor = "";
+    if (r.started) { say(T("Installing: {0}", (r.plan.features || []).join(", "))); FT.rep.install = {running: true, features: r.plan.features, lines: []}; paintPane(); ftPoll(); }
+    else say(T("Nothing here can be installed automatically: follow the steps shown."));
+  }
+}
+async function featuresChange(e) {
+  const t = e.target; if (!t.dataset || t.dataset.ftswitch == null) return;
+  const r = await post("/api/wb/features/switch", {id: t.dataset.ftswitch, on: t.checked});
+  if (!r || !r.ok) { t.checked = !t.checked; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+  say(t.checked ? T("{0} is on.", t.dataset.ftswitch) : T("{0} is off: simulation jobs will not use it.", t.dataset.ftswitch));
+  loadFeatures(false);
+}
+function featuresSideBlock() {
+  return `<section class="block"><h2>${esc(T("Features"))}</h2><p class="hint">${esc(T("What this installation can do, what each part needs, and what is missing. Installing changes the Python environment eda-agent runs in; a package that was already loaded needs eda-agent restarted."))}</p><p class="hint">${esc(T("The AI reads the same list with the app_features tool."))}</p></section>`;
+}
+
+/* ================================================================ simulation */
+// Simulation engines and jobs (eda_agent.simulation): one folder per problem,
+// one run per engine, the answers side by side.
+const SIM = {eng: null, jobs: null, job: null, jobId: store.get("wb.sim.job", ""), timer: 0,
+             path: store.get("wb.sim.path", ""), pick: store.get("wb.sim.pick", {"eda-agent": true, "scikit-rf": true})};
+const simState = s => T({queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled"}[s] || "Unknown");
+const simPill = s => ({done: "ok", failed: "bad", running: "warn", queued: "warn"}[s] || "");
+function simFmt(v, unit) {
+  if (typeof v !== "number") return esc(String(v));
+  if (unit === "Hz") { const a = Math.abs(v); return a >= 1e9 ? num(v / 1e9, 4) + " GHz" : a >= 1e6 ? num(v / 1e6, 4) + " MHz" : a >= 1e3 ? num(v / 1e3, 4) + " kHz" : num(v, 3) + " Hz"; }
+  const a = Math.abs(v), s = a !== 0 && (a < 1e-3 || a >= 1e6) ? v.toExponential(4) : num(v, a < 1 ? 6 : 4);
+  return esc(s + (unit ? " " + unit : ""));
+}
+async function loadSim() {
+  const [e, j] = await Promise.all([get("/api/wb/sim/engines"), get("/api/wb/sim/jobs")]);
+  SIM.eng = e || {ok: false}; SIM.jobs = j || {ok: false};
+  if (SIM.jobId && !(SIM.jobs.jobs || []).some(x => x.id === SIM.jobId)) SIM.jobId = "";
+  if (!SIM.jobId && SIM.jobs.jobs && SIM.jobs.jobs.length) SIM.jobId = SIM.jobs.jobs[0].id;
+  if (SIM.jobId) await loadSimJob(); else if (S.mode === "sim") paintPane();
+}
+async function loadSimJob() {
+  const r = await get("/api/wb/sim/job/" + encodeURIComponent(SIM.jobId));
+  SIM.job = r && r.ok ? r : null;
+  if (S.mode === "sim") paintPane();
+  clearTimeout(SIM.timer);
+  const busy = SIM.job && Object.values(SIM.job.runs || {}).some(r => r.state === "running" || r.state === "queued");
+  if (busy && S.mode === "sim") SIM.timer = setTimeout(async () => { await loadSimJob(); if (!Object.values((SIM.job || {}).runs || {}).some(r => r.state === "running")) loadSim(); }, 2000);
+}
+function simEngineCard(e) {
+  const ok = e.available;
+  return `<div class="card simeng"><h3>${esc(e.title)} <span class="pill ${ftPill(e.state)}">${esc(ftState(e.state))}</span><span class="sp"></span><small>${esc(e.process === "external" ? T("Own program") : T("In this process"))}</small></h3>
+    <p class="hint">${esc(e.summary)}</p>
+    <dl class="kv"><dt>${esc(T("License"))}</dt><dd>${esc(e.license)}</dd><dt>${esc(T("Jobs"))}</dt><dd>${e.kinds.map(k => `<span class="pill">${esc(k)}</span>`).join(" ")}</dd>
+    ${Object.keys(e.versions || {}).length ? `<dt>${esc(T("Version"))}</dt><dd>${Object.entries(e.versions).map(([k, v]) => esc(k + " " + v)).join(", ")}</dd>` : ""}</dl>
+    ${ok ? "" : `<div class="actions"><button data-simfeature="${esc(e.feature)}">${esc(T("Set it up on the Features page"))}</button></div>`}</div>`;
+}
+function simJobsTable() {
+  const rows = (SIM.jobs.jobs || []).map(j => `<tr data-simjob="${esc(j.id)}"${j.id === SIM.jobId ? ' aria-selected="true"' : ""}><td><b>${esc(j.title)}</b><div class="sub m">${esc(j.id)}</div></td>
+    <td>${Object.entries(j.runs || {}).map(([n, r]) => `<span class="pill ${simPill(r.state)}" title="${esc(simState(r.state))}">${esc(n)}</span>`).join(" ")}</td>
+    <td class="n">${esc(new Date(j.created * 1000).toLocaleString(LANG))}</td></tr>`).join("");
+  return rows ? `<table class="grid"><thead><tr><th>${esc(T("Job"))}</th><th>${esc(T("Engines"))}</th><th>${esc(T("Created"))}</th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<p class="hint">${esc(T("No jobs yet. Check a Touchstone file below, or ask the AI to run one with sim_job_run."))}</p>`;
+}
+function simJobCard() {
+  const J = SIM.job; if (!J) return "";
+  const runs = J.runs || {}, names = Object.keys(runs);
+  const cmp = J.compare || {}, rows = cmp.metrics || [];
+  const kindEngines = ((SIM.eng.kinds || []).find(k => k.id === J.kind) || {}).engines || [];
+  const avail = Object.fromEntries((SIM.eng.engines || []).map(e => [e.id, e.available]));
+  const more = kindEngines.filter(n => !runs[n] && avail[n]);
+  const status = names.map(n => {
+    const r = runs[n], res = r.results || {};
+    const ver = (res.verdicts || []).map(v => `<li><span class="pill ${v.pass ? "ok" : "bad"}">${esc(v.pass ? T("Pass") : T("Fail"))}</span> ${esc(v.check)}: ${esc(v.detail || "")}</li>`).join("");
+    const notes = (res.notes || []).filter(Boolean).map(x => `<li>${esc(x)}</li>`).join("");
+    return `<div class="simrun"><h4>${esc(n)} <span class="pill ${simPill(r.state)}">${esc(simState(r.state))}</span>${r.seconds != null ? ` <small class="sub">${esc(T("{0} s", r.seconds))}</small>` : ""}
+      ${r.state === "running" ? ` <span class="spin"></span> <small class="sub">${esc(r.message || "")}</small>` : ""}</h4>
+      ${r.error ? `<p class="bad">${esc(r.error)}</p>` : ""}${ver ? `<ul class="notes">${ver}</ul>` : ""}${notes ? `<ul class="notes">${notes}</ul>` : ""}</div>`;
+  }).join("");
+  const single = names.length === 1 && runs[names[0]].results ? Object.entries(runs[names[0]].results.metrics || {}) : [];
+  const table = rows.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th>${cmp.engines.map(n => `<th>${esc(n)}</th>`).join("")}<th>${esc(T("Spread"))}</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${esc(r.label || r.metric)}</td>${cmp.engines.map(n => `<td class="v">${n in r.values ? simFmt(r.values[n], r.unit) : "-"}</td>`).join("")}<td><span class="pill ${r.agree ? "ok" : "bad"}">${esc((100 * r.spread).toFixed(r.spread < 0.001 ? 3 : 1) + " %")}</span></td></tr>`).join("")}</tbody></table>`
+    : single.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th><th>${esc(names[0])}</th></tr></thead><tbody>${single.map(([k, m]) => `<tr><td>${esc(m.label || k)}</td><td class="v">${m.display ? esc(m.display) : simFmt(m.value, m.unit)}</td></tr>`).join("")}</tbody></table>` : "";
+  const verdict = rows.length ? (cmp.agree ? `<div class="result ok">${esc(T("The engines agree within {0} %.", num(100 * cmp.rel_tol, 1)))}</div>`
+    : `<div class="result fail">${esc(T("The engines disagree: see the rows marked in red."))}</div>`) : "";
+  return `<div class="card simjob"><h3>${esc(J.title)} <small>${esc(J.kind)}</small><span class="sp"></span>${more.map(n => `<button data-simrun="${esc(n)}">${esc(T("Run on {0}", n))}</button>`).join(" ")}</h3>
+    <p class="m">${esc(J.folder)}</p>${verdict}${table}${status}</div>`;
+}
+function paintSimPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  if (!SIM.eng || !SIM.jobs) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!SIM.eng.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  const ts = (SIM.eng.engines || []).filter(e => e.kinds.includes("touchstone-check"));
+  const picks = ts.map(e => `<label class="check"><input type="checkbox" data-simpick="${esc(e.id)}"${SIM.pick[e.id] ? " checked" : ""}${e.available ? "" : " disabled"}> ${esc(e.title)}</label>`).join("");
+  const errs = (SIM.eng.errors || []).map(e => `<li>${esc(e.plugin)}: ${esc(e.error)}</li>`).join("");
+  pane.innerHTML = `<div class="simwrap">
+    <h2 class="wsh">${esc(T("Engines"))}</h2><div class="wsgrid">${(SIM.eng.engines || []).map(simEngineCard).join("")}</div>
+    ${errs ? `<div class="result fail">${esc(T("Some plugins could not be loaded:"))}<ul>${errs}</ul></div>` : ""}
+    <h2 class="wsh">${esc(T("Check a Touchstone file"))}</h2>
+    <form class="card simnew" data-simform="1"><p class="hint">${esc(T("Passivity, reciprocity and the main figures of an .sNp file, from each engine you tick: two engines that agree are a second opinion."))}</p>
+      <div class="simrow"><input id="simpath" placeholder="${esc(T("Full path of the .sNp file"))}" value="${esc(SIM.path)}" autocomplete="off" aria-label="${esc(T("Full path of the .sNp file"))}"><button class="go" type="submit">${esc(T("Check"))}</button></div>
+      <div class="simpicks">${picks}</div></form>
+    <div class="simgrid"><div><h2 class="wsh">${esc(T("Jobs"))} <small class="sub m">${esc(SIM.jobs.folder || "")}</small></h2>${simJobsTable()}</div><div>${simJobCard()}</div></div></div>`;
+}
+async function simRun(kind, engines, spec, inputs, title) {
+  let job = "";
+  for (const engine of engines) {
+    const r = await post("/api/wb/sim/run", {kind, engine, spec, inputs, title});
+    if (!r || !r.ok) { say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); if (!r || !r.job) continue; }
+    job = r.job || job;
+  }
+  if (job) { SIM.jobId = job; store.set("wb.sim.job", job); }
+  await loadSim();
+}
+async function simClick(e) {
+  const tr = e.target.closest("[data-simjob]");
+  if (tr) { SIM.jobId = tr.dataset.simjob; store.set("wb.sim.job", SIM.jobId); return loadSimJob(); }
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.simfeature) { setMode("features"); setTimeout(() => { const c = document.getElementById("ft-" + b.dataset.simfeature); if (c) c.scrollIntoView({block: "center"}); }, 400); return; }
+  if (b.dataset.simrun && SIM.job) {
+    b.disabled = true;
+    const ins = Object.fromEntries(Object.entries(SIM.job.inputs || {}).map(([k, v]) => [k, SIM.job.folder + "/inputs/" + v.file]));
+    return simRun(SIM.job.kind, [b.dataset.simrun], SIM.job.spec || {}, ins, SIM.job.title);
+  }
+}
+function simSubmit() {
+  const path = SIM.path.trim();
+  if (!path) return say(T("Give the full path of an .sNp file."), true);
+  const engines = Object.keys(SIM.pick).filter(k => SIM.pick[k]);
+  if (!engines.length) return say(T("Tick at least one engine."), true);
+  say(T("Checking {0}", baseName(path)));
+  simRun("touchstone-check", engines, {}, {touchstone: path}, baseName(path));
+}
+function simInput(e) { if (e.target.id === "simpath") { SIM.path = e.target.value; store.set("wb.sim.path", SIM.path); } }
+function simChange(e) { const t = e.target; if (t.dataset && t.dataset.simpick != null) { SIM.pick[t.dataset.simpick] = t.checked; store.set("wb.sim.pick", SIM.pick); } }
+function simSideBlock() {
+  return `<section class="block"><h2>${esc(T("Simulation"))}</h2><p class="hint">${esc(T("Every simulator is an engine: this project's own solvers, scikit-rf, openEMS and any plugin. A job is one problem; each engine's answer is kept beside the others, so they can be compared."))}</p><p class="hint">${esc(T("The AI runs the same jobs with sim_job_run and compares them with sim_job_compare."))}</p></section>`;
+}
+
 /* ================================================================ wiring */
 function setMode(m) {
   if (!MODES.includes(m)) m = "place";
@@ -2463,7 +2736,9 @@ function setMode(m) {
   if (m === "library" && !S.lib && S.libView !== "find") pollLibrary(true);
   if (m === "usage") loadUsage();
   if (m === "calc") loadCalc();
-  if ((m === "calc") !== (from === "calc")) resize();
+  if (m === "features") loadFeatures(false);
+  if (m === "sim") loadSim();
+  if (WIDE_MODES.includes(m) !== WIDE_MODES.includes(from)) resize();
   S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
 }
 function repaintAll() { legend(); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); paintEmpty(); paintPane(); lastCall(); if (ACT.open) paintActivity(); draw(); }
@@ -2518,6 +2793,8 @@ function sideClick(e) {
 $("#side").addEventListener("click", sideClick);
 $("#pane").addEventListener("click", e => {
   if (S.mode === "calc") return calcClick(e);
+  if (S.mode === "features") return featuresClick(e);
+  if (S.mode === "sim") return simClick(e);
   if (S.mode === "workspace") return wsPaneClick(e);
   if (S.mode === "tools") {
     const r = e.target.closest("[data-tool]"); if (r) { S.tool = r.dataset.tool; S.toolResult = null; paintPane(); }
@@ -2539,6 +2816,7 @@ $("#pane").addEventListener("click", e => {
 });
 $("#pane").addEventListener("input", e => {
   if (S.mode === "calc") return calcInput(e);
+  if (S.mode === "sim") return simInput(e);
   if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
   if (e.target.id === "pfq") pfSearch(e.target.value);
   if (e.target.id === "pflib") S.pf.lib = e.target.value;
@@ -2548,9 +2826,11 @@ $("#pane").addEventListener("input", e => {
   if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
   if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;
 });
-$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); runTool(e.target); });
+$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); if (S.mode === "sim") return simSubmit(); runTool(e.target); });
 $("#pane").addEventListener("change", e => {
   if (S.mode === "calc") return calcChange(e);
+  if (S.mode === "features") return featuresChange(e);
+  if (S.mode === "sim") return simChange(e);
   if (S.mode === "usage" && e.target.dataset) {
     if (e.target.dataset.usagews != null) { S.usageWs = e.target.value; loadUsage(); }
     else if (e.target.dataset.usagedays != null) { S.usageDays = +e.target.value; loadUsage(); }

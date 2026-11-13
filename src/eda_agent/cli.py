@@ -163,6 +163,109 @@ def get_default_scripts_dest() -> Path:
 # scripts-path
 # --------------------------------------------------------------------------
 
+def _feature_mark(state: str) -> str:
+    return {"ready": "[x]", "partial": "[~]", "missing": "[ ]", "off": "[-]",
+            "unavailable": "[/]"}.get(state, "[?]")
+
+
+def cmd_features(deep: bool = False, as_json: bool = False,
+                 on: str = "", off: str = "") -> int:
+    """What eda-agent can do here: every feature, its state, and every
+    dependency with its version. --on/--off switch an engine."""
+    import json
+    from .features import report, state
+    if on or off:
+        try:
+            now_off = state.set_switch(on or off, bool(on))
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{on or off} is now {'on' if on else 'off'}"
+              f" (off: {', '.join(sorted(now_off)) or 'none'})")
+        return 0
+    rep = report(deep=deep)
+    if as_json:
+        print(json.dumps(rep, indent=1, default=str))
+        return 0
+    deps = {d["id"]: d for d in rep["dependencies"]}
+    for group in rep["groups"]:
+        print(f"\n{group}")
+        for f in (x for x in rep["features"] if x["group"] == group):
+            print(f"  {_feature_mark(f['state'])} {f['id']:<14} {f['title']}"
+                  + (f"  (missing: {', '.join(f['missing'])})" if f["missing"]
+                     and f["state"] != "ready" else ""))
+            for d_id in f["needs"] + [x for g in f["any_of"] for x in g] + f["adds"]:
+                d = deps[d_id]
+                ver = d.get("version") or ""
+                where = d.get("state")
+                print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
+    print("\n[x] ready  [~] partly  [ ] missing  [-] switched off  [/] not on this machine")
+    missing = [f["id"] for f in rep["features"] if f["state"] == "missing" and not f["dev"]]
+    if missing:
+        print(f"Install them all: eda-agent install-deps --all   "
+              f"(or name some: eda-agent install-deps {missing[0]})")
+    for e in rep["plugin_errors"]:
+        print(f"plugin {e['plugin']}: {e['error']}", file=sys.stderr)
+    return 0
+
+
+def cmd_install_deps(names: list, everything: bool = False, dev: bool = False,
+                     dry_run: bool = False, assume_yes: bool = False,
+                     as_json: bool = False) -> int:
+    """Install what the named features (or all of them) need."""
+    import json
+    from .features import install
+    if not names and not everything:
+        print("name features to install, or --all (see `eda-agent features`)",
+              file=sys.stderr)
+        return 2
+    try:
+        chosen = install.select(names, everything=everything, include_dev=dev)
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    plan = install.plan(chosen)
+    data = plan.to_dict()
+    if as_json and (dry_run or not plan.automatic):
+        print(json.dumps(data, indent=1))
+        return 0
+    if not as_json:
+        if data["already_present"]:
+            print("Already installed: " + ", ".join(data["already_present"]))
+        for st in plan.steps:
+            tag = {"pip": "install", "local": "build", "venv": "install apart",
+                   "manual": "by hand", "skip": "skipped"}[st.kind]
+            print(f"- [{tag}] {st.title}")
+            for cmd in st.to_dict().get("commands", []):
+                print(f"      {cmd}")
+            if st.text:
+                print(f"      {st.text}")
+        if not plan.steps:
+            print("Nothing to install.")
+    if dry_run or not plan.automatic:
+        return 0
+    if not assume_yes:
+        size = data["download_mb"]
+        try:
+            answer = input(f"Run {data['automatic_steps']} install step(s)"
+                           + (f", about {size} MB" if size else "") + "? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing installed.")
+            return 1
+    result = install.execute(plan, on_line=None if as_json else print)
+    if as_json:
+        print(json.dumps(result, indent=1))
+    else:
+        for r in result["steps"]:
+            print(f"{'ok ' if r['ok'] else 'FAILED'} {r['title']} ({r['seconds']} s)")
+        print(f"Log: {result['log']}")
+        if result["manual"]:
+            print("Still to do by hand: " + ", ".join(m["title"] for m in result["manual"]))
+    return 0 if result["ok"] else 1
+
+
 def cmd_scripts_path() -> int:
     """Print the path to the bundled DelphiScript sources."""
     path = get_bundled_scripts_path()
