@@ -71,11 +71,15 @@ class Stub:
     width: float
     length: float
     to: str = ""                     # a pad it reaches, if any
+    xy: Optional[tuple[float, float]] = None   # where it leaves the path
 
     def to_dict(self) -> dict[str, Any]:
-        return {"after_section": self.at, "layer": self.layer,
-                "width_mils": round(self.width, 4), "length_mils": round(self.length, 3),
-                "to": self.to}
+        d = {"after_section": self.at, "layer": self.layer,
+             "width_mils": round(self.width, 4), "length_mils": round(self.length, 3),
+             "to": self.to}
+        if self.xy is not None:
+            d["at_mils"] = [round(self.xy[0], 2), round(self.xy[1], 2)]
+        return d
 
 
 @dataclass
@@ -269,8 +273,11 @@ def _edge_sequence(g: nx.MultiGraph, nodes: list) -> list[dict[str, Any]]:
     return out
 
 
-def _sections(edges: list[dict[str, Any]]) -> tuple[list[Section], list[int]]:
-    """Merged sections, and the section each edge went into."""
+def _sections(edges: list[dict[str, Any]], breaks: frozenset = frozenset()
+              ) -> tuple[list[Section], list[int]]:
+    """Merged sections, and the section each edge went into. A run is
+    never merged across a node in ``breaks`` (where a stub leaves), so a
+    stub hangs at its own place and not at the end of the merged run."""
     out: list[Section] = []
     edge_sec: list[int] = []
     for e in edges:
@@ -278,7 +285,7 @@ def _sections(edges: list[dict[str, Any]]) -> tuple[list[Section], list[int]]:
             out.append(Section("via", via=e["u"][1], from_layer=out[-1].layer, to_layer=e["layer"]))
         last = out[-1] if out else None
         if (last is not None and last.kind == "line" and last.layer == e["layer"]
-                and abs(last.width - e["width"]) < 0.05):
+                and abs(last.width - e["width"]) < 0.05 and e["u"] not in breaks):
             last.length += e["length"]
             last.pts.extend(e["pts"][1:])
         else:
@@ -286,6 +293,16 @@ def _sections(edges: list[dict[str, Any]]) -> tuple[list[Section], list[int]]:
                                pts=list(e["pts"])))
         edge_sec.append(len(out) - 1)
     return out, edge_sec
+
+
+def _node_xy(board: LayoutBoard, n) -> Optional[tuple[float, float]]:
+    if n[0] == "pt":
+        return (n[2] * SNAP, n[3] * SNAP)
+    if n[0] == "pad":
+        return (board.pads[n[1]].x, board.pads[n[1]].y)
+    if n[0] == "via":
+        return (board.vias[n[1]].x, board.vias[n[1]].y)
+    return None
 
 
 def _stubs(board: LayoutBoard, g: nx.MultiGraph, nodes: list, edge_sec: list[int]
@@ -316,7 +333,8 @@ def _stubs(board: LayoutBoard, g: nx.MultiGraph, nodes: list, edge_sec: list[int
                         key=lambda d: d["length"])
             pins = [board.pads[x[1]].key for x in comp if x[0] == "pad"]
             out.append(Stub(at=edge_sec[k - 1] if k > 0 else -1, layer=first["layer"],
-                            width=first["width"], length=length, to=",".join(pins)))
+                            width=first["width"], length=length, to=",".join(pins),
+                            xy=_node_xy(board, n)))
     return out
 
 
@@ -332,7 +350,8 @@ def net_path(board: LayoutBoard, net: str, start: str = "", end: str = "") -> Ne
     except nx.NetworkXNoPath:
         raise ExtractError(f"{board.pads[a].key} and {board.pads[b].key} are not connected "
                            f"by copper on net {net}") from None
-    sections, edge_sec = _sections(_edge_sequence(g, nodes))
+    breaks = frozenset(n for n in nodes[1:-1] if g.degree(n) > 2)
+    sections, edge_sec = _sections(_edge_sequence(g, nodes), breaks)
     notes = []
     pins = sorted(board.pads[n[1]].key for n in g.nodes if n[0] == "pad" and board.pads[n[1]].comp)
     stubs = _stubs(board, g, nodes, edge_sec)
