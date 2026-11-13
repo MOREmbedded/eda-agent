@@ -1093,3 +1093,25 @@ def test_a_blind_via_joins_no_pour_beyond_its_span(engine, monkeypatch):
     assert res["summary"]["pours"] == ["BottomLayer:P"]
     assert res["summary"]["completion"] == 1.0, res["unrouted"]
     assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_blind_via_short_of_a_plane_layer_is_no_way_into_it(engine, monkeypatch):
+    """The same on an internal plane layer: C1.1's via from Top to
+    MidLayer1 stops short of the GND plane on InternalPlane1. The router
+    took it for the pad's way in, and the verdict, which joined every via
+    of the plane's net to the plane, agreed: the pad stayed apart."""
+    from eda_agent.layout.model import Layer
+
+    b = _gnd_plane()
+    b.regions = []
+    b.layers = [Layer("TopLayer", "signal", 0), Layer("MidLayer1", "signal", 1),
+                Layer("InternalPlane1", "plane", 2, plane_net="GND"),
+                Layer("BottomLayer", "signal", 3)]
+    b.vias = [Via(200, 300, 20, 10, "TopLayer", "MidLayer1", "GND")]
+    b.tracks = [Track("TopLayer", 200, 250, 200, 300, 6.0, "GND")]
+    assert run_drc(b).unrouted.get("GND") == 1, "the two GND pads start apart"
+    res = _run(engine, monkeypatch, b)
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    assert len([v for v in res["vias"] if v["net"] == "GND"]) == 2, res["vias"]

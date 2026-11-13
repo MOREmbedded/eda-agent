@@ -78,7 +78,8 @@ From his fork's history, the main differences are these:
   search then ran the server process out of memory. Between -1 and 0 it
   only turns the direction round, which `layer_dirs` says plainly. At an
   `outer_cost` of 0 or below a step on an outer layer would cost
-  nothing. A finer pitch grows the grid with the inverse square.
+  nothing. A finer pitch grows the grid with the inverse square; a
+  coarser one routes faster and fits fewer tracks.
 - **Old pours.** Before routing, the job takes each polygon's old poured
   copper off the board, which is repoured after. Both engines match the
   copper to its polygon's outline by layer and source. For Euan's, as
@@ -113,7 +114,10 @@ router knows fails the same way on both engines.
     short);
   - stays out of keep-outs drawn on those layers, which the via passes
     through as well;
-  - leaves the board's solder mask web to every pad and via opening.
+  - leaves the board's solder mask web to every pad and via opening,
+    unless its own opening may run into that one: a via's, or a pad's of
+    its own net that may take a via (a BGA's ball, say). Another net's
+    pad always keeps its web.
 
   Both engines apply these guards wherever a via is laid: in the
   search, in a BGA's fan-out and in the plane fan-out. Their vias go
@@ -129,9 +133,9 @@ both engines, and a seeded break of each guard makes it fail.
 
 ## Fixed in his router
 
-Besides the guards, four things in his router took for a join what the
-verdict does not, or laid a via where it should not. Each has a test that
-fails on his version.
+Besides the guards, these things in his router took for a join what the
+verdict does not, laid a via where it should not, or laid a track wider
+than it was routed. Each has a test that fails on his version.
 
 - **`join_existing`** takes pads, tracks and vias as joined where the
   verdict does: copper that touches, and a via on the layers it spans.
@@ -141,7 +145,15 @@ fails on his version.
 - **`reuse_vias`** takes a via of the net already on the board as a layer
   change only when it goes through every routing layer, as ours does. A
   blind or buried via was taken for a change between any two layers, and
-  the route was left open.
+  the route was left open. On a plane net, a pad counts as already in the
+  plane only when its copper reaches a via standing in the plane on a
+  layer the via passes; any via of the net counted before, so a pad wired
+  to a via in the plane's cut-out was left out, and the net stayed open.
+- **`neck_pads`** branches keep the narrower width they were routed at.
+  Their widths were kept by position beside the net's routes; when the
+  pour stage took out a route the pour made redundant, a 20 mil branch
+  moved into its place and was laid at the net's 40 mil, 5 mil from
+  another net's pads.
 - **`pad_vias="centre"`** puts a via in a pad at its centre only, where
   the fab notes ask for it to be filled and capped. Any via could share a
   pad's solder mask opening before, so one stood 1.9 mil off a resistor's
@@ -210,9 +222,3 @@ with Euan's router (`default` is the default).
   them.
 - With every stage switch off, the default engine's vias skip the via
   guards (see "Every stage switch off" above).
-- A pad of a plane net whose copper already ends on a via inside the
-  plane counts as joined to it, even when that via is blind and stops
-  short of the plane's layer, and the router leaves the pad. With a pour
-  taken as a plane the verdict reports the pad unrouted; on an internal
-  plane layer the verdict also takes every via of the plane's net as
-  joined to the plane.

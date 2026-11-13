@@ -24,9 +24,13 @@ maturity classification for every tool.
   under Fixed. Both engines' results go through the same verdict and our
   gloss, and the default router's via guards were ported into his.
   Where his router took for a join what the verdict does not
-  (`join_existing`, `reuse_vias` through a blind via), or let any via
+  (`join_existing`, `reuse_vias` through a blind via, or a plane pad
+  "served" by a via that stands outside the plane), or let any via
   share a pad's solder mask opening under `pad_vias="centre"`, it no
-  longer does. A
+  longer does. A narrow `neck_pads` branch keeps its width after the
+  pour stage (it was laid at the net's full width, into another net's
+  clearance), and his coarser grid pitches route clean (see Fixed: a pad
+  smaller than a cell). A
   setting that cannot be used routes with the default engine, and his
   router's own job parameters are range-checked before anything runs.
   `python -m eda_agent.layout.bench_run --fixtures DIR --router euan`
@@ -319,9 +323,46 @@ maturity classification for every tool.
   sliver rule asks for 10. Both outer layers' openings now count.
 - **A `pad_vias` the router does not know fails the routing job.** A
   misspelt value was routed as `"bga"` without a word; any case, and the
-  spelling `"center"`, are now taken as meant. `"centre"`, which only
-  Euan's router takes, is routed as `"bga"` by the default engine, and
-  the job's notes say so.
+  spelling `"center"`, are now taken as meant, given as a dict or as a
+  `StageOptions` object. `"centre"`, which only Euan's router takes, is
+  routed as `"bga"` by the default engine, and the job's notes say so,
+  and say when its fallback widened that to IC pins.
+- **A new via's mask opening runs together only with its own net's.**
+  Where a pad may take a via (a BGA's ball by default), the mask guard
+  let a new via's opening merge into that pad's opening whatever the
+  pad's net: on a 0.8 mm BGA a dog-bone via stood 7.3 mil from three
+  other nets' balls, its opening one with theirs, no solder dam between
+  them, and the verdict passed it. It now merges only into a via's
+  opening or one of its own net's pads; any other opening keeps the
+  board's mask web.
+- **Stage numbers are range-checked before routing.** A negative
+  `lane_cost` gave the shortest path search negative weights, and the
+  server process ran out of memory and aborted, with no job error; a
+  `lane_depth` of 1e7 mil held a job worker for hours. `lane_cost`,
+  `lane_depth`, `pair_skew`, `pair_width`, `pair_gap`, `fine_pitch` and
+  `bus_min` out of range, or not numbers, now fail the job at once.
+- **A differential pair's skew bump can no longer loop for ever.** When
+  a bump had to be cut to its run, rounding could leave it a hair too
+  long, and the same height came back on every pass: the job never
+  returned (seen with a tight `pair_skew`).
+- **A pad smaller than a grid cell is entered from a cell the router
+  keeps clear.** When no cell centre falls in a pad, the track ends at
+  the nearest cell's centre, outside the pad; that cell was taken as
+  all pad copper and left out of the router's own clearance map, so
+  another net could come within clearance of the track end. At Euan's
+  coarser pitches 43 of 1,155 random small-pad boards broke a
+  clearance; none do now.
+- **A blind via is no way into a plane or pour beyond its span.** A pad
+  wired to a via that stops short of its net's plane layer was taken as
+  already in the plane, and a pad on a blind via as joined to a pour on
+  a layer the via never reaches: the pad was never routed, and the
+  verdict found the net open. A via now counts only on the layers it
+  passes.
+- **The DRC verdict joins a plane layer only through vias that reach
+  it.** It took every via of an internal plane layer's net as joined to
+  the plane, so a pad wired to a blind via that stops short of the
+  plane counted as in it while no copper reached it, and a board left
+  that way was reported complete.
 - **The gloss keeps out of every keep-out.** It honoured keep-outs on the
   routed layer only and missed arcs, so it could straighten a route
   through a keep-out drawn as Keep-Out layer tracks (which bar every
