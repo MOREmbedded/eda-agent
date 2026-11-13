@@ -60,6 +60,36 @@ def test_track_is_rho_l_over_wt():
     assert t["amps"] == pytest.approx(1.0, rel=1e-6)
     assert t["j_a_per_mm2"] == pytest.approx(1.0 / (10 * 1.4 * 0.0254 ** 2), rel=1e-3)
     assert res["loss_w"] == pytest.approx(r, rel=1e-3)   # P = I^2 R at 1 A
+    snk = res["sinks"][0]
+    assert snk["drop_mv"] == pytest.approx(r * 1e3, rel=1e-6)
+    assert snk["drop_pct"] == pytest.approx(100 * r / 1.0, rel=1e-3)      # of the 1 V source
+    assert res["worst"]["drop_pct"] == snk["drop_pct"]
+
+
+def test_ipc2221_capacity_by_hand_and_halved_on_an_inner_layer():
+    # I = k dT^0.44 A^0.725, A in square mils; k = 0.048 outside, 0.024 inside.
+    # 10 mil x 1.4 mil at 10 K: 0.048 * 2.7542 * 6.776 = 0.896 A
+    assert ph.ipc2221_current_capacity(14.0, 10.0) == pytest.approx(0.896, rel=2e-3)
+    assert ph.ipc2221_current_capacity(14.0, 10.0, external=False) == pytest.approx(0.448, rel=2e-3)
+    assert ph.ipc2221_current_capacity(14.0, 20.0) / ph.ipc2221_current_capacity(14.0, 10.0) \
+        == pytest.approx(2 ** 0.44)
+    assert ph.ipc2221_current_capacity(0.0, 10.0) == 0.0
+
+    def track_on(layer):
+        b = _board()
+        b.layers = [Layer("TopLayer", "signal", 0), Layer("MidLayer1", "signal", 1),
+                    Layer("BottomLayer", "signal", 2)]
+        b.pads += [smd("J1", "1", 200, 200, "P", 40, 40, layer), smd("U1", "1", 1200, 200, "P", 40, 40, layer)]
+        b.tracks.append(Track(layer, 200, 200, 1200, 200, 10, "P"))
+        res = _r(b, cell_mils=5)[1]
+        area = 10 * ir._layer_thickness(b, None, layer)
+        return res["tracks"][0], area
+    top, a_top = track_on("TopLayer")
+    mid, a_mid = track_on("MidLayer1")
+    assert top["ipc2221_capacity_a"] == pytest.approx(0.048 * 10 ** 0.44 * a_top ** 0.725, abs=1e-3)
+    assert mid["ipc2221_capacity_a"] == pytest.approx(0.024 * 10 ** 0.44 * a_mid ** 0.725, abs=1e-3)
+    # 1 A is over what a 10 mil inner track may carry at 10 K, whatever its foil
+    assert mid["over_capacity"] is True
 
 
 def test_temperature_raises_the_drop():
@@ -432,6 +462,42 @@ def test_track_into_a_pour_reads_the_same_on_any_grid():
     assert min(got) > RHO / (10 * 1.4 * ph.MIL) * 980      # the track outside the pour, and more
 
 
+def _to_pour_edge(cell, delta, back):
+    """A pour whose right edge is ``delta`` past a grid line, and a track
+    that starts ``back`` mils inside that edge (negative: outside it)."""
+    b = _board(2400, 400)
+    e = 1000 + delta
+    b.regions.append(Region("TopLayer", [(100, 100), (e, 100), (e, 300), (100, 300)], [], "P", "pour"))
+    b.pads += [smd("J1", "1", 120, 200, "P", 40, 200), smd("U1", "1", 2000, 200, "P", 40, 40)]
+    b.tracks.append(Track("TopLayer", e - back, 200, 2000, 200, 10, "P"))
+    return _r(b, cell_mils=cell)
+
+
+@pytest.mark.parametrize("delta", [0.5, 2.4, 9.5])
+@pytest.mark.parametrize("back", [0.0, -3.0])
+def test_a_track_end_that_touches_a_pour_is_joined_wherever_the_grid_falls(delta, back):
+    # The end sits on the pour's edge, or 3 mil outside it with its round
+    # cap (5 mil) still on the copper. The last sliver of the pour is
+    # thinner than the grid resolves; the end is joined all the same, and
+    # to the pour, not to a sliver that hangs on nothing.
+    got = []
+    for cell in (10, 5):
+        r, res = _to_pour_edge(cell, delta, back)
+        assert res["network"]["open_track_ends"] == 0
+        got.append(r)
+    assert got[0] == pytest.approx(got[1], rel=0.006)
+    # the track from its end to the pad's edge, and the pour on top of it
+    track = RHO / (10 * 1.4 * ph.MIL) * (1980 - (1000 + delta - back))
+    assert track < got[1] < track + 4e-3
+
+
+@pytest.mark.parametrize("cell", [10, 5])
+def test_a_track_end_a_mil_short_of_a_pour_is_not_joined(cell):
+    # 6 mil outside the edge with a 5 mil cap: a 1 mil gap is a gap
+    with pytest.raises(ir.IRDropError, match="not connected"):
+        _to_pour_edge(cell, 2.4, -6.0)
+
+
 # --- cell size, inputs, reply ---------------------------------------------------
 
 def test_auto_cell_follows_the_rail_not_the_board():
@@ -458,6 +524,23 @@ def test_auto_cell_says_when_the_board_forces_a_coarser_grid():
     # and the answer holds on that coarse grid: wall to wall on the plane
     a = 6 + 0.79
     assert r == pytest.approx(RS / math.pi * math.acosh(2000 / (2 * a)), rel=0.03)
+
+
+def test_auto_cell_on_a_rail_routed_right_across_a_large_board():
+    # Small pads ask for a 4 mil cell, but the rail's own extent, 19600 by
+    # 14600 mil, would then be 180 million cells: the grid's own limit sets
+    # the cell (1.02 sqrt(area / 4e6) = 8.63 before the margin round the
+    # copper; 9 with it), a note says so, and the run goes through with the
+    # right answer.
+    b = _board(20000, 15000)
+    b.pads += [smd("J1", "1", 200, 200, "P", 16, 16), smd("U1", "1", 19800, 14800, "P", 16, 16)]
+    b.tracks += [Track("TopLayer", 200, 200, 19800, 200, 10, "P"),
+                 Track("TopLayer", 19800, 200, 19800, 14800, 10, "P")]
+    r, res = _r(b)
+    assert res["cell_mils"] == 9.0
+    assert any("coarser than a quarter of the smallest pad (4 mil) because of the board's size" in n
+               for n in res["notes"])
+    assert r == pytest.approx(RHO / (10 * 1.4 * ph.MIL) * (19600 + 14600 - 16), rel=2e-3)
 
 
 def test_sources_and_sinks_must_say_volts_and_amps():

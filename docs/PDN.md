@@ -53,7 +53,9 @@ read as zero.
 - **Connectivity follows the copper**, as Altium's does. Tracks that cross
   are joined where they cross, a via on an unbroken track taps it, ends
   whose copper overlaps are joined, and ends that are apart by more than
-  their width are not.
+  their width are not. A track end whose round cap touches a pour is
+  joined to it wherever the pour's edge falls on the grid, and an end a
+  mil short of it is not.
 - **Via barrels and plated through-hole pads** join the layers with
   R = ρ·Δz / (π((r+t)² − r²)), using the real dielectric heights and a
   plating thickness you can set (0.79 mil, the IPC-6012 class 2 minimum, by

@@ -57,8 +57,6 @@ FILL_MIN = 0.02
 #: current, and is dropped there. Only whole cells count: a cell a pad or
 #: a pour edge fills in part is still the track's to cross.
 INSIDE_POUR = 0.97
-#: A point on area copper this full is joined to the cell.
-TOUCH = 0.25
 #: Default upper bound on grid nodes for the automatic cell size.
 MAX_NODES_AUTO = 800_000
 #: A round contact wider than this many cells is drawn on the grid like any
@@ -231,6 +229,10 @@ def _arc_chords(a) -> list[tuple[float, float, float, float]]:
 
 #: Two points nearer than this are one point (mils).
 COINCIDE = 0.05
+#: Track ends looked at on a fine raster of their own surroundings, at
+#: most (each costs one small rasterisation; only ends that nothing else
+#: joined are asked).
+MAX_NEAR_SEARCHES = 2000
 
 
 def build_network(board: LayoutBoard, net: str, raster, stack, rho: float,
@@ -308,6 +310,72 @@ def build_network(board: LayoutBoard, net: str, raster, stack, rho: float,
                 continue
             seen.add(cid)
             N.edge(nid, cid, STIFF * sheet_g[layer] * max(fv, 0.05), "contact", layer)
+
+    near_searches = [0]
+
+    def tie_near(nid: int, layer: str, x: float, y: float, reach: float) -> bool:
+        """Join a track end to the area copper its round cap overlaps, when
+        the cell under the end holds too little of it to say.
+
+        The neighbourhood is rasterised finely, so copper the grid's cells
+        do not resolve (the last sliver of a pour whose edge is off the
+        grid) still counts, and copper a cell away that the cap does not
+        touch does not. The end goes to the whole cells that copper is one
+        piece with, nearest first, since a sliver's own cell may hang on
+        nothing; failing a whole cell, to the cells the piece lies in."""
+        if layer not in cell_id or near_searches[0] >= MAX_NEAR_SEARCHES:
+            return False
+        ids = cell_id[layer]
+        ci, cj = raster.cell_of(x, y)
+        k = int(math.ceil(reach / h)) + 1
+        if not (ids[max(0, cj - k):cj + k + 1, max(0, ci - k):ci + k + 1] >= 0).any():
+            return False                    # no area copper anywhere near
+        near_searches[0] += 1
+        from scipy import ndimage
+
+        from ..layout.copper_raster import rasterize
+        fine = max(0.25, reach / 6.0)
+        half = reach + h + fine
+        try:
+            win = rasterize(board, fine, nets=[net], layers=[layer], supersample=2,
+                            kinds={"pads", "vias", "regions", "planes"},
+                            bounds=(x - half, y - half, x + half, y + half))
+        except ValueError:
+            return False
+        f = win.fill.get(layer)
+        if f is None:
+            return False
+        solid = f >= 0.5
+        jj, ii = np.nonzero(solid)
+        if not jj.size:
+            return False
+        cx = win.x0 + (ii + 0.5) * fine
+        cy = win.y0 + (jj + 0.5) * fine
+        d = np.hypot(cx - x, cy - y)
+        k = int(np.argmin(d))
+        if d[k] > reach:
+            return False
+        lab, _ = ndimage.label(solid)
+        piece = lab[jj, ii] == lab[jj[k], ii[k]]
+        fill = raster.fill[layer]
+        gi = np.floor((cx[piece] - raster.x0) / h).astype(int)
+        gj = np.floor((cy[piece] - raster.y0) / h).astype(int)
+        ok = (gi >= 0) & (gi < ids.shape[1]) & (gj >= 0) & (gj < ids.shape[0])
+        cells = {(int(i), int(j)) for i, j in zip(gi[ok], gj[ok]) if ids[j, i] >= 0}
+        if not cells:
+            return False
+
+        def gap(i: int, j: int) -> float:
+            rx = max(raster.x0 + i * h - x, 0.0, x - (raster.x0 + (i + 1) * h))
+            ry = max(raster.y0 + j * h - y, 0.0, y - (raster.y0 + (j + 1) * h))
+            return math.hypot(rx, ry)
+        whole = sorted((gap(i, j), i, j) for i, j in cells if fill[j, i] >= INSIDE_POUR)
+        if whole:
+            take = [(i, j) for g, i, j in whole if g <= max(reach, whole[0][0] + 1e-6)]
+        else:
+            take = sorted(cells)
+        tie_cells(nid, layer, [(int(ids[j, i]), 1.0) for i, j in take])
+        return True
 
     def contact(nid: int, layer: str, shape: geom.Shape, restore: bool = False) -> float:
         """Join a node to the area copper as an equipotential ``shape``.
@@ -877,31 +945,30 @@ def build_network(board: LayoutBoard, net: str, raster, stack, rho: float,
         for i in range(m):
             for e, (how, what) in P[i][7].items():
                 nd = node(2 * i + e)
-                tied.add(nd)
                 if how == "node":
                     N.edge(nd, what, gstiff, "contact", layer)
+                    tied.add(nd)
                     continue
                 ax, ay = what
                 ux, uy = D[i] / Ln[i]
                 half = W[i] / 2.0
                 face = geom.capsule(ax - uy * half, ay + ux * half,
                                     ax + uy * half, ay - ux * half, 0.0)
-                tie_cells(nd, layer, cells_in(layer, face, grow=h * 0.5))
-        # (d) an end still joined to nothing: area copper under it, else a
-        # neighbour's end its round cap overlaps
+                cells = cells_in(layer, face, grow=h * 0.5)
+                if cells:
+                    tie_cells(nd, layer, cells)
+                    tied.add(nd)
+                # else the pour's last sliver is thinner than the grid sees:
+                # the end is joined below, by the copper its cap overlaps
+        # (d) an end still joined to nothing: area copper under it or under
+        # its round cap, else a neighbour's end its cap overlaps
         for i in range(m):
             for e in (0, 1):
                 nd = node(2 * i + e)
                 if nd in tied or degree.get(nd, 0) != 1:
                     continue
                 x, y = pts[2 * i + e]
-                cid, fv = cell_at(layer, x, y)
-                if cid >= 0 and fv >= TOUCH:
-                    ux, uy = D[i] / Ln[i]
-                    half = W[i] / 2.0
-                    face = geom.capsule(x - uy * half, y + ux * half,
-                                        x + uy * half, y - ux * half, 0.0)
-                    tie_cells(nd, layer, cells_in(layer, face, grow=h * 0.5))
+                if tie_near(nd, layer, x, y, W[i] / 2.0):
                     tied.add(nd)
                     continue
                 best = None

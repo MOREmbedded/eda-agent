@@ -380,6 +380,14 @@ def test_a_grid_node_has_the_peaceman_radius_absolutely():
         L = float(((zs - zt).imag / (2 * np.pi * f))[0])
         req = k * 100 / math.exp(L * 2 * math.pi / (ph.MU0 * 4 * ph.MIL))
         assert req == pytest.approx(ph.peaceman_radius(100.0), rel=0.01)
+        # Two real vias of radius r, k cells apart, one carrying the
+        # current down and the other back: the loop between the planes is
+        # the two-wire formula (mu0 d / pi) acosh(D / 2r). The grid gives
+        # 2 (Ls - Lt) for vias of the node's radius; the port term makes
+        # up the rest for each via, whatever the cell.
+        for r in (5.0, 12.0):
+            loop = 2 * L + 2 * ph.cavity_port_inductance(4, r, 100.0)
+            assert loop == pytest.approx(ph.via_pair_loop_inductance(4, k * 100.0, r), rel=0.01)
     assert ph.peaceman_radius(1.0) == pytest.approx(0.1985, abs=1e-4)
 
 
