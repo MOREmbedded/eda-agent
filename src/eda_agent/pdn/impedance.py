@@ -41,8 +41,9 @@ import numpy as np
 from ..layout import geom
 from ..layout.model import LayoutBoard, Pad
 from . import physics as ph
-from .decap import (Decap, default_esl, default_esr, is_bulk, mounting_inductance,
-                    package_of, parse_capacitance, touchstone_impedance)
+from .decap import (Decap, default_esl, default_esr, is_bulk, package_of,
+                    parse_capacitance, touchstone_impedance)
+from .mounting import VIA_SEARCH_MILS, Copper, mount
 
 #: Cavity grid: at least this many cells across the longer side, at most
 #: this many cells in all, and no coarser than lambda / CELLS_PER_WAVE at
@@ -50,7 +51,6 @@ from .decap import (Decap, default_esl, default_esr, is_bulk, mounting_inductanc
 MIN_CELLS_ACROSS = 48
 MAX_CAVITY_CELLS = 30_000
 CELLS_PER_WAVE = 20
-VIA_SEARCH_MILS = 200.0
 
 
 class PDNError(ValueError):
@@ -104,6 +104,12 @@ class Cavity:
     z_power: float = 0.0
     z_ground: float = 0.0
     notes: list[str] = field(default_factory=list)
+    #: Share of each cell where both planes have copper (None: all of it).
+    fill: Optional[np.ndarray] = None
+    #: How whole the copper is across each link between neighbours, 0..1,
+    #: shaped (ny, nx-1) and (ny-1, nx) (None: whole).
+    link_x: Optional[np.ndarray] = None
+    link_y: Optional[np.ndarray] = None
 
     @property
     def n(self) -> int:
@@ -111,7 +117,44 @@ class Cavity:
 
     @property
     def area_mils2(self) -> float:
-        return self.n * self.cell_mils ** 2
+        if self.fill is None:
+            return self.n * self.cell_mils ** 2
+        return float(self.fill[self.cells].sum()) * self.cell_mils ** 2
+
+    def node_fill(self) -> np.ndarray:
+        """Overlap share per node, in node order."""
+        out = np.ones(self.n)
+        if self.fill is not None:
+            out[self.ids[self.cells]] = self.fill[self.cells]
+        return out
+
+    def extent_mils(self) -> tuple[float, float]:
+        iy, ix = np.nonzero(self.cells)
+        return (float(ix.max() - ix.min() + 1) * self.cell_mils,
+                float(iy.max() - iy.min() + 1) * self.cell_mils)
+
+    def first_mode_hz(self) -> Optional[float]:
+        """Lowest resonance of the plane pair as it is shaped (open edges):
+        the smallest non-zero eigenvalue of the grid's own Laplacian,
+        f = c sqrt(lambda) / (2 pi h sqrt(er)). c / (2 a sqrt(er)) for a
+        rectangle of longer side a."""
+        import scipy.sparse as sp
+        from scipy.sparse.linalg import eigsh
+        n = self.n
+        if n < 3:
+            return None
+        L = _laplacian(self)
+        M = sp.diags(self.node_fill()).tocsc()
+        try:
+            vals = eigsh(L, k=min(3, n - 1), M=M, sigma=-1e-3, which="LM",
+                         return_eigenvectors=False)
+        except Exception:  # noqa: BLE001 - an estimate; never fail the run for it
+            return None
+        lam = sorted(float(v) for v in vals if v > 1e-9)
+        if not lam:
+            return None
+        return ph.C0 * math.sqrt(lam[0]) / (2 * math.pi * self.cell_mils * ph.MIL
+                                            * math.sqrt(self.er))
 
     @property
     def capacitance_f(self) -> float:
@@ -135,9 +178,13 @@ class Cavity:
                 "notes": list(self.notes)}
 
 
+#: A cell with less overlap of the two planes than this is not a node.
+MIN_OVERLAP = 0.1
+
+
 def _area_fill(board: LayoutBoard, net: str, cell: float):
     from ..layout.copper_raster import rasterize
-    return rasterize(board, cell, nets=[net], kinds={"regions", "planes"}, supersample=3)
+    return rasterize(board, cell, nets=[net], kinds={"regions", "planes"}, supersample=8)
 
 
 def cavity_cell_mils(board: LayoutBoard, f_max_hz: float, er: float) -> float:
@@ -151,47 +198,131 @@ def cavity_cell_mils(board: LayoutBoard, f_max_hz: float, er: float) -> float:
 
 
 def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: float,
-                cell_mils: float = 0.0, tand: Optional[float] = None) -> Optional[Cavity]:
+                cell_mils: float = 0.0, tand: Optional[float] = None,
+                near: Optional[list[tuple[float, float]]] = None) -> Optional[Cavity]:
     """The power/ground plane pair carrying the rail: of all pairs of a
     layer with ``net`` area copper and a layer with ``ground`` area copper,
     the one with the largest overlap capacitance. None when the rail has no
-    area copper over a ground layer."""
+    area copper over a ground layer.
+
+    Perforated copper (antipads under a BGA) stays in the model as what
+    it is: a cell holds the capacitance of the share of it where both
+    planes have copper, and a link between two cells conducts as a sheet
+    with that share of round holes does. A slot through either plane
+    opens the link, however narrow. When the pair is in several
+    islands the one under most of the points ``near`` (the load's pins)
+    is modelled, else the largest."""
     if stack is None or not stack.layers:
         return None
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
     er0 = max((d.er for d in stack.dielectrics), default=4.3)
     cell = cell_mils or cavity_cell_mils(board, f_max_hz, er0)
     rp = _area_fill(board, net, cell)
     rg = _area_fill(board, ground, cell)
     best = None
     for lp in rp.layers:
-        fp = rp.fill[lp] >= 0.5
-        if not fp.any():
+        if not (rp.fill[lp] > 0).any():
             continue
         for lg in rg.layers:
             if lg == lp:
                 continue
-            fg = rg.fill[lg] >= 0.5
-            both = fp & fg
-            if not both.any():
-                continue
             d = stack.gap_mils(lp, lg)
             if not d:
                 continue
-            c = both.sum() / d
-            if best is None or c > best[0]:
-                best = (c, lp, lg, both, d)
+            # the two fills as independent: between the bounds
+            # max(0, fp + fg - 1) and min(fp, fg) of the true overlap
+            over = rp.fill[lp] * rg.fill[lg]
+            c = float(over.sum()) / d
+            if c > 0 and (best is None or c > best[0]):
+                best = (c, lp, lg, over, d)
     if best is None:
         return None
-    _, lp, lg, both, d = best
-    from scipy.ndimage import label
-    lab, n = label(both)
+    _, lp, lg, over, d = best
+    both = over >= MIN_OVERLAP
+    if not both.any():
+        return None
+
+    # How whole each plane is across each link. Round holes smaller than a
+    # cell (antipads, drill holes) thin the sheet without cutting it:
+    # (1 - v) / (1 + v) of a solid sheet for a void share v (Maxwell
+    # Garnett in two dimensions, exact for sparse round holes). A slot is
+    # another matter: it is looked for on a grid fine enough to see a
+    # clearance, and wherever one crosses the whole way between two cell
+    # centres the link is open, however narrow the slot.
+    ratio = int(min(16, max(4, math.ceil(cell / 12.0))))
+    ratio += ratio % 2
+    fine = cell / ratio
+    from ..layout.copper_raster import rasterize
+    ny_, nx_ = over.shape
+
+    def crossing(net_: str, layer: str) -> tuple[np.ndarray, np.ndarray]:
+        rf = rasterize(board, fine, nets=[net_], kinds={"regions", "planes"},
+                       supersample=int(min(6, max(2, math.ceil(fine / 4.0)))), links=True)
+        out = []
+        for axis, lk in ((0, rf.link_x[layer]), (1, rf.link_y[layer])):
+            big = np.zeros((ny_ * ratio, nx_ * ratio))
+            big[:min(lk.shape[0], big.shape[0]), :min(lk.shape[1], big.shape[1])] = \
+                lk[:big.shape[0], :big.shape[1]]
+            if axis == 0:       # fine links from centre to centre along x, per cell row
+                blk = big[:, ratio // 2:ratio // 2 + (nx_ - 1) * ratio]
+                blk = blk.reshape(ny_, ratio, nx_ - 1, ratio).mean(axis=1)
+            else:
+                blk = big[ratio // 2:ratio // 2 + (ny_ - 1) * ratio, :]
+                blk = blk.reshape(ny_ - 1, ratio, nx_, ratio).mean(axis=3).transpose(0, 2, 1)
+            out.append(blk.min(axis=-1))   # the narrowest place on the way
+        return out[0], out[1]
+    cross = {lp: crossing(net, lp), lg: crossing(ground, lg)}
+
+    def links(axis: int) -> np.ndarray:
+        ks = []
+        for raster, layer in ((rp, lp), (rg, lg)):
+            f = raster.fill[layer]
+            pair = ((f[:, :-1] + f[:, 1:]) if axis == 0 else (f[:-1, :] + f[1:, :])) / 2.0
+            void = np.clip(1.0 - pair, 0.0, 1.0)
+            ks.append(np.minimum((1.0 - void) / (1.0 + void), cross[layer][axis]))
+        kp, kg = ks
+        ok = (kp > 0) & (kg > 0)
+        # the two planes' sheets carry the same current: their shares in series
+        k = np.where(ok, 2.0 * kp * kg / np.where(ok, kp + kg, 1.0), 0.0)
+        a_, b_ = (both[:, :-1], both[:, 1:]) if axis == 0 else (both[:-1, :], both[1:, :])
+        return np.where(a_ & b_, np.clip(k, 0.0, 1.0), 0.0)
+    lx, ly = links(0), links(1)
+    idx = np.full(both.shape, -1, dtype=np.int64)
+    idx[both] = np.arange(int(both.sum()))
+    ea = np.concatenate([idx[:, :-1][lx > 0], idx[:-1, :][ly > 0]])
+    eb = np.concatenate([idx[:, 1:][lx > 0], idx[1:, :][ly > 0]])
+    n_all = int(both.sum())
+    n_isl, lab = connected_components(
+        coo_matrix((np.ones(ea.size), (ea, eb)), shape=(n_all, n_all)), directed=False)
     notes = []
-    if n > 1:
-        sizes = np.bincount(lab.ravel())[1:]
-        keep = int(np.argmax(sizes)) + 1
-        notes.append(f"the plane pair is in {n} separate islands; the largest "
-                     f"({sizes[keep - 1] * cell * cell / 1e6:.2f} in2) is modelled")
-        both = lab == keep
+    if n_isl > 1:
+        area = np.bincount(lab, weights=over[both], minlength=n_isl)
+        keep = int(np.argmax(area))
+        how = "the largest"
+        if near:
+            iy, ix = np.nonzero(both)
+            cx = rp.x0 + (ix + 0.5) * cell
+            cy = rp.y0 + (iy + 0.5) * cell
+            votes = np.zeros(n_isl)
+            for (px, py) in near:
+                d2 = (cx - px) ** 2 + (cy - py) ** 2
+                k = int(np.argmin(d2))
+                if d2[k] <= (1.5 * cell) ** 2:
+                    votes[lab[k]] += 1
+            if votes.any() and int(np.argmax(votes)) != keep:
+                keep = int(np.argmax(votes))
+                how = "the one under the load"
+        # islands worth a word: more than a few cells
+        real = int((area * cell * cell >= max(4 * cell * cell, 0.01e6)).sum())
+        if real > 1:
+            notes.append(f"the plane pair is in {real} separate islands; {how} "
+                         f"({area[keep] * cell * cell / 1e6:.2f} in2) is modelled")
+        mask = np.zeros(both.shape, dtype=bool)
+        mask[both] = lab == keep
+        both = mask
+        lx = np.where(both[:, :-1] & both[:, 1:], lx, 0.0)
+        ly = np.where(both[:-1, :] & both[1:, :], ly, 0.0)
     ids = np.full(both.shape, -1, dtype=np.int64)
     ids[both] = np.arange(int(both.sum()))
     er = stack.er_between(lp, lg)
@@ -200,7 +331,8 @@ def find_cavity(board: LayoutBoard, stack, net: str, ground: str, f_max_hz: floa
         next((x.tan_d for x in stack.dielectrics), 0.02))
     return Cavity(lp, lg, d, er, tan_d, cp.copper_mils if cp else 1.4,
                   cg.copper_mils if cg else 1.4, rp.x0, rp.y0, cell, both, ids,
-                  cp.z_mils if cp else 0.0, cg.z_mils if cg else 0.0, notes)
+                  cp.z_mils if cp else 0.0, cg.z_mils if cg else 0.0, notes,
+                  fill=np.where(both, over, 0.0), link_x=lx, link_y=ly)
 
 
 def rectangular_cavity(a_mils: float, b_mils: float, d_mils: float, er: float,
@@ -218,14 +350,17 @@ def rectangular_cavity(a_mils: float, b_mils: float, d_mils: float, er: float,
 def _laplacian(cav: Cavity):
     import scipy.sparse as sp
     ids = cav.ids
-    a, b = [], []
-    for A, B in ((ids[:, :-1], ids[:, 1:]), (ids[:-1, :], ids[1:, :])):
+    a, b, g = [], [], []
+    for A, B, lk in ((ids[:, :-1], ids[:, 1:], cav.link_x),
+                     (ids[:-1, :], ids[1:, :], cav.link_y)):
         m = (A >= 0) & (B >= 0)
+        if lk is not None:
+            m &= lk > 0
         a.append(A[m]); b.append(B[m])
-    a = np.concatenate(a); b = np.concatenate(b)
+        g.append(np.ones(int(m.sum())) if lk is None else lk[m].astype(float))
+    a = np.concatenate(a); b = np.concatenate(b); g = np.concatenate(g)
     n = cav.n
-    ones = np.ones(a.size)
-    L = sp.coo_matrix((np.concatenate([ones, ones, -ones, -ones]),
+    L = sp.coo_matrix((np.concatenate([g, g, -g, -g]),
                        (np.concatenate([a, b, a, b]), np.concatenate([a, b, b, a]))),
                       shape=(n, n)).tocsc()
     return L
@@ -234,9 +369,12 @@ def _laplacian(cav: Cavity):
 def solve_cavity(cav: Cavity, freqs: np.ndarray, ports: list[tuple[int, np.ndarray]],
                  load_nodes: list[int], rho: float = ph.RHO_CU_20C,
                  extra_shunt: Optional[np.ndarray] = None,
-                 observe_nodes: Optional[list[int]] = None) -> np.ndarray:
-    """Impedance at the load nodes (1 A split equally, mean voltage) with
-    each port (node, Z(f) array) shunting its node to the ground plane.
+                 observe_nodes: Optional[list[int]] = None,
+                 load_weights: Optional[list[float]] = None) -> np.ndarray:
+    """Impedance at the load nodes with each port (node, Z(f) array)
+    shunting its node to the ground plane. 1 A goes in split by
+    ``load_weights`` (the pins at each node; equal when not given) and the
+    voltage read is the mean over the nodes with the same weights.
     ``observe_nodes`` reads the voltage elsewhere instead: the transfer
     impedance from the load to those nodes."""
     import scipy.sparse as sp
@@ -245,27 +383,32 @@ def solve_cavity(cav: Cavity, freqs: np.ndarray, ports: list[tuple[int, np.ndarr
     n = cav.n
     L = _laplacian(cav)
     d_m = cav.d_mils * ph.MIL
-    area = (cav.cell_mils * ph.MIL) ** 2
+    area = (cav.cell_mils * ph.MIL) ** 2 * cav.node_fill()
     eps = djordjevic_sarkar(freqs, cav.er, cav.tand)
     zs_p = surface_impedance(freqs, cav.t_power_mils * ph.MIL, rho)
     zs_g = surface_impedance(freqs, cav.t_ground_mils * ph.MIL, rho)
+    wts = np.ones(len(load_nodes)) if load_weights is None else np.asarray(load_weights, float)
+    if len(wts) != len(load_nodes) or not (wts.sum() > 0):
+        raise PDNError("one positive weight per load node")
+    wts = wts / wts.sum()
     rhs = np.zeros(n, dtype=complex)
-    for k in load_nodes:
-        rhs[k] += 1.0 / len(load_nodes)
+    for k, wt in zip(load_nodes, wts):
+        rhs[k] += wt
     out = np.empty(len(freqs), dtype=complex)
-    port_nodes = np.array([p[0] for p in ports], dtype=np.int64)
     for i, f in enumerate(freqs):
         w = 2 * np.pi * f
         zsq = 1j * w * ph.MU0 * d_m + zs_p[i] + zs_g[i]
-        yc = 1j * w * ph.EPS0 * eps[i] * area / d_m
-        diag = np.full(n, yc, dtype=complex)
+        diag = 1j * w * ph.EPS0 * eps[i] * area / d_m
         for (node, z) in ports:
             diag[node] += 1.0 / z[i]
         if extra_shunt is not None:
             diag += extra_shunt[i]
         A = (L / zsq + sp.diags(diag)).tocsc()
         v = splu(A).solve(rhs)
-        out[i] = np.mean(v[observe_nodes if observe_nodes else load_nodes])
+        if observe_nodes:
+            out[i] = np.mean(v[observe_nodes])
+        else:
+            out[i] = np.dot(wts, v[load_nodes])
     return out
 
 
@@ -288,102 +431,15 @@ def _pads_of(board: LayoutBoard, ref: str) -> list[Pad]:
     return [p for p in board.pads if p.comp == ref]
 
 
-def _smd_layer(board: LayoutBoard, pad: Pad) -> str:
-    if pad.hole > 0:
-        return ""
-    ls = pad.layers()
-    return ls[0] if ls else board.copper_layers()[0]
-
-
-def _near_vias(board: LayoutBoard, net: str, x: float, y: float, reach: float):
-    """Barrels of ``net`` (vias and plated TH pads) within ``reach``, nearest first,
-    as (distance, x, y, hole)."""
-    out = []
-    for v in board.vias:
-        if v.net == net and v.hole > 0:
-            d = math.hypot(v.x - x, v.y - y)
-            if d <= reach:
-                out.append((d, v.x, v.y, v.hole))
-    for p in board.pads:
-        if p.net == net and p.hole > 0 and p.plated:
-            d = math.hypot(p.x - x, p.y - y)
-            if d <= reach:
-                out.append((d, p.x, p.y, p.hole))
-    out.sort()
-    return out
-
-
-def _track_width_at(board: LayoutBoard, net: str, pad: Pad, layer: str) -> float:
-    shape = pad.shape_on(layer)
-    best = 0.0
-    for t in board.tracks:
-        if t.net != net or t.layer != layer or shape is None:
-            continue
-        for (x, y) in ((t.x1, t.y1), (t.x2, t.y2)):
-            if geom.clearance(geom.circle(x, y, 0.0), shape) <= 0:
-                best = max(best, t.width)
-    if best:
-        return best
-    sizes = [min(c.w, c.h) for c in pad.copper if c.layer == layer]
-    return min(sizes) if sizes else 10.0
-
-
-def _ref_height(stack, layer: str) -> float:
-    nb = stack.neighbours(layer) if stack is not None else []
-    return abs(stack.get(layer).z_mils - nb[0].z_mils) if nb else 8.0
-
-
 def mount_for(board: LayoutBoard, stack, cav: Optional[Cavity], net: str, ground: str,
               pwr_pads: list[Pad], gnd_pads: list[Pad], plating: float,
-              reach: float = VIA_SEARCH_MILS) -> dict:
-    """Mounting inductance of a two-terminal (or multi-pin) part between
-    its pads and the cavity."""
-    if not pwr_pads or not gnd_pads:
-        return {"_total": 1e-9, "total_nh": 1.0, "note": "pads not found; 1 nH assumed"}
-    pp, pg = pwr_pads[0], gnd_pads[0]
-    layer = _smd_layer(board, pp) or (cav.power_layer if cav else "")
-    cell = cav.cell_mils if cav else 50.0
-    if cav is not None and stack is not None and stack.get(layer) is not None:
-        zc = stack.get(layer).z_mils
-        zp, zg = cav.z_power, cav.z_ground
-        z_near = zp if abs(zc - zp) < abs(zc - zg) else zg
-        d = cav.d_mils
-    else:
-        zc, z_near, d = 0.0, _ref_height(stack, layer) if stack is not None and stack.get(layer) else 8.0, 0.0
-    vp = [v for p in pwr_pads for v in _near_vias(board, net, p.x, p.y, reach)]
-    vg = [v for p in gnd_pads for v in _near_vias(board, ground, p.x, p.y, reach)]
-    if pp.hole > 0 and pg.hole > 0:
-        vp = vp or [(0.0, pp.x, pp.y, pp.hole)]
-        vg = vg or [(0.0, pg.x, pg.y, pg.hole)]
-    if not vp or not vg:
-        side = "power" if not vp else "ground"
-        return {"_total": 1e-9, "total_nh": 1.0,
-                "note": f"no {side} via within {reach:g} mil of the pads; 1 nH assumed"}
-    vp.sort(); vg.sort()
-    # vias that belong to this part: within 30 mil of the nearest one
-    vp_use = [v for v in vp if v[0] <= vp[0][0] + 30.0]
-    vg_use = [v for v in vg if v[0] <= vg[0][0] + 30.0]
-    s = min(math.hypot(a[1] - b[1], a[2] - b[2]) for a in vp_use for b in vg_use)
-    r = vp_use[0][3] / 2.0 + plating
-    h_ref = _ref_height(stack, layer) if (stack is not None and stack.get(layer)) else 8.0
-    half = lambda p: max([max(c.w, c.h) for c in p.copper] or [0.0]) / 2.0  # noqa: E731
-    lt_p = max(0.0, vp_use[0][0] - half(pp))
-    lt_g = max(0.0, vg_use[0][0] - half(pg))
-    w_p = _track_width_at(board, net, pp, layer) if layer else 10.0
-    w_g = _track_width_at(board, ground, pg, layer) if layer else 10.0
-    n_each = min(len(vp_use), len(vg_use))
-    # Each fan-out trace counted with its own width
-    m1 = mounting_inductance(cap_z_mils=zc, plane_z_mils=z_near, cavity_mils=d,
-                             via_spacing_mils=s, via_radius_mils=r, n_vias_each=n_each,
-                             trace_len_mils=lt_p, trace_w_mils=w_p, ref_h_mils=h_ref,
-                             cell_mils=cell)
-    lt2 = ph.MU0 * h_ref * lt_g * ph.MIL / (w_g + 2 * h_ref) if lt_g > 0 else 0.0
-    total = m1["_total"] + lt2
-    return {"_total": total, "total_nh": round(total * 1e9, 4),
-            "vias_nh": m1["vias_nh"], "traces_nh": round(m1["traces_nh"] + lt2 * 1e9, 4),
-            "cavity_nh": m1["cavity_nh"], "via_pairs": n_each,
-            "via_spacing_mils": round(s, 2), "height_mils": round(abs(zc - z_near), 2),
-            "fanout_mils": [round(lt_p, 1), round(lt_g, 1)]}
+              reach: float = VIA_SEARCH_MILS, copper: Optional[Copper] = None) -> dict:
+    """Mounting inductance of a part between its pads and the cavity; see
+    ``mounting``. ``_total`` is the inductance in henries."""
+    copper = copper or Copper(board, stack, plating)
+    out = mount(copper, cav, net, ground, pwr_pads, gnd_pads, reach)
+    out["_total"] = out["_l"]
+    return out
 
 
 def find_decaps(board: LayoutBoard, net: str, ground: str) -> list[tuple[str, list[Pad], list[Pad]]]:
@@ -407,15 +463,27 @@ def find_decaps(board: LayoutBoard, net: str, ground: str) -> list[tuple[str, li
     return out
 
 
+def _centre(points) -> Optional[tuple[float, float]]:
+    """Mean of [(x, y, weight)]."""
+    wsum = sum(p[2] for p in points)
+    if not points or wsum <= 0:
+        return None
+    return (sum(p[0] * p[2] for p in points) / wsum, sum(p[1] * p[2] for p in points) / wsum)
+
+
 def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
                  overrides: Optional[list[dict]], plating: float,
-                 exclude: Optional[list[str]] = None) -> tuple[list[Decap], list[str]]:
+                 exclude: Optional[list[str]] = None,
+                 copper: Optional[Copper] = None) -> tuple[list[Decap], list[str]]:
     notes = []
     over = {o["ref"]: o for o in (overrides or []) if o.get("ref")}
     excl = set(exclude or [])
     caps: list[Decap] = []
     found = find_decaps(board, net, ground) if board is not None else []
     found_refs = {r for r, _, _ in found}
+    if board is not None and copper is None:
+        copper = Copper(board, stack, plating)
+    assumed: list[str] = []
     for ref, pw, gn in found:
         if ref in excl:
             continue
@@ -436,20 +504,30 @@ def build_decaps(board: LayoutBoard, stack, cav, net: str, ground: str,
         d = Decap(ref, float(c), float(esr), float(esl), pkg,
                   x=sum(p.x for p in pw + gn) / len(pw + gn),
                   y=sum(p.y for p in pw + gn) / len(pw + gn),
-                  layer=_smd_layer(board, pw[0]), source=src)
+                  layer=copper.pad_layer(pw[0]), source=src)
         if not pkg and not bulk and "esl_nh" not in o:
             d.notes.append("package not recognised from the footprint; 0.5 nH ESL assumed")
         if o.get("touchstone"):
             d.touchstone = touchstone_impedance(o["touchstone"], o.get("config", "shunt"))
             d.source = "touchstone"
-        mt = mount_for(board, stack, cav, net, ground, pw, gn, plating)
+        mt = mount(copper, cav, net, ground, pw, gn)
+        at = _centre(mt.get("_at", []) + mt.get("_at_ground", []))
+        if at is not None:
+            d.x, d.y = at                    # where its vias meet the planes
         if "mount_nh" in o:
             d.mount_l = o["mount_nh"] * 1e-9
             mt = {"total_nh": o["mount_nh"], "note": "given"}
         else:
-            d.mount_l = mt.pop("_total")
+            d.mount_l = mt["_l"]
+            d.mount_r = mt["_r"]
+            if mt.get("assumed"):
+                assumed.append(ref)
         d.mount_detail = {k: v for k, v in mt.items() if not k.startswith("_")}
         caps.append(d)
+    if assumed:
+        notes.append(f"{len(assumed)} capacitor(s) with no via found by their pads, "
+                     f"1 nH mounting assumed: {', '.join(assumed[:8])}"
+                     + (" ..." if len(assumed) > 8 else ""))
     # capacitors given that are not on the board (what-if, or schematic stage)
     for ref, o in over.items():
         if ref in found_refs or ref in excl:
@@ -539,14 +617,14 @@ def _suggest(bands: list[dict], target: float, part_l: float, f_max: float) -> l
 
 
 def write_spice(path, freqs, decaps: list[Decap], vrm: Optional[tuple[float, float]],
-                c_plane: float, load_l: float, title: str) -> None:
+                c_plane: float, load_l: float, title: str, load_r: float = 0.0) -> None:
     """A lumped SPICE deck of the network (LTspice and ngspice): every
     capacitor as R-L-C with its mounting, the VRM, the plane capacitance,
     and a 1 A AC source at the load, so V(load) reads ohms."""
     lines = [f"* {title}", "* PDN lumped equivalent written by eda-agent (sim_pdn_impedance)",
              "* V(load) in volts equals |Z| in ohms (1 A AC injection)."]
     for i, d in enumerate(decaps, 1):
-        lines.append(f"R{i} pdn n{i}a {d.esr:.6g}")
+        lines.append(f"R{i} pdn n{i}a {d.esr + d.mount_r:.6g}")
         lines.append(f"L{i} n{i}a n{i}b {d.esl + d.mount_l:.6g}")
         lines.append(f"C{i} n{i}b 0 {d.c:.6g}  ; {d.ref}")
     if vrm is not None:
@@ -554,7 +632,8 @@ def write_spice(path, freqs, decaps: list[Decap], vrm: Optional[tuple[float, flo
         lines.append(f"LVRM nv 0 {vrm[1]:.6g}")
     if c_plane > 0:
         lines.append(f"CPLANE pdn 0 {c_plane:.6g}")
-    lines.append(f"LLOAD load pdn {max(load_l, 1e-15):.6g}")
+    lines.append(f"LLOAD load nl {max(load_l, 1e-15):.6g}")
+    lines.append(f"RLOAD nl pdn {max(load_r, 1e-9):.6g}")
     lines.append("I1 0 load AC 1")
     lines.append(f".ac dec 50 {freqs[0]:.6g} {freqs[-1]:.6g}")
     lines.append(".end")
@@ -562,14 +641,18 @@ def write_spice(path, freqs, decaps: list[Decap], vrm: Optional[tuple[float, flo
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _plot(path, f, zmag, target, zlump=None, title=""):
+def _plot(path, f, zmag, target, zlump=None, title="") -> bool:
+    """The curve as a PNG. Drawn with matplotlib's object interface, which
+    holds no global state, so two runs at once do not draw into each
+    other's figure. False when matplotlib is not installed."""
     try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
     except Exception:  # noqa: BLE001 - optional extra
         return False
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=120)
+    fig = Figure(figsize=(8, 4.5), dpi=120)
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
     ax.loglog(f, zmag * 1e3, label="|Z| at the load", color="#1f5fbf", lw=1.8)
     if zlump is not None:
         ax.loglog(f, np.abs(zlump) * 1e3, label="lumped (no spreading)",
@@ -583,8 +666,73 @@ def _plot(path, f, zmag, target, zlump=None, title=""):
     ax.legend()
     fig.tight_layout()
     fig.savefig(path)
-    plt.close(fig)
     return True
+
+
+#: Width taken for the copper that joins a part to a plane pair it is not
+#: over, when the board does not say (mils).
+OFF_PLANE_TRACK_MILS = 10.0
+#: How far along the copper a load pin's via may be before the search
+#: widens (mils).
+LOAD_VIA_SEARCH_MILS = 100.0
+MAX_POINTS = 2001
+#: More capacitors than this are listed by kind in the reply; the file has
+#: them all.
+LIST_DECAPS = 30
+
+_DECAP_KEYS = {"ref", "c_uf", "c_farads", "esr_ohms", "esl_nh", "mount_nh", "touchstone",
+               "config", "package", "count", "x", "y"}
+_VRM_KEYS = {"r_mohm", "l_nh", "bandwidth_khz", "ref", "refs", "pads", "disable"}
+_LOAD_KEYS = {"ref", "refs", "pads", "mount_nh", "include_vias", "return_pads", "name"}
+_POSITIVE = {"c_uf", "c_farads", "count", "bandwidth_khz"}
+
+
+def _clean(kind: str, spec, keys: set, numeric: tuple, notes: list[str]) -> dict:
+    """A user dict with its numbers as numbers: a wrong type or a negative
+    value is an error here, not a traceback or a silent default later; a
+    key the tool does not know is said, not dropped."""
+    if spec is None:
+        return {}
+    if not isinstance(spec, dict):
+        raise PDNError(f"{kind} is a dict, got {spec!r}")
+    out = dict(spec)
+    unknown = sorted(k for k in out if k not in keys and not str(k).startswith("_"))
+    if unknown:
+        notes.append(f"{kind}: {unknown} not known and ignored; known keys: {sorted(keys)}")
+    for k in numeric:
+        if k in out and out[k] is not None:
+            try:
+                v = float(out[k])
+            except (TypeError, ValueError):
+                raise PDNError(f"{kind}: {k} must be a number, got {out[k]!r}") from None
+            if not math.isfinite(v) or v < 0 or (k in _POSITIVE and v <= 0):
+                raise PDNError(f"{kind}: {k} must be {'above 0' if k in _POSITIVE else '0 or more'}, "
+                               f"got {out[k]!r}")
+            out[k] = v
+    return out
+
+
+def _decap_list(caps: list[Decap]) -> dict:
+    """The capacitors for the reply: each one, or by kind when there are many."""
+    rows = [c.to_dict() for c in caps]
+    if len(rows) <= LIST_DECAPS:
+        return {"decaps": rows}
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r["c_uf"], r["package"], r["model"], r["esr_mohm"], r["esl_nh"]),
+                          []).append(r)
+    out = []
+    for (c_uf, pkg, model, esr, esl), rs in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        mounts = [r["mount_nh"] for r in rs]
+        srf = [r["srf_mhz"] for r in rs]
+        out.append({"count": len(rs), "c_uf": c_uf, "package": pkg, "model": model,
+                    "esr_mohm": esr, "esl_nh": esl,
+                    "mount_nh": [min(mounts), max(mounts)],
+                    "srf_mhz": [min(srf), max(srf)],
+                    "refs": [r["ref"] for r in rs][:12]})
+    return {"decap_count": len(rows), "decap_groups": out,
+            "decaps_note": f"{len(rows)} capacitors, listed by kind; every one is in the "
+                           f"decaps CSV (write_files)"}
 
 
 def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
@@ -595,13 +743,44 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
             vrm: Optional[dict] = None, mode: str = "auto", cell_mils: float = 0.0,
             plating_mils: float = ph.DEFAULT_PLATING_MILS, temp_c: float = 25.0,
             tand: Optional[float] = None, out_dir=None) -> dict:
+    notes: list[str] = []
     if mode not in ("auto", "cavity", "lumped"):
         raise PDNError("mode is auto, cavity or lumped")
-    if f_min_hz <= 0 or f_max_hz <= f_min_hz:
+    try:
+        f_min_hz, f_max_hz, points = float(f_min_hz), float(f_max_hz), int(points)
+    except (TypeError, ValueError):
+        raise PDNError("f_min_hz, f_max_hz and points are numbers") from None
+    if not (0 < f_min_hz < f_max_hz) or not math.isfinite(f_max_hz):
         raise PDNError("need 0 < f_min_hz < f_max_hz")
+    if net == ground:
+        raise PDNError("the rail and its ground are the same net")
+    if not (plating_mils > 0):
+        raise PDNError("plating_mils must be above 0")
+    if points < 16 or points > MAX_POINTS:
+        clamped = min(MAX_POINTS, max(16, points))
+        notes.append(f"points {points} taken as {clamped} (16 to {MAX_POINTS})")
+        points = clamped
+    load = _clean("load", load, _LOAD_KEYS, ("mount_nh",), notes)
+    v = _clean("vrm", vrm, _VRM_KEYS, ("r_mohm", "l_nh", "bandwidth_khz"), notes)
+    if decaps is not None and not isinstance(decaps, list):
+        raise PDNError("decaps is a list of dicts")
+    given = []
+    for k, o in enumerate(decaps or [], 1):
+        o = _clean(f"decaps[{k}]", o, _DECAP_KEYS,
+                   ("c_uf", "c_farads", "esr_ohms", "esl_nh", "mount_nh", "count", "x", "y"), notes)
+        if not o.get("ref"):
+            if not (o.get("c_uf") or o.get("c_farads")):
+                raise PDNError(f"decaps[{k}] needs a ref (a capacitor on the board) or a value "
+                               f"(c_uf) to add one")
+            o["ref"] = f"ADDED{k}"
+        o["ref"] = str(o["ref"])
+        given.append(o)
+    if board is not None:
+        for name in (net, ground):
+            if name not in board.nets():
+                raise PDNError(f"net {name!r} is not on the board")
     freqs = np.logspace(math.log10(f_min_hz), math.log10(f_max_hz), int(points))
     rho = ph.copper_resistivity(temp_c)
-    notes: list[str] = []
     # target
     tgt = None
     if target_ohms and target_ohms > 0:
@@ -617,10 +796,28 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
                "volts": volts, "ripple_pct": ripple_pct, "step_amps": step_amps}
     else:
         raise PDNError("give target_ohms, or volts, ripple_pct and step_amps")
+    if not (target > 0) or not math.isfinite(target):
+        raise PDNError("the target impedance must be above 0")
+
+    # the load's pads first: the plane island under them is the one solved
+    from .ir_drop import resolve_pads, safe_name
+    copper = Copper(board, stack, plating_mils, rho) if board is not None else None
+    load_pads: list[Pad] = []
+    gpads: list[Pad] = []
+    if board is not None:
+        load_pads = resolve_pads(board, net, load)
+        if not load_pads:
+            raise PDNError(f"load {load} has no pads on {net}")
+        if load.get("return_pads"):
+            gpads = resolve_pads(board, ground, {"pads": load["return_pads"]})
+        else:
+            refs = sorted({p.comp for p in load_pads if p.comp})
+            gpads = resolve_pads(board, ground, {"ref": refs}) if refs else []
 
     cav = None
     if board is not None and mode in ("auto", "cavity"):
-        cav = find_cavity(board, stack, net, ground, f_max_hz, cell_mils, tand)
+        cav = find_cavity(board, stack, net, ground, f_max_hz, cell_mils, tand,
+                          near=[(p.x, p.y) for p in load_pads])
         if cav is None and mode == "cavity":
             raise PDNError(f"no plane pair found for {net} over {ground}: the rail "
                            f"needs area copper (plane, pour) facing a {ground} layer. "
@@ -628,9 +825,8 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
         if cav is None:
             notes.append(f"{net} has no plane facing {ground}: lumped model, no "
                          f"spreading inductance or plane resonance")
-    caps, cap_notes = build_decaps(board, stack, cav, net, ground, decaps, plating_mils,
-                                   exclude) if board is not None else build_decaps(
-        None, stack, None, net, ground, decaps, plating_mils, exclude)
+    caps, cap_notes = build_decaps(board, stack, cav, net, ground, given, plating_mils,
+                                   exclude, copper)
     notes += cap_notes
     if not caps:
         notes.append("no decoupling capacitors found or given")
@@ -640,77 +836,126 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
                      "or a touchstone per part for sign-off numbers")
 
     # VRM
-    v = dict(vrm or {})
     r_vrm = float(v.get("r_mohm", target * 1e3 * 0.5)) * 1e-3
     f_bw = float(v.get("bandwidth_khz", 50.0)) * 1e3
     l_vrm = float(v["l_nh"]) * 1e-9 if "l_nh" in v else target / (2 * math.pi * f_bw)
     vrm_used = {"r_mohm": round(r_vrm * 1e3, 4), "l_nh": round(l_vrm * 1e9, 4),
-                "model": "given" if vrm else "default: R = target/2, L = target / (2 pi 50 kHz)"}
+                "model": "given" if v else "default: R = target/2, L = target / (2 pi 50 kHz)"}
     if v.get("disable"):
         vrm_used = None
+    elif r_vrm <= 0 and l_vrm <= 0:
+        raise PDNError("a VRM with neither resistance nor inductance is a short: give "
+                       "r_mohm or l_nh above 0, or disable it")
     z_vrm = r_vrm + 1j * 2 * np.pi * freqs * l_vrm
 
     # load
-    load_pads: list[Pad] = []
-    load_l = 0.0
+    load_l = load_r = 0.0
     load_info: dict[str, Any] = {}
-    if board is not None:
-        from .ir_drop import resolve_pads
-        load_pads = resolve_pads(board, net, load)
-        if not load_pads:
-            raise PDNError(f"load {load} has no pads on {net}")
-        gpads = resolve_pads(board, ground, {"ref": load.get("ref") or
-                                             sorted({p.comp for p in load_pads})})
-        if load.get("include_vias", True):
-            mt = mount_for(board, stack, cav, net, ground, load_pads, gpads, plating_mils,
-                           reach=100.0)
-            load_l = mt.pop("_total")
-            load_info["mount"] = mt
+    load_at = [(p.x, p.y, 1) for p in load_pads]
+    if board is not None and load.get("include_vias", True):
+        mt = mount(copper, cav, net, ground, load_pads, gpads, LOAD_VIA_SEARCH_MILS)
+        load_l, load_r = mt["_l"], mt["_r"]
+        if mt.get("_at"):
+            load_at = mt["_at"]
+        if mt.get("assumed"):
+            notes.append(f"load: {mt['note']}")
+        load_info["mount"] = {k: val for k, val in mt.items() if not k.startswith("_")}
     if "mount_nh" in load:
-        load_l = float(load["mount_nh"]) * 1e-9
+        load_l, load_r = float(load["mount_nh"]) * 1e-9, 0.0
         load_info["mount"] = {"total_nh": load["mount_nh"], "note": "given"}
 
-    zl = 1j * 2 * np.pi * freqs * load_l
+    off_caps: list[tuple[str, float]] = []
     if cav is not None:
+        def attach(x: float, y: float, layer: str) -> tuple[int, float, float, float]:
+            """(node, H, ohm, mils off) for a point: a part more than a cell
+            past the plane pair is joined to its edge by a track."""
+            node, dist = cav.node_near(x, y)
+            extra = dist - cav.cell_mils
+            if extra <= 0:
+                return node, 0.0, 0.0, 0.0
+            l_h, r_ohm = copper._strip(layer or cav.power_layer, extra, OFF_PLANE_TRACK_MILS)
+            return node, l_h, r_ohm, dist
         ports = []
-        attach = []
+        on_board = {r for r, _, _ in find_decaps(board, net, ground)}
+        lcx, lcy = _centre(load_at) or (cav.x0, cav.y0)
         for c in caps:
-            if c.x == 0.0 and c.y == 0.0 and c.ref not in {r for r, _, _ in find_decaps(board, net, ground)}:
-                xs = sum(p.x for p in load_pads) / len(load_pads)
-                ys = sum(p.y for p in load_pads) / len(load_pads)
-                node, dist = cav.node_near(xs, ys)
+            if c.ref not in on_board and c.x == 0.0 and c.y == 0.0:
+                node, l_off, r_off, dist = attach(lcx, lcy, "")
             else:
-                node, dist = cav.node_near(c.x, c.y)
+                node, l_off, r_off, dist = attach(c.x, c.y, c.layer)
+            if dist > 0:
+                c.mount_l += l_off
+                c.mount_r += r_off
+                c.notes.append(f"{dist:.0f} mil off the plane pair; joined to its edge as a "
+                               f"{OFF_PLANE_TRACK_MILS:g} mil track (+{l_off * 1e9:.2f} nH)")
+                off_caps.append((c.ref, dist))
             ports.append((node, c.z(freqs)))
-            if dist > 2 * cav.cell_mils:
-                c.notes.append(f"{dist:.0f} mil outside the plane pair; attached at its edge")
+        if off_caps:
+            notes.append(f"{len(off_caps)} capacitor(s) are not over the plane pair (up to "
+                         f"{max(d for _, d in off_caps):.0f} mil off): each is joined to its "
+                         f"edge as a {OFF_PLANE_TRACK_MILS:g} mil track of that length: "
+                         + ", ".join(r for r, _ in off_caps[:8])
+                         + (" ..." if len(off_caps) > 8 else ""))
         if vrm_used is not None:
-            src = load.get("_vrm_at")
-            vx, vy = None, None
-            if v.get("ref") or v.get("pads"):
-                from .ir_drop import resolve_pads as rp
-                vp = rp(board, net, v)
+            vx = vy = None
+            if v.get("ref") or v.get("refs") or v.get("pads"):
+                vp = resolve_pads(board, net, v)
                 if vp:
                     vx, vy = sum(p.x for p in vp) / len(vp), sum(p.y for p in vp) / len(vp)
+                else:
+                    notes.append(f"vrm: {v.get('ref') or v.get('refs') or v.get('pads')} has "
+                                 f"no pad on {net}; its place is taken as below")
             if vx is None:
                 # no position given: the largest capacitor's place stands in
                 big = max(caps, key=lambda c: c.c) if caps else None
-                vx, vy = (big.x, big.y) if big else (cav.x0, cav.y0)
+                vx, vy = (big.x, big.y) if big else (lcx, lcy)
                 vrm_used["at"] = "largest capacitor (pass vrm.ref for the real place)"
             else:
                 vrm_used["at"] = [round(vx, 1), round(vy, 1)]
             node, _ = cav.node_near(vx, vy)
             ports.append((node, z_vrm))
-        lx = [p.x for p in load_pads]; ly = [p.y for p in load_pads]
-        load_nodes = sorted({cav.node_near(x, y)[0] for x, y in zip(lx, ly)})
-        z_plane = solve_cavity(cav, freqs, ports, load_nodes, rho)
+        # the load: 1 A split by pins over the nodes its legs land on
+        weights: dict[int, float] = {}
+        offs = []
+        for (x, y, n_pads) in load_at:
+            node, l_off, r_off, dist = attach(x, y, copper.pad_layer(load_pads[0]))
+            weights[node] = weights.get(node, 0.0) + n_pads
+            offs.append((l_off, r_off, dist))
+        if offs and all(d > 0 for _, _, d in offs):
+            l_off = 1.0 / sum(1.0 / l for l, _, _ in offs)
+            r_off = 1.0 / sum(1.0 / r for _, r, _ in offs)
+            far = min(d for _, _, d in offs)
+            load_l += l_off
+            load_r += r_off
+            load_info["off_plane_mils"] = round(far, 1)
+            notes.append(f"the load is {far:.0f} mil off the plane pair: joined to its edge as "
+                         f"a {OFF_PLANE_TRACK_MILS:g} mil track of that length "
+                         f"(+{l_off * 1e9:.2f} nH). Give load.mount_nh, or route it, for a "
+                         f"better number")
+        elif any(d > 0 for _, _, d in offs):
+            n_off = sum(1 for _, _, d in offs if d > 0)
+            notes.append(f"{n_off} of the load's {len(offs)} connections are off the plane "
+                         f"pair and taken at its edge")
+        load_nodes = sorted(weights)
+        for (node, zp) in ports:
+            if not np.all(np.abs(zp) > 0):
+                raise PDNError("a branch of zero impedance shorts the rail: give every "
+                               "capacitor and the VRM some resistance or inductance")
+        z_plane = solve_cavity(cav, freqs, ports, load_nodes, rho,
+                               load_weights=[weights[k] for k in load_nodes])
         model = "cavity"
     else:
         z_plane = None
         model = "lumped"
+    zl = load_r + 1j * 2 * np.pi * freqs * load_l
     branches = [c.z(freqs) for c in caps] + ([z_vrm] if vrm_used is not None else [])
+    if any(not np.all(np.abs(zb) > 0) for zb in branches):
+        raise PDNError("a branch of zero impedance shorts the rail: give every "
+                       "capacitor and the VRM some resistance or inductance")
     c_pl = cav.capacitance_f if cav is not None else 0.0
     er = cav.er if cav is not None else 4.3
+    if not branches and c_pl <= 0:
+        raise PDNError("nothing on the rail to hold it: no capacitor, no VRM, no plane")
     z_lumped = lumped(freqs, branches, c_pl, er, cav.tand if cav else 0.02)
     z = (z_plane if z_plane is not None else z_lumped) + zl
     zmag = np.abs(z)
@@ -721,34 +966,38 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
     curve = [{"hz": float(f"{freqs[i]:.6g}"), "mohm": round(float(zmag[i]) * 1e3, 4)}
              for i in range(0, len(freqs), step)]
     k_min = int(np.argmin(zmag))
+    k_max = int(np.argmax(zmag / target))
     result = {
         "net": net, "ground": ground, "model": model,
         "target": tgt, "pass": not bands,
-        "worst": ({"mhz": round(float(freqs[int(np.argmax(zmag / target))]) / 1e6, 5),
-                   "mohm": round(float(zmag.max()) * 1e3, 4),
-                   "over_target_x": round(float(zmag.max() / target), 3)}),
+        "worst": ({"mhz": round(float(freqs[k_max]) / 1e6, 5),
+                   "mohm": round(float(zmag[k_max]) * 1e3, 4),
+                   "over_target_x": round(float(zmag[k_max] / target), 3)}),
         "minimum": {"mhz": round(float(freqs[k_min]) / 1e6, 5),
                     "mohm": round(float(zmag[k_min]) * 1e3, 4)},
         "violations": bands,
         "anti_resonances": _peaks(freqs, zmag),
         "suggestions": _suggest(bands, target, float(mount_avg), f_max_hz),
         "cavity": cav.to_dict() if cav is not None else None,
-        "decaps": [c.to_dict() for c in caps],
+        **_decap_list(caps),
         "vrm": vrm_used,
         "load": {"pads": [f"{p.comp}.{p.name}" for p in load_pads][:20],
-                 "mount_nh_included": round(load_l * 1e9, 4), **load_info},
+                 "pad_count": len(load_pads),
+                 "mount_nh_included": round(load_l * 1e9, 4),
+                 "mount_mohm_included": round(load_r * 1e3, 4), **load_info},
         "curve": curve,
         "notes": notes + (cav.notes if cav is not None else []),
     }
     if cav is not None:
-        f1 = ph.C0 / (2 * max(cav.cells.shape[1], cav.cells.shape[0]) * cav.cell_mils
-                      * ph.MIL * math.sqrt(er))
-        result["cavity"]["first_mode_mhz_estimate"] = round(f1 / 1e6, 3)
+        f1 = cav.first_mode_hz()
+        result["cavity"]["first_mode_mhz"] = round(f1 / 1e6, 3) if f1 else None
+        a_mils, b_mils = cav.extent_mils()
+        result["cavity"]["extent_mils"] = [round(a_mils, 1), round(b_mils, 1)]
     if out_dir is not None:
         from pathlib import Path
         folder = Path(out_dir)
         folder.mkdir(parents=True, exist_ok=True)
-        stem = net.replace("/", "_").replace("\\", "_")
+        stem = safe_name(net)
         csv = folder / f"{stem}_pdn_impedance.csv"
         with open(csv, "w", encoding="utf-8") as fh:
             fh.write("freq_hz,z_re_ohm,z_im_ohm,z_mag_ohm,z_lumped_mag_ohm,target_ohm\n")
@@ -756,13 +1005,31 @@ def analyse(board: Optional[LayoutBoard], stack, net: str, ground: str, *,
                 fh.write(f"{freqs[i]:.6g},{z[i].real:.6g},{z[i].imag:.6g},{zmag[i]:.6g},"
                          f"{abs(z_lumped[i] + zl[i]):.6g},{target:.6g}\n")
         files = [str(csv)]
-        png = folder / f"{stem}_pdn_impedance.png"
-        if _plot(png, freqs, zmag, target, z_lumped + zl if z_plane is not None else None,
-                 f"{net} PDN impedance ({model})"):
-            files.append(str(png))
+        dcsv = folder / f"{stem}_pdn_decaps.csv"
+        with open(dcsv, "w", encoding="utf-8") as fh:
+            fh.write("ref,c_uf,esr_mohm,esl_nh,mount_nh,mount_mohm,srf_mhz,package,model,"
+                     "x_mils,y_mils,layer,notes\n")
+            for c in caps:
+                r_ = c.to_dict()
+                fh.write(",".join(str(x) for x in (
+                    r_["ref"], r_["c_uf"], r_["esr_mohm"], r_["esl_nh"], r_["mount_nh"],
+                    r_["mount_mohm"], r_["srf_mhz"], r_["package"], r_["model"],
+                    r_["at"][0], r_["at"][1], r_["layer"],
+                    '"' + "; ".join(c.notes).replace('"', "'") + '"')) + "\n")
+        files.append(str(dcsv))
         cir = folder / f"{stem}_pdn_lumped.cir"
         write_spice(cir, freqs, caps, (r_vrm, l_vrm) if vrm_used is not None else None,
-                    c_pl, load_l, f"{net} PDN")
+                    c_pl, load_l, f"{net} PDN", load_r)
         files.append(str(cir))
+        png = folder / f"{stem}_pdn_impedance.png"
+        try:
+            if _plot(png, freqs, zmag, target, z_lumped + zl if z_plane is not None else None,
+                     f"{net} PDN impedance ({model})"):
+                files.append(str(png))
+            else:
+                result["notes"].append("no plot: matplotlib is not installed "
+                                       "(pip install eda-agent[render]); the CSV has the curve")
+        except Exception as exc:  # noqa: BLE001 - the numbers stand without the picture
+            result["files_error"] = f"plot not written: {type(exc).__name__}: {exc}"
         result["files"] = files
     return result

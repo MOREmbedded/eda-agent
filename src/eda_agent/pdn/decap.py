@@ -123,6 +123,7 @@ class Decap:
     esl: float
     package: str = ""
     mount_l: float = 0.0          # board mounting inductance, H
+    mount_r: float = 0.0          # fan-out and barrel resistance, ohm
     x: float = 0.0
     y: float = 0.0
     layer: str = ""
@@ -142,7 +143,7 @@ class Decap:
         return self.esr + 1j * w * self.esl + 1.0 / (1j * w * self.c)
 
     def z(self, f: np.ndarray) -> np.ndarray:
-        return self.z_part(f) + 1j * 2 * np.pi * np.asarray(f) * self.mount_l
+        return self.z_part(f) + self.mount_r + 1j * 2 * np.pi * np.asarray(f) * self.mount_l
 
     @property
     def srf_hz(self) -> float:
@@ -151,6 +152,7 @@ class Decap:
     def to_dict(self) -> dict:
         return {"ref": self.ref, "c_uf": round(self.c * 1e6, 6), "esr_mohm": round(self.esr * 1e3, 3),
                 "esl_nh": round(self.esl * 1e9, 4), "mount_nh": round(self.mount_l * 1e9, 4),
+                "mount_mohm": round(self.mount_r * 1e3, 3),
                 "package": self.package, "srf_mhz": round(self.srf_hz / 1e6, 4),
                 "at": [round(self.x, 1), round(self.y, 1)], "layer": self.layer,
                 "model": self.source, "mount": self.mount_detail,

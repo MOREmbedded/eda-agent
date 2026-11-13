@@ -295,9 +295,11 @@ def test_mounting_inductance_is_the_via_loop_plus_fanout(result):
     assert m["via_spacing_mils"] == 90.0 and m["height_mils"] == 4.0
     lv = ph.via_pair_loop_inductance(4.0, 90.0, 5.79)
     assert m["vias_nh"] == pytest.approx(lv * 1e9, abs=2e-4)
-    # two 13 mil fan-outs, 12 mil wide, 4 mil over the plane
-    lt = 2 * ph.MU0 * 4 * 13 * ph.MIL / (12 + 8)
+    # each fan-out: 5 mil of 12 mil track from the pad's edge to the land's,
+    # then the land (20 mil across) to the barrel wall, 4 mil over the plane
+    lt = 2 * ph.MU0 * 4 * ph.MIL * (5 / (12 + 8) + (10 - 5.79) / (20 + 8))
     assert m["traces_nh"] == pytest.approx(lt * 1e9, abs=2e-4)
+    assert m["how"] == ["track"] and m["power_legs"] == 1 and m["ground_legs"] == 1
     assert m["total_nh"] == pytest.approx(m["vias_nh"] + m["traces_nh"] + m["cavity_nh"], abs=3e-4)
 
 
@@ -378,3 +380,285 @@ def test_bad_inputs():
         im.analyse(None, None, "V", "GND", load={})
     with pytest.raises(im.PDNError, match="mode"):
         im.analyse(None, None, "V", "GND", load={}, target_ohms=1, mode="x")
+
+
+# --- mounting: each pin's own way to the planes --------------------------------
+
+from eda_agent.layout.model import Component, Region, Track, Via   # noqa: E402
+from eda_agent.pdn import mounting as mt                           # noqa: E402
+
+from .boards import add_bga, add_cap, bare_board, smd, via        # noqa: E402
+
+
+def _load_mount(b, ref="U2", reach=100.0):
+    st = stack_from_stackup(STACKUP)
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
+    pw = [p for p in b.pads if p.comp == ref and p.net == "+1V0"]
+    gn = [p for p in b.pads if p.comp == ref and p.net == "GND"]
+    return mt.mount(mt.Copper(b, st, 0.79), cav, "+1V0", "GND", pw, gn, reach)
+
+
+def test_n_dog_bones_are_one_nth_of_one():
+    one, many = bare_board(), bare_board()
+    add_bga(one, 2)
+    add_bga(many, 8)
+    m1, m8 = _load_mount(one), _load_mount(many)
+    # 2 pairs against 32 pairs of the same dog-bone
+    assert m8["via_pairs"] == 32 and m8["power_legs"] == 32 and m8["ground_legs"] == 32
+    assert m8["total_nh"] == pytest.approx(m1["total_nh"] * 2 / 32, rel=0.02)
+    assert m8["traces_nh"] == pytest.approx(m1["traces_nh"] * 2 / 32, rel=0.02)
+    assert m8["how"] == ["track"] and m8["fanout_mils"] == [27.9, 27.9]
+    # one dog-bone by hand: 27.86 mil centre to centre, 8 mil of it in the
+    # ball, 9 in the land, then the land to the wall; half a via-pair loop
+    # with the nearest other via 39.37 mil away; the power via crosses the
+    # cavity (ground plane is the nearer)
+    h, r = 4.0, 4.79
+    fan = ph.MU0 * h * ph.MIL * ((27.86 - 8 - 9) / (6 + 2 * h) + (9 - r) / (18 + 2 * h))
+    half_loop = 0.5 * ph.via_pair_loop_inductance(h, 39.37, r)
+    cav = im.find_cavity(one, stack_from_stackup(STACKUP), "+1V0", "GND", 1e9)
+    port = ph.cavity_port_inductance(cav.d_mils, r, cav.cell_mils)
+    by_hand = (fan + half_loop + port) / 2 + (fan + half_loop) / 2
+    assert m1["_l"] == pytest.approx(by_hand, rel=0.01)
+
+
+def test_via_in_pad_has_no_fan_out():
+    b = bare_board()
+    add_bga(b, 4, dog=0.0)
+    m = _load_mount(b)
+    assert m["how"] == ["via in pad"] and m["traces_nh"] == 0.0 and m["via_pairs"] == 8
+
+
+@pytest.mark.parametrize("pitch", [60.0, 40.0, 30.0])
+def test_a_neighbours_via_is_not_this_capacitors_via(pitch):
+    b = bare_board()
+    for i in range(5):
+        add_cap(b, f"C{10 + i}", 2000 + pitch * i, 1700)
+    st = stack_from_stackup(STACKUP)
+    caps, _ = im.build_decaps(b, st, im.find_cavity(b, st, "+1V0", "GND", 1e9),
+                              "+1V0", "GND", None, 0.79)
+    alone = bare_board()
+    add_cap(alone, "C10", 2000, 1700)
+    ref, _ = im.build_decaps(alone, st, im.find_cavity(alone, st, "+1V0", "GND", 1e9),
+                             "+1V0", "GND", None, 0.79)
+    for c in caps:
+        assert c.mount_detail["via_pairs"] == 1
+        assert c.mount_l == pytest.approx(ref[0].mount_l, rel=1e-6)
+        # and it is attached where its vias are, not at its body
+        assert (c.x, c.y) == pytest.approx((2000 + pitch * (int(c.ref[1:]) - 10), 1700))
+
+
+def test_a_via_that_does_not_reach_the_plane_is_not_counted():
+    b = bare_board()
+    add_cap(b, "C10", 2000, 1700, power_via=False)
+    # a blind via top to layer 2 (the ground plane): it never gets to +1V0 on layer 3
+    b.vias.append(Via(2000, 1655, 20, 10, "TopLayer", "InternalPlane1", "+1V0"))
+    b.tracks.append(Track("TopLayer", 2000, 1680, 2000, 1655, 12, "+1V0"))
+    st = stack_from_stackup(STACKUP)
+    caps, notes = im.build_decaps(b, st, im.find_cavity(b, st, "+1V0", "GND", 1e9),
+                                  "+1V0", "GND", None, 0.79)
+    assert caps[0].mount_detail["assumed"] and caps[0].mount_l == pytest.approx(1e-9)
+    assert any("1 nH mounting assumed: C10" in n for n in notes)
+
+
+def test_two_vias_per_pad_halve_the_way_down():
+    one, two = bare_board(), bare_board()
+    add_cap(one, "C10", 2000, 1700)
+    add_cap(two, "C10", 2000, 1700)
+    # second via on each pad, the other side of it, on its own track
+    two.vias += [via(2030, 1680, "+1V0"), via(2030, 1720, "GND")]
+    two.tracks += [Track("TopLayer", 2000, 1680, 2030, 1680, 12, "+1V0"),
+                   Track("TopLayer", 2000, 1720, 2030, 1720, 12, "GND")]
+    st = stack_from_stackup(STACKUP)
+
+    def m(b):
+        return im.build_decaps(b, st, im.find_cavity(b, st, "+1V0", "GND", 1e9),
+                               "+1V0", "GND", None, 0.79)[0][0]
+    a, c = m(one), m(two)
+    assert c.mount_detail["via_pairs"] == 2
+    assert 0.4 * a.mount_l < c.mount_l < 0.75 * a.mount_l
+
+
+def _pour_board():
+    """+1V0 as a 2500 x 2000 mil pour on the top layer over the layer 2 ground plane."""
+    b = bare_board(ground_l3=True)
+    b.regions.append(Region("TopLayer", [(500, 500), (3000, 500), (3000, 2500), (500, 2500)],
+                            [], "+1V0", "pour", source="polygon:P"))
+    b.regions.append(Region("TopLayer", [(400, 400), (3100, 400), (3100, 2600), (400, 2600)],
+                            [], "+1V0", "pour_boundary", source="polygon:P"))
+    for i in range(3):
+        add_cap(b, f"C{10 + i}", 1500 + 100 * i, 1500, power_via=False)
+    b.components.append(Component("U2", "QFN", 2500, 1500))
+    b.pads += [smd("U2", "1", 2500, 1500, "+1V0"), smd("U2", "2", 2550, 1500, "GND")]
+    b.vias.append(via(2550, 1540, "GND"))
+    b.tracks.append(Track("TopLayer", 2550, 1500, 2550, 1540, 12, "GND"))
+    return b
+
+
+def test_rail_on_an_outer_pour_needs_no_power_via():
+    b = _pour_board()
+    r = im.analyse(b, stack_from_stackup(STACKUP), "+1V0", "GND", load={"ref": "U2"},
+                   target_ohms=0.05, points=31)
+    cav = r["cavity"]
+    assert (cav["power_layer"], cav["ground_layer"]) == ("TopLayer", "InternalPlane1")
+    assert cav["area_in2"] == pytest.approx(5.0, rel=0.01)      # the pour, not its outline
+    for d in r["decaps"]:
+        m = d["mount"]
+        assert m["how"] == ["in the plane copper", "track"] and "assumed" not in m
+        assert m["height_mils"] == 0.0 and m["vias_nh"] == 0.0
+        # the ground via through the 4 mil cavity and its fan-out: about 0.07 nH, not 1
+        assert 0.03 < m["total_nh"] < 0.15
+    assert r["load"]["mount"]["how"] == ["in the plane copper", "track"]
+    assert not any("assumed" in n for n in r["notes"])
+    # first resonance of the pour itself, not of the board: c / (2 a sqrt(er))
+    f1 = ph.C0 / (2 * 2500 * ph.MIL * math.sqrt(cav["er_1ghz"])) / 1e6
+    assert cav["first_mode_mhz"] == pytest.approx(f1, rel=0.01)
+    assert cav["extent_mils"] == pytest.approx([2500, 2000], abs=90)
+
+
+def _split_board(track: bool):
+    """+1V0 plane only right of x = 2000; the load at x = 300 on a long track."""
+    b = bare_board()
+    b.regions.append(Region("InternalPlane2", [(2000, 0), (4000, 0), (4000, 3000), (2000, 3000)],
+                            [], "+1V0", "copper"))
+    add_cap(b, "C10", 3000, 1700)
+    b.components.append(Component("U3", "SOT23", 300, 1500))
+    b.pads += [smd("U3", "1", 300, 1500, "+1V0"), smd("U3", "2", 300, 1560, "GND")]
+    b.vias.append(via(300, 1600, "GND"))
+    b.tracks.append(Track("TopLayer", 300, 1560, 300, 1600, 12, "GND"))
+    if track:
+        b.tracks.append(Track("TopLayer", 300, 1500, 2100, 1500, 10, "+1V0"))
+        b.vias.append(via(2100, 1500, "+1V0"))
+    return b
+
+
+def test_a_load_fed_by_a_track_carries_the_track():
+    st = stack_from_stackup(STACKUP)
+    r = im.analyse(_split_board(True), st, "+1V0", "GND", load={"ref": "U3"},
+                   target_ohms=0.05, points=31)
+    assert r["cavity"]["area_in2"] == pytest.approx(6.0, rel=0.02)
+    m = r["load"]["mount"]
+    # 1800 mil of 10 mil track 4 mil over the ground plane, less the pad and the land
+    track = ph.MU0 * 4 * (1800 - 12 - 10) * ph.MIL / (10 + 8)
+    assert m["traces_nh"] == pytest.approx(track * 1e9, rel=0.02)
+    assert m["fanout_mils"][0] == pytest.approx(1800, abs=1)
+    assert r["load"]["mount_nh_included"] > 12.0
+    # the curve has it: at the top of the sweep the load is that inductance
+    top = r["curve"][-1]
+    assert top["mohm"] / 1e3 == pytest.approx(2 * math.pi * top["hz"] * m["total_nh"] * 1e-9,
+                                              rel=0.05)
+
+
+def test_a_load_off_the_plane_pair_with_no_copper_to_it_is_said():
+    st = stack_from_stackup(STACKUP)
+    r = im.analyse(_split_board(False), st, "+1V0", "GND", load={"ref": "U3"},
+                   target_ohms=0.05, points=31)
+    notes = " | ".join(r["notes"])
+    assert "no power via reached" in notes                     # 1 nH assumed, said at the top
+    assert "the load is 1" in notes and "off the plane pair" in notes
+    assert r["load"]["off_plane_mils"] > 1600
+    # the distance is in the number: far more than the 1 nH assumed for the vias
+    assert r["load"]["mount_nh_included"] > 8.0
+
+
+def test_perforated_plane_under_a_bga_stays_and_does_not_depend_on_the_grid():
+    st = stack_from_stackup(STACKUP)
+    z, area = [], []
+    for shift in (0.0, 14.0, 28.0, 41.0):
+        b = bare_board()
+        add_bga(b, 20, 1600 + shift, 1100 + 0.6 * shift, dog=0.0, land=18, hole=12)
+        cav = im.find_cavity(b, st, "+1V0", "GND", 1e9)
+        # every cell under the part is still a node: copper with holes, not a hole
+        ix0, iy0 = int((1600 + shift - cav.x0) / cav.cell_mils), int((1100 - cav.y0) / cav.cell_mils)
+        assert cav.cells[iy0 + 1:iy0 + 8, ix0 + 1:ix0 + 8].all()
+        assert 0.3 < cav.fill[iy0 + 3, ix0 + 3] < 0.95
+        area.append(cav.area_mils2)
+        r = im.analyse(b, st, "+1V0", "GND", load={"ref": "U2"}, target_ohms=0.05,
+                       f_min_hz=2e8, f_max_hz=2.2e8, points=16, vrm={"disable": True})
+        z.append(r["curve"][0]["mohm"])
+    assert max(area) / min(area) - 1 < 0.002
+    assert max(z) / min(z) - 1 < 0.04
+
+
+def test_a_slot_through_one_plane_opens_the_cavity_there():
+    st = stack_from_stackup(STACKUP)
+    b = bare_board()
+    # the +1V0 plane as two regions with a 6 mil slot between: far narrower than a cell
+    b.regions += [Region("InternalPlane2", [(0, 0), (1997, 0), (1997, 3000), (0, 3000)], [], "+1V0", "copper"),
+                  Region("InternalPlane2", [(2003, 0), (4000, 0), (4000, 3000), (2003, 3000)], [], "+1V0", "copper")]
+    add_cap(b, "C10", 1000, 1500)
+    add_cap(b, "C11", 3000, 1500)
+    b.components.append(Component("U2", "X", 3200, 1500))
+    b.pads += [smd("U2", "1", 3200, 1500, "+1V0"), smd("U2", "2", 3250, 1500, "GND")]
+    b.vias += [via(3200, 1500, "+1V0"), via(3250, 1500, "GND")]
+    r = im.analyse(b, st, "+1V0", "GND", load={"ref": "U2"}, target_ohms=0.05, points=31)
+    assert any("2 separate islands; the one under the load" in n or "2 separate islands; the largest" in n
+               for n in r["notes"])
+    assert r["cavity"]["area_in2"] == pytest.approx(6.0, rel=0.02)   # the load's half only
+    assert any(d["ref"] == "C10" and any("off the plane pair" in n for n in d.get("notes", []))
+               for d in r["decaps"])
+
+
+def test_load_current_is_split_by_pins_not_by_grid_nodes():
+    cav = im.rectangular_cavity(4000, 3000, 4, 4.3, 0.02, cell_mils=100)
+    f = np.array([3e8])
+    a, _ = cav.node_near(1050, 1550)
+    far, _ = cav.node_near(3050, 550)
+    za = im.solve_cavity(cav, f, [], [a])[0]
+    zf = im.solve_cavity(cav, f, [], [far])[0]
+    even = im.solve_cavity(cav, f, [], [a, far])[0]
+    pins = im.solve_cavity(cav, f, [], [a, far], load_weights=[30, 1])[0]
+    # thirty pins at one node and one stray: the stray carries 1/31, not half
+    assert abs(pins - za) < 0.2 * abs(even - za)
+    # weights of one are the old equal split
+    assert im.solve_cavity(cav, f, [], [a, far], load_weights=[1, 1])[0] == pytest.approx(even)
+    with pytest.raises(im.PDNError):
+        im.solve_cavity(cav, f, [], [a, far], load_weights=[1])
+    assert zf != za
+
+
+def test_impedance_inputs_are_checked_and_unknown_keys_are_said():
+    b = plane_board()
+    st = stack_from_stackup(STACKUP)
+    kw = dict(load={"ref": "U2"}, target_ohms=0.02, points=31)
+    bad = [
+        (dict(kw, decaps=[{"ref": "C10", "c_uf": "big"}]), "c_uf must be a number"),
+        (dict(kw, decaps=[{"ref": "C10", "esr_ohms": -1}]), "esr_ohms must be 0 or more"),
+        (dict(kw, decaps=[{"c_uf": 0}]), "c_uf must be above 0"),
+        (dict(kw, decaps=[{"esr_ohms": 0.01}]), "needs a ref"),
+        (dict(kw, decaps="C10"), "list of dicts"),
+        (dict(kw, decaps=["C10"]), "is a dict"),
+        (dict(kw, vrm={"r_mohm": "x"}), "r_mohm must be a number"),
+        (dict(kw, vrm={"r_mohm": 0, "l_nh": 0}), "is a short"),
+        (dict(kw, f_min_hz="a"), "are numbers"),
+        (dict(kw, plating_mils=0), "plating"),
+    ]
+    for args, msg in bad:
+        with pytest.raises(im.PDNError, match=msg):
+            im.analyse(b, st, "+1V0", "GND", **args)
+    with pytest.raises(im.PDNError, match="same net"):
+        im.analyse(b, st, "GND", "GND", **kw)
+    with pytest.raises(im.PDNError, match="not on the board"):
+        im.analyse(b, st, "+1V0", "AGND", **kw)
+    r = im.analyse(b, st, "+1V0", "GND", load={"ref": "U2", "amps": 2}, target_ohms=0.02,
+                   points=5000, decaps=[{"c_uf": 10, "esr": 0.01}], vrm={"ref": "U99"})
+    notes = " | ".join(r["notes"])
+    assert "load: ['amps'] not known and ignored" in notes
+    assert "decaps[1]: ['esr'] not known and ignored" in notes
+    assert "points 5000 taken as 2001" in notes
+    assert "vrm: U99 has no pad on +1V0" in notes
+    assert any(d["ref"] == "ADDED1" for d in r["decaps"])       # a value with no ref is added
+
+
+def test_many_capacitors_are_listed_by_kind_and_all_are_in_the_file(tmp_path):
+    import json
+    b = plane_board(n_caps=4)
+    for i in range(40):
+        add_cap(b, f"C{100 + i}", 1000 + 45 * i, 2300, "1uF" if i % 2 else "100nF")
+    r = im.analyse(b, stack_from_stackup(STACKUP), "+1V0", "GND", load={"ref": "U2"},
+                   target_ohms=0.02, points=31, out_dir=tmp_path)
+    assert "decaps" not in r and r["decap_count"] == 45
+    assert sum(g["count"] for g in r["decap_groups"]) == 45
+    assert len(json.dumps(r)) < 12000
+    rows = (tmp_path / "+1V0_pdn_decaps.csv").read_text().splitlines()
+    assert len(rows) == 46 and rows[0].startswith("ref,c_uf,")
+    assert any(f.endswith("_pdn_impedance.png") for f in r["files"])

@@ -73,3 +73,44 @@ def plane_board(n_caps: int = 4, cap_value: str = "100nF") -> LayoutBoard:
         b.tracks += [Track("TopLayer", x, y - 20, x, y - 45, 12, "+1V0"),
                      Track("TopLayer", x, y + 20, x, y + 45, 12, "GND")]
     return b
+
+
+def bare_board(ground_l3: bool = False) -> LayoutBoard:
+    """The four layers of ``plane_board`` with nothing on them."""
+    return LayoutBoard(name="pdn.PcbDoc", outline=list(OUTLINE),
+                       layers=[Layer("TopLayer", "signal", 0),
+                               Layer("InternalPlane1", "plane", 1, plane_net="GND"),
+                               Layer("InternalPlane2", "plane", 2,
+                                     plane_net="GND" if ground_l3 else "+1V0"),
+                               Layer("BottomLayer", "signal", 3)])
+
+
+def add_bga(b: LayoutBoard, n: int, x0: float = 2000.0, y0: float = 1500.0, *,
+            pitch: float = 39.37, dog: float = 19.7, ref: str = "U2",
+            land: float = 18.0, hole: float = 8.0) -> None:
+    """An n x n ball grid, +1V0 and GND in a chequerboard, every ball on its
+    own dog-bone via ``dog`` mils away on each axis (0: via in pad)."""
+    b.components.append(Component(ref, "BGA", x0, y0, comment="FPGA"))
+    k = 0
+    for i in range(n):
+        for j in range(n):
+            k += 1
+            net = "+1V0" if (i + j) % 2 == 0 else "GND"
+            x, y = x0 + i * pitch, y0 + j * pitch
+            b.pads.append(Pad(ref, str(k), x, y, 0.0, net, [PadCopper("TopLayer", "round", 16, 16)]))
+            b.vias.append(Via(x + dog, y + dog, land, hole, "TopLayer", "BottomLayer", net))
+            if dog:
+                b.tracks.append(Track("TopLayer", x, y, x + dog, y + dog, 6, net))
+
+
+def add_cap(b: LayoutBoard, ref: str, x: float, y: float, value: str = "100nF",
+            power_via: bool = True, ground_via: bool = True) -> None:
+    """A 0402 across +1V0 / GND with a via 25 mil from each pad."""
+    b.components.append(Component(ref, "C0402", x, y, comment=value))
+    b.pads += [smd(ref, "1", x, y - 20, "+1V0", 24, 20), smd(ref, "2", x, y + 20, "GND", 24, 20)]
+    if power_via:
+        b.vias.append(via(x, y - 45, "+1V0"))
+        b.tracks.append(Track("TopLayer", x, y - 20, x, y - 45, 12, "+1V0"))
+    if ground_via:
+        b.vias.append(via(x, y + 45, "GND"))
+        b.tracks.append(Track("TopLayer", x, y + 20, x, y + 45, 12, "GND"))
