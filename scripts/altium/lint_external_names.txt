@@ -408,7 +408,6 @@ lbl_LblReq
 lbl_LblStop
 lbl_LblUp
 lbl_LogHint
-lbl_Spinner
 lbl_Status
 lbl_ValMs
 lbl_ValReq
@@ -444,9 +443,12 @@ PCBM_BeginModify
 PCBM_BoardRegisteration
 PCBM_EndModify
 PCBServer
+pnl_Body
 pnl_Config
 pnl_Controls
 pnl_ErrBar
+pnl_Filter
+pnl_FilterIn
 pnl_Footer
 pnl_Header
 pnl_K1
@@ -456,6 +458,8 @@ pnl_K4
 pnl_KPIs
 pnl_StatusDot
 pnl_TabBar
+pnl_TabInk
+pnl_TabRule
 Point
 ReadLn
 Reset
@@ -473,6 +477,7 @@ sep_Cfg4
 sep_Cfg5
 sep_Cfg6
 sep_Cfg7
+sep_Cfg8
 ShowMessage
 SignalLayers
 Sin

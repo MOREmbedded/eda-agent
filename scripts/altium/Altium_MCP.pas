@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.12.4';
+    SCRIPT_VERSION = '2026.11.13.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -102422,24 +102422,32 @@ Var
     SavedHintHidePause : Integer;
 
 
-{ Static UI constants: Altium's dark theme, read off AD 26.11's own      }
-{ panels, status bar and buttons, so the form looks like one of them.    }
+{ Static UI constants: the web dashboard's dark theme (workbench.html,   }
+{ :root[data-theme="dark"]), so the window and the dashboard read as one  }
+{ product. A dark band at top and bottom, a body, raised cards, one inset }
+{ well for the log; blue marks what is chosen, amber what is held back.   }
 { DelphiScript color literals are BGR-ordered Cardinals (8 hex digits      }
 { after the $); a malformed 7-digit literal bombs the parser without an   }
 { obvious error location, so always double-count.                          }
 Const
-    COLOR_BG_BASE       = $00353535;   { panel body }
-    COLOR_BG_CARD       = $00404040;   { title strip, tab strip, status bar }
-    COLOR_BG_ELEVATED   = $00545454;   { button }
-    COLOR_BG_HOVER      = $00646464;   { button under the mouse }
-    COLOR_BG_LOG        = $002B2B2B;   { log and input fields }
-    COLOR_ACCENT_BLUE   = $00FFB363;   { #63B3FF in BGR }
-    COLOR_ACCENT_AMBER  = $00589EE0;   { #E09E58 in BGR }
-    COLOR_ACCENT_RED    = $005C5CFF;   { #FF5C5C in BGR }
-    COLOR_ACCENT_GREEN  = $006BC464;   { #64C46B in BGR }
-    COLOR_TEXT_BODY     = $00E5E5E5;
-    COLOR_TEXT_MUTED    = $00A0A0A0;
-    COLOR_TEXT_FAINT    = $00808080;
+    COLOR_BG_RAIL       = $00130F0B;   { #0B0F13 header and footer band }
+    COLOR_BG_BASE       = $0027201A;   { #1A2027 panel body }
+    COLOR_BG_CARD       = $00332A22;   { #222A33 figure cards, idle Dashboard }
+    COLOR_BG_ELEVATED   = $003D332A;   { #2A333D button }
+    COLOR_BG_HOVER      = $004D4236;   { #36424D button under the mouse }
+    COLOR_BG_LOG        = $001C1712;   { #12171C log well and input field }
+    COLOR_BG_SELECTED   = $004F3624;   { #24364F a toggle that is on }
+    COLOR_ACCENT_BLUE   = $00FFA67E;   { #7EA6FF }
+    COLOR_HOVER_BLUE    = $00FFBB9D;   { #9DBBFF }
+    COLOR_ACCENT_AMBER  = $0045A8EB;   { #EBA845 }
+    COLOR_HOVER_AMBER   = $006ABCF2;   { #F2BC6A }
+    COLOR_DIM_AMBER     = $00305A7A;   { #7A5A30 the busy dot's low beat }
+    COLOR_ACCENT_RED    = $00637AFF;   { #FF7A63 }
+    COLOR_ACCENT_GREEN  = $008AC062;   { #62C08A }
+    COLOR_TEXT_ON_ACCENT = $001C1712;  { dark text on a blue or amber fill }
+    COLOR_TEXT_BODY     = $00EAE6E1;   { #E1E6EA }
+    COLOR_TEXT_MUTED    = $00C0B8AE;   { #AEB8C0 }
+    COLOR_TEXT_FAINT    = $009E958A;   { #8A959E }
     UPDATE_FLAG_FILE     = 'update_available.flag';
     { Written by the MCP server after each tool call (diag/usage.py). }
     USAGE_STATUS_FILE    = 'tool_usage.txt';
@@ -102455,7 +102463,7 @@ Begin
     Try lbl_LastErr.Caption := Text; Except End;
     Try
         If Text = '' Then pnl_ErrBar.Height := 0
-        Else pnl_ErrBar.Height := 16;
+        Else pnl_ErrBar.Height := 22;
     Except End;
 End;
 
@@ -102485,15 +102493,17 @@ End;
 { Spinner glyph cycle. Classic terminal-spinner ASCII for max compatibility   }
 { with DelphiScript's TMemo / TLabel rendering, which doesn't reliably show   }
 { 3-byte UTF-8 sequences without a font fallback.                             }
-Function SpinnerGlyph(Frame : Integer) : String;
+{ The status dot is a round glyph: its font colour is the state. }
+Procedure SetStatusDot(Col : Cardinal);
 Begin
-    Case (Frame Mod SPINNER_FRAMES) Of
-        0: Result := '|';
-        1: Result := '/';
-        2: Result := '-';
-    Else
-        Result := '\';
-    End;
+    Try pnl_StatusDot.Font.Color := Col; Except End;
+End;
+
+{ While a call runs the dot beats: two ticks bright, two ticks low. }
+Function PulseColour(Frame : Integer) : Cardinal;
+Begin
+    If (Frame Mod SPINNER_FRAMES) < 2 Then Result := COLOR_ACCENT_AMBER
+    Else Result := COLOR_DIM_AMBER;
 End;
 
 
@@ -102732,8 +102742,7 @@ Begin
         SpinnerFrame := 0;
         Try tmr_Spinner.Enabled := True; Except End;
         Try
-            pnl_StatusDot.Color := COLOR_ACCENT_AMBER;
-            lbl_Spinner.Caption := SpinnerGlyph(SpinnerFrame);
+            SetStatusDot(PulseColour(SpinnerFrame));
             lbl_Status.Caption := Command + '  (0.0 s)';
             lbl_Status.Font.Color := COLOR_TEXT_BODY;
         Except End;
@@ -102747,17 +102756,16 @@ Begin
         InFlightCommand := '';
         Try tmr_Spinner.Enabled := False; Except End;
         Try
-            lbl_Spinner.Caption := '';
             If PausedFlag Then
             Begin
-                pnl_StatusDot.Color := COLOR_TEXT_FAINT;
-                lbl_Status.Caption := 'paused';
+                SetStatusDot(COLOR_TEXT_FAINT);
+                lbl_Status.Caption := 'Paused';
                 lbl_Status.Font.Color := COLOR_TEXT_MUTED;
             End
             Else
             Begin
-                pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
-                lbl_Status.Caption := 'idle';
+                SetStatusDot(COLOR_ACCENT_GREEN);
+                lbl_Status.Caption := 'Idle';
                 lbl_Status.Font.Color := COLOR_TEXT_BODY;
             End;
         Except End;
@@ -102826,7 +102834,6 @@ Begin
         + 'running a command, shown with its name and elapsed time. '
         + 'Grey: paused.';
     SetTip(pnl_StatusDot, Tip);  SetTip(lbl_Status, Tip);
-    SetTip(lbl_Spinner, Tip);
     SetTip(lbl_Version, 'Version of the eda-agent scripts loaded in Altium.');
 
     Tip := 'How long this bridge session has been running in Altium.';
@@ -102982,7 +102989,7 @@ Procedure btn_UpdateEnter(Sender : TObject);
 Begin Try btn_Update.Color := COLOR_BG_HOVER; Except End; End;
 
 Procedure btn_UpdateLeave(Sender : TObject);
-Begin Try btn_Update.Color := COLOR_BG_CARD; Except End; End;
+Begin Try btn_Update.Color := COLOR_BG_RAIL; Except End; End;
 
 Procedure UpdateOpenWebState(Dummy : Integer);
 Var
@@ -103019,9 +103026,9 @@ Begin
     Try
         If NewEnabled Then
         Begin
-            btn_OpenWeb.Color := COLOR_BG_ELEVATED;
-            btn_OpenWeb.Font.Color := COLOR_TEXT_BODY;
-            Try ico_OpenWeb.Font.Color := COLOR_TEXT_BODY; Except End;
+            btn_OpenWeb.Color := COLOR_ACCENT_BLUE;
+            btn_OpenWeb.Font.Color := COLOR_TEXT_ON_ACCENT;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_ON_ACCENT; Except End;
             btn_OpenWeb.Cursor := crHandPoint;
             SetTip(btn_OpenWeb, TIP_OPENWEB_ON);
             SetTip(ico_OpenWeb, TIP_OPENWEB_ON);
@@ -103130,7 +103137,7 @@ Var
 Begin
     If Not InFlightActive Then Exit;
     SpinnerFrame := (SpinnerFrame + 1) Mod SPINNER_FRAMES;
-    Try lbl_Spinner.Caption := SpinnerGlyph(SpinnerFrame); Except End;
+    SetStatusDot(PulseColour(SpinnerFrame));
     ElapsedMs := GetTickCount - InFlightStartMs;
     Tenths := ElapsedMs Div 100;
     Try
@@ -103155,13 +103162,13 @@ Begin
         Pnl.Caption := LabelText;
         If Checked Then
         Begin
-            Pnl.Color := COLOR_BG_ELEVATED;
-            Pnl.Font.Color := COLOR_TEXT_BODY;
+            Pnl.Color := COLOR_BG_SELECTED;
+            Pnl.Font.Color := COLOR_ACCENT_BLUE;
         End
         Else
         Begin
-            Pnl.Color := COLOR_BG_BASE;
-            Pnl.Font.Color := COLOR_TEXT_MUTED;
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_FAINT;
         End;
     Except End;
 End;
@@ -103169,8 +103176,8 @@ End;
 Procedure LeaveToggle(Pnl : TPanel; Checked : Boolean);
 Begin
     Try
-        If Checked Then Pnl.Color := COLOR_BG_ELEVATED
-        Else Pnl.Color := COLOR_BG_BASE;
+        If Checked Then Pnl.Color := COLOR_BG_SELECTED
+        Else Pnl.Color := COLOR_BG_ELEVATED;
     Except End;
 End;
 
@@ -103216,6 +103223,15 @@ Begin
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
     OwnPanelColours(sep_Cfg7);      OwnPanelColours(tab_Stats);
     OwnPanelColours(opt_StatsOn);   OwnPanelColours(opt_StatsOff);
+    OwnPanelColours(pnl_Filter);    OwnPanelColours(pnl_FilterIn);
+    OwnPanelColours(pnl_TabRule);   OwnPanelColours(pnl_TabInk);
+    OwnPanelColours(pnl_Body);      OwnPanelColours(sep_Cfg8);
+    OwnPanelColours(opt_ChkFpOn);   OwnPanelColours(opt_ChkFpOff);
+    OwnPanelColours(opt_ChkSymOn);  OwnPanelColours(opt_ChkSymOff);
+    OwnPanelColours(opt_ChkPadOn);  OwnPanelColours(opt_ChkPadOff);
+    OwnPanelColours(opt_ChkBodyOn); OwnPanelColours(opt_ChkBodyOff);
+    OwnPanelColours(opt_ChkSpiceOn); OwnPanelColours(opt_ChkSpiceOff);
+    OwnPanelColours(opt_ChkFabOn);  OwnPanelColours(opt_ChkFabOff);
 End;
 
 
@@ -103228,8 +103244,8 @@ Begin
         Begin
             btn_Saving.Caption := 'Saving OFF';
             btn_Saving.Color := COLOR_ACCENT_AMBER;
-            btn_Saving.Font.Color := $00111111;
-            ico_Saving.Font.Color := $00111111;
+            btn_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
+            ico_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
             SetTip(btn_Saving, TIP_SAVING_OFF);
             SetTip(ico_Saving, TIP_SAVING_OFF);
         End
@@ -103253,7 +103269,7 @@ Begin
         If Chosen Then
         Begin
             Pnl.Color := COLOR_ACCENT_BLUE;
-            Pnl.Font.Color := $00111111;
+            Pnl.Font.Color := COLOR_TEXT_ON_ACCENT;
         End
         Else
         Begin
@@ -103270,7 +103286,7 @@ Begin
         If Chosen Then
         Begin
             Pnl.Color := COLOR_ACCENT_AMBER;
-            Pnl.Font.Color := $00111111;
+            Pnl.Font.Color := COLOR_TEXT_ON_ACCENT;
         End
         Else
         Begin
@@ -103507,12 +103523,14 @@ Begin
         Try StatusForm.WindowState := wsMinimized; Except End;
         Try StatusForm.Caption := 'EDA Agent MCP'; Except End;
         Try lbl_Version.Caption := 'v' + SCRIPT_VERSION; Except End;
-        Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;
-        Try lbl_Status.Caption := 'idle'; Except End;
+        SetStatusDot(COLOR_ACCENT_GREEN);
+        Try lbl_Status.Caption := 'Idle'; Except End;
         ShowNotice('');
         { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState(0);
     Except End;
+    { A grey hint in the empty filter field; older VCLs lack it. }
+    Try edt_Filter.TextHint := 'Filter the log'; Except { display only } End;
 End;
 
 Procedure HideStatusForm(Dummy : Integer);
@@ -103553,12 +103571,12 @@ Begin
         Begin
             btn_Pause.Caption := 'Resume';
             btn_Pause.Color := COLOR_ACCENT_AMBER;
-            btn_Pause.Font.Color := $00111111;
+            btn_Pause.Font.Color := COLOR_TEXT_ON_ACCENT;
             Try ico_Pause.Visible := False; Except End;
             Try ico_Resume.Visible := True; Except End;
             SetTip(btn_Pause, TIP_RESUME);
-            pnl_StatusDot.Color := COLOR_TEXT_FAINT;
-            lbl_Status.Caption := 'paused';
+            SetStatusDot(COLOR_TEXT_FAINT);
+            lbl_Status.Caption := 'Paused';
             lbl_Status.Font.Color := COLOR_TEXT_MUTED;
         End
         Else
@@ -103571,8 +103589,8 @@ Begin
             SetTip(btn_Pause, TIP_PAUSE);
             If Not InFlightActive Then
             Begin
-                pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
-                lbl_Status.Caption := 'idle';
+                SetStatusDot(COLOR_ACCENT_GREEN);
+                lbl_Status.Caption := 'Idle';
                 lbl_Status.Font.Color := COLOR_TEXT_BODY;
             End;
         End;
@@ -103718,12 +103736,48 @@ Begin
 End;
 
 
+{ A tab is text on the body colour. The open one is bright and semibold }
+{ with the blue underline moved beneath it; the others are faint.       }
+Procedure PaintTab(Pnl : TPanel; Open : Boolean);
+Begin
+    Try
+        Pnl.Color := COLOR_BG_BASE;
+        If Open Then
+        Begin
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+            Pnl.Font.Name := 'Segoe UI Semibold';
+            pnl_TabInk.Left := Pnl.Left + 10;
+            pnl_TabInk.Width := Pnl.Width - 20;
+        End
+        Else
+        Begin
+            Pnl.Font.Color := COLOR_TEXT_FAINT;
+            Pnl.Font.Name := 'Segoe UI';
+        End;
+    Except End;
+End;
+
+
 { Hover handlers ============================================================ }
 
+{ Detach ends the bridge, so it is red, but only fills red under the }
+{ mouse: at rest it should not be the loudest thing in the window.    }
 Procedure btn_DetachEnter(Sender : TObject);
-Begin Try btn_Detach.Color := $004040E0; Except End; End;
+Begin
+    Try
+        btn_Detach.Color := COLOR_ACCENT_RED;
+        btn_Detach.Font.Color := COLOR_TEXT_ON_ACCENT;
+        ico_Detach.Font.Color := COLOR_TEXT_ON_ACCENT;
+    Except End;
+End;
 Procedure btn_DetachLeave(Sender : TObject);
-Begin Try btn_Detach.Color := $003030C8; Except End; End;
+Begin
+    Try
+        btn_Detach.Color := COLOR_BG_ELEVATED;
+        btn_Detach.Font.Color := COLOR_ACCENT_RED;
+        ico_Detach.Font.Color := COLOR_ACCENT_RED;
+    Except End;
+End;
 
 Procedure btn_ClearLogEnter(Sender : TObject);
 Begin Try btn_ClearLog.Color := COLOR_BG_HOVER; Except End; End;
@@ -103733,7 +103787,7 @@ Begin Try btn_ClearLog.Color := COLOR_BG_ELEVATED; Except End; End;
 Procedure btn_PauseEnter(Sender : TObject);
 Begin
     Try
-        If PausedFlag Then btn_Pause.Color := $0070B4F0
+        If PausedFlag Then btn_Pause.Color := COLOR_HOVER_AMBER
         Else btn_Pause.Color := COLOR_BG_HOVER;
     Except End;
 End;
@@ -103748,7 +103802,7 @@ End;
 Procedure btn_SavingEnter(Sender : TObject);
 Begin
     Try
-        If SavingOff Then btn_Saving.Color := $0070B4F0
+        If SavingOff Then btn_Saving.Color := COLOR_HOVER_AMBER
         Else btn_Saving.Color := COLOR_BG_HOVER;
     Except End;
 End;
@@ -103765,12 +103819,12 @@ Begin Try btn_Renew.Color := COLOR_BG_ELEVATED; Except End; End;
 Procedure btn_OpenWebEnter(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_BG_HOVER; Except End;
+        Try btn_OpenWeb.Color := COLOR_HOVER_BLUE; Except End;
 End;
 Procedure btn_OpenWebLeave(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_BG_ELEVATED; Except End
+        Try btn_OpenWeb.Color := COLOR_ACCENT_BLUE; Except End
     Else
         Try btn_OpenWeb.Color := COLOR_BG_CARD; Except End;
 End;
@@ -103793,28 +103847,26 @@ Begin LeaveToggle(chk_OnTop, AlwaysOnTopFlag); End;
 Procedure tab_LogEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Log.Visible Then tab_Log.Color := $004A4A4A;
+        If Not mmo_Log.Visible Then tab_Log.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_LogLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_LOG
-        Else tab_Log.Color := COLOR_BG_CARD;
+        PaintTab(tab_Log, mmo_Log.Visible);
     Except End;
 End;
 
 Procedure tab_PerfEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Perf.Visible Then tab_Perf.Color := $004A4A4A;
+        If Not mmo_Perf.Visible Then tab_Perf.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_PerfLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_LOG
-        Else tab_Perf.Color := COLOR_BG_CARD;
+        PaintTab(tab_Perf, mmo_Perf.Visible);
     Except End;
 End;
 
@@ -103822,34 +103874,18 @@ End;
 Procedure tab_StatsEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Stats.Visible Then tab_Stats.Color := $004A4A4A;
+        If Not mmo_Stats.Visible Then tab_Stats.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_StatsLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Stats.Visible Then tab_Stats.Color := COLOR_BG_LOG
-        Else tab_Stats.Color := COLOR_BG_CARD;
+        PaintTab(tab_Stats, mmo_Stats.Visible);
     Except End;
 End;
 
 
 { Show one of the four tabs: 0 Log, 1 Perf, 2 Config, 3 Stats. }
-Procedure PaintTab(Pnl : TPanel; Open : Boolean);
-Begin
-    Try
-        If Open Then
-        Begin
-            Pnl.Color := COLOR_BG_LOG;
-            Pnl.Font.Color := COLOR_TEXT_BODY;
-        End
-        Else
-        Begin
-            Pnl.Color := COLOR_BG_CARD;
-            Pnl.Font.Color := COLOR_TEXT_MUTED;
-        End;
-    Except End;
-End;
 
 Procedure ShowTab(Which : Integer);
 Begin
@@ -103884,15 +103920,14 @@ Begin ShowTab(3); End;
 Procedure tab_ConfigEnter(Sender : TObject);
 Begin
     Try
-        If Not pnl_Config.Visible Then tab_Config.Color := $004A4A4A;
+        If Not pnl_Config.Visible Then tab_Config.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 
 Procedure tab_ConfigLeave(Sender : TObject);
 Begin
     Try
-        If pnl_Config.Visible Then tab_Config.Color := COLOR_BG_LOG
-        Else tab_Config.Color := COLOR_BG_CARD;
+        PaintTab(tab_Config, pnl_Config.Visible);
     Except End;
 End;
 
@@ -105143,7 +105178,7 @@ Begin
                     PumpInterval := PollIntervalActiveMs;
                     Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
-                UpdateStatusHeader('MCP: idle');
+                UpdateStatusHeader('Idle');
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
                     StatusRequestCount,
@@ -105261,7 +105296,7 @@ Begin
     { The timer only ticks while the form is visible, so this is not just  }
     { cosmetic: showing the dashboard is what starts the pump running.     }
     ShowStatusForm(0);
-    UpdateStatusHeader('MCP: idle');
+    UpdateStatusHeader('Idle');
     UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
     AppendLog(FormatLogStamp(0) + ',0,_session_start,version=' + SCRIPT_VERSION
               + ',protocol=' + IntToStr(PROTOCOL_VERSION));
@@ -105278,7 +105313,7 @@ Begin
     If Not Armed Then
     Begin
         AppendLog(FormatLogStamp(0) + ',0,_arm_failed,the poll timer did not start');
-        UpdateStatusHeader('MCP: poll timer did not start');
+        UpdateStatusHeader('Poll timer did not start');
     End;
 End;
 
