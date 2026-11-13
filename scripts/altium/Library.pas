@@ -1677,6 +1677,33 @@ Begin
     End;
 End;
 
+{ The shape words the pad writers take (issue #309). The two pad creators
+  compared the word as given and sent anything else to round, so a
+  "rectangle" pad, or a "Rectangular" one, was made round and the reply
+  said success. Case and spaces are ignored and the rounded rectangle
+  spellings set_pad_properties already took are kept. Returns the shape
+  word, empty when none was given (each writer keeps its own default), or
+  "?" and the word as given when it is not a pad shape. }
+Function CanonicalPadShape(Raw : String) : String;
+Var
+    S : String;
+Begin
+    S := LowerCase(Trim(Raw));
+    If (S = 'roundrectangle') Or (S = 'roundedrect') Or (S = 'rounded_rectangular') Then
+        S := 'roundrect';
+    If (S = '') Or (S = 'round') Or (S = 'rectangular') Or (S = 'octagonal')
+        Or (S = 'roundrect') Then
+        Result := S
+    Else
+        Result := '?' + Trim(Raw);
+End;
+
+Function PadShapeRefusal(Words : String) : String;
+Begin
+    Result := 'shape must be round, rectangular, octagonal or roundrect (got: '
+        + Words + ')';
+End;
+
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr, FootprintName : String;
@@ -1702,7 +1729,13 @@ Begin
     XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
     YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
     HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
-    Shape := ExtractJsonValue(Params, 'shape');
+    Shape := CanonicalPadShape(ExtractJsonValue(Params, 'shape'));
+    If Copy(Shape, 1, 1) = '?' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_SHAPE',
+            PadShapeRefusal(Copy(Shape, 2, Length(Shape))) + '; no pad was added');
+        Exit;
+    End;
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
     CornerRadius := StrToIntDef(ExtractJsonValue(Params, 'corner_radius'), 25);
@@ -2586,7 +2619,7 @@ End;
 { up as property_failures instead of a pad that silently lacks it.            }
 Function Lib_AddFootprintPads(Params : String; RequestId : String) : String;
 Var
-    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers : String;
+    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers, BadShapes : String;
     OpCount, Added, Failed : Integer;
     CornerRadius : Integer;
     X, Y, XSize, YSize, HoleSize : Double;
@@ -2613,6 +2646,30 @@ Begin
     If PadsStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pads is required');
+        Exit;
+    End;
+
+    { Every shape word is checked before any pad is made (issue #309): a
+      land pattern half built from a batch is worse than none. }
+    BadShapes := '';
+    Remaining := PadsStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        Shape := CanonicalPadShape(GetBatchField(Op, 'shape'));
+        If Copy(Shape, 1, 1) = '?' Then
+        Begin
+            Shape := Copy(Shape, 2, Length(Shape));
+            If BadShapes = '' Then BadShapes := Shape
+            Else If Pos(Shape, BadShapes) = 0 Then
+                BadShapes := BadShapes + ', ' + Shape;
+        End;
+    End;
+    If BadShapes <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_SHAPE',
+            PadShapeRefusal(BadShapes) + '; no pad was added');
         Exit;
     End;
 
@@ -2653,7 +2710,7 @@ Begin
             YSize := StrToFloatDef(GetBatchField(Op, 'y_size'), MilsInUnits(60, UnitsStr));
             HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
             Rotation := StrToFloatDef(GetBatchField(Op, 'rotation'), 0);
-            Shape := GetBatchField(Op, 'shape');
+            Shape := CanonicalPadShape(GetBatchField(Op, 'shape'));
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
             PasteExpMils := StrToFloatDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
@@ -13917,13 +13974,11 @@ Begin
         Result := ('hole_width makes a slot; leave it out for a round or square hole');
         Exit;
     End;
-    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
-    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
-    If (Shape <> '') And (Shape <> 'round') And (Shape <> 'rectangular')
-        And (Shape <> 'octagonal') And (Shape <> 'roundrect') Then
+    Shape := CanonicalPadShape(PadArg(Src, IsOp, 'shape'));
+    If Copy(Shape, 1, 1) = '?' Then
     Begin
         Code := 'INVALID_SHAPE';
-        Result := ('shape must be round, rectangular, octagonal or roundrect');
+        Result := PadShapeRefusal(Copy(Shape, 2, Length(Shape)));
         Exit;
     End;
     CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
@@ -14012,8 +14067,7 @@ Var
 Begin
     { The same normalising as PadEditProblem, which has passed already. }
     HoleTypeStr := LowerCase(PadArg(Src, IsOp, 'hole_type'));
-    Shape := LowerCase(PadArg(Src, IsOp, 'shape'));
-    If (Shape = 'roundrectangle') Or (Shape = 'roundedrect') Then Shape := 'roundrect';
+    Shape := CanonicalPadShape(PadArg(Src, IsOp, 'shape'));
     CornerStr := PadArg(Src, IsOp, 'corner_radius_pct');
     CornerPct := -1;
     If (CornerStr <> '') And IsFloatStr(CornerStr) Then
@@ -22179,6 +22233,18 @@ Begin
         Exit;
     End;
 
+    { Part 1 when not asked, and the part written BEFORE the component     }
+    { joins the sheet, as the .SchLib placer does (#322): left alone, the   }
+    { loader's own pick lands, and on a two-part symbol that was part 2.    }
+    If PartId < 1 Then PartId := 1;
+    PartCount := 0;
+    Try PartCount := Comp.PartCount; Except End;
+    If (PartCount = 0) Or (PartId <= PartCount) Then
+    Begin
+        Try Comp.SetState_CurrentPartID(PartId); Except { written and checked again on the sheet below } End;
+        Try Comp.CurrentPartID := PartId; Except { written and checked again on the sheet below } End;
+    End;
+
     SchBeginEdit(SchDoc, '');
     Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
     Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
@@ -22191,16 +22257,17 @@ Begin
     Begin
         Try Comp.Designator.Text := DesigStr; Except NoteWriteFailed('component Designator'); End;
     End;
-    { Which part of a multi-part component to place, the same two writers }
-    { the generic CurrentPartID setter uses; read back below.             }
-    PartCount := 0;
-    Try PartCount := Comp.PartCount; Except End;
-    If (PartId > 0) And ((PartCount = 0) Or (PartId <= PartCount)) Then
+    SchRegisterObject(SchDoc, Comp);
+    { Again on the sheet, inside the modify bracket: the write above decides }
+    { what lands, this one is what the compiler sees (SetSchPartId in       }
+    { Generic.pas, which builds after this unit). Read back below.          }
+    If (PartCount = 0) Or (PartId <= PartCount) Then
     Begin
+        SchBeginModify(Comp);
         Try Comp.SetState_CurrentPartID(PartId); Except { read back below } End;
         Try Comp.CurrentPartID := PartId; Except { read back below } End;
+        SchEndModify(Comp);
     End;
-    SchRegisterObject(SchDoc, Comp);
     SchEndEdit(SchDoc, 'Edit');
     MarkDocDirtyByPath(SchDoc.DocumentName);
 
@@ -22228,8 +22295,11 @@ Begin
         + ',"rotation":' + IntToStr(Rotation)
         + ',"part_id":' + IntToStr(PartBack)
         + ',"part_count":' + IntToStr(PartCount)
-        + ',"part_id_applied":' + BoolToJsonStr((PartId = 0) Or (PartBack = PartId))
+        + ',"part_id_applied":' + BoolToJsonStr(PartBack = PartId)
         + ',"designator":"' + EscapeJsonString(DesigStr) + '"';
+    { On the sheet, but not as the part asked for: said, never silent. }
+    If PartBack <> PartId Then
+        Result := Result + ',"reason":"PART_REFUSED","part_id_asked":' + IntToStr(PartId);
 End;
 
 { Lib_PlaceDbLibComponent - place one DbLib row on a schematic sheet.         }

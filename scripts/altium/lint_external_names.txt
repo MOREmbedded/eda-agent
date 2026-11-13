@@ -532,3 +532,6 @@ opt_ChkSymOff
 opt_ChkSymOn
 opt_UnitsMil
 opt_UnitsMm
+# TObjectCreationMode: a schematic object made with the user's Place
+# defaults (Vincent Himpe's blanket fix, upstream PR #318).
+eCreate_GlobalCopy

@@ -936,6 +936,11 @@ End;
 {                                                                             }
 { Both paths are now followed by a re-read of DM_Parameters, and the reply    }
 { carries what was READ, not what was asked for.                              }
+{                                                                             }
+{ The PROJECT FILE is what is saved. Adding a parameter does not mark the     }
+{ project modified, so saving only modified documents left it in memory and  }
+{ out of the .PrjPcb (AD 25.8.1), and wrote every other modified document of }
+{ the project, which nobody asked for.                                        }
 Function Proj_SetParameter(Params : String; RequestId : String) : String;
 Var
     ProjectPath, ParamName, ParamValue, ReadBack : String;
@@ -943,7 +948,7 @@ Var
     Project : IProject;
     Param : IParameter;
     I : Integer;
-    Found, Verified : Boolean;
+    Found, Verified, FileSaved : Boolean;
 Begin
     ParamName := ExtractJsonValue(Params, 'name');
     ParamValue := ExtractJsonValue(Params, 'value');
@@ -984,7 +989,10 @@ Begin
             Param := Project.DM_Parameters(I);
             If Param.DM_Name = ParamName Then
             Begin
-                Param.DM_Value := ParamValue;
+                { DM_Value is a getter: assigning it stopped the script with }
+                { a blank "Error" box no Try/Except catches (#310).        }
+                { DM_SetValue is the setter, as Prj-Parameters.pas uses it.  }
+                Param.DM_SetValue(ParamValue);
                 Found := True;
                 Break;
             End;
@@ -996,8 +1004,8 @@ Begin
         Project.DM_EndUpdate;
     End;
 
-    { Persist, then READ IT BACK. }
-    SaveProjectMembers(Project);
+    { Persist the project file, then READ IT BACK. }
+    FileSaved := SaveProjectFile(Project);
 
     Verified := False;
     ReadBack := '';
@@ -1017,6 +1025,7 @@ Begin
             '{"success":true,"name":"' + EscapeJsonString(ParamName)
             + '","value":"' + EscapeJsonString(ReadBack)
             + '","created":' + BoolToJsonStr(Not Found)
+            + ',"project_file_saved":' + BoolToJsonStr(FileSaved)
             + ',"verified":true,"project_path":"'
             + EscapeJsonString(ProjectPath) + '"}')
     Else
@@ -6988,16 +6997,19 @@ Begin
         SchEndEdit(SchDoc, 'Edit');
     End;
 
-    { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
-      does SetModified + DoFileSave. WorkspaceManager:SaveAll doesn't
-      reach non-active sheets in our tests, so we don't rely on it. }
+    { THE SHEET IS ONLY MARKED, NOT WRITTEN (issue #326). MarkDocDirtyByPath   }
+    { sets the modified flag and nothing more, as every write here does; a  }
+    { save at a checkpoint (app_save_all, proj_save) writes the sheet. This  }
+    { reply used to say "saved":true: measured on AD 25.8.1, an added, an    }
+    { updated and an existing Title parameter were all gone after closing  }
+    { the project without a save.                                          }
     MarkDocDirtyByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"action":"' + Action + '"' +
-        ',"saved":true' +
+        ',"saved":false,"pending_save":true' +
         ',"file_path":"' + EscapeJsonString(FilePath) +
         '","name":"' + EscapeJsonString(ParamName) +
         '","value":"' + EscapeJsonString(ParamValue) + '"}');
