@@ -582,6 +582,8 @@ GAPS: dict[str, str] = {
     "sim_job_status": "as sim_engines",
     "sim_job_compare": "as sim_engines",
     "sim_jobs": "as sim_engines",
+    "si_line_model": "reads the stackup through the Altium bridge; not yet on the KiCad surface",
+    "si_stackup_plan": "as si_line_model",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",
     "pcb_audit_placement_plan": "not ported",

@@ -146,7 +146,39 @@ def register(app: Flask) -> None:
             out["compare"] = sim.compare(job_id)
         except KeyError as exc:
             return jsonify({"ok": False, "error": str(exc.args[0])})
+        # JSON objects lose their order on the way; the engine's own order
+        # (headline figures first) goes as a list.
+        for run in out.get("runs", {}).values():
+            res = run.get("results")
+            if isinstance(res, dict) and isinstance(res.get("metrics"), dict):
+                res["metric_order"] = list(res["metrics"])
+        # Engines that could also take this job, by their own check.
+        runnable = []
+        for e in sim.engines_for(out.get("kind", "")):
+            try:
+                if not e.check(out["kind"], out.get("spec") or {}, out.get("inputs") or {}):
+                    runnable.append(e.info.id)
+            except Exception:  # noqa: BLE001 - a check that fails is a no
+                pass
+        out["runnable"] = runnable
         return jsonify(out)
+
+    @app.route("/api/wb/sim/file/<job_id>/<engine>/<name>")
+    def wb_sim_file(job_id: str, engine: str, name: str) -> Response:
+        """A file an engine wrote (plot, Touchstone), from its work folder."""
+        from flask import abort, send_file
+        from ..simulation import jobs
+        ok = lambda s: bool(s) and all(c.isalnum() or c in "-_." for c in s) and not s.startswith(".")  # noqa: E731
+        if not ok(engine) or not ok(name):
+            abort(404)
+        try:
+            job = jobs.get(job_id)
+        except KeyError:
+            abort(404)
+        path = job.work_folder(engine) / name
+        if not path.is_file():
+            abort(404)
+        return send_file(path, as_attachment=not name.lower().endswith(".png"), download_name=name)
 
     @app.route("/api/wb/sim/run", methods=["POST"])
     def wb_sim_run() -> Response:
