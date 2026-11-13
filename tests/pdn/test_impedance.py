@@ -1111,3 +1111,40 @@ def test_fan_out_resistance_is_added_to_the_barrels():
     rs = ph.sheet_resistance(1.4)
     want = 2 * rs * (5.0 / 12.0 + (10.0 - 5.79) / 20.0)
     assert mount_r(False) - mount_r(True) == pytest.approx(want, rel=0.03)
+
+
+def test_files_that_cannot_be_written_cost_the_files_not_the_numbers(tmp_path):
+    st = stack_from_stackup(STACKUP)
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
+    r = im.analyse(plane_board(), st, "+1V0", "GND", load={"ref": "U2"}, target_ohms=0.02,
+                   points=31, out_dir=blocker / "runs")
+    assert r["worst"]["mohm"] > 0 and r["curve"]
+    assert r["files"] == [] and r["files_error"].split(":")[0] in (
+        "NotADirectoryError", "FileExistsError", "FileNotFoundError")
+
+
+def test_mounting_resistance_is_in_series_with_the_capacitor_and_in_the_deck(tmp_path):
+    d = dc.Decap("C1", 100e-9, 0.02, 0.4e-9, mount_l=0.6e-9, mount_r=0.005)
+    srf = 1 / (2 * math.pi * math.sqrt(d.c * (d.esl + d.mount_l)))
+    z = d.z(np.array([srf]))[0]
+    assert z.real == pytest.approx(0.025, rel=1e-6) and abs(z.imag) < 1e-6
+    deck = tmp_path / "p.cir"
+    im.write_spice(deck, np.array([1e5, 1e8]), [d], None, 1e-9, 0.0, "t")
+    assert "R1 pdn n1a 0.025" in deck.read_text()
+    # a value with more than two digits after the letter is not that notation
+    assert dc.parse_capacitance("100n5000") == pytest.approx(100e-9)
+
+
+def test_a_hairline_slot_on_a_cell_centre_line_still_parts_the_plane():
+    # 4 mil of nothing, narrower than a fine cell, exactly where the cell
+    # centres are: copper on both sides of the centre is no reason to step
+    # over what lies between
+    st = stack_from_stackup(STACKUP)
+    b = bare_board()
+    b.outline = [(0, 0), (2000, 0), (2000, 1600), (0, 1600)]
+    b.regions += [Region("InternalPlane2", [(0, 0), (838, 0), (838, 1600), (0, 1600)], [], "+1V0", "copper"),
+                  Region("InternalPlane2", [(842, 0), (2000, 0), (2000, 1600), (842, 1600)], [], "+1V0", "copper")]
+    cav = im.find_cavity(b, st, "+1V0", "GND", 1e9, 80.0, near=[(1500, 800)])
+    assert any("2 separate islands" in n for n in cav.notes)
+    assert cav.area_mils2 < 0.62 * 2000 * 1600

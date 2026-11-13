@@ -154,7 +154,7 @@ The tool reports every band where |Z| at the load is above it.
   antipads nearly touching, a split with a bridge across it), the link is
   throttled by the square root of the shortfall, and a slot right across
   opens it, however thin. A copper web under 4 mil between two antipads
-  may read as cut; on a very large board the sampling is coarser, and the
+  may read as cut, and a gap under 4 mil as copper; on a very large board the sampling is coarser, and the
   result says so.
 - **Copper loss** uses the exact surface impedance of a slab,
   Zs = (γ/σ)·coth(γt), which is the DC sheet resistance at low frequency and
