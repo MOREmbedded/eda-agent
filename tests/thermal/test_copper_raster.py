@@ -323,12 +323,265 @@ def test_a_gap_narrower_than_a_sample_is_open_and_an_edge_row_conducts():
     # two pours 4 mil apart on 50 mil cells (samples of 12.5 mil), and a
     # track whose edge falls inside a sample row
     b = _board(regions=[Region("TopLayer", [(100, 100), (498, 100), (498, 200), (100, 200)], [], "A"),
-                        Region("TopLayer", [(502, 100), (900, 100), (900, 200), (100 + 800, 200)], [], "B")],
+                        Region("TopLayer", [(502, 100), (900, 100), (900, 200), (502, 200)], [], "B")],
                tracks=[Track("TopLayer", 100, 353, 900, 353, 30, "C")])
     r = rasterize(b, cell_mils=50, links=True)
     kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
     assert kx[2, 9] == 0.0                      # across the gap at x = 500, row y = 100..150
     assert kx[2, 5] == pytest.approx(1.0)       # solid pour
+    assert kx[2, 12] == pytest.approx(1.0)      # and solid again beyond the gap
+    # the same at the 2 mil sample a conduction model uses: a 3 mil gap
+    # leaves no sample empty, and is still open
+    b.regions[1] = Region("TopLayer", [(501, 100), (900, 100), (900, 200), (501, 200)], [], "B")
+    fine = rasterize(b, cell_mils=50, links=True, supersample=0)
+    assert fine.supersample == 25
+    fx, _ = fine.link_conductivity("TopLayer", 1.0, 0.0)
+    assert fx[2, 9] == 0.0 and fx[2, 5] == pytest.approx(1.0) and fx[2, 12] == pytest.approx(1.0)
     # the track spans y = 338..368: 12 mil in row 6 (300..350), 18 in row 7
     assert kx[6, 8] == pytest.approx(12 / 50, rel=1e-6)
     assert kx[7, 8] == pytest.approx(18 / 50, rel=1e-6)
+
+
+# -- sample pitch for conduction ----------------------------------------------
+
+def rect(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def test_fine_supersample_holds_the_sample_near_two_mils():
+    from eda_agent.layout.copper_raster import MAX_SAMPLES, SAMPLE_MILS, fine_supersample
+    assert SAMPLE_MILS == 2.0
+    assert fine_supersample(25.0, 40_000) == 13          # 1.9 mil
+    assert fine_supersample(40.0, 40_000) == 20
+    assert fine_supersample(5.0, 40_000) == 4            # never under 4
+    # a grid too large for it takes the finest sample that fits
+    s = fine_supersample(50.0, 1_000_000)
+    assert s == 4 and 1_000_000 * s * s <= MAX_SAMPLES
+    assert fine_supersample(50.0, 250_000) == 8
+    board = LayoutBoard(name="b", outline=rect(0, 0, 400, 400),
+                        layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)])
+    assert rasterize(board, cell_mils=40.0, supersample=0).supersample == 20
+    assert rasterize(board, cell_mils=40.0).supersample == 4
+
+
+def _sheet_conductance(raster, layer):
+    """Conductance per square of ``layer`` from its left edge to its right
+    one, 1 for solid copper, from the raster's link conductivities."""
+    kx, ky = raster.link_conductivity(layer, 1.0, 0.0)
+    ny, nx = raster.ny, raster.nx
+    idx = np.arange(ny * nx).reshape(ny, nx)
+    a = np.zeros((ny * nx, ny * nx))
+    for i, j, g in ((idx[:, :-1], idx[:, 1:], kx), (idx[:-1, :], idx[1:, :], ky)):
+        i, j, g = i.ravel(), j.ravel(), g.ravel()
+        np.add.at(a, (i, i), g)
+        np.add.at(a, (j, j), g)
+        np.add.at(a, (i, j), -g)
+        np.add.at(a, (j, i), -g)
+    b = np.zeros(ny * nx)
+    big = 1e6
+    a[idx[:, 0], idx[:, 0]] += big
+    b[idx[:, 0]] += big
+    a[idx[:, -1], idx[:, -1]] += big
+    v = np.linalg.solve(a + 1e-12 * np.eye(ny * nx), b).reshape(ny, nx)
+    mid = nx // 2
+    current = float((kx[:, mid] * (v[:, mid] - v[:, mid + 1])).sum())
+    return current * (nx - 1) / ny
+
+
+def _via_field(pitch=40.0, hole=8.0, n=12, stagger=False):
+    w = n * pitch
+    layers = [Layer("TopLayer", "signal", 0), Layer("InternalPlane1", "plane", 1, "GND"),
+              Layer("BottomLayer", "signal", 2)]
+    board = LayoutBoard(name="bga", outline=rect(0, 0, w, w), layers=layers)
+    for i in range(n):
+        for j in range(n):
+            x = (i + 0.5) * pitch + (pitch / 2 if stagger and j % 2 else 0.0)
+            if x < w - 1:
+                board.vias.append(Via(x, (j + 0.5) * pitch, hole + 10, hole,
+                                      "TopLayer", "BottomLayer", "SIG"))
+    return board
+
+
+@pytest.mark.parametrize("cell,rel", [(8.0, 0.04), (16.0, 0.04), (24.0, 0.06), (40.0, 0.15)])
+def test_a_plane_under_a_via_field_conducts_as_the_perforated_sheet_it_is(cell, rel):
+    """A plane a BGA's vias pass through: round antipads of 28 mil at
+    40 mil pitch, webs of 12 mil between them. Rayleigh's result for a
+    square array of round holes of area share f in a sheet is
+    1 - 2f / (1 + f - 0.3058 f^4). With a sample of 2 mil the webs are
+    seen whatever the cell; with four samples to a 40 mil cell every web
+    read as a cut and the plane as open (conductance 0)."""
+    board = _via_field()
+    f = math.pi * 14.0 ** 2 / 40.0 ** 2
+    rayleigh = 1.0 - 2.0 * f / (1.0 + f - 0.305827 * f ** 4)
+    r = rasterize(board, cell_mils=cell, links=True, supersample=0, plane_clearance_mils=10.0)
+    assert r.fill["InternalPlane1"].mean() == pytest.approx(1.0 - f, abs=2e-3)
+    assert _sheet_conductance(r, "InternalPlane1") == pytest.approx(rayleigh, rel=rel)
+
+
+def test_staggered_holes_do_not_cut_the_plane_either():
+    board = _via_field(stagger=True)
+    for cell in (16.0, 40.0):
+        r = rasterize(board, cell_mils=cell, links=True, supersample=0,
+                      plane_clearance_mils=10.0)
+        assert 0.40 < _sheet_conductance(r, "InternalPlane1") < 0.55
+
+
+# ---------------------------------------------------------------------------
+# Islands: copper that does not touch, lying in one cell
+# ---------------------------------------------------------------------------
+
+def _pad_in_pour(clear=8.0, pad=(440.0, 230.0, 20.0, 60.0), tie=False):
+    """A pour over the top layer and one pad of another net in a
+    clearance cut into it (``tie``: the pad's net is the pour's and
+    there is no cut)."""
+    x, y, w, h = pad
+    hole = rect(x - w / 2 - clear, y - h / 2 - clear, x + w / 2 + clear, y + h / 2 + clear)
+    return _board(
+        regions=[Region("TopLayer", list(OUTLINE), holes=[] if tie else [hole], net="GND",
+                        kind="pour")],
+        pads=[Pad("U1", "1", x, y, net="GND" if tie else "SIG",
+                  copper=[PadCopper("TopLayer", "rect", w, h)])])
+
+
+def test_copper_that_does_not_touch_is_split_inside_a_cell():
+    """A 20 x 60 mil pad in an 8 mil clearance, cells of 50 mil: the
+    pad and the pour share cells and are two islands there. The pour
+    keeps the cells' nodes, the pad is a piece in each, and the two
+    together are the cell's copper."""
+    board = _pad_in_pour()
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    isl = r.islands["TopLayer"]
+    ncell = r.nx * r.ny
+    pad_label, pad_node = r.island_at("TopLayer", 440.0, 230.0)
+    pour_label, pour_node = r.island_at("TopLayer", 410.0, 230.0)       # same cell
+    assert pad_label and pour_label and pad_label != pour_label
+    assert r.cell_of(440.0, 230.0) == r.cell_of(410.0, 230.0) == (8, 4)
+    assert pour_node == 4 * r.nx + 8 and pad_node >= ncell              # main, and a piece
+    assert r.island_at("TopLayer", 426.0, 230.0) == (0, -1)             # in the clearance
+    assert r.island_at("TopLayer", -5.0, 230.0) == (0, -1)              # off the grid
+    # the pad spans y 200..260: cells iy 4 and 5, a piece in each
+    assert len(isl.label) == 2 and set(isl.label) == {pad_label}
+    assert sorted(isl.cell) == [4 * r.nx + 8, 5 * r.nx + 8]
+    assert isl.fill.sum() * 2500 == pytest.approx(20 * 60, rel=1e-6)
+    assert (isl.fill_main + np.bincount(isl.cell, weights=isl.fill, minlength=ncell)
+            .reshape(r.ny, r.nx)) == pytest.approx(r.fill["TopLayer"], abs=1e-9)
+    # its edge, but for the 20 mil end lying on a cell border (y = 200),
+    # which falls to the cell below
+    assert isl.edge_mils.sum() == pytest.approx(2 * (20 + 60) - 20, rel=0.05)
+    assert (isl.label_main == pour_label).all()
+    # the pad's copper, node by node, is its own island's and all of it
+    nodes = r.island_nodes("TopLayer", board.pads[0].shape_on("TopLayer"))
+    assert set(nodes) == {ncell, ncell + 1}
+    assert sum(nodes.values()) == pytest.approx(20 * 60, rel=1e-6)
+    assert r.island_nodes("TopLayer", rect_shape(700, 100, 720, 120)).keys() == {2 * r.nx + 14}
+    # a shape lying over the pad, its clearance and some pour is on the pad
+    # (1000 mil^2 of it against 600 of pour): the pour's copper is not counted
+    over = r.island_nodes("TopLayer", rect_shape(425, 205, 470, 250))
+    assert set(over) == {ncell} and over[ncell] == pytest.approx(20 * 45, rel=1e-6)
+    # its two pieces are joined through the pad, and to nothing else
+    assert len(isl.link_w) == 1 and {int(isl.link_a[0]), int(isl.link_b[0])} == {ncell, ncell + 1}
+    assert isl.link_w[0] == pytest.approx((20 / r.cell_mils * r.supersample)
+                                          / (30 / r.cell_mils * r.supersample), rel=0.1)
+
+
+def rect_shape(x0, y0, x1, y1):
+    from eda_agent.layout import geom
+    return geom.polygon(rect(x0, y0, x1, y1))
+
+
+def test_the_island_with_most_copper_in_a_cell_is_its_node():
+    """A pad that fills most of a cell is that cell's node and the pour
+    is the piece there; a cell's link to the next is copper only where
+    both hold the same island."""
+    board = _pad_in_pour(pad=(425.0, 225.0, 36.0, 36.0), clear=4.0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    isl = r.islands["TopLayer"]
+    pad_label, pad_node = r.island_at("TopLayer", 425.0, 225.0)
+    pour_label, pour_node = r.island_at("TopLayer", 401.0, 201.0)
+    assert pad_node == 4 * r.nx + 8                                     # the cell itself
+    assert pour_node >= r.nx * r.ny and pour_label == isl.label_main[4, 7]
+    assert isl.fill_main[4, 8] == pytest.approx(36 * 36 / 2500, rel=1e-6)
+    kx, ky = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[4, 7] == 0.0 and kx[4, 8] == 0.0 and ky[3, 8] == 0.0 and ky[4, 8] == 0.0
+    assert kx[4, 5] == pytest.approx(1.0) and ky[1, 8] == pytest.approx(1.0)
+    # the pour's ring in the pad's cell is joined to the pour on all four sides
+    ring = pour_node
+    joined = {int(b if a == ring else a) for a, b in zip(isl.link_a, isl.link_b)
+              if ring in (a, b)}
+    assert joined == {4 * r.nx + 7, 4 * r.nx + 9, 3 * r.nx + 8, 5 * r.nx + 8}
+
+
+def test_a_board_whose_cells_hold_one_island_each_is_unchanged_by_islands():
+    """Solid copper, a lone track, a plane with antipads: no cell holds
+    two islands, and the links are what they were. The antipads' cuts
+    leave rounding in the samples (1e-16 of copper); those are not
+    islands."""
+    board = _board(
+        layers=[Layer("TopLayer", "signal", 0), Layer("InternalPlane1", "plane", 1, "GND"),
+                Layer("BottomLayer", "signal", 2)],
+        regions=[Region("BottomLayer", list(OUTLINE), net="GND", kind="pour")],
+        tracks=[Track("TopLayer", 100, 225, 900, 225, 10.0, "A")],
+        vias=[Via(380 + 40 * i, 180 + 40 * j, 18, 8, "TopLayer", "BottomLayer", "S")
+              for i in range(4) for j in range(4)])
+    plain = rasterize(board, cell_mils=20, links=True, supersample=0)
+    isl = rasterize(board, cell_mils=20, links=True, supersample=0, islands=True)
+    assert not plain.islands and set(isl.islands) == set(isl.layers)
+    assert len(isl.islands["InternalPlane1"].label) == 0
+    assert len(isl.islands["BottomLayer"].label) == 0
+    for layer in ("InternalPlane1", "BottomLayer"):
+        assert np.array_equal(isl.slice_x[layer], plain.slice_x[layer])
+        assert np.array_equal(isl.slice_y[layer], plain.slice_y[layer])
+        assert isl.islands[layer].fill_main == pytest.approx(isl.fill[layer], abs=1e-12)
+        got = isl.link_conductivity(layer, 390.0, 0.3)
+        want = plain.link_conductivity(layer, 390.0, 0.3)
+        assert got[0] == pytest.approx(want[0]) and got[1] == pytest.approx(want[1])
+
+
+def test_a_pad_that_stops_short_of_the_cell_centres_is_still_one_piece_of_copper():
+    """A 32 mil pad across the border of two 50 mil cells reaches neither
+    centre. Measured from centre to centre the way would begin and end in
+    laminate and the two halves would not be joined; with islands the
+    node is the copper, and the path starts where the copper does. A
+    clearance in the way is still a cut."""
+    pad = _board(pads=[Pad("U1", "1", 500.0, 225.0, net="A",
+                           copper=[PadCopper("TopLayer", "rect", 32.0, 30.0)])])
+    r = rasterize(pad, cell_mils=50, links=True, supersample=0, islands=True)
+    kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[4, 9] == pytest.approx(30 / 32, rel=0.02)        # a strip 30 wide and 32 long
+    assert np.count_nonzero(kx) == 1
+    old, _ = rasterize(pad, cell_mils=50, links=True, supersample=0).link_conductivity(
+        "TopLayer", 1.0, 0.0)
+    assert old[4, 9] == 0.0
+    two = _board(pads=[Pad("U1", "1", 486.0, 225.0, net="A",
+                           copper=[PadCopper("TopLayer", "rect", 20.0, 30.0)]),
+                       Pad("U1", "2", 514.0, 225.0, net="B",
+                           copper=[PadCopper("TopLayer", "rect", 20.0, 30.0)])])
+    r2 = rasterize(two, cell_mils=50, links=True, supersample=0, islands=True)
+    kx2, _ = r2.link_conductivity("TopLayer", 1.0, 0.0)
+    assert not kx2.any()                       # 8 mil between them, right on the border
+    assert len(r2.islands["TopLayer"].label) == 0
+
+
+def test_a_piece_lying_in_the_way_adds_nothing_to_the_main_islands_link():
+    """A 20 mil pad in a 28 mil hole of a pour, on the border of two
+    50 mil cells: the pour passes the hole with 22 of its 50 mil for 28
+    of the 50 mil between the cell centres. The pad's copper in that
+    stretch is not the pour's and carries none of the pour's heat."""
+    board = _pad_in_pour(pad=(450.0, 225.0, 20.0, 20.0), clear=4.0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    assert len(r.islands["TopLayer"].label) == 2                 # the pad, a piece in both cells
+    kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[4, 8] == pytest.approx(50 / (22 + 28 / (22 / 50)), rel=0.03)
+    assert kx[4, 7] == pytest.approx(1.0) and kx[3, 8] == pytest.approx(1.0)
+
+
+def test_a_speck_of_copper_smaller_than_a_sample_is_not_an_island():
+    """A 1 mil dot left in a clearance (a third of a 2 mil sample) is
+    below what the samples can place; it is no node of its own."""
+    board = _pad_in_pour(pad=(440.0, 230.0, 1.0, 1.0), clear=10.0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    assert len(r.islands["TopLayer"].label) == 0
+    assert r.island_at("TopLayer", 440.0, 230.0) == (0, -1)
+    real = rasterize(_pad_in_pour(pad=(440.0, 230.0, 6.0, 6.0), clear=10.0), cell_mils=50,
+                     links=True, supersample=0, islands=True)
+    assert len(real.islands["TopLayer"].label) == 1
