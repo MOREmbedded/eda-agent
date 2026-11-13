@@ -323,12 +323,20 @@ def test_a_gap_narrower_than_a_sample_is_open_and_an_edge_row_conducts():
     # two pours 4 mil apart on 50 mil cells (samples of 12.5 mil), and a
     # track whose edge falls inside a sample row
     b = _board(regions=[Region("TopLayer", [(100, 100), (498, 100), (498, 200), (100, 200)], [], "A"),
-                        Region("TopLayer", [(502, 100), (900, 100), (900, 200), (100 + 800, 200)], [], "B")],
+                        Region("TopLayer", [(502, 100), (900, 100), (900, 200), (502, 200)], [], "B")],
                tracks=[Track("TopLayer", 100, 353, 900, 353, 30, "C")])
     r = rasterize(b, cell_mils=50, links=True)
     kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
     assert kx[2, 9] == 0.0                      # across the gap at x = 500, row y = 100..150
     assert kx[2, 5] == pytest.approx(1.0)       # solid pour
+    assert kx[2, 12] == pytest.approx(1.0)      # and solid again beyond the gap
+    # the same at the 2 mil sample a conduction model uses: a 3 mil gap
+    # leaves no sample empty, and is still open
+    b.regions[1] = Region("TopLayer", [(501, 100), (900, 100), (900, 200), (501, 200)], [], "B")
+    fine = rasterize(b, cell_mils=50, links=True, supersample=0)
+    assert fine.supersample == 25
+    fx, _ = fine.link_conductivity("TopLayer", 1.0, 0.0)
+    assert fx[2, 9] == 0.0 and fx[2, 5] == pytest.approx(1.0) and fx[2, 12] == pytest.approx(1.0)
     # the track spans y = 338..368: 12 mil in row 6 (300..350), 18 in row 7
     assert kx[6, 8] == pytest.approx(12 / 50, rel=1e-6)
     assert kx[7, 8] == pytest.approx(18 / 50, rel=1e-6)
