@@ -223,6 +223,15 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_PDN_RUNS", "Simulation", r"`%USERPROFILE%\EDA Agent\pdn`",
            "Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, "
            "curves and SPICE decks, one folder per run."),
+    EnvVar("EDA_AGENT_SIM_JOBS", "Simulation", r"`%USERPROFILE%\EDA Agent\jobs`",
+           "Where simulation jobs (`sim_job_run`, the dashboard's Simulation "
+           "page) keep their folders: one per problem, one subfolder per engine."),
+    EnvVar("EDA_AGENT_ENGINES_DIR", "Simulation", r"`%USERPROFILE%\EDA Agent\engines`",
+           "Where engines that run in their own Python environment are "
+           "installed (`eda-agent install-deps`); install logs go beside it."),
+    EnvVar("EDA_AGENT_FEATURES_FILE", "Simulation", r"`%USERPROFILE%\.eda-agent\features.json`",
+           "Which switchable features (simulation engines) are turned off "
+           "(`eda-agent features --off`, the dashboard's Features page)."),
     EnvVar("EDA_AGENT_OPENEMS_DIR", "Simulation", "none",
            "The unzipped openEMS folder (Windows build). Added to `PATH` and "
            "`PYTHONPATH` for the solver run."),

@@ -119,6 +119,8 @@ nav:
       - IPC standards and rule values: IPC_STANDARDS.md
       - EMI/EMC and RF field solving: EMC_RF.md
       - PDN analysis: PDN.md
+      - Simulation engines: SIMULATION.md
+      - Features and dependencies: FEATURES_AND_DEPENDENCIES.md
       - Design modes: DESIGN_MODES.md
       - Autonomous design: AUTONOMOUS_DESIGN.md
       - NPI phase gates: NPI_PHASE_GATES.md

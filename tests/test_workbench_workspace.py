@@ -254,7 +254,7 @@ def test_the_page_has_the_workspace_mode_and_chip():
     from eda_agent.web.workbench_strings import PAGE
     page = PAGE.read_text(encoding="utf-8")
     assert 'data-mode="workspace"' in page and 'id="wsbtn"' in page
-    assert '"tools", "workspace", "usage", "calc"]' in page and "/^[1-9]$/" in page
+    assert '"tools", "workspace", "usage", "calc"' in page and "/^[1-9]$/" in page
     for url in ("/api/wb/workspace", "/api/wb/workspace/use", "/api/wb/workspace/file",
                 "/api/wb/workspace/rules-plan"):
         assert url in page

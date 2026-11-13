@@ -108,6 +108,9 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_SPICE_MODEL_DIRS` | none | Extra folders of SPICE models `design_simulate_deck` may include, separated by `;` on Windows. |
 | `EDA_AGENT_EM_RUNS` | `%USERPROFILE%\EDA Agent\em` | Where each openEMS field-solver run (`sim_em_build_model`) gets its own folder. Runs can be large: point it at a drive with room. |
 | `EDA_AGENT_PDN_RUNS` | `%USERPROFILE%\EDA Agent\pdn` | Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, curves and SPICE decks, one folder per run. |
+| `EDA_AGENT_SIM_JOBS` | `%USERPROFILE%\EDA Agent\jobs` | Where simulation jobs (`sim_job_run`, the dashboard's Simulation page) keep their folders: one per problem, one subfolder per engine. |
+| `EDA_AGENT_ENGINES_DIR` | `%USERPROFILE%\EDA Agent\engines` | Where engines that run in their own Python environment are installed (`eda-agent install-deps`); install logs go beside it. |
+| `EDA_AGENT_FEATURES_FILE` | `%USERPROFILE%\.eda-agent\features.json` | Which switchable features (simulation engines) are turned off (`eda-agent features --off`, the dashboard's Features page). |
 | `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` and `PYTHONPATH` for the solver run. |
 | `EDA_AGENT_OPENEMS_PYTHON` | this Python, then `python` on PATH | A Python that can `import openEMS`, used to run the solver. |
 
@@ -294,6 +297,32 @@ Print where the EasyEDA extension source is (path), or build the .eext to import
 |---|---|---|
 | `action` | `path`, `build` |  |
 | `--out` | `DIR` | Folder to build in. An installed copy is built beside the default workspace unless this is given; a checkout builds in place. |
+
+### Features and dependencies
+
+#### `eda-agent features`
+
+List features and dependencies: installed, missing, versions
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--deep` | switch | Also run the slow checks (openEMS import, versions of programs). |
+| `--json` | switch | Machine-readable output. |
+| `--on` | `FEATURE` | Switch a switchable feature (an engine) on. |
+| `--off` | `FEATURE` | Switch a switchable feature (an engine) off. |
+
+#### `eda-agent install-deps`
+
+Install what features need (all of them with --all)
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `FEATURE` | `FEATURE` | Features to install (see `eda-agent features`). |
+| `--all` | switch | Every feature except the development ones. |
+| `--dev` | switch | With --all, include the test suite and website tools. |
+| `--dry-run` | switch | Show the plan and change nothing. |
+| `--yes`, `-y` | switch | Do not ask before installing. |
+| `--json` | switch | Machine-readable output. |
 
 ### Diagnostics
 

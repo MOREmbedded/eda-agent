@@ -20,6 +20,19 @@ cd eda-agent
 python -m pip install -e .
 ```
 
+Everything optional (pictures and plots, STEP models, the Rust wheels, the
+RF toolbox and so on) installs with one more command, which shows its plan
+and asks before it changes anything:
+
+```bash
+eda-agent install-deps --all
+```
+
+Name features to install only some (`eda-agent install-deps render
+models3d`), and run `eda-agent features` to see them all. Programs such as
+openEMS, LTspice and KiCad are not pip packages: the installer prints their
+steps instead. See [Features and dependencies](FEATURES_AND_DEPENDENCIES.md).
+
 Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
 
 Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. Everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`.
