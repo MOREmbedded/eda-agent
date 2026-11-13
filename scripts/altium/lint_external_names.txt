@@ -414,10 +414,10 @@ lbl_ValReq
 lbl_ValStop
 lbl_ValUp
 lbl_Version
+lst_Log
 MaxLayer
 MinLayer
 MkSet
-mmo_Log
 mmo_Perf
 mmo_Stats
 Now
@@ -456,6 +456,7 @@ pnl_K2
 pnl_K3
 pnl_K4
 pnl_KPIs
+pnl_Log
 pnl_StatusDot
 pnl_TabBar
 pnl_TabInk

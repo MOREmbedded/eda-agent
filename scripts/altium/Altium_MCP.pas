@@ -102391,13 +102391,13 @@ Var
     InFlightStartMs  : Cardinal;
     InFlightActive   : Boolean;
 
-    { Free-text filter applied at WRITE time to mmo_Log.Lines. Empty = no   }
+    { Free-text filter applied at WRITE time to lst_Log.Items. Empty = no   }
     { text filter. Changing the filter only affects new entries; old ones   }
     { stay until you click Clear log. (We used to keep a TStringList buffer }
     { and re-render on filter change, but DelphiScript's TStringList API is }
     { broken in too many spots, .Insert and .Clear undeclared, typed-param   }
     { dispatch loses methods, empty-literal arguments trip the parser; the  }
-    { committed pattern wrote straight to mmo_Log.Lines and we're back to    }
+    { committed pattern wrote straight to lst_Log.Items and we're back to    }
     { that.)                                                                 }
     FilterText       : String;
 
@@ -102530,7 +102530,7 @@ Begin
 End;
 
 
-{ Used to re-render mmo_Log from a TStringList buffer when filter flags     }
+{ Used to re-render lst_Log from a TStringList buffer when filter flags     }
 { changed. The buffer was a DelphiScript minefield, so we dropped it; this   }
 { procedure now just clears the visible memo. Callers that previously       }
 { wanted "apply new filter to old entries" now just see a clean slate after }
@@ -102538,11 +102538,11 @@ End;
 Procedure RebuildVisibleLog(Dummy : Integer);
 Begin
     Try
-        mmo_Log.Lines.BeginUpdate;
+        lst_Log.Items.BeginUpdate;
         Try
-            mmo_Log.Lines.Clear;
+            lst_Log.Items.Clear;
         Finally
-            mmo_Log.Lines.EndUpdate;
+            lst_Log.Items.EndUpdate;
         End;
     Except End;
 End;
@@ -102679,6 +102679,77 @@ End;
 { Public entry point called from Dispatcher.ProcessSingleRequest after every }
 { command. The row shows the part of RequestId that names ONE call, which is }
 { what bridge_trace.log writes, so grepping that log for it finds the call.  }
+
+{ The log is an owner-drawn list so each part of a row has its colour: the }
+{ time green under 100 ms, amber under a second, red beyond; the call id   }
+{ faint; the command bright. A detail row (it starts with spaces) is red   }
+{ under an error and muted otherwise. The list is 18 px wider than its     }
+{ panel, so the panel clips the light Windows scrollbar; the wheel scrolls. }
+Function LogTimeColour(Ms : Integer) : Cardinal;
+Begin
+    If Ms >= 1000 Then Result := COLOR_ACCENT_RED
+    Else If Ms >= 100 Then Result := COLOR_ACCENT_AMBER
+    Else Result := COLOR_ACCENT_GREEN;
+End;
+
+Procedure lst_LogDrawItem(Control : TWinControl; Idx : Integer; ARect : TRect;
+                          State : TOwnerDrawState);
+Var
+    S, TimePart, Rest, IdPart, Cmd : String;
+    P, X, Y, Ms : Integer;
+    Cv : TCanvas;
+Begin
+    Try
+        Cv := lst_Log.Canvas;
+        S := lst_Log.Items[Idx];
+        Cv.Brush.Color := COLOR_BG_LOG;
+        Cv.FillRect(ARect);
+        X := ARect.Left + 4;
+        Y := ARect.Top + 2;
+        P := Pos(' ms  ', S);
+        If P = 0 Then
+        Begin
+            { An error detail sits red under its command; a note is faint. }
+            P := Pos('`-- ', S);
+            If P > 0 Then
+            Begin
+                Cv.Font.Color := COLOR_ACCENT_RED;
+                Cv.TextOut(X + 64 + Cv.TextWidth('00000000'), Y,
+                           Copy(S, P + 4, Length(S)));
+            End
+            Else
+            Begin
+                Cv.Font.Color := COLOR_TEXT_FAINT;
+                Cv.TextOut(X, Y, Trim(S));
+            End;
+            Exit;
+        End;
+        TimePart := Trim(Copy(S, 1, P - 1));
+        Ms := StrToIntDef(TimePart, 0);
+        Rest := Copy(S, P + 5, Length(S));
+        P := Pos('  ', Rest);
+        If P > 0 Then
+        Begin
+            IdPart := Copy(Rest, 1, P - 1);
+            Cmd := Copy(Rest, P + 2, Length(Rest));
+        End
+        Else
+        Begin
+            IdPart := '';
+            Cmd := Rest;
+        End;
+        Cv.Font.Color := LogTimeColour(Ms);
+        Cv.TextOut(X + 44 - Cv.TextWidth(TimePart + ' ms'), Y, TimePart + ' ms');
+        Cv.Font.Color := COLOR_TEXT_FAINT;
+        { The id's leading 8 name the session, the same on every row; the }
+        { sequence after the dash names the call. Copy log keeps it whole. }
+        If Copy(IdPart, 9, 1) = '-' Then IdPart := Copy(IdPart, 10, 8);
+        Cv.TextOut(X + 54, Y, IdPart);
+        Cv.Font.Color := COLOR_TEXT_BODY;
+        Cv.TextOut(X + 54 + Cv.TextWidth('00000000') + 10, Y, Cmd);
+    Except { display only: a row that fails to paint stays blank } End;
+End;
+
 Procedure AppendLogLine(Command : String; DurationMs : Cardinal; IsError : Boolean;
                         RequestId : String; ErrorDetail : String);
 Var
@@ -102707,16 +102778,16 @@ Begin
           + IdShort + '  ' + Command;
 
     { Apply the filter at write time. The committed pattern wrote straight  }
-    { to mmo_Log.Lines via TStrings (TMemo property), which DelphiScript    }
+    { to lst_Log.Items via TStrings (TMemo property), which DelphiScript    }
     { routes through fine. Skipping an entry just means the user doesn't    }
     { see it until a future entry matches the new filter.                   }
     If Not ShouldShowLine(Line) Then Exit;
     Try
-        mmo_Log.Lines.Insert(0, Line);
+        lst_Log.Items.Insert(0, Line);
         If IsError And (ErrorDetail <> '') Then
-            mmo_Log.Lines.Insert(1, '      `-- ' + ErrorDetail);
-        While mmo_Log.Lines.Count > MAX_LOG_LINES Do
-            mmo_Log.Lines.Delete(mmo_Log.Lines.Count - 1);
+            lst_Log.Items.Insert(1, '      `-- ' + ErrorDetail);
+        While lst_Log.Items.Count > MAX_LOG_LINES Do
+            lst_Log.Items.Delete(lst_Log.Items.Count - 1);
     Except End;
 
     If IsError Then
@@ -103230,6 +103301,7 @@ Begin
     OwnPanelColours(pnl_Filter);    OwnPanelColours(pnl_FilterIn);
     OwnPanelColours(pnl_TabRule);   OwnPanelColours(pnl_TabInk);
     OwnPanelColours(pnl_Body);      OwnPanelColours(sep_Cfg8);
+    OwnPanelColours(pnl_Log);
     OwnPanelColours(opt_ChkFpOn);   OwnPanelColours(opt_ChkFpOff);
     OwnPanelColours(opt_ChkSymOn);  OwnPanelColours(opt_ChkSymOff);
     OwnPanelColours(opt_ChkPadOn);  OwnPanelColours(opt_ChkPadOff);
@@ -103561,7 +103633,7 @@ End;
 
 Procedure btn_ClearLogClick(Sender : TObject);
 Begin
-    Try mmo_Log.Lines.Clear; Except End;
+    Try lst_Log.Items.Clear; Except End;
     ShowNotice('');
 End;
 
@@ -103675,7 +103747,7 @@ Begin
         Else If mmo_Stats.Visible Then
             Clipboard.AsText := mmo_Stats.Lines.Text
         Else
-            Clipboard.AsText := mmo_Log.Lines.Text;
+            Clipboard.AsText := lst_Log.Items.Text;
         btn_CopyLog.Caption := #59643;
     Except End;
 End;
@@ -103723,9 +103795,9 @@ Begin
         StoreSavingSwitch(0);
         PaintSavingSwitch(0);
         If SavingOff Then
-            mmo_Log.Lines.Insert(0, '      saving switched OFF: the bridge writes no documents')
+            lst_Log.Items.Insert(0, '      saving switched OFF: the bridge writes no documents')
         Else
-            mmo_Log.Lines.Insert(0, '      saving switched on');
+            lst_Log.Items.Insert(0, '      saving switched on');
     Except End;
 End;
 
@@ -103847,13 +103919,13 @@ Begin LeaveToggle(chk_OnTop, AlwaysOnTopFlag); End;
 Procedure tab_LogEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Log.Visible Then tab_Log.Font.Color := COLOR_TEXT_BODY;
+        If Not pnl_Log.Visible Then tab_Log.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_LogLeave(Sender : TObject);
 Begin
     Try
-        PaintTab(tab_Log, mmo_Log.Visible);
+        PaintTab(tab_Log, pnl_Log.Visible);
     Except End;
 End;
 
@@ -103892,7 +103964,7 @@ Begin
     Try
         If Which = 1 Then RefreshPerfPanel(0);
         If Which = 3 Then RefreshStatsPanel(True);
-        mmo_Log.Visible := Which = 0;
+        pnl_Log.Visible := Which = 0;
         mmo_Perf.Visible := Which = 1;
         pnl_Config.Visible := Which = 2;
         mmo_Stats.Visible := Which = 3;
@@ -103940,7 +104012,7 @@ Begin
         ValueUnit := UnitChoice;
         StorePreferences(0);
         PaintValueFormat(0);
-        mmo_Log.Lines.Insert(0, '      value format set to ' + Choice + ', unit '
+        lst_Log.Items.Insert(0, '      value format set to ' + Choice + ', unit '
             + UnitChoice);
     Except End;
 End;
@@ -103971,7 +104043,7 @@ Begin
         Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
-        mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
+        lst_Log.Items.Insert(0, '      ' + Setting + ' set to ' + Choice);
     Except End;
 End;
 
@@ -104059,9 +104131,9 @@ Begin
         StorePreferences(0);
         PaintAgentSettings(0);
         If TurnOn Then
-            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' on')
+            lst_Log.Items.Insert(0, '      check ' + CheckName + ' on')
         Else
-            mmo_Log.Lines.Insert(0, '      check ' + CheckName + ' off');
+            lst_Log.Items.Insert(0, '      check ' + CheckName + ' off');
     Except End;
 End;
 

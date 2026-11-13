@@ -796,23 +796,34 @@ object StatusForm: TStatusForm
     BorderWidth = 8
     Color = $001C1712
     TabOrder = 3
-    object mmo_Log: TMemo
+    object pnl_Log: TPanel
       Left = 8
       Top = 8
       Width = 364
-      Height = 330
+      Height = 394
       Align = alClient
-      BorderStyle = bsNone
+      BevelOuter = bvNone
       Color = $001C1712
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00D9D3CB
-      Font.Height = -11
-      Font.Name = 'Consolas'
-      Font.Style = []
-      ParentFont = False
-      ReadOnly = True
-      ScrollBars = ssNone
       TabOrder = 0
+      object lst_Log: TListBox
+        Left = 0
+        Top = 0
+        Width = 382
+        Height = 394
+        Anchors = [akLeft, akTop, akRight, akBottom]
+        BorderStyle = bsNone
+        Color = $001C1712
+        Font.Charset = DEFAULT_CHARSET
+        Font.Color = $00D9D3CB
+        Font.Height = -11
+        Font.Name = 'Consolas'
+        Font.Style = []
+        ItemHeight = 18
+        ParentFont = False
+        Style = lbOwnerDrawFixed
+        TabOrder = 0
+        OnDrawItem = lst_LogDrawItem
+      end
     end
     object mmo_Perf: TMemo
       Left = 8
