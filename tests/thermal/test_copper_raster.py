@@ -573,3 +573,15 @@ def test_a_piece_lying_in_the_way_adds_nothing_to_the_main_islands_link():
     kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
     assert kx[4, 8] == pytest.approx(50 / (22 + 28 / (22 / 50)), rel=0.03)
     assert kx[4, 7] == pytest.approx(1.0) and kx[3, 8] == pytest.approx(1.0)
+
+
+def test_a_speck_of_copper_smaller_than_a_sample_is_not_an_island():
+    """A 1 mil dot left in a clearance (a third of a 2 mil sample) is
+    below what the samples can place; it is no node of its own."""
+    board = _pad_in_pour(pad=(440.0, 230.0, 1.0, 1.0), clear=10.0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    assert len(r.islands["TopLayer"].label) == 0
+    assert r.island_at("TopLayer", 440.0, 230.0) == (0, -1)
+    real = rasterize(_pad_in_pour(pad=(440.0, 230.0, 6.0, 6.0), clear=10.0), cell_mils=50,
+                     links=True, supersample=0, islands=True)
+    assert len(real.islands["TopLayer"].label) == 1
