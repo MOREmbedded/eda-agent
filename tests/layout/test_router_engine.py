@@ -178,7 +178,7 @@ def test_router_use_keeps_half_an_emoji_the_file_already_held(tmp_path, monkeypa
 @pytest.mark.parametrize("content", [
     "[" * 30000 + "]" * 30000,                                  # deeper than the parser goes
     " " * (engine.MAX_BYTES + 1) + '{"engine": "euan"}',        # too big to be a setting
-])
+], ids=["too_deep", "too_big"])  # as ids, both overflowed Windows' 32767-character variable
 def test_a_router_file_that_cannot_be_parsed_is_a_problem_not_a_crash(tmp_path, monkeypatch,
                                                                      content):
     monkeypatch.setattr(engine, "_profile_dir", lambda: tmp_path)
