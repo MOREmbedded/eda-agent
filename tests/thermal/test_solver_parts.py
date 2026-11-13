@@ -391,6 +391,10 @@ def test_heat_crosses_a_partly_covered_inner_layer():
     assert solid < fine < bare                 # a fifth copper helps a little
     assert coarse == pytest.approx(fine, rel=0.05)
     assert solid < coarse < bare
+    # cells of 50 and 100 mil hold two and four tracks, each an island of
+    # its own: what they cover together is not open to the heat a second time
+    for cell in (50.0, 100.0):
+        assert _through_rise("tracks", cell) == pytest.approx(coarse, rel=0.01)
     # no copper, or all copper: nothing to resolve, any cell gives the same
     assert _through_rise("none", 50.0) == pytest.approx(bare, rel=1e-6)
     assert _through_rise("solid", 50.0) == pytest.approx(solid, rel=1e-6)
@@ -534,6 +538,13 @@ def test_the_map_and_the_parts_read_each_island_of_a_cell():
     # in this cell the pad holds the most copper: it is the cell's node, the pour a piece
     assert res.main_temps["TopLayer"][iy, ix] == pytest.approx(t_pad, abs=0.01)
     assert np.nanmin(np.abs(res.piece_temps["TopLayer"] - t_pour)) < 1e-9
+    # one cell up the pour holds the most copper and the pad is the piece:
+    # the map still shows the pad, the hottest copper there
+    jx, jy = raster.cell_of(425.0, 415.0)
+    assert (jx, jy) == (ix, iy + 1)
+    assert res.main_temps["TopLayer"][jy, jx] < t_pad - 15.0
+    assert res.temps["TopLayer"][jy, jx] == pytest.approx(t_pad, abs=0.01)
+    assert res.copper_at("TopLayer", 425.0, 415.0) == pytest.approx(t_pad, abs=0.01)
     # no copper at a point of the clearance: the cell's own node answers
     assert res.copper_at("TopLayer", 440.0, 395.0) == pytest.approx(t_pad, abs=0.01)
 

@@ -474,6 +474,10 @@ def test_copper_that_does_not_touch_is_split_inside_a_cell():
     assert set(nodes) == {ncell, ncell + 1}
     assert sum(nodes.values()) == pytest.approx(20 * 60, rel=1e-6)
     assert r.island_nodes("TopLayer", rect_shape(700, 100, 720, 120)).keys() == {2 * r.nx + 14}
+    # a shape lying over the pad, its clearance and some pour is on the pad
+    # (1000 mil^2 of it against 600 of pour): the pour's copper is not counted
+    over = r.island_nodes("TopLayer", rect_shape(425, 205, 470, 250))
+    assert set(over) == {ncell} and over[ncell] == pytest.approx(20 * 45, rel=1e-6)
     # its two pieces are joined through the pad, and to nothing else
     assert len(isl.link_w) == 1 and {int(isl.link_a[0]), int(isl.link_b[0])} == {ncell, ncell + 1}
     assert isl.link_w[0] == pytest.approx((20 / r.cell_mils * r.supersample)
@@ -517,7 +521,7 @@ def test_a_board_whose_cells_hold_one_island_each_is_unchanged_by_islands():
                 Layer("BottomLayer", "signal", 2)],
         regions=[Region("BottomLayer", list(OUTLINE), net="GND", kind="pour")],
         tracks=[Track("TopLayer", 100, 225, 900, 225, 10.0, "A")],
-        vias=[Via(200 + 40 * i, 100 + 40 * j, 18, 8, "TopLayer", "BottomLayer", "S")
+        vias=[Via(380 + 40 * i, 180 + 40 * j, 18, 8, "TopLayer", "BottomLayer", "S")
               for i in range(4) for j in range(4)])
     plain = rasterize(board, cell_mils=20, links=True, supersample=0)
     isl = rasterize(board, cell_mils=20, links=True, supersample=0, islands=True)
@@ -556,3 +560,16 @@ def test_a_pad_that_stops_short_of_the_cell_centres_is_still_one_piece_of_copper
     kx2, _ = r2.link_conductivity("TopLayer", 1.0, 0.0)
     assert not kx2.any()                       # 8 mil between them, right on the border
     assert len(r2.islands["TopLayer"].label) == 0
+
+
+def test_a_piece_lying_in_the_way_adds_nothing_to_the_main_islands_link():
+    """A 20 mil pad in a 28 mil hole of a pour, on the border of two
+    50 mil cells: the pour passes the hole with 22 of its 50 mil for 28
+    of the 50 mil between the cell centres. The pad's copper in that
+    stretch is not the pour's and carries none of the pour's heat."""
+    board = _pad_in_pour(pad=(450.0, 225.0, 20.0, 20.0), clear=4.0)
+    r = rasterize(board, cell_mils=50, links=True, supersample=0, islands=True)
+    assert len(r.islands["TopLayer"].label) == 2                 # the pad, a piece in both cells
+    kx, _ = r.link_conductivity("TopLayer", 1.0, 0.0)
+    assert kx[4, 8] == pytest.approx(50 / (22 + 28 / (22 / 50)), rel=0.03)
+    assert kx[4, 7] == pytest.approx(1.0) and kx[3, 8] == pytest.approx(1.0)

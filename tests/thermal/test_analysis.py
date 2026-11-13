@@ -14,6 +14,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from eda_agent.layout.copper_raster import rasterize
+from eda_agent.layout.model import Component, Pad, PadCopper
 from eda_agent.thermal import physics as ph
 from eda_agent.thermal import run as tr
 from eda_agent.thermal.analysis import (
@@ -542,3 +543,31 @@ def test_a_board_as_the_altium_reader_gives_it_is_solved():
     assert rep["t_max_at_mils"] == pytest.approx([100.0, 200.0], abs=10.0)
     assert np.isfinite(res.t_max_c) and rep["t_max_c"] > rep["layers"][1]["t_max_c"] + 50
     assert rep["stackup"]["assumed"] is True
+
+
+def test_the_tool_keeps_a_pad_apart_from_the_pour_round_it():
+    """The analysis solves with the copper split by island: a gull-wing
+    part in a pour reads on 50 mil cells what the solver gives with the
+    split, a third more than without it."""
+    from .boards import add_leaded, four_layer, pour_round_pads
+
+    board, stack = four_layer(1000.0, 1000.0)
+    add_leaded(board, "U1", 500.0, 500.0)
+    # a small part on the pour, in the cell of U1's first pad
+    board.pads.append(Pad("C9", "1", 440.0, 353.0, net="GND",
+                          copper=[PadCopper("TopLayer", "rect", 6.0, 6.0)]))
+    board.components.append(Component("C9", x=440.0, y=353.0,
+                                      courtyard=rect(435, 350, 445, 356)))
+    pour_round_pads(board)
+    rep, res = analyze(board, stack, powers={"U1": 1.0},
+                       packages={"U1": Package(theta_jb=10.0)}, cell_mils=50.0)
+    assert rep["grid"]["island_pieces"] > 0 and res.raster.islands
+    joined = solve(board, stack, rasterize(board, cell_mils=50.0, links=True, supersample=0),
+                   powers={"U1": 1.0}, packages={"U1": Package(theta_jb=10.0)})
+    tj = rep["parts"][0]["t_junction_c"]
+    assert tj - 25.0 > 1.3 * (joined.parts[0]["t_junction_c"] - 25.0)
+    assert rep["t_max_c"] == pytest.approx(rep["parts"][0]["t_pads_max_c"], abs=0.01)
+    assert rep["hotspots"][0]["nearest"] == "U1" and rep["hotspots"][0]["distance_mils"] == 0.0
+    # the neighbour on the pour reads the pour, not the pad it shares a cell with
+    c9 = next(c for c in rep["hottest_components"] if c["ref"] == "C9")
+    assert c9["t_c"] < rep["parts"][0]["t_pads_c"] - 15.0
