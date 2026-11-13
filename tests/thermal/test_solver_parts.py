@@ -327,11 +327,15 @@ def test_direct_solver_fallback_when_pyamg_is_missing(monkeypatch):
 def test_no_false_peak_in_the_drill_holes_under_a_pad():
     """On a grid fine enough to see the drill holes of a via-in-pad, the
     cells inside a hole have no copper and must take none of the pad's
-    heat: the copper round them does not reach in, so they would stand
-    out as peaks several kelvin over the pad (5 K on the demo board)."""
+    heat: the copper round them does not reach in. A junction feeding
+    them through theta_jb would lift them several kelvin over the pad
+    (6.4 K here), a false peak. The via centres sit on cell centres, so
+    each hole holds a cell with no copper at all."""
     board, stack = four_layer(500, 500)
-    add_qfn(board, "U1", 251, 249)
-    res = _solve(board, stack, cell=5.0, powers={"U1": 1.0})
+    add_qfn(board, "U1", 252.5, 247.5)
+    res = _solve(board, stack, cell=5.0, powers={"U1": 1.0},
+                 packages={"U1": Package(theta_jb=12.0)})
     p = _part(res, "U1")
     assert res.t_max_c - p["t_pads_c"] < 1.0
     assert p["t_pads_max_c"] - p["t_pads_c"] < 1.0
+    assert p["t_junction_c"] == pytest.approx(p["t_pads_c"] + 12.0, abs=0.01)
