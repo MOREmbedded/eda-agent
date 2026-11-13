@@ -16,6 +16,20 @@ maturity classification for every tool.
 
 ### Added
 
+- **PCB toolkit: 44 calculators, a Calculators tab and `pcb_calc
+  kind=toolkit`.** Controlled impedance (microstrip, embedded
+  microstrip, symmetric and offset stripline, dual stripline, coplanar)
+  and differential pairs (edge-coupled, broadside, coplanar) come from a
+  new 2D field solver with solder mask, trapezoidal traces, mixed
+  dielectrics, causal Er(f), dispersion, and conductor loss with
+  roughness; it agrees with the exact conformal-mapping results within
+  0.1 %. Trace and via current come from a thermal model of the board
+  (planes, laminate, convection, radiation) in place of a chart. Also
+  crosstalk, plane-pair capacitance and cavity impedance, PDN target,
+  timing, junction temperature, Ohm's law and passives, padstacks, BGA
+  lands and conversions. The dashboard tab (key 0) fills inputs from the
+  open board's layer stack. See [`docs/PCB_TOOLKIT.md`](docs/PCB_TOOLKIT.md).
+
 - **PDN analysis.** `sim_pdn_ir_drop` solves a power net and its return
   as a sparse resistor network of the board's real copper (pours and
   planes on a grid, tracks and arcs as exact resistors, via barrels from

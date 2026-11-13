@@ -96,7 +96,7 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 📚 **Libraries and parts** | Symbols, footprints, 3D models, and part search across distributors. Preview a part's symbol and footprint before placing it (`lib_preview_part`, or the dashboard's Library pane). See [Part sourcing](docs/PART_SOURCING.md) |
 | 🏭 **Fab output** | Read the Gerbers back and check them against the board, plus JLCPCB and PCBWay stackups and a cited rules database for 13 fabs. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md) |
 | 📏 **Fab and IPC rule floors** | On demand, check the board's design rules against a fab's minimums and your IPC class floors, and raise the ones below them (`pcb_rules_fab_floors`). See [IPC standards](docs/IPC_STANDARDS.md) |
-| 🧮 **Calculators** | Spacing, fusing, vias, impedance and PDN, also on the command line. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md#calculators) |
+| 🧮 **Calculators** | A PCB toolkit of 44 calculators on the dashboard's Calculators tab and as `pcb_calc` tools: impedance and differential pairs from a 2D field solver, trace and via current from a thermal model of the board, planes, crosstalk, passives. See [PCB toolkit](docs/PCB_TOOLKIT.md) and [Fab and calculators](docs/FAB_AND_CALCULATORS.md#calculators) |
 | 📈 **Simulation** | SPICE model library and LTspice round trip: find models by MPN, check pin maps, export and compare decks. See [SPICE models](docs/SPICE_MODELS.md) |
 | 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
 | 🔋 **Power integrity (PDN)** | DC IR drop and current density on the real copper (`sim_pdn_ir_drop`), AC impedance against a target with a field-solved plane pair and every capacitor's mounting (`sim_pdn_impedance`). See [PDN analysis](docs/PDN.md) |
@@ -130,6 +130,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Profiles](docs/PROFILES.md) | Per-workspace house style: naming, rules, fab profiles, templates |
 | [Fab output, stackups and calculators](docs/FAB_AND_CALCULATORS.md) | Checking the fab package, bundled fab data, laminates, calculators |
 | [IPC standards and rule values](docs/IPC_STANDARDS.md) | Catalogue of IPC standards, rule definitions, your licensed values per profile |
+| [PCB toolkit calculators](docs/PCB_TOOLKIT.md) | The Calculators tab: field-solver impedance and pairs, trace thermal model, vias, planes, crosstalk, passives, with measured accuracy |
 | [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
 | [PDN analysis](docs/PDN.md) | DC IR drop, current density, and AC impedance against a target impedance |
 | [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |

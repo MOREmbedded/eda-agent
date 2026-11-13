@@ -115,6 +115,7 @@ nav:
       - Overview: FEATURES.md
       - Using the tools: USING_THE_TOOLS.md
       - Fab output and calculators: FAB_AND_CALCULATORS.md
+      - PCB toolkit calculators: PCB_TOOLKIT.md
       - IPC standards and rule values: IPC_STANDARDS.md
       - EMI/EMC and RF field solving: EMC_RF.md
       - PDN analysis: PDN.md

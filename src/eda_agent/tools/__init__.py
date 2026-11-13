@@ -51,6 +51,7 @@ from .kicad_sch import register_kicad_sch_tools
 from .kicad_lib import register_kicad_lib_tools
 from .eda import register_eda_tools
 from .calc import register_calc_tools, register_pcb_calc_tools
+from .toolkit import register_toolkit_tools
 from .stackup import register_stackup_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
@@ -386,6 +387,10 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # EVERYWHERE; scoping them to the KiCad path hid all ten from
     # Altium users, which is this project's main backend.
     register_pcb_calc_tools(mcp)
+    # The PCB calculator toolkit: field-solver impedance, thermal trace
+    # current and the rest, behind one tool (list, describe, run) on
+    # every backend, plus the board's stackup as inputs where Altium is.
+    register_toolkit_tools(mcp, altium=backend in ("altium", "both"))
     # Bundled fab capabilities, stackup templates and laminate data.
     # Everywhere, for the same reason: four of the five are local file
     # reads with no editor involved, and the fifth only needs Altium to
@@ -440,6 +445,7 @@ __all__ = [
     "register_eda_tools",
     "register_calc_tools",
     "register_pcb_calc_tools",
+    "register_toolkit_tools",
     "register_stackup_tools",
     "register_plan_tools",
     "register_offline_design_tools",
