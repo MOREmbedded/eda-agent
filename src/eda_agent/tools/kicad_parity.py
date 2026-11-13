@@ -572,6 +572,8 @@ GAPS: dict[str, str] = {
     "sim_em_build_model": "as sim_emc_prescan",
     "sim_em_run": "runs models from sim_em_build_model, which has no KiCad reader yet",
     "sim_em_results": "as sim_em_run",
+    "sim_pdn_ir_drop": "as sim_emc_prescan",
+    "sim_pdn_impedance": "as sim_emc_prescan",
     "sim_read_touchstone": "reads a file only; registered with the Altium suite, not yet on the KiCad surface",
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",

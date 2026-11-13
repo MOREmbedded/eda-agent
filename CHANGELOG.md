@@ -30,6 +30,21 @@ maturity classification for every tool.
   lands and conversions. The dashboard tab (key 0) fills inputs from the
   open board's layer stack. See [`docs/PCB_TOOLKIT.md`](docs/PCB_TOOLKIT.md).
 
+- **PDN analysis.** `sim_pdn_ir_drop` solves a power net and its return
+  as a sparse resistor network of the board's real copper (pours and
+  planes on a grid, tracks and arcs as exact resistors, via barrels from
+  the stackup; pads met at their real edge and barrels at their hole
+  wall, so the answer does not move with the grid) and reports the worst
+  pins of every load, current density, loss per layer, overloaded tracks
+  and vias, and a grid-convergence error estimate. `sim_pdn_impedance`
+  finds a rail's decoupling capacitors (MLCC, polymer, tantalum and
+  electrolytic defaults), works out each pin's mounting inductance from
+  the copper that joins it to the planes, solves the power/ground plane
+  pair as a field cavity on its real, perforated shape (FDFD, exact
+  skin-effect surface impedance, Djordjevic-Sarkar laminate) and reports
+  where |Z| at the load exceeds the target. Both are checked against
+  closed-form references, and the IR-drop run writes its Joule heat map.
+  UNVERIFIED live. See [`docs/PDN.md`](docs/PDN.md).
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design
