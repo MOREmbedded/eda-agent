@@ -197,7 +197,7 @@ NOT_LENGTH_NAMES = re.compile(
     r"colou?r|mode|style|orientation|type$|kind$|layers$|revision|^sides$|"
     r"increment|spokes|^symbol$|^entries$|^units$|pins|^f_|supplies|"
     r"^region$|^names_region$|^wires$|^pins$|direction|display|naming|"
-    r"multiple|_pair$|_move$")
+    r"multiple|_pair$|_move$|_gbps$|baud")
 
 
 def _surface():
