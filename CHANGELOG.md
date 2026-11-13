@@ -28,9 +28,9 @@ maturity classification for every tool.
   "served" by a via that stands outside the plane), or let any via
   share a pad's solder mask opening under `pad_vias="centre"`, it no
   longer does. A narrow `neck_pads` branch keeps its width after the
-  pour stage (it was laid at the net's full width, into another net's
-  clearance), and his coarser grid pitches route clean (see Fixed: a pad
-  smaller than a cell). A
+  pour stage and in the attempt after a plane is given back (it was laid
+  at the net's full width, into another net's clearance), and his coarser
+  grid pitches route clean (see Fixed: a pad smaller than a cell). A
   setting that cannot be used routes with the default engine, and his
   router's own job parameters are range-checked before anything runs.
   `python -m eda_agent.layout.bench_run --fixtures DIR --router euan`
@@ -332,15 +332,21 @@ maturity classification for every tool.
   let a new via's opening merge into that pad's opening whatever the
   pad's net: on a 0.8 mm BGA a dog-bone via stood 7.3 mil from three
   other nets' balls, its opening one with theirs, no solder dam between
-  them, and the verdict passed it. It now merges only into a via's
-  opening or one of its own net's pads; any other opening keeps the
-  board's mask web.
+  them, and the verdict passed it. Openings that already meet count as
+  one, and a new via's may merge only into one whose every pad and via
+  is of its net, each pad one that may take a via, and never where it
+  would join two nets' openings: next to another net's via whose opening
+  ran into that net's pad, a new via shared the pad's opening too. Any
+  other opening keeps the board's mask web.
 - **Stage numbers are range-checked before routing.** A negative
   `lane_cost` gave the shortest path search negative weights, and the
   server process ran out of memory and aborted, with no job error; a
   `lane_depth` of 1e7 mil held a job worker for hours. `lane_cost`,
   `lane_depth`, `pair_skew`, `pair_width`, `pair_gap`, `fine_pitch` and
-  `bus_min` out of range, or not numbers, now fail the job at once.
+  `bus_min` out of range, or not numbers, now fail the job at once, and
+  so does a number too large to compute with (a 400-digit `lane_cost`
+  passed the check and overflowed mid-job); the engines get each as a
+  plain float.
 - **A differential pair's skew bump can no longer loop for ever.** When
   a bump had to be cut to its run, rounding could leave it a hair too
   long, and the same height came back on every pass: the job never
@@ -351,13 +357,21 @@ maturity classification for every tool.
   all pad copper and left out of the router's own clearance map, so
   another net could come within clearance of the track end. At Euan's
   coarser pitches 43 of 1,155 random small-pad boards broke a
-  clearance; none do now.
+  clearance; none do now. The two cells nearest two such pads of
+  different nets are judged by the tracks that end on them, without the
+  margin a diagonal step needs, and an escape stub from a pad by its own
+  copper rather than a disc round each cell it crosses: random boards of
+  0201 parts at pitch 15 and 20 route 100% and 97.5%, where the first
+  version of this fix left 75% and 52% (and the router before it 89%
+  and 82%, with clearance violations on 12 of 160 boards).
 - **A blind via is no way into a plane or pour beyond its span.** A pad
   wired to a via that stops short of its net's plane layer was taken as
   already in the plane, and a pad on a blind via as joined to a pour on
   a layer the via never reaches: the pad was never routed, and the
   verdict found the net open. A via now counts only on the layers it
-  passes.
+  passes, in the plane fan-out's count of pads already joined too, and
+  the routing attempt after a plane is given back routes again a pad
+  whose only way in was through that plane.
 - **The DRC verdict joins a plane layer only through vias that reach
   it.** It took every via of an internal plane layer's net as joined to
   the plane, so a pad wired to a blind via that stops short of the

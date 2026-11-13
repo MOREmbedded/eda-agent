@@ -18,6 +18,9 @@ missed keep-outs drawn on the Keep-Out layer.
 """
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import pytest
 
 from eda_agent.design import live
@@ -500,6 +503,213 @@ def test_a_new_vias_opening_never_runs_into_another_nets_pad(engine, monkeypatch
                 assert gap >= 6 + 6 + 4 - 1e-6, (v["net"], p.name, round(gap, 2))
 
 
+def _beside_b(b_pads=True):
+    """test_route_mask_webs' board with WIDE_MASK, and net B's through-hole
+    pads (40 mil, round) 30 mil left of and 25 mil out from where the
+    search puts A's vias without them, (258.2, 224.9) and (258.2, 274.9):
+    a via there stands 9 mil from B's copper, its opening one with B's."""
+    b = webs._board()
+    b.rules = [r for r in b.rules if r.kind not in ("mask_sliver", "soldermask")] + WIDE_MASK
+    if b_pads:
+        b.pads += [Pad(f"J{k}", "1", x, y, net="B", hole=20.0,
+                       copper=[PadCopper(l, "round", 40, 40) for l in ("TopLayer", "BottomLayer")])
+                   for k, (x, y) in enumerate(((228.2, 199.9), (228.2, 299.9), (560, 460)))]
+    return b
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_search_via_keeps_its_opening_off_another_nets_pad(engine, monkeypatch):
+    """The search bars a via from the cells where its opening would meet
+    another's (_mask_webs), and frees one for a net's via only where it
+    would merge into openings of that net alone. Freed for any net's via,
+    as the fan-out tests could never show, A's vias stood 9 mil from B's
+    pads, no mask between the two nets, and the job passed."""
+    plain = _run(engine, monkeypatch, _beside_b(b_pads=False))
+    assert sorted((round(v["x"], 1), round(v["y"], 1)) for v in plain["vias"]) \
+        == [(258.2, 224.9), (258.2, 274.9)]
+    res = _run(engine, monkeypatch, _beside_b())
+    assert res["summary"]["completion"] == 1.0
+    assert res["summary"]["drc_status"] == "pass" and res["summary"]["mask_slivers"] == 0
+    assert len(res["vias"]) == 2, "A needs its vias, or this proves nothing"
+    pads = _beside_b().pads
+    for v in res["vias"]:
+        disc = geom.circle(v["x"], v["y"], v["size"])
+        for p in pads:
+            for layer in ("TopLayer", "BottomLayer"):
+                s = p.shape_on(layer)
+                if s is None or p.net == v["net"]:
+                    continue
+                gap = geom.clearance(disc, s)
+                assert gap >= 6 + 6 + 4 - 1e-6, (v["net"], p.comp, layer, round(gap, 2))
+
+
+def _opening_groups(board):
+    """The board's solder mask openings, joined where they meet (a gap of
+    0 or less): per group, each opening's (kind, index, net)."""
+    from eda_agent.layout.drc import mask_openings
+    from eda_agent.layout.rules import RuleSet
+
+    ops = mask_openings(board, RuleSet.from_board(board))
+    parent = list(range(len(ops)))
+
+    def root(a):
+        while parent[a] != a:
+            a = parent[a]
+        return a
+
+    for a, (ia, ga) in enumerate(ops):
+        for b in range(a + 1, len(ops)):
+            ib, gb = ops[b]
+            if ia.layer == ib.layer and geom.clearance(ia.shape, ib.shape) - ga - gb <= 1e-9:
+                parent[root(a)] = root(b)
+    groups: dict = {}
+    for n, (it, _g) in enumerate(ops):
+        groups.setdefault(root(n), []).append((it.kind, it.idx, it.net))
+    return list(groups.values())
+
+
+def _dog_bone_m():
+    """test_route_mask_webs' board, and net M: a pad and the via of its
+    dog-bone, 6 mil apart, so their openings (4 mil each) are one."""
+    b = webs._board()
+    zx, zy = 234.19, 274.85
+    b.pads.append(Pad("U9", "1", zx - 26, zy, net="M",
+                      copper=[PadCopper("TopLayer", "rect", 20, 20)]))
+    b.vias.append(Via(zx, zy, 20, 10, "TopLayer", "BottomLayer", "M"))
+    b.tracks.append(Track("TopLayer", zx - 26, zy, zx, zy, 6, "M"))
+    return b
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_new_via_shares_no_opening_with_another_nets_pad_through_its_via(engine,
+                                                                          monkeypatch):
+    """M's via and pad already share one opening. A new via could merge
+    into any via's opening, so A's went in beside M's via, 24 mil from
+    M's pad: A's via and M's pad in one opening, no mask left between the
+    two nets, and no sliver for the verdict to see."""
+    assert verdict(_dog_bone_m())["status"] == "pass"
+    res = _run(engine, monkeypatch, _dog_bone_m())
+    assert res["summary"]["completion"] == 1.0
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    n0 = len(_dog_bone_m().vias)
+    out = _written(_dog_bone_m(), res)
+    assert len(out.vias) > n0, "A needs its vias, or this proves nothing"
+    for group in _opening_groups(out):
+        for net in {n for kind, i, n in group if kind == "via" and i >= n0}:
+            assert {n for _k, _i, n in group} == {net}, group
+
+
+def _web_board():
+    """Mask rules as test_route_mask_webs' (4 mil openings, 10 mil sliver
+    rule; a new 20 mil via's opening meets one whose copper is within 18
+    mil of its centre), and: M's via V alone at (100, 100) and N's
+    through-hole pad Q 26 mil to its right; N's via W at (100, 300) and
+    the pad P of N's passive 6 mil from it, their openings one; K's pad E
+    at (300, 100) and a pad of no net, Z, 6 mil from it, theirs one too.
+    M and N each have a pad far off to make them jobs."""
+    from eda_agent.layout.model import Layer, LayoutBoard
+    from tests.layout.test_route import _rules
+
+    def smd(comp, name, x, y, net):
+        return Pad(comp, name, x, y, net=net, copper=[PadCopper("TopLayer", "rect", 20, 20)])
+
+    b = LayoutBoard(name="w", outline=[(0, 0), (600, 0), (600, 500), (0, 500)],
+                    layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)],
+                    rules=_rules() + [r for r in webs.RULES if r.kind != "clearance"])
+    b.vias = [Via(100, 100, 20, 10, "TopLayer", "BottomLayer", "M"),
+              Via(100, 300, 20, 10, "TopLayer", "BottomLayer", "N")]
+    b.pads = [Pad("J1", "1", 151, 100, net="N", hole=15.0,
+                  copper=[PadCopper(l, "round", 30, 30) for l in ("TopLayer", "BottomLayer")]),
+              smd("C5", "1", 126, 300, "N"), smd("C5", "2", 126, 450, "Y"),
+              smd("C7", "1", 300, 100, "K"), smd("C7", "2", 300, 250, "Y2"),
+              smd("J9", "1", 326, 100, ""),
+              smd("R8", "1", 450, 400, "M"), smd("R8", "2", 550, 400, "M"),
+              smd("R9", "1", 500, 250, "N")]
+    b.meta["mask_read"] = True
+    return b
+
+
+def _cell(r, x, y):
+    """The grid cell nearest (x, y): its index (y, x), and its centre."""
+    spec = r.grid.spec
+    ci, cj = spec.cell(x, y)
+    return (cj, ci), (float(spec.x(ci)), float(spec.y(cj)))
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_new_vias_opening_merges_only_into_one_all_of_its_own_net(engine):
+    """Where a new via's opening would meet another's, the two are one
+    opening, with whatever that one already holds. Any net's via could
+    merge into any via's opening; now only into one whose every pad and
+    via is of its net, each pad one that may take a via, and never where
+    it would join two nets' openings. A via in a pad (``pad``) may merge
+    into whatever that pad's opening is one with."""
+    r = _router(engine, _web_board(), excluded=())
+    v = r.rr.vias("N")[0]
+    assert (v.diameter, v.hole) == (20.0, 10.0)
+    # 13 mil past V's copper on the side away from Q, and 13 mil from both
+    # between them: within the merge (18) of V's opening, of both.
+    (alone, at_a), (both, at_b) = _cell(r, 77, 100), _cell(r, 123, 100)
+    assert 10 < math.hypot(at_a[0] - 100, at_a[1] - 100) < 28
+    assert math.hypot(at_b[0] - 100, at_b[1] - 100) < 28 and abs(at_b[0] - 151) < 33
+    assert not r.via_leaves_web(v, *at_a, net="M")
+    for net in ("N", None):
+        assert r.via_leaves_web(v, *at_a, net=net), net
+    # Between M's via and N's pad, an N via would join their openings.
+    for net in ("M", "N"):
+        assert r.via_leaves_web(v, *at_b, net=net), net
+    flat = {n: {tuple(c) for c in r._mask_webs(v, n).tolist()} for n in ("M", "N")}
+    assert alone not in flat["M"] and alone in flat["N"]
+    assert both in flat["M"] and both in flat["N"]
+    # The search's own guard frees the cell for M's via, for N's alone.
+    jobs = {j.name: j for j in r.jobs}
+    assert alone not in {tuple(c) for c in jobs["M"].no_via[0].tolist()}
+    assert alone in {tuple(c) for c in jobs["N"].no_via[0].tolist()}
+    # W's opening is one with that of P, a passive's pad, which may not
+    # take a via: an N via merging into W's would merge into P's.
+    assert r.via_leaves_web(v, 77, 300, net="N")
+    assert not _router(engine, _web_board(), excluded=(), pad_vias="any").via_leaves_web(
+        v, 77, 300, net="N")
+    # A via in E (meant to go there) merges into Z's opening, already one
+    # with E's; any other via of K's may not.
+    e = next(i for i, p in enumerate(r.board.pads) if p.comp == "C7" and p.name == "1")
+    assert not r.via_leaves_web(v, 300, 100, pad=e, net="K")
+    assert r.via_leaves_web(v, 300, 100, net="K")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_group_of_openings_is_one_nets_only_if_all_of_it_is(engine):
+    """K's through-hole pad T, which may take a via, and J's via 6 mil
+    from it: one opening, T's listed first. Taken from its first opening,
+    the group was K's, and a K via could merge into it: K's opening and
+    J's one, with no mask between the two nets."""
+    from eda_agent.layout.model import Layer, LayoutBoard
+    from tests.layout.test_route import _rules
+
+    def th(comp, name, x, y, net):
+        return Pad(comp, name, x, y, net=net, hole=15.0,
+                   copper=[PadCopper(l, "round", 30, 30) for l in ("TopLayer", "BottomLayer")])
+
+    b = LayoutBoard(name="g", outline=[(0, 0), (600, 0), (600, 500), (0, 500)],
+                    layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)],
+                    rules=_rules() + [r for r in webs.RULES if r.kind != "clearance"])
+    b.pads = [th("J1", "1", 200, 200, "K"), th("J2", "1", 500, 400, "K"),
+              Pad("R1", "1", 500, 100, net="J", copper=[PadCopper("TopLayer", "rect", 20, 20)])]
+    b.vias = [Via(231, 200, 20, 10, "TopLayer", "BottomLayer", "J")]
+    b.meta["mask_read"] = True
+    r = _router(engine, b, excluded=())
+    v = r.rr.vias("K")[0]
+    assert (v.diameter, v.hole) == (20.0, 10.0)
+    # 12 mil past T's copper on the side away from J's via: within the
+    # merge of T's opening (a new via's opening meets one whose copper is
+    # within 18 mil of its centre), out of reach of the via's.
+    cell, at = _cell(r, 173, 200)
+    assert 15 < math.hypot(at[0] - 200, at[1] - 200) < 33 and at[0] < 200
+    for net in ("K", "J", None):
+        assert r.via_leaves_web(v, *at, net=net), net
+        assert cell in {tuple(c) for c in r._mask_webs(v, net).tolist()}, net
+
+
 def _caps(extra=()):
     """Two capacitors with a GND pad each over a GND plane on MidLayer2,
     their other pads joined on the top. The plane fan-out drops a dog-bone
@@ -838,7 +1048,8 @@ L = {_RUN!r}
 plan = NS(lines=[[(-10.0, 0.0), (0.0, 0.0), (L, 0.0), (L + 10.0, 0.0)],
                  [(-10.0, 100.0), (L + 10.0, 100.0), (L + 10.0, 300.0)]],
           nets=["P", "N"], width=8.6, pitch=100.0, li=0)
-print(dp.even_skew(ctx, plan, 0.2))
+n = dp.even_skew(ctx, plan, 0.2)
+print(n, max(abs(y) for _x, y in plan.lines[0]))
 """
 
 
@@ -869,7 +1080,12 @@ def test_a_skew_bump_cut_to_its_run_ends(engine):
     except subprocess.TimeoutExpired:
         pytest.fail("even_skew did not return")
     assert out.returncode == 0, out.stderr[-2000:]
-    assert int(out.stdout.split()[-1]) >= 1, "no bump went in"
+    count, high = out.stdout.split()[-2:]
+    assert int(count) >= 1, "no bump went in"
+    # The cut bump went in, as high as the run takes. Without the margin
+    # it came out a hair too long and the run was split instead: lower
+    # bumps on each half.
+    assert float(high) >= h - 1e-6, (high, h)
 
 
 # -- Euan's router only -------------------------------------------------------
@@ -973,6 +1189,29 @@ def test_a_branch_is_laid_at_its_width_after_the_pour_takes_the_trunk(pour, monk
         assert min(geom.clearance(cap, w) for w in walls) >= 6.0 - 1e-6
 
 
+def test_a_warm_start_keeps_a_branchs_width():
+    """route_adaptive's next attempt takes over the routes that still
+    hold. A branch's narrower width stayed with the attempt that routed
+    it: taken over, the branch into the slot was laid at the net's 40
+    mil, 5 mil from X1 and X2 (rule 6)."""
+    first = _router("euan", _branch_board(False), excluded=(), neck_pads=True)
+    first.run()
+    second = _router("euan", _branch_board(False), excluded=(), neck_pads=True)
+    real, kept = second.warm_from, []
+
+    def warm_from(prev):
+        todo = real(prev)
+        kept.extend(j.name for j in second.jobs if j not in todo)
+        return todo
+
+    second.warm_from = warm_from
+    second.run(warm=first)
+    assert "P" in kept, "the warm start must take P over, or this proves nothing"
+    slot = [t for t in second.apply().tracks if t.net == "P" and t.y1 > 420 and t.y2 > 420]
+    assert slot, "the branch must reach into the slot, or this proves nothing"
+    assert max(t.width for t in slot) <= 20.0 + 1e-6, sorted({t.width for t in slot})
+
+
 @pytest.mark.parametrize("engine", ENGINES)
 def test_a_pad_no_cell_centre_falls_in_is_entered_from_a_stamped_cell(engine):
     """A 2 mil pad at a cell's corner: no cell centre falls in it, so it is
@@ -1025,6 +1264,241 @@ def test_a_coarse_pitch_keeps_every_clearance(seed, monkeypatch):
     assert res["summary"]["violations"] == 0, res["violations"][:2]
 
 
+
+def _two_small_pads(ax, bx, size=8.0, y=150.0):
+    """Nets A and B on two small pads at (ax, y) and (bx, y), each joined to
+    a 20 mil pad far off on its own side, so the routes leave apart."""
+    b = _board(w=400, h=300)
+    b.pads = [Pad("C1", "1", ax, y, net="A", copper=[PadCopper("TopLayer", "rect", size, size)]),
+              Pad("C1", "2", bx, y, net="B", copper=[PadCopper("TopLayer", "rect", size, size)]),
+              _pad("J1", "1", 30, 150, "A"), _pad("J2", "1", 370, 150, "B")]
+    return b
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_two_small_pads_a_cell_apart_both_route_at_a_coarse_pitch(engine, monkeypatch):
+    """At pitch 20 no cell centre falls in either 8 mil pad, and the cells
+    nearest them, which each net's route must end on, are neighbours.
+    Their stamps met by the corner margin alone (for a step between two
+    cells): counted as a conflict that no reroute could undo, it left A
+    open in Euan's router. Tracks centred on the two cells are 14 mil
+    apart. The default engine routes at its own pitch, where no two cells
+    are near enough to tell; a script can give it one (route_adaptive),
+    and it is held to the same."""
+    if engine == "euan":
+        from eda_agent.layout.route_euan.router import Router
+    else:
+        from eda_agent.layout.route.router import Router, route_adaptive
+
+    spec = Router(_two_small_pads(150, 175), pitch=20.0).grid.spec
+    (ia, ja), (ib, jb) = spec.cell(150, 150), spec.cell(175, 150)
+    assert (ib - ia, jb - ja) == (1, 0), "the nearest cells must be neighbours"
+    if engine == "euan":
+        res = _run("euan", monkeypatch, _two_small_pads(150, 175), pitch=20.0)
+        assert res["summary"]["completion"] == 1.0, res["unrouted"]
+        assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+        return
+    got = verdict(route_adaptive(_two_small_pads(150, 175), pitch=20.0).apply())
+    assert got["report"].completion == 1.0, dict(got["report"].unrouted)
+    assert not got["violations"], got["violations"][:2]
+
+
+@pytest.mark.parametrize("engine, pitch, size, apart, off", [
+    ("euan", 8.0, 4.0, 1, 3.5), ("default", None, 2.0, 2, 1.5), ("euan", None, 2.0, 2, 1.5)])
+def test_two_small_pads_too_close_for_their_tracks_keep_the_rule(engine, pitch, size, apart, off,
+                                                                 monkeypatch):
+    """Euan's router at pitch 8: two 4 mil pads 15 mil apart (11 mil of
+    gap) on neighbouring cells, 8 mil apart. Either router at its own 4.2
+    mil: two 2 mil pads 11.3 mil apart on cells two apart, 8.3 mil. Tracks
+    centred on the two cells would stand 2 and 2.3 mil apart under the 6
+    mil rule. Both routes must end there, so one net stays open rather
+    than be laid through the other's clearance; the router before the
+    stamp laid both, 2 mil apart. (Tracks laid straight from the two pads'
+    centres would clear: a limit of the grid, in the engines doc's known
+    limits.)"""
+    if engine == "euan":
+        from eda_agent.layout.route_euan.router import Router
+    else:
+        from eda_agent.layout.route.router import Router
+    kw = {"pitch": pitch} if pitch else {}
+    spec = Router(_two_small_pads(150, 175), **kw).grid.spec
+    i, j = spec.cell(150, 150)
+    ax, bx, y = float(spec.x(i)) - off, float(spec.x(i + apart)) + off, float(spec.y(j))
+    assert [spec.cell(ax, y), spec.cell(bx, y)] == [(i, j), (i + apart, j)]
+    assert off > size / 2, "no cell centre may fall in either pad"
+    board = lambda: _two_small_pads(ax, bx, size=size, y=y)  # noqa: E731
+    assert not run_drc(board()).violations
+    res = _run(engine, monkeypatch, board(), **kw)
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    assert res["summary"]["completion"] == 0.5, "one of the two nets must stay open"
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_pass_that_must_add_no_conflict_keeps_off_a_covered_forced_cell(engine):
+    """The board of the case above at either router's own pitch: one net
+    routed, the other open, the cell its route must end on covered by the
+    first's. A pass that must add no conflict (repair, settle) keeps off
+    it, as it keeps off any cell another route covers: opened for being
+    the only way into the pad, it laid the second net through the first's
+    clearance, a conflict for the clean-up to take up again."""
+    if engine == "euan":
+        from eda_agent.layout.route_euan.router import Router
+    else:
+        from eda_agent.layout.route.router import Router
+    spec = Router(_two_small_pads(150, 175)).grid.spec
+    i, j = spec.cell(150, 150)
+    ax, bx, y = float(spec.x(i)) - 1.5, float(spec.x(i + 2)) + 1.5, float(spec.y(j))
+    r = Router(_two_small_pads(ax, bx, size=2.0, y=y))
+    r.run()
+    open_ = [job for job in r.jobs if job.name in ("A", "B") and job.failed]
+    assert len(open_) == 1, "one of A and B must be open, or this proves nothing"
+    job = open_[0]
+    (forced,) = r._forced_cells(job)
+    assert r.occ_t[r._track_class(job)][forced] > 0, "the other's route must cover it"
+    r.route_net(job, 1.0, hard=True)
+    assert job.failed and not job.paths, "the pass laid a route into the other's clearance"
+    assert not r._conflicts(job)
+
+
+def _fingers(wide=False):
+    """Three 4 x 24 mil fingers at 13.5 mil pitch, 6/6 rules, each joined to
+    a 20 mil pad below. No cell centre falls in U1.4, so N3 leaves it by
+    an escape stub down its axis, all of it out of the 4 mil pad (the 6
+    mil track is wider). ``wide``: 8 x 30 mil fingers at 14 mil pitch, the
+    stub in the pad, where the track fits, until 3 mil from its end."""
+    from eda_agent.layout.model import Layer, LayoutBoard
+
+    def pad(comp, name, x, y, net, w, h):
+        return Pad(comp, name, x, y, net=net, copper=[PadCopper("TopLayer", "rect", w, h)])
+
+    if wide:
+        pads = [p for k in range(3) for p in (
+            pad("U1", str(k + 3), 162.9 + 14 * k, 68.4, f"N{k + 2}", 8, 30),
+            pad(f"R{k + 2}", "1", 130 + 45 * k, 240.0 + 3 * k, f"N{k + 2}", 20, 20))]
+    else:
+        pads = [pad("U1", "3", 159.336, 68.408, "N2", 4, 24),
+                pad("R2", "1", 130, 240.654, "N2", 20, 20),
+                pad("U1", "4", 172.837, 68.408, "N3", 4, 24),
+                pad("R3", "1", 175, 240.547, "N3", 20, 20),
+                pad("U1", "5", 186.339, 68.408, "N4", 4, 24),
+                pad("R4", "1", 220, 249.585, "N4", 20, 20)]
+    return LayoutBoard(
+        name="fingers", outline=[(0, 0), (400, 0), (400, 300), (0, 300)],
+        layers=[Layer("TopLayer", "signal", 0), Layer("BottomLayer", "signal", 1)],
+        rules=[Rule("Clearance", "0", "All", "All", 1, True, {"gap": 6.0},
+                    "Clearance Constraint (Gap=6mil) (All),(All)"),
+               Rule("Width", "1", "All", "All", 1, True, {},
+                    "Width Constraint (Min=6mil) (Max=6mil) (Preferred=6mil) (All)")],
+        pads=pads)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_escape_stub_is_stamped_from_its_own_copper(engine, monkeypatch):
+    """Stamped from the cells nearest N3's escape stub, each grown by the
+    0.71 of a cell the stub can lie from it, the stub covered every cell
+    N4 could enter U1.5 by, and N4 was left open; N3's copper and N4's are
+    7.5 mil apart."""
+    res = _run(engine, monkeypatch, _fingers())
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+
+
+@pytest.mark.parametrize("wide", (False, True))
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_escape_stubs_stamp_measures_from_all_of_it_off_the_pad(engine, wide):
+    """The stamp measures from the stub's centreline wherever its track
+    stands out of the pad: never farther (other nets would come in) and
+    at most the quarter of a cell the stub is cut by nearer than a walk
+    along the stub a hundredth of a mil at a time finds. Measured from
+    points along it less an eighth of a cell, and from its stretch in the
+    pad too where no cell of the pad was deep, it stood up to 2.8 cells
+    nearer on the wide finger and barred 10 cells for nothing."""
+    from eda_agent.layout.route.grid import inner_depth
+
+    r = _router(engine, _fingers(wide), excluded=())
+    r.run()
+    job = next(j for j in r.jobs if j.name == "N3")
+    ends = {tuple(map(int, e)) for p in job.paths for e in (p[0], p[-1])}
+    stubs = [(t, e, pts) for t in job.terminals for e, pts in t.stubs.items()
+             if tuple(map(int, e)) in ends]
+    assert len(stubs) == 1, "N3 must leave U1.4 by one stub, or this proves nothing"
+    t, end, pts = stubs[0]
+    segs = r._stub_segments(job)
+    assert list(segs) == [end[0]]
+    shape = r.board.pads[t.pad].shape_on("TopLayer")
+    walk = []
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        k = np.linspace(0.0, 1.0, int(math.hypot(bx - ax, by - ay) / 0.01) + 2)
+        walk.append(np.stack([ax + (bx - ax) * k, ay + (by - ay) * k], axis=1))
+    walk = np.concatenate(walk)
+    out = inner_depth(shape, walk[:, 0], walk[:, 1]) < job.width / 2 - 1e-6
+    assert out.any(), "the stub must leave the pad, or this proves nothing"
+    assert out.all() != wide, "a wide finger's stub starts in the pad"
+    spec = r.grid.spec
+    cj, ci = int(end[1]), int(end[2])
+    ys, xs = np.mgrid[cj - 6:cj + 7, ci - 6:ci + 7]
+    got = r._stub_distance(ys.astype(float), xs.astype(float), segs[end[0]])
+    cx, cy = spec.x(xs), spec.y(ys)
+    true = np.min(np.hypot(cx[..., None] - walk[out, 0], cy[..., None] - walk[out, 1]),
+                  axis=-1) / spec.pitch
+    assert (got <= true + 1e-6).all(), float((got - true).max())
+    assert (got >= true - 0.25 - 1e-6).all(), float((true - got).max())
+    # And the stamp is just that: the cells within the radius of the route's
+    # cells and of the stub. Stamped from the cells the stub passes over
+    # as well, it barred 16 cells more round the wide finger's stub.
+    deep = job.deep_cells
+    cells = [(y, x) for p in job.paths for l, y, x in p if l >= 0 and (l, y, x) not in deep]
+    assert not job.via_at and all(l >= 0 for p in job.paths for l, _y, _x in p)
+    cl = r.to_reader[r.group_of.get(job.id, 0)]
+    for sl, win, mt, mv in job.stamp:
+        ys, xs = np.mgrid[win[0], win[1]]
+        near = np.min(np.hypot(ys[..., None] - np.array([c[0] for c in cells]),
+                               xs[..., None] - np.array([c[1] for c in cells])), axis=-1)
+        stub = r._stub_distance(ys.astype(float), xs.astype(float), segs[sl]) if sl in segs \
+            else np.full(near.shape, np.inf)
+        # Other nets' tracks, and their vias: the stub keeps both off.
+        for got, classes, k in ((mt, r.t_classes, 0), (mv, r.v_classes, 1)):
+            for q, (g, size) in enumerate(classes):
+                radius = r._radii(job, 0, size if k else 0.0, 0.0 if k else size,
+                                  float(cl[g]))[k]
+                want = (near < radius - 1e-9) | (stub < radius - 1e-9)
+                assert (got[q] == want).all(), (k, q, int((got[q] & ~want).sum()),
+                                                int((want & ~got[q]).sum()))
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_cell_only_an_escape_stub_covers_is_not_waved_through(engine):
+    """A cell a route must end on passes other nets' stamps only where
+    they cover it from cells their own routes must end on (_forced_clear).
+    Round N3's escape stub are cells its stamp covers from the stub alone,
+    every cell of its route a reach or more away: none is clear for N2.
+    Taken as clear, a route ending on one comes inside the clearance of
+    the stub's copper."""
+    r = _router(engine, _fingers(), excluded=())
+    r.run()
+    jobs = {j.name: j for j in r.jobs}
+    n2, n3, n4 = jobs["N2"], jobs["N3"], jobs["N4"]
+    segs = r._stub_segments(n3)
+    assert list(segs) == [0], "N3 must leave U1.4 by a stub, or this proves nothing"
+    assert not n3.via_at
+    wq = r._track_class(n2)
+    g, width = r.t_classes[wq]
+    reach = r._radii(n3, 0, 0.0, width, float(r.to_reader[r.group_of.get(n3.id, 0)][g]))[0]
+    route = [(y, x) for p in n3.paths for l, y, x in p if l == 0 and (l, y, x) not in n3.deep_cells]
+
+    def covers(job, y, x):
+        return any(sl == 0 and win[0].start <= y < win[0].stop and win[1].start <= x < win[1].stop
+                   and mt[wq, y - win[0].start, x - win[1].start] for sl, win, mt, _mv in job.stamp)
+
+    ends = np.round(segs[0]).astype(int)
+    cells = [(y, x) for y in range(ends[:, [0, 2]].min() - 3, ends[:, [0, 2]].max() + 4)
+             for x in range(ends[:, [1, 3]].min() - 3, ends[:, [1, 3]].max() + 4)
+             if covers(n3, y, x) and not covers(n4, y, x)
+             and min(math.hypot(y - cy, x - cx) for cy, cx in route) >= reach]
+    assert cells, "the stub must cover cells its route does not, or this proves nothing"
+    assert not [c for c in cells if r._forced_clear(n2, 0, *c)]
+
+
 def _gnd_plane(strip=False):
     """GND poured over MidLayer2 (a plane; with ``strip``, but for a strip
     x < 80) and two capacitors, each with a GND pad and an N pad."""
@@ -1074,12 +1548,9 @@ def test_a_plane_pad_on_a_via_outside_the_plane_is_routed_into_it(monkeypatch):
     assert [round(v["x"]) for v in res["vias"] if v["net"] == "GND"] == [179], res["vias"]
 
 
-@pytest.mark.parametrize("engine", ENGINES)
-def test_a_blind_via_joins_no_pour_beyond_its_span(engine, monkeypatch):
-    """P is poured on the bottom. C2.1 reaches the pour down a through via,
-    C1.1 only a via from Top to MidLayer1. The pour stage joined each pad
-    to the pour piece at its via on every layer, took the two pads for
-    joined and left P open in the verdict."""
+def _bottom_pour():
+    """P poured on the bottom. C2.1 reaches the pour down a through via,
+    C1.1 only a via from Top to MidLayer1."""
     b = _board(w=600, h=500, layers=("TopLayer", "MidLayer1", "MidLayer2", "BottomLayer"))
     b.regions = [Region("BottomLayer", [(-5, -5), (605, -5), (605, 505), (-5, 505)], [],
                         "P", "pour_boundary")]
@@ -1089,7 +1560,15 @@ def test_a_blind_via_joins_no_pour_beyond_its_span(engine, monkeypatch):
               Via(400, 300, 20, 10, "TopLayer", "BottomLayer", "P")]
     b.tracks = [Track("TopLayer", 200, 250, 200, 300, 6.0, "P"),
                 Track("TopLayer", 400, 250, 400, 300, 6.0, "P")]
-    res = _run(engine, monkeypatch, b)
+    return b
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_blind_via_joins_no_pour_beyond_its_span(engine, monkeypatch):
+    """_bottom_pour: the pour stage joined each pad to the pour piece at
+    its via on every layer, took the two pads for joined and left P open
+    in the verdict."""
+    res = _run(engine, monkeypatch, _bottom_pour())
     assert res["summary"]["pours"] == ["BottomLayer:P"]
     assert res["summary"]["completion"] == 1.0, res["unrouted"]
     assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
@@ -1115,3 +1594,63 @@ def test_a_blind_via_short_of_a_plane_layer_is_no_way_into_it(engine, monkeypatc
     assert res["summary"]["completion"] == 1.0, res["unrouted"]
     assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
     assert len([v for v in res["vias"] if v["net"] == "GND"]) == 2, res["vias"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_the_plane_fanout_counts_a_pad_joined_only_where_its_barrel_reaches(engine,
+                                                                           monkeypatch):
+    """C1.1's only via is a blind one from Top to MidLayer1: short of the
+    GND plane on MidLayer2, and of P's pour on the bottom. The fan-out
+    took any barrel for the pad's way in, laid C1.1 no dog-bone, and the
+    search laid it a via later. C2.1's through via still joins it."""
+    b = _gnd_plane()
+    b.vias = [Via(200, 300, 20, 10, "TopLayer", "MidLayer1", "GND")]
+    b.tracks = [Track("TopLayer", 200, 250, 200, 300, 6.0, "GND")]
+    res = _run(engine, monkeypatch, b, **FANOUT)
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    assert res["fanout"] == {"dogbones": 2}
+    assert len(res["vias"]) == 2, res["vias"]
+    res = _run(engine, monkeypatch, _bottom_pour(), **FANOUT)
+    assert res["summary"]["pours"] == ["BottomLayer:P"]
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]
+    assert res["fanout"] == {"already_joined": 1, "dogbones": 1}
+    assert len(res["vias"]) == 1, res["vias"]
+
+
+def _released_blind():
+    """Six layers. GND is poured whole on MidLayer1 and MidLayer4, taken as
+    planes, and a wall of W stands on every other layer, which S crosses
+    only on MidLayer4: the first attempt fails S, and route_adaptive
+    gives MidLayer4 back. C2.1, on the bottom, reaches GND only down a
+    blind via from the bottom to MidLayer4."""
+    b = _board(w=600, h=500, layers=("TopLayer", "MidLayer1", "MidLayer2", "MidLayer3",
+                                     "MidLayer4", "BottomLayer"))
+    full = [(-5, -5), (605, -5), (605, 505), (-5, 505)]
+    wall = [(290, -5), (310, -5), (310, 505), (290, 505)]
+    b.regions = [Region("MidLayer1", full, [], "GND", "pour_boundary"),
+                 Region("MidLayer4", full, [], "GND", "pour_boundary")]
+    b.regions += [Region(layer, wall, [], "W", "copper")
+                  for layer in ("TopLayer", "MidLayer2", "MidLayer3", "BottomLayer")]
+    b.pads = [_pad("R1", "1", 150, 250, "S", layer="BottomLayer"),
+              _pad("R2", "1", 450, 250, "S", layer="BottomLayer"),
+              _pad("C1", "1", 150, 100, "GND"),
+              _pad("C2", "1", 450, 400, "GND", layer="BottomLayer")]
+    b.vias = [Via(450, 440, 20, 10, "BottomLayer", "MidLayer4", "GND")]
+    b.tracks = [Track("BottomLayer", 450, 400, 450, 440, 6.0, "GND")]
+    return b
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_warm_start_routes_a_pad_whose_barrel_reached_only_the_plane_given_back(
+        engine, monkeypatch):
+    """The second attempt takes over the first one's routes where they
+    hold. GND's were taken over as they were, C2.1 not among them: its
+    blind via was its way into the plane on MidLayer4, which joins it to
+    nothing once MidLayer4 is given back. GND stayed open."""
+    res = _run(engine, monkeypatch, _released_blind())
+    assert res["summary"]["released_planes"] == ["MidLayer4"], \
+        "MidLayer4 must be given back, or this proves nothing"
+    assert res["summary"]["completion"] == 1.0, res["unrouted"]
+    assert res["summary"]["drc_status"] == "pass", res["violations"][:2]

@@ -153,7 +153,8 @@ than it was routed. Each has a test that fails on his version.
   Their widths were kept by position beside the net's routes; when the
   pour stage took out a route the pour made redundant, a 20 mil branch
   moved into its place and was laid at the net's 40 mil, 5 mil from
-  another net's pads.
+  another net's pads. The attempt after a plane is given back takes the
+  branches over at their own width too; it laid them at the net's.
 - **`pad_vias="centre"`** puts a via in a pad at its centre only, where
   the fab notes ask for it to be filled and capped. Any via could share a
   pad's solder mask opening before, so one stood 1.9 mil off a resistor's
@@ -179,14 +180,14 @@ The figures are totals over three seeds of each board.
 
 | Boards (3 of each) | Engine | Completion | Connections left | Violations added | Vias | Track length (in) | Time (s) |
 |---|---|---|---|---|---|---|---|
-| Mixed, 2 layers | default | 100.0% | 0 | 0 | 178 | 79.7 | 14 |
-|  | euan | 100.0% | 0 | 0 | 178 | 79.7 | 15 |
-| Mixed, 4 layers | default | 100.0% | 0 | 0 | 145 | 78.2 | 11 |
-|  | euan | 100.0% | 0 | 0 | 145 | 78.2 | 11 |
-| Mixed, 4 layers with planes | default | 100.0% | 0 | 0 | 166 | 57.7 | 12 |
+| Mixed, 2 layers | default | 100.0% | 0 | 0 | 178 | 79.7 | 17 |
+|  | euan | 100.0% | 0 | 0 | 178 | 79.7 | 17 |
+| Mixed, 4 layers | default | 100.0% | 0 | 0 | 145 | 78.2 | 12 |
+|  | euan | 100.0% | 0 | 0 | 145 | 78.2 | 12 |
+| Mixed, 4 layers with planes | default | 100.0% | 0 | 0 | 166 | 57.7 | 11 |
 |  | euan | 100.0% | 0 | 0 | 168 | 58.1 | 12 |
-| 8 x 8 BGA, 4 layers | default | 83.5% | 44 | 0 | 411 | 92.3 | 198 |
-|  | euan | 83.5% | 44 | 0 | 413 | 93.4 | 198 |
+| 8 x 8 BGA, 4 layers | default | 83.5% | 44 | 0 | 411 | 92.3 | 218 |
+|  | euan | 83.5% | 44 | 0 | 413 | 93.4 | 220 |
 
 - On the mixed boards both engines lay the same copper, except on the
   boards with planes, where Euan's router laid 2 more vias and 0.4 inch
@@ -222,3 +223,9 @@ with Euan's router (`default` is the default).
   them.
 - With every stage switch off, the default engine's vias skip the via
   guards (see "Every stage switch off" above).
+- A pad smaller than a grid cell is entered from the cell nearest its
+  centre. When two such pads of different nets have nearest cells closer
+  than their tracks' width and clearance allow, one net stays open, even
+  where tracks laid straight from the two pads' centres would clear. At
+  the default pitch this shows only on pads about as small as an
+  008004 part's; at Euan's coarser pitches (`pitch` 10 to 20) on more.

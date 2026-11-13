@@ -40,7 +40,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         engine_notes.append(f"The router setting was ignored ({setting['problem']}), so the "
                             "default engine routed.")
     stages_in, centre_asked = _pad_vias(params.get("stages"), which)
-    _check_stage_numbers(stages_in)
+    stages_in = _check_stage_numbers(stages_in)
     euan_args: dict[str, Any] = {}
     if which == "euan":
         # Before anything runs: a bad switch fails the job as it does with
@@ -224,26 +224,43 @@ STAGE_RANGES = {"pair_skew": (0.0, 1000.0), "pair_width": (1.0, 1000.0),
                 "bus_min": (2, 10000)}
 
 
-def _check_stage_numbers(stages: Any) -> None:
-    """ValueError for a numeric stage option out of STAGE_RANGES, or not a
-    number at all; pair_width and pair_gap may be None (the board's rule)."""
-    from dataclasses import asdict, is_dataclass
+def _check_stage_numbers(stages: Any) -> Any:
+    """``stages`` with each numeric stage option as the float the engines
+    compute with (bus_min as an int), in the form it came in; ValueError
+    for one out of STAGE_RANGES, not a number at all, or too large for a
+    float. pair_width and pair_gap may be None (the board's rule).
 
-    if is_dataclass(stages) and not isinstance(stages, type):
-        stages = asdict(stages)
+    Passed on as given, a lane_cost of 10**400 was in range and then
+    overflowed in the router's cost arrays, and a Fraction made them
+    arrays of Python objects."""
+    from dataclasses import asdict, is_dataclass, replace
+
+    given = stages if is_dataclass(stages) and not isinstance(stages, type) else None
+    if given is not None:
+        stages = asdict(given)
     if not isinstance(stages, dict):
-        return
+        return stages
+    fixed: dict[str, Any] = {}
     for key, (lo, hi) in STAGE_RANGES.items():
         if key not in stages or (stages[key] is None and key in ("pair_width", "pair_gap")):
             continue
         value = stages[key]
         whole = key == "bus_min"
-        if isinstance(value, bool) or not isinstance(value, numbers.Real) \
-                or (whole and not float(value).is_integer()):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
             raise ValueError(f"{key} takes {'a whole number' if whole else 'a number'}, "
                              f"not {value!r}")
+        # Compared exactly first, so a huge int or Fraction meets the range
+        # message rather than an overflow.
         if not lo <= value <= hi:                  # NaN fails this as well
             raise ValueError(f"{key} takes {lo:g} to {hi:g}, not {value!r}")
+        if whole and not (isinstance(value, numbers.Integral) or float(value).is_integer()):
+            raise ValueError(f"{key} takes a whole number, not {value!r}")
+        try:
+            fixed[key] = int(value) if whole else float(value)
+        except OverflowError:                       # only lane_cost reaches inf
+            raise ValueError(f"{key} takes {lo:g} to {hi:g}, not a number too large to "
+                             "compute with (inf makes each pin lane a wall)") from None
+    return replace(given, **fixed) if given is not None else {**stages, **fixed}
 
 
 #: Where a via may go into a pad (the stage option pad_vias), by engine.

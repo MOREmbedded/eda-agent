@@ -88,6 +88,9 @@ class Terminal:
     # counts it as failed, but never entered at full width (its cells are
     # not opened); the branch pass reaches it narrower.
     blocked: bool = False
+    # The width of the branch the branch pass reached this pad with: the
+    # terminal is set up at that width (Router._branch_down).
+    branch: float | None = None
 
 
 @dataclass
@@ -1191,15 +1194,17 @@ class Router:
 
     def _web_rings(self, v) -> list:
         """Round each pad's and via's solder mask opening, where a new via
-        of style ``v`` may not stand: (opening item, merge, reach, takes).
-        A via whose centre lies within ``reach`` of the opening leaves a
-        web narrower than the board's sliver rule, unless it is within
-        ``merge`` and ``takes`` (the openings meet and leave none, which a
-        pad that may not take a via does not allow, nor another net's pad:
-        _mask_webs). The new via is masked
-        like most of the board's vias (drc.usual_via_mask); no rings when
-        it is tented on both sides or the mask was not read. This router's
-        vias go through every copper layer, so both sides' openings count.
+        of style ``v`` may not stand: (opening item, merge, reach, partner,
+        group). A via whose centre lies within ``reach`` of the opening
+        leaves a web narrower than the board's sliver rule, unless it is
+        within ``merge`` and of the net ``partner`` names: the openings
+        then meet and leave none, which only that net's via may do
+        (_opening_partners). ``group`` names the opening the item's is one
+        with. The new via is masked like most of the board's vias
+        (drc.usual_via_mask); no rings when it is tented on both sides or
+        the mask was not read. This router's vias go through every copper
+        layer, so both sides' openings count, whichever layers it routes
+        on.
         Under pad_vias="centre" a surface pad takes one at its centre only,
         which _guard_pad_vias judges: taken anywhere, a via beside a
         passive's pad could share its opening."""
@@ -1207,7 +1212,7 @@ class Router:
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
             return cache[key]
-        from ..drc import Item, mask_openings, usual_via_mask
+        from ..drc import Item, usual_via_mask
         rings: list = []
         cache[key] = rings
         usual = usual_via_mask(self.board)
@@ -1217,8 +1222,8 @@ class Router:
         order = self.board.copper_layers()
         sides = {order[0]: 0, order[-1]: 1}
         r_open = v.hole / 2 if from_hole and v.hole > 0 else v.diameter / 2
-        mode = self.options.pad_vias
-        for it, grow in mask_openings(self.board, self.rules):
+        openings, partners, groups, _of_pad = self._opening_partners()
+        for n, (it, grow) in enumerate(openings):
             side = sides.get(it.layer)
             if side is None or tents[side]:
                 continue
@@ -1229,30 +1234,85 @@ class Router:
             if web <= 0:
                 continue
             merge = r_open + ev + grow
-            takes = it.kind != "pad" or mode == "any" or it.idx in self.via_pads
-            if not takes:
-                pad = self.board.pads[it.idx]
-                takes = not pad.is_smd or (mode == "ic" and not self._is_passive(pad))
-            rings.append((it, merge, merge + web, takes))
+            rings.append((it, merge, merge + web, partners[n], groups[n]))
         return rings
+
+    def _opening_partners(self) -> tuple:
+        """The board's solder mask openings (drc.mask_openings); for each,
+        the one net whose new via may merge its opening into it, or None,
+        and the opening it is one with; and per pad, the openings its own
+        are one with. Openings that already meet are one opening: a via
+        that runs into any of them runs into all. Its net may when every
+        pad and via in it is of that net and each pad may take a via.
+        Another net's copper would share the opening with no mask left
+        between the two nets, and a pad that may not take a via loses its
+        solder to it; no sliver rule sees either."""
+        got = self.__dict__.get("_opening_partners_cache")
+        if got is not None:
+            return got
+        from ..drc import _cell_size, _Grid, mask_openings
+        openings = mask_openings(self.board, self.rules)
+        items = [it for it, _g in openings]
+        grow = [g for _it, g in openings]
+        parent = list(range(len(items)))
+
+        def root(a: int) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        reach = 2 * max(grow, default=0.0) + 2 * EPS
+        for a, b in _Grid(items, _cell_size(items, reach), reach).candidate_pairs():
+            ra, rb = root(a), root(b)
+            if ra == rb:
+                continue
+            sa, sb, meet = items[a].shape, items[b].shape, grow[a] + grow[b] + EPS
+            if geom.bboxes_near(sa, sb, meet) and geom.clearance(sa, sb) <= meet:
+                parent[ra] = rb
+        groups = [root(n) for n in range(len(items))]
+        net: dict = {}
+        of_pad: dict = {}
+        for n, it in enumerate(items):
+            ok = bool(it.net) and (it.kind != "pad" or self._pad_takes_via(it.idx))
+            if net.setdefault(groups[n], it.net if ok else None) != (it.net if ok else None):
+                net[groups[n]] = None
+            if it.kind == "pad":
+                of_pad.setdefault(it.idx, set()).add(groups[n])
+        got = (openings, [net[g] for g in groups], groups, of_pad)
+        self._opening_partners_cache = got
+        return got
+
+    def _pad_takes_via(self, idx: int) -> bool:
+        """Whether a new via's mask opening may merge into the opening of
+        pad ``idx`` under pad_vias: a through-hole pad's, a pad's the
+        board's copper already takes to a via, any pad's under "any", an
+        IC's pin's under "ic"."""
+        mode = self.options.pad_vias
+        if mode == "any" or idx in self.via_pads:
+            return True
+        pad = self.board.pads[idx]
+        return not pad.is_smd or (mode == "ic" and not self._is_passive(pad))
 
     def _mask_webs(self, v, net: str | None = None) -> np.ndarray:
         """The cells (y, x) where a new via of style ``v`` and ``net`` would
         stand in one of the rings of _web_rings. Its opening may run into
-        a via's opening, or into a pad's of its own net that may take a
-        via; into another net's pad's it may not: no mask would be left
-        between the two nets' copper, and no sliver rule sees that."""
+        an opening of its own net, every pad in which may take a via
+        (_opening_partners); into any other it may not."""
         full, free = self._mask_web_cells(v)
         own = free.get(net) if net else None
         if own is None:
             return full
-        nx = self.grid.spec.nx
-        return full[~np.isin(full[:, 0] * nx + full[:, 1], own)]
+        # Both sorted by flat index, ``own`` a subset of ``full``.
+        keep = np.ones(len(full), dtype=bool)
+        keep[np.searchsorted(full[:, 0] * self.grid.spec.nx + full[:, 1], own)] = False
+        return full[keep]
 
     def _mask_web_cells(self, v) -> tuple:
-        """For via style ``v``: the cells (y, x) a via of no pad's net may
-        not take, and per net the flat cells (y * nx + x) among them that
-        only that net's pads barred, as openings its via may merge into."""
+        """For via style ``v``: the cells (y, x) a via of no net may not
+        take, sorted, and per net the flat cells (y * nx + x) among them
+        free to its via: within the merge of openings that net may merge
+        into, and within no other ring."""
         cache = self.__dict__.setdefault("_mask_webs_cache", {})
         key = (round(v.diameter, 4), round(v.hole, 4))
         if key in cache:
@@ -1260,7 +1320,7 @@ class Router:
         spec = self.grid.spec
         nx = spec.nx
         out, merged = [], {}
-        for it, merge, reach, takes in self._web_rings(v):
+        for it, merge, reach, partner, _g in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             i0, j0, i1, j1 = spec.window(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
             if i0 >= i1 or j0 >= j1:
@@ -1269,28 +1329,30 @@ class Router:
             Y = spec.y(np.arange(j0, j1))[:, None]
             d = shape_distance(it.shape, X, Y)
             near = d < reach - EPS
-            if takes and (it.kind != "pad" or it.net):
-                # Openings that meet merge into one and leave no web: any
-                # via's, a pad's only for the pad's own net.
+            if partner:
+                # Openings that meet merge into one and leave no web.
                 inside = near & (d <= merge + EPS)
                 near &= ~inside
-                if it.kind == "pad":
-                    ys, xs = np.nonzero(inside)
-                    merged.setdefault(it.net, []).append((ys + j0).astype(np.int64) * nx
-                                                         + (xs + i0))
+                ys, xs = np.nonzero(inside)
+                merged.setdefault(partner, []).append((ys + j0).astype(np.int64) * nx + (xs + i0))
             ys, xs = np.nonzero(near)
             out.append(np.stack([ys + j0, xs + i0], axis=1))
         common = _unique_cells(out, nx)
         flat = common[:, 0].astype(np.int64) * nx + common[:, 1]
         free: dict = {}
         if merged:
-            per = {n: np.unique(np.concatenate(fs)) for n, fs in merged.items()}
-            every, count = np.unique(np.concatenate(list(per.values())), return_counts=True)
-            shared = every[count > 1]           # within two nets' pads' merge
-            for n, f in per.items():
-                f = f[~np.isin(f, shared) & ~np.isin(f, flat)]
-                if len(f):
-                    free[n] = f
+            names = list(merged)
+            per = [np.unique(np.concatenate(merged[n])) for n in names]
+            every, count = np.unique(np.concatenate(per), return_counts=True)
+            # Off limits to all: too near some opening, or within two nets'
+            # merge (a via there would join them). One sorted pass for
+            # every net, not one per net: 3,600 balls took 8 s.
+            off = np.union1d(flat, every[count > 1])
+            ends = np.cumsum([len(f) for f in per])
+            keep = ~np.isin(np.concatenate(per), off)
+            for n, f, k in zip(names, per, np.split(keep, ends[:-1])):
+                if k.any():
+                    free[n] = f[k]
             flat = np.union1d(flat, every)
         full = np.stack([flat // nx, flat % nx], axis=1)
         cache[key] = (full, free)
@@ -1299,19 +1361,19 @@ class Router:
     def via_leaves_web(self, v, x: float, y: float, pad: int | None = None,
                        net: str | None = None) -> bool:
         """A via of style ``v`` and ``net`` at (x, y) stands in one of the
-        rings of _web_rings; ``pad``, a pad its array is meant to be in,
-        takes it. Its opening may merge with a via's, or with a pad's of
-        its own net that may take a via (see _mask_webs)."""
+        rings of _web_rings. Its opening may merge into one of its own net
+        (_opening_partners), and into the one ``pad``'s is part of: the
+        pad its array is meant to be in."""
         at_x, at_y = np.array([[x]]), np.array([[y]])
-        for it, merge, reach, takes in self._web_rings(v):
+        mine = self._opening_partners()[3].get(pad, ()) if pad is not None else ()
+        for it, merge, reach, partner, group in self._web_rings(v):
             x0, y0, x1, y1 = it.shape.bbox
             if x < x0 - reach or x > x1 + reach or y < y0 - reach or y > y1 + reach:
                 continue
             d = float(shape_distance(it.shape, at_x, at_y)[0, 0])
             if d >= reach - EPS:
                 continue
-            mine = it.kind != "pad" or (bool(net) and it.net == net)
-            if d <= merge + EPS and ((takes and mine) or (it.kind == "pad" and it.idx == pad)):
+            if d <= merge + EPS and ((partner is not None and partner == net) or group in mine):
                 continue
             return True
         return False
@@ -1320,7 +1382,7 @@ class Router:
         """How far past a pad's copper the centre of a via of style ``v``
         must stand to leave the mask web round the pad's opening; 0 when
         the via needs none."""
-        return max((reach for it, _m, reach, _t in self._web_rings(v)
+        return max((reach for it, _m, reach, _p, _g in self._web_rings(v)
                     if it.kind == "pad" and it.idx == pad), default=0.0)
 
     def _is_passive(self, pad: Pad) -> bool:
@@ -1765,6 +1827,9 @@ class Router:
                 gy, gx = win.j0 + win.cy[r], win.i0 + win.cx[r]
                 occ_t = self.occ_t if hard else walls[0]
                 ruled = shallow & (occ_t[wq, c[:, 0], gy, gx] > 0)
+                if len(t.cells) == 1 and ruled.any() and \
+                        self._forced_clear(job, int(c[0, 0]), int(gy[0]), int(gx[0])):
+                    ruled[:] = False            # see _forced_clear
                 cost = np.where(ruled, np.inf, cost)
             cell[c[:, 0], r] = cost
         return cell, via
@@ -2165,7 +2230,11 @@ class Router:
 
     # -- occupancy -----------------------------------------------------------
 
-    def _cells(self, job: NetJob):
+    def _cells(self, job: NetJob, stubs: bool = True):
+        """This net's route cells per layer and its via cells; with
+        ``stubs``, the cells its escape stubs pass over as well, which the
+        conflict check takes for the stubs (the stamp measures from the
+        stubs themselves, _stub_segments)."""
         tracks: dict[int, set] = {}
         vias: set = set()
         for path in job.paths:
@@ -2174,14 +2243,15 @@ class Router:
                     vias.add((y, x))
                 else:
                     tracks.setdefault(l, set()).add((y, x))
-        for l, cells in self._stub_cells(job).items():
-            tracks.setdefault(l, set()).update(cells)
+        if stubs:
+            for l, cells in self._stub_cells(job).items():
+                tracks.setdefault(l, set()).update(cells)
         return tracks, vias
 
     def _stub_cells(self, job: NetJob) -> dict[int, set]:
         """The cells an escape stub of this net's routes passes over, per
         layer: the stub is off the grid, and the cells nearest it stand in
-        for it in the stamp, grown by how far they can lie from it."""
+        for it in the conflict check."""
         esc = job.escapes
         if not esc:
             return {}
@@ -2200,6 +2270,106 @@ class Router:
                         if 0 <= ci < spec.nx and 0 <= cj < spec.ny:
                             cells.add((cj, ci))
         return out
+
+    def _stub_segments(self, job: NetJob) -> dict[int, np.ndarray]:
+        """The escape stubs of this net's routes where they stand out of the
+        pad, per layer, as segments (y0, x0, y1, x1) in cells of the grid.
+
+        A stub is cut a quarter of a cell at a time, and a piece left out
+        where the track lies wholly in the pad at both its ends: the pad is
+        convex, so it does all along the piece, and that copper is the
+        pad's. The pieces left run on together as long segments, measured
+        exactly (_stub_distance). Measured from points along the stub,
+        less the eighth of a cell it can pass from the nearest, and from
+        its stretch in a pad where no cell of the pad was deep, the stamp
+        stood up to 2.8 cells nearer than the copper on an 8 mil finger."""
+        ends = {tuple(map(int, e)) for path in job.paths for e in (path[0], path[-1])}
+        if not ends:
+            return {}
+        spec = self.grid.spec
+        half = job.width / 2
+        out: dict[int, list] = {}
+        for t in job.terminals:
+            for end, pts in t.stubs.items():
+                end = tuple(map(int, end))
+                if end not in ends or len(pts) < 2:
+                    continue
+                shape = self.board.pads[t.pad].shape_on(self.grid.layers[end[0]])
+                for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                    n = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / (self.pitch / 4))))
+                    k = np.arange(n + 1) / n
+                    X = (ax + (bx - ax) * k)[None, :]
+                    Y = (ay + (by - ay) * k)[None, :]
+                    inside = (np.zeros(n + 1, dtype=bool) if shape is None
+                              else inner_depth(shape, X, Y)[0] >= half - EPS)
+                    keep = ~(inside[:-1] & inside[1:])
+                    # Runs of kept pieces, each one segment of the stub.
+                    edge = np.flatnonzero(np.diff(np.concatenate(([0], keep.astype(np.int8), [0]))))
+                    gy = (Y[0] - spec.oy) / spec.pitch
+                    gx = (X[0] - spec.ox) / spec.pitch
+                    for s, e in zip(edge[::2], edge[1::2]):
+                        out.setdefault(end[0], []).append((gy[s], gx[s], gy[e], gx[e]))
+        return {l: np.array(v, dtype=np.float64) for l, v in out.items()}
+
+    @staticmethod
+    def _stub_distance(Y, X, segs: np.ndarray) -> np.ndarray:
+        """The distance, in cells, from each point (Y, X) of the grid to the
+        nearest of these stub segments (_stub_segments)."""
+        d = np.full(np.broadcast(Y, X).shape, np.inf)
+        for y0, x0, y1, x1 in segs:
+            d = np.minimum(d, _seg_dist(X, Y, x0, y0, x1, y1))
+        return d
+
+    def _forced_cells(self, job: NetJob) -> set:
+        """Cells a route of this net must end on, its track standing out of
+        the pad there: a terminal's only cell, not deep in the pad (a pad
+        smaller than a cell takes the cell nearest its centre)."""
+        return {(int(t.cells[0][0]), int(t.cells[0][1]), int(t.cells[0][2]))
+                for t in job.terminals
+                if len(t.cells) == 1 and not getattr(t, "blocked", False)
+                and not (t.deep is not None and bool(t.deep[0]))}
+
+    def _forced_clear(self, job: NetJob, l: int, y: int, x: int) -> bool:
+        """Whether a cell this net's route must end on (_forced_cells) is
+        covered by other nets' stamps only through cells their own routes
+        must end on, each no nearer than the clearance between tracks
+        centred on the two. The two then meet only in the corner margin
+        the stamps add (_radii), which is for a step between two cells:
+        each step from a forced cell ends on a cell judged with its margin.
+        Counted, the conflict could never be undone, as every route of
+        either net ends there: at a coarse pitch, one of two small pads a
+        cell apart lost its net."""
+        wq = self._track_class(job)
+        g, width = self.t_classes[wq]
+        p = self.pitch
+        for other in self.jobs:
+            if other is job or not other.stamp or not any(
+                    sl == l and win[0].start <= y < win[0].stop
+                    and win[1].start <= x < win[1].stop
+                    and mt[wq, y - win[0].start, x - win[1].start]
+                    for sl, win, mt, _mv in other.stamp):
+                continue
+            cl = float(self.to_reader[self.group_of.get(other.id, 0)][g])
+            reach = self._radii(other, 0, 0.0, width, cl)[0] - 1e-9
+            pair = (other.width / 2 + cl + width / 2) / p - 1e-9
+            forced = self._forced_cells(other)
+            deep = other.deep_cells
+            tracks, vias = self._cells(other, stubs=False)
+            for cy, cx in tracks.get(l, ()):
+                if (l, cy, cx) not in deep and \
+                        math.hypot(cy - y, cx - x) < (pair if (l, cy, cx) in forced else reach):
+                    return False
+            segs = self._stub_segments(other).get(l)
+            if segs is not None and len(segs) and float(self._stub_distance(
+                    np.array([[float(y)]]), np.array([[float(x)]]), segs)[0, 0]) < reach:
+                return False
+            for vy, vx in vias:
+                grow = 0.71 if (vy, vx) in other.pad_via else 0.0
+                st = other.via_at.get((vy, vx), 0)
+                if math.hypot(vy - y, vx - x) < \
+                        self._radii(other, st, 0.0, width, cl)[2] + grow - 1e-9:
+                    return False
+        return True
 
     def _radii(self, job: NetJob, style: int, other_via: float, other_width: float,
                clearance: float):
@@ -2226,12 +2396,14 @@ class Router:
                 (rv + other_via + clearance) / p)        # via excludes vias
 
     def _stamp(self, job: NetJob) -> None:
-        tracks, vias = self._cells(job)
+        # The stubs measured from themselves: stamped from the cells they
+        # pass over too, it barred 16 cells more round a stub on an 8 mil
+        # finger, room its copper left free.
+        tracks, vias = self._cells(job, stubs=False)
         deep = job.deep_cells
         tracks = {l: {c for c in cells if (l, *c) not in deep} for l, cells in tracks.items()}
-        grown = {l: {c for c in cells if (l, *c) not in deep}
-                 for l, cells in self._stub_cells(job).items()}
-        if not any(tracks.values()) and not vias:
+        stubs = self._stub_segments(job)
+        if not any(tracks.values()) and not vias and not stubs:
             return
         cl = self.to_reader[self.group_of.get(job.id, 0)]
         big = max(r for _, r in self.v_classes)
@@ -2246,12 +2418,18 @@ class Router:
         vc = np.array([v in job.pad_via for v in vias], dtype=bool)
         for l in range(self.L):
             cells = tracks.get(l, set())
-            if not cells and not len(vy):
+            segs = stubs.get(l)
+            if not cells and not len(vy) and segs is None:
                 continue
             ty = np.array([c[0] for c in cells], dtype=np.int64)
             tx = np.array([c[1] for c in cells], dtype=np.int64)
-            ally = np.concatenate([ty, vy])
-            allx = np.concatenate([tx, vx])
+            # The window takes in the stubs' ends too, wherever they lie.
+            sy = np.zeros(0, dtype=np.int64) if segs is None else \
+                np.round(segs[:, [0, 2]]).astype(np.int64).ravel()
+            sx = np.zeros(0, dtype=np.int64) if segs is None else \
+                np.round(segs[:, [1, 3]]).astype(np.int64).ravel()
+            ally = np.concatenate([ty, vy, sy])
+            allx = np.concatenate([tx, vx, sx])
             j0, j1 = max(0, ally.min() - R), min(self.ny, ally.max() + R + 1)
             i0, i1 = max(0, allx.min() - R), min(self.nx, allx.max() + R + 1)
             shape = (j1 - j0, i1 - i0)
@@ -2266,18 +2444,19 @@ class Router:
                     mt[q] |= dt < self._radii(job, 0, 0.0, width, cl[g])[0] - 1e-9
                 for q, (g, other) in enumerate(self.v_classes):
                     mv[q] |= dt < self._radii(job, 0, other, 0.0, cl[g])[1] - 1e-9
-            if grown.get(l):
-                # An escape stub lies up to 0.71 of a cell from the cells
-                # standing in for it.
-                gy = np.array([c[0] for c in grown[l]], dtype=np.int64)
-                gx = np.array([c[1] for c in grown[l]], dtype=np.int64)
-                a = np.ones(shape, dtype=bool)
-                a[gy - j0, gx - i0] = False
-                dg = distance_transform_edt(a)
+            if segs is not None:
+                # An escape stub is off the grid: measured exactly from its
+                # segments out of the pad. Grown from the cells nearest it
+                # by the 0.71 of a cell it can lie from those, it covered
+                # the next pad's entry cells, which its copper kept well
+                # clear of.
+                Y = np.arange(j0, j1, dtype=np.float64)[:, None]
+                X = np.arange(i0, i1, dtype=np.float64)[None, :]
+                ds = self._stub_distance(Y, X, segs)
                 for q, (g, width) in enumerate(self.t_classes):
-                    mt[q] |= dg < self._radii(job, 0, 0.0, width, cl[g])[0] + 0.71 - 1e-9
+                    mt[q] |= ds < self._radii(job, 0, 0.0, width, cl[g])[0] - 1e-9
                 for q, (g, other) in enumerate(self.v_classes):
-                    mv[q] |= dg < self._radii(job, 0, other, 0.0, cl[g])[1] + 0.71 - 1e-9
+                    mv[q] |= ds < self._radii(job, 0, other, 0.0, cl[g])[1] - 1e-9
             for st, centred in sorted({(int(a), bool(c)) for a, c in zip(vk, vc)}):
                 sel = (vk == st) & (vc == centred)
                 grow = 0.71 if centred else 0.0
@@ -2305,11 +2484,16 @@ class Router:
         own = job.deep_cells
         wq = self._track_class(job)
         bad = []
+        forced = None
         for l, cells in tracks.items():
             for y, x in cells:
                 if (l, y, x) in own:
                     continue
                 if self.occ_t[wq, l, y, x] > 1:
+                    if forced is None:
+                        forced = self._forced_cells(job)
+                    if (l, y, x) in forced and self._forced_clear(job, l, y, x):
+                        continue
                     bad.append((l, y, x))
         radius = [v.diameter / 2 for v in job.vias]
         for y, x in vias:
@@ -2387,6 +2571,15 @@ class Router:
                     or not old.paths or not same):
                 todo.append(job)
                 continue
+            # A pad a branch reached is judged by the terminal at the
+            # branch's width, with its stub and cells (_branch_down); the
+            # net's own one is put back if the routes are not kept.
+            terms = job.terminals
+            narrow = {t.pad: t.branch for t in old.terminals if t.branch}
+            if narrow:
+                job.terminals = [self._branch_terminal(job, t.pad, narrow[t.pad])
+                                 if t.pad in narrow else t for t in terms]
+                job._deep = None
             paths = []
             ok = True
             for path in old.paths:
@@ -2416,7 +2609,16 @@ class Router:
                 # into it can stand in another net's island of the plane
                 # that is left, and the pad was counted joined.
                 ok = all(p[-1][0] < 0 and job.plane_mask[p[-1][1], p[-1][2]] for p in paths)
-            if not ok or not self._paths_clear(job, paths, old.via_at):
+                # A pad the other attempt took as joined by its barrel must
+                # still be: a blind via that reached only the plane given
+                # back joins it to nothing now, and no kept route reaches it.
+                ok = ok and all(self._barrel_in(job.name, t.pad)
+                                or not prev._barrel_in(job.name, t.pad) for t in job.terminals)
+            if not ok or not self._paths_clear(job, paths, old.via_at,
+                                               [old.branch_width(p) for p in old.paths]):
+                if job.terminals is not terms:
+                    job.terminals = terms
+                    job._deep = None
                 todo.append(job)
                 continue
             job.paths = paths
@@ -2428,20 +2630,29 @@ class Router:
             self._stamp(job)
         return todo
 
-    def _paths_clear(self, job: NetJob, paths, via_at) -> bool:
-        """Every cell of these routes clears this grid's fixed copper."""
+    def _branch_terminal(self, job: NetJob, pad: int, width: float) -> Terminal:
+        """The terminal the branch pass reached ``pad`` with, at ``width``."""
+        t = self._terminal(pad, self.board.pads[pad], job.id, width)
+        t.branch = width
+        return t
+
+    def _paths_clear(self, job: NetJob, paths, via_at, widths=None) -> bool:
+        """Every cell of these routes clears this grid's fixed copper, each
+        route at its width in ``widths`` (None: the net's): a branch is
+        laid narrower, and judged at the net's width it never cleared."""
         row = self.rr.clearance_row(job.id)
-        need = job.width / 2 + self._bow(job) - EPS
         deep = job.deep_cells
-        cells: dict[int, list] = {}
+        cells: dict[tuple, list] = {}
         vias = set()
-        for path in paths:
+        for k, path in enumerate(paths):
+            w = (widths[k] if widths and k < len(widths) else None) or job.width
+            need = w / 2 + self._bow_at(w / 2 + self.c) - EPS
             for l, y, x in path:
                 if l < 0:
                     vias.add((y, x))
                 elif (l, y, x) not in deep:
-                    cells.setdefault(l, []).append((y, x))
-        for l, yx in cells.items():
+                    cells.setdefault((need, l), []).append((y, x))
+        for (need, l), yx in cells.items():
             ys = np.array([c[0] for c in yx])
             xs = np.array([c[1] for c in yx])
             if (self._slack(job.id, l, (ys, xs), row) < need).any():
@@ -2754,6 +2965,7 @@ class Router:
                     if path is not None:
                         self._add_path(job, path)
                         job.path_w[id(path)] = (path, w)
+                        nt.branch = w
                         job.terminals[job.terminals.index(t)] = nt
                         for l, y, x in path:
                             (hubs.add((y, x)) if l < 0 else tree.add((l, y, x)))

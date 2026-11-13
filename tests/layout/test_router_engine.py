@@ -134,7 +134,8 @@ def test_router_use_reports_a_folder_that_takes_no_new_file(tmp_path, monkeypatc
         raise PermissionError(13, "Permission denied")
     monkeypatch.setattr(engine.tempfile, "mkstemp", refuse)
     res = engine.write(tmp_path, "euan")
-    assert not res["ok"] and "cannot write" in res["reason"] and "Permission denied" in res["reason"]
+    assert not res["ok"] and "cannot write" in res["reason"]
+    assert "Permission denied" in res["reason"]
     monkeypatch.setattr(profile, "resolve_profile_dir", lambda: tmp_path)
     assert cli.cmd_router_use("euan") == 2
     assert "ERROR: cannot write" in capsys.readouterr().err
@@ -160,13 +161,18 @@ def test_router_use_keeps_half_an_emoji_the_file_already_held(tmp_path, monkeypa
     assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
     # Whatever else a write cannot encode is reported, not raised, and
     # leaves no temporary file.
-    def circular(*args, **kwargs):
-        raise ValueError("Circular reference detected")
-    monkeypatch.setattr(engine.json, "dumps", circular)
-    res = engine.write(tmp_path, "default")
-    assert not res["ok"] and "cannot write" in res["reason"] and "Circular" in res["reason"]
-    assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
-    assert json.loads(path.read_text())["engine"] == "euan"
+    # Python 3.12 reads a file nested deeper than its encoder writes: a
+    # RecursionError escaped and left a temporary file behind.
+    for error in (ValueError("Circular reference detected"),
+                  RecursionError("maximum recursion depth exceeded")):
+        def fail(*args, error=error, **kwargs):
+            raise error
+        monkeypatch.setattr(engine.json, "dumps", fail)
+        res = engine.write(tmp_path, "default")
+        assert not res["ok"] and "cannot write" in res["reason"], res
+        assert str(error) in res["reason"]
+        assert [p.name for p in tmp_path.iterdir()] == [engine.FILE]
+        assert json.loads(path.read_text())["engine"] == "euan"
 
 
 @pytest.mark.parametrize("content", [
@@ -360,6 +366,11 @@ def test_the_centre_note_tells_of_the_fallbacks_ic_pins(monkeypatch):
     ("fine_pitch", float("inf"), "fine_pitch takes 1 to 1000, not inf"),
     ("bus_min", 1, "bus_min takes 2 to 10000, not 1"),
     ("bus_min", 2.5, "bus_min takes a whole number, not 2.5"),
+    # In range, and then an OverflowError in the router's cost arrays.
+    ("lane_cost", 10**400, "lane_cost takes 1 to inf, not a number too large to compute "
+                           "with (inf makes each pin lane a wall)"),
+    # float() of it in the whole-number test raised OverflowError.
+    ("bus_min", 10**400, "bus_min takes 2 to 10000, not 1000000"),
 ])
 @pytest.mark.parametrize("which", engine.ENGINES)
 def test_stage_numbers_are_checked_before_either_engine_runs(which, key, value, match,
@@ -373,6 +384,52 @@ def test_stage_numbers_are_checked_before_either_engine_runs(which, key, value, 
     with pytest.raises(ValueError, match=re.escape(match)):
         route_job({"board": _board(), "stages": {key: value}})
     assert not ran, "the job failed before the router ran"
+
+
+@pytest.mark.parametrize("which", engine.ENGINES)
+def test_stage_numbers_reach_either_engine_as_plain_numbers(which, monkeypatch):
+    """A lane_cost given as a Fraction made the router's cost arrays arrays
+    of Python objects (numpy keeps the Fraction); the engines get the
+    float, and bus_min as an int."""
+    from fractions import Fraction
+
+    import eda_agent.layout.route.job as job_mod
+    import eda_agent.layout.route_euan.router as euan
+
+    class Ran(Exception):
+        pass
+
+    got = []
+
+    def ran(*a, **k):
+        got.append(k["stages"])
+        raise Ran
+
+    for where in (job_mod, euan):
+        monkeypatch.setattr(where, "route_adaptive", ran)
+    monkeypatch.setenv(engine.ENV, which)
+    with pytest.raises(Ran):
+        route_job({"board": _board(), "stages": {"lane_cost": Fraction(17, 2),
+                                                 "bus_min": 4.0, "lane_depth": 3}})
+    (stages,) = got
+    assert [(stages[k], type(stages[k])) for k in ("lane_cost", "bus_min", "lane_depth")] \
+        == [(8.5, float), (4, int), (3.0, float)]
+
+
+def test_the_stage_number_check_reads_a_stage_options_object_too():
+    """_check_stage_numbers takes the options in any form the job does: a
+    StageOptions object it read as no options at all, so a negative lane
+    cost passed (route_job turns the object into a dict first, so the
+    job itself was safe)."""
+    from eda_agent.layout.route.job import _check_stage_numbers
+    from eda_agent.layout.route.stages import StageOptions
+
+    with pytest.raises(ValueError, match=re.escape("lane_cost takes 1 to inf, not -1.0")):
+        _check_stage_numbers(StageOptions(lane_cost=-1.0))
+    # and gives back the object, its numbers as the engines compute with.
+    out = _check_stage_numbers(StageOptions(bus_min=4.0, lane_cost=12))
+    assert isinstance(out, StageOptions) and (out.bus_min, out.lane_cost) == (4, 12.0)
+    assert type(out.bus_min) is int and type(out.lane_cost) is float
 
 
 @pytest.mark.parametrize("which", engine.ENGINES)
