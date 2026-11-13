@@ -69,19 +69,26 @@ def layer_sections(stack: Stack, opt: Options) -> list[dict[str, Any]]:
             continue
         info: dict[str, Any] = {"layer": layer.name, "label": layer.label or layer.name,
                                 "copper_mils": layer.copper_mils}
+        label = lambda x: x.label or x.name  # noqa: E731
         lam = lambda a, b: Laminate(stack.er_between(a.name, b.name), opt.tand, opt.f_spec)  # noqa: E731
         if above is None or below is None:
             ref = below if below is not None else above
-            info.update(structure="microstrip", reference=ref.name,
+            info.update(structure="microstrip", reference=ref.name, reference_label=label(ref),
                         h_mils=abs(layer.z_mils - ref.z_mils), laminate=lam(layer, ref))
+            if ref.kind != "plane":
+                info["note"] = (f"the reference is signal layer {label(ref)}; keep it solid "
+                                "copper under these traces or the figures do not hold")
         else:
             info.update(structure="stripline", reference=[above.name, below.name],
+                        reference_label=[label(above), label(below)],
                         h_below_mils=layer.z_mils - below.z_mils,
                         h_above_mils=above.z_mils - layer.z_mils,
                         laminate=lam(layer, below), laminate_above=lam(layer, above))
-            if above.kind != "plane" or below.kind != "plane":
-                info["note"] = ("an adjacent signal layer is taken as a reference; "
-                                "keep it solid copper under these traces or the figures do not hold")
+            signal_refs = [label(x) for x in (above, below) if x.kind != "plane"]
+            if signal_refs:
+                info["note"] = (f"signal layer {' and '.join(signal_refs)} is taken as a "
+                                "reference; keep it solid copper under these traces or the "
+                                "figures do not hold")
         out.append(info)
     return out
 

@@ -238,3 +238,25 @@ def test_dashboard_serves_job_files_and_offers_only_engines_that_fit():
     assert c.get(f"/api/wb/sim/file/{r['job']}/eda-agent/..").status_code == 404
     assert c.get(f"/api/wb/sim/file/{r['job']}/eda-agent/nothing.png").status_code == 404
     assert c.get("/api/wb/sim/file/nope/eda-agent/line.s4p").status_code == 404
+
+
+def test_signal_layer_references_are_named_and_warned():
+    st = {"layers": [
+        {"layer_id": 1, "name": "Top", "copper_thickness_mils": 1.4,
+         "dielectric_height_mils": 4.0, "dielectric_constant": 4.2, "dielectric_type": "Core"},
+        {"layer_id": 39, "name": "GND", "copper_thickness_mils": 1.4,
+         "dielectric_height_mils": 5.0, "dielectric_constant": 4.2, "dielectric_type": "Core"},
+        {"layer_id": 2, "name": "In1", "copper_thickness_mils": 0.7,
+         "dielectric_height_mils": 30.0, "dielectric_constant": 4.2, "dielectric_type": "Core"},
+        {"layer_id": 3, "name": "In2", "copper_thickness_mils": 0.7,
+         "dielectric_height_mils": 5.0, "dielectric_constant": 4.2, "dielectric_type": "Core"},
+        {"layer_id": 40, "name": "PWR", "copper_thickness_mils": 1.4,
+         "dielectric_height_mils": 4.0, "dielectric_constant": 4.2, "dielectric_type": "Core"},
+        {"layer_id": 32, "name": "Bottom", "copper_thickness_mils": 1.4}]}
+    secs = {s["label"]: s for s in planner.layer_sections(stack_from_stackup(st), planner.Options())}
+    assert secs["Top"]["reference_label"] == "GND" and "note" not in secs["Top"]
+    assert secs["In1"]["reference_label"] == ["GND", "In2"]
+    assert "In2" in secs["In1"]["note"] and "In1" in secs["In2"]["note"]
+    res = si_jobs.run_stackup_plan({"se_ohms": 50, "diff_ohms": [], "layers": ["In1"]}, st,
+                                   __import__("pathlib").Path(__import__("tempfile").mkdtemp()))
+    assert any(n.startswith("In1: signal layer In2") for n in res["notes"])

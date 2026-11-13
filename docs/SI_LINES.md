@@ -108,7 +108,7 @@ links to the Touchstone, RLGC and section files.
 ## Limits
 
 - 2D: the line is uniform along its length. Vias, bends, breakouts and
-  plane gaps are the next phase (nets).
+  plane gaps: see [Routed nets and pairs](SI_NETS.md) for nets as routed; plane gaps are checked in a later phase.
 - The reference planes are solid and wide (25 dielectric heights each
   side). A plane split or a slot under the trace is not modelled here.
 - Microstrip dispersion beyond the quasi-TEM model is not added; it

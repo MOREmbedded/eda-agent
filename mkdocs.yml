@@ -122,6 +122,7 @@ nav:
       - PDN analysis: PDN.md
       - Simulation engines: SIMULATION.md
       - Transmission lines: SI_LINES.md
+      - Routed nets and pairs: SI_NETS.md
       - Features and dependencies: FEATURES_AND_DEPENDENCIES.md
       - Design modes: DESIGN_MODES.md
       - Autonomous design: AUTONOMOUS_DESIGN.md

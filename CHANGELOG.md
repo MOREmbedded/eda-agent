@@ -16,6 +16,17 @@ maturity classification for every tool.
 
 ### Added
 
+- **Signal integrity: routed nets and pairs.** A routed net or differential
+  pair is modelled from pin to pin: its path is found in the board's copper
+  (tees, stubs and layer changes included), every trace section uses the RLGC
+  of its own cross-section, vias are coaxial barrels with stubs, pad
+  capacitance and the return-via loop when the reference changes, and the
+  blocks are cascaded as exact chain matrices. New job kind `net-channel`;
+  new tools `si_board_snapshot` (the board and stackup read once, content
+  named, stale once the board is saved) and `si_net_channel` (S-parameters,
+  TDR, delay, loss at Nyquist, skew, mode conversion, checks against limits,
+  and the width, gap, uncoupled-length and length rules, written to Altium
+  when asked). See [Routed nets and pairs](docs/SI_NETS.md).
 - **Signal integrity: transmission lines and a stackup planner.** New
   package `eda_agent.si`. A 2D eddy-current solver gives R(f) and L(f)
   of traces and their reference planes with skin and proximity effect

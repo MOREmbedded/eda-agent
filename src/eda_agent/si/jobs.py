@@ -7,7 +7,6 @@ JSON with lengths in mils (as Altium shows them) and frequencies in GHz.
 from __future__ import annotations
 
 import json
-import math
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -340,4 +339,6 @@ def run_stackup_plan(spec: dict[str, Any], stackup: dict, folder: Path, progress
                              "detail": f"our {c['our_ohms_at_altium_width']} ohm vs Altium's "
                                        f"{c['altium_ohms']} at {c['altium_width_mils']} mil"})
     return {"metrics": metrics, "verdicts": verdicts, "files": {"plan": "plan.json"},
-            "notes": list(res.get("stack_notes", [])), "plan": res}
+            "notes": list(res.get("stack_notes", []))
+            + [f"{row['label']}: {row['note']}" for row in res.get("layers", []) if row.get("note")],
+            "plan": res}

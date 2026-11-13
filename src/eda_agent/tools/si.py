@@ -8,6 +8,11 @@ width for a single-ended target and pair geometry for differential
 targets, can compare them with Altium's impedance profiles and, when
 asked, write them as profiles. Both run as simulation jobs, so the
 answers are kept and show on the dashboard's Simulation page.
+
+``si_board_snapshot`` reads the open board and its stackup once and keeps
+them; ``si_net_channel`` models a routed net or differential pair of a
+snapshot end to end (every trace section, via and stub) and works out the
+design rules that hold it to its targets.
 """
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ import hashlib
 import json
 from typing import Any, Optional
 
-__all__ = ["register_si_tools"]
+__all__ = ["register_si_net_tools", "register_si_tools"]
 
 
 def _failed(exc: Exception) -> dict[str, Any]:
@@ -74,6 +79,7 @@ def _run(kind: str, engines: list[str], spec: dict, inputs: dict, title: str, fo
 
 
 def register_si_tools(mcp) -> None:
+    register_si_net_tools(mcp)
 
     @mcp.tool()
     async def si_line_model(spec: dict, engines: Optional[list[str]] = None, stackup_file: str = "",
@@ -208,6 +214,171 @@ def register_si_tools(mcp) -> None:
                     cmd = ("pcb.impedance_profile" if step["tool"] == "pcb_impedance_profile"
                            else "pcb.impedance_profile_layer")
                     r = await bridge.send_command_async(cmd, _bridge_params(step["args"]))
+                    done.append({"step": step, "reply": r})
+                reply["applied"] = done
+            return reply
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+
+async def _snapshot_from_args(snapshot: str, expect_file: str, board_json_path: str,
+                              stackup_json_path: str) -> dict[str, Any]:
+    """A snapshot record from an id, a live read, or saved files."""
+    from ..si import snapshot as snap
+    if snapshot:
+        rec = snap.load(snapshot)
+        return {**rec, **snap.status(rec)}
+    if board_json_path:
+        from ..layout.model import LayoutBoard
+        board = await asyncio.to_thread(LayoutBoard.load, board_json_path)
+        stackup = None
+        if stackup_json_path:
+            stackup = json.loads(open(stackup_json_path, encoding="utf-8").read())
+        rec = await asyncio.to_thread(snap.save, board, stackup, board.source)
+        return {**rec, **snap.status(rec)}
+    if not expect_file:
+        raise ValueError("pass snapshot (an id from si_board_snapshot), expect_file (the "
+                         "focused board's full path, read live) or board_json_path")
+    from ..bridge import get_bridge
+    from ..layout.read_altium import read_live_board
+    board = await asyncio.to_thread(read_live_board, expect_file)
+    stackup = None
+    if stackup_json_path:
+        stackup = json.loads(open(stackup_json_path, encoding="utf-8").read())
+    else:
+        reply = await get_bridge().send_command_async("pcb.get_layer_stackup", {})
+        if isinstance(reply, dict) and reply.get("layers"):
+            stackup = reply
+    rec = await asyncio.to_thread(snap.save, board, stackup, expect_file)
+    return {**rec, **snap.status(rec)}
+
+
+def register_si_net_tools(mcp) -> None:
+
+    @mcp.tool()
+    async def si_board_snapshot(expect_file: str = "", board_json_path: str = "",
+                                stackup_json_path: str = "", list_only: bool = False
+                                ) -> dict[str, Any]:
+        """Read the open board and its stackup once, for the SI tools.
+
+        The copper (pads, tracks, arcs, vias, regions, net classes, pairs,
+        rules) and the stackup are kept in a folder named by their content
+        hash. Pass its ``id`` as ``snapshot`` to si_net_channel: every job
+        from one snapshot is about the same board, and the board is not
+        read again. A snapshot is reported ``stale`` once the board file is
+        saved after it.
+
+        Args:
+            expect_file: the focused board's full path; the read refuses a
+                different board. Reads the whole board: on a large board
+                that takes a while.
+            board_json_path: a saved LayoutBoard instead of a live read.
+            stackup_json_path: a saved pcb_get_layer_stackup reply; empty
+                with a live read asks Altium.
+            list_only: only list the snapshots kept so far.
+
+        Returns:
+            ``id``, ``counts``, ``diff_pairs``, ``stale`` and the files; or
+            ``snapshots`` with list_only.
+        """
+        try:
+            if list_only:
+                from ..si import snapshot as snap
+                return {"ok": True, "snapshots": await asyncio.to_thread(snap.listing)}
+            rec = await _snapshot_from_args("", expect_file, board_json_path, stackup_json_path)
+            from ..layout.model import LayoutBoard
+            board = await asyncio.to_thread(LayoutBoard.load, rec["board"])
+            rec["diff_pairs"] = [{"name": d.name, "positive": d.positive, "negative": d.negative}
+                                 for d in board.diff_pairs]
+            if not rec.get("has_stackup"):
+                rec["warning"] = ("no stackup was read; si_net_channel needs one "
+                                  "(pass stackup_json_path)")
+            return {"ok": True, **rec}
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+
+    @mcp.tool()
+    async def si_net_channel(net: str = "", pair: str = "", snapshot: str = "",
+                             expect_file: str = "", board_json_path: str = "",
+                             stackup_json_path: str = "", options: Optional[dict] = None,
+                             apply_rules: bool = False, title: str = "",
+                             force: bool = False) -> dict[str, Any]:
+        """Model a routed net or differential pair of the board, end to end.
+
+        Finds the net's routed path between its pins and models every part
+        of it: each trace section from its own cross-section (layer, width,
+        and for a pair the gap; eddy-current R and L, causal dielectrics),
+        each via (barrel, stubs, pads, the return-via loop when the
+        reference plane changes), and each stub off the path. Gives the
+        channel's S-parameters (Touchstone), TDR, delay, insertion and
+        return loss at Nyquist, and for a pair mode conversion and skew;
+        checks them against limits; and works out the Altium rules (width,
+        pair gap, uncoupled length, length from the loss budget) that hold
+        the net to its targets.
+
+        Args:
+            net: the net to model; or ``pair``: a differential pair (or
+                one of its nets).
+            snapshot: an id from si_board_snapshot (preferred). Else
+                expect_file reads the open board live, or board_json_path
+                and stackup_json_path name saved files.
+            options: from_pin, to_pin (DESIGNATOR.PIN), data_rate_gbps,
+                f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
+                z_target, z_tol_pct (10), il_max_db, rl_min_db,
+                skew_max_ps, tand (0.02), foil, mask_mils, etch_mils,
+                rules (true). sim_engines lists every key.
+            apply_rules: create the rules in Altium (pcb_create_design_rule).
+                Changes the board; only when the user asked for it.
+            title: a name for the job list.
+            force: solve again even when results exist.
+
+        Returns:
+            ``metrics``, ``verdicts``, ``path`` (sections, vias, stubs),
+            ``altium_steps`` (the rules), ``applied`` when written,
+            ``snapshot`` with ``stale``, ``job`` and ``folder``.
+        """
+        if not net and not pair:
+            return {"ok": False, "error": "give net or pair"}
+        try:
+            rec = await _snapshot_from_args(snapshot, expect_file, board_json_path,
+                                            stackup_json_path)
+            if not rec.get("has_stackup"):
+                return {"ok": False, "error": "the snapshot has no stackup; take it again "
+                        "with stackup_json_path or with the board open in Altium",
+                        "snapshot": rec["id"]}
+            spec: dict[str, Any] = dict(options or {})
+            if pair:
+                spec["pair"] = pair
+            else:
+                spec["net"] = net
+            out = await asyncio.to_thread(
+                _run, "net-channel", ["eda-agent"], spec,
+                {"board": rec["board"], "stackup": rec["stackup"]},
+                title or f"channel {pair or net}", bool(force))
+            res = (out.get("results") or {}).get("eda-agent") or {}
+            reply: dict[str, Any] = {
+                "ok": bool(res), "job": out.get("job"), "folder": out.get("folder"),
+                "snapshot": {"id": rec["id"], "stale": rec.get("stale"), "why": rec.get("why")},
+                "metrics": res.get("metrics", {}), "verdicts": res.get("verdicts", []),
+                "files": res.get("files", {}), "notes": res.get("notes", []),
+                "altium_steps": res.get("altium_steps", []),
+                "path": (res.get("figures") or {}).get("path")}
+            if out.get("errors"):
+                reply["errors"] = out["errors"]
+            if apply_rules and reply["altium_steps"]:
+                if rec.get("stale"):
+                    reply["applied"] = []
+                    reply["error"] = "not applied: the board changed since the snapshot"
+                    return reply
+                from .pcb import _rule_edit, create_rule_params
+                done = []
+                for step in reply["altium_steps"]:
+                    params = create_rule_params(**step["args"])
+                    if "name" not in params:
+                        done.append({"step": step, "reply": params})
+                        continue
+                    r = await _rule_edit("pcb_create_design_rule", step["args"],
+                                         "pcb.create_design_rule", params)
                     done.append({"step": step, "reply": r})
                 reply["applied"] = done
             return reply
