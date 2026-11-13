@@ -67,8 +67,8 @@ maturity classification for every tool.
   skin-effect surface impedance, Djordjevic-Sarkar laminate) and reports
   where |Z| at the load exceeds the target. Both are checked against
   closed-form references, and the IR-drop run writes its Joule heat map.
-  Both ran live, read-only, on one six-layer board; reading values from
-  parameters is UNVERIFIED live. See [`docs/PDN.md`](docs/PDN.md).
+  Both ran live, read-only, on one six-layer board, with the capacitor
+  values read from the parts' parameters. See [`docs/PDN.md`](docs/PDN.md).
 - **SPICE model library and LTspice round trip.** `sim_scan_models`
   indexes vendor model files and LTspice symbols (including LTspice's own
   library, encrypted models through their symbols) into the design
