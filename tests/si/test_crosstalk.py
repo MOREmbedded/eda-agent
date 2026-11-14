@@ -139,6 +139,8 @@ def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(couplin
     # two separate stretches beside one net: the longer one is the place
     two = of(beside(beside(victim(), x1=50, x2=150), x1=400, x2=900), coupling)["aggressors"][0]
     assert two["at_mils"] == [400.0, 0.0] and two["length_mils"] == pytest.approx(600)
+    two = of(beside(beside(victim(), x1=50, x2=550), x1=800, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [50.0, 0.0]
     # an arc of another net that only crosses is still nothing
     b = victim()
     b.arcs = [Arc("TopLayer", 500, 300, 300, 180, 360, 5, "LOOP")]
