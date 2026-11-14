@@ -19,7 +19,7 @@ from eda_agent.si import eye, ibis, spice_export, spice_eye, vectfit
 from eda_agent.si.eye_jobs import terminations
 from eda_agent.si.mtl import mixed_mode
 
-from .ibis_text import R_OUT, TEXT, VCC
+from .ibis_text import R_OUT, REAL, TEXT, VCC
 from .test_nets import _rlgc
 
 NGSPICE = shutil.which("ngspice")
@@ -241,6 +241,37 @@ def test_ibis_numbers_and_tables():
         ibis.pick(models, "NOPE")
 
 
+def test_ibis_tables_shaped_like_a_vendors(tmp_path):
+    models = ibis.parse(REAL)
+    d = ibis.driver(models["DRV_REAL"])
+    # the transistor's side of the table, not the clamp diode below the rail
+    # (0.5 ohm) that the points either side of 0 V would give
+    assert d["r_out_ohms"] == pytest.approx(R_OUT, rel=0.2)
+    assert d["r_pulldown_ohms"] == pytest.approx(d["r_pullup_ohms"])
+    # a pull-up that barely conducts near its rail is not averaged in
+    n = ibis.driver(models["DRV_NPU"])
+    assert n["r_out_ohms"] == pytest.approx(d["r_out_ohms"]) and "differ widely" in n["note"]
+    assert n["r_pullup_ohms"] > 1000 * n["r_pulldown_ohms"]
+    # an input does not drive; its clamp tables carry the on-die termination
+    with pytest.raises(ValueError, match="RX_ODT is of type Input"):
+        ibis.driver(models["RX_ODT"])
+    assert ibis.receiver(models["RX_ODT"])["r_term_ohms"] == pytest.approx(50.0, rel=1e-6)
+    assert "r_term_ohms" not in ibis.receiver(models["RX_HIZ"])
+    assert "r_term_ohms" not in ibis.receiver(models["DRV_REAL"])
+    path = tmp_path / "real.ibs"
+    path.write_text(REAL)
+    t = terminations({"tx_ibis": str(path), "tx_model": "DRV_REAL", "rx_ibis": str(path),
+                      "rx_model": "RX_ODT"}, {"rise": 30e-12, "amp": 0.8}, 50.0, 2)
+    assert t["rl"] == pytest.approx(50.0) and t["rs"] == pytest.approx(R_OUT, rel=0.2)
+    assert any("on-die termination 50.0 ohm" in n for n in t["notes"])
+    t = terminations({"rx_ibis": str(path), "rx_model": "RX_ODT", "rx_r_ohms": "open"},
+                     {"rise": 30e-12, "amp": 0.8}, 50.0, 2)
+    assert t["rl"] is None
+    with pytest.raises(ValueError, match="does not drive"):
+        terminations({"tx_ibis": str(path), "tx_model": "RX_HIZ"},
+                     {"rise": 30e-12, "amp": 0.8}, 50.0, 2)
+
+
 def test_ibis_buffers_set_the_terminations(tmp_path):
     path = tmp_path / "part.ibs"
     path.write_text(TEXT)
@@ -315,6 +346,22 @@ def test_open_receiver_doubles_the_eye(tmp_path):
                    ["main_cursor_mv"]["value"])
     # S11 is under 10 %, so the open end comes close to doubling
     assert out[1] == pytest.approx(2 * out[0], rel=0.15)
+
+
+def test_a_sweep_too_coarse_for_the_bit_is_refused(tmp_path):
+    # 250 points to 25 GHz is a 100 MHz step: 10 ns of response
+    ts = _channel(tmp_path)
+
+    def run(**spec):
+        r = sim.submit("channel-eye", "eda-agent", {"repeats": 1, **spec}, {"touchstone": ts},
+                       "eye", True)
+        return r["state"], str(r.get("error") or "")
+    state, why = run(data_rate_gbps=0.2)                # a 5 ns bit
+    assert state == "failed" and "one bit lasts 5 ns" in why and "66.7 MHz or finer" in why
+    # a 1 ohm driver into an open end rings for longer than the sweep covers
+    state, why = run(data_rate_gbps=1, tx_r_ohms=1, rx_r_ohms="open")
+    assert state == "failed" and "still ringing after" in why
+    assert run(data_rate_gbps=1, tx_r_ohms=40, rx_r_ohms="open")[0] == "done"
 
 
 def test_pair_eye_is_the_differential_one(tmp_path):
