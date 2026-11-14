@@ -465,6 +465,9 @@ def test_edge_figures_of_known_steps():
     slow = eye.edge_figures(t, 1 - np.exp(-t / 0.5e-9))
     assert slow["overshoot"] < 1e-3 and slow["ringback"] == 0 and slow["reversal"] == 0
     assert slow["settle"] == pytest.approx(0.5e-9 * (math.log(20) - math.log(2)), rel=0.05)
+    # the level is read at the very end: an edge that is slow to arrive has no overshoot
+    late = eye.edge_figures(t, 1 - np.exp(-t / 2e-9))
+    assert late["final"] == pytest.approx(1 - math.exp(-4.875), abs=2e-3) and late["overshoot"] < 2e-3
     # a shelf that dips on the way up: half way, back by 0.15, then on to the level
     shelf = np.interp(t, [0, 1e-9, 2e-9, 3e-9, 4e-9, 10e-9], [0, 0.5, 0.35, 0.5, 1.0, 1.0])
     e = eye.edge_figures(t, shelf)

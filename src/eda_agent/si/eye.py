@@ -96,7 +96,7 @@ def edge_figures(t: np.ndarray, v: np.ndarray) -> dict[str, float]:
 
     - ``overshoot``: how far the highest point stands above that level;
     - ``ringback``: how far it falls back below the level after that
-      highest point (0 with no overshoot);
+      highest point;
     - ``reversal``: the deepest fall on the way up, between first reaching
       10 % and first reaching 90 % of the level. An edge that turns back
       there can clock a receiver twice;
@@ -113,8 +113,7 @@ def edge_figures(t: np.ndarray, v: np.ndarray) -> dict[str, float]:
     out["final"] = final
     k = int(np.argmax(u))
     out["overshoot"] = max(float(u[k]) - 1.0, 0.0)
-    if out["overshoot"] > 0:
-        out["ringback"] = max(1.0 - float(u[k:].min()), 0.0)
+    out["ringback"] = max(1.0 - float(u[k:].min()), 0.0)
     up10 = np.nonzero(u >= 0.1)[0]
     up90 = np.nonzero(u >= 0.9)[0]
     if len(up10) and len(up90) and up90[0] > up10[0]:
