@@ -425,6 +425,10 @@ maturity classification for every tool.
   earlier markers; and each stretch of a route outside the impedance band
   gets its own placed finding, not only the worst.
 
+- **A simulation job's kept answer is tied to the code that made it.** The
+  same job asked again after an update returned the older code's results
+  unless forced; it is now solved again.
+
 - **Fan-out vias keep off copper the router does not see.** A BGA's
   fan-out and the plane fan-out laid their vias outside the search, so
   they skipped its hole-to-hole and hidden-copper guards: a fan-out via
