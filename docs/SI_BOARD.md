@@ -50,7 +50,7 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most five per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
 | Return path | Each gap where the route crosses it, with what is crossed (a split between two nets, a slot, no copper) and how far along the route. At most six per net; a stripline with its other plane whole is a warning. |
-| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap; for an aggressor on the facing signal layer, its layer and the dielectric between the two. |
+| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap; for an aggressor on the facing signal layer, its layer and the dielectric between the two. The finding's detail ends with the gap that brings it within the limit. |
 | Delay match | The driving pin of each net too far ahead of the slowest of its target, with how far ahead it is and about how much trace matches it (its own delay per mil). |
 | Loss, return loss, skew, eye | The driving pin. |
 
