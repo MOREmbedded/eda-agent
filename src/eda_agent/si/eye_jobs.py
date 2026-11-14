@@ -45,9 +45,15 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "tx_ffe": ("list", False, "transmitter feed-forward equaliser taps, one unit interval "
                               "apart, e.g. [-0.1, 0.7, -0.2]: the largest is the main tap, "
                               "those before it pre-cursor taps; scaled so their magnitudes "
-                              "add up to 1"),
+                              "add up to 1; or \"auto\": the taps that leave the largest "
+                              "worst-case eye, tx_ffe_pre before the main one and "
+                              "tx_ffe_post after it"),
+    "tx_ffe_pre": ("number", False, "pre-cursor taps of an automatic tx_ffe (default 1, 0 to 3)"),
+    "tx_ffe_post": ("number", False, "post-cursor taps of an automatic tx_ffe (default 1, 0 to 4)"),
     "ctle_db": ("number", False, "receiver CTLE: what the high frequencies gain over DC, in dB "
-                                 "(default 0: none)"),
+                                 "(default 0: none); or \"auto\": the whole dB from 0 to "
+                                 "ctle_max_db that leaves the largest worst-case eye"),
+    "ctle_max_db": ("number", False, "the most an automatic ctle_db takes (default 12)"),
     "ctle_peak_ghz": ("number", False, "the CTLE's first pole (default the Nyquist frequency)"),
     "dfe_taps": ("number", False, "receiver decision-feedback equaliser taps (default 0)"),
     "dfe_max": ("number", False, "the most a DFE tap takes off, as a part of the main cursor "
@@ -376,18 +382,32 @@ def equaliser(spec: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
     receiver's CTLE and its DFE."""
     raw = spec.get("tx_ffe")
     taps: list[float] = []
-    if raw not in (None, "", []):
+    auto_ffe = isinstance(raw, str) and raw.strip().lower() == "auto"
+    pre = _num(spec, "tx_ffe_pre", 1)
+    post = _num(spec, "tx_ffe_post", 1)
+    if pre != int(pre) or not 0 <= pre <= 3 or post != int(post) or not 0 <= post <= 4:
+        raise ValueError("tx_ffe_pre is a whole number, 0 to 3, and tx_ffe_post 0 to 4")
+    if auto_ffe and pre + post == 0:
+        raise ValueError("an automatic tx_ffe needs a tap beside the main one: tx_ffe_pre or "
+                         "tx_ffe_post above 0")
+    if not auto_ffe and raw not in (None, "", []):
         try:
             taps = [float(x) for x in raw]
         except (TypeError, ValueError):
-            raise ValueError("tx_ffe is a list of tap weights, e.g. [-0.1, 0.7, -0.2]") from None
+            raise ValueError("tx_ffe is a list of tap weights, e.g. [-0.1, 0.7, -0.2], or "
+                             "\"auto\"") from None
         if not any(taps):
             raise ValueError("tx_ffe needs one tap or more that is not zero")
         if len(taps) > 8:
             raise ValueError("tx_ffe has 8 taps at most")
-    db = _num(spec, "ctle_db", 0.0)
+    raw_db = spec.get("ctle_db")
+    auto_ctle = isinstance(raw_db, str) and raw_db.strip().lower() == "auto"
+    db = 0.0 if auto_ctle else _num(spec, "ctle_db", 0.0)
     if not 0 <= db <= 30:
-        raise ValueError("ctle_db is 0 to 30")
+        raise ValueError("ctle_db is 0 to 30, or \"auto\"")
+    most_db = _num(spec, "ctle_max_db", 12)
+    if most_db != int(most_db) or not 1 <= most_db <= 30:
+        raise ValueError("ctle_max_db is a whole number, 1 to 30")
     peak = _num(spec, "ctle_peak_ghz", st["rate"] / 2e9) * 1e9
     if peak <= 0:
         raise ValueError("ctle_peak_ghz is above 0")
@@ -397,7 +417,9 @@ def equaliser(spec: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
     most = _num(spec, "dfe_max", 0.5)
     if not 0 < most <= 1:
         raise ValueError("dfe_max is above 0 and at most 1")
-    return {"ffe": taps, "ctle_db": db, "ctle_peak": peak, "dfe_taps": int(n), "dfe_max": most}
+    return {"ffe": taps, "ctle_db": db, "ctle_peak": peak, "dfe_taps": int(n), "dfe_max": most,
+            "auto_ffe": (int(pre), int(post)) if auto_ffe else None,
+            "auto_ctle": int(most_db) if auto_ctle else None}
 
 
 def _write_wave(path: Path, t: np.ndarray, v: np.ndarray) -> None:
@@ -417,15 +439,35 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     h, pair = channel_transfer(f, s, z0, term)
     say("pulse response", 0.2)
     eq = equaliser(spec, st)
-    gain = _eye.ctle(np.concatenate([[0.0], f]), eq["ctle_db"], eq["ctle_peak"]) \
-        if eq["ctle_db"] else np.ones(len(f) + 1)
-    pulse = _eye.pulse_response(f, h * gain[1:], st["ui"], st["rise"], st["spui"],
-                                dc=dc_level(s, z0, term) * float(gain[0].real))
-    if eq["ffe"]:
-        pulse = _eye.ffe(pulse, eq["ffe"])
-    dfe_taps: list[float] = []
-    if eq["dfe_taps"]:
-        pulse, dfe_taps = _eye.dfe(pulse, eq["dfe_taps"], eq["dfe_max"])
+    f0 = np.concatenate([[0.0], f])
+    level = dc_level(s, z0, term)
+
+    def equalised(boost: float):
+        gain = _eye.ctle(f0, boost, eq["ctle_peak"]) if boost else np.ones(len(f0))
+        out = _eye.pulse_response(f, h * gain[1:], st["ui"], st["rise"], st["spui"],
+                                  dc=level * float(gain[0].real))
+        taps = eq["ffe"]
+        if eq["auto_ffe"]:
+            taps = _eye.best_ffe(out, *eq["auto_ffe"], dfe_taps=eq["dfe_taps"])
+        if taps:
+            out = _eye.ffe(out, taps)
+        fed: list[float] = []
+        if eq["dfe_taps"]:
+            out, fed = _eye.dfe(out, eq["dfe_taps"], eq["dfe_max"])
+        return out, taps, fed
+
+    if eq["auto_ctle"] is not None:
+        # every whole dB; between equal eyes the least boost
+        tried = [(b, equalised(float(b))) for b in range(eq["auto_ctle"] + 1)]
+        boost, (pulse, ffe_taps, dfe_taps) = max(
+            tried, key=lambda r: (round(_eye.worst_case_eye(r[1][0], st["amp"])["margin"], 9),
+                                  -r[0]))
+        eq["ctle_db"] = float(boost)
+    else:
+        pulse, ffe_taps, dfe_taps = equalised(eq["ctle_db"])
+    chosen = " (chosen for the largest worst-case eye)"
+    if eq["auto_ffe"]:
+        eq["ffe"] = ffe_taps
     say("PRBS eye", 0.5)
     se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"])
     wc = _eye.worst_case_eye(pulse, st["amp"])
@@ -459,10 +501,19 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     if eq["ffe"]:
         total = sum(abs(x) for x in eq["ffe"])
         notes.append("transmitter FFE taps " + ", ".join(f"{x / total:+.3f}" for x in eq["ffe"])
-                     + " (magnitudes add up to 1)")
+                     + " (magnitudes add up to 1)" + (chosen if eq["auto_ffe"] else ""))
+    if eq["auto_ffe"]:
+        m["ffe_main_tap"] = _metric(round(max(abs(x) for x in eq["ffe"]) / total, 4), "",
+                                    "Main tap of the transmitter FFE chosen (1: none needed)")
+    if eq["auto_ctle"] is not None:
+        m["ctle_db"] = _metric(eq["ctle_db"], "dB", "Receiver CTLE boost chosen")
+        if not eq["ctle_db"]:
+            notes.append(f"receiver CTLE: none; no boost up to {eq['auto_ctle']} dB leaves a "
+                         "larger worst-case eye")
     if eq["ctle_db"]:
         notes.append(f"receiver CTLE: {eq['ctle_db']:g} dB of boost over DC, first pole at "
-                     f"{eq['ctle_peak'] / 1e9:g} GHz; its DC gain lowers the eye's levels")
+                     f"{eq['ctle_peak'] / 1e9:g} GHz; its DC gain lowers the eye's levels"
+                     + (chosen if eq["auto_ctle"] is not None else ""))
     if eq["dfe_taps"]:
         m["dfe_tap1_mv"] = _metric(round((dfe_taps[0] if dfe_taps else 0.0) * st["amp"] / 2 * 1e3,
                                          3), "mV", "First DFE tap")
@@ -525,7 +576,8 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
     f0, s0, z0 = load_channel(touchstone)
     term = terminations(spec, st, z0, s0.shape[1])
     eq = equaliser(spec, st)
-    if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"]:
+    if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"] or eq["auto_ffe"] \
+            or eq["auto_ctle"] is not None:
         raise ValueError("equalisation (tx_ffe, ctle_db, dfe_taps) is modelled by the "
                          "eda-agent engine only: run the eye without it in SPICE")
     keep = f0 > 0
