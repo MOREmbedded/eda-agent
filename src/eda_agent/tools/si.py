@@ -454,6 +454,9 @@ def _register_si_time_tools(mcp) -> None:
             options: rise_ps (0.3 UI), amplitude_mv (800, differential
                 for a pair), noise_mv (0; peak noise at the receiver, the
                 eye loses twice this), prbs (7, 9, 11, 15), repeats (2),
+                overshoot_max_pct, ringback_max_pct,
+                edge_reversal_max_pct (limits on one edge at the receiver,
+                percent of its settled level; no check if absent),
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
                 tx_model (an IBIS driver: its output resistance, C_comp,
@@ -709,6 +712,8 @@ def _register_si_board_tools(mcp) -> None:
                 xtalk_aggressors ([{match, rise_ps, swing_mv}]: neighbours
                 with their own edge and swing), xtalk_max_mv (limit in mV);
                 eye: true to add the eye, eye_min_mv,
+                overshoot_max_pct, ringback_max_pct, edge_reversal_max_pct
+                (one edge at the receiver, placed at the receiving pin),
                 eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
                 is taken by the first target that matches it. Default: every
                 differential pair.

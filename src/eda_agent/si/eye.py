@@ -55,18 +55,30 @@ def ramp_spectrum(f: np.ndarray, rise: float) -> np.ndarray:
     return np.sinc(f * tr) * np.exp(-1j * x)
 
 
+def dc_gain(h: np.ndarray) -> float:
+    """The transfer at 0 Hz, read back from its first points on the band
+    df, 2 df, ...: its real part is even in f, so a + b f^2 through the
+    first two gives a. Taking the first point itself as DC leaves a step
+    response with a slope over its whole window."""
+    if len(h) < 2:
+        return float(h[0].real)
+    return float((4.0 * h[0].real - h[1].real) / 3.0)
+
+
 def step_response(f: np.ndarray, h: np.ndarray, rise: float, pad: int = 8,
-                  t_pre: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
+                  t_pre: Optional[float] = None, dc: Optional[float] = None
+                  ) -> tuple[np.ndarray, np.ndarray]:
     """Response to a linear-ramp step starting at t = 0, from a transfer
     function sampled at f = df .. N df. The band edge is tapered (the top
-    tenth by a half cosine) so its truncation does not ring."""
+    tenth by a half cosine) so its truncation does not ring. ``dc`` is the
+    transfer at 0 Hz (default the real part of the first point)."""
     N = len(f)
     df = f[0]
     if not np.allclose(np.diff(f), df, rtol=1e-6, atol=df * 1e-6):
         raise ValueError("a step response needs the uniform band df, 2 df, ... N df")
     t_pre = t_pre if t_pre is not None else 4.0 / f[-1]
     ff = np.concatenate([[0.0], f])
-    H = np.concatenate([[h[0].real], h]) * ramp_spectrum(ff, rise)
+    H = np.concatenate([[h[0].real if dc is None else dc], h]) * ramp_spectrum(ff, rise)
     taper = np.ones_like(ff)
     edge = ff > 0.9 * ff[-1]
     taper[edge] = 0.5 * (1 + np.cos(np.pi * (ff[edge] - 0.9 * ff[-1]) / (0.1 * ff[-1])))
@@ -76,6 +88,42 @@ def step_response(f: np.ndarray, h: np.ndarray, rise: float, pad: int = 8,
     t = (np.arange(n) + 0.5) / (n * df) - t_pre
     keep = t < 0.95 / df - t_pre
     return t[keep], step[keep]
+
+
+def edge_figures(t: np.ndarray, v: np.ndarray) -> dict[str, float]:
+    """What a step response shows of the edge at the receiver, as fractions
+    of the level it settles to (the mean of its last twentieth):
+
+    - ``overshoot``: how far the highest point stands above that level;
+    - ``ringback``: how far it falls back below the level after that
+      highest point;
+    - ``reversal``: the deepest fall on the way up, between first reaching
+      10 % and first reaching 90 % of the level. An edge that turns back
+      there can clock a receiver twice;
+    - ``settle``: seconds from first reaching half the level until it
+      stays within 5 % of it.
+    """
+    v = np.asarray(v, dtype=float)
+    out = {"final": 0.0, "overshoot": 0.0, "ringback": 0.0, "reversal": 0.0, "settle": 0.0}
+    tail = max(len(v) // 20, 1)
+    final = float(v[-tail:].mean())
+    if len(v) < 4 or abs(final) < 1e-12:
+        return out
+    u = v / final                                   # settles to 1, whatever the sign
+    out["final"] = final
+    k = int(np.argmax(u))
+    out["overshoot"] = max(float(u[k]) - 1.0, 0.0)
+    out["ringback"] = max(1.0 - float(u[k:].min()), 0.0)
+    up10 = np.nonzero(u >= 0.1)[0]
+    up90 = np.nonzero(u >= 0.9)[0]
+    if len(up10) and len(up90) and up90[0] > up10[0]:
+        seg = u[up10[0]:up90[0] + 1]
+        out["reversal"] = max(float((np.maximum.accumulate(seg) - seg).max()), 0.0)
+    half = np.nonzero(u >= 0.5)[0]
+    away = np.nonzero(np.abs(u - 1.0) > 0.05)[0]
+    if len(half) and len(away) and away[-1] + 1 < len(u) and away[-1] >= half[0]:
+        out["settle"] = float(t[away[-1] + 1] - t[half[0]])
+    return out
 
 
 @dataclass

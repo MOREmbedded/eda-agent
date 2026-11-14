@@ -34,6 +34,14 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "noise_mv": ("number", False, "noise at the receiver from other sources (crosstalk, supply), "
                                   "peak, each side of zero: the eye loses twice this in height "
                                   "(default 0)"),
+    "overshoot_max_pct": ("number", False, "allowed overshoot of the edge at the receiver, in "
+                                           "percent of the level it settles to (no check if "
+                                           "absent)"),
+    "ringback_max_pct": ("number", False, "allowed fall back below that level after the "
+                                          "overshoot (no check if absent)"),
+    "edge_reversal_max_pct": ("number", False, "allowed fall on the way up, between 10 % and "
+                                               "90 % of the level: a clock wants none (no check "
+                                               "if absent)"),
     "prbs": ("number", False, "PRBS order: 7, 9, 11, 15 (default 7)"),
     "repeats": ("number", False, "times the pattern runs after settling (default 2)"),
     "samples_per_ui": ("number", False, "time steps per unit interval (default 32)"),
@@ -196,6 +204,34 @@ def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
                  "by that much, whenever it arrives: the worst case")
 
 
+def _edge(spec: dict[str, Any], f: np.ndarray, h: np.ndarray, st: dict[str, Any],
+          m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+    """The single edge at the receiver: overshoot, ringback, a reversal on
+    the way up and the settling time, with the limits the spec gives."""
+    e = _eye.edge_figures(*_eye.step_response(f, h, st["rise"], dc=_eye.dc_gain(h)))
+    over, back, rev = (round(100 * e[k], 2) for k in ("overshoot", "ringback", "reversal"))
+    m["overshoot_pct"] = _metric(over, "%", "Overshoot of one edge at the receiver, of the "
+                                 "level it settles to")
+    m["ringback_pct"] = _metric(back, "%", "Fall back below that level after the overshoot")
+    m["edge_reversal_pct"] = _metric(rev, "%", "Deepest fall on the way up, between 10 % and "
+                                     "90 % of the level")
+    m["settling_ps"] = _metric(round(e["settle"] * 1e12, 2), "ps", "From half the level until "
+                               "the edge stays within 5 % of it")
+    for key, name, got in (("overshoot_max_pct", "overshoot", over),
+                           ("ringback_max_pct", "ringback", back),
+                           ("edge_reversal_max_pct", "edge reversal", rev)):
+        if spec.get(key) is None:
+            continue
+        lim = _num(spec, key, 0.0)
+        if lim < 0:
+            raise ValueError(f"{key} is 0 or more")
+        verdicts.append({"check": name, "pass": got <= lim,
+                         "detail": f"{got:.1f} % of the settled level, {lim:g} % allowed"})
+    if rev >= 2.0:
+        notes.append(f"the edge turns back by {rev:.1f} % of its level on the way up: a "
+                     "reflection arrives inside the edge, and a clock input can see it twice")
+
+
 def _write_wave(path: Path, t: np.ndarray, v: np.ndarray) -> None:
     np.savetxt(path, np.column_stack([t * 1e12, v * 1e3]), delimiter=",",
                header="time_ps,mv", comments="", fmt="%.6g")
@@ -247,6 +283,7 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
     _with_noise(spec, se["eye_height"], m, verdicts, notes)
+    _edge(spec, f, h, st, m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 
 

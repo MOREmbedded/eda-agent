@@ -444,3 +444,109 @@ def test_tools_eye_spice_model_and_ibis(tmp_path):
     by = {x["name"]: x for x in r["models"]}
     assert by["DRV18"]["driver"]["r_out_ohms"] == pytest.approx(R_OUT)
     assert by["RX18"]["model_type"] == "Input"
+
+
+# -- the single edge: overshoot, ringback, a reversal on the way up ------------------
+
+def test_edge_figures_of_known_steps():
+    t = np.linspace(0, 10e-9, 2001)
+    w, a = 2 * math.pi * 1e9, 0.4e9
+    ring = 1 - np.exp(-a * t) * np.cos(w * t)          # rings about 1: peaks at half periods
+    e = eye.edge_figures(t, 3.0 * ring)
+    assert e["final"] == pytest.approx(3.0, rel=0.01)
+    assert e["overshoot"] == pytest.approx(math.exp(-a * 0.5e-9), abs=0.01)     # first peak
+    assert e["ringback"] == pytest.approx(math.exp(-a * 1.0e-9), abs=0.01)      # the dip after
+    assert e["reversal"] == 0
+    # within 5 % once exp(-a t) < 0.05, counted from the half level
+    assert e["settle"] == pytest.approx(math.log(20) / a, rel=0.1)
+    # a falling edge is the same picture upside down
+    assert eye.edge_figures(t, -3.0 * ring)["overshoot"] == pytest.approx(e["overshoot"])
+    # an overdamped edge has none of it
+    slow = eye.edge_figures(t, 1 - np.exp(-t / 0.5e-9))
+    assert slow["overshoot"] < 1e-3 and slow["ringback"] == 0 and slow["reversal"] == 0
+    assert slow["settle"] == pytest.approx(0.5e-9 * (math.log(20) - math.log(2)), rel=0.05)
+    # the level is read at the very end: an edge that is slow to arrive has no overshoot
+    late = eye.edge_figures(t, 1 - np.exp(-t / 2e-9))
+    assert late["final"] == pytest.approx(1 - math.exp(-4.875), abs=2e-3) and late["overshoot"] < 2e-3
+    # a shelf that dips on the way up: half way, back by 0.15, then on to the level
+    shelf = np.interp(t, [0, 1e-9, 2e-9, 3e-9, 4e-9, 10e-9], [0, 0.5, 0.35, 0.5, 1.0, 1.0])
+    e = eye.edge_figures(t, shelf)
+    assert e["reversal"] == pytest.approx(0.15, abs=0.005) and e["overshoot"] < 1e-6
+    # a dip after the level is reached is ringback's business, not a reversal
+    late = np.interp(t, [0, 1e-9, 2e-9, 3e-9, 10e-9], [0, 1.2, 0.8, 1.0, 1.0])
+    e = eye.edge_figures(t, late)
+    assert e["reversal"] == 0 and e["overshoot"] == pytest.approx(0.2, abs=0.005)
+    assert e["ringback"] == pytest.approx(0.2, abs=0.005)
+    # nothing to measure
+    assert eye.edge_figures(t, np.zeros_like(t))["overshoot"] == 0
+    assert eye.edge_figures(t[:2], np.ones(2))["final"] == 0
+
+
+def _edge_job(ts, **opt):
+    r = sim.submit("channel-eye", "eda-agent", {"data_rate_gbps": 1, "repeats": 1, **opt},
+                   {"touchstone": ts}, "edge", True)
+    assert r["state"] in ("done", "failed"), r
+    return sim.refresh(r["job"])["runs"]["eda-agent"]
+
+
+def test_a_strong_driver_into_an_open_end_overshoots_and_a_matched_one_does_not(tmp_path):
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0)             # 4 inches, about 0.67 ns one way
+    ts = str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+    res = _edge_job(ts)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["overshoot_pct"] < 0.5 and m["ringback_pct"] < 0.5 and m["edge_reversal_pct"] < 0.5
+    assert not any(v["check"] in ("overshoot", "ringback") for v in res["verdicts"])
+    # 15 ohm into an open end: the first wave is 2 x 50 / 65 of the level, 54 % over,
+    # and it comes back (15 - 50) / (15 + 50) of that later
+    res = _edge_job(ts, tx_r_ohms=15, rx_r_ohms="open", rise_ps=100, overshoot_max_pct=20,
+                    ringback_max_pct=40)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["overshoot_pct"] == pytest.approx(100 * (2 * 50 / 65 - 1), abs=4)
+    assert m["ringback_pct"] == pytest.approx(100 * (1 - (100 / 65) * (1 - 35 / 65)), abs=4)
+    assert m["settling_ps"] > 2 * 1340
+    v = {x["check"]: x for x in res["verdicts"]}
+    assert not v["overshoot"]["pass"] and v["ringback"]["pass"]
+    assert v["overshoot"]["detail"] == f"{m['overshoot_pct']:.1f} % of the settled level, 20 % allowed"
+    # a weak driver climbs in steps and never overshoots
+    res = _edge_job(ts, tx_r_ohms=75, rx_r_ohms="open", rise_ps=100, overshoot_max_pct=5)
+    m = {k: v["value"] for k, v in res["results"]["metrics"].items()}
+    assert m["overshoot_pct"] < 2
+    assert next(x for x in res["results"]["verdicts"] if x["check"] == "overshoot")["pass"]
+    bad = _edge_job(ts, overshoot_max_pct=-1)
+    assert bad["state"] == "failed" and "overshoot_max_pct is 0 or more" in json.dumps(bad)
+
+
+def test_a_reflection_inside_the_edge_is_told(tmp_path):
+    # a 20 ohm stretch in a 50 ohm line, a weak driver, an open end: the edge climbs in
+    # steps, and the wave the open end sent back returns inverted from the stretch
+    f = ch.uniform_band(10e9, 800)
+    c = ch.Channel(f, 1)
+    for z, length in ((50.0, 0.03), (20.0, 0.03), (50.0, 0.03)):
+        c.add(ch.line_block(_rlgc(f, z0=z, loss=False), length))
+    ts = str(write_touchstone(tmp_path / "step.s2p", list(f), c.s(50.0).tolist(), 50.0))
+    opt = {"data_rate_gbps": 0.2, "tx_r_ohms": 100, "rx_r_ohms": "open", "rise_ps": 100}
+    res = _edge_job(ts, **opt, edge_reversal_max_pct=5)["results"]
+    rev = res["metrics"]["edge_reversal_pct"]["value"]
+    assert 15 < rev < 30 and res["metrics"]["overshoot_pct"]["value"] < 2
+    assert any(f"turns back by {rev:.1f} %" in n for n in res["notes"])
+    v = next(x for x in res["verdicts"] if x["check"] == "edge reversal")
+    assert not v["pass"] and v["detail"] == f"{rev:.1f} % of the settled level, 5 % allowed"
+    # the same line between matched ends climbs once
+    res = _edge_job(ts, data_rate_gbps=0.2, rise_ps=100, edge_reversal_max_pct=5)["results"]
+    assert res["metrics"]["edge_reversal_pct"]["value"] < 2
+    assert not any("turns back" in n for n in res["notes"])
+    assert next(x for x in res["verdicts"] if x["check"] == "edge reversal")["pass"]
+
+
+def test_the_step_takes_its_dc_from_the_first_points():
+    f = ch.uniform_band(20e9, 400)
+    h = lossy_line(f, length=0.1, z0=50.0, loss=False)[:, 1, 0]     # a pure delay: 1 at DC
+    assert h[0].real < 0.98 and eye.dc_gain(h) == pytest.approx(1.0, abs=1e-3)
+    assert eye.dc_gain(h[:1]) == h[0].real
+    t, v = eye.step_response(f, h, 100e-12, dc=eye.dc_gain(h))
+    late = v[t > 2e-9]
+    assert late.max() - late.min() < 0.01               # flat once it has arrived
+    t, v = eye.step_response(f, h, 100e-12)             # the first point as DC: it slopes
+    late = v[t > 2e-9]
+    assert late.max() - late.min() > 0.015
