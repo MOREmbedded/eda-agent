@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """What eda-agent can do and what each part of it needs.
 
-One table for everything optional: the pip extras in ``pyproject.toml``,
+One table for everything eda-agent can do, built in or optional: the
+core packages and the pip extras in ``pyproject.toml``,
 the programs some tools drive (openEMS, LTspice, ngspice, KiCad, FreeCAD,
 pcb-toolkit), the compiled wheels built from this repository, and the
 simulation engines that run in their own environment. The installer
 (``eda-agent install-deps``), the status report (``eda-agent features``),
-the dashboard's Features page and the ``sys_features`` tool all read it,
+the dashboard's Features page and the ``app_features`` tool all read it,
 so a dependency is described once.
 
 A **feature** is something a user would turn on: "3D STEP models", "EMI
@@ -58,8 +59,14 @@ class Dependency:
     size_mb: float = 0.0
     #: Steps for a person, when the installer cannot do it alone.
     manual: str = ""
-    #: Environment variables that point eda-agent at it.
+    #: Environment variables that point eda-agent at it. The first one is
+    #: the one the Features page and ``eda-agent features --set-path``
+    #: save, so it names the program or its folder.
     env: tuple[str, ...] = ()
+    #: PROGRAM built with Rust: the arguments after ``cargo install``
+    #: (a crate, or ``--git URL crate``). The installer builds it into
+    #: ``<engines folder>/<id>`` when cargo is present.
+    cargo: tuple[str, ...] = ()
     #: One line on why it is needed or how it is used.
     note: str = ""
 
@@ -94,6 +101,17 @@ class Feature:
     dev: bool = False
     #: The user may switch it off (an engine that should not be offered).
     switchable: bool = False
+    #: Whether a switchable feature is on until the user says otherwise.
+    #: The Rust kernels are off by default: Python stays the reference.
+    default_on: bool = True
+    #: A switch that works through an environment variable:
+    #: (variable, value when on, value when off). Switching on sets the
+    #: variable for this process and every later one (see state.apply);
+    #: a value the user set in the environment decides instead.
+    switch_env: tuple[str, ...] = ()
+    #: Other features that extend this one (an engine for its jobs, a
+    #: faster kernel): shown beside it, never required.
+    related: tuple[str, ...] = ()
 
     def all_deps(self) -> tuple[str, ...]:
         seen: list[str] = []
@@ -105,6 +123,7 @@ class Feature:
 
 GROUPS = (
     "Core",
+    "Analysis",
     "Views and pictures",
     "Manufacturing files",
     "3D models",
@@ -116,7 +135,60 @@ GROUPS = (
 )
 
 
-DEPENDENCIES: tuple[Dependency, ...] = (
+#: The packages every installation has: ``[project] dependencies`` in
+#: pyproject.toml. Listed so the Features page shows their versions and
+#: licenses, and so ``install-deps`` can repair an environment that lost
+#: one. A test keeps this list equal to pyproject.toml.
+CORE_DEPENDENCIES: tuple[Dependency, ...] = (
+    Dependency("mcp", "MCP Python SDK", PYTHON, "MIT",
+               "https://github.com/modelcontextprotocol/python-sdk", dist="mcp",
+               note="the protocol the assistant talks to eda-agent in"),
+    Dependency("anyio", "AnyIO", PYTHON, "MIT", "https://anyio.readthedocs.io",
+               dist="anyio"),
+    Dependency("pydantic", "Pydantic", PYTHON, "MIT", "https://docs.pydantic.dev",
+               dist="pydantic", note="tool arguments and replies"),
+    Dependency("psutil", "psutil", PYTHON, "BSD-3-Clause",
+               "https://github.com/giampaolo/psutil", dist="psutil",
+               note="finds Altium and watches the solver processes"),
+    Dependency("pywin32", "pywin32", PYTHON, "PSF-2.0",
+               "https://github.com/mhammond/pywin32", dist="pywin32",
+               platforms=("win32",), note="windows, the clipboard and COM on Windows"),
+    Dependency("comtypes", "comtypes", PYTHON, "MIT",
+               "https://github.com/enthought/comtypes", dist="comtypes",
+               platforms=("win32",), note="reads Altium's dialogs (MSAA, UI Automation)"),
+    Dependency("pillow", "Pillow", PYTHON, "MIT-CMU", "https://python-pillow.org",
+               dist="pillow", note="screen captures and footprint pictures"),
+    Dependency("networkx", "NetworkX", PYTHON, "BSD-3-Clause", "https://networkx.org",
+               dist="networkx", note="net graphs for the placer, router and reviews"),
+    Dependency("numpy", "NumPy", PYTHON, "BSD-3-Clause", "https://numpy.org",
+               dist="numpy", note="every solver's arrays"),
+    Dependency("scipy", "SciPy", PYTHON, "BSD-3-Clause", "https://scipy.org",
+               dist="scipy", note="sparse solves for layout, PDN, thermal and SI"),
+    Dependency("pyamg", "PyAMG", PYTHON, "MIT", "https://github.com/pyamg/pyamg",
+               dist="pyamg", note="the multigrid preconditioner of the thermal solver"),
+    Dependency("threadpoolctl", "threadpoolctl", PYTHON, "BSD-3-Clause",
+               "https://github.com/joblib/threadpoolctl", dist="threadpoolctl",
+               note="keeps parallel SI solves from oversubscribing the cores"),
+    Dependency("pypdf", "pypdf", PYTHON, "BSD-3-Clause", "https://pypdf.readthedocs.io",
+               dist="pypdf", note="text search in datasheets"),
+    Dependency("pypdfium2", "pypdfium2", PYTHON, "Apache-2.0 OR BSD-3-Clause",
+               "https://github.com/pypdfium2-team/pypdfium2", dist="pypdfium2",
+               note="renders datasheet figures"),
+    Dependency("olefile", "olefile", PYTHON, "BSD-2-Clause",
+               "https://github.com/decalage2/olefile", dist="olefile",
+               note="reads Altium files without Altium running"),
+    Dependency("xlrd", "xlrd", PYTHON, "BSD-3-Clause", "https://github.com/python-excel/xlrd",
+               dist="xlrd", note="Altium's IPC footprint batch templates (.xls)"),
+    Dependency("certifi", "certifi", PYTHON, "MPL-2.0",
+               "https://github.com/certifi/python-certifi", dist="certifi",
+               note="certificates for downloading fab data"),
+    Dependency("packaging", "packaging", PYTHON, "Apache-2.0 OR BSD-2-Clause",
+               "https://packaging.pypa.io", dist="packaging",
+               note="version checks of the optional parts"),
+)
+
+
+DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("flask", "Flask", PYTHON, "BSD-3-Clause",
                "https://flask.palletsprojects.com", dist="flask",
                size_mb=1, note="the local web server behind the dashboard"),
@@ -136,8 +208,10 @@ DEPENDENCIES: tuple[Dependency, ...] = (
                note="large: it brings the OpenCascade kernel"),
     Dependency("freecad", "FreeCAD", PROGRAM, "LGPL-2.1+",
                "https://www.freecad.org/downloads.php",
+               env=("EDA_AGENT_FREECADCMD",),
                manual="Install FreeCAD from freecad.org. eda-agent finds "
-                      "freecadcmd on PATH.",
+                      "freecadcmd on PATH and in the usual install folders, or "
+                      "set EDA_AGENT_FREECADCMD to it.",
                note="used for STEP models when CadQuery is not installed"),
     Dependency("eda-agent-compute", "eda-agent Rust compute", LOCAL, "Apache-2.0",
                dist="eda-agent-compute", source="rust/eda_agent_compute", size_mb=2,
@@ -146,10 +220,12 @@ DEPENDENCIES: tuple[Dependency, ...] = (
                     "with EDA_AGENT_COMPUTE=auto"),
     Dependency("ngspice", "ngspice", PROGRAM, "BSD-3-Clause",
                "https://ngspice.sourceforge.io/download.html",
-               manual="Windows: download the ngspice zip from "
-                      "ngspice.sourceforge.io and put its bin folder on PATH "
-                      "(or `scoop install ngspice`). Linux: install the ngspice "
-                      "package."),
+               env=("EDA_AGENT_NGSPICE",),
+               manual="Windows: unzip the ngspice release from "
+                      "ngspice.sourceforge.io (to C:\\Spice64 or Program Files, "
+                      "where eda-agent looks), or `scoop install ngspice`, or "
+                      "set EDA_AGENT_NGSPICE to ngspice_con.exe. Linux: install "
+                      "the ngspice package."),
     Dependency("ltspice", "LTspice", PROGRAM, "Freeware (Analog Devices)",
                "https://www.analog.com/ltspice", platforms=("win32", "darwin"),
                env=("EDA_AGENT_LTSPICE_EXE",),
@@ -162,8 +238,9 @@ DEPENDENCIES: tuple[Dependency, ...] = (
                manual="Windows: unzip the openEMS release (it carries the "
                       "Python bindings) and set EDA_AGENT_OPENEMS_DIR to that "
                       "folder; set EDA_AGENT_OPENEMS_PYTHON to a Python that "
-                      "can `import openEMS`. Linux: build openEMS-Project with "
-                      "its Python bindings."),
+                      "can `import openEMS`. Save both once on the Features "
+                      "page or with `eda-agent features --set-path`. Linux: "
+                      "build openEMS-Project with its Python bindings."),
     Dependency("scikit-rf", "scikit-rf", PYTHON, "BSD-3-Clause",
                "https://scikit-rf.readthedocs.io", dist="scikit-rf",
                requirement="scikit-rf>=1.0,<3", size_mb=5,
@@ -172,14 +249,21 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency("pcb-toolkit", "pcb-toolkit", PROGRAM, "MIT OR Apache-2.0",
                "https://github.com/akiselev/pcb-toolkit",
                env=("EDA_AGENT_PCB_TOOLKIT",),
-               manual="Build it with Rust: git clone "
-                      "https://github.com/akiselev/pcb-toolkit, cargo build "
-                      "--release --workspace, then put the binary on PATH or "
-                      "point EDA_AGENT_PCB_TOOLKIT at it."),
+               cargo=("--git", "https://github.com/akiselev/pcb-toolkit", "pcb-toolkit-cli"),
+               size_mb=1,
+               manual="Built from source with Rust: install Rust from rustup.rs "
+                      "(on Windows also the Visual Studio C++ build tools) and "
+                      "run the installer again, which builds it into the engines "
+                      "folder. Or build it yourself and point "
+                      "EDA_AGENT_PCB_TOOLKIT at the binary.",
+               note="a separate Rust program; built with cargo, never linked"),
     Dependency("kicad", "KiCad", PROGRAM, "GPL-3.0 (runs as its own program)",
                "https://www.kicad.org/download/",
+               env=("EDA_AGENT_KICAD_CLI",),
                manual="Install KiCad 8 or later from kicad.org. eda-agent "
-                      "drives kicad-cli and KiCad's API server."),
+                      "drives kicad-cli and KiCad's API server, and finds "
+                      "kicad-cli on PATH and in Program Files\\KiCad, or set "
+                      "EDA_AGENT_KICAD_CLI to it."),
     Dependency("pytest", "pytest and plugins", PYTHON, "MIT", "https://pytest.org",
                dist="pytest", size_mb=5),
     Dependency("pytest-asyncio", "pytest-asyncio", PYTHON, "Apache-2.0",
@@ -193,11 +277,76 @@ DEPENDENCIES: tuple[Dependency, ...] = (
 
 FEATURES: tuple[Feature, ...] = (
     Feature("core", "Altium bridge and the design tools", "Core",
-            "Everything the MCP server does with no extra installed: reading and "
-            "editing schematics and boards in Altium, reviews, rules, libraries, "
-            "the placer and router, the calculators, PDN and EMI checks.",
-            offers=("All MCP tools that are not listed under another feature",),
+            "What every installation does: reading and editing schematics and "
+            "boards in Altium, reviews, ERC and DRC, rules, libraries and parts, "
+            "and every tool not listed under another feature.",
+            offers=("Schematic and board reading and editing in Altium",
+                    "Design review, ERC and DRC, rule checks",
+                    "Libraries, part search and footprint generation"),
+            needs=("mcp", "anyio", "pydantic", "psutil", "pywin32", "comtypes",
+                   "pillow", "networkx", "numpy", "olefile", "xlrd", "pypdf",
+                   "pypdfium2", "certifi", "packaging"),
+            tools=("review_design", "run_drc", "run_erc"),
             core=True, docs="docs/FEATURES.md"),
+    Feature("layout", "Placer and router", "Analysis",
+            "Automatic placement and routing of the board, with the result "
+            "checked before it is written to Altium. Two routing engines: this "
+            "project's own, and Euan's alternative router, switched with "
+            "`eda-agent router-use`.",
+            offers=("pcb_autoplace with incremental scoring",
+                    "pcb_autoroute, default or Euan's engine",
+                    "Route plans and repair plans"),
+            needs=("numpy", "scipy", "networkx"),
+            tools=("pcb_autoplace", "pcb_autoroute", "route_plan"),
+            related=("compute",), core=True, docs="docs/ROUTER_ENGINES.md"),
+    Feature("signal-integrity", "Signal integrity", "Analysis",
+            "Lines, nets and channels from the stackup to the eye: RLGC with "
+            "surface roughness, routed-net S-parameters and TDR, IBIS eyes, and "
+            "a whole-board check whose findings are marked in Altium.",
+            offers=("si_line_model and si_stackup_plan: impedance and loss per layer",
+                    "si_net_channel: S-parameters and TDR of a routed net",
+                    "si_channel_eye: eye diagrams, with IBIS drivers",
+                    "si_board_check: findings placed on the board"),
+            needs=("numpy", "scipy", "threadpoolctl"),
+            tools=("si_line_model", "si_stackup_plan", "si_board_snapshot",
+                   "si_net_channel", "si_channel_eye", "si_spice_model",
+                   "si_ibis_models", "si_board_check"),
+            related=("scikit-rf", "spice", "openems"), core=True,
+            docs="docs/SI_BOARD.md"),
+    Feature("power-integrity", "Power integrity (PDN)", "Analysis",
+            "DC IR drop over the copper of each rail and the PDN impedance "
+            "against its target, with the decoupling read from the design.",
+            offers=("sim_pdn_ir_drop: voltage drop and current density maps",
+                    "sim_pdn_impedance: impedance of the rail against its target"),
+            needs=("numpy", "scipy"),
+            tools=("sim_pdn_ir_drop", "sim_pdn_impedance", "pcb_calc_pdn_target"),
+            related=("render",), core=True, docs="docs/PDN.md"),
+    Feature("thermal", "Thermal analysis", "Analysis",
+            "Steady-state board temperatures: 3D conduction through copper and "
+            "laminate, convection and radiation, junction temperatures of the "
+            "parts.",
+            offers=("sim_thermal_analysis: temperature map and Tj per part",),
+            needs=("numpy", "scipy", "pyamg"),
+            tools=("sim_thermal_analysis",), related=("render",), core=True,
+            docs="docs/THERMAL.md"),
+    Feature("emi", "EMI prescan", "Analysis",
+            "Fast EMC checks of the routed board with no external program: "
+            "tracks over plane splits, fast nets near the edge, layer changes "
+            "without a return via, and radiated estimates against CISPR and FCC "
+            "limits. openEMS gives the full-wave answer.",
+            offers=("sim_emc_prescan: ranked EMC risks of the fast nets",
+                    "Touchstone reading and checks (sim_read_touchstone)"),
+            needs=("numpy",),
+            tools=("sim_emc_prescan", "sim_read_touchstone"),
+            related=("openems", "scikit-rf"), core=True, docs="docs/EMC_RF.md"),
+    Feature("calculators", "PCB calculators", "Analysis",
+            "Impedance, current capacity, vias, fusing, spacing, padstacks and "
+            "more, each with its model and accuracy, also on the dashboard's "
+            "Calculators page.",
+            offers=("pcb_calc_* and the pcb_calc_toolkit family",),
+            needs=("numpy", "scipy"),
+            tools=("pcb_calc", "pcb_calc_toolkit", "pcb_calc_impedance"),
+            related=("pcb-toolkit",), core=True, docs="docs/PCB_TOOLKIT.md"),
     Feature("dashboard", "Dashboard", "Views and pictures",
             "The local web dashboard: board view, review, library, workspace, "
             "calculators, features and simulation.",
@@ -229,15 +378,23 @@ FEATURES: tuple[Feature, ...] = (
             any_of=(("cadquery", "freecad"),), extra="models3d"),
     Feature("compute", "Rust compute", "Speed",
             "Compiled kernels: the routing search runs about 15 times faster. "
-            "Python stays the default and the reference.",
-            offers=("faster autorouting (EDA_AGENT_COMPUTE=auto)",),
+            "Python stays the default and the reference; switch it on here or "
+            "with EDA_AGENT_COMPUTE=auto.",
+            offers=("faster autorouting: the grid search in compiled code",
+                    "the same answers as Python, checked by a parity test"),
             needs=("eda-agent-compute",), tools=("compute-status",),
-            docs="docs/RUST_COMPUTE.md"),
+            docs="docs/RUST_COMPUTE.md", switchable=True, default_on=False,
+            switch_env=("EDA_AGENT_COMPUTE", "auto", "python")),
     Feature("spice", "SPICE simulation", "Circuit simulation",
-            "Runs SPICE decks built from the schematic, and the LTspice round "
-            "trip.",
-            offers=("sim_run_* with ngspice", "eng_ltspice_* with LTspice"),
-            any_of=(("ngspice", "ltspice"),), docs="docs/SPICE_MODELS.md"),
+            "Runs SPICE decks built from the schematic, the LTspice round trip, "
+            "and the signal-integrity eye through a circuit simulator. Runs as "
+            "its own process.",
+            offers=("sim_run and sim_run_deck with ngspice or LTspice",
+                    "eng_ltspice_*: export, run and compare with LTspice",
+                    "simulation engine `spice`: channel eyes in a circuit simulator"),
+            any_of=(("ngspice", "ltspice"),),
+            tools=("sim_run", "sim_run_deck", "eng_ltspice_run", "si_spice_model"),
+            docs="docs/SPICE_MODELS.md", switchable=True),
     Feature("openems", "3D field solver (openEMS)", "Field solvers and signal integrity",
             "Full-wave FDTD: S-parameters of nets and vias, antenna patterns. "
             "Runs as its own process.",
@@ -252,11 +409,14 @@ FEATURES: tuple[Feature, ...] = (
             docs="docs/SIMULATION.md", switchable=True),
     Feature("pcb-toolkit", "Calculator cross-check (pcb-toolkit)", "Other EDA programs",
             "A second, independent implementation of the PCB calculators.",
-            offers=("calc-cross-check",), needs=("pcb-toolkit",),
-            tools=("calc-cross-check",)),
+            offers=("pcb_calc_cross_check: every calculator against a second implementation",),
+            needs=("pcb-toolkit",), tools=("pcb_calc_cross_check", "calc-cross-check"),
+            docs="docs/PCB_TOOLKIT.md"),
     Feature("kicad", "KiCad backend", "Other EDA programs",
             "Runs the same tools against KiCad instead of Altium.",
-            offers=("--backend kicad", "kicad-cli exports"), needs=("kicad",),
+            offers=("--backend kicad", "kicad-cli exports",
+                    "Altium to KiCad conversion, checked with KiCad's own ERC and DRC"),
+            needs=("kicad",),
             extra="kicad", docs="docs/BACKENDS.md"),
     Feature("dev", "Test suite", "Development",
             "What the test suite needs.", needs=("pytest", "pytest-asyncio",

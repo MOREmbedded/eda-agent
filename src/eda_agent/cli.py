@@ -169,11 +169,26 @@ def _feature_mark(state: str) -> str:
 
 
 def cmd_features(deep: bool = False, as_json: bool = False,
-                 on: str = "", off: str = "") -> int:
+                 on: str = "", off: str = "", set_path: str = "",
+                 clear_path: str = "") -> int:
     """What eda-agent can do here: every feature, its state, and every
-    dependency with its version. --on/--off switch an engine."""
+    dependency with its version. --on/--off switch an engine;
+    --set-path/--clear-path save or forget where a program is."""
     import json
     from .features import report, state
+    if set_path or clear_path:
+        name, _, value = (set_path or clear_path).partition("=")
+        if set_path and not value.strip():
+            print("error: --set-path takes VARIABLE=PATH", file=sys.stderr)
+            return 2
+        try:
+            saved = state.set_path(name, value if set_path else "")
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+            return 2
+        print(f"{name.strip()} " + (f"saved: {saved[name.strip()]}" if set_path else "forgotten")
+              + f" ({state.state_file()})")
+        return 0
     if on or off:
         try:
             now_off = state.set_switch(on or off, bool(on))
@@ -191,11 +206,18 @@ def cmd_features(deep: bool = False, as_json: bool = False,
     for group in rep["groups"]:
         print(f"\n{group}")
         for f in (x for x in rep["features"] if x["group"] == group):
-            print(f"  {_feature_mark(f['state'])} {f['id']:<14} {f['title']}"
+            print(f"  {_feature_mark(f['state'])} {f['id']:<17} {f['title']}"
+                  + ("  (built in)" if f["core"] and f["state"] == "ready" else "")
                   + (f"  (missing: {', '.join(f['missing'])})" if f["missing"]
                      and f["state"] != "ready" else ""))
+            if f.get("note"):
+                print(f"        {f['note']}")
+            if f["core"] and f["state"] == "ready":
+                continue    # built-in packages: `--json` lists them
             for d_id in f["needs"] + [x for g in f["any_of"] for x in g] + f["adds"]:
                 d = deps[d_id]
+                if d.get("applies") is False:
+                    continue
                 ver = d.get("version") or ""
                 where = d.get("state")
                 print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
@@ -231,10 +253,14 @@ def cmd_install_deps(names: list, everything: bool = False, dev: bool = False,
         return 0
     if not as_json:
         if data["already_present"]:
-            print("Already installed: " + ", ".join(data["already_present"]))
+            core = {d for f in chosen if f.core for d in f.needs}
+            extra = [d for d in data["already_present"] if d not in core]
+            n_core = len(data["already_present"]) - len(extra)
+            print("Already installed: " + ", ".join(
+                extra + ([f"the {n_core} core packages"] if n_core else [])))
         for st in plan.steps:
             tag = {"pip": "install", "local": "build", "venv": "install apart",
-                   "manual": "by hand", "skip": "skipped"}[st.kind]
+                   "cargo": "build", "manual": "by hand", "skip": "skipped"}[st.kind]
             print(f"- [{tag}] {st.title}")
             for cmd in st.to_dict().get("commands", []):
                 print(f"      {cmd}")

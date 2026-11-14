@@ -25,6 +25,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,21 @@ INSTALL_OFFERS = {
 
 
 def find_ngspice() -> Optional[str]:
+    """The ngspice console program: the file EDA_AGENT_NGSPICE names, else
+    PATH, else Scoop's shims, else the folders the Windows release is
+    usually unzipped to (``C:\\Spice64``, ``Program Files\\Spice64``)."""
+    import os
+    named = os.environ.get("EDA_AGENT_NGSPICE", "").strip().strip('"')
+    if named:
+        p = Path(named)
+        if p.is_dir():          # the folder, or its bin folder, was named
+            for base in (p / "bin", p):
+                for name in NGSPICE_NAMES:
+                    for exe in (base / f"{name}.exe", base / name):
+                        if exe.is_file():
+                            return str(exe)
+        elif p.is_file():
+            return str(p)
     for name in NGSPICE_NAMES:
         path = shutil.which(name)
         if path:
@@ -65,6 +81,15 @@ def find_ngspice() -> Optional[str]:
         exe = shims / f"{name}.exe"
         if exe.exists():
             return str(exe)
+    if sys.platform == "win32":
+        roots = [Path(os.environ.get("SystemDrive", "C:") + "\\")]
+        roots += [Path(os.environ[k]) for k in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA")
+                  if os.environ.get(k)]
+        for root in roots:
+            for name in NGSPICE_NAMES:
+                exe = root / "Spice64" / "bin" / f"{name}.exe"
+                if exe.is_file():
+                    return str(exe)
     return None
 
 

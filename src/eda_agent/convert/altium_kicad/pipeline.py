@@ -25,8 +25,17 @@ _INSTALL_GLOB = r"C:\Program Files\KiCad\*\bin\kicad-cli.exe"
 
 
 def find_kicad_cli(explicit: str = "") -> str:
+    """kicad-cli: ``explicit``, else the file EDA_AGENT_KICAD_CLI names,
+    else PATH, else the newest KiCad under Program Files."""
     if explicit and os.path.isfile(explicit):
         return explicit
+    named = os.environ.get("EDA_AGENT_KICAD_CLI", "").strip().strip('"')
+    if named and os.path.isfile(named):
+        return named
+    import shutil
+    on_path = shutil.which("kicad-cli")
+    if on_path:
+        return on_path
 
     def version(path: str) -> tuple:
         m = re.search(r"KiCad\\([\d.]+)\\", path)
