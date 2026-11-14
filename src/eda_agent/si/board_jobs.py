@@ -303,6 +303,12 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
     return where
 
 
+#: The unit intervals an item's sweep covers when its eye is wanted, and
+#: the most points it is given for that.
+EYE_WINDOW_UI = 8.0
+MAX_EYE_POINTS = 4000
+
+
 def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points: int
                ) -> dict[str, Any]:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
@@ -314,6 +320,11 @@ def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points:
         s["data_rate_gbps"] = spec["data_rate_gbps"]
     s.setdefault("f_max_ghz", f_max)
     s.setdefault("points", points)
+    if item["settings"].get("eye", spec.get("eye", False)) and s.get("data_rate_gbps"):
+        # an eye needs the sweep's step to cover several bits: a slow net
+        # on a wide sweep gets more points, not a refused eye
+        need = math.ceil(EYE_WINDOW_UI * float(s["f_max_ghz"]) / float(s["data_rate_gbps"]))
+        s["points"] = min(max(int(s["points"]), need), MAX_EYE_POINTS)
     s["rules"] = False
     s["pair" if item["kind"] == "pair" else "net"] = item["name"]
     return s

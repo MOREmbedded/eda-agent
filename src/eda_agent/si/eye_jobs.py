@@ -105,7 +105,7 @@ def terminations(spec: dict[str, Any], st: dict[str, Any], z0: float, ports: int
                  ) -> dict[str, Any]:
     """Source and load of the eye: the reference impedance on both ends
     unless the spec names resistances, capacitances or IBIS buffers. An
-    IBIS driver sets the output resistance (V-I slope at 0 V), C_comp and,
+    IBIS driver sets the output resistance (its V-I tables near the rail), C_comp and,
     unless rise_ps or amplitude_mv is given, the edge and the swing: rail
     to rail open circuit on each driven side, which is an amplitude of
     half the supply for a line (its source swings +/- amplitude) and the
@@ -128,13 +128,17 @@ def terminations(spec: dict[str, Any], st: dict[str, Any], z0: float, ports: int
         notes.append(f"driver {model.name} from {Path(tx_path).name}: "
                      f"{rs:.1f} ohm, C_comp {cs * 1e12:.2f} pF, edge {st['rise'] * 1e12:.0f} ps"
                      + (f", {model.voltage:g} V supply" if model.voltage else "")
-                     + " (linearised at the typical corner)")
+                     + " (linearised at the typical corner)"
+                     + (f"; {d['note']}" if d.get("note") else ""))
     if rx_path:
         model = ibis.pick(ibis.read(rx_path), str(spec.get("rx_model") or ""))
-        cl = ibis.receiver(model).get("c_comp_f", 0.0)
-        rl = None
+        r = ibis.receiver(model)
+        cl = r.get("c_comp_f", 0.0)
+        rl = r.get("r_term_ohms")
         notes.append(f"receiver {model.name} from {Path(rx_path).name}: C_comp "
-                     f"{cl * 1e12:.2f} pF, high impedance unless rx_r_ohms is given")
+                     f"{cl * 1e12:.2f} pF, "
+                     + (f"on-die termination {rl:.1f} ohm (from its clamp tables)" if rl
+                        else "high impedance unless rx_r_ohms is given"))
     if spec.get("tx_r_ohms") not in (None, ""):
         rs = _num(spec, "tx_r_ohms", z0)
     if spec.get("tx_c_pf") not in (None, ""):

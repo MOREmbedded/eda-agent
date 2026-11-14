@@ -106,9 +106,32 @@ class Pulse:
         return (a + b) // 2
 
 
+#: A pulse response needs the sweep to cover this many unit intervals.
+MIN_WINDOW_UI = 3.0
+#: ... and the step to move less than this part of its final value over the
+#: last 15 % of that time.
+UNSETTLED = 0.05
+
+
 def pulse_response(f: np.ndarray, h: np.ndarray, ui: float, rise: float,
                    spui: int = 64) -> Pulse:
     t, step = step_response(f, h, rise)
+    # the sweep's step df sets how long a time the response covers (1/df).
+    # A bit that does not fit, or a response still ringing at the end of
+    # that time, wraps round onto itself: the eye would be an artefact.
+    window = t[-1] - t[0]
+    if window < MIN_WINDOW_UI * ui:
+        raise ValueError(
+            f"the channel's frequency step ({f[0] / 1e6:.4g} MHz) covers {window * 1e9:.3g} ns, "
+            f"and one bit lasts {ui * 1e9:.3g} ns: sweep the channel with a step of "
+            f"{1e-6 / (MIN_WINDOW_UI * ui):.3g} MHz or finer (more points, or a lower f_max)")
+    tail = step[t > t[-1] - 0.15 * window]
+    final = abs(float(tail[-1]))
+    if final > 0 and float(tail.max() - tail.min()) > UNSETTLED * final:
+        raise ValueError(
+            f"the channel is still ringing after {window * 1e9:.3g} ns, all the time its "
+            f"frequency step ({f[0] / 1e6:.4g} MHz) covers: sweep it with a finer step (more "
+            "points, or a lower f_max), or terminate it")
     dt = ui / spui
     tt = np.arange(t[0], t[-1] - ui, dt)
     s = np.interp(tt, t, step)

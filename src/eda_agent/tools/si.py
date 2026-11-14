@@ -551,9 +551,13 @@ def _ibis_models_tool(mcp) -> None:
                 out = []
                 for m in ibis.read(ibis_file).values():
                     row = m.to_dict()
-                    d = ibis.driver(m)
-                    if len(d) > 1 and (m.pulldown or m.pullup or m.ramp_r or m.ramp_f):
-                        row["driver"] = d
+                    if m.model_type.lower() not in ibis.NOT_DRIVERS:
+                        d = ibis.driver(m)
+                        if len(d) > 1 and (m.pulldown or m.pullup or m.ramp_r or m.ramp_f):
+                            row["driver"] = d
+                    r = ibis.receiver(m)
+                    if "r_term_ohms" in r:
+                        row["termination_ohms"] = round(r["r_term_ohms"], 2)
                     out.append(row)
                 return out
 
