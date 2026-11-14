@@ -38,7 +38,8 @@ from .net_jobs import NET_SPEC, run_net_channel
 
 #: Keys a target may carry: the net job's limits and models, and the eye's.
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
-_EYE_KEYS = {"tx_ffe", "ctle_db", "ctle_peak_ghz", "dfe_taps", "dfe_max", "overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
+_EYE_KEYS = {"ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "eye_at_ber_min_mv",
+             "eye_at_ber_min_ui", "tx_ffe", "ctle_db", "ctle_peak_ghz", "dfe_taps", "dfe_max", "overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
              "rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
 _TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",
@@ -447,7 +448,7 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
             ts = sub / res["files"]["touchstone"]
             er = eye_jobs.run_convolution(es, ts, sub / "eye")
             em = {k: v["value"] for k, v in er["metrics"].items()}
-            out["metrics"].update({f"eye_{k}" if not k.startswith(("eye", "worst")) else k: v
+            out["metrics"].update({f"eye_{k}" if not k.startswith(("eye", "worst", "bit_error")) else k: v
                                    for k, v in em.items() if k != "insertion_loss_db_at_nyquist"})
             if "plot" in er.get("files", {}):
                 out["files"]["eye"] = f"{out['folder']}/eye/{er['files']['plot']}"
@@ -463,7 +464,8 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
                 need.append(f"{float(lim_mv):g} mV")
             if lim_ui is not None:
                 need.append(f"{float(lim_ui):g} UI")
-            out["verdicts"] += [v for v in er["verdicts"] if v["check"] in EDGE_CHECKS]
+            out["verdicts"] += [v for v in er["verdicts"]
+                                if v["check"] in EDGE_CHECKS + ("eye at the bit error rate",)]
             out["verdicts"].append({"check": "eye", "pass": bool(ok),
                                     "detail": f"{h:.1f} mV by {w:.3f} UI{noisy}"
                                               + (f", {' and '.join(need)} needed" if need
