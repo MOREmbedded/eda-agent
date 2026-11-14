@@ -16,7 +16,12 @@ How each kind is installed:
   manual step with the reason.
 - **venv**: a separate virtual environment under the engines folder, so
   copyleft packages never load into this process.
-- **program**: manual, with the steps from the catalogue.
+- **program**: manual, with the steps from the catalogue, except a
+  program the catalogue says is built with Rust (pcb-toolkit): with
+  ``cargo`` on ``PATH`` it is built into ``<engines folder>/<id>``,
+  where eda-agent finds it. It stays a program of its own, never linked.
+- **core**: the packages every installation has are checked too, so
+  ``--all`` repairs an environment that lost one.
 """
 from __future__ import annotations
 
@@ -36,7 +41,7 @@ from .registry import all_features, get_dependency, get_feature
 
 @dataclass
 class Step:
-    kind: str                      # pip | local | venv | manual | skip
+    kind: str                      # pip | local | venv | cargo | manual | skip
     deps: list[str]
     title: str
     argv: list[list[str]] = field(default_factory=list)   # commands, in order
@@ -45,7 +50,7 @@ class Step:
 
     @property
     def automatic(self) -> bool:
-        return self.kind in ("pip", "local", "venv")
+        return self.kind in ("pip", "local", "venv", "cargo")
 
     def to_dict(self) -> dict:
         out = {"kind": self.kind, "deps": self.deps, "title": self.title}
@@ -94,9 +99,17 @@ def repo_root() -> Optional[Path]:
 def select(names: Iterable[str] = (), everything: bool = False,
            include_dev: bool = False) -> list[Feature]:
     """Features by id, or every installable one with ``everything``."""
-    names = [n for n in names if n]
+    # A pip extra's name (``si``, ``web``) stands for its feature, so the
+    # names pyproject.toml uses work here too.
+    by_extra = {f.extra: f.id for f in all_features(True) if f.extra}
+    known = {f.id for f in all_features(True)}
+    names = list(dict.fromkeys(
+        (n if n in known else by_extra.get(n, n)) for n in names if n))
     if everything:
-        chosen = [f for f in all_features(include_dev) if not f.core]
+        # The core features come first: when the environment lost one of
+        # their packages, --all puts it back.
+        feats = all_features(include_dev)
+        chosen = [f for f in feats if f.core] + [f for f in feats if not f.core]
         return chosen + [get_feature(n) for n in names
                          if all(n != f.id for f in chosen)]
     return [get_feature(n) for n in names]
@@ -106,7 +119,8 @@ def _wanted(f: Feature, status: dict[str, detect.DepStatus]) -> list[str]:
     """The dependencies a feature still needs installed: its needs, one of
     each group of alternatives (the first one that installs on its own),
     and its additions."""
-    want = [d for d in f.needs]
+    # A need only other platforms have (pywin32 off Windows) is no need.
+    want = [d for d in f.needs if detect.applies_here(get_dependency(d))]
     for group in f.any_of:
         if any(status[d].state == detect.PRESENT for d in group):
             continue
@@ -133,6 +147,10 @@ def plan(features: list[Feature], deep: bool = False,
                 deps.append(get_dependency(d))
     already = [d.id for d in deps if status[d.id].state == detect.PRESENT]
     todo = [d for d in deps if status[d.id].state != detect.PRESENT]
+    # The features this plan is about: the ones asked for by name, and
+    # the built-in ones only when they have something to repair.
+    touched = {owner[d.id].id for d in todo}
+    feature_ids = [f.id for f in features if not f.core or f.id in touched]
     steps: list[Step] = []
 
     # One pip call per feature: pip resolves a feature's packages
@@ -183,11 +201,18 @@ def plan(features: list[Feature], deep: bool = False,
             steps.append(Step("venv", [d.id], f"{d.title} in its own environment",
                               argv=cmds, size_mb=d.size_mb,
                               text=f"Kept apart from eda-agent ({d.license})."))
+        elif d.kind == PROGRAM and d.cargo and shutil.which("cargo"):
+            target = detect.engines_dir() / d.id
+            steps.append(Step("cargo", [d.id], f"{d.title}, built with Rust",
+                              argv=[["cargo", "install", "--locked", "--root",
+                                     str(target), *d.cargo]],
+                              size_mb=d.size_mb,
+                              text=f"Into {target}; a program of its own ({d.license})."))
         elif d.kind == PROGRAM:
             steps.append(Step("manual", [d.id], d.title,
                               text=(d.manual or f"Install {d.title}.")
                               + (f" Download: {d.url}" if d.url else "")))
-    return Plan([f.id for f in features], steps, already)
+    return Plan(feature_ids, steps, already)
 
 
 @dataclass

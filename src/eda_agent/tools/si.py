@@ -316,7 +316,8 @@ def _register_si_net_tools(mcp) -> None:
         channel's S-parameters (Touchstone), TDR, delay, insertion and
         return loss at Nyquist, and for a pair mode conversion and skew;
         finds the other nets routed beside it and their near-end and
-        far-end crosstalk; checks them against limits; and works out the Altium rules (width,
+        far-end crosstalk, and the places where the route crosses a split
+        or a gap in its reference plane; checks them against limits; and works out the Altium rules (width,
         pair gap, uncoupled length, length from the loss budget) that hold
         the net to its targets.
 
@@ -333,7 +334,9 @@ def _register_si_net_tools(mcp) -> None:
                 rules (true); crosstalk from the copper beside the net:
                 xtalk (true), xtalk_max_pct (5, of the aggressors' swing),
                 xtalk_reach_mils, xtalk_quiet (name globs of nets that do
-                not switch). sim_engines lists every key.
+                not switch); gaps in the reference copper under the
+                route: return_path (true), return_gap_min_mils (8).
+                sim_engines lists every key.
             apply_rules: create the rules in Altium (pcb_create_design_rule).
                 Changes the board; only when the user asked for it.
             title: a name for the job list.
@@ -342,7 +345,8 @@ def _register_si_net_tools(mcp) -> None:
         Returns:
             ``metrics``, ``verdicts``, ``path`` (sections, vias, stubs),
             ``crosstalk`` (each aggressor: nets, layer, gap, shared length,
-            near and far end, where),
+            near and far end, where), ``return_path`` (each gap in the
+            reference copper under the route: layer, length, where),
             ``altium_steps`` (the rules), ``applied`` when written,
             ``snapshot`` with ``stale``, ``job`` and ``folder``.
         """
@@ -372,8 +376,9 @@ def _register_si_net_tools(mcp) -> None:
                 "files": res.get("files", {}), "notes": res.get("notes", []),
                 "altium_steps": res.get("altium_steps", []),
                 "path": (res.get("figures") or {}).get("path")}
-            if "crosstalk" in (res.get("figures") or {}):
-                reply["crosstalk"] = res["figures"]["crosstalk"]
+            for key in ("crosstalk", "return_path"):
+                if key in (res.get("figures") or {}):
+                    reply[key] = res["figures"][key]
             if out.get("errors"):
                 reply["errors"] = out["errors"]
             if apply_rules and reply["altium_steps"]:
@@ -680,7 +685,8 @@ def _register_si_board_tools(mcp) -> None:
         an impedance fault where the TDR sees it (walked along the routed
         path at each section's own delay), a stub where it leaves the path,
         a via stub at its via, crosstalk at the stretch beside the worst
-        neighbour, other faults at the driving pin. Writes
+        neighbour, each gap in the reference plane where the route crosses
+        it, other faults at the driving pin. Writes
         report.html (self-contained), findings.json and summary.csv.
 
         Args:
@@ -702,7 +708,7 @@ def _register_si_board_tools(mcp) -> None:
                 temperature_c or thermal_npz (a thermal analysis'
                 result.npz: hot copper loses more), tand, foil, mask_mils,
                 etch_mils, xtalk (true), xtalk_max_pct, xtalk_reach_mils,
-                xtalk_quiet.
+                xtalk_quiet, return_path (true), return_gap_min_mils.
             mark: "none"; "highlight" highlights the failing nets in
                 Altium; "text" also writes each error's id and check as
                 text on ``marker_layer`` at its place (changes the board;

@@ -511,6 +511,7 @@ def test_tool_runs_from_files_and_applies_rules(tmp_path, monkeypatch):
     assert out["snapshot"]["id"] == snap_reply["id"]
     assert [(a["aggressor"], a["gap_mils"], a["length_mils"]) for a in out["crosstalk"]] \
         == [("AGG", 4.0, 400.0)]
+    assert out["return_path"] == []        # no plane shapes in this board: taken as solid
     assert [c for c, _ in sent] == ["pcb.create_design_rule"] * len(out["altium_steps"])
     assert sent and all("name" in p for _, p in sent)
     # a snapshot of a board saved since: results come back, rules are not written
