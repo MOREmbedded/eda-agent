@@ -130,6 +130,7 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
   - The level a step settles to is worked out from the S-matrix at 0 Hz (each entry read back from its first two points as a + b f^2) and the terminations: 1 between matched ends and 2 into an open end within 1 %, also behind a 215 ohm driver whose transfer has its corner near the frequency step. A pure delay then stays flat to 1 % where the first point taken as DC slopes.
   - The series resistor named for a 15 ohm driver into an open end and a 10 % limit is 2 Z / 1.1 - Z - 15 = 26 ohm within 3; with it in the edge passes, and 1.5 ohm less it does not.
 - **Eyes:**
+  - The pulse settles to the DC level worked out from the S-matrix at 0 Hz. A matched lossless line then gives the full swing with under 4 mV of ISI at 800 mV (the first point taken as DC left more than twice that, as offsets of all the bits adding up), and a 150 ohm driver into an open end runs where it used to be refused as still ringing.
   - A flat channel's eye and worst-case eye are the full swing.
   - On a lossy line, the worst case lies below the PRBS eye.
   - The worst case is reached by the pattern that peak distortion analysis names.

@@ -165,8 +165,11 @@ UNSETTLED = 0.05
 
 
 def pulse_response(f: np.ndarray, h: np.ndarray, ui: float, rise: float,
-                   spui: int = 64) -> Pulse:
-    t, step = step_response(f, h, rise)
+                   spui: int = 64, dc: Optional[float] = None) -> Pulse:
+    """The response to one bit: a step and the same step one interval
+    later, taken off. ``dc`` is the transfer at 0 Hz, the level the step
+    settles to (default the real part of the first point)."""
+    t, step = step_response(f, h, rise, dc=dc)
     # the sweep's step df sets how long a time the response covers (1/df).
     # A bit that does not fit, or a response still ringing at the end of
     # that time, wraps round onto itself: the eye would be an artefact.

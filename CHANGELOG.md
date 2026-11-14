@@ -408,6 +408,14 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Signal integrity: the eye settles to the right level.** The pulse
+  response took the first frequency point as DC. The step then sloped
+  over its window, every bit left a small offset behind, and the offsets
+  added up as ISI that was not there (8 mV instead of 3 mV on a matched
+  4 inch line at 800 mV); behind a weak driver into an open end the slope
+  was steep enough for the eye to be refused as "still ringing". The level
+  is now worked out from the S-matrix read back to 0 Hz and the
+  terminations. Eye heights rise slightly; worst-case eyes rise more.
 - **Signal integrity: dual striplines.** Two signal layers between a pair
   of planes are now modelled as they are built. A trace there is referenced
   to the planes on either side, past the other signal layer (which used to

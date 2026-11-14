@@ -204,13 +204,20 @@ def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
                  "by that much, whenever it arrives: the worst case")
 
 
+def dc_level(s: np.ndarray, z0: float, term: dict[str, Any]) -> float:
+    """The channel's transfer at 0 Hz with the terminations of ``term``:
+    the level a step settles to. From the S-matrix read back to 0 Hz,
+    which is smooth there where the transfer itself may not be."""
+    dc, _ = channel_transfer(np.array([0.0]), _eye.dc_matrix(s)[None].astype(complex), z0, term)
+    return float(dc[0].real)
+
+
 def _step(f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any], rise: float
           ) -> tuple[np.ndarray, np.ndarray]:
     """The step at the receiver with the terminations of ``term``, its DC
     level worked out from the S-matrix at 0 Hz."""
     h, _ = channel_transfer(f, s, z0, term)
-    dc, _ = channel_transfer(np.array([0.0]), _eye.dc_matrix(s)[None].astype(complex), z0, term)
-    return _eye.step_response(f, h, rise, dc=float(dc[0].real))
+    return _eye.step_response(f, h, rise, dc=dc_level(s, z0, term))
 
 
 #: The most a series resistor is tried at, in reference impedances.
@@ -293,7 +300,8 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     f, s, model = uniform(f, s, _num(spec, "fit_tol", 2e-3))
     h, pair = channel_transfer(f, s, z0, term)
     say("pulse response", 0.2)
-    pulse = _eye.pulse_response(f, h, st["ui"], st["rise"], st["spui"])
+    pulse = _eye.pulse_response(f, h, st["ui"], st["rise"], st["spui"],
+                                dc=dc_level(s, z0, term))
     say("PRBS eye", 0.5)
     se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"])
     wc = _eye.worst_case_eye(pulse, st["amp"])
@@ -382,7 +390,8 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
     f, s, _ = uniform(f0, s0, _num(spec, "fit_tol", 2e-3))
     s_model = model.eval(f)
     h_model, pair = channel_transfer(f, s_model, z0, term)
-    pulse = _eye.pulse_response(f, h_model, st["ui"], st["rise"], st["spui"])
+    pulse = _eye.pulse_response(f, h_model, st["ui"], st["rise"], st["spui"],
+                                dc=dc_level(s_model, z0, term))
     bits = np.tile(_eye.prbs(st["order"]), st["repeats"] + 1)
     over = int(_num(spec, "spice_oversample", 4))
     say("SPICE transient", 0.3)
