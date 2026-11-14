@@ -91,6 +91,9 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 | `eye_height_mv`, `eye_width_ps`, `eye_width_ui` | both | The eye of the pattern |
 | `worst_case_eye_height_mv`, `worst_case_eye_width_ps` | `eda-agent` | Peak distortion analysis |
 | `main_cursor_mv`, `isi_mv` | `eda-agent` | The main cursor and the sum of the others |
+| `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
+| `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
+| `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
 | `spice_vs_convolution_rms_mv` | `spice` | The two routes' difference |
 | `macromodel_poles`, `macromodel_rms_error` | `spice` | The fit |
@@ -98,6 +101,7 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 **Checks:**
 - eye open;
 - worst case open;
+- overshoot, ringback and edge reversal, each when its limit is given (`overshoot_max_pct`, `ringback_max_pct`, `edge_reversal_max_pct`, in percent of the settled level);
 - macromodel passive;
 - macromodel fit within twice `fit_tol`;
 - SPICE agrees with convolution.
@@ -119,6 +123,10 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 
 - **PRBS:** each generator has its full period (2^n - 1) and no shorter one, with one more one than zeros.
 - **Edge:** the step of a flat channel is the ramp, with the 10-90 % time asked for within 3 %.
+- **The single edge:**
+  - A damped ringing step gives back its first peak as overshoot, the dip after it as ringback and its decay as the settling time; a shelf that dips 15 % on the way up reads 15 % of reversal.
+  - A 15 ohm driver into an open end of a 50 ohm line overshoots by 2 x 50 / 65 - 1 = 54 % (within 4 points on a lossy line) and rings back as the source reflection says; a matched or a weak driver does not overshoot.
+  - The step takes its DC value from the first two points (a + b f^2), which leaves a pure delay flat to 1 % where the first point alone slopes.
 - **Eyes:**
   - A flat channel's eye and worst-case eye are the full swing.
   - On a lossy line, the worst case lies below the PRBS eye.
@@ -139,5 +147,6 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
 - The convolution needs the channel on a uniform grid from df. Another grid is resampled through a fitted model, and the job says so.
 - The channel's frequency step sets the time its response covers (1/df). The eye is refused, with the step it needs, when that time is under three bits or the response is still ringing at its end: the response would wrap round onto itself. A board check gives a slow net with an eye more points so its sweep covers eight bits.
-- The linear IBIS buffer has no clamp diodes, so overshoot past the rails is not clipped.
+- The linear IBIS buffer has no clamp diodes, so overshoot past the rails is not clipped: the overshoot figure is the unclamped one, the worst case.
+- The edge figures are those of one isolated rising edge with the terminations given; a falling edge is the same in this linear model.
 - A channel with very long delay needs many poles (about one per 50 ps of delay per 10 GHz of band). Fitting time grows with them.

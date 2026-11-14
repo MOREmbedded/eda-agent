@@ -90,6 +90,15 @@ maturity classification for every tool.
   values and are the same circuit in both routes. New tools
   `si_channel_eye`, `si_spice_model` and `si_ibis_models`. See
   [Eyes and SPICE models](docs/SI_TIME.md).
+- **Signal integrity: the edge at the receiver.** The eye job and the
+  board check now also give what one edge does where it arrives:
+  overshoot, ringback, the deepest fall on the way up (a reflection inside
+  the edge, which a clock input can see twice) and the settling time, with
+  the driver and receiver given (resistances, capacitances or IBIS).
+  `overshoot_max_pct`, `ringback_max_pct` and `edge_reversal_max_pct` hold
+  them to limits; the board check places a failure at the receiving pin.
+  The step takes its DC value from the first two frequency points, which
+  removes a slope the response had over its window.
 - **Signal integrity: routed nets and pairs.** A routed net or differential
   pair is modelled from pin to pin: its path is found in the board's copper
   (tees, stubs and layer changes included), every trace section uses the RLGC
