@@ -460,11 +460,10 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         return out, taps, fed
 
     if eq["auto_ctle"] is not None:
-        # every whole dB; between equal eyes the least boost
+        # every whole dB, from none up: the first of equal eyes is the least boost
         tried = [(b, equalised(float(b))) for b in range(eq["auto_ctle"] + 1)]
         boost, (pulse, ffe_taps, dfe_taps) = max(
-            tried, key=lambda r: (round(_eye.worst_case_eye(r[1][0], st["amp"])["margin"], 9),
-                                  -r[0]))
+            tried, key=lambda r: round(_eye.worst_case_eye(r[1][0], st["amp"])["margin"], 9))
         eq["ctle_db"] = float(boost)
     else:
         pulse, ffe_taps, dfe_taps = equalised(eq["ctle_db"])

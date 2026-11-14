@@ -899,6 +899,13 @@ def test_the_eye_job_chooses_its_equaliser(tmp_path):
         "(chosen for the largest worst-case eye)") for n in res["notes"])
     low = run(ctle_db="auto", ctle_max_db=4)[0]
     assert low["ctle_db"] == 4 and low["worst_case_eye_height_mv"] == each[4]
+    # with a DFE the taps are worked out for what it leaves: the post-cursor tap is not
+    # spent, and the eye beats the taps chosen without it
+    with_dfe, res = run(tx_ffe="auto", dfe_taps=4)
+    note = [n for n in res["notes"] if n.startswith("transmitter FFE taps")][0]
+    assert note.split("taps ")[1].split(" (")[0].endswith(", +0.000")
+    assert with_dfe["worst_case_eye_height_mv"] > \
+        run(tx_ffe=taps, dfe_taps=4)[0]["worst_case_eye_height_mv"] + 5
     # both, with a DFE: no worse than either alone
     both = run(tx_ffe="auto", ctle_db="auto", dfe_taps=4)[0]
     assert both["worst_case_eye_height_mv"] >= max(
