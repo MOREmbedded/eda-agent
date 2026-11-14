@@ -511,6 +511,15 @@ def validate_error_response(resp: dict, request_id: str,
         assert resp["error"]["code"] == expected_code
 
 
+@pytest.fixture(autouse=True)
+def _no_live_altium_titles(monkeypatch):
+    """The document tools read Altium's window title for unsaved edits
+    (ui/title_state.py). A test never sees the real windows of the machine
+    it runs on, or a developer's open board could change its answer."""
+    from eda_agent.ui import title_state
+    monkeypatch.setattr(title_state, "_titles", lambda: [])
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _stop_dashboard_threads():
     """Stop the dashboard threads a test module started, when it ends.

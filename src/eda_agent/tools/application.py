@@ -891,6 +891,16 @@ def register_application_tools(mcp):
         params = {"file_path": file_path}
         if discard_changes:
             params["discard"] = "true"
+        else:
+            # Altium's modified flag misses scripted board edits; its title
+            # does not. Closing such a board would raise the modal save
+            # prompt, so it is refused here, as a modified read would be.
+            from ..ui.title_state import front_document_dirty
+            if front_document_dirty(file_path):
+                return {"closed": False, "file_path": file_path,
+                        "error": "the document has unsaved edits (Altium's title shows "
+                                 "'*'): save it first, or pass discard_changes=true to "
+                                 "drop them"}
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
@@ -1591,6 +1601,9 @@ def register_application_tools(mcp):
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_open_documents")
+        if isinstance(result, list):
+            from ..ui.title_state import mark_modified
+            result = [mark_modified(d) for d in result]
         return result
 
     @mcp.tool()
@@ -1638,7 +1651,8 @@ def register_application_tools(mcp):
         result = await bridge.send_command_async(
             "application.get_active_document",
             {} if session else {"front": "true"})
-        return result
+        from ..ui.title_state import mark_modified
+        return mark_modified(result)
 
     @mcp.tool()
     async def app_set_active_document(file_path: str) -> dict[str, Any]:
