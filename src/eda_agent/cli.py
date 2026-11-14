@@ -221,6 +221,8 @@ def cmd_features(deep: bool = False, as_json: bool = False,
                 ver = d.get("version") or ""
                 where = d.get("state")
                 print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
+                if d.get("detail") and d.get("state") != "present":
+                    print(f"          {d['detail']}")
     print("\n[x] ready  [~] partly  [ ] missing  [-] switched off  [/] not on this machine")
     missing = [f["id"] for f in rep["features"] if f["state"] == "missing" and not f["dev"]]
     if missing:
