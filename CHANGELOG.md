@@ -34,6 +34,11 @@ maturity classification for every tool.
   copper temperature, uniform or from a thermal analysis' map. Jobs record
   the snapshot and jobs their inputs came from; the Simulation page shows
   that graph and marks results stale once the board is saved.
+- **Signal integrity: delay matching.** A board-check target takes
+  `delay_match_ps`: its nets and pairs are held to the slowest of them
+  (a bus, a byte lane, a clock with its data). A net too far ahead is a
+  finding at its driving pin, with how far ahead it is and about how much
+  trace matches it.
 - **Signal integrity: the return path.** A net channel and the board check
   now look at the reference copper under each route (split planes, pours
   and regions, with their holes) and report every place where it stops:

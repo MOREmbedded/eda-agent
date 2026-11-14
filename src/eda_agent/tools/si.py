@@ -696,7 +696,9 @@ def _register_si_board_tools(mcp) -> None:
             targets: a list of {match: net or pair name glob, or class: an
                 Altium net class; kind: "pair" or "net"; data_rate_gbps,
                 z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
-                stub_margin, xtalk_max_pct (crosstalk from neighbours, 5),
+                stub_margin, delay_match_ps (each of the target's nets may
+                be this far ahead of the slowest of them),
+                xtalk_max_pct (crosstalk from neighbours, 5),
                 xtalk_swing_mv (the neighbours' swing: crosstalk then
                 closes the eye; default the eye's amplitude);
                 eye: true to add the eye, eye_min_mv,
