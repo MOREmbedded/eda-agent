@@ -468,6 +468,41 @@ def jitter_weights(dt: float, rj_rms: float, dj_pp: float, most: int) -> np.ndar
     return w
 
 
+def _level_density(main: float, cur: np.ndarray, sigma: float, span: float) -> np.ndarray:
+    """Probability of each voltage bin, over -span..span, for the level
+    ``main`` plus each of ``cur`` with a random sign plus a Gaussian of
+    ``sigma``. Right from the lower tail to past the middle; the upper
+    part, which no contour is read from, falls under the rounding and is
+    left out."""
+    dv = 2 * span / STAT_BINS
+    omega = 2 * np.pi * np.fft.rfftfreq(STAT_BINS, dv)
+    v = (np.arange(STAT_BINS) - STAT_BINS // 2) * dv
+    small = STAT_SERIES_BINS * dv
+    big = cur[np.abs(cur) >= small]
+    tiny = cur[(np.abs(cur) < small) & (cur != 0)]
+    # The density is transformed tilted by exp(-theta (x - main)), which
+    # lifts its lower tail by STAT_TILT against the body, and tilted back
+    # afterwards: the transform's rounding, level with the body, then
+    # falls away along the tail the contour is read from.
+    theta = np.log(STAT_TILT) / (float(np.sum(np.abs(cur))) + 7.0 * sigma)
+    w_ = omega - 1j * theta
+    phi = np.exp(-0.5 * (w_ * sigma) ** 2 + _small_cursors(tiny, w_))
+    for j in range(0, len(big), 64):
+        phi = phi * np.prod(np.cos(big[j: j + 64, None] * w_[None, :]), axis=0)
+    # at w = 0 it is the tilted density's whole weight: taken out for the
+    # transform, so that its rounding is known, and put back after
+    weight = float(phi[0].real)
+    # 0 V sits mid-grid
+    phi = phi / weight * np.exp(-1j * omega * (main + span))
+    tilted = np.fft.irfft(phi, STAT_BINS)
+    # the transform's rounding, about level across the grid
+    floor = 20 * np.finfo(float).eps * np.log2(STAT_BINS) * np.sqrt(
+        2 * float(np.sum(np.abs(phi) ** 2)) / STAT_BINS)
+    tilted[tilted < floor] = 0.0
+    with np.errstate(over="ignore"):
+        return tilted * weight * np.exp(np.clip(theta * (v - main), None, 60.0))
+
+
 def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rms: float = 0.0,
                     rj_rms: float = 0.0, dj_pp: float = 0.0) -> dict[str, Any]:
     """The eye at a bit error rate, from the pulse response.
@@ -504,34 +539,9 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     omega = 2 * np.pi * np.fft.rfftfreq(STAT_BINS, dv)
     v = (np.arange(STAT_BINS) - STAT_BINS // 2) * dv
     sigma = max(noise_rms, STAT_MIN_SIGMA_BINS * dv)
-    small = STAT_SERIES_BINS * dv
     pdfs = np.empty((len(rows), STAT_BINS))
     for i, (main, cur) in enumerate(rows):
-        big = cur[np.abs(cur) >= small]
-        tiny = cur[(np.abs(cur) < small) & (cur != 0)]
-        # The density is transformed tilted by exp(-theta (x - main)), which
-        # lifts its lower tail by STAT_TILT against the body, and tilted back
-        # afterwards: the transform's rounding, level with the body, then
-        # falls away along the tail the contour is read from.
-        theta = np.log(STAT_TILT) / (float(np.sum(np.abs(cur))) + 7.0 * sigma)
-        w_ = omega - 1j * theta
-        # the small cursors together, less the same at w = 0 (cos(-j theta a) = cosh)
-        log_phi = _small_cursors(tiny, w_) - _small_cursors(tiny, np.array([-1j * theta]))[0]
-        phi = np.exp(-0.5 * (w_ * sigma) ** 2 - 0.5 * (theta * sigma) ** 2 + log_phi)
-        for j in range(0, len(big), 64):
-            a = big[j: j + 64, None]
-            phi = phi * np.prod(np.cos(a * w_[None, :]) / np.cosh(theta * a), axis=0)
-        level = float(np.prod(np.cosh(theta * big))) * float(np.exp(0.5 * (theta * sigma) ** 2)) \
-            * float(np.exp(_small_cursors(tiny, np.array([-1j * theta]))[0].real))
-        # 0 V sits mid-grid
-        phi = phi * np.exp(-1j * omega * (main + span))
-        tilted = np.fft.irfft(phi, STAT_BINS)
-        # the transform's rounding, about level across the grid
-        floor = 20 * np.finfo(float).eps * np.log2(STAT_BINS) * np.sqrt(
-            2 * float(np.sum(np.abs(phi) ** 2)) / STAT_BINS)
-        tilted[tilted < floor] = 0.0
-        with np.errstate(over="ignore"):
-            pdfs[i] = tilted * level * np.exp(np.clip(theta * (v - main), None, 60.0))
+        pdfs[i] = _level_density(main, cur, sigma, span)
     if reach:
         pdfs = sum(w[j] * pdfs[j: j + spui] for j in range(len(w)))
     cdf = np.cumsum(pdfs, axis=1)

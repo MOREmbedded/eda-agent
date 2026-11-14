@@ -1014,6 +1014,24 @@ def test_small_cursors_go_through_the_series_and_come_out_the_same(monkeypatch):
     both = eye._small_cursors(np.array([0.3, -0.5, 1.0]), x)
     assert np.exp(both) == pytest.approx(np.cos(0.3 * x) * np.cos(0.5 * x) * np.cos(x), rel=1e-10)
     assert eye._small_cursors(np.array([]), x) == pytest.approx(0)
+    # one level's density: cursors of 0.24 and of 0.6 of a step lie either side of where
+    # the series ends; it is the same with every cursor multiplied out
+    span = 0.5
+    dv = 2 * span / eye.STAT_BINS
+    main = 9830 * dv                                     # on a bin, about 0.3
+    cur = np.array([0.24 * dv] * 60 + [0.6 * dv] * 40 + [0.05, -0.02, 0.0])
+    pdf = eye._level_density(main, cur, 3 * dv, span)
+    v = (np.arange(eye.STAT_BINS) - eye.STAT_BINS // 2) * dv
+    # the lower half is half the probability (the upper part is not kept: no contour is
+    # read from it), and its spread is that of the sum
+    k = eye.STAT_BINS // 2 + 9830
+    assert np.sum(pdf[:k]) + pdf[k] / 2 == pytest.approx(0.5, abs=1e-9)
+    assert 2 * np.sum(pdf[:k] * (v[:k] - main) ** 2) == pytest.approx(
+        np.sum(cur ** 2) + (3 * dv) ** 2, rel=1e-6)
+    with monkeypatch.context() as mp:
+        mp.setattr(eye, "STAT_SERIES_BINS", 0.0)
+        assert eye._level_density(main, cur, 3 * dv, span)[:k + 500] == pytest.approx(
+            pdf[:k + 500], abs=1e-12)
     # 2000 cursors of 15 millionths: each a fifth of a voltage step, together a Gaussian
     # of 0.4 x 15e-6 x sqrt(2000) = 0.27 mV beside the grid's own 2.8 steps
     base = _tri_pulse([1.0, 0.2])
