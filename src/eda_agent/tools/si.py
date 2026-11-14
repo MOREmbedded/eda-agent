@@ -315,7 +315,8 @@ def _register_si_net_tools(mcp) -> None:
         reference plane changes), and each stub off the path. Gives the
         channel's S-parameters (Touchstone), TDR, delay, insertion and
         return loss at Nyquist, and for a pair mode conversion and skew;
-        checks them against limits; and works out the Altium rules (width,
+        finds the other nets routed beside it and their near-end and
+        far-end crosstalk; checks them against limits; and works out the Altium rules (width,
         pair gap, uncoupled length, length from the loss budget) that hold
         the net to its targets.
 
@@ -329,7 +330,10 @@ def _register_si_net_tools(mcp) -> None:
                 f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
                 z_target, z_tol_pct (10), il_max_db, rl_min_db,
                 skew_max_ps, tand (0.02), foil, mask_mils, etch_mils,
-                rules (true). sim_engines lists every key.
+                rules (true); crosstalk from the copper beside the net:
+                xtalk (true), xtalk_max_pct (5, of the aggressors' swing),
+                xtalk_reach_mils, xtalk_quiet (name globs of nets that do
+                not switch). sim_engines lists every key.
             apply_rules: create the rules in Altium (pcb_create_design_rule).
                 Changes the board; only when the user asked for it.
             title: a name for the job list.
@@ -670,7 +674,8 @@ def _register_si_board_tools(mcp) -> None:
         optionally the eye. A failure becomes a finding placed where it is:
         an impedance fault where the TDR sees it (walked along the routed
         path at each section's own delay), a stub where it leaves the path,
-        a via stub at its via, other faults at the driving pin. Writes
+        a via stub at its via, crosstalk at the stretch beside the worst
+        neighbour, other faults at the driving pin. Writes
         report.html (self-contained), findings.json and summary.csv.
 
         Args:
@@ -680,7 +685,8 @@ def _register_si_board_tools(mcp) -> None:
             targets: a list of {match: net or pair name glob, or class: an
                 Altium net class; kind: "pair" or "net"; data_rate_gbps,
                 z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
-                stub_margin; eye: true to add the eye, eye_min_mv,
+                stub_margin, xtalk_max_pct (crosstalk from neighbours, 5);
+                eye: true to add the eye, eye_min_mv,
                 eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
                 is taken by the first target that matches it. Default: every
                 differential pair.
@@ -688,7 +694,8 @@ def _register_si_board_tools(mcp) -> None:
                 max_items (40), workers (4), f_max_ghz, points (200),
                 temperature_c or thermal_npz (a thermal analysis'
                 result.npz: hot copper loses more), tand, foil, mask_mils,
-                etch_mils.
+                etch_mils, xtalk (true), xtalk_max_pct, xtalk_reach_mils,
+                xtalk_quiet.
             mark: "none"; "highlight" highlights the failing nets in
                 Altium; "text" also writes each error's id and check as
                 text on ``marker_layer`` at its place (changes the board;

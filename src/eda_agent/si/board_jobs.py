@@ -60,6 +60,10 @@ BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "foil": ("text", False, "copper roughness preset"),
     "mask_mils": ("number", False, "solder mask on outer layers"),
     "etch_mils": ("number", False, "etch narrowing of the top face"),
+    "xtalk": ("bool", False, "crosstalk from the copper beside each item (default true)"),
+    "xtalk_max_pct": ("number", False, "allowed crosstalk where a target gives none (default 5)"),
+    "xtalk_reach_mils": ("number", False, "how far a neighbour still counts"),
+    "xtalk_quiet": ("list", False, "nets that do not switch, as name globs"),
 }
 
 #: Checks whose failure is a warning rather than an error.
@@ -277,6 +281,13 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
             if pt is not None:
                 where = {"at_mils": [round(pt[0], 2), round(pt[1], 2)], "layer": pt[2],
                          "where": f"{pt[3]:.0f} mil from {path.start} (TDR {z:.1f} ohm)"}
+    elif v["check"] == "crosstalk":
+        rows = res.get("figures", {}).get("crosstalk") or []
+        if rows:
+            a = rows[0]
+            where = {"at_mils": a["at_mils"], "layer": a["layer"],
+                     "where": f"runs {a['length_mils']:.0f} mil beside {a['aggressor']} at "
+                              f"{a['gap_mils']:.1f} mil"}
     elif v["check"] == "stub resonance":
         blocks = res.get("figures", {}).get("blocks", [])
         worst = min((b for b in blocks if b.get("stub_resonance_ghz")),
@@ -301,7 +312,8 @@ MAX_EYE_POINTS = 4000
 def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points: int
                ) -> dict[str, Any]:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
-    for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils"):
+    for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils",
+              "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet"):
         if k in spec and k not in s:
             s[k] = spec[k]
     if "data_rate_gbps" not in s and spec.get("data_rate_gbps") is not None:
@@ -480,7 +492,7 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 def _summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
     keys = ["insertion_loss_db", "return_loss_db", "line_loss_db", "delay_ps", "tdr_min_ohms",
             "tdr_max_ohms", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
-            "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
+            "crosstalk_next_pct", "crosstalk_fext_pct", "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["kind", "name", "errors", "warnings"] + keys)
@@ -559,7 +571,7 @@ def report_html(data: dict[str, Any], folder: Path) -> str:
         out.append("<p class=ok>Every net and pair is within its limits.</p>")
     cols = [("insertion_loss_db", "IL dB"), ("return_loss_db", "RL dB"), ("delay_ps", "delay ps"),
             ("tdr_min_ohms", "TDR min"), ("tdr_max_ohms", "TDR max"), ("skew_ps", "skew ps"),
-            ("stub_resonance_ghz", "stub GHz"), ("eye_height_mv", "eye mV")]
+            ("stub_resonance_ghz", "stub GHz"), ("crosstalk_pct", "xtalk %"), ("eye_height_mv", "eye mV")]
     out.append("<h2>Nets and pairs</h2><div class=wrap><table><tr><th>Item</th><th>Status</th>"
                + "".join(f"<th class=num>{e(c)}</th>" for _, c in cols) + "</tr>")
     for r in items:

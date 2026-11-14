@@ -58,6 +58,8 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 | `line_loss_db` | Loss of the trace sections alone at Nyquist (the odd mode for a pair): what grows with length |
 | `stub_resonance_ghz` | The lowest quarter-wave notch of any trace stub or via stub on the path |
 | `length_mils`, `vias`, `stubs` | What the path is made of |
+| `crosstalk_next_pct`, `crosstalk_fext_pct`, `crosstalk_pct` | Near-end and far-end crosstalk from the copper beside the net, and the worse of the two, in percent of the aggressors' swing |
+| `aggressors` | Nets routed beside it |
 | `skew_ps`, `mode_conversion_db`, `length_n_mils` | For a pair |
 
 **Checks:**
@@ -66,6 +68,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 - impedance: the TDR within `z_tol_pct` of `z_target`;
 - `il_max_db`, `rl_min_db` and `skew_max_ps` when they are given;
 - stub resonance: with a data rate, every stub's first notch must lie at least `stub_margin` (default 2) times above Nyquist. A notch near Nyquist is a fault of its own that no length limit fixes: shorten the stub or back-drill the via.
+- crosstalk: the worse of the near and far end within `xtalk_max_pct` (default 5) of the aggressors' swing (below).
 
 When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 
@@ -74,7 +77,31 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 - `path.json`, the path as found;
 - `sections.json`, every block and the figures of each cross-section;
 - `tdr.csv`;
+- `crosstalk.json`, every aggressor with its gap, shared length and place;
 - `channel.png`.
+
+## Crosstalk
+
+The board is searched for what runs beside the net. For each stretch of the route, tracks of other nets on the same layer count when they run within 10 degrees of it, for at least 10 mil, and within reach: four heights above the reference plane edge to edge, and at least three trace widths (`xtalk_reach_mils` sets it).
+
+Each neighbour's coupling comes from the field solver's cross-section of the two traces at their gap:
+
+| | |
+|---|---|
+| Kc = \|C12\| / C11 | Capacitive coupling |
+| Kl = L12 / L11 | Inductive coupling |
+| Near end = (Kc + Kl) / 4 | Reached once the shared length is longer than half the edge; 2 TD / tr of it below that |
+| Far end = (Kc - Kl) / 2 x TD / tr | Grows with the shared length and with a faster edge. Zero in a stripline (one dielectric), negative on a microstrip |
+
+TD is the delay of the shared length and tr the edge (`rise_ps`, taken for the aggressor too). Gaps are solved on a grid and read between its points, so a board with many neighbours costs a few fast solves per layer and width.
+
+- One aggressor's stretches add up; its near end stops at the ceiling of its tightest gap however the route is cut into segments.
+- A differential aggressor counts as the difference between its two sides, and a differential victim hears the difference between what reaches its two sides. A pair routed beside a net therefore disturbs it far less than one of its sides alone.
+- Aggressors add up as magnitudes: all switching together, the worst case.
+- Grounds, plane nets and supply rails (by name: `GND*`, `VCC*`, `VDD*`, `+3V3`, `1V8`, ...) do not switch and are left out. `xtalk_quiet` names more, as globs (`["LED_*", "RESET_N"]`).
+- `xtalk: false` leaves the check out.
+
+The figures are fractions of the aggressor's swing. A 3.3 V neighbour at 4 % puts 132 mV on the net, whatever the net's own swing is.
 
 ## Rules back to Altium
 
@@ -118,9 +145,15 @@ Each run works out `pcb_create_design_rule` calls:
 - **Via stub:** the via stub's notch falls within 5 % of c / (4 l sqrt Er), and back-drilling removes it.
 - **Line loss:** the lines' loss equals the sum of each cross-section's own loss per inch to 0.1 %; a pair's is the odd mode's exactly.
 - **Length budget:** the same stubbed net routed 2000 and 5000 mil long gets the same length limit within 3 % (scaling the whole loss by the routed length moved it by over 30 %).
+- **Crosstalk:** for two traces 4 mil apart over 800 mil of microstrip and a 100 ps edge, the near end is within 5 % and the far end within 15 % of the peaks of the coupled line solved in full (the four-port from the eddy-current solver, between 50 ohm ports). A stripline's far end is under 0.3 %. A pair with one side each side of the net cancels to zero.
 - **Pair skew:** the skew of a pair with a 49 mil length mismatch matches the mismatch times the line's delay per mil within 1.5 ps.
 
 ## Limits
+
+- **Crosstalk:**
+  - The weak-coupling results hold for matched ends and coupling of a few percent to about 15 %. Reflections at mismatched ends add to them.
+  - Only tracks on the same layer count. Copper on the next signal layer with no plane between (broadside coupling), arcs, and vias beside vias are not searched.
+  - The aggressor's edge is taken as fast as the victim's `rise_ps`. Beside a slower neighbour the far end is overstated.
 
 - **Vias:**
   - The via model is an engineering model: right in shape to the first stub resonance, and good to a few GHz for a typical via. Above that, or where a via field matters, model the via in 3D (`em-3d`, openEMS) and use its S-parameters.
