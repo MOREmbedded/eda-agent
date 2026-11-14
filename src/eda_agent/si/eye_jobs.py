@@ -27,7 +27,9 @@ from .mtl import mixed_mode
 from .spice_export import subcircuit
 
 EYE_SPEC: dict[str, tuple[str, bool, str]] = {
-    "data_rate_gbps": ("number", True, "data rate (NRZ)"),
+    "data_rate_gbps": ("number", True, "data rate, in bits"),
+    "modulation": ("text", False, "nrz (default) or pam4: four levels, two bits a symbol, so "
+                                  "half the symbol rate for the same data rate"),
     "rise_ps": ("number", False, "transmitter 10-90 % edge (default 0.3 UI)"),
     "amplitude_mv": ("number", False, "transmitter swing into a matched load, peak to peak "
                                       "(differential for a pair; default 800)"),
@@ -123,8 +125,13 @@ def _settings(spec: dict[str, Any]) -> dict[str, Any]:
     rate = _num(spec, "data_rate_gbps", 0) * 1e9
     if rate <= 0:
         raise ValueError("data_rate_gbps must be more than 0")
-    ui = 1 / rate
-    out = {"ui": ui, "rate": rate,
+    mod = str(spec.get("modulation") or "nrz").strip().lower()
+    if mod not in ("nrz", "pam4"):
+        raise ValueError("modulation is nrz or pam4")
+    levels = 4 if mod == "pam4" else 2
+    baud = rate / (levels // 2)                          # symbols a second
+    ui = 1 / baud
+    out = {"ui": ui, "rate": rate, "baud": baud, "levels": levels,
            "rise": _num(spec, "rise_ps", 0.3 * ui * 1e12) * 1e-12,
            "amp": _num(spec, "amplitude_mv", 800) / 1000,
            "order": int(_num(spec, "prbs", 7)),
@@ -258,8 +265,10 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
     reach = 8.5 * rj + dj / 2
     if reach > st["ui"] * 1e12 / 2:
         raise ValueError(f"the jitter reaches {reach:.1f} ps (8.5 sigma and half the "
-                         f"deterministic part): more than half the {st['ui'] * 1e12:g} ps bit")
-    se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12)
+                         f"deterministic part): more than half the {st['ui'] * 1e12:g} ps "
+                         f"{'symbol' if st['levels'] > 2 else 'bit'}")
+    se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12,
+                              levels=st["levels"])
     height = max(se["eye_height"] * 1e3 - 2 * peak, 0.0)
     # with peak noise on the rails the width is that of the phases still open
     wide = int(np.sum(se["heights"] * 1e3 - 2 * peak > 0)) if height > 0 else 0
@@ -280,7 +289,7 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
     verdicts.append({"check": "eye at the bit error rate", "pass": bool(ok),
                      "detail": f"{height:.1f} mV by {width_ui:.3f} UI at {ber:g}"
                                + (f", {' and '.join(need)} needed" if need else ", must be open")})
-    parts = ["ISI as independent random bits"]
+    parts = ["ISI as independent random " + ("symbols" if st["levels"] > 2 else "bits")]
     if noise:
         parts.append(f"{noise:g} mV RMS of Gaussian noise")
     if rj:
@@ -411,7 +420,7 @@ def equaliser(spec: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
     most_db = _num(spec, "ctle_max_db", 12)
     if most_db != int(most_db) or not 1 <= most_db <= 30:
         raise ValueError("ctle_max_db is a whole number, 1 to 30")
-    peak = _num(spec, "ctle_peak_ghz", st["rate"] / 2e9) * 1e9
+    peak = _num(spec, "ctle_peak_ghz", st.get("baud", st["rate"]) / 2e9) * 1e9
     if peak <= 0:
         raise ValueError("ctle_peak_ghz is above 0")
     n = _num(spec, "dfe_taps", 0)
@@ -459,19 +468,21 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         if not eq["auto_ffe"]:
             return after(eq["ffe"])
         pre, post = eq["auto_ffe"]
-        best = after(_eye.best_ffe(out, pre, post, dfe_taps=eq["dfe_taps"]))
+        best = after(_eye.best_ffe(out, pre, post, dfe_taps=eq["dfe_taps"],
+                                   levels=st["levels"]))
         # The taps are worked out at one sampling point and with the DFE
         # taken as ideal; the eye is read over the whole bit with the DFE
         # as it is. Should the eye without them be the larger, it stands.
         none = after([0.0] * pre + [1.0] + [0.0] * post)
         return max(none, best, key=lambda r: round(
-            _eye.worst_case_eye(r[0], st["amp"])["margin"], 9))
+            _eye.worst_case_eye(r[0], st["amp"], st["levels"])["margin"], 9))
 
     if eq["auto_ctle"] is not None:
         # every whole dB, from none up: the first of equal eyes is the least boost
         tried = [(b, equalised(float(b))) for b in range(eq["auto_ctle"] + 1)]
         boost, (pulse, ffe_taps, dfe_taps) = max(
-            tried, key=lambda r: round(_eye.worst_case_eye(r[1][0], st["amp"])["margin"], 9))
+            tried, key=lambda r: round(
+                _eye.worst_case_eye(r[1][0], st["amp"], st["levels"])["margin"], 9))
         eq["ctle_db"] = float(boost)
     else:
         pulse, ffe_taps, dfe_taps = equalised(eq["ctle_db"])
@@ -479,9 +490,9 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     if eq["auto_ffe"]:
         eq["ffe"] = ffe_taps
     say("PRBS eye", 0.5)
-    se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"])
-    wc = _eye.worst_case_eye(pulse, st["amp"])
-    k = ch.nyquist_index(f, st["rate"] / 2)
+    se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"], st["levels"])
+    wc = _eye.worst_case_eye(pulse, st["amp"], st["levels"])
+    k = ch.nyquist_index(f, st["baud"] / 2)
     m = _eye_metrics(se)
     m["worst_case_eye_height_mv"] = _metric(round(wc["eye_height"] * 1e3, 3), "mV",
                                             "Worst-case eye height (peak distortion analysis)")
@@ -491,12 +502,13 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     m["isi_mv"] = _metric(round(wc["isi_sum"] * 1e3, 3), "mV", "Sum of the other cursors")
     m["insertion_loss_db_at_nyquist"] = _metric(round(float(-ch.db(h[k])), 3), "dB",
                                                 f"Insertion loss at {f[k] / 1e9:g} GHz")
-    bits = np.tile(_eye.prbs(st["order"]), st["repeats"] + 1)
-    t, v = _eye.waveform(pulse, bits, st["amp"])
+    pam4 = st["levels"] == 4
+    bits = np.tile(_eye.prbs(st["order"]), (st["repeats"] + 1) * (2 if pam4 else 1))
+    t, v = _eye.waveform(pulse, bits, st["amp"], st["levels"])
     _write_wave(folder / "waveform.csv", t, v)
     files = {"waveform": "waveform.csv"}
-    title = (f"{'pair' if pair else 'line'}, {st['rate'] / 1e9:g} Gb/s, PRBS{st['order']}, "
-             f"convolution")
+    title = (f"{'pair' if pair else 'line'}, {st['rate'] / 1e9:g} Gb/s"
+             f"{' PAM4' if pam4 else ''}, PRBS{st['order']}, convolution")
     if _eye.plot_eye(folder / "eye.png", se["eye"], st["ui"], title):
         files["plot"] = "eye.png"
     verdicts = [{"check": "eye open", "pass": se["eye_height"] > 0,
@@ -508,6 +520,16 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
              f"{st['rise'] * 1e12:g} ps edge; PRBS{st['order']}, "
              f"{len(bits)} bits; amplitude {st['amp'] * 1e3:g} mV (incident, into a matched load)"]
     notes += term["notes"]
+    if pam4:
+        for i, h_ in enumerate(se["eye_heights"]):
+            name = ("lower", "middle", "upper")[i]
+            m[f"eye_height_{name}_mv"] = _metric(round(h_ * 1e3, 3), "mV",
+                                                 f"Height of the {name} of the three eyes")
+        notes.append(f"PAM4: {st['rate'] / 1e9:g} Gb/s is {st['baud'] / 1e9:g} GBd, a symbol "
+                     f"of {st['ui'] * 1e12:g} ps; levels at -1, -1/3, +1/3 and +1 of half the "
+                     "amplitude, Gray coded; the eye is the smallest of the three, its width "
+                     "where all three are open; the worst case takes every other symbol at "
+                     "an outer level")
     if eq["ffe"]:
         total = sum(abs(x) for x in eq["ffe"])
         notes.append("transmitter FFE taps " + ", ".join(f"{x / total:+.3f}" for x in eq["ffe"])
@@ -586,6 +608,8 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
     f0, s0, z0 = load_channel(touchstone)
     term = terminations(spec, st, z0, s0.shape[1])
     eq = equaliser(spec, st)
+    if st["levels"] != 2:
+        raise ValueError("PAM4 is modelled by the eda-agent engine only: the SPICE eye is NRZ")
     if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"] or eq["auto_ffe"] \
             or eq["auto_ctle"] is not None:
         raise ValueError("equalisation (tx_ffe, ctle_db, dfe_taps) is modelled by the "

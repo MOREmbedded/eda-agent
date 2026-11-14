@@ -206,7 +206,8 @@ def ffe(pulse: Pulse, taps: Sequence[float]) -> Pulse:
     return Pulse(t, out, pulse.ui, pulse.spui)
 
 
-def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float]:
+def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0, levels: int = 2
+             ) -> list[float]:
     """The transmitter taps (``pre`` before the main one, ``post`` after)
     that leave the largest worst-case eye at the sampling point where the
     pulse's own worst-case eye is tallest, with their magnitudes adding up
@@ -225,7 +226,7 @@ def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float
     if n == 1:
         return [1.0]
     spui = pulse.spui
-    c0 = worst_case_eye(pulse, 1.0)["sample_index"]
+    c0 = worst_case_eye(pulse, 1.0, levels)["sample_index"]
     first = c0 % spui
     samples = pulse.p[first::spui]                      # the cursors, main at index m0
     m0 = (c0 - first) // spui
@@ -237,7 +238,7 @@ def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float
         idx = m0 + ks - j
         ok = (idx >= 0) & (idx < len(samples))
         a[ok, col] = samples[idx[ok]]
-    main = a[ks == 0][0]
+    main = a[ks == 0][0] / (levels - 1)                 # neighbouring levels are that far apart
     rest = a[(ks != 0) & ~((ks >= 1) & (ks <= dfe_taps))]
     rest = rest[np.any(rest != 0, axis=1)]
     m = len(rest)
@@ -322,9 +323,29 @@ def pulse_response(f: np.ndarray, h: np.ndarray, ui: float, rise: float,
     return Pulse(tt, s - s_late, ui, spui)
 
 
-def waveform(pulse: Pulse, bits: Sequence[int], amplitude: float) -> tuple[np.ndarray, np.ndarray]:
-    """Received waveform of NRZ ``bits`` (+/- amplitude/2 incident)."""
-    sym = (2 * np.asarray(bits, dtype=float) - 1) * amplitude / 2
+#: PAM4 in Gray code: the two bits of a symbol to its level index.
+PAM4_GRAY = {(0, 0): 0, (0, 1): 1, (1, 1): 2, (1, 0): 3}
+
+
+def symbols(bits: Sequence[int], levels: int = 2) -> np.ndarray:
+    """Level index (0..levels-1) of each symbol: a bit each for NRZ, two
+    bits each in Gray code for PAM4."""
+    b = np.asarray(bits, dtype=int)
+    if levels == 2:
+        return b
+    if levels != 4:
+        raise ValueError("levels is 2 (NRZ) or 4 (PAM4)")
+    b = b[: len(b) // 2 * 2].reshape(-1, 2)
+    return np.array([0, 1, 3, 2])[2 * b[:, 0] + b[:, 1]]
+
+
+def waveform(pulse: Pulse, bits: Sequence[int], amplitude: float, levels: int = 2
+             ) -> tuple[np.ndarray, np.ndarray]:
+    """Received waveform of ``bits``: NRZ, or PAM4 with two bits a symbol.
+    The outer levels are +/- amplitude/2 incident, the others evenly
+    between them."""
+    idx = symbols(bits, levels)
+    sym = (2 * idx / (levels - 1) - 1) * amplitude / 2
     up = np.zeros(len(sym) * pulse.spui)
     up[::pulse.spui] = sym
     v = np.convolve(up, pulse.p)[: len(up)]
@@ -340,16 +361,19 @@ def fold(t: np.ndarray, v: np.ndarray, ui: float, spui: int, skip_bits: int, pha
     return v[start:start + usable * spui].reshape(usable, spui)
 
 
-def eye_metrics(eye: np.ndarray, bits: np.ndarray, ui: float, threshold: float = 0.0
-                ) -> dict[str, Any]:
+def eye_metrics(eye: np.ndarray, bits: np.ndarray, ui: float, threshold: float = 0.0,
+                levels: int = 2) -> dict[str, Any]:
     """Height and width of a folded eye whose rows are labelled by the
-    bit sent in that interval."""
-    ones, zeros = eye[bits == 1], eye[bits == 0]
-    if not len(ones) or not len(zeros):
-        raise ValueError("the pattern needs both ones and zeros")
-    low_ones = ones.min(axis=0)
-    high_zeros = zeros.max(axis=0)
-    height = low_ones - high_zeros
+    level index sent in that interval (the bit, for NRZ). With more than
+    two levels there is an eye between each two neighbours: the height at
+    a sampling phase is that of the smallest, and the eye is open where
+    all are."""
+    rows = [eye[bits == k] for k in range(levels)]
+    if any(not len(r) for r in rows):
+        raise ValueError("the pattern needs both ones and zeros" if levels == 2
+                         else "the pattern needs every level")
+    each = np.array([rows[k + 1].min(axis=0) - rows[k].max(axis=0) for k in range(levels - 1)])
+    height = each.min(axis=0)
     k = int(np.argmax(height))
     open_ = height > 0
     width = 0
@@ -368,29 +392,39 @@ def eye_metrics(eye: np.ndarray, bits: np.ndarray, ui: float, threshold: float =
     spui = eye.shape[1]
     return {"eye_height": float(max(height[k], 0.0)), "eye_width_ui": width / spui,
             "eye_width": width / spui * ui, "phase": k,
-            "level_one": float(np.mean(ones[:, k])), "level_zero": float(np.mean(zeros[:, k]))}
+            "level_one": float(np.mean(rows[-1][:, k])), "level_zero": float(np.mean(rows[0][:, k])),
+            "eye_heights": [float(max(h[k], 0.0)) for h in each]}
 
 
-def simulated_eye(pulse: Pulse, amplitude: float, order: int = 7, repeats: int = 2
-                  ) -> dict[str, Any]:
+def simulated_eye(pulse: Pulse, amplitude: float, order: int = 7, repeats: int = 2,
+                  levels: int = 2) -> dict[str, Any]:
     pattern = prbs(order)
+    if levels == 4:
+        # the sequence's length is odd: twice round it is a whole number of symbols,
+        # and every pair of bits comes up
+        pattern = np.tile(pattern, 2)
     bits = np.tile(pattern, repeats + 1)
-    t, v = waveform(pulse, bits, amplitude)
+    t, v = waveform(pulse, bits, amplitude, levels)
+    sent = symbols(bits, levels)
     span = len(pulse.p) // pulse.spui + 1
-    skip = min(span, len(pattern))
+    skip = min(span, len(sent) // (repeats + 1))
     # sampling phase reference: the middle of the pulse
     c = pulse.center_index
     phase0 = (c - pulse.spui // 2) % pulse.spui
     shift = (c - pulse.spui // 2) // pulse.spui
     eye = fold(t, v, pulse.ui, pulse.spui, skip + shift, phase0)
-    labels = bits[skip: skip + len(eye)]
-    m = eye_metrics(eye, labels, pulse.ui)
+    labels = sent[skip: skip + len(eye)]
+    m = eye_metrics(eye, labels, pulse.ui, levels=levels)
     m.update(eye=eye, bits=labels, phase0=phase0, start_bits=skip + shift)
     return m
 
 
-def worst_case_eye(pulse: Pulse, amplitude: float) -> dict[str, Any]:
-    """Peak distortion analysis over every sampling phase of the UI."""
+def worst_case_eye(pulse: Pulse, amplitude: float, levels: int = 2) -> dict[str, Any]:
+    """Peak distortion analysis over every sampling phase of the UI. With
+    ``levels`` levels, neighbours are 1 / (levels - 1) of the swing apart
+    while every other symbol can still be at an outer level: the eye
+    between two neighbours is that much of the main cursor less all the
+    ISI."""
     spui = pulse.spui
     p = pulse.p * amplitude / 2
     pk = pulse.peak_index
@@ -400,7 +434,7 @@ def worst_case_eye(pulse: Pulse, amplitude: float) -> dict[str, Any]:
         idx = np.arange(c % spui, len(p), spui)
         main = p[c] if 0 <= c < len(p) else 0.0
         isi = np.sum(np.abs(p[idx])) - abs(main)
-        heights[ph] = 2 * (main - isi)
+        heights[ph] = 2 * (main / (levels - 1) - isi)
     k = int(np.argmax(heights))
     open_ = heights > 0
     width = int(np.sum(open_)) if open_[k] else 0
@@ -421,26 +455,43 @@ STAT_TILT = 1e9
 #: spectrum to rounding at the grid's highest frequency, so that the steps of
 #: a density made of ISI alone do not ring across the grid.
 STAT_MIN_SIGMA_BINS = 2.8
+#: exp(-STAT_CUT^2 / 2) is the rounding of a double: no spectrum is worked
+#: out past this many reciprocal Gaussian widths.
+STAT_CUT = 8.8
 
 
-def _log_cos_terms(order: int = 16) -> np.ndarray:
-    """Coefficients c_n of ln cos x = -sum c_n x^(2n), n = 1..order."""
-    from scipy.special import bernoulli, factorial
-    n = np.arange(1, order + 1)
-    b = np.abs(bernoulli(2 * order)[2 * n])
-    return 2.0 ** (2 * n - 1) * (2.0 ** (2 * n) - 1) * b / (n * factorial(2 * n))
+#: What each symbol is of the outer level, by number of levels.
+SYMBOL_SCALES = {2: (1.0,), 4: (1.0, 1.0 / 3.0)}
 
 
-#: A cursor under this part of a voltage bin goes into the series: its
-#: argument then stays under pi/4 over the whole grid.
+def _log_terms(levels: int, order: int = 16) -> np.ndarray:
+    """Coefficients c_n of ln g(x) = -sum c_n x^(2n), n = 1..order, where
+    g is the characteristic function of one cursor of size 1 carrying a
+    random symbol: cos x for NRZ, (cos x + cos(x / 3)) / 2 for PAM4."""
+    from scipy.special import factorial
+    scales = SYMBOL_SCALES[levels]
+    k = np.arange(order + 1)
+    # g = sum_k g_k y^k with y = x^2
+    g = (-1.0) ** k / factorial(2 * k) * np.mean([s ** (2 * k) for s in scales], axis=0)
+    # ln g = sum_n l_n y^n: from g' = g (ln g)', n l_n = n g_n - sum_{m<n} m l_m g_{n-m}
+    ln = np.zeros(order + 1)
+    for n in range(1, order + 1):
+        ln[n] = g[n] - sum(m * ln[m] * g[n - m] for m in range(1, n)) / n
+    return -ln[1:]
+
+
+#: A cursor goes into the series while its argument stays under this part
+#: of pi over the frequencies worked out (a quarter of a voltage bin when
+#: that is the whole grid).
 STAT_SERIES_BINS = 0.25
-_LOG_COS = _log_cos_terms()
+_LOG_TERMS = {n: _log_terms(n) for n in SYMBOL_SCALES}
 
 
-def _small_cursors(cur: np.ndarray, w: np.ndarray) -> np.ndarray:
-    """ln of the product of cos(w a) over the cursors ``cur``, all small:
-    from the series of ln cos, which needs only the sums of their even
-    powers. One pass whatever their number."""
+def _small_cursors(cur: np.ndarray, w: np.ndarray, levels: int = 2) -> np.ndarray:
+    """ln of the product of each cursor's characteristic function at ``w``,
+    the cursors ``cur`` all small: from the series of its logarithm, which
+    needs only the sums of their even powers. One pass whatever their
+    number."""
     out = np.zeros(len(w), dtype=complex)
     if not len(cur):
         return out
@@ -448,7 +499,7 @@ def _small_cursors(cur: np.ndarray, w: np.ndarray) -> np.ndarray:
     rel = cur / scale
     z = (w * scale) ** 2
     power = np.ones(len(w), dtype=complex)
-    for n, c in enumerate(_LOG_COS, start=1):
+    for n, c in enumerate(_LOG_TERMS[levels], start=1):
         power = power * z
         out -= c * float(np.sum(rel ** (2 * n))) * power
     return out
@@ -475,16 +526,23 @@ def jitter_weights(dt: float, rj_rms: float, dj_pp: float, most: int) -> np.ndar
     return w
 
 
-def _level_density(main: float, cur: np.ndarray, sigma: float, span: float) -> np.ndarray:
+def _level_density(main: float, cur: np.ndarray, sigma: float, span: float,
+                   levels: int = 2) -> np.ndarray:
     """Probability of each voltage bin, over -span..span, for the level
-    ``main`` plus each of ``cur`` with a random sign plus a Gaussian of
-    ``sigma``. Right from the lower tail to past the middle; the upper
+    ``main`` plus each of ``cur`` times a random symbol (its sign for NRZ;
+    +/-1 or +/-1/3 for PAM4) plus a Gaussian of ``sigma``. Right from the lower tail to past the middle; the upper
     part, which no contour is read from, falls under the rounding and is
     left out."""
     dv = 2 * span / STAT_BINS
     omega = 2 * np.pi * np.fft.rfftfreq(STAT_BINS, dv)
     v = (np.arange(STAT_BINS) - STAT_BINS // 2) * dv
-    small = STAT_SERIES_BINS * dv
+    # the Gaussian takes the spectrum under rounding from STAT_CUT / sigma on:
+    # with real noise that is a small part of the grid, and the rest is left at 0
+    keep = min(len(omega), int(np.ceil(STAT_CUT / sigma / omega[1])) + 2)
+    full = len(omega)
+    omega = omega[:keep]
+    # the series holds while a cursor's argument is under pi / 4 at the top kept
+    small = STAT_SERIES_BINS * np.pi / omega[-1]
     big = cur[np.abs(cur) >= small]
     tiny = cur[(np.abs(cur) < small) & (cur != 0)]
     # The density is transformed tilted by exp(-theta (x - main)), which
@@ -493,15 +551,23 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float) -> n
     # falls away along the tail the contour is read from.
     theta = np.log(STAT_TILT) / (float(np.sum(np.abs(cur))) + 7.0 * sigma)
     w_ = omega - 1j * theta
-    phi = np.exp(-0.5 * (w_ * sigma) ** 2 + _small_cursors(tiny, w_))
+    phi = np.exp(-0.5 * (w_ * sigma) ** 2 + _small_cursors(tiny, w_, levels))
+    scales = SYMBOL_SCALES[levels]
     for j in range(0, len(big), 64):
-        phi = phi * np.prod(np.cos(big[j: j + 64, None] * w_[None, :]), axis=0)
+        # cos(a (w - j theta)) = cos(a w) cosh(a theta) + j sin(a w) sinh(a theta):
+        # real functions of real arrays, which is quicker than a complex cosine
+        term = 0.0
+        for s in scales:
+            a = s * big[j: j + 64, None]
+            arg = a * omega[None, :]
+            term = term + np.cos(arg) * np.cosh(a * theta) + 1j * np.sin(arg) * np.sinh(a * theta)
+        phi = phi * np.prod(term / len(scales), axis=0)
     # at w = 0 it is the tilted density's whole weight: taken out for the
     # transform, so that its rounding is known, and put back after
     weight = float(phi[0].real)
     # 0 V sits mid-grid
     phi = phi / weight * np.exp(-1j * omega * (main + span))
-    tilted = np.fft.irfft(phi, STAT_BINS)
+    tilted = np.fft.irfft(np.concatenate([phi, np.zeros(full - keep)]), STAT_BINS)
     # the transform's rounding, about level across the grid
     floor = 20 * np.finfo(float).eps * np.log2(STAT_BINS) * np.sqrt(
         2 * float(np.sum(np.abs(phi) ** 2)) / STAT_BINS)
@@ -511,7 +577,7 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float) -> n
 
 
 def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rms: float = 0.0,
-                    rj_rms: float = 0.0, dj_pp: float = 0.0) -> dict[str, Any]:
+                    rj_rms: float = 0.0, dj_pp: float = 0.0, levels: int = 2) -> dict[str, Any]:
     """The eye at a bit error rate, from the pulse response.
 
     At each sampling phase the received level of a one is its main cursor
@@ -521,6 +587,11 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     probability density, exact but for the grid. Jitter mixes the densities
     of the phases it reaches. The inner contour is the level a one falls
     below with probability ``ber``; a zero mirrors it.
+
+    With four levels (PAM4) each cursor carries +/-1 or +/-1/3 of itself,
+    and the eye is the one between two neighbouring levels, a third of the
+    main cursor apart: all three are alike. ``bit_error_rate`` counts the
+    six ways a symbol can be taken for its neighbour, over its two bits.
     """
     if not BER_FLOOR <= ber <= 0.1:
         raise ValueError(f"ber is {BER_FLOOR:g} to 0.1")
@@ -539,7 +610,7 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
         main = p[c] if 0 <= c < len(p) else 0.0
         if 0 <= c < len(p):
             cur = np.delete(cur, (c - c % spui) // spui)
-        rows.append((main, cur))
+        rows.append((main / (levels - 1), cur))
     reachv = max(abs(m) + np.sum(np.abs(c)) for m, c in rows)
     span = max(reachv + 12.0 * noise_rms, 1e-12) * 1.05
     dv = 2 * span / STAT_BINS
@@ -548,7 +619,7 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     sigma = max(noise_rms, STAT_MIN_SIGMA_BINS * dv)
     pdfs = np.empty((len(rows), STAT_BINS))
     for i, (main, cur) in enumerate(rows):
-        pdfs[i] = _level_density(main, cur, sigma, span)
+        pdfs[i] = _level_density(main, cur, sigma, span, levels)
     if reach:
         pdfs = sum(w[j] * pdfs[j: j + spui] for j in range(len(w)))
     cdf = np.cumsum(pdfs, axis=1)
@@ -579,7 +650,8 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
         width = b - a + 1
     return {"eye_height": float(max(heights[k], 0.0)), "eye_width_ui": width / spui,
             "eye_width": width / spui * pulse.ui, "phase": k,
-            "bit_error_rate": float(max(np.min(errors), BER_FLOOR / 10)),
+            "bit_error_rate": float(max(
+                np.min(errors) * 2 * (levels - 1) / levels / np.log2(levels), BER_FLOOR / 10)),
             "heights": heights, "errors": errors}
 
 
