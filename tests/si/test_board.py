@@ -527,3 +527,19 @@ def test_a_target_has_its_equaliser_chosen(tmp_path):
     assert "eye_ffe_main_tap" in auto and 0 <= auto["eye_ctle_db"] <= 3
     assert "eye_ffe_main_tap" not in plain and "eye_ctle_db" not in plain
     assert auto["worst_case_eye_height_mv"] >= plain["worst_case_eye_height_mv"]
+
+
+def test_a_target_runs_its_eye_in_pam4(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    nrz = eye_of("a")
+    pam = eye_of("b", modulation="pam4")
+    assert "eye_height_middle_mv" in pam and "eye_height_middle_mv" not in nrz
+    assert pam["eye_height_mv"] == min(pam[f"eye_height_{n}_mv"] for n in ("lower", "middle", "upper"))
+    assert pam["eye_width_ps"] > nrz["eye_width_ps"]            # a symbol is two bits long
