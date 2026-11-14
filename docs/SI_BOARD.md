@@ -24,7 +24,8 @@ It runs as a [simulation job](SIMULATION.md) of kind `board-si`, through the `si
 | `delay_match_ps` | Hold the target's nets and pairs to one another in delay: each may be this much ahead of the slowest of them. A signal can be delayed by adding trace and never sped up, so the slowest sets the time. Each target is its own group |
 | `eye`, `eye_min_mv`, `eye_min_ui` | Also run the eye, and its limits (open by default) |
 | `return_path`, `return_gap_min_mils` | Gaps in the reference copper under the route: `false` to leave it out, and the shortest gap that counts (8 mil) ([Return path](SI_NETS.md#return-path)) |
-| `xtalk_swing_mv` | The neighbours' swing (default the eye's own `amplitude_mv`). Crosstalk times this is noise on both rails of the eye: `eye_min_mv` is held against what is left (`eye_height_with_noise_mv`) |
+| `xtalk_aggressors`, `xtalk_max_mv` | Neighbours with an edge and a swing of their own (`{match, rise_ps, swing_mv}`), and a limit on crosstalk in millivolts ([Crosstalk](SI_NETS.md#crosstalk)). Both can also be set for the whole board |
+| `xtalk_swing_mv` | The swing of the neighbours that are given none (default the eye's own `amplitude_mv`). Each neighbour's crosstalk times its swing is noise on both rails of the eye: `eye_min_mv` is held against what is left (`eye_height_with_noise_mv`) |
 | `tx_ibis`, `rx_ibis`, ... | The eye's driver and receiver ([Eyes and SPICE models](SI_TIME.md)) |
 
 - A net or pair is taken by the first target that matches it. A broad target last (`{"match": "*", ...}`) catches what the others leave.
@@ -37,7 +38,7 @@ Job options:
 - `f_max_ghz` (1.5 times the highest data rate, at least 10);
 - `points` (200);
 - the laminate settings (`tand`, `foil`, `mask_mils`, `etch_mils`);
-- the crosstalk settings (`xtalk`, `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`) and the return-path settings (`return_path`, `return_gap_min_mils`) for targets that give none;
+- the crosstalk settings (`xtalk`, `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`, `xtalk_aggressors`, `xtalk_swing_mv`, `xtalk_max_mv`) and the return-path settings (`return_path`, `return_gap_min_mils`) for targets that give none;
 - the copper temperature (below).
 
 A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warning; the rest of the board still runs.

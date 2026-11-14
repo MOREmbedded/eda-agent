@@ -69,6 +69,16 @@ maturity classification for every tool.
   and the eye limit is held against what is left; `si_channel_eye` takes
   such noise from any source as `noise_mv`. `si_net_channel` lists the
   aggressors in its reply (`crosstalk`).
+- **Signal integrity: neighbours with their own edge and swing.**
+  `xtalk_aggressors` gives nets an edge and a swing of their own by name
+  (`{"match": "CLK*", "rise_ps": 300, "swing_mv": 3300}`), in a net channel
+  and in the board check. A slower neighbour couples less at the far end
+  and over a short run. With every swing known, crosstalk is also given in
+  millivolts on the net (`crosstalk_noise_mv`), each neighbour at its own
+  swing, and `xtalk_max_mv` holds it to a limit (the check `crosstalk
+  noise`): the figure that matters where 3.3 V logic runs beside a
+  low-swing pair. The eye of the board check takes each neighbour's noise
+  at its own swing.
 - **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
   and engine `spice`. The `eda-agent` engine convolves a channel's pulse
   response with a PRBS pattern and adds the worst-case eye by peak

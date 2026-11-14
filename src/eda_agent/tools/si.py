@@ -336,7 +336,10 @@ def _register_si_net_tools(mcp) -> None:
                 rules (true); crosstalk from the copper beside the net:
                 xtalk (true), xtalk_max_pct (5, of the aggressors' swing),
                 xtalk_reach_mils, xtalk_quiet (name globs of nets that do
-                not switch); gaps in the reference copper under the
+                not switch), xtalk_aggressors ([{match, rise_ps,
+                swing_mv}]: neighbours with their own edge and swing),
+                xtalk_swing_mv (the swing of the rest), xtalk_max_mv
+                (limit on crosstalk in mV on the net); gaps in the reference copper under the
                 route: return_path (true), return_gap_min_mils (8).
                 sim_engines lists every key.
             apply_rules: create the rules in Altium (pcb_create_design_rule).
@@ -702,7 +705,9 @@ def _register_si_board_tools(mcp) -> None:
                 be this far ahead of the slowest of them),
                 xtalk_max_pct (crosstalk from neighbours, 5),
                 xtalk_swing_mv (the neighbours' swing: crosstalk then
-                closes the eye; default the eye's amplitude);
+                closes the eye; default the eye's amplitude),
+                xtalk_aggressors ([{match, rise_ps, swing_mv}]: neighbours
+                with their own edge and swing), xtalk_max_mv (limit in mV);
                 eye: true to add the eye, eye_min_mv,
                 eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
                 is taken by the first target that matches it. Default: every
@@ -712,7 +717,8 @@ def _register_si_board_tools(mcp) -> None:
                 temperature_c or thermal_npz (a thermal analysis'
                 result.npz: hot copper loses more), tand, foil, mask_mils,
                 etch_mils, xtalk (true), xtalk_max_pct, xtalk_reach_mils,
-                xtalk_quiet, return_path (true), return_gap_min_mils.
+                xtalk_quiet, xtalk_aggressors, xtalk_swing_mv, xtalk_max_mv,
+                return_path (true), return_gap_min_mils.
             mark: "none"; "highlight" highlights the failing nets in
                 Altium; "text" also writes each error's id and check as
                 text on ``marker_layer`` at its place (changes the board;
