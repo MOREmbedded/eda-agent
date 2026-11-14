@@ -511,17 +511,48 @@ def _small_cursors(cur: np.ndarray, w: np.ndarray, levels: int = 2) -> np.ndarra
     return out
 
 
-def jitter_weights(dt: float, rj_rms: float, dj_pp: float, most: int) -> np.ndarray:
+#: Parts of a step (or of the random jitter's sigma, if finer) the
+#: sinusoidal jitter is cut into before the Gaussian is laid over it.
+SJ_PARTS = 16
+
+
+def _sine_cdf(x: np.ndarray, half: float) -> np.ndarray:
+    """Part of its time a sine of amplitude ``half`` spends below x."""
+    return 0.5 + np.arcsin(np.clip(x / half, -1.0, 1.0)) / np.pi
+
+
+def jitter_weights(dt: float, rj_rms: float, dj_pp: float, most: int,
+                   sj_pp: float = 0.0) -> np.ndarray:
     """Probability of each sampling offset, in steps of ``dt`` from -n to n:
     Gaussian random jitter around the two points of the deterministic jitter
-    (dual Dirac). Each step holds the probability of the offsets nearest to
-    it, so the tails are kept. ``most`` bounds n."""
-    if rj_rms <= 0 and dj_pp <= 0:
+    (dual Dirac), each spread by the sinusoidal jitter, which stays at an
+    offset for the part of its period a sine does (most at its two ends).
+    Each step holds the probability of the offsets nearest to it, so the
+    tails are kept. ``most`` bounds n."""
+    if rj_rms <= 0 and dj_pp <= 0 and sj_pp <= 0:
         return np.ones(1)
     from scipy.special import ndtr
-    n = int(min(most, max(1, np.ceil((8.5 * rj_rms + dj_pp / 2) / dt + 0.5))))
+    n = int(min(most, max(1, np.ceil((8.5 * rj_rms + dj_pp / 2 + sj_pp / 2) / dt + 0.5))))
     edges = (np.arange(-n, n + 2) - 0.5) * dt
     w = np.zeros(2 * n + 1)
+    if sj_pp > 0:
+        half = sj_pp / 2
+        for centre in (-dj_pp / 2, dj_pp / 2):
+            if rj_rms > 0:
+                # the sine in equal slices of its period (so fine where it
+                # turns), with the Gaussian around each slice's mean offset
+                parts = int(np.ceil(np.pi * half / min(dt, rj_rms) * SJ_PARTS))
+                cut = half * np.sin(np.linspace(-np.pi / 2, np.pi / 2, parts + 1))
+                share = np.full(parts, 1.0 / parts)
+                # mean of a slice: the integral of x dF, F the sine's
+                root = np.sqrt(np.clip(half ** 2 - cut ** 2, 0.0, None))
+                mean = -np.diff(root) / np.pi / share
+                cdf = ndtr((edges[:, None] - centre - mean[None, :]) / rj_rms) @ share
+            else:
+                cdf = _sine_cdf(edges - centre, half)
+            cdf[0], cdf[-1] = 0.0, 1.0
+            w += 0.5 * np.diff(cdf)
+        return w
     for centre in (-dj_pp / 2, dj_pp / 2):
         if rj_rms > 0:
             cdf = ndtr((edges - centre) / rj_rms)
@@ -582,7 +613,8 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float,
 
 
 def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rms: float = 0.0,
-                    rj_rms: float = 0.0, dj_pp: float = 0.0, levels: int = 2) -> dict[str, Any]:
+                    rj_rms: float = 0.0, dj_pp: float = 0.0, levels: int = 2,
+                    sj_pp: float = 0.0) -> dict[str, Any]:
     """The eye at a bit error rate, from the pulse response.
 
     At each sampling phase the received level of a one is its main cursor
@@ -603,7 +635,7 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     spui = pulse.spui
     p = pulse.p * amplitude / 2
     pk = pulse.peak_index
-    w = jitter_weights(pulse.ui / spui, rj_rms, dj_pp, spui // 2)
+    w = jitter_weights(pulse.ui / spui, rj_rms, dj_pp, spui // 2, sj_pp)
     reach = len(w) // 2
     offsets = np.arange(-reach, spui + reach)
     # every sample belongs to one bit position of one phase

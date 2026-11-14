@@ -66,6 +66,7 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "noise_rms_mv": ("number", False, "random (Gaussian) noise at the receiver, RMS (default 0)"),
     "rj_rms_ps": ("number", False, "random jitter of the sampling instant, RMS (default 0)"),
     "dj_pp_ps": ("number", False, "deterministic jitter, peak to peak, as two points (default 0)"),
+    "sj_pp_ps": ("number", False, "sinusoidal jitter, peak to peak (default 0)"),
     "eye_at_ber_min_mv": ("number", False, "eye height needed at the bit error rate "
                                            "(default: open)"),
     "eye_at_ber_min_ui": ("number", False, "eye width needed at the bit error rate, in UI"),
@@ -237,7 +238,7 @@ def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
 
 
 #: The keys that ask for the statistical eye.
-STAT_KEYS = ("ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "eye_at_ber_min_mv",
+STAT_KEYS = ("ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "sj_pp_ps", "eye_at_ber_min_mv",
              "eye_at_ber_min_ui")
 
 
@@ -253,7 +254,9 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
     noise = _num(spec, "noise_rms_mv", 0)
     rj = _num(spec, "rj_rms_ps", 0)
     dj = _num(spec, "dj_pp_ps", 0)
-    for key, val in (("noise_rms_mv", noise), ("rj_rms_ps", rj), ("dj_pp_ps", dj)):
+    sj = _num(spec, "sj_pp_ps", 0)
+    for key, val in (("noise_rms_mv", noise), ("rj_rms_ps", rj), ("dj_pp_ps", dj),
+                     ("sj_pp_ps", sj)):
         if val < 0:
             raise ValueError(f"{key} is 0 or more")
     peak = _num(spec, "noise_mv", 0)
@@ -262,13 +265,14 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
     if lim_mv < 0 or not 0 <= lim_ui <= 1:
         raise ValueError("eye_at_ber_min_mv is 0 or more and eye_at_ber_min_ui is 0 to 1")
     step = st["ui"] / st["spui"] * 1e12
-    reach = 8.5 * rj + dj / 2
+    reach = 8.5 * rj + dj / 2 + sj / 2
     if reach > st["ui"] * 1e12 / 2:
         raise ValueError(f"the jitter reaches {reach:.1f} ps (8.5 sigma and half the "
-                         f"deterministic part): more than half the {st['ui'] * 1e12:g} ps "
+                         "deterministic and sinusoidal parts): more than half the "
+                         f"{st['ui'] * 1e12:g} ps "
                          f"{'symbol' if st['levels'] > 2 else 'bit'}")
     se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12,
-                              levels=st["levels"])
+                              levels=st["levels"], sj_pp=sj * 1e-12)
     height = max(se["eye_height"] * 1e3 - 2 * peak, 0.0)
     # with peak noise on the rails the width is that of the phases still open
     wide = int(np.sum(se["heights"] * 1e3 - 2 * peak > 0)) if height > 0 else 0
@@ -296,6 +300,8 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
         parts.append(f"{rj:g} ps RMS of random jitter")
     if dj:
         parts.append(f"{dj:g} ps peak to peak of deterministic jitter")
+    if sj:
+        parts.append(f"{sj:g} ps peak to peak of sinusoidal jitter")
     if peak:
         parts.append(f"{peak:g} mV of peak noise off each rail")
     notes.append("statistical eye: " + ", ".join(parts)

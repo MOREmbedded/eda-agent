@@ -110,7 +110,7 @@ The worst-case eye asks whether any pattern can close the eye; on a long channel
 |---|---|
 | `ber` | The bit error rate the eye is drawn at (default 1e-12; 1e-18 to 0.1) |
 | `noise_rms_mv` | Random (Gaussian) noise at the receiver, RMS |
-| `rj_rms_ps`, `dj_pp_ps` | Jitter of the sampling instant against the data: random (Gaussian, RMS) and deterministic (peak to peak, as two points: the dual-Dirac model) |
+| `rj_rms_ps`, `dj_pp_ps`, `sj_pp_ps` | Jitter of the sampling instant against the data: random (Gaussian, RMS), deterministic (peak to peak, as two points: the dual-Dirac model) and sinusoidal (peak to peak: the instant is where a sine is, most of the time near its two ends) |
 | `eye_at_ber_min_mv`, `eye_at_ber_min_ui` | The height and width needed at that rate (default: open) |
 
 At each sampling phase the level of a one is its main cursor plus every other cursor with the sign of an independent random bit. The probability density of that sum is the transform of its characteristic function, the product of cos(w a_k) over the cursors times the noise's Gaussian: every pattern is in it, with its probability, without running one. Jitter mixes the densities of the phases it reaches, each with its probability. The inner contour is the level a one falls below with probability `ber`; a zero mirrors it, and the eye is what lies between.

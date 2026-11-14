@@ -466,9 +466,9 @@ def _register_si_time_tools(mcp) -> None:
                 first pole, default Nyquist), dfe_taps (receiver DFE taps,
                 0-32), dfe_max (most one tap takes off, part of the main
                 cursor, 0.5; equalisation is in the eda-agent engine only),
-                ber (1e-12), noise_rms_mv, rj_rms_ps, dj_pp_ps (any of
-                them adds the eye at that bit error rate with Gaussian
-                noise and random and deterministic jitter), with limits
+                ber (1e-12), noise_rms_mv, rj_rms_ps, dj_pp_ps, sj_pp_ps (any
+                of them adds the eye at that bit error rate with Gaussian
+                noise and random, deterministic and sine jitter), with limits
                 eye_at_ber_min_mv and eye_at_ber_min_ui,
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
