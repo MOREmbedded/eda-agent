@@ -603,3 +603,134 @@ def test_the_fix_moves_the_worst_neighbour_on_the_layer_its_row_tells(dual):
     # and under what the one beside it gives alone, moving the other is not enough
     fix = of(board(0), dual, limit_pct=4.0)["fix"]
     assert "offset_mils" not in fix and 4.0 < fix["rest_pct"] < 6.0
+
+
+# -- neighbours with an edge and a swing of their own --------------------------------
+
+def test_the_aggressor_table_is_checked():
+    t = crosstalk.aggressor_table([{"match": " clk* ", "rise_ps": 300, "swing_mv": 3300},
+                                   {"match": "D?", "swing_mv": "400"}, {"match": "X", "rise_ps": 50}])
+    assert t == [("CLK*", pytest.approx(300e-12), 3300.0), ("D?", None, 400.0),
+                 ("X", pytest.approx(50e-12), None)]
+    assert crosstalk.aggressor_table(None) == [] and crosstalk.aggressor_table([]) == []
+    assert crosstalk._driver("clk_out", t) == (pytest.approx(300e-12), 3300.0)
+    assert crosstalk._driver("D1", t) == (None, 400.0) and crosstalk._driver("D12", t) == (None, None)
+    for bad, word in (([{"rise_ps": 5}], "list of"), (["CLK"], "list of"),
+                      ([{"match": "A"}], "gives no"), ([{"match": "A", "rise_ps": 0}], "rise_ps of A"),
+                      ([{"match": "A", "swing_mv": -1}], "swing_mv of A"),
+                      ([{"match": "A", "swing_mv": "x"}], "swing_mv of A"),
+                      ([{"match": "A", "rise_ps": 5, "slew": 1}], "unknown key slew")):
+        with pytest.raises(ValueError, match=word):
+            crosstalk.aggressor_table(bad)
+
+
+def test_a_slower_neighbour_couples_less_and_the_first_match_is_taken(coupling):
+    b = beside(victim(), x1=300, x2=500)               # 200 mil: the near end still grows
+    fast = of(b, coupling)["aggressors"][0]
+    slow = of(b, coupling, table=crosstalk.aggressor_table(
+        [{"match": "AG*", "rise_ps": 400}, {"match": "AGG", "rise_ps": 100}]))["aggressors"][0]
+    assert "rise_ps" not in fast and slow["rise_ps"] == 400
+    # under its ceiling the near end, and always the far end, go as 1 / rise
+    assert slow["next_pct"] == pytest.approx(fast["next_pct"] / 4, rel=0.01)
+    assert slow["fext_pct"] == pytest.approx(fast["fext_pct"] / 4, rel=0.01)
+    # a long run reaches the same ceiling whatever the edge
+    long = beside(victim())
+    a = of(long, coupling)["aggressors"][0]
+    c = of(long, coupling, table=crosstalk.aggressor_table([{"match": "AGG", "rise_ps": 150}]))
+    assert c["aggressors"][0]["next_pct"] == pytest.approx(a["next_pct"], rel=0.01)
+    # a net that matches nothing keeps the victim's edge; the fix reckons with the table
+    other = of(b, coupling, table=crosstalk.aggressor_table([{"match": "ZZ*", "rise_ps": 400}]))
+    assert other["aggressors"][0] == fast
+    assert "fix" in of(long, coupling, limit_pct=5.0)
+    slow_fix = of(b, coupling, limit_pct=1.0,
+                  table=crosstalk.aggressor_table([{"match": "AGG", "rise_ps": 400}]))
+    assert of(b, coupling, limit_pct=1.0)["fix"]["gap_mils"] > slow_fix["fix"]["gap_mils"]
+
+
+def test_crosstalk_in_millivolts_takes_each_neighbour_at_its_own_swing(coupling):
+    b = beside(beside(victim()), "B", gap=8, side=-1)
+    res = of(b, coupling, table=crosstalk.aggressor_table(
+        [{"match": "AGG", "swing_mv": 400}, {"match": "B", "swing_mv": 3300}]))
+    agg = next(r for r in res["aggressors"] if r["aggressor"] == "AGG")
+    bb = next(r for r in res["aggressors"] if r["aggressor"] == "B")
+    assert agg["swing_mv"] == 400 and bb["swing_mv"] == 3300 and agg["next_pct"] > bb["next_pct"]
+    near = (agg["next_pct"] * 400 + bb["next_pct"] * 3300) / 100
+    far = (agg["fext_pct"] * 400 + bb["fext_pct"] * 3300) / 100
+    assert crosstalk.noise_mv(res) == pytest.approx(max(near, far), abs=0.01)
+    assert near > far and bb["next_pct"] * 33 > agg["next_pct"] * 4     # the 3.3 V net leads
+    # one swing unknown: no figure, unless a swing is given for the rest
+    part = of(b, coupling, table=crosstalk.aggressor_table([{"match": "B", "swing_mv": 3300}]))
+    assert crosstalk.noise_mv(part) is None
+    assert crosstalk.noise_mv(part, 400) == pytest.approx(max(near, far), abs=0.01)
+    plain = of(b, coupling)
+    assert crosstalk.noise_mv(plain) is None
+    assert crosstalk.noise_mv(plain, 1000) == pytest.approx(10 * plain["worst_pct"], abs=0.01)
+    assert crosstalk.noise_mv(of(victim(), coupling)) == 0
+    # a far end that outweighs the near end is the one counted
+    assert crosstalk.noise_mv({"aggressors": [{"next_pct": 1.0, "fext_pct": 3.0}]}, 200) == 6.0
+
+
+def test_the_net_job_gives_millivolts_and_holds_them_to_a_limit(tmp_path):
+    b = beside(beside(victim()), "B", gap=8, side=-1)
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100, "xtalk_max_pct": 50}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "a")
+    assert "crosstalk_noise_mv" not in res["metrics"]
+    assert not any(v["check"] == "crosstalk noise" for v in res["verdicts"])
+    aggs = [{"match": "AGG", "swing_mv": 400, "rise_ps": 150}, {"match": "B", "swing_mv": 3300}]
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs, "xtalk_max_mv": 100},
+                                   b.to_dict(), STACKUP, tmp_path / "b")
+    saved = json.loads((tmp_path / "b" / "crosstalk.json").read_text())
+    mv = res["metrics"]["crosstalk_noise_mv"]["value"]
+    assert mv == saved["noise_mv"] == crosstalk.noise_mv(saved) and 150 < mv < 400
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")
+    assert not v["pass"] and v["detail"] == (f"{mv:.1f} mV from the neighbours at their own "
+                                             "swings, 100 mV allowed")
+    assert saved["aggressors"][0]["aggressor"] == "AGG" and saved["aggressors"][0]["rise_ps"] == 150
+    assert "(its edge 150 ps)" in next(x for x in res["verdicts"] if x["check"] == "crosstalk")["detail"]
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs, "xtalk_max_mv": 400},
+                                   b.to_dict(), STACKUP, tmp_path / "c")
+    assert next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")["pass"]
+    # one swing for all of them; a swing missing; and the settings are checked
+    res = net_jobs.run_net_channel({**spec, "xtalk_swing_mv": 1000}, b.to_dict(), STACKUP,
+                                   tmp_path / "d")
+    assert res["metrics"]["crosstalk_noise_mv"]["value"] == pytest.approx(
+        10 * res["metrics"]["crosstalk_pct"]["value"], abs=0.02)
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_swing_mv": 400},
+                                   b.to_dict(), STACKUP, tmp_path / "e")
+    assert res["metrics"]["crosstalk_noise_mv"]["value"] > mv      # AGG at its fast edge again
+    with pytest.raises(ValueError, match="xtalk_max_mv needs the swing of every neighbour"):
+        net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_max_mv": 100},
+                                 b.to_dict(), STACKUP, tmp_path / "f")
+    with pytest.raises(ValueError, match="xtalk_swing_mv is 0 or more"):
+        net_jobs.run_net_channel({**spec, "xtalk_swing_mv": -5}, b.to_dict(), STACKUP,
+                                 tmp_path / "g")
+    with pytest.raises(ValueError, match="gives no rise_ps or swing_mv"):
+        net_jobs.run_net_channel({**spec, "xtalk_aggressors": [{"match": "B"}]}, b.to_dict(),
+                                 STACKUP, tmp_path / "h")
+
+
+def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
+    b = beside(victim(), x1=300, x2=900)
+    target = {"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2, "eye": True,
+              "amplitude_mv": 800, "xtalk_max_pct": 50}
+    spec = {"targets": [target], "points": 80, "f_max_ghz": 10}
+
+    def noise(name, **more):
+        board_jobs.run_board_si({**spec, **more}, b.to_dict(), STACKUP, tmp_path / name,
+                                snapshot="t")
+        item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+        return item["metrics"], item
+    m0, _ = noise("a")
+    assert m0["noise_mv"] == pytest.approx(8 * m0["crosstalk_pct"], abs=0.01)   # its own 800 mV
+    m1, _ = noise("b", xtalk_aggressors=[{"match": "AGG", "swing_mv": 3300}])
+    assert m1["noise_mv"] == pytest.approx(33 * m1["crosstalk_pct"], abs=0.02)
+    assert m1["crosstalk_noise_mv"] == m1["noise_mv"]
+    assert m1["eye_height_with_noise_mv"] < m0["eye_height_with_noise_mv"]
+    m2, _ = noise("c", xtalk_swing_mv=1600)
+    assert m2["noise_mv"] == pytest.approx(16 * m2["crosstalk_pct"], abs=0.01)
+    # a limit in mV on the board reaches the item and the finding is placed with the copper
+    res = board_jobs.run_board_si({**spec, "xtalk_swing_mv": 3300, "xtalk_max_mv": 50},
+                                  b.to_dict(), STACKUP, tmp_path / "d", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk noise")
+    assert f["at_mils"] == [300.0, 0.0] and "50 mV allowed" in f["detail"]
+    assert f["where"] == "runs 600 mil beside AGG at 4.0 mil"

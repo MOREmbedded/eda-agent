@@ -32,7 +32,7 @@ from typing import Any, Optional
 import numpy as np
 
 from ..layout.model import LayoutBoard
-from . import extract
+from . import crosstalk, extract
 from .jobs import _metric, _num
 from .net_jobs import NET_SPEC, run_net_channel
 
@@ -69,6 +69,9 @@ BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "return_gap_min_mils": ("number", False, "shortest gap that is a finding (default 8)"),
     "xtalk_swing_mv": ("number", False, "swing of the neighbours, which turns crosstalk into noise "
                                         "on the eye (default the eye's own amplitude)"),
+    "xtalk_aggressors": ("list", False, "neighbours with an edge or a swing of their own: "
+                                        "{match, rise_ps, swing_mv}"),
+    "xtalk_max_mv": ("number", False, "allowed crosstalk in mV where a target gives none"),
 }
 
 #: Checks whose failure is a warning rather than an error.
@@ -292,7 +295,7 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
             g = rows[0]
             where = {"at_mils": g["at_mils"], "layer": g["layer"],
                      "where": f"{g['distance_mils']:.0f} mil along the route, {g['text']}"}
-    elif v["check"] == "crosstalk":
+    elif v["check"] in ("crosstalk", "crosstalk noise"):
         rows = res.get("figures", {}).get("crosstalk") or []
         if rows:
             a = rows[0]
@@ -361,6 +364,7 @@ def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
     for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils",
               "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet",
+              "xtalk_aggressors", "xtalk_swing_mv", "xtalk_max_mv",
               "return_path", "return_gap_min_mils"):
         if k in spec and k not in s:
             s[k] = spec[k]
@@ -425,9 +429,11 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
         es["repeats"] = 1
         xt = out["metrics"].get("crosstalk_pct")
         if xt:
-            swing = item["settings"].get("xtalk_swing_mv", spec.get("xtalk_swing_mv"))
+            # each neighbour at its own swing; the eye's amplitude where none is given
+            swing = s.get("xtalk_swing_mv")
             swing = float(es.get("amplitude_mv", 800)) if swing is None else float(swing)
-            es["noise_mv"] = round(xt / 100 * max(swing, 0.0), 3)
+            es["noise_mv"] = crosstalk.noise_mv(
+                {"aggressors": res.get("figures", {}).get("crosstalk") or []}, max(swing, 0.0))
         try:
             ts = sub / res["files"]["touchstone"]
             er = eye_jobs.run_convolution(es, ts, sub / "eye")

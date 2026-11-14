@@ -60,6 +60,13 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
                                           "(default 4 heights above the plane, at least 3 widths)"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs; grounds, plane nets "
                                    "and supply rails are left out already"),
+    "xtalk_aggressors": ("list", False, "neighbours with an edge or a swing of their own: "
+                                        "{match (net name glob), rise_ps, swing_mv}; the "
+                                        "others switch as fast as rise_ps"),
+    "xtalk_swing_mv": ("number", False, "swing of the neighbours that are given none; with "
+                                        "every swing known, crosstalk is also given in mV"),
+    "xtalk_max_mv": ("number", False, "allowed crosstalk in mV on the net (no check if absent; "
+                                      "needs every neighbour's swing)"),
     "return_path": ("bool", False, "also look for gaps in the reference copper under the net "
                                    "(default true)"),
     "return_gap_min_mils": ("number", False, "a gap under the trace shorter than this is no "
@@ -259,10 +266,22 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
             detail = (f"near end {xt['next_pct']:.2f} %, far end {xt['fext_pct']:.2f} % of the "
                       f"aggressors' swing at {rise * 1e12:g} ps, {lim:g} % allowed; worst is "
                       f"{a['aggressor']}, {a['length_mils']:.0f} mil {how}"
+                      + (f" (its edge {a['rise_ps']:g} ps)" if "rise_ps" in a else "")
                       + _fix_text(xt.get("fix"), lim))
         else:
             detail = "no switching net runs beside it"
         verdicts.append({"check": "crosstalk", "pass": xt["worst_pct"] <= lim, "detail": detail})
+        if "noise_mv" in xt:
+            m["crosstalk_noise_mv"] = _metric(xt["noise_mv"], "mV", "Crosstalk on the net, each "
+                                              "neighbour at its own swing")
+        if spec.get("xtalk_max_mv") is not None:
+            lim_mv = _num(spec, "xtalk_max_mv", 0.0)
+            if "noise_mv" not in xt:
+                raise ValueError("xtalk_max_mv needs the swing of every neighbour: give "
+                                 "xtalk_swing_mv, or xtalk_aggressors for each of them")
+            verdicts.append({"check": "crosstalk noise", "pass": xt["noise_mv"] <= lim_mv,
+                             "detail": f"{xt['noise_mv']:.1f} mV from the neighbours at their "
+                                       f"own swings, {lim_mv:g} mV allowed"})
     rp = None
     if spec.get("return_path", True):
         mg = _num(spec, "return_gap_min_mils", return_path.MIN_GAP_MILS)
@@ -346,7 +365,14 @@ def _crosstalk(spec: dict[str, Any], board: LayoutBoard, stack, opt, path, rise:
     coupling = crosstalk.Coupling(info, opt, 0.35 / rise, stack=stack)
     out = crosstalk.of_path(board, path, coupling, rise,
                             None if reach is None else float(reach), still,
-                            _num(spec, "xtalk_max_pct", 5.0))
+                            _num(spec, "xtalk_max_pct", 5.0),
+                            crosstalk.aggressor_table(spec.get("xtalk_aggressors")))
+    swing = spec.get("xtalk_swing_mv")
+    if swing is not None and float(swing) < 0:
+        raise ValueError("xtalk_swing_mv is 0 or more")
+    noise = crosstalk.noise_mv(out, None if swing is None else float(swing))
+    if noise is not None and (swing is not None or spec.get("xtalk_aggressors")):
+        out["noise_mv"] = noise
     out["quiet"] = sorted(still)
     return out
 
