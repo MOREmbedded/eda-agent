@@ -94,6 +94,7 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 | `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
 | `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
+| `series_r_ohms` | `eda-agent` | When the overshoot is over its limit: the resistor in series with the driver (each side of a pair) that brings it within, to the whole ohm above. It is worked out as more source resistance with everything else as it is, up to four reference impedances; when that is not enough the overshoot comes from the line and the check says so |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
 | `spice_vs_convolution_rms_mv` | `spice` | The two routes' difference |
 | `macromodel_poles`, `macromodel_rms_error` | `spice` | The fit |
@@ -126,7 +127,8 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 - **The single edge:**
   - A damped ringing step gives back its first peak as overshoot, the dip after it as ringback and its decay as the settling time; a shelf that dips 15 % on the way up reads 15 % of reversal.
   - A 15 ohm driver into an open end of a 50 ohm line overshoots by 2 x 50 / 65 - 1 = 54 % (within 4 points on a lossy line) and rings back as the source reflection says; a matched or a weak driver does not overshoot.
-  - The step takes its DC value from the first two points (a + b f^2), which leaves a pure delay flat to 1 % where the first point alone slopes.
+  - The level a step settles to is worked out from the S-matrix at 0 Hz (each entry read back from its first two points as a + b f^2) and the terminations: 1 between matched ends and 2 into an open end within 1 %, also behind a 215 ohm driver whose transfer has its corner near the frequency step. A pure delay then stays flat to 1 % where the first point taken as DC slopes.
+  - The series resistor named for a 15 ohm driver into an open end and a 10 % limit is 2 Z / 1.1 - Z - 15 = 26 ohm within 3; with it in the edge passes, and 1.5 ohm less it does not.
 - **Eyes:**
   - A flat channel's eye and worst-case eye are the full swing.
   - On a lossy line, the worst case lies below the PRBS eye.
