@@ -52,6 +52,15 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "dfe_taps": ("number", False, "receiver decision-feedback equaliser taps (default 0)"),
     "dfe_max": ("number", False, "the most a DFE tap takes off, as a part of the main cursor "
                                  "(default 0.5)"),
+    "ber": ("number", False, "bit error rate the statistical eye is drawn at (default 1e-12); "
+                             "the statistical eye is worked out when this or one of the "
+                             "four keys after it is given"),
+    "noise_rms_mv": ("number", False, "random (Gaussian) noise at the receiver, RMS (default 0)"),
+    "rj_rms_ps": ("number", False, "random jitter of the sampling instant, RMS (default 0)"),
+    "dj_pp_ps": ("number", False, "deterministic jitter, peak to peak, as two points (default 0)"),
+    "eye_at_ber_min_mv": ("number", False, "eye height needed at the bit error rate "
+                                           "(default: open)"),
+    "eye_at_ber_min_ui": ("number", False, "eye width needed at the bit error rate, in UI"),
     "prbs": ("number", False, "PRBS order: 7, 9, 11, 15 (default 7)"),
     "repeats": ("number", False, "times the pattern runs after settling (default 2)"),
     "samples_per_ui": ("number", False, "time steps per unit interval (default 32)"),
@@ -212,6 +221,70 @@ def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
                                f"{noise:g} mV of noise on each rail"})
     notes.append(f"noise of {noise:g} mV peak lowers the high rail and raises the low rail "
                  "by that much, whenever it arrives: the worst case")
+
+
+#: The keys that ask for the statistical eye.
+STAT_KEYS = ("ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "eye_at_ber_min_mv",
+             "eye_at_ber_min_ui")
+
+
+def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
+                 m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+    """The eye at a bit error rate, when the spec asks for it: its metrics,
+    its check and what it took into account."""
+    if all(spec.get(k) in (None, "") for k in STAT_KEYS):
+        return
+    ber = _num(spec, "ber", 1e-12)
+    if not _eye.BER_FLOOR <= ber <= 0.1:
+        raise ValueError(f"ber is {_eye.BER_FLOOR:g} to 0.1")
+    noise = _num(spec, "noise_rms_mv", 0)
+    rj = _num(spec, "rj_rms_ps", 0)
+    dj = _num(spec, "dj_pp_ps", 0)
+    for key, val in (("noise_rms_mv", noise), ("rj_rms_ps", rj), ("dj_pp_ps", dj)):
+        if val < 0:
+            raise ValueError(f"{key} is 0 or more")
+    peak = _num(spec, "noise_mv", 0)
+    lim_mv = _num(spec, "eye_at_ber_min_mv", 0)
+    lim_ui = _num(spec, "eye_at_ber_min_ui", 0)
+    if lim_mv < 0 or not 0 <= lim_ui <= 1:
+        raise ValueError("eye_at_ber_min_mv is 0 or more and eye_at_ber_min_ui is 0 to 1")
+    step = st["ui"] / st["spui"] * 1e12
+    reach = 8.5 * rj + dj / 2
+    if reach > st["ui"] * 1e12 / 2:
+        raise ValueError(f"the jitter reaches {reach:.1f} ps (8.5 sigma and half the "
+                         f"deterministic part): more than half the {st['ui'] * 1e12:g} ps bit")
+    se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12)
+    height = max(se["eye_height"] * 1e3 - 2 * peak, 0.0)
+    # with peak noise on the rails the width is that of the phases still open
+    wide = int(np.sum(se["heights"] * 1e3 - 2 * peak > 0)) if height > 0 else 0
+    width_ui = wide / st["spui"] if peak else se["eye_width_ui"]
+    m["eye_height_at_ber_mv"] = _metric(round(height, 3), "mV",
+                                        f"Eye height at a bit error rate of {ber:g}")
+    m["eye_width_at_ber_ps"] = _metric(round(width_ui * st["ui"] * 1e12, 3), "ps",
+                                       f"Eye width at a bit error rate of {ber:g}")
+    m["eye_width_at_ber_ui"] = _metric(round(width_ui, 4), "UI",
+                                       f"Eye width at a bit error rate of {ber:g}")
+    m["bit_error_rate"] = _metric(float(f"{se['bit_error_rate']:.3g}"), "",
+                                  "Bit error rate at the best sampling instant, threshold in "
+                                  f"the middle ({_eye.BER_FLOOR / 10:g}: that or less)")
+    ok = height > lim_mv and width_ui >= lim_ui and height > 0
+    need = [f"{lim_mv:g} mV"] if lim_mv else []
+    if lim_ui:
+        need.append(f"{lim_ui:g} UI")
+    verdicts.append({"check": "eye at the bit error rate", "pass": bool(ok),
+                     "detail": f"{height:.1f} mV by {width_ui:.3f} UI at {ber:g}"
+                               + (f", {' and '.join(need)} needed" if need else ", must be open")})
+    parts = ["ISI as independent random bits"]
+    if noise:
+        parts.append(f"{noise:g} mV RMS of Gaussian noise")
+    if rj:
+        parts.append(f"{rj:g} ps RMS of random jitter")
+    if dj:
+        parts.append(f"{dj:g} ps peak to peak of deterministic jitter")
+    if peak:
+        parts.append(f"{peak:g} mV of peak noise off each rail")
+    notes.append("statistical eye: " + ", ".join(parts)
+                 + f"; jitter is taken in steps of {step:.3g} ps (samples_per_ui)")
 
 
 def dc_level(s: np.ndarray, z0: float, term: dict[str, Any]) -> float:
@@ -404,6 +477,7 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
     _with_noise(spec, se["eye_height"], m, verdicts, notes)
+    _statistical(spec, pulse, st, m, verdicts, notes)
     _edge(spec, f, s, z0, term, st, m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 

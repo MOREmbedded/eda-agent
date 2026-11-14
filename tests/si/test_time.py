@@ -808,3 +808,185 @@ def test_equaliser_defaults_and_the_spice_engine_refuses_it(tmp_path):
     for opt in ({"tx_ffe": [0.8, -0.2]}, {"ctle_db": 3}, {"dfe_taps": 1}):
         with pytest.raises(ValueError, match="eda-agent engine only"):
             eye_jobs.run_spice({"data_rate_gbps": 5, **opt}, ts, tmp_path / "s")
+
+
+# --- the eye at a bit error rate -------------------------------------------------------
+
+def test_jitter_weights_hold_the_whole_probability_where_it_falls():
+    dt = 1e-12
+    assert eye.jitter_weights(dt, 0, 0, 8).tolist() == [1.0]
+    w = eye.jitter_weights(dt, 1.5e-12, 0, 40)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-15) and w == pytest.approx(w[::-1])
+    assert n >= 13                                       # past 8.5 sigma
+    assert np.sum(w * x ** 2) == pytest.approx(1.5e-12 ** 2 + dt ** 2 / 12, rel=1e-3)
+    # the tail beyond 7 sigma is still there
+    from scipy.special import ndtr
+    assert np.sum(w[x > 10e-12]) == pytest.approx(ndtr(-10.5 / 1.5), rel=1e-6)
+    # deterministic jitter alone: two points
+    w = eye.jitter_weights(dt, 0, 6e-12, 40)
+    assert w[len(w) // 2 - 3] == w[len(w) // 2 + 3] == 0.5 and np.sum(w) == 1.0
+    # both: the Gaussian around each of the two
+    w = eye.jitter_weights(dt, 1e-12, 6e-12, 40)
+    n = len(w) // 2
+    assert w[n + 3] == pytest.approx(0.5 * (ndtr(0.5) - ndtr(-0.5)), rel=1e-6)
+    assert w[n] == pytest.approx(ndtr(-2.5) - ndtr(-3.5), rel=1e-6)
+    # what the reach allowed cannot hold lands on its ends
+    w = eye.jitter_weights(dt, 3e-12, 0, 2)
+    assert len(w) == 5 and np.sum(w) == pytest.approx(1.0) and w[0] == pytest.approx(ndtr(-0.5))
+
+
+def test_statistical_eye_of_noise_alone_is_the_gaussian_quantile():
+    from scipy.special import ndtr, ndtri
+    p = _tri_pulse([1.0])
+    for ber in (1e-3, 1e-6, 1e-12, 1e-15, 1e-18):
+        r = eye.statistical_eye(p, 0.8, ber, noise_rms=0.02)
+        assert r["eye_height"] == pytest.approx(2 * (0.4 + ndtri(ber) * 0.02), rel=2e-6), ber
+    # the triangle is over the level for the part of the bit the quantile leaves
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.02)
+    open_part = 1 + ndtri(1e-12) * 0.02 / 0.4
+    assert r["eye_width_ui"] == pytest.approx(open_part, abs=1.5 / 16)
+    assert r["phase"] == 8 and r["eye_width"] == pytest.approx(r["eye_width_ui"] * 1e-10)
+    # and the error rate at the threshold is the tail below it
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1)
+    assert r["bit_error_rate"] == pytest.approx(ndtr(-4.0), rel=1e-4, abs=0)
+    assert r["eye_height"] == 0.0 and r["eye_width_ui"] == 0.0
+    assert eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.05)["bit_error_rate"] == \
+        pytest.approx(ndtr(-8.0), rel=1e-3, abs=0)          # 6e-16
+    for bad in (0.2, 1e-19, 0.0):
+        with pytest.raises(ValueError, match="ber is"):
+            eye.statistical_eye(p, 0.8, bad)
+
+
+def test_statistical_eye_of_isi_alone_steps_through_the_patterns():
+    # four cursors beside the main one: 16 patterns, each 1 in 16
+    p = _tri_pulse([0.05, 1.0, 0.2, -0.1, 0.03], lead=2)
+    wc = eye.worst_case_eye(p, 0.8)
+    assert wc["eye_height"] == pytest.approx(0.8 * (1 - 0.38))
+    # rarer than any pattern: the worst case, less the grid's own width
+    for ber in (1e-3, 1e-6, 1e-12, 1e-18):
+        r = eye.statistical_eye(p, 0.8, ber)
+        assert wc["eye_height"] - 0.004 < r["eye_height"] <= wc["eye_height"] + 1e-4, ber
+    # between 1 and 2 patterns in 16: the second worst, which has the smallest cursor turned
+    r = eye.statistical_eye(p, 0.8, 0.1)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 0.38 + 0.06), abs=0.002)
+    # the threshold is crossed by no pattern
+    assert r["bit_error_rate"] == eye.BER_FLOOR / 10
+    # noise rounds the steps off: lower at 1e-12, and more so further down
+    a = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.01)["eye_height"]
+    b = eye.statistical_eye(p, 0.8, 1e-15, noise_rms=0.01)["eye_height"]
+    assert b < a < wc["eye_height"] - 2 * 6 * 0.01
+    # yet no lower than the worst pattern with the noise's own quantile off it
+    from scipy.special import ndtri
+    assert a > wc["eye_height"] + 2 * ndtri(1e-12) * 0.01 - 1e-3
+    # sixteen cursors of 0.07: all against the bit close the eye, once in 65536 bits; 14 or
+    # more against it come 137 times in 65536, 15 or more 17 times, so 1e-3 is 14 against
+    many = _tri_pulse([1.0] + [0.07, -0.07] * 8)
+    assert eye.worst_case_eye(many, 0.8)["eye_height"] == 0.0
+    r = eye.statistical_eye(many, 0.8, 1e-3)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 12 * 0.07), abs=0.004)
+    assert r["bit_error_rate"] == pytest.approx(1 / 65536, rel=1e-6, abs=0)
+    assert eye.statistical_eye(many, 0.8, 1e-6)["eye_height"] == 0.0
+
+
+def test_cursors_too_small_for_the_grid_count_at_their_worst():
+    # 300 cursors of a ten-millionth each: far below a voltage step, 3e-5 together
+    base = _tri_pulse([1.0, 0.2])
+    tail = _tri_pulse([1.0, 0.2] + [1e-7, -1e-7] * 150)
+    a = eye.statistical_eye(base, 0.8, 1e-12)["eye_height"]
+    b = eye.statistical_eye(tail, 0.8, 1e-12)["eye_height"]
+    assert a - b == pytest.approx(0.8 * 300e-7, rel=0.05, abs=0)
+
+
+def test_jitter_takes_the_eye_where_the_sampling_instant_can_be():
+    p = _tri_pulse([1.0])                                # 16 steps a bit: 1/8 off per step
+    step = 1e-10 / 16
+    flat = eye.statistical_eye(p, 0.8, 1e-12)
+    assert flat["eye_height"] == pytest.approx(0.8, abs=0.004)
+    # two points 3 steps either side: the level there, whichever it is
+    r = eye.statistical_eye(p, 0.8, 1e-12, dj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 3 / 8), abs=0.004)
+    assert r["eye_width_ui"] == pytest.approx(flat["eye_width_ui"] - 6 / 16, abs=1.01 / 16)
+    # random jitter of half a step: 4 steps off holds 2.6e-12 of it (past 7 sigma, both
+    # sides) and 5 steps next to nothing, so 1e-12 is 4 steps off; 2 steps off holds
+    # 2.7e-3 and 3 steps 5.7e-7, so 1e-3 is 2 steps off
+    deep = eye.statistical_eye(p, 0.8, 1e-12, rj_rms=0.5 * step)
+    shallow = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step)
+    assert deep["eye_height"] == pytest.approx(0.8 * (1 - 4 / 8), abs=0.004)
+    assert shallow["eye_height"] == pytest.approx(0.8 * (1 - 2 / 8), abs=0.004)
+    assert deep["eye_width_ui"] < shallow["eye_width_ui"] < flat["eye_width_ui"]
+    both = eye.statistical_eye(p, 0.8, 1e-12, rj_rms=0.5 * step, dj_pp=6 * step)
+    assert both["eye_height"] < min(deep["eye_height"], r["eye_height"])
+
+
+def test_the_eye_job_gives_the_statistical_eye_when_asked(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=5, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    plain, res = run()
+    assert "eye_height_at_ber_mv" not in plain and "bit_error_rate" not in plain
+    assert not any(v["check"] == "eye at the bit error rate" for v in res["verdicts"])
+    m, res = run(ber=1e-12)
+    # between the worst case and the pattern's eye
+    assert plain["worst_case_eye_height_mv"] - 3 < m["eye_height_at_ber_mv"] < plain["eye_height_mv"]
+    assert m["eye_width_at_ber_ps"] == pytest.approx(m["eye_width_at_ber_ui"] * 200, abs=0.05)
+    assert m["bit_error_rate"] == 1e-19
+    v = {x["check"]: x for x in res["verdicts"]}["eye at the bit error rate"]
+    assert v["pass"] and v["detail"] == (f"{m['eye_height_at_ber_mv']:.1f} mV by "
+                                         f"{m['eye_width_at_ber_ui']:.3f} UI at 1e-12, must be open")
+    assert any(n.startswith("statistical eye: ISI as independent random bits; jitter")
+               for n in res["notes"])
+    # noise and jitter each cost, and are named
+    n, res = run(noise_rms_mv=10)
+    assert " UI at 1e-12, " in {x["check"]: x for x in res["verdicts"]}[
+        "eye at the bit error rate"]["detail"]              # the rate where none is given
+    assert n["eye_height_at_ber_mv"] == run(noise_rms_mv=10, ber=1e-12)[0]["eye_height_at_ber_mv"]
+    assert n["eye_height_at_ber_mv"] < run(noise_rms_mv=10, ber=1e-9)[0]["eye_height_at_ber_mv"]
+    # at most its own 7 sigma off each rail, and less than that beside the ISI's spread
+    assert m["eye_height_at_ber_mv"] - 2 * 7.04 * 10 < n["eye_height_at_ber_mv"] \
+        < m["eye_height_at_ber_mv"] - 2 * 3 * 10
+    j, res = run(rj_rms_ps=3, dj_pp_ps=20, noise_rms_mv=10)
+    assert j["eye_height_at_ber_mv"] < n["eye_height_at_ber_mv"]
+    assert j["eye_width_at_ber_ui"] < n["eye_width_at_ber_ui"] - 0.1
+    assert any("10 mV RMS of Gaussian noise, 3 ps RMS of random jitter, 20 ps peak to peak of "
+               "deterministic jitter; jitter is taken in steps of 6.25 ps" in x
+               for x in res["notes"])
+    # a looser error rate opens it
+    assert run(ber=1e-6, noise_rms_mv=10)[0]["eye_height_at_ber_mv"] > n["eye_height_at_ber_mv"]
+    # peak noise comes off both rails
+    pk = run(noise_rms_mv=10, noise_mv=20)[0]
+    assert pk["eye_height_at_ber_mv"] == pytest.approx(n["eye_height_at_ber_mv"] - 40, abs=0.01)
+    assert pk["eye_width_at_ber_ui"] < n["eye_width_at_ber_ui"]
+    # limits
+    lim = n["eye_height_at_ber_mv"]
+    for opt, ok, tail in (({"eye_at_ber_min_mv": lim - 1}, True, f", {lim - 1:g} mV needed"),
+                          ({"eye_at_ber_min_mv": lim + 1}, False, f", {lim + 1:g} mV needed"),
+                          ({"eye_at_ber_min_ui": 0.99}, False, ", 0.99 UI needed"),
+                          ({"eye_at_ber_min_ui": 0.1, "eye_at_ber_min_mv": 5}, True,
+                           ", 5 mV and 0.1 UI needed")):
+        v = {x["check"]: x for x in run(noise_rms_mv=10, **opt)[1]["verdicts"]}
+        v = v["eye at the bit error rate"]
+        assert v["pass"] is ok and v["detail"].endswith(tail), opt
+    # enough noise closes it, and the error rate says how badly
+    shut, res = run(noise_rms_mv=150)
+    assert shut["eye_height_at_ber_mv"] == 0 and shut["eye_width_at_ber_ui"] == 0
+    assert 1e-6 < shut["bit_error_rate"] < 0.1
+    assert not {x["check"]: x for x in res["verdicts"]}["eye at the bit error rate"]["pass"]
+
+
+@pytest.mark.parametrize("opt, text", [
+    ({"ber": 0.5}, "ber is 1e-18 to 0.1"), ({"ber": 1e-20}, "ber is 1e-18 to 0.1"),
+    ({"noise_rms_mv": -1}, "noise_rms_mv is 0 or more"), ({"rj_rms_ps": -1}, "rj_rms_ps is 0"),
+    ({"dj_pp_ps": -2}, "dj_pp_ps is 0 or more"), ({"eye_at_ber_min_ui": 1.5}, "eye_at_ber_min_ui"),
+    ({"eye_at_ber_min_mv": -1}, "eye_at_ber_min_mv"),
+    ({"rj_rms_ps": 60}, "the jitter reaches 510.0 ps"),
+    ({"dj_pp_ps": 1200}, "more than half the 1000 ps bit"),
+])
+def test_statistical_eye_settings_are_checked(tmp_path, opt, text):
+    f = ch.uniform_band(20e9, 400)
+    ts = str(write_touchstone(tmp_path / "l.s2p", list(f), lossy_line(f, 0.05, 50.0).tolist(), 50.0))
+    run = _edge_job(ts, **opt)
+    assert run["state"] == "failed" and text in run["error"], run

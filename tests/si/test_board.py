@@ -483,3 +483,26 @@ def test_a_target_carries_its_equaliser_to_the_eye(tmp_path):
     assert "eye_dfe_tap1_mv" in eq and "eye_dfe_tap1_mv" not in plain
     assert eq["eye_isi_mv"] < plain["eye_isi_mv"]
     assert eq["eye_main_cursor_mv"] < plain["eye_main_cursor_mv"]     # the FFE's price
+
+
+def test_a_target_carries_its_bit_error_rate_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 5, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def item_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+    plain = item_of("a")
+    assert "eye_height_at_ber_mv" not in plain["metrics"]
+    it = item_of("b", ber=1e-12, noise_rms_mv=5, rj_rms_ps=2)
+    m = it["metrics"]
+    assert 0 < m["eye_height_at_ber_mv"] < m["eye_height_mv"] - 2 * 3 * 5
+    assert 0 < m["eye_width_at_ber_ui"] < m["eye_width_ui"] and "bit_error_rate" in m
+    assert not [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
+    # a limit it does not meet is a finding of the net
+    it = item_of("c", eye_at_ber_min_mv=m["eye_height_at_ber_mv"] + 5)
+    f = [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
+    assert len(f) == 1 and f[0]["severity"] == "error"
+    assert f[0]["detail"].endswith(f", {m['eye_height_at_ber_mv'] + 5:g} mV needed")

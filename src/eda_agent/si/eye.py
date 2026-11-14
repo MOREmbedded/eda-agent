@@ -351,6 +351,135 @@ def worst_case_eye(pulse: Pulse, amplitude: float) -> dict[str, Any]:
             "isi_sum": float(np.sum(np.abs(p[np.arange(pk % spui, len(p), spui)])) - abs(p[pk]))}
 
 
+#: Voltage bins of the statistical eye, and the lowest bit error rate it is
+#: asked for.
+STAT_BINS = 32768
+BER_FLOOR = 1e-18
+#: How far the lower tail is lifted against the body for the transform.
+STAT_TILT = 1e9
+#: The least Gaussian width the transform is given, in bins: it takes the
+#: spectrum to rounding at the grid's highest frequency, so that the steps of
+#: a density made of ISI alone do not ring across the grid.
+STAT_MIN_SIGMA_BINS = 2.8
+
+
+def jitter_weights(dt: float, rj_rms: float, dj_pp: float, most: int) -> np.ndarray:
+    """Probability of each sampling offset, in steps of ``dt`` from -n to n:
+    Gaussian random jitter around the two points of the deterministic jitter
+    (dual Dirac). Each step holds the probability of the offsets nearest to
+    it, so the tails are kept. ``most`` bounds n."""
+    if rj_rms <= 0 and dj_pp <= 0:
+        return np.ones(1)
+    from scipy.special import ndtr
+    n = int(min(most, max(1, np.ceil((8.5 * rj_rms + dj_pp / 2) / dt + 0.5))))
+    edges = (np.arange(-n, n + 2) - 0.5) * dt
+    w = np.zeros(2 * n + 1)
+    for centre in (-dj_pp / 2, dj_pp / 2):
+        if rj_rms > 0:
+            cdf = ndtr((edges - centre) / rj_rms)
+        else:
+            cdf = (edges > centre).astype(float)
+        cdf[0], cdf[-1] = 0.0, 1.0                     # what lies beyond goes to the ends
+        w += 0.5 * np.diff(cdf)
+    return w
+
+
+def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rms: float = 0.0,
+                    rj_rms: float = 0.0, dj_pp: float = 0.0) -> dict[str, Any]:
+    """The eye at a bit error rate, from the pulse response.
+
+    At each sampling phase the received level of a one is its main cursor
+    plus the other cursors, each with the sign of an independent random bit.
+    The characteristic function of that sum is the product of cos(w a_k),
+    times the Gaussian's for the noise; its transform is the level's
+    probability density, exact but for the grid. Jitter mixes the densities
+    of the phases it reaches. The inner contour is the level a one falls
+    below with probability ``ber``; a zero mirrors it.
+    """
+    if not BER_FLOOR <= ber <= 0.1:
+        raise ValueError(f"ber is {BER_FLOOR:g} to 0.1")
+    spui = pulse.spui
+    p = pulse.p * amplitude / 2
+    pk = pulse.peak_index
+    w = jitter_weights(pulse.ui / spui, rj_rms, dj_pp, spui // 2)
+    reach = len(w) // 2
+    offsets = np.arange(-reach, spui + reach)
+    # every sample belongs to one bit position of one phase
+    first = pk - spui // 2 + offsets
+    rows = []
+    for c in first:
+        idx = np.arange(c % spui, len(p), spui)
+        cur = p[idx]
+        main = p[c] if 0 <= c < len(p) else 0.0
+        if 0 <= c < len(p):
+            cur = np.delete(cur, (c - c % spui) // spui)
+        rows.append((main, cur))
+    reachv = max(abs(m) + np.sum(np.abs(c)) for m, c in rows)
+    span = max(reachv + 12.0 * noise_rms, 1e-12) * 1.05
+    dv = 2 * span / STAT_BINS
+    omega = 2 * np.pi * np.fft.rfftfreq(STAT_BINS, dv)
+    v = (np.arange(STAT_BINS) - STAT_BINS // 2) * dv
+    sigma = max(noise_rms, STAT_MIN_SIGMA_BINS * dv)
+    small = dv / 64
+    pdfs = np.empty((len(rows), STAT_BINS))
+    for i, (main, cur) in enumerate(rows):
+        big = cur[np.abs(cur) >= small]
+        # cursors far below a bin are taken at their worst: off the main cursor
+        main = main - float(np.sum(np.abs(cur[np.abs(cur) < small])))
+        # The density is transformed tilted by exp(-theta (x - main)), which
+        # lifts its lower tail by STAT_TILT against the body, and tilted back
+        # afterwards: the transform's rounding, level with the body, then
+        # falls away along the tail the contour is read from.
+        theta = np.log(STAT_TILT) / (float(np.sum(np.abs(big))) + 7.0 * sigma)
+        w_ = omega - 1j * theta
+        phi = np.exp(-0.5 * (w_ * sigma) ** 2 - 0.5 * (theta * sigma) ** 2)
+        for j in range(0, len(big), 64):
+            a = big[j: j + 64, None]
+            phi = phi * np.prod(np.cos(a * w_[None, :]) / np.cosh(theta * a), axis=0)
+        level = float(np.prod(np.cosh(theta * big))) * float(np.exp(0.5 * (theta * sigma) ** 2))
+        # 0 V sits mid-grid
+        phi = phi * np.exp(-1j * omega * (main + span))
+        tilted = np.fft.irfft(phi, STAT_BINS)
+        # the transform's rounding, about level across the grid
+        floor = 20 * np.finfo(float).eps * np.log2(STAT_BINS) * np.sqrt(
+            2 * float(np.sum(np.abs(phi) ** 2)) / STAT_BINS)
+        tilted[tilted < floor] = 0.0
+        with np.errstate(over="ignore"):
+            pdfs[i] = tilted * level * np.exp(np.clip(theta * (v - main), None, 60.0))
+    if reach:
+        pdfs = sum(w[j] * pdfs[j: j + spui] for j in range(len(w)))
+    cdf = np.cumsum(pdfs, axis=1)
+    # the level a one stays above but for ``ber``: interpolated in the bin
+    inner = np.empty(spui)
+    errors = np.empty(spui)
+    zero = STAT_BINS // 2
+    for i in range(spui):
+        k = int(np.searchsorted(cdf[i], ber))
+        lo = cdf[i, k - 1] if k else 0.0
+        hi = cdf[i, k]
+        if lo > 0:                                      # a tail climbs by a factor a bin
+            frac = np.log(ber / lo) / np.log(hi / lo)
+        else:
+            frac = ber / max(hi, 1e-300)
+        inner[i] = v[k] - dv / 2 + frac * dv
+        errors[i] = cdf[i, zero - 1] + 0.5 * pdfs[i, zero]
+    heights = 2 * inner
+    k = int(np.argmax(heights))
+    open_ = heights > 0
+    width = 0
+    if open_[k]:                                        # the run of open phases around the best
+        a = b = k
+        while a > 0 and open_[a - 1]:
+            a -= 1
+        while b < spui - 1 and open_[b + 1]:
+            b += 1
+        width = b - a + 1
+    return {"eye_height": float(max(heights[k], 0.0)), "eye_width_ui": width / spui,
+            "eye_width": width / spui * pulse.ui, "phase": k,
+            "bit_error_rate": float(max(np.min(errors), BER_FLOOR / 10)),
+            "heights": heights, "errors": errors}
+
+
 def plot_eye(path, eye: np.ndarray, ui: float, title: str, extra: Optional[np.ndarray] = None
              ) -> bool:
     try:

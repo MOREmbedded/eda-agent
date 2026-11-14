@@ -462,7 +462,11 @@ def _register_si_time_tools(mcp) -> None:
                 (receiver CTLE boost over DC, 0-30), ctle_peak_ghz (its
                 first pole, default Nyquist), dfe_taps (receiver DFE taps,
                 0-32), dfe_max (most one tap takes off, part of the main
-                cursor, 0.5); equalisation is in the eda-agent engine only,
+                cursor, 0.5; equalisation is in the eda-agent engine only),
+                ber (1e-12), noise_rms_mv, rj_rms_ps, dj_pp_ps (any of
+                them adds the eye at that bit error rate with Gaussian
+                noise and random and deterministic jitter), with limits
+                eye_at_ber_min_mv and eye_at_ber_min_ui,
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
                 tx_model (an IBIS driver: its output resistance, C_comp,
@@ -715,7 +719,7 @@ def _register_si_board_tools(mcp) -> None:
                 swing_mv}]); eye: true to add the eye, eye_min_mv,
                 eye_min_ui, overshoot_max_pct, ringback_max_pct,
                 edge_reversal_max_pct, and si_channel_eye's driver,
-                receiver and equaliser options}. A net is taken by the
+                receiver, equaliser and bit-error-rate options}. A net is taken by the
                 first target that matches it. Default: every differential
                 pair.
             options: data_rate_gbps (for targets without one), eye,
