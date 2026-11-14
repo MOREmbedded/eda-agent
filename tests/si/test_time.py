@@ -1451,3 +1451,83 @@ def test_the_eye_job_takes_sinusoidal_jitter(tmp_path):
     # they add: the sine around each of the two points
     both = run(sj_pp_ps=30, dj_pp_ps=30)[0]
     assert both["eye_width_at_ber_ui"] < sj["eye_width_at_ber_ui"] - 0.1
+
+
+# --- DFE error propagation -------------------------------------------------------------
+
+def test_burst_errors_with_no_taps_or_no_effect_is_the_one_error():
+    never = lambda x: np.zeros_like(x, dtype=float)                     # noqa: E731
+    assert eye.burst_errors(never, []) == 1.0
+    assert eye.burst_errors(never, [0.0, 0.0]) == 1.0
+    assert eye.burst_errors(never, [0.1, 0.05]) == 1.0
+
+
+@pytest.mark.parametrize("m", [1, 2, 5])
+@pytest.mark.parametrize("q", [0.01, 0.3])
+def test_burst_errors_at_a_fixed_chance_is_the_wait_for_a_clean_run(m, q):
+    # each decision wrong with chance q while any of the last m was: the burst ends at m
+    # right ones in a row, and the wrong ones before that number (1 - q)^-m - 1
+    same = lambda x: np.full(np.shape(x), q)                            # noqa: E731
+    assert eye.burst_errors(same, [0.1] * m) == pytest.approx((1 - q) ** -m, rel=1e-12)
+    # a tap of 0 in the middle still holds the burst open; taps of 0 at the end do not
+    assert eye.burst_errors(same, [0.1] * m + [0.0, 0.0]) == pytest.approx((1 - q) ** -m, rel=1e-12)
+
+
+def test_burst_errors_are_those_of_a_receiver_played_out():
+    from scipy.special import ndtr
+    main, sigma, steps = 1.0, 0.45, np.array([0.9, 0.5, 0.3])
+    error_at = lambda x: ndtr((np.asarray(x) - main) / sigma)           # noqa: E731
+    want = eye.burst_errors(error_at, steps)
+    rng = np.random.default_rng(7)
+    total, bursts = 0, 40000
+    for _ in range(bursts):
+        wrong = [True, False, False]                      # newest first
+        total += 1
+        while any(wrong):
+            left = sum(s * rng.choice((-1.0, 1.0)) for s, w in zip(steps, wrong) if w)
+            err = main + sigma * rng.standard_normal() + left < 0
+            total += err
+            wrong = [bool(err)] + wrong[:-1]
+    assert 1.15 < want < 3
+    assert total / bursts == pytest.approx(want, rel=0.02)
+
+
+def test_statistical_eye_multiplies_its_error_rate_by_the_burst():
+    from scipy.special import ndtr
+    p = _tri_pulse([1.0])
+    plain = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1)
+    assert plain["burst_errors"] == 1.0
+    # a tap of 0.6 of the pulse: a wrong decision leaves 2 x 0.6 x 0.4 V on the next
+    # sample, for or against: against, the level is 0.4 - 0.48 with 0.1 of noise
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1, dfe_taps=[0.6])
+    q = 0.5 * (ndtr((-0.4 + 0.48) / 0.1) + ndtr((-0.4 - 0.48) / 0.1))
+    assert r["burst_errors"] == pytest.approx(1 / (1 - q), rel=2e-3)
+    assert r["bit_error_rate"] == pytest.approx(plain["bit_error_rate"] * r["burst_errors"], rel=1e-12)
+    assert r["eye_height"] == plain["eye_height"]         # the contour takes decisions as right
+    # a small tap leaves next to nothing
+    small = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.02, dfe_taps=[0.1, -0.05])
+    assert 1.0 <= small["burst_errors"] < 1 + 1e-9
+    # PAM4: a neighbouring level taken instead leaves a third of that, with levels a third apart
+    r4 = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.03, levels=4, dfe_taps=[0.6])
+    q4 = 0.5 * (ndtr((-0.4 / 3 + 0.16) / 0.03) + ndtr((-0.4 / 3 - 0.16) / 0.03))
+    assert r4["burst_errors"] == pytest.approx(1 / (1 - q4), rel=2e-3)
+
+
+def test_the_eye_job_counts_the_errors_a_dfe_propagates(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    # no DFE, or no eye at a bit error rate: nothing to report
+    assert "dfe_burst_errors" not in run(ber=1e-12, noise_rms_mv=20)[0]
+    assert "dfe_burst_errors" not in run(dfe_taps=3)[0]
+    m, res = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=40)
+    assert m["dfe_burst_errors"] > 1.0005
+    assert any("a wrong DFE decision followed through 3 taps" in n for n in res["notes"])
+    # more noise: a wrong decision is likelier to bring another
+    worse = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=80)[0]
+    assert worse["dfe_burst_errors"] > m["dfe_burst_errors"]
+    # taps held small propagate less
+    held = run(dfe_taps=3, dfe_max=0.02, ber=1e-12, noise_rms_mv=40)[0]
+    assert 1.0 <= held["dfe_burst_errors"] < m["dfe_burst_errors"]

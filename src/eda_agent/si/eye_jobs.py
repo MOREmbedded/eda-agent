@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 
@@ -243,7 +243,8 @@ STAT_KEYS = ("ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "sj_pp_ps", "eye_at
 
 
 def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
-                 m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+                 m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str],
+                 dfe_taps: Sequence[float] = ()) -> None:
     """The eye at a bit error rate, when the spec asks for it: its metrics,
     its check and what it took into account."""
     if all(spec.get(k) in (None, "") for k in STAT_KEYS):
@@ -272,7 +273,7 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
                          f"{st['ui'] * 1e12:g} ps "
                          f"{'symbol' if st['levels'] > 2 else 'bit'}")
     se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12,
-                              levels=st["levels"], sj_pp=sj * 1e-12)
+                              levels=st["levels"], sj_pp=sj * 1e-12, dfe_taps=dfe_taps)
     height = max(se["eye_height"] * 1e3 - 2 * peak, 0.0)
     # with peak noise on the rails the width is that of the phases still open
     wide = int(np.sum(se["heights"] * 1e3 - 2 * peak > 0)) if height > 0 else 0
@@ -286,6 +287,10 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
     m["bit_error_rate"] = _metric(float(f"{se['bit_error_rate']:.3g}"), "",
                                   "Bit error rate at the best sampling instant, threshold in "
                                   f"the middle ({_eye.BER_FLOOR / 10:g}: that or less)")
+    if len(dfe_taps):
+        m["dfe_burst_errors"] = _metric(float(f"{se['burst_errors']:.4g}"), "",
+                                        "Wrong decisions one wrong decision of the DFE brings, "
+                                        "itself included; the bit error rate is multiplied by it")
     ok = height > lim_mv and width_ui >= lim_ui and height > 0
     need = [f"{lim_mv:g} mV"] if lim_mv else []
     if lim_ui:
@@ -304,6 +309,10 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
         parts.append(f"{sj:g} ps peak to peak of sinusoidal jitter")
     if peak:
         parts.append(f"{peak:g} mV of peak noise off each rail")
+    if len(dfe_taps):
+        parts.append(f"a wrong DFE decision followed through {min(len(dfe_taps), _eye.BURST_TAPS)} "
+                     f"taps ({se['burst_errors']:.4g} errors each, in the error rate; the "
+                     "contour takes decisions as right)")
     notes.append("statistical eye: " + ", ".join(parts)
                  + f"; jitter is taken in steps of {step:.3g} ps (samples_per_ui)")
 
@@ -557,8 +566,8 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
                                          3), "mV", "First DFE tap")
         notes.append("receiver DFE taps (mV): "
                      + ", ".join(f"{d * st['amp'] / 2 * 1e3:+.1f}" for d in dfe_taps)
-                     + f"; each at most {eq['dfe_max']:g} of the main cursor, decisions taken "
-                     "as right")
+                     + f"; each at most {eq['dfe_max']:g} of the main cursor; the eye takes "
+                     "its decisions as right")
     if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"]:
         notes.append("the eye, the waveform and the cursors are those after equalisation; the "
                      "edge figures and the insertion loss are the channel's own")
@@ -566,7 +575,7 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
     _with_noise(spec, se["eye_height"], m, verdicts, notes)
-    _statistical(spec, pulse, st, m, verdicts, notes)
+    _statistical(spec, pulse, st, m, verdicts, notes, dfe_taps if eq["dfe_taps"] else ())
     _edge(spec, f, s, z0, term, st, m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 

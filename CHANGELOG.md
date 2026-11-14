@@ -61,6 +61,11 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: DFE error propagation.** With `dfe_taps` and the eye
+  at a bit error rate, `bit_error_rate` now counts the errors a wrong
+  decision of the DFE brings after it: the decisions of the last taps are
+  a Markov chain, solved for the length of the burst (`dfe_burst_errors`;
+  1 is no propagation). The contour still takes decisions as right.
 - **Signal integrity: sinusoidal jitter.** `sj_pp_ps` in `si_channel_eye`
   and in a board-check target adds sinusoidal jitter to the eye at a bit
   error rate, with the density of a sine (not two points), together with
