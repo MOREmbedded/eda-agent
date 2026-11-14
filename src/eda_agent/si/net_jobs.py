@@ -19,7 +19,7 @@ from ..emc.stack import stack_from_stackup
 from ..emc.touchstone import write_touchstone
 from ..layout.model import LayoutBoard
 from . import channel as ch
-from . import crosstalk, extract, net_model, planner
+from . import crosstalk, extract, net_model, planner, return_path
 from .jobs import _metric, _num, plan_options
 
 _PLOT_LOCK = threading.Lock()
@@ -60,6 +60,11 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
                                           "(default 4 heights above the plane, at least 3 widths)"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs; grounds, plane nets "
                                    "and supply rails are left out already"),
+    "return_path": ("bool", False, "also look for gaps in the reference copper under the net "
+                                   "(default true)"),
+    "return_gap_min_mils": ("number", False, "a gap under the trace shorter than this is no "
+                                             "finding unless the plane's net changes across it "
+                                             "(default 8)"),
     "rules": ("bool", False, "also work out Altium design rules for the net (default true)"),
 }
 
@@ -255,6 +260,30 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         else:
             detail = "no switching net runs beside it"
         verdicts.append({"check": "crosstalk", "pass": xt["worst_pct"] <= lim, "detail": detail})
+    rp = None
+    if spec.get("return_path", True):
+        mg = _num(spec, "return_gap_min_mils", return_path.MIN_GAP_MILS)
+        if mg < 0:
+            raise ValueError("return_gap_min_mils is 0 or more")
+        info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+        rp = return_path.of_path(board, path, info, mg)
+        (folder / "return_path.json").write_text(json.dumps(rp, indent=1), encoding="utf-8")
+        files["return_path"] = "return_path.json"
+        gaps = rp["gaps"]
+        m["return_gaps"] = _metric(len(gaps), "", "Gaps in the reference copper under the route")
+        m["return_gap_mils"] = _metric(rp["worst_mils"], "mil", "Longest such gap")
+        v = {"check": "return path", "pass": not gaps,
+             "detail": "reference copper under the whole route"}
+        if gaps:
+            g = gaps[0]
+            v["detail"] = (f"{g['text']}, {g['distance_mils']:.0f} mil along the route on "
+                           f"{g['layer']}"
+                           + ("; the other reference plane is whole there"
+                              if g["other_reference_solid"] else "")
+                           + (f"; {len(gaps) - 1} more" if len(gaps) > 1 else ""))
+            if all(x["other_reference_solid"] for x in gaps):
+                v["severity"] = "warning"
+        verdicts.append(v)
     notes = [
         f"path {path.p.start if pair else path.start} to {path.p.end if pair else path.end}; "
         "lines from the 2D field and eddy-current solvers of each cross-section, vias from "
@@ -270,8 +299,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
                      "all switching together)")
         if xt["quiet"]:
             notes.append("taken as not switching: " + ", ".join(xt["quiet"]))
+    if rp is not None:
+        notes.extend(rp["notes"])
     out = {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files,
            "figures": {"path": path.to_dict(), "blocks": model.blocks}}
+    if rp is not None:
+        out["figures"]["return_path"] = rp["gaps"]
     if xt is not None:
         out["figures"]["crosstalk"] = xt["aggressors"]
     if spec.get("rules", True):
