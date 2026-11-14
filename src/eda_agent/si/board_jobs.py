@@ -514,8 +514,11 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
     cap = int(_num(spec, "max_items", 40))
     skipped = items[cap:]
     items = items[:cap]
-    rates = [float(it["settings"].get("data_rate_gbps", spec.get("data_rate_gbps") or 0))
-             for it in items]
+    # symbols a second: the sweep is sized for the symbol, so a PAM4
+    # target gets the sweep of NRZ at half its data rate
+    rates = [symbol_rate_gbd({"data_rate_gbps": it["settings"].get(
+                 "data_rate_gbps", spec.get("data_rate_gbps")),
+                 "modulation": it["settings"].get("modulation")}) or 0.0 for it in items]
     for it, r in zip(items, rates):
         if r <= 0:
             raise ValueError(f"{it['kind']} {it['name']}: no data rate (give data_rate_gbps "

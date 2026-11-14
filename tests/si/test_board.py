@@ -565,3 +565,12 @@ def test_a_pam4_target_is_checked_at_its_symbol_rate(tmp_path):
     assert 0 < pam["worst_case_eye_height_mv"] <= nrz["worst_case_eye_height_mv"] / 3 + 1e-9
     slow = run("c", data_rate_gbps=10, modulation="pam4")
     assert slow["insertion_loss_db"] < nrz["insertion_loss_db"]
+    # and with the sweep left to the job: sized for the symbol, so the same sweep
+    del spec["f_max_ghz"]
+    nrz = run("d", data_rate_gbps=10, modulation="nrz")
+    pam = run("e", data_rate_gbps=20, modulation="pam4")
+    assert pam["insertion_loss_db"] == nrz["insertion_loss_db"]
+    assert pam["return_loss_db"] == nrz["return_loss_db"]
+    with pytest.raises(ValueError, match="no data rate"):
+        target.pop("data_rate_gbps")
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "f", snapshot="t")
