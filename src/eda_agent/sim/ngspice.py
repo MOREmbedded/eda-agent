@@ -135,18 +135,54 @@ def parse_ngspice_version(banner: str) -> str:
 #: Releases between the two are untested; 30 is a conservative floor.
 NGSPICE_MIN = 30
 
+_VERSIONS: dict = {}
+
+
+def ngspice_too_old(path: str) -> str:
+    """Why the ngspice at ``path`` cannot run eda-agent's decks, or "".
+    An unknown version is given the benefit of the doubt. The version is
+    asked once per file (path and modification time)."""
+    try:
+        key = (path, Path(path).stat().st_mtime)
+    except OSError:
+        return ""
+    if key not in _VERSIONS:
+        _VERSIONS[key] = ngspice_version(path)
+    version = _VERSIONS[key]
+    try:
+        major = int(float(version))
+    except ValueError:
+        return ""
+    if major >= NGSPICE_MIN:
+        return ""
+    return (f"ngspice {version} at {path} is too old: it ignores a deck's .control "
+            f"block in batch mode, so its runs do nothing. eda-agent needs ngspice "
+            f"{NGSPICE_MIN} or later.")
+
+
+def find_usable_ngspice() -> tuple[Optional[str], str]:
+    """(path, "") for an ngspice that can run eda-agent's decks, or
+    (None, why not): not installed, or too old."""
+    path = find_ngspice()
+    if not path:
+        return None, "ngspice is not installed"
+    old = ngspice_too_old(path)
+    return (None, old) if old else (path, "")
+
 
 def simulator_backends() -> dict:
     """Which simulators are here, with versions, and offers for the rest."""
-    ng = find_ngspice()
+    found = find_ngspice()
+    ng, too_old = find_usable_ngspice() if found else (None, "")
     lt = find_ltspice()
     kicad_dll = sorted(glob.glob(r"C:/Program Files/KiCad/*/bin/ngspice.dll"))
     ems_exe = shutil.which("openEMS")
     ems_py = all(importlib.util.find_spec(m) is not None
                  for m in ("openEMS", "CSXCAD"))
     report = {
-        "ngspice": {"available": bool(ng), "path": ng or "",
+        "ngspice": {"available": bool(ng), "path": ng or found or "",
                     "version": ngspice_version(ng) if ng else "",
+                    **({"too_old": too_old} if too_old else {}),
                     "kicad_library_only": kicad_dll if not ng else []},
         # Runs a deck when asked for, or when ngspice is not installed
         # (design_simulate_deck); ngspice comes first when both are here.
@@ -173,9 +209,13 @@ def run_deck(deck: str, outputs: tuple[str, ...] = (), timeout: float = 120,
              ngspice: Optional[str] = None) -> dict:
     """Run a deck in batch mode in a scratch folder; return the text of the
     files its .control block writes (``outputs``) with the log."""
-    exe = ngspice or find_ngspice()
+    if ngspice:
+        exe, why = ngspice, ngspice_too_old(ngspice)
+        exe = None if why else exe
+    else:
+        exe, why = find_usable_ngspice()
     if not exe:
-        return {"ok": False, "reason": "ngspice is not installed",
+        return {"ok": False, "reason": why or "ngspice is not installed",
                 "install_offer": INSTALL_OFFERS["ngspice"]}
     with tempfile.TemporaryDirectory(prefix="eda_ngspice_") as tmp:
         (Path(tmp) / "deck.cir").write_text(deck, encoding="utf-8")

@@ -435,3 +435,48 @@ def test_the_page_offers_selection_filters_locations_and_the_full_list():
                    '"/api/wb/features/path"', 'function ftAllDeps', 'data-ftgoto',
                    'applies !== false'):
         assert needle in page, needle
+
+
+# ------------------------------------------------- an ngspice too old to use
+
+@pytest.fixture
+def old_ngspice(tmp_path, monkeypatch):
+    """EAGLE's ngspice 26 found first, LTspice beside it."""
+    from eda_agent.sim import deck_runner
+    from eda_agent.sim import ngspice as ng
+    exe, lt = tmp_path / "ngspice.exe", tmp_path / "LTspice.exe"
+    exe.write_text("")
+    lt.write_text("")
+    ng._VERSIONS.clear()
+    monkeypatch.setattr(ng, "ngspice_version", lambda path: "26")
+    for mod in (ng, deck_runner):
+        monkeypatch.setattr(mod, "find_ngspice", lambda: str(exe))
+        monkeypatch.setattr(mod, "find_ltspice", lambda: str(lt))
+    yield exe, lt
+    ng._VERSIONS.clear()
+
+
+def test_auto_passes_over_an_ngspice_too_old_for_the_decks(old_ngspice):
+    from eda_agent.sim import deck_runner
+    exe, lt = old_ngspice
+    choice = deck_runner.pick_simulator("auto")
+    assert choice["engine"] == "ltspice" and choice["path"] == str(lt)
+    assert "too old" in choice["why"]
+    asked = deck_runner.pick_simulator("ngspice")
+    assert asked["engine"] == "" and "too old" in asked["reason"]
+
+
+def test_without_ltspice_the_old_ngspice_is_named(old_ngspice, monkeypatch):
+    from eda_agent.sim import deck_runner
+    monkeypatch.setattr(deck_runner, "find_ltspice", lambda: None)
+    choice = deck_runner.pick_simulator("auto")
+    assert choice["engine"] == "" and "ngspice 26" in choice["reason"]
+
+
+def test_runs_and_the_backend_report_refuse_an_old_ngspice(old_ngspice):
+    from eda_agent.sim import ngspice as ng
+    out = ng.run_deck("* deck\n.end\n")
+    assert not out["ok"] and "too old" in out["reason"]
+    rep = ng.simulator_backends()["ngspice"]
+    assert rep["available"] is False and "too old" in rep["too_old"]
+    assert ng.find_usable_ngspice()[0] is None
