@@ -456,7 +456,10 @@ def test_the_edge_checks_of_the_eye_are_placed_at_the_receiving_pin(tmp_path):
     f, = [x for x in res["figures"]["findings"] if x["check"] in board_jobs.EDGE_CHECKS]
     assert f["check"] == "overshoot" and f["severity"] == "error"
     assert f["at_mils"] == [3000.0, 0.0] and f["where"] == "at UB.1"
-    assert f["detail"] == f"{m['eye_overshoot_pct']:.1f} % of the settled level, 20 % allowed"
+    r = m["eye_series_r_ohms"]
+    assert 10 < r < 40 and f["detail"] == (
+        f"{m['eye_overshoot_pct']:.1f} % of the settled level, 20 % allowed; {r:.0f} ohm in "
+        "series at the driver brings it within 20 %")
     # with no limits the figures are there and nothing is judged
     for k in ("overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct"):
         target.pop(k)
