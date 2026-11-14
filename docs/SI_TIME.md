@@ -128,7 +128,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
 - **The eye at a bit error rate.** Each cursor carries +/-1 or +/-1/3 of itself with equal probability, so its characteristic function is (cos(w a) + cos(w a / 3)) / 2. The three eyes are alike. `bit_error_rate` counts the six of a symbol's eight sides that can be crossed, over its two bits: 3/4 of the probability of crossing one threshold.
 - **Equalisers.** FFE, CTLE and DFE work on the pulse as before; taps are chosen (`tx_ffe: "auto"`) for a third of the main cursor less the ISI, so PAM4 is given taps where NRZ needs none.
 
-The SPICE engine refuses PAM4. A board check's own limits (loss at Nyquist, skew) still take the target's `data_rate_gbps` as a bit rate of NRZ; only the eye follows `modulation`.
+The SPICE engine refuses PAM4. A routed net, a pair and a board-check target take `modulation` too: their loss at Nyquist, the stub limit and the default skew limit (5 % of a symbol) follow the symbol rate.
 
 ## What a run gives
 

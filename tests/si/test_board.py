@@ -192,6 +192,10 @@ def test_a_slow_net_with_an_eye_gets_a_sweep_that_holds_its_bit():
     assert board_jobs._item_spec(no_eye, {}, 10.0, 200)["points"] == 200
     crawl = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 0.001}}
     assert board_jobs._item_spec(crawl, {}, 10.0, 200)["points"] == board_jobs.MAX_EYE_POINTS
+    # PAM4 symbols are two bits long: twice the points for the same eight
+    pam = {"kind": "net", "name": "SIG",
+           "settings": {"eye": True, "data_rate_gbps": 0.2, "modulation": "pam4"}}
+    assert board_jobs._item_spec(pam, {}, 10.0, 200)["points"] == 800
 
 
 def test_a_wide_section_in_an_off_target_line_gets_its_own_finding(tmp_path):
@@ -543,3 +547,30 @@ def test_a_target_runs_its_eye_in_pam4(tmp_path):
     assert "eye_height_middle_mv" in pam and "eye_height_middle_mv" not in nrz
     assert pam["eye_height_mv"] == min(pam[f"eye_height_{n}_mv"] for n in ("lower", "middle", "upper"))
     assert pam["eye_width_ps"] > nrz["eye_width_ps"]            # a symbol is two bits long
+
+
+def test_a_pam4_target_is_checked_at_its_symbol_rate(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def run(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    nrz = run("a", data_rate_gbps=10)
+    pam = run("b", data_rate_gbps=20, modulation="pam4")
+    assert pam["insertion_loss_db"] == nrz["insertion_loss_db"]
+    # the same pulse: 2 (main / 3 - isi) against 2 (main - isi)
+    assert 0 < pam["worst_case_eye_height_mv"] <= nrz["worst_case_eye_height_mv"] / 3 + 1e-9
+    slow = run("c", data_rate_gbps=10, modulation="pam4")
+    assert slow["insertion_loss_db"] < nrz["insertion_loss_db"]
+    # and with the sweep left to the job: sized for the symbol, so the same sweep
+    del spec["f_max_ghz"]
+    nrz = run("d", data_rate_gbps=10, modulation="nrz")
+    pam = run("e", data_rate_gbps=20, modulation="pam4")
+    assert pam["insertion_loss_db"] == nrz["insertion_loss_db"]
+    assert pam["return_loss_db"] == nrz["return_loss_db"]
+    with pytest.raises(ValueError, match="no data rate"):
+        target.pop("data_rate_gbps")
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "f", snapshot="t")

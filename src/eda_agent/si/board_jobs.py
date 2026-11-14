@@ -34,7 +34,7 @@ import numpy as np
 from ..layout.model import LayoutBoard
 from . import crosstalk, extract
 from .jobs import _metric, _num
-from .net_jobs import NET_SPEC, run_net_channel
+from .net_jobs import NET_SPEC, run_net_channel, symbol_rate_gbd
 
 #: Keys a target may carry: the net job's limits and models, and the eye's.
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
@@ -387,7 +387,7 @@ def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points:
     if item["settings"].get("eye", spec.get("eye", False)) and s.get("data_rate_gbps"):
         # an eye needs the sweep's step to cover several bits: a slow net
         # on a wide sweep gets more points, not a refused eye
-        need = math.ceil(EYE_WINDOW_UI * float(s["f_max_ghz"]) / float(s["data_rate_gbps"]))
+        need = math.ceil(EYE_WINDOW_UI * float(s["f_max_ghz"]) / symbol_rate_gbd(s))
         s["points"] = min(max(int(s["points"]), need), MAX_EYE_POINTS)
     s["rules"] = False
     s["pair" if item["kind"] == "pair" else "net"] = item["name"]
@@ -514,8 +514,11 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
     cap = int(_num(spec, "max_items", 40))
     skipped = items[cap:]
     items = items[:cap]
-    rates = [float(it["settings"].get("data_rate_gbps", spec.get("data_rate_gbps") or 0))
-             for it in items]
+    # symbols a second: the sweep is sized for the symbol, so a PAM4
+    # target gets the sweep of NRZ at half its data rate
+    rates = [symbol_rate_gbd({"data_rate_gbps": it["settings"].get(
+                 "data_rate_gbps", spec.get("data_rate_gbps")),
+                 "modulation": it["settings"].get("modulation")}) or 0.0 for it in items]
     for it, r in zip(items, rates):
         if r <= 0:
             raise ValueError(f"{it['kind']} {it['name']}: no data rate (give data_rate_gbps "

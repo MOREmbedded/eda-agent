@@ -24,13 +24,17 @@ from .jobs import _metric, _num, plan_options
 
 _PLOT_LOCK = threading.Lock()
 
+BITS_PER_SYMBOL = {"nrz": 1, "pam4": 2}
+
 NET_SPEC: dict[str, tuple[str, bool, str]] = {
     "net": ("text", False, "the net to model (give net or pair)"),
     "pair": ("text", False, "a differential pair of the board, or one of its nets"),
     "from_pin": ("text", False, "start pin, DESIGNATOR.PIN (default: the two pins farthest apart)"),
     "to_pin": ("text", False, "end pin"),
-    "data_rate_gbps": ("number", False, "data rate; the Nyquist frequency is half of it "
-                       "(default: a quarter of f_max)"),
+    "data_rate_gbps": ("number", False, "data rate; the Nyquist frequency is half the symbol "
+                       "rate (default: a quarter of f_max)"),
+    "modulation": ("text", False, "nrz (default) or pam4: two bits a symbol, so the symbol "
+                                  "rate, Nyquist and the unit interval follow half the data rate"),
     "f_max_ghz": ("number", False, "top of the band (default 20)"),
     "points": ("number", False, "frequency points, evenly spaced (default 400)"),
     "rise_ps": ("number", False, "10-90 % edge of the TDR and step responses (default 35)"),
@@ -111,6 +115,16 @@ def _plot(path: Path, f, curves, t, tdr, z_target, title: str,
     return True
 
 
+def symbol_rate_gbd(spec: dict[str, Any]) -> Optional[float]:
+    """Symbols a second in GBd from ``data_rate_gbps`` and ``modulation``;
+    None without a data rate. PAM4 carries two bits a symbol."""
+    mod = str(spec.get("modulation") or "nrz").strip().lower()
+    if mod not in BITS_PER_SYMBOL:
+        raise ValueError("modulation is nrz or pam4")
+    rate = spec.get("data_rate_gbps")
+    return float(rate) / BITS_PER_SYMBOL[mod] if rate else None
+
+
 def _temperatures(spec: dict[str, Any]):
     from .thermal_link import Temperatures
     npz = str(spec.get("thermal_npz") or "").strip()
@@ -136,8 +150,8 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
     if not 16 <= points <= 4000:
         raise ValueError("points is 16 to 4000")
     f = ch.uniform_band(f_max, points)
-    rate = spec.get("data_rate_gbps")
-    f_nyq = float(rate) * 1e9 / 2 if rate else f_max / 4
+    rate = symbol_rate_gbd(spec)
+    f_nyq = rate * 1e9 / 2 if rate else f_max / 4
     rise = _num(spec, "rise_ps", 35) * 1e-12
     z_ref = _num(spec, "z_ref", 50)
     temps = _temperatures(spec)
@@ -431,7 +445,7 @@ def rule_steps(spec: dict[str, Any], figs: dict[str, Any], path, stack, opt,
                         "value": round(gap * 0.9, 2), "max_value": round(gap * 1.1, 2),
                         "favored_value": round(gap, 2), "scope": scope}
                 lim = spec.get("skew_max_ps")
-                rate = spec.get("data_rate_gbps")
+                rate = symbol_rate_gbd(spec)
                 if lim is None and rate:
                     lim = 0.05 * 1e3 / float(rate)
                 if lim is not None and figs.get("delay_ps") and path.p.length > 0:
