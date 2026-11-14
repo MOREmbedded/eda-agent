@@ -546,7 +546,22 @@ def test_the_step_settles_to_the_dc_of_the_s_matrix():
     s = lossy_line(f, length=0.1, z0=50.0, loss=False)
     s0 = eye.dc_matrix(s)                               # a lossless line at DC: a through
     assert s0 == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=2e-3)
-    assert eye.dc_matrix(s[:1]) == pytest.approx(s[0].real)
+    assert eye.dc_matrix(s[:1]) == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=1e-9)
+    # a long line swept coarsely: the first point is nowhere near DC, the magnitude is
+    f2 = ch.uniform_band(30e9, 200)
+    far = lossy_line(f2, length=0.5, z0=50.0, loss=False)
+    assert far[0, 1, 0].real < -0.9
+    assert eye.dc_matrix(far) == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=2e-3)
+    lossy = eye.dc_matrix(lossy_line(f2, length=0.5, z0=50.0))
+    assert 0.96 < lossy[1, 0] < 1.0 and lossy[0, 0] == pytest.approx(1 - lossy[1, 0])
+    # a pair: each side to its own far end, nothing across
+    four = np.zeros((2, 4, 4), dtype=complex)
+    four[:, 0, 2] = four[:, 2, 0] = four[:, 1, 3] = four[:, 3, 1] = [0.95j, -0.93]
+    four[:, 0, 1] = four[:, 1, 0] = [0.02, 0.04]
+    for k in range(4):
+        four[:, k, k] = [0.3, 0.25j]                    # a reflection in the band says nothing of DC
+    d4 = eye.dc_matrix(four)
+    assert d4[2, 0] == pytest.approx(0.97) and d4[1, 0] == 0 and d4[0, 0] == pytest.approx(0.03)
     assert s[0, 1, 0].real < 0.98                       # the first point is not DC
     # matched it settles to 1, into an open end to 2, whatever the driver: also a weak one,
     # whose transfer is a low-pass with its corner near the frequency step
@@ -645,3 +660,151 @@ def test_the_eye_takes_its_dc_level_from_the_s_matrix(tmp_path):
     with pytest.raises(ValueError, match="still ringing"):
         eye.pulse_response(f, hw, 1e-9, 100e-12, 32)             # the first point as DC
     eye.pulse_response(f, hw, 1e-9, 100e-12, 32, dc=2.0)
+
+
+# -- equalisation: transmitter FFE, receiver CTLE and DFE ----------------------------
+
+def _tri_pulse(cursors, spui=16, ui=1e-10, lead=2):
+    """A pulse of triangles half an interval wide each side, their tops ``cursors`` at the
+    sampling points: the first is ``lead`` intervals in."""
+    n = (len(cursors) + lead + 2) * spui
+    p = np.zeros(n)
+    x = np.arange(n)
+    for k, c in enumerate(cursors):
+        centre = (lead + k) * spui
+        p += c * np.clip(1 - np.abs(x - centre) / (spui // 2), 0, None)
+    return eye.Pulse(np.arange(n) * ui / spui, p, ui, spui)
+
+
+def test_ctle_gains_its_boost_from_dc_to_the_poles():
+    f = np.array([0.0, 1e7, 5e9, 1e10, 4e10, 1e12])
+    g = eye.ctle(f, 6.0, 5e9)
+    assert g[0] == pytest.approx(10 ** (-6 / 20)) and g[0].imag == 0
+    assert abs(g[1]) == pytest.approx(abs(g[0]), rel=1e-3)
+    # by hand at the first pole: g (1 + j / g) / ((1 + j) (1 + j / 4))
+    k = 10 ** (-6 / 20)
+    assert g[2] == pytest.approx(k * (1 + 1j / k) / ((1 + 1j) * (1 + 0.25j)))
+    assert 0.8 < abs(g[3]) < 1.0                        # near 1 between the poles
+    assert abs(g[5]) < 0.03                             # and it rolls off above the second
+    assert abs(eye.ctle(f, 12.0, 5e9)[0]) == pytest.approx(10 ** (-12 / 20))
+    assert abs(eye.ctle(np.array([8e9]), 6.0, 8e9)[0]) == pytest.approx(abs(g[2]))
+
+
+def test_ffe_adds_the_pulse_tap_by_tap_and_keeps_the_peak_swing():
+    p = _tri_pulse([1.0], spui=16)
+    out = eye.ffe(p, [3.0, -1.0])                       # scaled to 0.75, -0.25
+    c = p.center_index
+    assert out.p[c] == pytest.approx(0.75) and out.p[c + 16] == pytest.approx(-0.25)
+    assert len(out.p) == len(p.p) + 16 and out.spui == 16 and out.ui == p.ui
+    assert out.center_index == c
+    # a pre-cursor tap comes first: the main cursor is then one interval later
+    out = eye.ffe(p, [-0.1, 0.7, -0.2])
+    assert [out.p[c + 16 * k] for k in range(3)] == pytest.approx([-0.1, 0.7, -0.2])
+    assert out.center_index == c + 16
+    assert eye.ffe(p, [5.0]).p == pytest.approx(p.p)    # one tap: the pulse itself
+    for bad in ([], [0.0, 0.0]):
+        with pytest.raises(ValueError, match="tx_ffe"):
+            eye.ffe(p, bad)
+    # de-emphasis on a flat channel: full swing at a transition, 0.75 - 0.25 after it
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    m = eye.simulated_eye(eye.ffe(flat, [0.75, -0.25]), 0.8)
+    assert m["eye_height"] == pytest.approx(0.5 * 0.8)
+    # the post-cursor of a channel is cancelled by the tap that mirrors it
+    chan = _tri_pulse([1.0, 0.3])
+    eq = eye.ffe(chan, [1.0, -0.3])
+    c = eq.center_index
+    assert eq.p[c + 16] == pytest.approx(0.0, abs=1e-12)
+    assert eye.worst_case_eye(eq, 1.0)["isi_sum"] < eye.worst_case_eye(chan, 1.0)["isi_sum"]
+
+
+def test_dfe_takes_off_the_post_cursors_up_to_its_limit():
+    p = _tri_pulse([0.2, 1.0, 0.4, -0.1, 0.05], lead=1)
+    c = p.center_index
+    assert p.p[c] == pytest.approx(1.0)
+    out, taps = eye.dfe(p, 2)
+    assert taps == pytest.approx([0.4, -0.1])
+    assert out.p[c + 16] == pytest.approx(0.0, abs=1e-12)
+    assert out.p[c + 32] == pytest.approx(0.0, abs=1e-12)
+    assert out.p[c + 48] == pytest.approx(0.05)         # beyond its taps
+    assert out.p[c] == pytest.approx(1.0) and out.p[c - 16] == pytest.approx(0.2)   # nor before
+    # each tap holds for its whole interval, as the decided bit does
+    assert out.p[c + 16 - 8] == pytest.approx(-0.4) and out.p[c + 16 + 7] == pytest.approx(
+        p.p[c + 16 + 7] - 0.4)
+    assert out.p[c + 16 - 9] == pytest.approx(p.p[c + 16 - 9])
+    before, after = eye.worst_case_eye(p, 2.0), eye.worst_case_eye(out, 2.0)
+    assert before["isi_sum"] == pytest.approx(0.2 + 0.4 + 0.1 + 0.05)
+    assert after["isi_sum"] == pytest.approx(0.2 + 0.05)
+    assert after["eye_height"] == pytest.approx(2 * (1 - 0.25))
+    # a tap is held to its limit, and taps past the pulse's end are not made up
+    out, taps = eye.dfe(p, 1, limit=0.25)
+    assert taps == [0.25] and out.p[c + 16] == pytest.approx(0.15)
+    out, taps = eye.dfe(p, 20)
+    assert len(taps) < 20 and taps[:3] == pytest.approx([0.4, -0.1, 0.05])
+    assert eye.dfe(p, 0)[1] == [] and eye.dfe(p, 0)[0].p == pytest.approx(p.p)
+
+
+def _long_channel(tmp_path):
+    f = ch.uniform_band(40e9, 800)
+    s = lossy_line(f, length=0.8, z0=50.0)             # 32 inches: about 15 dB at 5 GHz
+    return str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+
+
+def test_equalisation_opens_the_eye_of_a_long_channel(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    plain, res0 = run()
+    # some pattern closes it: more ISI than main cursor
+    assert plain["worst_case_eye_height_mv"] == 0 and plain["isi_mv"] > plain["main_cursor_mv"]
+    assert "dfe_tap1_mv" not in plain and not any("equalisation" in n for n in res0["notes"])
+    ffe, res = run(tx_ffe=[-0.1, 0.7, -0.2])
+    assert ffe["worst_case_eye_height_mv"] > 80 and ffe["eye_height_mv"] > 3 * plain["eye_height_mv"]
+    assert ffe["isi_mv"] < 0.4 * plain["isi_mv"] and ffe["main_cursor_mv"] < plain["main_cursor_mv"]
+    assert any("transmitter FFE taps -0.100, +0.700, -0.200" in n for n in res["notes"])
+    ctle, res = run(ctle_db=6)
+    assert ctle["worst_case_eye_height_mv"] > 10 and ctle["eye_height_mv"] > 1.5 * plain["eye_height_mv"]
+    assert ctle["eye_width_ui"] > plain["eye_width_ui"]
+    assert any("receiver CTLE: 6 dB of boost over DC, first pole at 5 GHz" in n
+               for n in res["notes"])
+    assert run(ctle_db=6, ctle_peak_ghz=2)[0]["eye_height_mv"] != ctle["eye_height_mv"]
+    dfe, res = run(dfe_taps=4)
+    assert dfe["worst_case_eye_height_mv"] > 80
+    assert dfe["main_cursor_mv"] == plain["main_cursor_mv"]           # it adds no loss
+    assert dfe["dfe_tap1_mv"] == pytest.approx(plain["isi_mv"] - run(dfe_taps=1)[0]["isi_mv"],
+                                               abs=0.5)
+    assert any(n.startswith(f"receiver DFE taps (mV): +{dfe['dfe_tap1_mv']:.1f}, ")
+               for n in res["notes"])
+    held = run(dfe_taps=4, dfe_max=0.05)[0]
+    assert held["dfe_tap1_mv"] == pytest.approx(0.05 * plain["main_cursor_mv"], abs=0.3)
+    assert plain["eye_height_mv"] < held["eye_height_mv"] < dfe["eye_height_mv"]
+    # the channel's own figures stay: loss and the edge are not the equaliser's
+    for got in (ffe, ctle, dfe):
+        assert got["insertion_loss_db_at_nyquist"] == plain["insertion_loss_db_at_nyquist"]
+        assert got["overshoot_pct"] == plain["overshoot_pct"]
+    assert any("after equalisation" in n for n in res["notes"])
+
+
+@pytest.mark.parametrize("opt, word", [
+    ({"tx_ffe": [0, 0]}, "tx_ffe needs one tap"), ({"tx_ffe": ["a"]}, "tx_ffe is a list"),
+    ({"tx_ffe": [1] * 9}, "8 taps at most"), ({"ctle_db": -1}, "ctle_db is 0 to 30"),
+    ({"ctle_db": 31}, "ctle_db is 0 to 30"), ({"ctle_db": 3, "ctle_peak_ghz": 0}, "ctle_peak_ghz"),
+    ({"dfe_taps": 1.5}, "dfe_taps is a whole number"), ({"dfe_taps": 33}, "dfe_taps"),
+    ({"dfe_taps": 2, "dfe_max": 0}, "dfe_max"), ({"dfe_taps": 2, "dfe_max": 1.5}, "dfe_max")])
+def test_equaliser_settings_are_checked(opt, word):
+    from eda_agent.si import eye_jobs
+    with pytest.raises(ValueError, match=word):
+        eye_jobs.equaliser({"data_rate_gbps": 10, **opt}, {"rate": 10e9})
+
+
+def test_equaliser_defaults_and_the_spice_engine_refuses_it(tmp_path):
+    from eda_agent.si import eye_jobs
+    eq = eye_jobs.equaliser({}, {"rate": 8e9})
+    assert eq == {"ffe": [], "ctle_db": 0.0, "ctle_peak": 4e9, "dfe_taps": 0, "dfe_max": 0.5}
+    assert eye_jobs.equaliser({"tx_ffe": [], "dfe_taps": 3, "ctle_peak_ghz": 6},
+                              {"rate": 8e9}) == {**eq, "dfe_taps": 3, "ctle_peak": 6e9}
+    ts = _channel(tmp_path)
+    for opt in ({"tx_ffe": [0.8, -0.2]}, {"ctle_db": 3}, {"dfe_taps": 1}):
+        with pytest.raises(ValueError, match="eda-agent engine only"):
+            eye_jobs.run_spice({"data_rate_gbps": 5, **opt}, ts, tmp_path / "s")

@@ -56,16 +56,28 @@ def ramp_spectrum(f: np.ndarray, rise: float) -> np.ndarray:
 
 
 def dc_matrix(s: np.ndarray) -> np.ndarray:
-    """The S-matrix at 0 Hz, read back from its first points on the band
-    df, 2 df, ...: each real part is even in f, so a + b f^2 through the
-    first two gives a. S of a line changes slowly there (as the cosine of
-    its delay), where the transfer between real terminations may not: a
-    weak driver into an open line is a low-pass with its corner near df.
-    The transfer worked out from this matrix is the level a step settles
-    to; taking the first point as DC leaves a slope over the whole window."""
-    if len(s) < 2:
-        return np.array(s[0].real, dtype=float)
-    return (4.0 * s[0].real - s[1].real) / 3.0
+    """The S-matrix at 0 Hz of a channel made of conductors, read back from
+    its first points on the band df, 2 df, ...
+
+    At DC such a channel is a small resistance in series between each port
+    and its far end, and nothing between the lines. So each transmission
+    is real and positive, and its magnitude, which changes slowly and does
+    not turn with the channel's delay, is carried back along the line
+    through its first two points; each reflection is 1 less the
+    transmissions out of its port (r / (r + 2 z0) beside 2 z0 / (r + 2 z0)
+    for a series r). Coupling between lines falls with frequency and comes
+    out as nothing.
+
+    The real and imaginary parts themselves turn with the delay: on a
+    long channel swept with a coarse step the first point is far from DC
+    (the cosine of a radian or more), and a step response that takes it
+    as DC slopes over its whole window."""
+    mag = np.abs(s[0]) if len(s) < 2 else 2.0 * np.abs(s[0]) - np.abs(s[1])
+    out = np.clip(np.asarray(mag, dtype=float), 0.0, 1.0)
+    if out.ndim == 2:
+        np.fill_diagonal(out, 0.0)
+        np.fill_diagonal(out, np.clip(1.0 - out.sum(axis=0), 0.0, 1.0))
+    return out
 
 
 def step_response(f: np.ndarray, h: np.ndarray, rise: float, pad: int = 8,
@@ -155,6 +167,65 @@ class Pulse:
         while b < len(self.p) - 1 and abs(self.p[b + 1]) >= half:
             b += 1
         return (a + b) // 2
+
+
+# -- equalisation -------------------------------------------------------------------
+
+#: The second pole of the receiver's CTLE, in first poles.
+CTLE_POLE_RATIO = 4.0
+
+
+def ctle(f: np.ndarray, boost_db: float, f_peak: float) -> np.ndarray:
+    """A receiver's continuous-time linear equaliser, one zero and two
+    poles: g (1 + j f / fz) / ((1 + j f / fp) (1 + j f / (4 fp))) with
+    g = 10^(-boost/20) and fz = g fp. Its gain is g at DC and rises from
+    the zero to about 1 between the poles. ``boost_db`` is what the high
+    frequencies gain over DC; ``f_peak`` is the first pole fp, usually the
+    Nyquist frequency."""
+    g = 10.0 ** (-boost_db / 20.0)
+    f = np.asarray(f, dtype=float)
+    fz = f_peak * g
+    return g * (1 + 1j * f / fz) / ((1 + 1j * f / f_peak) * (1 + 1j * f / (CTLE_POLE_RATIO * f_peak)))
+
+
+def ffe(pulse: Pulse, taps: Sequence[float]) -> Pulse:
+    """The pulse as a transmitter with a feed-forward equaliser sends it:
+    the sum of the pulse weighted by each tap, one unit interval apart.
+    The taps are scaled so their magnitudes add up to 1 (the driver's peak
+    swing stays what it is); the largest is the main one, those before it
+    are pre-cursor taps."""
+    c = np.asarray(list(taps), dtype=float)
+    total = float(np.abs(c).sum())
+    if not len(c) or total <= 0:
+        raise ValueError("tx_ffe needs one tap or more that is not zero")
+    c = c / total
+    out = np.zeros(len(pulse.p) + (len(c) - 1) * pulse.spui)
+    for k, w in enumerate(c):
+        out[k * pulse.spui:k * pulse.spui + len(pulse.p)] += w * pulse.p
+    t = pulse.t[0] + np.arange(len(out)) * (pulse.ui / pulse.spui)
+    return Pulse(t, out, pulse.ui, pulse.spui)
+
+
+def dfe(pulse: Pulse, taps: int, limit: float = 0.5) -> tuple[Pulse, list[float]]:
+    """The pulse after a decision-feedback equaliser of ``taps`` taps, and
+    the taps (in the pulse's units). Tap k takes off what the pulse still
+    holds k unit intervals after its sampling point, for the whole of that
+    interval, as the receiver does with the bit it decided k bits ago. A
+    tap reaches at most ``limit`` of the main cursor. Decisions are taken
+    as right: error propagation is not modelled."""
+    c = pulse.center_index
+    main = abs(float(pulse.p[c]))
+    p = pulse.p.copy()
+    got: list[float] = []
+    for k in range(1, int(taps) + 1):
+        i = c + k * pulse.spui
+        if i >= len(p):
+            break
+        d = float(np.clip(pulse.p[i], -limit * main, limit * main))
+        got.append(d)
+        a = i - pulse.spui // 2
+        p[a:a + pulse.spui] -= d
+    return Pulse(pulse.t, p, pulse.ui, pulse.spui), got
 
 
 #: A pulse response needs the sweep to cover this many unit intervals.

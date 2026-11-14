@@ -84,6 +84,22 @@ The two routes therefore see the same circuit.
 
 The IBIS reduction is linear: the driver is its resistance at the typical corner. That is right for a reflection and loss budget. The full nonlinear buffer, with its V-I curve through the whole swing and its V-t waveforms, needs a full IBIS simulation; the subcircuit is there for that.
 
+## Equalisation
+
+A long channel closes the plain eye well before the link stops working, because both ends equalise. The convolution engine models the three usual stages; all are off by default.
+
+| Option | Meaning |
+|---|---|
+| `tx_ffe` | Transmitter feed-forward taps, one unit interval apart, for example `[-0.1, 0.7, -0.2]` (one pre-cursor, the main tap, one post-cursor). The largest tap is the main one. The taps are scaled so that their magnitudes add up to 1: the driver's peak swing stays `amplitude_mv`, and what the equaliser gains at the edge it pays for in level. Up to 8 taps |
+| `ctle_db` | Receiver continuous-time linear equaliser: its boost over DC in dB (0 to 30). It is passive in shape: the gain at DC is lowered by the boost and the peak is at most 1, H(f) = g (1 + j f / fz) / ((1 + j f / fp)(1 + j f / 4 fp)) with g = 10^(-boost / 20) and fz = g fp |
+| `ctle_peak_ghz` | The CTLE's first pole fp (default: Nyquist). The second pole is at four times it |
+| `dfe_taps` | Receiver decision-feedback taps (0 to 32). Tap k takes off the pulse's post-cursor k bits after the main one, over the whole interval around it |
+| `dfe_max` | The most one tap can take off, as a part of the main cursor (default 0.5). A post-cursor above it is only partly cancelled |
+
+The CTLE multiplies the channel's transfer, the FFE adds shifted copies of the pulse and the DFE subtracts from it; the eye, the worst-case eye, the waveform and the cursors are then those after equalisation. The edge figures and the insertion loss stay the channel's own. `dfe_tap1_mv` gives the first DFE tap, and the notes list all taps, so they can be compared with what the receiver allows.
+
+The taps are the ones given: nothing is adapted or searched. The DFE takes every decision as right, so error propagation is not in the eye. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
+
 ## What a run gives
 
 | Metric | Engine | Meaning |
@@ -94,6 +110,7 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 | `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
 | `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
+| `dfe_tap1_mv` | `eda-agent` | With `dfe_taps`: the first tap, as the voltage it takes off |
 | `series_r_ohms` | `eda-agent` | When the overshoot is over its limit: the resistor in series with the driver (each side of a pair) that brings it within, to the whole ohm above. It is worked out as more source resistance with everything else as it is, up to four reference impedances; when that is not enough the overshoot comes from the line and the check says so |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
 | `spice_vs_convolution_rms_mv` | `spice` | The two routes' difference |
@@ -127,13 +144,18 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 - **The single edge:**
   - A damped ringing step gives back its first peak as overshoot, the dip after it as ringback and its decay as the settling time; a shelf that dips 15 % on the way up reads 15 % of reversal.
   - A 15 ohm driver into an open end of a 50 ohm line overshoots by 2 x 50 / 65 - 1 = 54 % (within 4 points on a lossy line) and rings back as the source reflection says; a matched or a weak driver does not overshoot.
-  - The level a step settles to is worked out from the S-matrix at 0 Hz (each entry read back from its first two points as a + b f^2) and the terminations: 1 between matched ends and 2 into an open end within 1 %, also behind a 215 ohm driver whose transfer has its corner near the frequency step. A pure delay then stays flat to 1 % where the first point taken as DC slopes.
+  - The level a step settles to is worked out from the S-matrix at 0 Hz and the terminations. Each transmission's magnitude is read back to 0 Hz in a straight line from its first two points (the magnitude does not turn with the delay, as the real part does), and each port reflects what it does not pass on, as a channel of conductors alone does at DC: 1 between matched ends and 2 into an open end within 1 %, also behind a 215 ohm driver whose transfer has its corner near the frequency step. A pure delay then stays flat to 1 % where the first point taken as DC slopes. A 0.8 m line swept in 50 MHz steps (over 1 rad of delay per step) still gives its level within 1 %, and reflections inside the band do not change it.
   - The series resistor named for a 15 ohm driver into an open end and a 10 % limit is 2 Z / 1.1 - Z - 15 = 26 ohm within 3; with it in the edge passes, and 1.5 ohm less it does not.
 - **Eyes:**
   - The pulse settles to the DC level worked out from the S-matrix at 0 Hz. A matched lossless line then gives the full swing with under 4 mV of ISI at 800 mV (the first point taken as DC left more than twice that, as offsets of all the bits adding up), and a 150 ohm driver into an open end runs where it used to be refused as still ringing.
   - A flat channel's eye and worst-case eye are the full swing.
   - On a lossy line, the worst case lies below the PRBS eye.
   - The worst case is reached by the pattern that peak distortion analysis names.
+- **Equalisation:**
+  - The CTLE is 1 / boost at DC, and at its first pole it is the formula's value by hand; with no boost it is 1 everywhere.
+  - On a flat channel, FFE taps [0.75, -0.25] give the de-emphasis they should: the eye is 0.75 - 0.25 = 0.5 of the swing. A tap that mirrors a channel's post-cursor cancels it.
+  - A DFE with enough taps and range takes the post-cursors off to zero and leaves the main cursor and the pre-cursors alone; a tap at its limit takes off the limit and no more.
+  - A 0.8 m lossy line at 10 Gb/s has a closed worst-case eye. FFE taps [-0.1, 0.7, -0.2] open it, and so do four DFE taps, each above 80 mV at 800 mV; 6 dB of CTLE opens it too and widens the eye.
 - **Vector fitting:** known poles come back to 1e-5 with an RMS error under 1e-8. Fits stay stable and reciprocal.
 - **Passivity:** a model with gain above 1 is brought to at most 1 everywhere on the check grid.
 - **Subcircuit:** ngspice AC of a 2-port and a 4-port subcircuit equals the model's S to 1e-6.
@@ -146,7 +168,9 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 
 ## Limits
 
-- The eye is NRZ with no equalisation, jitter or noise. Transmitter FIR, CTLE and DFE, and statistical (BER) eyes, are not modelled.
+- The eye is NRZ with no jitter, and noise only as the peak given. Statistical (BER) eyes are not modelled.
+- Equalisation is the taps and the boost given: no adaptation, no tap search, no DFE error propagation, and not in the SPICE engine.
+- The DC level takes the channel as conductors alone. A Touchstone file with a shunt element or a series capacitor in it gets an approximate level.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
 - The convolution needs the channel on a uniform grid from df. Another grid is resampled through a fitted model, and the job says so.
 - The channel's frequency step sets the time its response covers (1/df). The eye is refused, with the step it needs, when that time is under three bits or the response is still ringing at its end: the response would wrap round onto itself. A board check gives a slow net with an eye more points so its sweep covers eight bits.
