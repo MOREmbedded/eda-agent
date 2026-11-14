@@ -101,6 +101,15 @@ maturity classification for every tool.
   it (`series_r_ohms`), or says that none does. The level a step settles
   to is worked out from the S-matrix at 0 Hz and the terminations, so it
   is right behind a weak driver too.
+- **Signal integrity: equalisation in the eye.** `si_channel_eye` and a
+  board-check target take a transmitter FFE (`tx_ffe`, taps one unit
+  interval apart, scaled to the driver's peak swing), a receiver CTLE
+  (`ctle_db`, `ctle_peak_ghz`) and a receiver DFE (`dfe_taps`, `dfe_max`).
+  The eye, the worst-case eye and the cursors are then those the receiver
+  decides on, so a long channel whose plain eye is closed can be judged as
+  the link runs it. `dfe_tap1_mv` and the notes give the taps. All off by
+  default; convolution engine only. See
+  [Equalisation](docs/SI_TIME.md#equalisation).
 - **Signal integrity: routed nets and pairs.** A routed net or differential
   pair is modelled from pin to pin: its path is found in the board's copper
   (tees, stubs and layer changes included), every trace section uses the RLGC
@@ -416,6 +425,8 @@ maturity classification for every tool.
   was steep enough for the eye to be refused as "still ringing". The level
   is now worked out from the S-matrix read back to 0 Hz and the
   terminations. Eye heights rise slightly; worst-case eyes rise more.
+  The read-back uses magnitudes, which do not turn with the delay, so the
+  level also holds on a long channel swept in coarse steps.
 - **Signal integrity: dual striplines.** Two signal layers between a pair
   of planes are now modelled as they are built. A trace there is referenced
   to the planes on either side, past the other signal layer (which used to

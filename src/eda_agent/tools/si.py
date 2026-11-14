@@ -457,6 +457,12 @@ def _register_si_time_tools(mcp) -> None:
                 overshoot_max_pct, ringback_max_pct,
                 edge_reversal_max_pct (limits on one edge at the receiver,
                 percent of its settled level; no check if absent),
+                tx_ffe (transmitter taps one UI apart, e.g.
+                [-0.1, 0.7, -0.2]; scaled to a peak of 1), ctle_db
+                (receiver CTLE boost over DC, 0-30), ctle_peak_ghz (its
+                first pole, default Nyquist), dfe_taps (receiver DFE taps,
+                0-32), dfe_max (most one tap takes off, part of the main
+                cursor, 0.5); equalisation is in the eda-agent engine only,
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
                 tx_model (an IBIS driver: its output resistance, C_comp,
@@ -714,7 +720,9 @@ def _register_si_board_tools(mcp) -> None:
                 eye: true to add the eye, eye_min_mv,
                 overshoot_max_pct, ringback_max_pct, edge_reversal_max_pct
                 (one edge at the receiver, placed at the receiving pin),
-                eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
+                eye_min_ui, the eye's tx_ibis/rx_ibis options and its
+                equalisation (tx_ffe, ctle_db, ctle_peak_ghz, dfe_taps,
+                dfe_max)}. A net
                 is taken by the first target that matches it. Default: every
                 differential pair.
             options: data_rate_gbps (for targets without one), eye,
