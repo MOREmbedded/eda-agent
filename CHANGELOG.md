@@ -34,6 +34,13 @@ maturity classification for every tool.
   copper temperature, uniform or from a thermal analysis' map. Jobs record
   the snapshot and jobs their inputs came from; the Simulation page shows
   that graph and marks results stale once the board is saved.
+- **Signal integrity: the return path.** A net channel and the board check
+  now look at the reference copper under each route (split planes, pours
+  and regions, with their holes) and report every place where it stops:
+  a split between two plane nets, a slot, a missing pour. Each is a
+  finding placed where the route crosses it (check `return path`,
+  `return_gaps`, `return_gap_mils`); a stripline with its other plane
+  whole there is a warning.
 - **Signal integrity: crosstalk across the board.** A net channel and the
   board check now search the board for the copper that runs beside each
   net: other nets' tracks on the same layer, within reach, with the length

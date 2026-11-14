@@ -24,11 +24,13 @@ def register_simulation_tools(mcp) -> None:
     async def app_features(deep: bool = False, feature: str = "") -> dict[str, Any]:
         """What this eda-agent installation can do, and what is missing.
 
-        Every feature (3D models, SPICE, openEMS, the Rust compute wheel,
-        the dashboard, the simulation engines...) with its state (ready,
-        partial, missing, off, unavailable), what it offers, and each
-        dependency with its version, license and how it installs. Use it
-        when a tool reports a missing package or program.
+        Every feature, built in (signal and power integrity, thermal,
+        EMI, placer and router, calculators) or optional (3D models,
+        SPICE, openEMS, the Rust kernels, the dashboard, the simulation
+        engines...), with its state (ready, partial, missing, off,
+        unavailable), what it offers, its tools, and each dependency with
+        its version, license, how it installs and where eda-agent looks
+        for it. Use it when a tool reports a missing package or program.
 
         Args:
             deep: also run the slow checks (openEMS import, program versions).

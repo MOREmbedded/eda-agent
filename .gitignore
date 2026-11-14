@@ -115,8 +115,9 @@ extensions/easyeda/verified.json
 extensions/easyeda/*.eext
 /.eda-local/*
 
-# Rust build output of the optional compute wheel
+# Rust build output of the optional wheels (compute kernels, path tracer)
 rust/*/target/
+render-core/target/
 
 # Built product website (python -m mkdocs build)
 /site/

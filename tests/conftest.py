@@ -531,6 +531,25 @@ def _isolate_workspace_pointer(tmp_path_factory):
     os.environ.pop("EDA_AGENT_POINTER_FILE", None)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_feature_choices(tmp_path_factory):
+    """Keep the session away from the user's own features.json.
+
+    That file can switch the Rust kernels on (EDA_AGENT_COMPUTE=auto) and
+    hold program locations (EDA_AGENT_OPENEMS_DIR, EDA_AGENT_NGSPICE...),
+    which ``features.state.apply`` copies into the environment. A
+    developer who saved them would otherwise run every test with them.
+    Tests of the file itself point EDA_AGENT_FEATURES_FILE at their own.
+    """
+    before = os.environ.get("EDA_AGENT_FEATURES_FILE")
+    os.environ["EDA_AGENT_FEATURES_FILE"] = str(tmp_path_factory.mktemp("features") / "features.json")
+    yield
+    if before is None:
+        os.environ.pop("EDA_AGENT_FEATURES_FILE", None)
+    else:
+        os.environ["EDA_AGENT_FEATURES_FILE"] = before
+
+
 #: The name AltiumBridge gives its keep-alive thread.
 KEEPALIVE_THREAD_NAME = "altium-keepalive"
 

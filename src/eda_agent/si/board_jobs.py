@@ -65,6 +65,8 @@ BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "xtalk_max_pct": ("number", False, "allowed crosstalk where a target gives none (default 5)"),
     "xtalk_reach_mils": ("number", False, "how far a neighbour still counts"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs"),
+    "return_path": ("bool", False, "gaps in the reference copper under each item (default true)"),
+    "return_gap_min_mils": ("number", False, "shortest gap that is a finding (default 8)"),
     "xtalk_swing_mv": ("number", False, "swing of the neighbours, which turns crosstalk into noise "
                                         "on the eye (default the eye's own amplitude)"),
 }
@@ -284,6 +286,12 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
             if pt is not None:
                 where = {"at_mils": [round(pt[0], 2), round(pt[1], 2)], "layer": pt[2],
                          "where": f"{pt[3]:.0f} mil from {path.start} (TDR {z:.1f} ohm)"}
+    elif v["check"] == "return path":
+        rows = res.get("figures", {}).get("return_path") or []
+        if rows:
+            g = rows[0]
+            where = {"at_mils": g["at_mils"], "layer": g["layer"],
+                     "where": f"{g['distance_mils']:.0f} mil along the route, {g['text']}"}
     elif v["check"] == "crosstalk":
         rows = res.get("figures", {}).get("crosstalk") or []
         if rows:
@@ -316,7 +324,8 @@ def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points:
                ) -> dict[str, Any]:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
     for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils",
-              "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet"):
+              "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet",
+              "return_path", "return_gap_min_mils"):
         if k in spec and k not in s:
             s[k] = spec[k]
     if "data_rate_gbps" not in s and spec.get("data_rate_gbps") is not None:
@@ -404,10 +413,21 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
         if v["pass"]:
             continue
         f = {"check": v["check"],
-             "severity": "warning" if v["check"] in WARNING_CHECKS else "error",
+             "severity": v.get("severity") or ("warning" if v["check"] in WARNING_CHECKS
+                                               else "error"),
              "detail": v["detail"]}
         f.update(_locate(board, item, v, res, sub, rise, z_target, paths))
         out["findings"].append(f)
+        if v["check"] == "return path":
+            for g in (res.get("figures", {}).get("return_path") or [])[1:MAX_EXTRA_FAULTS + 1]:
+                out["findings"].append({
+                    "check": "return path",
+                    "severity": "warning" if g["other_reference_solid"] else f["severity"],
+                    "detail": f"{g['text']} on {g['layer']}"
+                              + ("; the other reference plane is whole there"
+                                 if g["other_reference_solid"] else ""),
+                    "at_mils": g["at_mils"], "layer": g["layer"],
+                    "where": f"{g['distance_mils']:.0f} mil along the route, {g['text']}"})
         if v["check"] == "impedance":
             tol = float(s.get("z_tol_pct", 10)) / 100
             out["findings"].extend(_more_impedance(item, res, sub, rise, z_target, tol, paths, f))
@@ -502,7 +522,8 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 def _summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
     keys = ["insertion_loss_db", "return_loss_db", "line_loss_db", "delay_ps", "tdr_min_ohms",
             "tdr_max_ohms", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
-            "crosstalk_next_pct", "crosstalk_fext_pct", "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
+            "crosstalk_next_pct", "crosstalk_fext_pct", "return_gaps", "return_gap_mils",
+            "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["kind", "name", "errors", "warnings"] + keys)
