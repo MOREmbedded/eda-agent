@@ -445,6 +445,11 @@ maturity classification for every tool.
   same job asked again after an update returned the older code's results
   unless forced; it is now solved again.
 
+- **A net between free pads can be modelled.** A net with fewer than two
+  component pins (a bare test board, edge fingers, a test point at one
+  end) was refused as having no pins. Its free pads now count as pins, with
+  a note.
+
 - **IBIS buffers as vendors write them.** A driver's output resistance was
   read from the two table points either side of 0 V, which on a real file
   is the clamp diode below the rail: a 50 ohm driver came out as 0.18 ohm.

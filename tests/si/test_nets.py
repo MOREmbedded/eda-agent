@@ -200,6 +200,39 @@ def test_copper_between_two_pads_runs_the_way_the_path_does():
         == pytest.approx(p.length)
 
 
+def test_free_pads_end_a_path_when_the_net_has_fewer_than_two_component_pins():
+    # a bare test board: two free pads and a track
+    b = single_net(with_stub=False, with_return_via=False, inner=0)
+    b.vias = []
+    b.pads = [smd("", "A", 0, 0, "SIG"), smd("", "B", 1000, 0, "SIG")]
+    b.tracks = [Track("TopLayer", 0, 0, 1000, 0, 5, "SIG")]
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"~A@0.00,0.00", "~B@1000.00,0.00"}
+    assert p.length == pytest.approx(1000) and len(p.pins) == 2
+    assert any("2 free pads of the net taken as pins" in n for n in p.notes)
+    assert extract.pins_of(b, "SIG") == sorted([p.start, p.end])
+    # one part's pin and a test point as a free pad
+    b.pads[0] = smd("U1", "1", 0, 0, "SIG")
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"U1.1", "~B@1000.00,0.00"}
+    assert any("1 free pad of the net taken as a pin" in n for n in p.notes)
+    # a free pad can be named as an end
+    p = extract.net_path(b, "SIG", "~B@1000.00,0.00", "U1.1")
+    assert p.start == "~B@1000.00,0.00" and p.length == pytest.approx(1000)
+    # with two component pins a free pad on the way is not an end and brings no note
+    b.pads.append(smd("U2", "1", 600, 0, "SIG"))
+    b.tracks = [Track("TopLayer", 0, 0, 600, 0, 5, "SIG"), Track("TopLayer", 600, 0, 1000, 0, 5, "SIG")]
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"U1.1", "U2.1"} and p.pins == ["U1.1", "U2.1"]
+    assert not any("free pad" in n for n in p.notes)
+    assert extract.pins_of(b, "SIG") == ["U1.1", "U2.1"]
+    # one pad alone is still no path
+    b.pads = [smd("", "A", 0, 0, "SIG")]
+    b.tracks = [Track("TopLayer", 0, 0, 1000, 0, 5, "SIG")]
+    with pytest.raises(extract.ExtractError, match="fewer than two pins or pads"):
+        extract.net_path(b, "SIG")
+
+
 def test_explicit_pins_and_a_stub_end_as_the_target():
     p = extract.net_path(single_net(), "SIG", "U1.1", "TP1.1")
     assert p.length == pytest.approx(900) and p.vias == 0
