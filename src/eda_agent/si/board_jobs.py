@@ -32,21 +32,24 @@ from typing import Any, Optional
 import numpy as np
 
 from ..layout.model import LayoutBoard
-from . import extract
+from . import crosstalk, extract
 from .jobs import _metric, _num
-from .net_jobs import NET_SPEC, run_net_channel
+from .net_jobs import NET_SPEC, run_net_channel, symbol_rate_gbd
 
 #: Keys a target may carry: the net job's limits and models, and the eye's.
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
-_EYE_KEYS = {"rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
+_EYE_KEYS = {"ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "sj_pp_ps", "eye_at_ber_min_mv",
+             "eye_at_ber_min_ui", "modulation", "tx_ffe", "tx_ffe_pre", "tx_ffe_post", "ctle_max_db", "ctle_db", "ctle_peak_ghz", "dfe_taps", "dfe_max", "overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
+             "rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
-_TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui"} | _NET_KEYS | _EYE_KEYS
+_TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",
+                "xtalk_swing_mv", "delay_match_ps"} | _NET_KEYS | _EYE_KEYS
 
 BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "targets": ("list", False, "what to check: a list of {match (net or pair name glob) or "
                                "class (an Altium net class), kind (pair or net), and limits: "
                                "data_rate_gbps, z_target, z_tol_pct, il_max_db, rl_min_db, "
-                               "skew_max_ps, stub_margin, eye, eye_min_mv, eye_min_ui, and the "
+                               "skew_max_ps, stub_margin, delay_match_ps, eye, eye_min_mv, eye_min_ui, and the "
                                "eye's driver and receiver}; default every differential pair"),
     "data_rate_gbps": ("number", False, "data rate where a target gives none"),
     "eye": ("bool", False, "also run the eye of every item (default false)"),
@@ -64,6 +67,13 @@ BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "xtalk_max_pct": ("number", False, "allowed crosstalk where a target gives none (default 5)"),
     "xtalk_reach_mils": ("number", False, "how far a neighbour still counts"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs"),
+    "return_path": ("bool", False, "gaps in the reference copper under each item (default true)"),
+    "return_gap_min_mils": ("number", False, "shortest gap that is a finding (default 8)"),
+    "xtalk_swing_mv": ("number", False, "swing of the neighbours, which turns crosstalk into noise "
+                                        "on the eye (default the eye's own amplitude)"),
+    "xtalk_aggressors": ("list", False, "neighbours with an edge or a swing of their own: "
+                                        "{match, rise_ps, swing_mv}"),
+    "xtalk_max_mv": ("number", False, "allowed crosstalk in mV where a target gives none"),
 }
 
 #: Checks whose failure is a warning rather than an error.
@@ -271,6 +281,11 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
         where = {"at_mils": [round(start[0], 2), round(start[1], 2)], "where": f"at {path.start}"}
     if path is None:
         return where
+    if v["check"] in RECEIVER_CHECKS:
+        # the edge and the eye are seen where the signal arrives
+        end = _pin_xy(board, path.end)
+        if end is not None:
+            where = {"at_mils": [round(end[0], 2), round(end[1], 2)], "where": f"at {path.end}"}
     if v["check"] == "impedance" and "delay_ps" in res["metrics"] and path.length:
         delay = res["metrics"]["delay_ps"]["value"] * 1e-12
         hit = _tdr_fault(folder, z_target, rise_s, delay)
@@ -281,13 +296,22 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
             if pt is not None:
                 where = {"at_mils": [round(pt[0], 2), round(pt[1], 2)], "layer": pt[2],
                          "where": f"{pt[3]:.0f} mil from {path.start} (TDR {z:.1f} ohm)"}
-    elif v["check"] == "crosstalk":
+    elif v["check"] == "return path":
+        rows = res.get("figures", {}).get("return_path") or []
+        if rows:
+            g = rows[0]
+            where = {"at_mils": g["at_mils"], "layer": g["layer"],
+                     "where": f"{g['distance_mils']:.0f} mil along the route, {g['text']}"}
+    elif v["check"] in ("crosstalk", "crosstalk noise"):
         rows = res.get("figures", {}).get("crosstalk") or []
         if rows:
             a = rows[0]
             where = {"at_mils": a["at_mils"], "layer": a["layer"],
-                     "where": f"runs {a['length_mils']:.0f} mil beside {a['aggressor']} at "
-                              f"{a['gap_mils']:.1f} mil"}
+                     "where": (f"runs {a['length_mils']:.0f} mil across from {a['aggressor']} "
+                               f"on {a['aggressor_layer']}, {a['gap_mils']:.1f} mil of "
+                               "dielectric between" if a.get("aggressor_layer") else
+                               f"runs {a['length_mils']:.0f} mil beside {a['aggressor']} at "
+                               f"{a['gap_mils']:.1f} mil")}
     elif v["check"] == "stub resonance":
         blocks = res.get("figures", {}).get("blocks", [])
         worst = min((b for b in blocks if b.get("stub_resonance_ghz")),
@@ -303,17 +327,57 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
     return where
 
 
+#: Checks of the single edge at the receiver, placed at the receiving pin.
+EDGE_CHECKS = ("overshoot", "ringback", "edge reversal")
+#: Checks of what the receiver sees: their findings sit at the receiving pin.
+RECEIVER_CHECKS = EDGE_CHECKS + ("eye", "eye at the bit error rate")
+
 #: The unit intervals an item's sweep covers when its eye is wanted, and
 #: the most points it is given for that.
 EYE_WINDOW_UI = 8.0
 MAX_EYE_POINTS = 4000
 
 
+def _delay_match(results: list[dict[str, Any]]) -> None:
+    """Hold the items of each target that gives ``delay_match_ps`` to the
+    slowest of them: a signal can be delayed by adding trace, never sped
+    up, so the slowest sets the time the others are matched to."""
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for r in results:
+        if r.get("delay_match_ps") is not None and "delay_ps" in r.get("metrics", {}):
+            groups.setdefault(r["target"], []).append(r)
+    for rs in groups.values():
+        if len(rs) < 2:
+            continue
+        slow = max(rs, key=lambda r: r["metrics"]["delay_ps"])
+        top = slow["metrics"]["delay_ps"]
+        for r in rs:
+            tol = float(r["delay_match_ps"])
+            d = r["metrics"]["delay_ps"]
+            lead = top - d
+            r["metrics"]["delay_lead_ps"] = round(lead, 3)
+            ok = lead <= tol
+            if r is slow:
+                detail = f"{d:.1f} ps, the slowest of the {len(rs)} matched to it"
+            else:
+                detail = (f"{lead:.1f} ps ahead of {slow['kind']} {slow['name']} "
+                          f"({top:.1f} ps), {tol:g} ps allowed")
+                length = r["metrics"].get("length_mils")
+                if not ok and length and d > 0:
+                    detail += f": about {lead * length / d:.0f} mil more trace matches it"
+            r["verdicts"].append({"check": "delay match", "pass": bool(ok), "detail": detail})
+            if not ok:
+                r["findings"].append({"check": "delay match", "severity": "error",
+                                      "detail": detail, **r.get("start", {})})
+
+
 def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points: int
                ) -> dict[str, Any]:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
     for k in ("temperature_c", "thermal_npz", "tand", "foil", "mask_mils", "etch_mils",
-              "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet"):
+              "xtalk", "xtalk_max_pct", "xtalk_reach_mils", "xtalk_quiet",
+              "xtalk_aggressors", "xtalk_swing_mv", "xtalk_max_mv",
+              "return_path", "return_gap_min_mils"):
         if k in spec and k not in s:
             s[k] = spec[k]
     if "data_rate_gbps" not in s and spec.get("data_rate_gbps") is not None:
@@ -323,7 +387,7 @@ def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points:
     if item["settings"].get("eye", spec.get("eye", False)) and s.get("data_rate_gbps"):
         # an eye needs the sweep's step to cover several bits: a slow net
         # on a wide sweep gets more points, not a refused eye
-        need = math.ceil(EYE_WINDOW_UI * float(s["f_max_ghz"]) / float(s["data_rate_gbps"]))
+        need = math.ceil(EYE_WINDOW_UI * float(s["f_max_ghz"]) / symbol_rate_gbd(s))
         s["points"] = min(max(int(s["points"]), need), MAX_EYE_POINTS)
     s["rules"] = False
     s["pair" if item["kind"] == "pair" else "net"] = item["name"]
@@ -336,6 +400,10 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
     s = _item_spec(item, spec, f_max, points)
     out: dict[str, Any] = {"kind": item["kind"], "name": item["name"], "target": item["target"],
                            "folder": str(sub.relative_to(folder)), "findings": []}
+    if item["settings"].get("delay_match_ps") is not None:
+        out["delay_match_ps"] = float(item["settings"]["delay_match_ps"])
+        if out["delay_match_ps"] < 0:
+            raise ValueError(f"target {item['target']}: delay_match_ps is 0 or more")
     try:
         res = run_net_channel(s, board_data, stackup, sub)
     except Exception as exc:  # noqa: BLE001 - one bad net must not stop the board
@@ -356,6 +424,12 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
             paths = (extract.net_path(board, item["name"]), None)
     except Exception:  # noqa: BLE001
         paths = (None, None)
+    first = paths[1] if pair else paths[0]
+    if first is not None:
+        xy = _pin_xy(board, first.start)
+        if xy is not None:
+            out["start"] = {"at_mils": [round(xy[0], 2), round(xy[1], 2)],
+                            "where": f"at {first.start}"}
     z_ref = float(s.get("z_ref", 50))
     z_target = float(s.get("z_target", 2 * z_ref if pair else z_ref))
     rise = float(s.get("rise_ps", 35)) * 1e-12
@@ -365,17 +439,26 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
         es = {k: v for k, v in item["settings"].items() if k in _EYE_KEYS}
         es["data_rate_gbps"] = s["data_rate_gbps"]
         es["repeats"] = 1
+        xt = out["metrics"].get("crosstalk_pct")
+        if xt:
+            # each neighbour at its own swing; the eye's amplitude where none is given
+            swing = s.get("xtalk_swing_mv")
+            swing = float(es.get("amplitude_mv", 800)) if swing is None else float(swing)
+            es["noise_mv"] = crosstalk.noise_mv(
+                {"aggressors": res.get("figures", {}).get("crosstalk") or []}, max(swing, 0.0))
         try:
             ts = sub / res["files"]["touchstone"]
             er = eye_jobs.run_convolution(es, ts, sub / "eye")
             em = {k: v["value"] for k, v in er["metrics"].items()}
-            out["metrics"].update({f"eye_{k}" if not k.startswith(("eye", "worst")) else k: v
+            out["metrics"].update({f"eye_{k}" if not k.startswith(("eye", "worst", "bit_error")) else k: v
                                    for k, v in em.items() if k != "insertion_loss_db_at_nyquist"})
             if "plot" in er.get("files", {}):
                 out["files"]["eye"] = f"{out['folder']}/eye/{er['files']['plot']}"
             lim_mv = item["settings"].get("eye_min_mv")
             lim_ui = item["settings"].get("eye_min_ui")
-            h, w = em["eye_height_mv"], em["eye_width_ui"]
+            h, w = em.get("eye_height_with_noise_mv", em["eye_height_mv"]), em["eye_width_ui"]
+            noisy = (f" with {em['noise_mv']:g} mV of crosstalk on each rail "
+                     f"({em['eye_height_mv']:.1f} mV without)" if "noise_mv" in em else "")
             ok = h > (float(lim_mv) if lim_mv is not None else 0.0) and \
                 (lim_ui is None or w >= float(lim_ui))
             need = []
@@ -383,8 +466,10 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
                 need.append(f"{float(lim_mv):g} mV")
             if lim_ui is not None:
                 need.append(f"{float(lim_ui):g} UI")
+            out["verdicts"] += [v for v in er["verdicts"]
+                                if v["check"] in EDGE_CHECKS + ("eye at the bit error rate",)]
             out["verdicts"].append({"check": "eye", "pass": bool(ok),
-                                    "detail": f"{h:.1f} mV by {w:.3f} UI"
+                                    "detail": f"{h:.1f} mV by {w:.3f} UI{noisy}"
                                               + (f", {' and '.join(need)} needed" if need
                                                  else ", must be open")})
         except Exception as exc:  # noqa: BLE001
@@ -394,10 +479,21 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
         if v["pass"]:
             continue
         f = {"check": v["check"],
-             "severity": "warning" if v["check"] in WARNING_CHECKS else "error",
+             "severity": v.get("severity") or ("warning" if v["check"] in WARNING_CHECKS
+                                               else "error"),
              "detail": v["detail"]}
         f.update(_locate(board, item, v, res, sub, rise, z_target, paths))
         out["findings"].append(f)
+        if v["check"] == "return path":
+            for g in (res.get("figures", {}).get("return_path") or [])[1:MAX_EXTRA_FAULTS + 1]:
+                out["findings"].append({
+                    "check": "return path",
+                    "severity": "warning" if g["other_reference_solid"] else f["severity"],
+                    "detail": f"{g['text']} on {g['layer']}"
+                              + ("; the other reference plane is whole there"
+                                 if g["other_reference_solid"] else ""),
+                    "at_mils": g["at_mils"], "layer": g["layer"],
+                    "where": f"{g['distance_mils']:.0f} mil along the route, {g['text']}"})
         if v["check"] == "impedance":
             tol = float(s.get("z_tol_pct", 10)) / 100
             out["findings"].extend(_more_impedance(item, res, sub, rise, z_target, tol, paths, f))
@@ -418,8 +514,11 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
     cap = int(_num(spec, "max_items", 40))
     skipped = items[cap:]
     items = items[:cap]
-    rates = [float(it["settings"].get("data_rate_gbps", spec.get("data_rate_gbps") or 0))
-             for it in items]
+    # symbols a second: the sweep is sized for the symbol, so a PAM4
+    # target gets the sweep of NRZ at half its data rate
+    rates = [symbol_rate_gbd({"data_rate_gbps": it["settings"].get(
+                 "data_rate_gbps", spec.get("data_rate_gbps")),
+                 "modulation": it["settings"].get("modulation")}) or 0.0 for it in items]
     for it, r in zip(items, rates):
         if r <= 0:
             raise ValueError(f"{it['kind']} {it['name']}: no data rate (give data_rate_gbps "
@@ -438,6 +537,7 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(work, items))
+    _delay_match(results)
 
     findings = []
     for r in results:
@@ -491,8 +591,9 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 
 def _summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
     keys = ["insertion_loss_db", "return_loss_db", "line_loss_db", "delay_ps", "tdr_min_ohms",
-            "tdr_max_ohms", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
-            "crosstalk_next_pct", "crosstalk_fext_pct", "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
+            "tdr_max_ohms", "delay_lead_ps", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
+            "crosstalk_next_pct", "crosstalk_fext_pct", "return_gaps", "return_gap_mils",
+            "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["kind", "name", "errors", "warnings"] + keys)

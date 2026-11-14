@@ -358,6 +358,14 @@ table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { t
 .ftplan { margin-top:8px; padding:8px 10px; border:1px dashed var(--blue); border-radius:4px; background:var(--paper2); }
 .ftplan pre.small { margin:4px 0; } .ftlog { margin-bottom:var(--s3); border-color:var(--blue); }
 h2.ftgroup { margin-top:var(--s3); }
+.ftcard.core { box-shadow:inset 3px 0 0 var(--blue); } .ftcard.flash { outline:2px solid var(--blue); outline-offset:2px; }
+.ftpick { margin:0 6px 0 0; } .ftpick input { margin:0; }
+.ftnote { color:var(--ink2); font-style:italic; } .ftcore { margin-top:6px; font-size:12px; }
+.ftrel { margin:6px 0 2px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+.ftchip { font-size:11px; padding:1px 8px; border-radius:9px; } .ftchip .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; background:var(--rule); vertical-align:1px; }
+.ftchip.ready .dot { background:var(--green); } .ftchip.partial .dot { background:var(--amber); } .ftchip.missing .dot { background:var(--red); }
+.ftlocs { margin-top:6px; } .ftloc { margin-top:4px; } .ftloc .row { display:flex; gap:4px; } .ftloc input { flex:1; min-width:0; font-size:12px; }
+.ftall { margin-top:var(--s3); } .ftall summary { cursor:pointer; } .ftall table.ftdeps { table-layout:auto; } .ftall td:last-child { line-height:1.9; }
 .simgrid { display:grid; grid-template-columns:minmax(300px, 0.9fr) minmax(360px, 1.1fr); gap:var(--s4); align-items:start; }
 @media (max-width: 1100px) { .simgrid { grid-template-columns:1fr; } }
 .simwrap > .wsgrid { margin-bottom:var(--s4); } .simnew { margin-bottom:var(--s4); } .simrow { display:flex; gap:6px; } .simrow input { flex:1; min-width:0; font:12px var(--mono); }
@@ -2484,7 +2492,8 @@ $("#follow").addEventListener("change", async e => {
 // What this installation can do (eda_agent.features): every feature with its
 // state, every dependency with its version and license, the installer that
 // `eda-agent install-deps` runs, and the on/off switch of the engines.
-const FT = {rep: null, busy: false, timer: 0, plan: null, planFor: "", deep: false};
+const FT = {rep: null, busy: false, timer: 0, plan: null, planFor: "", deep: false, pick: new Set(), filter: "all", allOpen: false};
+try { const f = localStorage.getItem("wb.ftfilter"); if (f) FT.filter = f; } catch (x) {}
 const ftState = s => T({ready: "Ready", partial: "Partly ready", missing: "Not installed", off: "Switched off", unavailable: "Not for this machine"}[s] || "Unknown");
 const ftDepState = s => T({present: "Installed", missing: "Missing", outdated: "Wrong version", unsupported: "Not for this machine"}[s] || "Unknown");
 const ftKind = k => T({python: "Python package", local: "Built from this repository", venv: "Own environment", program: "Program"}[k] || "Unknown");
@@ -2523,36 +2532,88 @@ function paintFtLog() { const el = document.querySelector("#pane .ftlog"); if (e
 function ftPlanHtml(fid) {
   if (FT.planFor !== fid || !FT.plan) return "";
   const p = FT.plan;
-  const steps = (p.steps || []).map(s => `<li><b>${esc(T({pip: "Install", local: "Build", venv: "Install apart", manual: "By hand", skip: "Skipped"}[s.kind] || "Install"))}</b> ${esc(s.title)}${(s.commands || []).map(c => `<pre class="small">${esc(c)}</pre>`).join("")}${s.text ? `<div class="hint">${esc(s.text)}</div>` : ""}</li>`).join("");
+  const steps = (p.steps || []).map(s => `<li><b>${esc(T({pip: "Install", local: "Build", venv: "Install apart", manual: "By hand", skip: "Skipped"}[s.kind] || "Install"))}</b> ${esc(s.title)}${(s.commands || []).map(c => `<pre class="small">${esc(c)}</pre>`).join("")}${s.text ? `<div class="hint">${ftMd(s.text)}</div>` : ""}</li>`).join("");
   const auto = p.automatic_steps || 0;
   return `<div class="ftplan">${steps ? `<ul class="notes">${steps}</ul>` : `<p class="hint">${esc(T("Nothing to install."))}</p>`}
     <div class="actions">${auto ? `<button class="go" data-ftgo="${esc(fid)}">${esc(p.download_mb ? T("Install now (about {0} MB)", p.download_mb) : T("Install now"))}</button>` : ""}<button data-ftcancel="1">${esc(T("Close"))}</button></div></div>`;
 }
+// Catalogue text marks commands and names with backticks: shown as code.
+const ftMd = t => esc(t).replace(/`([^`]+)`/g, '<span class="m">$1</span>');
+function ftLoc(d) {
+  // Where eda-agent looks for a program: saved here, or set in the environment.
+  const locs = d.locations || [];
+  if (!locs.length) return "";
+  const rows = locs.map(l => {
+    const src = l.source === "environment" ? T("set in the environment") : l.source === "saved" ? T("saved here") : "";
+    return `<div class="ftloc"><label class="m" for="ftloc-${esc(l.name)}">${esc(l.name)}</label>
+      <div class="row"><input id="ftloc-${esc(l.name)}" data-ftloc="${esc(l.name)}" value="${esc(l.value || l.saved || "")}" placeholder="${esc(T("Full path"))}"${l.source === "environment" ? " disabled" : ""}>
+      ${l.source === "environment" ? "" : `<button data-ftlocsave="${esc(l.name)}">${esc(T("Save"))}</button>${l.saved ? `<button data-ftlocclear="${esc(l.name)}">${esc(T("Forget"))}</button>` : ""}`}</div>
+      ${src ? `<small class="sub">${esc(src)}</small>` : ""}</div>`;
+  }).join("");
+  return `<div class="ftlocs"><small class="sub">${esc(T("Installed somewhere eda-agent does not look? Point it there; every later session uses it."))}</small>${rows}</div>`;
+}
+function ftDepRow(d, role) {
+  const open = d.state !== "present";
+  const how = (open && d.manual) || (d.locations || []).length
+    ? `<details${open && (d.locations || []).some(l => l.saved) ? " open" : ""}><summary>${esc(open ? T("How to install") : T("Location"))}</summary>${open && d.manual ? `<p class="hint">${ftMd(d.manual)}</p>` : ""}${open && d.url ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>` : ""}${ftLoc(d)}</details>` : "";
+  return `<tr><td><b>${esc(d.title)}</b>${role ? ` <small class="sub">${esc(role)}</small>` : ""}<div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}${d.note ? " · " + esc(d.note) : ""}</div>${how}</td>
+    <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
+    <td class="n">${esc(d.version || "")}</td><td class="m" title="${esc(d.license)}">${esc(d.license)}</td></tr>`;
+}
 function ftDeps(f, deps) {
-  const ids = [...f.needs, ...f.any_of.flat(), ...f.adds];
+  const ids = [...f.needs, ...f.any_of.flat(), ...f.adds].filter(id => deps[id] && deps[id].applies !== false);
   if (!ids.length) return "";
   const alt = new Set(f.any_of.flat()), add = new Set(f.adds);
-  const rows = ids.map(id => {
-    const d = deps[id]; if (!d) return "";
-    const role = alt.has(id) ? T("one of") : add.has(id) ? T("adds to it") : "";
-    const how = d.state !== "present" && d.manual ? `<details><summary>${esc(T("How to install"))}</summary><p class="hint">${esc(d.manual)}</p>${d.url ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>` : ""}</details>` : "";
-    return `<tr><td><b>${esc(d.title)}</b>${role ? ` <small class="sub">${esc(role)}</small>` : ""}<div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}</div>${how}</td>
-      <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
-      <td class="n">${esc(d.version || "")}</td><td class="m" title="${esc(d.license)}">${esc(d.license)}</td></tr>`;
-  }).join("");
-  return `<table class="grid ftdeps"><thead><tr><th>${esc(T("Needs"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const rows = ids.map(id => ftDepRow(deps[id], alt.has(id) ? T("one of") : add.has(id) ? T("adds to it") : "")).join("");
+  const table = `<table class="grid ftdeps"><thead><tr><th>${esc(T("Needs"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th></tr></thead><tbody>${rows}</tbody></table>`;
+  // Built-in packages are there on every installation: folded away unless one is missing.
+  if (f.core && f.state === "ready") return `<details class="ftcore"><summary>${esc(T("Packages ({0})", ids.length))}</summary>${table}</details>`;
+  return table;
 }
-function ftCard(f, deps, running) {
-  const canInstall = !f.core && (f.state === "missing" || f.state === "partial" || (f.state === "off" && f.missing.length));
-  const sw = f.switchable ? `<label class="check ftsw" title="${esc(T("An engine that is off is not offered for simulation jobs"))}"><input type="checkbox" data-ftswitch="${esc(f.id)}"${f.state !== "off" ? " checked" : ""}> ${esc(T("On"))}</label>` : "";
-  return `<div class="card ftcard ${esc(f.state)}" id="ft-${esc(f.id)}"><h3>${esc(f.title)} <span class="pill ${ftPill(f.state)}">${esc(ftState(f.state))}</span><span class="sp"></span>${sw}
+function ftInstallable(f) { return !f.core && (f.state === "missing" || f.state === "partial" || (f.state === "off" && f.missing.length)); }
+function ftRelated(f, byId) {
+  const rel = (f.related || []).map(id => byId[id]).filter(Boolean);
+  if (!rel.length) return "";
+  return `<div class="ftrel"><small class="sub">${esc(T("Extended by"))}</small> ${rel.map(r => `<button class="ftchip ${esc(r.state)}" data-ftgoto="${esc(r.id)}" title="${esc(ftState(r.state))}"><span class="dot"></span>${esc(r.title)}</button>`).join(" ")}</div>`;
+}
+function ftCard(f, deps, running, byId) {
+  const canInstall = ftInstallable(f);
+  const sw = f.switchable ? `<label class="check ftsw" title="${esc(f.default_on ? T("An engine that is off is not offered for simulation jobs") : T("Off by default; on, eda-agent uses it for every run"))}"><input type="checkbox" data-ftswitch="${esc(f.id)}"${f.state !== "off" && !(f.state === "missing" && !f.default_on) ? " checked" : ""}${f.state === "missing" && !f.default_on ? " disabled" : ""}> ${esc(T("On"))}</label>` : "";
+  const pick = canInstall ? `<label class="check ftpick" title="${esc(T("Add to the selection to install"))}"><input type="checkbox" data-ftpick="${esc(f.id)}"${FT.pick.has(f.id) ? " checked" : ""}${running ? " disabled" : ""}></label>` : "";
+  const pill = f.core && f.state === "ready" ? `<span class="pill ok">${esc(T("Built in"))}</span>` : `<span class="pill ${ftPill(f.state)}">${esc(ftState(f.state))}</span>`;
+  const tools = (f.tools || []).length ? `<div class="sub2 hint">${esc(T("Tools"))}: ${f.tools.map(t => `<span class="m">${esc(t)}</span>`).join(", ")}</div>` : "";
+  return `<div class="card ftcard ${esc(f.state)}${f.core ? " core" : ""}" id="ft-${esc(f.id)}"><h3>${pick}${esc(f.title)} ${pill}<span class="sp"></span>${sw}
       ${canInstall ? `<button data-ftplan="${esc(f.id)}"${running ? " disabled" : ""}>${esc(T("Install"))}</button>` : ""}</h3>
-    <p class="hint">${esc(f.summary)}</p>
+    <p class="hint">${ftMd(f.summary)}</p>
+    ${f.note ? `<p class="hint ftnote">${ftMd(f.note)}</p>` : ""}
     ${f.detail ? `<p class="hint bad">${esc(f.detail)}</p>` : ""}
-    ${f.offers.length ? `<h4>${esc(T("Offers"))}</h4><ul class="notes">${f.offers.map(o => `<li>${esc(o)}</li>`).join("")}</ul>` : ""}
+    ${f.offers.length ? `<h4>${esc(T("Offers"))}</h4><ul class="notes">${f.offers.map(o => `<li>${ftMd(o)}</li>`).join("")}</ul>` : ""}
+    ${ftRelated(f, byId)}
     ${ftDeps(f, deps)}
     ${ftPlanHtml(f.id)}
-    ${f.core ? "" : `<div class="sub2 hint">${f.extra ? `<span class="m">pip install eda-agent[${esc(f.extra)}]</span> · ` : ""}<span class="m">eda-agent install-deps ${esc(f.id)}</span>${f.docs ? ` · <span class="m">${esc(f.docs)}</span>` : ""}</div>`}</div>`;
+    ${tools}
+    ${f.core ? (f.docs ? `<div class="sub2 hint"><span class="m">${esc(f.docs)}</span></div>` : "") : `<div class="sub2 hint">${f.extra ? `<span class="m">pip install eda-agent[${esc(f.extra)}]</span> · ` : ""}<span class="m">eda-agent install-deps ${esc(f.id)}</span>${f.docs ? ` · <span class="m">${esc(f.docs)}</span>` : ""}</div>`}</div>`;
+}
+const FT_FILTERS = [["all", "All"], ["builtin", "Built in"], ["ready", "Installed"], ["todo", "To install"], ["off", "Switched off"]];
+function ftShown(f) {
+  const k = FT.filter;
+  if (k === "builtin") return f.core;
+  if (k === "ready") return !f.core && (f.state === "ready" || f.state === "partial");
+  if (k === "todo") return ftInstallable(f) || f.state === "unavailable";
+  if (k === "off") return f.state === "off";
+  return true;
+}
+function ftAllDeps(R, byId) {
+  const deps = (R.dependencies || []).filter(d => d.applies !== false);
+  const order = {python: 0, local: 1, venv: 2, program: 3};
+  deps.sort((a, b) => (order[a.kind] - order[b.kind]) || a.title.localeCompare(b.title));
+  const rows = deps.map(d => `<tr><td><b>${esc(d.title)}</b><div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}</div></td>
+    <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
+    <td class="n">${esc(d.version || "")}</td><td class="m">${esc(d.license)}</td>
+    <td>${(d.used_by || []).map(id => byId[id] ? `<button class="ftchip ${esc(byId[id].state)}" data-ftgoto="${esc(id)}"><span class="dot"></span>${esc(byId[id].title)}</button>` : "").join(" ")}</td></tr>`).join("");
+  const n = deps.length, have = deps.filter(d => d.state === "present").length;
+  return `<details class="card ftall"${FT.allOpen ? " open" : ""}><summary><b>${esc(T("All dependencies"))}</b> <small class="sub">${esc(T("{0} of {1} installed", have, n))}</small></summary>
+    <table class="grid ftdeps"><thead><tr><th>${esc(T("Dependency"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th><th>${esc(T("Used by"))}</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }
 function paintFeaturesPane() {
   const pane = $("#pane"); pane.hidden = false;
@@ -2560,54 +2621,96 @@ function paintFeaturesPane() {
   if (!R) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
   if (!R.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
   const deps = Object.fromEntries((R.dependencies || []).map(d => [d.id, d]));
+  const byId = Object.fromEntries((R.features || []).map(f => [f.id, f]));
   const c = R.counts || {}, running = !!(R.install && R.install.running);
+  // A pick that is no longer installable (installed meanwhile) drops out.
+  for (const id of [...FT.pick]) if (!byId[id] || !ftInstallable(byId[id])) FT.pick.delete(id);
   const fig = (label, v, cls) => `<div><span>${esc(label)}</span><b class="${cls || ""}">${num(v || 0)}</b></div>`;
-  const missingAny = (R.features || []).some(f => !f.dev && (f.state === "missing" || f.state === "partial"));
+  const missingAny = (R.features || []).some(f => !f.dev && ftInstallable(f));
   const groups = (R.groups || []).map(g => {
-    const cards = R.features.filter(f => f.group === g).map(f => ftCard(f, deps, running)).join("");
-    return `<h2 class="wsh ftgroup">${esc(g)}</h2><div class="wsgrid ftgrid">${cards}</div>`;
-  }).join("");
+    const cards = R.features.filter(f => f.group === g && ftShown(f)).map(f => ftCard(f, deps, running, byId)).join("");
+    return cards ? `<h2 class="wsh ftgroup">${esc(g)}</h2><div class="wsgrid ftgrid">${cards}</div>` : "";
+  }).join("") || `<p class="hint">${esc(T("Nothing matches this filter."))}</p>`;
   const errs = (R.plugin_errors || []).map(e => `<li>${esc(e.plugin)}: ${esc(e.error)}</li>`).join("");
+  const chips = FT_FILTERS.map(([k, label]) => `<button data-ftfilter="${k}" aria-pressed="${FT.filter === k}">${esc(T(label))}</button>`).join("");
+  const nPick = FT.pick.size;
   pane.innerHTML = `<div class="ftwrap"><div class="panehead"><div class="figures">
-      ${fig(T("Ready"), (c.ready || 0) + (c.partial || 0), "good")}${fig(T("Not installed"), c.missing, c.missing ? "bad" : "")}${fig(T("Switched off"), c.off)}${fig(T("Not for this machine"), c.unavailable)}
+      ${fig(T("Built in"), R.built_in, "good")}${fig(T("Installed"), (c.ready || 0) + (c.partial || 0) - (R.built_in || 0), "good")}${fig(T("Not installed"), c.missing, c.missing ? "bad" : "")}${fig(T("Switched off"), c.off)}${fig(T("Not for this machine"), c.unavailable)}
     </div><span class="sp"></span>
     <button data-ftdeep="1"${FT.busy ? " disabled" : ""} title="${esc(T("Also ask openEMS and the programs for their versions; takes a few seconds"))}">${FT.busy ? `<span class="spin"></span> ` : ""}${esc(T("Check thoroughly"))}</button>
-    ${missingAny ? `<button class="go" data-ftplan="all"${running ? " disabled" : ""}>${esc(T("Install everything missing"))}</button>` : ""}</div>
+    ${nPick ? `<button class="go" data-ftplan="sel"${running ? " disabled" : ""}>${esc(T("Install selected ({0})", nPick))}</button>` : ""}
+    ${missingAny ? `<button${nPick ? "" : ' class="go"'} data-ftplan="all"${running ? " disabled" : ""}>${esc(T("Install everything missing"))}</button>` : ""}</div>
+    <div class="chipset ftfilters">${chips}</div>
     <p class="hint">${esc(T("The same list and installer from a terminal: {0}. Python packages go into the Python eda-agent runs in; GPL programs run apart from it.", "eda-agent features, eda-agent install-deps --all"))}</p>
-    ${FT.planFor === "all" ? `<div class="card">${ftPlanHtml("all")}</div>` : ""}
+    ${FT.planFor === "all" || FT.planFor === "sel" ? `<div class="card">${ftPlanHtml(FT.planFor)}</div>` : ""}
     ${ftLogHtml()}
     ${errs ? `<div class="result fail">${esc(T("Some plugins could not be loaded:"))}<ul>${errs}</ul></div>` : ""}
     ${groups}
+    ${ftAllDeps(R, byId)}
     <p class="hint">${esc(T("Engines are installed under {0}; switches are kept in {1}.", R.engines_dir, R.state_file))}</p></div>`;
 }
+function ftChosen(fid) { return fid === "all" ? {all: true} : fid === "sel" ? {features: [...FT.pick]} : {features: [fid]}; }
 async function featuresClick(e) {
+  const sum = e.target.closest(".ftall > summary");
+  if (sum) { FT.allOpen = !sum.parentElement.open; return; }
   const b = e.target.closest("button"); if (!b) return;
   if (b.dataset.ftdeep) return loadFeatures(true);
+  if (b.dataset.ftfilter) { FT.filter = b.dataset.ftfilter; try { localStorage.setItem("wb.ftfilter", FT.filter); } catch (x) {} return paintPane(); }
+  if (b.dataset.ftgoto) {
+    const id = b.dataset.ftgoto;
+    if (!document.getElementById("ft-" + id)) { FT.filter = "all"; paintPane(); }
+    const c = document.getElementById("ft-" + id);
+    if (c) { c.scrollIntoView({block: "center", behavior: "smooth"}); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 1200); }
+    return;
+  }
+  if (b.dataset.ftlocsave || b.dataset.ftlocclear) {
+    const name = b.dataset.ftlocsave || b.dataset.ftlocclear;
+    const inp = document.querySelector(`[data-ftloc="${CSS.escape(name)}"]`);
+    const value = b.dataset.ftlocsave ? ((inp && inp.value) || "").trim() : "";
+    if (b.dataset.ftlocsave && !value) return say(T("Type the full path first."), true);
+    b.disabled = true;
+    const r = await post("/api/wb/features/path", {name, value});
+    b.disabled = false;
+    if (!r || !r.ok) return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true);
+    say(value ? T("{0} saved. Checking again.", name) : T("{0} forgotten.", name));
+    return loadFeatures(false);
+  }
   if (b.dataset.ftcancel) { FT.plan = null; FT.planFor = ""; return paintPane(); }
   if (b.dataset.ftplan) {
     const fid = b.dataset.ftplan; b.disabled = true;
-    const r = await post("/api/wb/features/plan", fid === "all" ? {all: true} : {features: [fid]});
+    const r = await post("/api/wb/features/plan", ftChosen(fid));
     if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
     FT.plan = r.plan; FT.planFor = fid; return paintPane();
   }
   if (b.dataset.ftgo) {
     const fid = b.dataset.ftgo; b.disabled = true;
-    const r = await post("/api/wb/features/install", fid === "all" ? {all: true} : {features: [fid]});
+    const r = await post("/api/wb/features/install", ftChosen(fid));
     if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
     FT.plan = null; FT.planFor = "";
-    if (r.started) { say(T("Installing: {0}", (r.plan.features || []).join(", "))); FT.rep.install = {running: true, features: r.plan.features, lines: []}; paintPane(); ftPoll(); }
+    if (r.started) { if (fid === "sel") FT.pick.clear(); say(T("Installing: {0}", (r.plan.features || []).join(", "))); FT.rep.install = {running: true, features: r.plan.features, lines: []}; paintPane(); ftPoll(); }
     else say(T("Nothing here can be installed automatically: follow the steps shown."));
   }
 }
 async function featuresChange(e) {
-  const t = e.target; if (!t.dataset || t.dataset.ftswitch == null) return;
+  const t = e.target; if (!t.dataset) return;
+  if (t.dataset.ftpick != null) {
+    (t.checked ? FT.pick.add : FT.pick.delete).call(FT.pick, t.dataset.ftpick);
+    if (FT.planFor === "sel") { FT.plan = null; FT.planFor = ""; }
+    return paintPane();
+  }
+  if (t.dataset.ftswitch == null) return;
   const r = await post("/api/wb/features/switch", {id: t.dataset.ftswitch, on: t.checked});
   if (!r || !r.ok) { t.checked = !t.checked; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
-  say(t.checked ? T("{0} is on.", t.dataset.ftswitch) : T("{0} is off: simulation jobs will not use it.", t.dataset.ftswitch));
+  const f = FT.rep && (FT.rep.features || []).find(x => x.id === t.dataset.ftswitch);
+  say(t.checked ? T("{0} is on.", t.dataset.ftswitch)
+      : f && !f.default_on ? T("{0} is off.", t.dataset.ftswitch)
+      : T("{0} is off: simulation jobs will not use it.", t.dataset.ftswitch));
   loadFeatures(false);
 }
 function featuresSideBlock() {
-  return `<section class="block"><h2>${esc(T("Features"))}</h2><p class="hint">${esc(T("What this installation can do, what each part needs, and what is missing. Installing changes the Python environment eda-agent runs in; a package that was already loaded needs eda-agent restarted."))}</p><p class="hint">${esc(T("The AI reads the same list with the app_features tool."))}</p></section>`;
+  return `<section class="block"><h2>${esc(T("Features"))}</h2><p class="hint">${esc(T("What this installation can do, what each part needs, and what is missing. Installing changes the Python environment eda-agent runs in; a package that was already loaded needs eda-agent restarted."))}</p>
+    <p class="hint">${esc(T("Tick the cards you want and install them together, or install everything missing at once."))}</p>
+    <p class="hint">${esc(T("The AI reads the same list with the app_features tool."))}</p></section>`;
 }
 
 /* ================================================================ simulation */

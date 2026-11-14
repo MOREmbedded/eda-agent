@@ -56,6 +56,19 @@ class Options:
     plane_mils: float = 1.4
 
 
+def _reference(stack: Stack, i: int, step: int):
+    """The copper that layer ``i`` is referenced to on one side: the nearest
+    plane, past any signal layers (returned second), or with no plane on
+    that side the layer right next to it."""
+    j, passed = i + step, []
+    while 0 <= j < len(stack.layers):
+        if stack.layers[j].kind == "plane":
+            return stack.layers[j], passed
+        passed.append(stack.layers[j])
+        j += step
+    return (passed[0] if passed else None), []
+
+
 def layer_sections(stack: Stack, opt: Options) -> list[dict[str, Any]]:
     """For each signal layer: how its cross-section is built."""
     out = []
@@ -63,8 +76,8 @@ def layer_sections(stack: Stack, opt: Options) -> list[dict[str, Any]]:
     for i, layer in enumerate(stack.layers):
         if layer.kind == "plane":
             continue
-        above = stack.layers[i - 1] if i > 0 else None
-        below = stack.layers[i + 1] if i + 1 < n else None
+        above, over_above = _reference(stack, i, -1)
+        below, over_below = _reference(stack, i, 1)
         if above is None and below is None:
             continue
         info: dict[str, Any] = {"layer": layer.name, "label": layer.label or layer.name,
@@ -89,6 +102,11 @@ def layer_sections(stack: Stack, opt: Options) -> list[dict[str, Any]]:
                 info["note"] = (f"signal layer {' and '.join(signal_refs)} is taken as a "
                                 "reference; keep it solid copper under these traces or the "
                                 "figures do not hold")
+        passed = [label(x) for x in over_above + over_below]
+        if passed:
+            info["note"] = " ".join(filter(None, [info.get("note"), (
+                f"signal layer {' and '.join(passed)} lies between these traces and their "
+                "reference plane; copper on it over or under them changes the figures")]))
         for key, other in (("h_mils", None), ("h_below_mils", below), ("h_above_mils", above)):
             if key in info and info[key] <= 0:
                 other = other or (below if below is not None else above)

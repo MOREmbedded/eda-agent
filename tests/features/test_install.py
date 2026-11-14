@@ -21,9 +21,13 @@ def nothing_installed(monkeypatch, tmp_path):
     monkeypatch.setenv("EDA_AGENT_ENGINES_DIR", str(tmp_path / "engines"))
 
 
-def test_select_all_leaves_out_core_and_development():
-    ids = {f.id for f in install.select(everything=True)}
-    assert "core" not in ids and "dev" not in ids and "site" not in ids
+def test_select_all_checks_core_first_and_leaves_out_development():
+    """--all puts back a core package the environment lost, so the core
+    features come first; the development ones only with include_dev."""
+    chosen = install.select(everything=True)
+    ids = [f.id for f in chosen]
+    assert ids[0] == "core" and all(f.core for f in chosen[:ids.index("dashboard")])
+    assert "dev" not in ids and "site" not in ids
     assert "dev" in {f.id for f in install.select(everything=True, include_dev=True)}
     with pytest.raises(KeyError):
         install.select(["nope"])

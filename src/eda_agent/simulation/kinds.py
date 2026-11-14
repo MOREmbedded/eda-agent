@@ -115,11 +115,12 @@ def check_spec(kind_id: str, spec: dict[str, Any], inputs: dict[str, str]) -> li
                 problems.append(f"spec key {key!r} is required for {kind_id}")
             continue
         v = spec[key]
-        ok = isinstance(v, _TYPES[type_name])
-        if type_name == "number" and isinstance(v, bool):
-            ok = False
+        # "number|text": either will do
+        names = type_name.split("|")
+        ok = any(isinstance(v, _TYPES[n]) and not (n == "number" and isinstance(v, bool))
+                 for n in names)
         if not ok:
-            problems.append(f"spec key {key!r} must be a {type_name}")
+            problems.append(f"spec key {key!r} must be a {' or a '.join(names)}")
     for role in inputs:
         if role not in k.inputs:
             problems.append(f"unknown input {role!r} for {kind_id}; "

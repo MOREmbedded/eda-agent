@@ -18,7 +18,8 @@ from eda_agent.si import channel as ch
 from eda_agent.si.jobs import plan_options
 from eda_agent.si.section import MIL
 
-from .boards import LAYERS, STACKUP, pair_board, single_net
+from .boards import (DUAL_LAYERS, DUAL_STACKUP, LAYERS, STACKUP, pair_board, single_net,
+                     smd)
 
 RISE = 100e-12
 
@@ -92,6 +93,59 @@ def test_only_copper_running_beside_the_net_within_reach_counts(coupling):
     names = {a["aggressor"]: a for a in wide["aggressors"]}
     assert set(names) == {"AGG", "FAR"}
     assert names["FAR"]["next_pct"] < 0.1 * names["AGG"]["next_pct"]
+
+
+def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(coupling):
+    from eda_agent.layout.model import Arc
+    # the victim turns a quarter circle of 500 mil radius; the aggressor follows
+    # it on the outside, 4 mil away edge to edge
+    b = victim()
+    b.pads = [smd("U1", "1", 500, 0, "SIG"), smd("U2", "1", 0, 500, "SIG")]
+    b.vias = []
+    b.tracks = []
+    b.arcs = [Arc("TopLayer", 0, 0, 500, 0, 90, 5, "SIG"),
+              Arc("TopLayer", 0, 0, 509, 0, 90, 5, "AGG")]
+    curved = of(b, coupling)["aggressors"][0]
+    quarter = math.pi / 2 * 500
+    assert curved["aggressor"] == "AGG" and curved["layer"] == "TopLayer"
+    assert curved["length_mils"] == pytest.approx(quarter, rel=0.01)
+    assert curved["gap_mils"] == pytest.approx(4.0, abs=0.1)
+    assert of(b, coupling, quiet={"AGG"})["aggressors"] == []     # a quiet net's arcs too
+    # the place given is where the curved stretch starts on the route (U1.1 at
+    # 0 degrees), not where one of its chords does
+    assert curved["at_mils"] == pytest.approx([500, 0], abs=0.5)
+    # walked the other way (from U2.1), against the way the neighbour's arc was drawn
+    back = crosstalk.of_path(b, extract.net_path(b, "SIG", "U2.1", "U1.1"), coupling, RISE)
+    assert back["aggressors"][0]["at_mils"] == pytest.approx([0, 500], abs=0.5)
+    assert back["aggressors"][0]["length_mils"] == pytest.approx(curved["length_mils"], rel=1e-6)
+    # an aggressor beside the last third only: the stretch starts at 60 degrees
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 60, 90, 5, "AGG")
+    third = of(b, coupling)["aggressors"][0]
+    assert third["at_mils"] == pytest.approx([250, 500 * math.sin(math.radians(60))], abs=6)
+    assert third["length_mils"] == pytest.approx(quarter / 3, rel=0.02)
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 0, 90, 5, "AGG")
+    # as much as the same length side by side on a straight run
+    straight = of(beside(victim(), x1=100, x2=100 + quarter), coupling)["aggressors"][0]
+    assert curved["next_pct"] == pytest.approx(straight["next_pct"], rel=0.02)
+    assert curved["fext_pct"] == pytest.approx(straight["fext_pct"], rel=0.03)
+    # a straight neighbour drawn as 160 tracks of 5 mil is one run of 800 mil
+    cut = victim()
+    for i in range(160):
+        beside(cut, x1=100 + 5 * i, x2=105 + 5 * i)
+    whole = of(beside(victim()), coupling)["aggressors"][0]
+    pieces = of(cut, coupling)["aggressors"][0]
+    assert pieces["length_mils"] == pytest.approx(800)
+    assert pieces["next_pct"] == pytest.approx(whole["next_pct"], rel=1e-6)
+    assert pieces["at_mils"] == [100.0, 0.0]
+    # two separate stretches beside one net: the longer one is the place
+    two = of(beside(beside(victim(), x1=50, x2=150), x1=400, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [400.0, 0.0] and two["length_mils"] == pytest.approx(600)
+    two = of(beside(beside(victim(), x1=50, x2=550), x1=800, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [50.0, 0.0]
+    # an arc of another net that only crosses is still nothing
+    b = victim()
+    b.arcs = [Arc("TopLayer", 500, 300, 300, 180, 360, 5, "LOOP")]
+    assert of(b, coupling)["aggressors"] == []
 
 
 def test_a_track_at_a_slight_angle_still_runs_beside_and_only_where_it_overlaps(coupling):
@@ -252,3 +306,439 @@ def test_the_board_check_places_a_crosstalk_finding_at_the_coupled_stretch(tmp_p
     assert not any(x["check"] == "crosstalk" for x in res["figures"]["findings"])
     items = json.loads((tmp_path / "z" / "findings.json").read_text())["items"]
     assert "crosstalk_pct" not in items[0]["metrics"] and "delay_ps" in items[0]["metrics"]
+
+
+def test_crosstalk_closes_the_eye_by_its_noise_on_both_rails(tmp_path):
+    from eda_agent.si import eye_jobs
+    b = beside(victim(), x1=300, x2=900)
+    target = {"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2, "eye": True,
+              "xtalk_max_pct": 50}
+    spec = {"targets": [target], "points": 200, "f_max_ghz": 10}
+
+    def run(name, **more):
+        board_jobs.run_board_si({"targets": [{**target, **more}], **{k: v for k, v in spec.items()
+                                                                     if k != "targets"}},
+                                b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+        return item["metrics"], next(v for v in item["verdicts"] if v["check"] == "eye")
+
+    m, v = run("a")
+    # the neighbours swing as the net does (800 mV) unless told otherwise
+    assert m["eye_noise_mv"] == pytest.approx(m["crosstalk_pct"] / 100 * 800, abs=0.01)
+    assert m["eye_height_with_noise_mv"] == pytest.approx(
+        m["eye_height_mv"] - 2 * m["eye_noise_mv"], abs=0.01)
+    assert v["pass"] and "of crosstalk on each rail" in v["detail"]
+    assert f"{m['eye_height_with_noise_mv']:.1f} mV by" in v["detail"]
+    # 3.3 V neighbours: four times the noise, and the limit is held against what is left
+    m3, v3 = run("b", xtalk_swing_mv=3300, eye_min_mv=m["eye_height_with_noise_mv"] - 1)
+    assert m3["eye_noise_mv"] == pytest.approx(m["eye_noise_mv"] * 3300 / 800, rel=1e-3)
+    assert not v3["pass"] and m3["eye_height_mv"] == pytest.approx(m["eye_height_mv"])
+    # no crosstalk asked, no noise
+    m0, v0 = run("c", xtalk=False)
+    assert "eye_noise_mv" not in m0 and "crosstalk" not in v0["detail"]
+    # the eye job itself takes noise from any source
+    ts = next((tmp_path / "a").rglob("channel.s2p"))
+    res = eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": 50, "repeats": 1}, ts,
+                                   tmp_path / "eye")
+    em = {k: x["value"] for k, x in res["metrics"].items()}
+    assert em["eye_height_with_noise_mv"] == pytest.approx(em["eye_height_mv"] - 100, abs=0.01)
+    assert next(x for x in res["verdicts"] if x["check"] == "eye open with noise")["pass"]
+    res = eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": 500, "repeats": 1}, ts,
+                                   tmp_path / "eye2")
+    assert res["metrics"]["eye_height_with_noise_mv"]["value"] == 0
+    assert not next(x for x in res["verdicts"] if x["check"] == "eye open with noise")["pass"]
+    with pytest.raises(ValueError, match="noise_mv"):
+        eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": -1}, ts, tmp_path / "eye3")
+
+
+# -- the facing signal layer (broadside) --------------------------------------------
+
+@pytest.fixture(scope="module")
+def dual():
+    opt = plan_options({})
+    stack = stack_from_stackup(DUAL_STACKUP, DUAL_LAYERS)
+    info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+    return crosstalk.Coupling(info, opt, 0.35 / RISE, stack=stack)
+
+
+def dual_victim():
+    """The victim on a dual stripline board: its 2000 mil along x = 1000 is
+    on Sig1, 8 mil of dielectric above Sig2."""
+    b = victim()
+    b.layers = list(DUAL_LAYERS)
+    return b
+
+
+def under(b, net="AGG", offset=0.0, y1=200.0, y2=1800.0, width=4.0, layer="MidLayer2"):
+    """A track on the facing layer, ``offset`` to the side of the victim's
+    inner run, centre to centre."""
+    b.tracks.append(Track(layer, 1000 + offset, y1, 1000 + offset, y2, width, net))
+    return b
+
+
+def test_layers_face_each_other_only_with_no_plane_between(dual, coupling):
+    assert dual.facing("MidLayer1") == [("MidLayer2", 8.0)]
+    assert dual.facing("MidLayer2") == [("MidLayer1", 8.0)]
+    assert dual.facing("TopLayer") == [] and dual.facing("BottomLayer") == []
+    assert dual.facing("InternalPlane1") == [] and dual.facing("Nowhere") == []
+    assert coupling.facing("MidLayer1") == []          # no stack given: same layer only
+    stack = stack_from_stackup(STACKUP, LAYERS)        # a plane between every two signal layers
+    assert crosstalk.Coupling(coupling.info, coupling.opt, 1e9, stack=stack).facing("MidLayer1") == []
+    # two layers and no plane: nothing to solve the pair against
+    two = stack_from_stackup({"layers": [STACKUP["layers"][0], STACKUP["layers"][-1]]},
+                             [LAYERS[0], LAYERS[-1]])
+    assert [x.name for x in two.layers] == ["TopLayer", "BottomLayer"]
+    assert crosstalk.Coupling({}, coupling.opt, 1e9, stack=two).facing("TopLayer") == []
+
+
+def test_the_facing_section_stands_both_traces_between_their_planes(dual):
+    sec = dual.facing_section("MidLayer1", 4, "MidLayer2", 6, 3)
+    up, low = sec.traces                               # the first trace is the layer asked for
+    assert sec.kind == "broadside" and len(sec.traces) == 2
+    assert low.y == pytest.approx(5 * MIL) and low.width == pytest.approx(6 * MIL)
+    assert low.x == pytest.approx(3 * MIL) and up.x == 0 and up.width == pytest.approx(4 * MIL)
+    assert up.y == pytest.approx((5 + 0.7 + 8) * MIL)
+    assert sec.plane_above == pytest.approx((5 + 0.7 + 8 + 0.7 + 5) * MIL)
+    # asked from the other layer, the same picture with the traces swapped
+    low2, up2 = dual.facing_section("MidLayer2", 6, "MidLayer1", 4, 3).traces
+    assert (low2.y, low2.width, up2.y, up2.width) == (low.y, low.width, up.y, up.width)
+    assert low2.x == 0 and up2.x == pytest.approx(3 * MIL)
+
+
+def test_the_facing_formulas_agree_with_the_coupled_line_solved_in_full(dual):
+    """A trace on Sig2 right under one on Sig1 for 800 mil, and 6 mil to its
+    side: the near-end peak of the full four-port against the closed form."""
+    f = ch.uniform_band(20e9, 300)
+    for offset in (0.0, 6.0):
+        sec = dual.facing_section("MidLayer1", 4, "MidLayer2", 4, offset)
+        s = mtl.s_params(rlgc.compute(sec, f), 800 * MIL, 50.0)
+        _, near = net_model.step_response(f, s[:, 1, 0], RISE)
+        res = of(under(dual_victim(), offset=offset, y1=600, y2=1400), dual)
+        a = res["aggressors"][0]
+        assert a["next_pct"] == pytest.approx(100 * np.abs(near).max(), rel=0.05)
+        assert a["fext_pct"] < 0.3                      # one dielectric: no far end
+    assert 6 < a["next_pct"] < 9
+
+
+def test_a_track_on_the_facing_layer_is_an_aggressor(dual, coupling):
+    res = of(under(dual_victim()), dual)
+    a, = res["aggressors"]
+    assert a["aggressor"] == "AGG" and a["layer"] == "MidLayer1"
+    assert a["aggressor_layer"] == "MidLayer2" and a["offset_mils"] == 0
+    assert a["gap_mils"] == 8.0 and a["length_mils"] == 1600 and a["at_mils"] == [1000, 200]
+    assert 9 < a["next_pct"] < 12
+    # it falls as the track moves aside, the same on either side, and ends at the reach
+    side = [of(under(dual_victim(), offset=o), dual)["worst_pct"] for o in (0, 8, -8, 16, 30)]
+    assert side[0] > side[1] > side[3] > side[4] > 0 and side[1] == pytest.approx(side[2])
+    assert side[1] == pytest.approx(6.2, abs=0.6) and side[4] < 0.5
+    assert not of(under(dual_victim(), offset=40), dual)["aggressors"]
+    assert len(of(under(dual_victim(), offset=40), dual, reach_mils=50)["aggressors"]) == 1
+    # a wider track over it couples more
+    assert of(under(dual_victim(), width=12), dual)["worst_pct"] > side[0]
+    # the victim is the first trace of the section: its own width, on its own layer
+    run = crosstalk.Run("AGG", "MidLayer1", 4.0, 0.0, 800.0, (0, 0), other="MidLayer2",
+                        other_width=12.0, sep=8.0)
+    assert dual.of(run) == dual.get_facing("MidLayer1", 4, "MidLayer2", 12, 0, 8)
+    assert dual.of(run)[0] > 1.2 * dual.get_facing("MidLayer2", 12, "MidLayer1", 4, 0, 8)[0]
+    # crossing at right angles, on a layer that does not face it, or with no
+    # stack to say what faces what: nothing
+    b = dual_victim()
+    b.tracks.append(Track("MidLayer2", 600, 1000, 1400, 1000, 4, "AGG"))
+    assert not of(b, dual)["aggressors"]
+    assert not of(under(dual_victim(), layer="BottomLayer"), dual)["aggressors"]
+    assert not of(under(dual_victim()), crosstalk.Coupling(dual.info, dual.opt, dual.f))["aggressors"]
+    b = under(victim())
+    b.tracks[-1].layer = "BottomLayer"                  # the plane PWR lies between
+    stack = stack_from_stackup(STACKUP, LAYERS)
+    c = crosstalk.Coupling(coupling.info, coupling.opt, coupling.f, stack=stack)
+    assert not of(b, c)["aggressors"]
+
+
+def test_the_facing_layer_adds_to_the_same_layer_and_the_row_tells_the_stronger(dual):
+    b = under(dual_victim(), "BUS", y1=200, y2=600)
+    b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))   # 8 mil beside
+    a, = of(b, dual)["aggressors"]
+    alone = of(under(dual_victim(), "BUS", y1=200, y2=600), dual)["aggressors"][0]
+    assert a["length_mils"] == 1200 and a["next_pct"] >= alone["next_pct"]
+    assert a["aggressor_layer"] == "MidLayer2" and a["gap_mils"] == 8.0
+    assert a["at_mils"] == [1000, 200]
+    # with the facing track far to the side, the row is the one beside it
+    b = under(dual_victim(), "BUS", offset=24, y1=200, y2=600)
+    b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))
+    a, = of(b, dual)["aggressors"]
+    assert "aggressor_layer" not in a and a["gap_mils"] == 8.0 and a["at_mils"] == [1000, 1000]
+
+
+def test_a_dual_stripline_is_referenced_to_its_planes():
+    opt = plan_options({})
+    stack = stack_from_stackup(DUAL_STACKUP, DUAL_LAYERS)
+    info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+    s1, s2 = info["MidLayer1"], info["MidLayer2"]
+    assert s1["structure"] == "stripline"
+    assert s1["reference"] == ["InternalPlane1", "InternalPlane2"] == s2["reference"]
+    assert (s1["h_above_mils"], s1["h_below_mils"]) == (5.0, 13.0)
+    assert (s2["h_above_mils"], s2["h_below_mils"]) == (13.0, 5.0)
+    assert "signal layer Sig2 lies between" in s1["note"] and "Sig1 lies between" in s2["note"]
+    assert "note" not in info["TopLayer"] and info["TopLayer"]["reference"] == "InternalPlane1"
+    z = planner.impedances(planner.build(s1, opt, 4 * MIL), 1e9)["z0"]
+    assert 54 < z < 60                                  # 5 mil to one plane, 13.7 to the other
+    # with no plane on a side, the next layer is the reference as before
+    two = stack_from_stackup({"layers": [STACKUP["layers"][0], STACKUP["layers"][-1]]},
+                             [LAYERS[0], LAYERS[-1]])
+    top = planner.layer_sections(two, opt)[0]
+    assert top["reference"] == "BottomLayer" and "keep it solid" in top["note"]
+
+
+def test_the_net_job_and_the_board_check_say_which_layer(tmp_path):
+    b = under(dual_victim())
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), DUAL_STACKUP, tmp_path / "a")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert not v["pass"]
+    assert "1600 mil on MidLayer2 across 8.0 mil of dielectric from MidLayer1" in v["detail"], v["detail"]
+    row = res["figures"]["crosstalk"][0]
+    assert row["aggressor_layer"] == "MidLayer2" and row["offset_mils"] == 0
+    spec = {"targets": [{"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2}],
+            "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), DUAL_STACKUP, tmp_path / "x", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
+    assert f["at_mils"] == [1000.0, 200.0] and f["layer"] == "MidLayer1"
+    assert f["where"] == "runs 1600 mil across from AGG on MidLayer2, 8.0 mil of dielectric between"
+
+
+# -- what brings it within the limit ------------------------------------------------
+
+def test_the_fix_is_the_gap_that_brings_the_worst_neighbour_within_the_limit(coupling):
+    b = beside(victim())                                # 4 mil for 800 mil: about 10 %
+    res = of(b, coupling, limit_pct=5.0)
+    fix = res["fix"]
+    assert fix["aggressor"] == "AGG" and fix["limit_pct"] == 5.0 and "rest_pct" not in fix
+    g = fix["gap_mils"]
+    assert 6 < g < 12
+    # routed at that gap it passes, and a little closer it does not
+    assert of(beside(victim(), gap=g), coupling)["worst_pct"] <= 5.0
+    assert of(beside(victim(), gap=g - 0.4), coupling)["worst_pct"] > 5.0
+    # a looser limit asks for less, and within the limit there is nothing to fix
+    assert of(b, coupling, limit_pct=8.0)["fix"]["gap_mils"] < g
+    assert "fix" not in of(b, coupling, limit_pct=15.0) and "fix" not in of(b, coupling)
+    assert "fix" not in of(victim(), coupling, limit_pct=5.0)
+
+
+def test_the_fix_moves_only_the_worst_and_says_when_that_is_not_enough(coupling):
+    # a second neighbour on the other side, further off: the first has to go further
+    b = beside(beside(victim()), "B", gap=12, side=-1)
+    alone = of(beside(victim()), coupling, limit_pct=5.0)["fix"]["gap_mils"]
+    fix = of(b, coupling, limit_pct=5.0)["fix"]
+    assert fix["aggressor"] == "AGG" and fix["gap_mils"] > alone + 1
+    moved = beside(beside(victim(), gap=fix["gap_mils"]), "B", gap=12, side=-1)
+    assert of(moved, coupling, reach_mils=60)["worst_pct"] == pytest.approx(5.0, abs=0.15)
+    # two close neighbours: with one gone the other is still over
+    b = beside(beside(victim()), "B", gap=4.5, side=-1)
+    fix = of(b, coupling, limit_pct=5.0)["fix"]
+    assert fix["aggressor"] == "AGG" and "gap_mils" not in fix
+    assert fix["rest_pct"] == pytest.approx(of(beside(victim(), "B", gap=4.5, side=-1),
+                                               coupling)["worst_pct"], abs=0.1)
+
+
+def test_the_fix_moves_a_pair_as_it_is_routed_and_a_facing_track_to_the_side(coupling, dual):
+    b = victim()
+    for net, y in (("D_P", 9.0), ("D_N", 18.0)):        # a pair 4 mil from the net, 4 mil gap
+        b.tracks.append(Track("TopLayer", 100, y, 900, y, 5, net))
+    b.diff_pairs.append(DiffPair("D", "D_P", "D_N"))
+    res = of(b, coupling, limit_pct=1.0, reach_mils=60)
+    assert res["worst_pct"] > 1.0
+    fix = res["fix"]
+    assert fix["aggressor"] == "pair D" and 4.0 < fix["gap_mils"] < 20
+    shift = fix["gap_mils"] - 4.0
+    for t in b.tracks[-2:]:
+        t.y1 += shift
+        t.y2 += shift
+    assert of(b, coupling, reach_mils=60)["worst_pct"] == pytest.approx(1.0, abs=0.1)
+    # on the facing layer it is the offset to the side
+    fix = of(under(dual_victim()), dual, limit_pct=5.0)["fix"]
+    assert fix["aggressor_layer"] == "MidLayer2" and "gap_mils" not in fix
+    assert 8 < fix["offset_mils"] < 20
+    assert of(under(dual_victim(), offset=fix["offset_mils"]), dual)["worst_pct"] <= 5.0
+    assert of(under(dual_victim(), offset=fix["offset_mils"] - 1), dual)["worst_pct"] > 5.0
+
+
+def test_the_net_job_and_the_board_check_say_the_fix(tmp_path):
+    b = beside(victim())
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "a")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    saved = json.loads((tmp_path / "a" / "crosstalk.json").read_text())
+    g = saved["fix"]["gap_mils"]
+    assert v["detail"].endswith(f"; AGG at {g:.1f} mil or more brings it within 5 %"), v["detail"]
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_pct": 8}, b.to_dict(), STACKUP,
+                                   tmp_path / "b")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert "brings it within 8 %" in v["detail"]
+    assert json.loads((tmp_path / "b" / "crosstalk.json").read_text())["fix"]["gap_mils"] < g
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_pct": 15}, b.to_dict(), STACKUP,
+                                   tmp_path / "c")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert v["pass"] and "brings" not in v["detail"]
+    assert net_jobs._fix_text({"aggressor": "B", "rest_pct": 6.123}, 5) == \
+        "; moving B away is not enough, the other neighbours alone give 6.12 %"
+    assert net_jobs._fix_text({"aggressor": "B", "offset_mils": 14.0}, 5) == \
+        "; B 14.0 mil or more to the side brings it within 5 %"
+    spec = {"targets": [{"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2}],
+            "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "x", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
+    assert f["detail"].endswith("mil or more brings it within 5 %") and "; AGG at " in f["detail"]
+
+
+def test_the_fix_moves_the_worst_neighbour_on_the_layer_its_row_tells(dual):
+    def board(offset):
+        b = under(dual_victim(), "BUS", offset=offset, y1=200, y2=600)
+        b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))   # 8 mil beside
+        return b
+    fix = of(board(0), dual, limit_pct=7.0)["fix"]
+    assert fix["aggressor_layer"] == "MidLayer2"
+    # the track beside it stays where it is: only the one under it moves aside
+    assert of(board(fix["offset_mils"]), dual)["worst_pct"] <= 7.0
+    assert of(board(fix["offset_mils"] - 1), dual)["worst_pct"] > 7.0
+    # and under what the one beside it gives alone, moving the other is not enough
+    fix = of(board(0), dual, limit_pct=4.0)["fix"]
+    assert "offset_mils" not in fix and 4.0 < fix["rest_pct"] < 6.0
+
+
+# -- neighbours with an edge and a swing of their own --------------------------------
+
+def test_the_aggressor_table_is_checked():
+    t = crosstalk.aggressor_table([{"match": " clk* ", "rise_ps": 300, "swing_mv": 3300},
+                                   {"match": "D?", "swing_mv": "400"}, {"match": "X", "rise_ps": 50}])
+    assert t == [("CLK*", pytest.approx(300e-12), 3300.0), ("D?", None, 400.0),
+                 ("X", pytest.approx(50e-12), None)]
+    assert crosstalk.aggressor_table(None) == [] and crosstalk.aggressor_table([]) == []
+    assert crosstalk._driver("clk_out", t) == (pytest.approx(300e-12), 3300.0)
+    assert crosstalk._driver("D1", t) == (None, 400.0) and crosstalk._driver("D12", t) == (None, None)
+    for bad, word in (([{"rise_ps": 5}], "list of"), (["CLK"], "list of"),
+                      ([{"match": "A"}], "gives no"), ([{"match": "A", "rise_ps": 0}], "rise_ps of A"),
+                      ([{"match": "A", "swing_mv": -1}], "swing_mv of A"),
+                      ([{"match": "A", "swing_mv": "x"}], "swing_mv of A"),
+                      ([{"match": "A", "rise_ps": 5, "slew": 1}], "unknown key slew")):
+        with pytest.raises(ValueError, match=word):
+            crosstalk.aggressor_table(bad)
+
+
+def test_a_slower_neighbour_couples_less_and_the_first_match_is_taken(coupling):
+    b = beside(victim(), x1=300, x2=500)               # 200 mil: the near end still grows
+    fast = of(b, coupling)["aggressors"][0]
+    slow = of(b, coupling, table=crosstalk.aggressor_table(
+        [{"match": "AG*", "rise_ps": 400}, {"match": "AGG", "rise_ps": 100}]))["aggressors"][0]
+    assert "rise_ps" not in fast and slow["rise_ps"] == 400
+    # under its ceiling the near end, and always the far end, go as 1 / rise
+    assert slow["next_pct"] == pytest.approx(fast["next_pct"] / 4, rel=0.01)
+    assert slow["fext_pct"] == pytest.approx(fast["fext_pct"] / 4, rel=0.01)
+    # a long run reaches the same ceiling whatever the edge
+    long = beside(victim())
+    a = of(long, coupling)["aggressors"][0]
+    c = of(long, coupling, table=crosstalk.aggressor_table([{"match": "AGG", "rise_ps": 150}]))
+    assert c["aggressors"][0]["next_pct"] == pytest.approx(a["next_pct"], rel=0.01)
+    # a net that matches nothing keeps the victim's edge; the fix reckons with the table
+    other = of(b, coupling, table=crosstalk.aggressor_table([{"match": "ZZ*", "rise_ps": 400}]))
+    assert other["aggressors"][0] == fast
+    assert "fix" in of(long, coupling, limit_pct=5.0)
+    slow_fix = of(b, coupling, limit_pct=1.0,
+                  table=crosstalk.aggressor_table([{"match": "AGG", "rise_ps": 400}]))
+    assert of(b, coupling, limit_pct=1.0)["fix"]["gap_mils"] > slow_fix["fix"]["gap_mils"]
+
+
+def test_crosstalk_in_millivolts_takes_each_neighbour_at_its_own_swing(coupling):
+    b = beside(beside(victim()), "B", gap=8, side=-1)
+    res = of(b, coupling, table=crosstalk.aggressor_table(
+        [{"match": "AGG", "swing_mv": 400}, {"match": "B", "swing_mv": 3300}]))
+    agg = next(r for r in res["aggressors"] if r["aggressor"] == "AGG")
+    bb = next(r for r in res["aggressors"] if r["aggressor"] == "B")
+    assert agg["swing_mv"] == 400 and bb["swing_mv"] == 3300 and agg["next_pct"] > bb["next_pct"]
+    near = (agg["next_pct"] * 400 + bb["next_pct"] * 3300) / 100
+    far = (agg["fext_pct"] * 400 + bb["fext_pct"] * 3300) / 100
+    assert crosstalk.noise_mv(res) == pytest.approx(max(near, far), abs=0.01)
+    assert near > far and bb["next_pct"] * 33 > agg["next_pct"] * 4     # the 3.3 V net leads
+    # one swing unknown: no figure, unless a swing is given for the rest
+    part = of(b, coupling, table=crosstalk.aggressor_table([{"match": "B", "swing_mv": 3300}]))
+    assert crosstalk.noise_mv(part) is None
+    assert crosstalk.noise_mv(part, 400) == pytest.approx(max(near, far), abs=0.01)
+    plain = of(b, coupling)
+    assert crosstalk.noise_mv(plain) is None
+    assert crosstalk.noise_mv(plain, 1000) == pytest.approx(10 * plain["worst_pct"], abs=0.01)
+    assert crosstalk.noise_mv(of(victim(), coupling)) == 0
+    # a far end that outweighs the near end is the one counted
+    assert crosstalk.noise_mv({"aggressors": [{"next_pct": 1.0, "fext_pct": 3.0}]}, 200) == 6.0
+
+
+def test_the_net_job_gives_millivolts_and_holds_them_to_a_limit(tmp_path):
+    b = beside(beside(victim()), "B", gap=8, side=-1)
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100, "xtalk_max_pct": 50}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "a")
+    assert "crosstalk_noise_mv" not in res["metrics"]
+    assert not any(v["check"] == "crosstalk noise" for v in res["verdicts"])
+    aggs = [{"match": "AGG", "swing_mv": 400, "rise_ps": 150}, {"match": "B", "swing_mv": 3300}]
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs, "xtalk_max_mv": 100},
+                                   b.to_dict(), STACKUP, tmp_path / "b")
+    saved = json.loads((tmp_path / "b" / "crosstalk.json").read_text())
+    mv = res["metrics"]["crosstalk_noise_mv"]["value"]
+    assert mv == saved["noise_mv"] == crosstalk.noise_mv(saved) and 150 < mv < 400
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")
+    assert not v["pass"] and v["detail"] == (f"{mv:.1f} mV from the neighbours at their own "
+                                             "swings, 100 mV allowed")
+    assert saved["aggressors"][0]["aggressor"] == "AGG" and saved["aggressors"][0]["rise_ps"] == 150
+    assert "(its edge 150 ps)" in next(x for x in res["verdicts"] if x["check"] == "crosstalk")["detail"]
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs, "xtalk_max_mv": 400},
+                                   b.to_dict(), STACKUP, tmp_path / "c")
+    assert next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")["pass"]
+    # one swing for all of them; a swing missing; and the settings are checked
+    res = net_jobs.run_net_channel({**spec, "xtalk_swing_mv": 1000}, b.to_dict(), STACKUP,
+                                   tmp_path / "d")
+    assert res["metrics"]["crosstalk_noise_mv"]["value"] == pytest.approx(
+        10 * res["metrics"]["crosstalk_pct"]["value"], abs=0.02)
+    res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_swing_mv": 400},
+                                   b.to_dict(), STACKUP, tmp_path / "e")
+    # AGG at its fast edge again: 800 mil is at its ceiling at either edge, the far end is not
+    assert res["metrics"]["crosstalk_noise_mv"]["value"] == pytest.approx(mv, abs=0.01)
+    assert res["figures"]["crosstalk"][0]["fext_pct"] > 1.4 * saved["aggressors"][0]["fext_pct"]
+    with pytest.raises(ValueError, match="xtalk_max_mv needs the swing of every neighbour"):
+        net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_max_mv": 100},
+                                 b.to_dict(), STACKUP, tmp_path / "f")
+    # with nothing beside it there is no figure to show, and any limit holds
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_mv": 10}, victim().to_dict(), STACKUP,
+                                   tmp_path / "i")
+    assert "crosstalk_noise_mv" not in res["metrics"]
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")
+    assert v["pass"] and v["detail"].startswith("0.0 mV")
+    with pytest.raises(ValueError, match="xtalk_swing_mv is 0 or more"):
+        net_jobs.run_net_channel({**spec, "xtalk_swing_mv": -5}, b.to_dict(), STACKUP,
+                                 tmp_path / "g")
+    with pytest.raises(ValueError, match="gives no rise_ps or swing_mv"):
+        net_jobs.run_net_channel({**spec, "xtalk_aggressors": [{"match": "B"}]}, b.to_dict(),
+                                 STACKUP, tmp_path / "h")
+
+
+def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
+    b = beside(victim(), x1=300, x2=900)
+    target = {"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2, "eye": True,
+              "amplitude_mv": 600, "xtalk_max_pct": 50}
+    spec = {"targets": [target], "points": 80, "f_max_ghz": 10}
+
+    def noise(name, **more):
+        board_jobs.run_board_si({**spec, **more}, b.to_dict(), STACKUP, tmp_path / name,
+                                snapshot="t")
+        item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+        return item["metrics"], item
+    m0, _ = noise("a")
+    assert m0["eye_noise_mv"] == pytest.approx(6 * m0["crosstalk_pct"], abs=0.01)   # its own 600 mV
+    m1, _ = noise("b", xtalk_aggressors=[{"match": "AGG", "swing_mv": 3300}])
+    assert m1["eye_noise_mv"] == pytest.approx(33 * m1["crosstalk_pct"], abs=0.02)
+    assert m1["crosstalk_noise_mv"] == m1["eye_noise_mv"] and "crosstalk_noise_mv" not in m0
+    assert m1["eye_height_with_noise_mv"] < m0["eye_height_with_noise_mv"]
+    m2, _ = noise("c", xtalk_swing_mv=1600)
+    assert m2["eye_noise_mv"] == pytest.approx(16 * m2["crosstalk_pct"], abs=0.01)
+    # a limit in mV on the board reaches the item and the finding is placed with the copper
+    res = board_jobs.run_board_si({**spec, "xtalk_swing_mv": 3300, "xtalk_max_mv": 50},
+                                  b.to_dict(), STACKUP, tmp_path / "d", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk noise")
+    assert f["at_mils"] == [300.0, 0.0] and "50 mV allowed" in f["detail"]
+    assert f["where"] == "runs 600 mil beside AGG at 4.0 mil"

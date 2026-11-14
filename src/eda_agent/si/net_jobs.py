@@ -19,18 +19,22 @@ from ..emc.stack import stack_from_stackup
 from ..emc.touchstone import write_touchstone
 from ..layout.model import LayoutBoard
 from . import channel as ch
-from . import crosstalk, extract, net_model, planner
+from . import crosstalk, extract, net_model, planner, return_path
 from .jobs import _metric, _num, plan_options
 
 _PLOT_LOCK = threading.Lock()
+
+BITS_PER_SYMBOL = {"nrz": 1, "pam4": 2}
 
 NET_SPEC: dict[str, tuple[str, bool, str]] = {
     "net": ("text", False, "the net to model (give net or pair)"),
     "pair": ("text", False, "a differential pair of the board, or one of its nets"),
     "from_pin": ("text", False, "start pin, DESIGNATOR.PIN (default: the two pins farthest apart)"),
     "to_pin": ("text", False, "end pin"),
-    "data_rate_gbps": ("number", False, "data rate; the Nyquist frequency is half of it "
-                       "(default: a quarter of f_max)"),
+    "data_rate_gbps": ("number", False, "data rate; the Nyquist frequency is half the symbol "
+                       "rate (default: a quarter of f_max)"),
+    "modulation": ("text", False, "nrz (default) or pam4: two bits a symbol, so the symbol "
+                                  "rate, Nyquist and the unit interval follow half the data rate"),
     "f_max_ghz": ("number", False, "top of the band (default 20)"),
     "points": ("number", False, "frequency points, evenly spaced (default 400)"),
     "rise_ps": ("number", False, "10-90 % edge of the TDR and step responses (default 35)"),
@@ -60,6 +64,18 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
                                           "(default 4 heights above the plane, at least 3 widths)"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs; grounds, plane nets "
                                    "and supply rails are left out already"),
+    "xtalk_aggressors": ("list", False, "neighbours with an edge or a swing of their own: "
+                                        "{match (net name glob), rise_ps, swing_mv}; the "
+                                        "others switch as fast as rise_ps"),
+    "xtalk_swing_mv": ("number", False, "swing of the neighbours that are given none; with "
+                                        "every swing known, crosstalk is also given in mV"),
+    "xtalk_max_mv": ("number", False, "allowed crosstalk in mV on the net (no check if absent; "
+                                      "needs every neighbour's swing)"),
+    "return_path": ("bool", False, "also look for gaps in the reference copper under the net "
+                                   "(default true)"),
+    "return_gap_min_mils": ("number", False, "a gap under the trace shorter than this is no "
+                                             "finding unless the plane's net changes across it "
+                                             "(default 8)"),
     "rules": ("bool", False, "also work out Altium design rules for the net (default true)"),
 }
 
@@ -99,6 +115,16 @@ def _plot(path: Path, f, curves, t, tdr, z_target, title: str,
     return True
 
 
+def symbol_rate_gbd(spec: dict[str, Any]) -> Optional[float]:
+    """Symbols a second in GBd from ``data_rate_gbps`` and ``modulation``;
+    None without a data rate. PAM4 carries two bits a symbol."""
+    mod = str(spec.get("modulation") or "nrz").strip().lower()
+    if mod not in BITS_PER_SYMBOL:
+        raise ValueError("modulation is nrz or pam4")
+    rate = spec.get("data_rate_gbps")
+    return float(rate) / BITS_PER_SYMBOL[mod] if rate else None
+
+
 def _temperatures(spec: dict[str, Any]):
     from .thermal_link import Temperatures
     npz = str(spec.get("thermal_npz") or "").strip()
@@ -124,8 +150,8 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
     if not 16 <= points <= 4000:
         raise ValueError("points is 16 to 4000")
     f = ch.uniform_band(f_max, points)
-    rate = spec.get("data_rate_gbps")
-    f_nyq = float(rate) * 1e9 / 2 if rate else f_max / 4
+    rate = symbol_rate_gbd(spec)
+    f_nyq = rate * 1e9 / 2 if rate else f_max / 4
     rise = _num(spec, "rise_ps", 35) * 1e-12
     z_ref = _num(spec, "z_ref", 50)
     temps = _temperatures(spec)
@@ -248,13 +274,53 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         lim = _num(spec, "xtalk_max_pct", 5.0)
         if xt["aggressors"]:
             a = xt["aggressors"][0]
+            how = (f"on {a['aggressor_layer']} across {a['gap_mils']:.1f} mil of dielectric "
+                   f"from {a['layer']}" if a.get("aggressor_layer")
+                   else f"at {a['gap_mils']:.1f} mil on {a['layer']}")
             detail = (f"near end {xt['next_pct']:.2f} %, far end {xt['fext_pct']:.2f} % of the "
                       f"aggressors' swing at {rise * 1e12:g} ps, {lim:g} % allowed; worst is "
-                      f"{a['aggressor']}, {a['length_mils']:.0f} mil at {a['gap_mils']:.1f} mil "
-                      f"on {a['layer']}")
+                      f"{a['aggressor']}, {a['length_mils']:.0f} mil {how}"
+                      + (f" (its edge {a['rise_ps']:g} ps)" if "rise_ps" in a else "")
+                      + _fix_text(xt.get("fix"), lim))
         else:
             detail = "no switching net runs beside it"
         verdicts.append({"check": "crosstalk", "pass": xt["worst_pct"] <= lim, "detail": detail})
+        if "noise_mv" in xt:
+            m["crosstalk_noise_mv"] = _metric(xt["noise_mv"], "mV", "Crosstalk on the net, each "
+                                              "neighbour at its own swing")
+        if spec.get("xtalk_max_mv") is not None:
+            lim_mv = _num(spec, "xtalk_max_mv", 0.0)
+            got = xt.get("noise_mv", None if xt["aggressors"] else 0.0)
+            if got is None:
+                raise ValueError("xtalk_max_mv needs the swing of every neighbour: give "
+                                 "xtalk_swing_mv, or xtalk_aggressors for each of them")
+            verdicts.append({"check": "crosstalk noise", "pass": got <= lim_mv,
+                             "detail": f"{got:.1f} mV from the neighbours at their "
+                                       f"own swings, {lim_mv:g} mV allowed"})
+    rp = None
+    if spec.get("return_path", True):
+        mg = _num(spec, "return_gap_min_mils", return_path.MIN_GAP_MILS)
+        if mg < 0:
+            raise ValueError("return_gap_min_mils is 0 or more")
+        info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+        rp = return_path.of_path(board, path, info, mg)
+        (folder / "return_path.json").write_text(json.dumps(rp, indent=1), encoding="utf-8")
+        files["return_path"] = "return_path.json"
+        gaps = rp["gaps"]
+        m["return_gaps"] = _metric(len(gaps), "", "Gaps in the reference copper under the route")
+        m["return_gap_mils"] = _metric(rp["worst_mils"], "mil", "Longest such gap")
+        v = {"check": "return path", "pass": not gaps,
+             "detail": "reference copper under the whole route"}
+        if gaps:
+            g = gaps[0]
+            v["detail"] = (f"{g['text']}, {g['distance_mils']:.0f} mil along the route on "
+                           f"{g['layer']}"
+                           + ("; the other reference plane is whole there"
+                              if g["other_reference_solid"] else "")
+                           + (f"; {len(gaps) - 1} more" if len(gaps) > 1 else ""))
+            if all(x["other_reference_solid"] for x in gaps):
+                v["severity"] = "warning"
+        verdicts.append(v)
     notes = [
         f"path {path.p.start if pair else path.start} to {path.p.end if pair else path.end}; "
         "lines from the 2D field and eddy-current solvers of each cross-section, vias from "
@@ -270,8 +336,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
                      "all switching together)")
         if xt["quiet"]:
             notes.append("taken as not switching: " + ", ".join(xt["quiet"]))
+    if rp is not None:
+        notes.extend(rp["notes"])
     out = {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files,
            "figures": {"path": path.to_dict(), "blocks": model.blocks}}
+    if rp is not None:
+        out["figures"]["return_path"] = rp["gaps"]
     if xt is not None:
         out["figures"]["crosstalk"] = xt["aggressors"]
     if spec.get("rules", True):
@@ -281,6 +351,19 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         except (ValueError, KeyError) as exc:
             out["notes"].append(f"no design rules worked out: {exc}")
     return out
+
+
+def _fix_text(fix: Optional[dict[str, Any]], lim: float) -> str:
+    """What brings the crosstalk within its limit, in words."""
+    if not fix:
+        return ""
+    if "rest_pct" in fix:
+        return (f"; moving {fix['aggressor']} away is not enough, the other neighbours "
+                f"alone give {fix['rest_pct']:.2f} %")
+    if "offset_mils" in fix:
+        return (f"; {fix['aggressor']} {fix['offset_mils']:.1f} mil or more to the side "
+                f"brings it within {lim:g} %")
+    return f"; {fix['aggressor']} at {fix['gap_mils']:.1f} mil or more brings it within {lim:g} %"
 
 
 def _crosstalk(spec: dict[str, Any], board: LayoutBoard, stack, opt, path, rise: float
@@ -294,9 +377,17 @@ def _crosstalk(spec: dict[str, Any], board: LayoutBoard, stack, opt, path, rise:
     if reach is not None and float(reach) <= 0:
         raise ValueError("xtalk_reach_mils is above 0")
     # the edge's energy sits around 0.35 / rise
-    coupling = crosstalk.Coupling(info, opt, 0.35 / rise)
+    coupling = crosstalk.Coupling(info, opt, 0.35 / rise, stack=stack)
     out = crosstalk.of_path(board, path, coupling, rise,
-                            None if reach is None else float(reach), still)
+                            None if reach is None else float(reach), still,
+                            _num(spec, "xtalk_max_pct", 5.0),
+                            crosstalk.aggressor_table(spec.get("xtalk_aggressors")))
+    swing = spec.get("xtalk_swing_mv")
+    if swing is not None and float(swing) < 0:
+        raise ValueError("xtalk_swing_mv is 0 or more")
+    noise = crosstalk.noise_mv(out, None if swing is None else float(swing))
+    if noise is not None and (swing is not None or spec.get("xtalk_aggressors")):
+        out["noise_mv"] = noise
     out["quiet"] = sorted(still)
     return out
 
@@ -354,7 +445,7 @@ def rule_steps(spec: dict[str, Any], figs: dict[str, Any], path, stack, opt,
                         "value": round(gap * 0.9, 2), "max_value": round(gap * 1.1, 2),
                         "favored_value": round(gap, 2), "scope": scope}
                 lim = spec.get("skew_max_ps")
-                rate = spec.get("data_rate_gbps")
+                rate = symbol_rate_gbd(spec)
                 if lim is None and rate:
                     lim = 0.05 * 1e3 / float(rate)
                 if lim is not None and figs.get("delay_ps") and path.p.length > 0:

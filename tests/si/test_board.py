@@ -15,12 +15,14 @@ from mcp.server.fastmcp import FastMCP
 
 from eda_agent import simulation as sim
 from eda_agent.emc.stack import stack_from_stackup
+from eda_agent.layout.model import LayoutBoard, Track
 from eda_agent.si import board_jobs, extract, net_model
 from eda_agent.si import snapshot as snap
 from eda_agent.si import thermal_link as th
 from eda_agent.simulation import jobs as _jobs
 
-from .boards import STACKUP, mixed_board, pair_board, single_net
+
+from .boards import LAYERS, STACKUP, mixed_board, pair_board, single_net, smd
 from .test_nets import _rlgc
 
 
@@ -190,6 +192,10 @@ def test_a_slow_net_with_an_eye_gets_a_sweep_that_holds_its_bit():
     assert board_jobs._item_spec(no_eye, {}, 10.0, 200)["points"] == 200
     crawl = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 0.001}}
     assert board_jobs._item_spec(crawl, {}, 10.0, 200)["points"] == board_jobs.MAX_EYE_POINTS
+    # PAM4 symbols are two bits long: twice the points for the same eight
+    pam = {"kind": "net", "name": "SIG",
+           "settings": {"eye": True, "data_rate_gbps": 0.2, "modulation": "pam4"}}
+    assert board_jobs._item_spec(pam, {}, 10.0, 200)["points"] == 800
 
 
 def test_a_wide_section_in_an_off_target_line_gets_its_own_finding(tmp_path):
@@ -375,3 +381,213 @@ def test_dielectric_layers_of_the_physical_stack_fill_a_bare_stackup(monkeypatch
     assert b.sent == ["pcb.get_layer_stackup", "pcb.physical_stack"]
     b = B(STACKUP)
     assert asyncio.run(read_live_stackup(b)) is STACKUP and b.sent == ["pcb.get_layer_stackup"]
+
+
+def _bus(lengths):
+    """Nets B0, B1, ... side by side on the top layer, 200 mil apart, each
+    from UA to UB over its own length."""
+    b = LayoutBoard(name="bus.PcbDoc", layers=list(LAYERS))
+    for i, length in enumerate(lengths):
+        y = 200.0 * i
+        net = f"B{i}"
+        b.pads += [smd("UA", str(i + 1), 0, y, net), smd("UB", str(i + 1), length, y, net)]
+        b.tracks.append(Track("TopLayer", 0, y, length, y, 5, net))
+    b.net_classes = {"BUS": [f"B{i}" for i in range(len(lengths))]}
+    return b
+
+
+def test_nets_of_a_target_are_matched_in_delay_to_the_slowest(tmp_path):
+    b = _bus([2000, 1990, 1700, 2000])
+    spec = {"targets": [{"class": "BUS", "data_rate_gbps": 2, "z_tol_pct": 60,
+                         "delay_match_ps": 10}], "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "a", snapshot="t")
+    items = {r["name"]: r for r in json.loads((tmp_path / "a" / "findings.json").read_text())["items"]}
+    d = {k: r["metrics"]["delay_ps"] for k, r in items.items()}
+    per_mil = d["B0"] / 2000
+    assert items["B0"]["metrics"]["delay_lead_ps"] == pytest.approx(0, abs=0.01)
+    assert items["B2"]["metrics"]["delay_lead_ps"] == pytest.approx(300 * per_mil, rel=0.02)
+    fs = [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    # 10 mil short is inside 10 ps; 300 mil short is not
+    assert [f["item"] for f in fs] == ["B2"] and fs[0]["severity"] == "error"
+    assert fs[0]["at_mils"] == [0.0, 400.0] and fs[0]["where"] == "at UA.3"
+    lead = items["B2"]["metrics"]["delay_lead_ps"]
+    assert f"{lead:.1f} ps ahead of net B" in fs[0]["detail"] and "10 ps allowed" in fs[0]["detail"]
+    # the trace to add is the missing length
+    add = float(fs[0]["detail"].split("about ")[1].split(" mil")[0])
+    assert add == pytest.approx(300, abs=8)
+    v = {k: next(x for x in r["verdicts"] if x["check"] == "delay match") for k, r in items.items()}
+    assert [v[k]["pass"] for k in ("B0", "B1", "B2", "B3")] == [True, True, False, True]
+    assert sum("the slowest of the 4 matched to it" in x["detail"] for x in v.values()) == 1
+    assert "delay_lead_ps" in (tmp_path / "a" / "summary.csv").read_text().splitlines()[0]
+    # a wider window passes; without the key nothing is matched; one net alone has no group
+    res = board_jobs.run_board_si({**spec, "targets": [{**spec["targets"][0], "delay_match_ps": 80}]},
+                                  b.to_dict(), STACKUP, tmp_path / "b", snapshot="t")
+    assert not [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    plain = {k: v for k, v in spec["targets"][0].items() if k != "delay_match_ps"}
+    res = board_jobs.run_board_si({**spec, "targets": [plain]}, b.to_dict(), STACKUP,
+                                  tmp_path / "c", snapshot="t")
+    items = json.loads((tmp_path / "c" / "findings.json").read_text())["items"]
+    assert all("delay_lead_ps" not in r["metrics"] for r in items)
+    assert not any(x["check"] == "delay match" for r in items for x in r["verdicts"])
+    # each target is its own group: B2 alone in a second target is matched to nothing
+    two = [{"match": "B2", "data_rate_gbps": 2, "z_tol_pct": 60, "delay_match_ps": 10},
+           spec["targets"][0]]
+    res = board_jobs.run_board_si({**spec, "targets": two}, b.to_dict(), STACKUP,
+                                  tmp_path / "d", snapshot="t")
+    assert not [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    alone = next(r for r in json.loads((tmp_path / "d" / "findings.json").read_text())["items"]
+                 if r["name"] == "B2")
+    assert "delay_lead_ps" not in alone["metrics"]
+    assert not any(x["check"] == "delay match" for x in alone["verdicts"])
+    with pytest.raises(ValueError, match="delay_match_ps"):
+        board_jobs.run_board_si({**spec, "targets": [{**plain, "delay_match_ps": -1}]},
+                                b.to_dict(), STACKUP, tmp_path / "e", snapshot="t")
+
+
+def test_the_edge_checks_of_the_eye_are_placed_at_the_receiving_pin(tmp_path):
+    b = _bus([3000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 1, "z_tol_pct": 60, "eye": True,
+              "tx_r_ohms": 15, "rx_r_ohms": "open", "rise_ps": 100,
+              "overshoot_max_pct": 20, "ringback_max_pct": 60, "edge_reversal_max_pct": 5}
+    spec = {"targets": [target], "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "a", snapshot="t")
+    item = json.loads((tmp_path / "a" / "findings.json").read_text())["items"][0]
+    m = item["metrics"]
+    assert 30 < m["eye_overshoot_pct"] < 70 and m["eye_ringback_pct"] > 10
+    assert m["eye_edge_reversal_pct"] < 5 and m["eye_settling_ps"] > 0
+    checks = {v["check"]: v["pass"] for v in item["verdicts"]}
+    assert checks["overshoot"] is False and checks["ringback"] and checks["edge reversal"]
+    f, = [x for x in res["figures"]["findings"] if x["check"] in board_jobs.EDGE_CHECKS]
+    assert f["check"] == "overshoot" and f["severity"] == "error"
+    assert f["at_mils"] == [3000.0, 0.0] and f["where"] == "at UB.1"
+    r = m["eye_series_r_ohms"]
+    assert 10 < r < 40 and f["detail"] == (
+        f"{m['eye_overshoot_pct']:.1f} % of the settled level, 20 % allowed; {r:.0f} ohm in "
+        "series at the driver brings it within 20 %")
+    # with no limits the figures are there and nothing is judged
+    for k in ("overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct"):
+        target.pop(k)
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "b", snapshot="t")
+    item = json.loads((tmp_path / "b" / "findings.json").read_text())["items"][0]
+    assert item["metrics"]["eye_overshoot_pct"] == m["eye_overshoot_pct"]
+    assert not any(v["check"] in board_jobs.EDGE_CHECKS for v in item["verdicts"])
+
+
+def test_a_target_carries_its_equaliser_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    plain = eye_of("a")
+    eq = eye_of("b", tx_ffe=[0.8, -0.2], dfe_taps=2)
+    assert "eye_dfe_tap1_mv" in eq and "eye_dfe_tap1_mv" not in plain
+    assert eq["eye_isi_mv"] < plain["eye_isi_mv"]
+    assert eq["eye_main_cursor_mv"] < plain["eye_main_cursor_mv"]     # the FFE's price
+
+
+def test_a_target_carries_its_bit_error_rate_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 5, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def item_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+    plain = item_of("a")
+    assert "eye_height_at_ber_mv" not in plain["metrics"]
+    it = item_of("b", ber=1e-12, noise_rms_mv=5, rj_rms_ps=2)
+    m = it["metrics"]
+    assert 0 < m["eye_height_at_ber_mv"] < m["eye_height_mv"] - 2 * 3 * 5
+    assert 0 < m["eye_width_at_ber_ui"] < m["eye_width_ui"] and "bit_error_rate" in m
+    assert not [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
+    # a limit it does not meet is a finding of the net
+    it = item_of("c", eye_at_ber_min_mv=m["eye_height_at_ber_mv"] + 5)
+    f = [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
+    assert len(f) == 1 and f[0]["severity"] == "error"
+    # where the signal is judged: the far pin of the 8000 mil route, as the eye itself
+    assert f[0]["at_mils"] == [8000.0, 0.0] and f[0]["where"].startswith("at ")
+    it = item_of("d", eye_min_mv=5000)
+    e = [x for x in it["findings"] if x["check"] == "eye"]
+    assert len(e) == 1 and e[0]["at_mils"] == f[0]["at_mils"] and e[0]["where"] == f[0]["where"]
+    assert f[0]["detail"].endswith(f", {m['eye_height_at_ber_mv'] + 5:g} mV needed")
+
+
+def test_a_target_has_its_equaliser_chosen(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    plain = eye_of("a")
+    auto = eye_of("b", tx_ffe="auto", tx_ffe_post=2, ctle_db="auto", ctle_max_db=3)
+    assert "eye_ffe_main_tap" in auto and 0 <= auto["eye_ctle_db"] <= 3
+    assert "eye_ffe_main_tap" not in plain and "eye_ctle_db" not in plain
+    assert auto["worst_case_eye_height_mv"] >= plain["worst_case_eye_height_mv"]
+
+
+def test_a_target_runs_its_eye_in_pam4(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    nrz = eye_of("a")
+    pam = eye_of("b", modulation="pam4")
+    assert "eye_height_middle_mv" in pam and "eye_height_middle_mv" not in nrz
+    assert pam["eye_height_mv"] == min(pam[f"eye_height_{n}_mv"] for n in ("lower", "middle", "upper"))
+    assert pam["eye_width_ps"] > nrz["eye_width_ps"]            # a symbol is two bits long
+
+
+def test_a_pam4_target_is_checked_at_its_symbol_rate(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def run(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    nrz = run("a", data_rate_gbps=10)
+    pam = run("b", data_rate_gbps=20, modulation="pam4")
+    assert pam["insertion_loss_db"] == nrz["insertion_loss_db"]
+    # the same pulse: 2 (main / 3 - isi) against 2 (main - isi)
+    assert 0 < pam["worst_case_eye_height_mv"] <= nrz["worst_case_eye_height_mv"] / 3 + 1e-9
+    slow = run("c", data_rate_gbps=10, modulation="pam4")
+    assert slow["insertion_loss_db"] < nrz["insertion_loss_db"]
+    # and with the sweep left to the job: sized for the symbol, so the same sweep
+    del spec["f_max_ghz"]
+    nrz = run("d", data_rate_gbps=10, modulation="nrz")
+    pam = run("e", data_rate_gbps=20, modulation="pam4")
+    assert pam["insertion_loss_db"] == nrz["insertion_loss_db"]
+    assert pam["return_loss_db"] == nrz["return_loss_db"]
+    with pytest.raises(ValueError, match="no data rate"):
+        target.pop("data_rate_gbps")
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "f", snapshot="t")
+
+
+def test_a_target_carries_sinusoidal_jitter_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 5, "z_tol_pct": 60, "eye": True,
+              "ber": 1e-12}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def metrics(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    none = metrics("a")
+    sj = metrics("b", sj_pp_ps=40)
+    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.05
+    assert sj["eye_height_at_ber_mv"] < none["eye_height_at_ber_mv"] - 10
+    assert sj["eye_height_mv"] == none["eye_height_mv"]     # the pattern's eye has no jitter

@@ -1307,6 +1307,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Switch a switchable feature (an engine) on.")
     feat_p.add_argument("--off", metavar="FEATURE", default="",
                         help="Switch a switchable feature (an engine) off.")
+    feat_p.add_argument("--set-path", metavar="VARIABLE=PATH", default="",
+                        help="Save where a program is, e.g. "
+                             "EDA_AGENT_OPENEMS_DIR=F:\\openEMS; used by every later "
+                             "session unless the environment sets it.")
+    feat_p.add_argument("--clear-path", metavar="VARIABLE", default="",
+                        help="Forget a saved program location.")
 
     # install-deps -- one command that installs what features need
     inst_p = subparsers.add_parser(
@@ -2007,9 +2013,15 @@ def main() -> int:
     requested_compute = getattr(args, "compute", None)
     if requested_compute:
         os.environ["EDA_AGENT_COMPUTE"] = requested_compute
+    # Program locations saved on the Features page and the switches that
+    # set a variable (the Rust kernels): defaults under whatever the
+    # environment says, so every command and the server see them.
+    from .features import state as _feature_state
+    _feature_state.apply()
     if args.command == "features":
         return cli.cmd_features(deep=args.deep, as_json=args.json,
-                                on=args.on, off=args.off)
+                                on=args.on, off=args.off,
+                                set_path=args.set_path, clear_path=args.clear_path)
     if args.command == "install-deps":
         return cli.cmd_install_deps(args.names, everything=args.everything,
                                     dev=args.dev, dry_run=args.dry_run,

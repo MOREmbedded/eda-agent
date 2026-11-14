@@ -85,9 +85,13 @@ def test_copyleft_programs_are_never_python_imports():
             assert d.runs_apart, d.id
 
 
-def test_core_needs_nothing_and_cannot_be_switched_off():
-    core = cat.feature("core")
-    assert core.core and not core.all_deps() and not core.switchable
+def test_core_needs_only_core_packages_and_cannot_be_switched_off():
+    core_ids = {d.id for d in cat.CORE_DEPENDENCIES}
+    for f in cat.FEATURES:
+        if f.core:
+            assert not f.switchable and not f.extra, f.id
+            assert set(f.all_deps()) <= core_ids, (f.id, set(f.all_deps()) - core_ids)
+    assert cat.feature("core").needs
 
 
 def test_unknown_names_say_what_is_known():

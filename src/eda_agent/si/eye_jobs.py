@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 
@@ -27,10 +27,49 @@ from .mtl import mixed_mode
 from .spice_export import subcircuit
 
 EYE_SPEC: dict[str, tuple[str, bool, str]] = {
-    "data_rate_gbps": ("number", True, "data rate (NRZ)"),
+    "data_rate_gbps": ("number", True, "data rate, in bits"),
+    "modulation": ("text", False, "nrz (default) or pam4: four levels, two bits a symbol, so "
+                                  "half the symbol rate for the same data rate"),
     "rise_ps": ("number", False, "transmitter 10-90 % edge (default 0.3 UI)"),
     "amplitude_mv": ("number", False, "transmitter swing into a matched load, peak to peak "
                                       "(differential for a pair; default 800)"),
+    "noise_mv": ("number", False, "noise at the receiver from other sources (crosstalk, supply), "
+                                  "peak, each side of zero: the eye loses twice this in height "
+                                  "(default 0)"),
+    "overshoot_max_pct": ("number", False, "allowed overshoot of the edge at the receiver, in "
+                                           "percent of the level it settles to (no check if "
+                                           "absent)"),
+    "ringback_max_pct": ("number", False, "allowed fall back below that level after the "
+                                          "overshoot (no check if absent)"),
+    "edge_reversal_max_pct": ("number", False, "allowed fall on the way up, between 10 % and "
+                                               "90 % of the level: a clock wants none (no check "
+                                               "if absent)"),
+    "tx_ffe": ("list|text", False, "transmitter feed-forward equaliser taps, one unit interval "
+                              "apart, e.g. [-0.1, 0.7, -0.2]: the largest is the main tap, "
+                              "those before it pre-cursor taps; scaled so their magnitudes "
+                              "add up to 1; or \"auto\": the taps that leave the largest "
+                              "worst-case eye, tx_ffe_pre before the main one and "
+                              "tx_ffe_post after it"),
+    "tx_ffe_pre": ("number", False, "pre-cursor taps of an automatic tx_ffe (default 1, 0 to 3)"),
+    "tx_ffe_post": ("number", False, "post-cursor taps of an automatic tx_ffe (default 1, 0 to 4)"),
+    "ctle_db": ("number|text", False, "receiver CTLE: what the high frequencies gain over DC, in dB "
+                                 "(default 0: none); or \"auto\": the whole dB from 0 to "
+                                 "ctle_max_db that leaves the largest worst-case eye"),
+    "ctle_max_db": ("number", False, "the most an automatic ctle_db takes (default 12)"),
+    "ctle_peak_ghz": ("number", False, "the CTLE's first pole (default the Nyquist frequency)"),
+    "dfe_taps": ("number", False, "receiver decision-feedback equaliser taps (default 0)"),
+    "dfe_max": ("number", False, "the most a DFE tap takes off, as a part of the main cursor "
+                                 "(default 0.5)"),
+    "ber": ("number", False, "bit error rate the statistical eye is drawn at (default 1e-12); "
+                             "the statistical eye is worked out when this or one of the "
+                             "four keys after it is given"),
+    "noise_rms_mv": ("number", False, "random (Gaussian) noise at the receiver, RMS (default 0)"),
+    "rj_rms_ps": ("number", False, "random jitter of the sampling instant, RMS (default 0)"),
+    "dj_pp_ps": ("number", False, "deterministic jitter, peak to peak, as two points (default 0)"),
+    "sj_pp_ps": ("number", False, "sinusoidal jitter, peak to peak (default 0)"),
+    "eye_at_ber_min_mv": ("number", False, "eye height needed at the bit error rate "
+                                           "(default: open)"),
+    "eye_at_ber_min_ui": ("number", False, "eye width needed at the bit error rate, in UI"),
     "prbs": ("number", False, "PRBS order: 7, 9, 11, 15 (default 7)"),
     "repeats": ("number", False, "times the pattern runs after settling (default 2)"),
     "samples_per_ui": ("number", False, "time steps per unit interval (default 32)"),
@@ -87,8 +126,13 @@ def _settings(spec: dict[str, Any]) -> dict[str, Any]:
     rate = _num(spec, "data_rate_gbps", 0) * 1e9
     if rate <= 0:
         raise ValueError("data_rate_gbps must be more than 0")
-    ui = 1 / rate
-    out = {"ui": ui, "rate": rate,
+    mod = str(spec.get("modulation") or "nrz").strip().lower()
+    if mod not in ("nrz", "pam4"):
+        raise ValueError("modulation is nrz or pam4")
+    levels = 4 if mod == "pam4" else 2
+    baud = rate / (levels // 2)                          # symbols a second
+    ui = 1 / baud
+    out = {"ui": ui, "rate": rate, "baud": baud, "levels": levels,
            "rise": _num(spec, "rise_ps", 0.3 * ui * 1e12) * 1e-12,
            "amp": _num(spec, "amplitude_mv", 800) / 1000,
            "order": int(_num(spec, "prbs", 7)),
@@ -174,6 +218,237 @@ def _eye_metrics(m: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     }
 
 
+def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
+                verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+    """The eye of ``height`` volts with ``noise_mv`` on both rails."""
+    noise = _num(spec, "noise_mv", 0)
+    if noise < 0:
+        raise ValueError("noise_mv is 0 or more")
+    if noise == 0:
+        return
+    left = max(height * 1e3 - 2 * noise, 0.0)
+    m["noise_mv"] = _metric(round(noise, 3), "mV", "Noise at the receiver, peak")
+    m["eye_height_with_noise_mv"] = _metric(round(left, 3), "mV",
+                                            "Eye height with the noise on both rails")
+    verdicts.append({"check": "eye open with noise", "pass": left > 0,
+                     "detail": f"{left:.1f} mV left of {height * 1e3:.1f} mV with "
+                               f"{noise:g} mV of noise on each rail"})
+    notes.append(f"noise of {noise:g} mV peak lowers the high rail and raises the low rail "
+                 "by that much, whenever it arrives: the worst case")
+
+
+#: The keys that ask for the statistical eye.
+STAT_KEYS = ("ber", "noise_rms_mv", "rj_rms_ps", "dj_pp_ps", "sj_pp_ps", "eye_at_ber_min_mv",
+             "eye_at_ber_min_ui")
+
+
+def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
+                 m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str],
+                 dfe_taps: Sequence[float] = ()) -> None:
+    """The eye at a bit error rate, when the spec asks for it: its metrics,
+    its check and what it took into account."""
+    if all(spec.get(k) in (None, "") for k in STAT_KEYS):
+        return
+    ber = _num(spec, "ber", 1e-12)
+    if not _eye.BER_FLOOR <= ber <= 0.1:
+        raise ValueError(f"ber is {_eye.BER_FLOOR:g} to 0.1")
+    noise = _num(spec, "noise_rms_mv", 0)
+    rj = _num(spec, "rj_rms_ps", 0)
+    dj = _num(spec, "dj_pp_ps", 0)
+    sj = _num(spec, "sj_pp_ps", 0)
+    for key, val in (("noise_rms_mv", noise), ("rj_rms_ps", rj), ("dj_pp_ps", dj),
+                     ("sj_pp_ps", sj)):
+        if val < 0:
+            raise ValueError(f"{key} is 0 or more")
+    peak = _num(spec, "noise_mv", 0)
+    lim_mv = _num(spec, "eye_at_ber_min_mv", 0)
+    lim_ui = _num(spec, "eye_at_ber_min_ui", 0)
+    if lim_mv < 0 or not 0 <= lim_ui <= 1:
+        raise ValueError("eye_at_ber_min_mv is 0 or more and eye_at_ber_min_ui is 0 to 1")
+    step = st["ui"] / st["spui"] * 1e12
+    reach = 8.5 * rj + dj / 2 + sj / 2
+    if reach > st["ui"] * 1e12 / 2:
+        raise ValueError(f"the jitter reaches {reach:.1f} ps (8.5 sigma and half the "
+                         "deterministic and sinusoidal parts): more than half the "
+                         f"{st['ui'] * 1e12:g} ps "
+                         f"{'symbol' if st['levels'] > 2 else 'bit'}")
+    se = _eye.statistical_eye(pulse, st["amp"], ber, noise * 1e-3, rj * 1e-12, dj * 1e-12,
+                              levels=st["levels"], sj_pp=sj * 1e-12, dfe_taps=dfe_taps)
+    height = max(se["eye_height"] * 1e3 - 2 * peak, 0.0)
+    # with peak noise on the rails the width is that of the phases still open
+    wide = int(np.sum(se["heights"] * 1e3 - 2 * peak > 0)) if height > 0 else 0
+    width_ui = wide / st["spui"] if peak else se["eye_width_ui"]
+    m["eye_height_at_ber_mv"] = _metric(round(height, 3), "mV",
+                                        f"Eye height at a bit error rate of {ber:g}")
+    m["eye_width_at_ber_ps"] = _metric(round(width_ui * st["ui"] * 1e12, 3), "ps",
+                                       f"Eye width at a bit error rate of {ber:g}")
+    m["eye_width_at_ber_ui"] = _metric(round(width_ui, 4), "UI",
+                                       f"Eye width at a bit error rate of {ber:g}")
+    m["bit_error_rate"] = _metric(float(f"{se['bit_error_rate']:.3g}"), "",
+                                  "Bit error rate at the best sampling instant, threshold in "
+                                  f"the middle ({_eye.BER_FLOOR / 10:g}: that or less)")
+    if len(dfe_taps):
+        m["dfe_burst_errors"] = _metric(float(f"{se['burst_errors']:.4g}"), "",
+                                        "Wrong decisions one wrong decision of the DFE brings, "
+                                        "itself included; the bit error rate is multiplied by it")
+    ok = height > lim_mv and width_ui >= lim_ui and height > 0
+    need = [f"{lim_mv:g} mV"] if lim_mv else []
+    if lim_ui:
+        need.append(f"{lim_ui:g} UI")
+    verdicts.append({"check": "eye at the bit error rate", "pass": bool(ok),
+                     "detail": f"{height:.1f} mV by {width_ui:.3f} UI at {ber:g}"
+                               + (f", {' and '.join(need)} needed" if need else ", must be open")})
+    parts = ["ISI as independent random " + ("symbols" if st["levels"] > 2 else "bits")]
+    if noise:
+        parts.append(f"{noise:g} mV RMS of Gaussian noise")
+    if rj:
+        parts.append(f"{rj:g} ps RMS of random jitter")
+    if dj:
+        parts.append(f"{dj:g} ps peak to peak of deterministic jitter")
+    if sj:
+        parts.append(f"{sj:g} ps peak to peak of sinusoidal jitter")
+    if peak:
+        parts.append(f"{peak:g} mV of peak noise off each rail")
+    if len(dfe_taps):
+        parts.append(f"a wrong DFE decision followed through {min(len(dfe_taps), _eye.BURST_TAPS)} "
+                     f"taps ({se['burst_errors']:.4g} errors each, in the error rate; the "
+                     "contour takes decisions as right)")
+    notes.append("statistical eye: " + ", ".join(parts)
+                 + f"; jitter is taken in steps of {step:.3g} ps (samples_per_ui)")
+
+
+def dc_level(s: np.ndarray, z0: float, term: dict[str, Any]) -> float:
+    """The channel's transfer at 0 Hz with the terminations of ``term``:
+    the level a step settles to. From the S-matrix read back to 0 Hz,
+    which is smooth there where the transfer itself may not be."""
+    dc, _ = channel_transfer(np.array([0.0]), _eye.dc_matrix(s)[None].astype(complex), z0, term)
+    return float(dc[0].real)
+
+
+def _step(f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any], rise: float
+          ) -> tuple[np.ndarray, np.ndarray]:
+    """The step at the receiver with the terminations of ``term``, its DC
+    level worked out from the S-matrix at 0 Hz."""
+    h, _ = channel_transfer(f, s, z0, term)
+    return _eye.step_response(f, h, rise, dc=dc_level(s, z0, term))
+
+
+#: The most a series resistor is tried at, in reference impedances.
+SERIES_R_MAX_Z0 = 4.0
+
+
+def series_resistor(f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any],
+                    rise: float, limit: float) -> Optional[float]:
+    """The resistance in series with the driver, in ohms per side and
+    rounded up to a whole ohm, that brings the overshoot at the receiver
+    within ``limit`` (a fraction of the settled level). It is taken as
+    more source resistance, everything else as it is. None when four
+    reference impedances of it are not enough: the overshoot then comes
+    from the line, not from the driver's strength."""
+    def over(extra: float) -> float:
+        t = {**term, "rs": term["rs"] + extra, "matched": False}
+        return _eye.edge_figures(*_step(f, s, z0, t, rise))["overshoot"]
+
+    lo, hi = 0.0, SERIES_R_MAX_Z0 * z0
+    if over(hi) > limit:
+        return None
+    for _ in range(12):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if over(mid) > limit else (lo, mid)
+    return float(math.ceil(hi - 1e-9))
+
+
+def _edge(spec: dict[str, Any], f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any],
+          st: dict[str, Any],
+          m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+    """The single edge at the receiver: overshoot, ringback, a reversal on
+    the way up and the settling time, with the limits the spec gives."""
+    e = _eye.edge_figures(*_step(f, s, z0, term, st["rise"]))
+    over, back, rev = (round(100 * e[k], 2) for k in ("overshoot", "ringback", "reversal"))
+    m["overshoot_pct"] = _metric(over, "%", "Overshoot of one edge at the receiver, of the "
+                                 "level it settles to")
+    m["ringback_pct"] = _metric(back, "%", "Fall back below that level after the overshoot")
+    m["edge_reversal_pct"] = _metric(rev, "%", "Deepest fall on the way up, between 10 % and "
+                                     "90 % of the level")
+    m["settling_ps"] = _metric(round(e["settle"] * 1e12, 2), "ps", "From half the level until "
+                               "the edge stays within 5 % of it")
+    for key, name, got in (("overshoot_max_pct", "overshoot", over),
+                           ("ringback_max_pct", "ringback", back),
+                           ("edge_reversal_max_pct", "edge reversal", rev)):
+        if spec.get(key) is None:
+            continue
+        lim = _num(spec, key, 0.0)
+        if lim < 0:
+            raise ValueError(f"{key} is 0 or more")
+        detail = f"{got:.1f} % of the settled level, {lim:g} % allowed"
+        if name == "overshoot" and got > lim:
+            r = series_resistor(f, s, z0, term, st["rise"], lim / 100)
+            if r is None:
+                detail += "; a series resistor at the driver does not bring it within"
+            else:
+                m["series_r_ohms"] = _metric(r, "ohm", "Series resistor at the driver that "
+                                             "brings the overshoot within its limit")
+                detail += (f"; {r:.0f} ohm in series at the driver"
+                           + (" (each side)" if s.shape[1] == 4 else "")
+                           + f" brings it within {lim:g} %")
+        verdicts.append({"check": name, "pass": got <= lim, "detail": detail})
+    if rev >= 2.0:
+        notes.append(f"the edge turns back by {rev:.1f} % of its level on the way up: a "
+                     "reflection arrives inside the edge, and a clock input can see it twice")
+
+
+#: The equaliser settings of a spec.
+EQ_KEYS = ("tx_ffe", "ctle_db", "ctle_peak_ghz", "dfe_taps", "dfe_max")
+
+
+def equaliser(spec: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
+    """The equalisation a spec asks for, checked: transmitter FFE taps, the
+    receiver's CTLE and its DFE."""
+    raw = spec.get("tx_ffe")
+    taps: list[float] = []
+    auto_ffe = isinstance(raw, str) and raw.strip().lower() == "auto"
+    pre = _num(spec, "tx_ffe_pre", 1)
+    post = _num(spec, "tx_ffe_post", 1)
+    if pre != int(pre) or not 0 <= pre <= 3 or post != int(post) or not 0 <= post <= 4:
+        raise ValueError("tx_ffe_pre is a whole number, 0 to 3, and tx_ffe_post 0 to 4")
+    if auto_ffe and pre + post == 0:
+        raise ValueError("an automatic tx_ffe needs a tap beside the main one: tx_ffe_pre or "
+                         "tx_ffe_post above 0")
+    if not auto_ffe and raw not in (None, "", []):
+        try:
+            taps = [float(x) for x in raw]
+        except (TypeError, ValueError):
+            raise ValueError("tx_ffe is a list of tap weights, e.g. [-0.1, 0.7, -0.2], or "
+                             "\"auto\"") from None
+        if not any(taps):
+            raise ValueError("tx_ffe needs one tap or more that is not zero")
+        if len(taps) > 8:
+            raise ValueError("tx_ffe has 8 taps at most")
+    raw_db = spec.get("ctle_db")
+    auto_ctle = isinstance(raw_db, str) and raw_db.strip().lower() == "auto"
+    try:
+        db = 0.0 if auto_ctle else _num(spec, "ctle_db", 0.0)
+    except ValueError:
+        db = -1.0
+    if not 0 <= db <= 30:
+        raise ValueError("ctle_db is 0 to 30, or \"auto\"")
+    most_db = _num(spec, "ctle_max_db", 12)
+    if most_db != int(most_db) or not 1 <= most_db <= 30:
+        raise ValueError("ctle_max_db is a whole number, 1 to 30")
+    peak = _num(spec, "ctle_peak_ghz", st.get("baud", st["rate"]) / 2e9) * 1e9
+    if peak <= 0:
+        raise ValueError("ctle_peak_ghz is above 0")
+    n = _num(spec, "dfe_taps", 0)
+    if n != int(n) or not 0 <= n <= 32:
+        raise ValueError("dfe_taps is a whole number, 0 to 32")
+    most = _num(spec, "dfe_max", 0.5)
+    if not 0 < most <= 1:
+        raise ValueError("dfe_max is above 0 and at most 1")
+    return {"ffe": taps, "ctle_db": db, "ctle_peak": peak, "dfe_taps": int(n), "dfe_max": most,
+            "auto_ffe": (int(pre), int(post)) if auto_ffe else None,
+            "auto_ctle": int(most_db) if auto_ctle else None}
+
+
 def _write_wave(path: Path, t: np.ndarray, v: np.ndarray) -> None:
     np.savetxt(path, np.column_stack([t * 1e12, v * 1e3]), delimiter=",",
                header="time_ps,mv", comments="", fmt="%.6g")
@@ -190,11 +465,49 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     f, s, model = uniform(f, s, _num(spec, "fit_tol", 2e-3))
     h, pair = channel_transfer(f, s, z0, term)
     say("pulse response", 0.2)
-    pulse = _eye.pulse_response(f, h, st["ui"], st["rise"], st["spui"])
+    eq = equaliser(spec, st)
+    f0 = np.concatenate([[0.0], f])
+    level = dc_level(s, z0, term)
+
+    def equalised(boost: float):
+        gain = _eye.ctle(f0, boost, eq["ctle_peak"]) if boost else np.ones(len(f0))
+        out = _eye.pulse_response(f, h * gain[1:], st["ui"], st["rise"], st["spui"],
+                                  dc=level * float(gain[0].real))
+        def after(taps):
+            got = _eye.ffe(out, taps) if taps else out
+            fed: list[float] = []
+            if eq["dfe_taps"]:
+                got, fed = _eye.dfe(got, eq["dfe_taps"], eq["dfe_max"])
+            return got, taps, fed
+
+        if not eq["auto_ffe"]:
+            return after(eq["ffe"])
+        pre, post = eq["auto_ffe"]
+        best = after(_eye.best_ffe(out, pre, post, dfe_taps=eq["dfe_taps"],
+                                   levels=st["levels"]))
+        # The taps are worked out at one sampling point and with the DFE
+        # taken as ideal; the eye is read over the whole bit with the DFE
+        # as it is. Should the eye without them be the larger, it stands.
+        none = after([0.0] * pre + [1.0] + [0.0] * post)
+        return max(none, best, key=lambda r: round(
+            _eye.worst_case_eye(r[0], st["amp"], st["levels"])["margin"], 9))
+
+    if eq["auto_ctle"] is not None:
+        # every whole dB, from none up: the first of equal eyes is the least boost
+        tried = [(b, equalised(float(b))) for b in range(eq["auto_ctle"] + 1)]
+        boost, (pulse, ffe_taps, dfe_taps) = max(
+            tried, key=lambda r: round(
+                _eye.worst_case_eye(r[1][0], st["amp"], st["levels"])["margin"], 9))
+        eq["ctle_db"] = float(boost)
+    else:
+        pulse, ffe_taps, dfe_taps = equalised(eq["ctle_db"])
+    chosen = " (chosen for the largest worst-case eye)"
+    if eq["auto_ffe"]:
+        eq["ffe"] = ffe_taps
     say("PRBS eye", 0.5)
-    se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"])
-    wc = _eye.worst_case_eye(pulse, st["amp"])
-    k = ch.nyquist_index(f, st["rate"] / 2)
+    se = _eye.simulated_eye(pulse, st["amp"], st["order"], st["repeats"], st["levels"])
+    wc = _eye.worst_case_eye(pulse, st["amp"], st["levels"])
+    k = ch.nyquist_index(f, st["baud"] / 2)
     m = _eye_metrics(se)
     m["worst_case_eye_height_mv"] = _metric(round(wc["eye_height"] * 1e3, 3), "mV",
                                             "Worst-case eye height (peak distortion analysis)")
@@ -204,12 +517,13 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     m["isi_mv"] = _metric(round(wc["isi_sum"] * 1e3, 3), "mV", "Sum of the other cursors")
     m["insertion_loss_db_at_nyquist"] = _metric(round(float(-ch.db(h[k])), 3), "dB",
                                                 f"Insertion loss at {f[k] / 1e9:g} GHz")
-    bits = np.tile(_eye.prbs(st["order"]), st["repeats"] + 1)
-    t, v = _eye.waveform(pulse, bits, st["amp"])
+    pam4 = st["levels"] == 4
+    bits = np.tile(_eye.prbs(st["order"]), (st["repeats"] + 1) * (2 if pam4 else 1))
+    t, v = _eye.waveform(pulse, bits, st["amp"], st["levels"])
     _write_wave(folder / "waveform.csv", t, v)
     files = {"waveform": "waveform.csv"}
-    title = (f"{'pair' if pair else 'line'}, {st['rate'] / 1e9:g} Gb/s, PRBS{st['order']}, "
-             f"convolution")
+    title = (f"{'pair' if pair else 'line'}, {st['rate'] / 1e9:g} Gb/s"
+             f"{' PAM4' if pam4 else ''}, PRBS{st['order']}, convolution")
     if _eye.plot_eye(folder / "eye.png", se["eye"], st["ui"], title):
         files["plot"] = "eye.png"
     verdicts = [{"check": "eye open", "pass": se["eye_height"] > 0,
@@ -221,9 +535,48 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
              f"{st['rise'] * 1e12:g} ps edge; PRBS{st['order']}, "
              f"{len(bits)} bits; amplitude {st['amp'] * 1e3:g} mV (incident, into a matched load)"]
     notes += term["notes"]
+    if pam4:
+        for i, h_ in enumerate(se["eye_heights"]):
+            name = ("lower", "middle", "upper")[i]
+            m[f"eye_height_{name}_mv"] = _metric(round(h_ * 1e3, 3), "mV",
+                                                 f"Height of the {name} of the three eyes")
+        notes.append(f"PAM4: {st['rate'] / 1e9:g} Gb/s is {st['baud'] / 1e9:g} GBd, a symbol "
+                     f"of {st['ui'] * 1e12:g} ps; levels at -1, -1/3, +1/3 and +1 of half the "
+                     "amplitude, Gray coded; the eye is the smallest of the three, its width "
+                     "where all three are open; the worst case takes every other symbol at "
+                     "an outer level")
+    if eq["ffe"]:
+        total = sum(abs(x) for x in eq["ffe"])
+        notes.append("transmitter FFE taps " + ", ".join(f"{x / total:+.3f}" for x in eq["ffe"])
+                     + " (magnitudes add up to 1)" + (chosen if eq["auto_ffe"] else ""))
+    if eq["auto_ffe"]:
+        m["ffe_main_tap"] = _metric(round(max(abs(x) for x in eq["ffe"]) / total, 4), "",
+                                    "Main tap of the transmitter FFE chosen (1: none needed)")
+    if eq["auto_ctle"] is not None:
+        m["ctle_db"] = _metric(eq["ctle_db"], "dB", "Receiver CTLE boost chosen")
+        if not eq["ctle_db"]:
+            notes.append(f"receiver CTLE: none; no boost up to {eq['auto_ctle']} dB leaves a "
+                         "larger worst-case eye")
+    if eq["ctle_db"]:
+        notes.append(f"receiver CTLE: {eq['ctle_db']:g} dB of boost over DC, first pole at "
+                     f"{eq['ctle_peak'] / 1e9:g} GHz; its DC gain lowers the eye's levels"
+                     + (chosen if eq["auto_ctle"] is not None else ""))
+    if eq["dfe_taps"]:
+        m["dfe_tap1_mv"] = _metric(round((dfe_taps[0] if dfe_taps else 0.0) * st["amp"] / 2 * 1e3,
+                                         3), "mV", "First DFE tap")
+        notes.append("receiver DFE taps (mV): "
+                     + ", ".join(f"{d * st['amp'] / 2 * 1e3:+.1f}" for d in dfe_taps)
+                     + f"; each at most {eq['dfe_max']:g} of the main cursor; the eye takes "
+                     "its decisions as right")
+    if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"]:
+        notes.append("the eye, the waveform and the cursors are those after equalisation; the "
+                     "edge figures and the insertion loss are the channel's own")
     if model is not None:
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
+    _with_noise(spec, se["eye_height"], m, verdicts, notes)
+    _statistical(spec, pulse, st, m, verdicts, notes, dfe_taps if eq["dfe_taps"] else ())
+    _edge(spec, f, s, z0, term, st, m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 
 
@@ -269,6 +622,13 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
     st = _settings(spec)
     f0, s0, z0 = load_channel(touchstone)
     term = terminations(spec, st, z0, s0.shape[1])
+    eq = equaliser(spec, st)
+    if st["levels"] != 2:
+        raise ValueError("PAM4 is modelled by the eda-agent engine only: the SPICE eye is NRZ")
+    if eq["ffe"] or eq["ctle_db"] or eq["dfe_taps"] or eq["auto_ffe"] \
+            or eq["auto_ctle"] is not None:
+        raise ValueError("equalisation (tx_ffe, ctle_db, dfe_taps) is modelled by the "
+                         "eda-agent engine only: run the eye without it in SPICE")
     keep = f0 > 0
     say("fitting the macromodel", 0.1)
     model = vectfit.macromodel(f0[keep], s0[keep], _num(spec, "fit_tol", 2e-3))
@@ -277,7 +637,8 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
     f, s, _ = uniform(f0, s0, _num(spec, "fit_tol", 2e-3))
     s_model = model.eval(f)
     h_model, pair = channel_transfer(f, s_model, z0, term)
-    pulse = _eye.pulse_response(f, h_model, st["ui"], st["rise"], st["spui"])
+    pulse = _eye.pulse_response(f, h_model, st["ui"], st["rise"], st["spui"],
+                                dc=dc_level(s_model, z0, term))
     bits = np.tile(_eye.prbs(st["order"]), st["repeats"] + 1)
     over = int(_num(spec, "spice_oversample", 4))
     say("SPICE transient", 0.3)
@@ -332,4 +693,5 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
              *term["notes"],
              "place channel.asy in an LTspice schematic (with channel.sub beside it) to drive "
              "the channel with real driver and receiver models"]
+    _with_noise(spec, em["eye_height"], m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}

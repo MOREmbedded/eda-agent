@@ -86,3 +86,23 @@ def mixed_board() -> LayoutBoard:
     b.tracks += s.tracks
     b.net_classes = {"FAST": ["SIG"], "PAIRS": ["D_P", "D_N"]}
     return b
+
+
+#: Two signal layers between a pair of planes (a dual stripline): Sig1 and
+#: Sig2 face each other across 8 mil with no plane between.
+DUAL_STACKUP = {"layers": [
+    {"layer_id": 1, "name": "Top Layer", "copper_thickness_mils": 1.4,
+     "dielectric_height_mils": 4.0, "dielectric_constant": 4.2, "dielectric_type": "Prepreg"},
+    {"layer_id": 39, "name": "GND", "copper_thickness_mils": 1.4,
+     "dielectric_height_mils": 5.0, "dielectric_constant": 4.3, "dielectric_type": "Core"},
+    {"layer_id": 2, "name": "Sig1", "copper_thickness_mils": 0.7,
+     "dielectric_height_mils": 8.0, "dielectric_constant": 4.3, "dielectric_type": "Prepreg"},
+    {"layer_id": 3, "name": "Sig2", "copper_thickness_mils": 0.7,
+     "dielectric_height_mils": 5.0, "dielectric_constant": 4.3, "dielectric_type": "Core"},
+    {"layer_id": 40, "name": "PWR", "copper_thickness_mils": 1.4,
+     "dielectric_height_mils": 4.0, "dielectric_constant": 4.2, "dielectric_type": "Prepreg"},
+    {"layer_id": 32, "name": "Bottom Layer", "copper_thickness_mils": 1.4}]}
+
+DUAL_LAYERS = [Layer("TopLayer", "signal", 0), Layer("InternalPlane1", "plane", 1, "GND"),
+               Layer("MidLayer1", "signal", 2), Layer("MidLayer2", "signal", 3),
+               Layer("InternalPlane2", "plane", 4, "VCC"), Layer("BottomLayer", "signal", 5)]

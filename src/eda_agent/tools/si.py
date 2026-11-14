@@ -315,8 +315,11 @@ def _register_si_net_tools(mcp) -> None:
         reference plane changes), and each stub off the path. Gives the
         channel's S-parameters (Touchstone), TDR, delay, insertion and
         return loss at Nyquist, and for a pair mode conversion and skew;
-        finds the other nets routed beside it and their near-end and
-        far-end crosstalk; checks them against limits; and works out the Altium rules (width,
+        finds the other nets routed beside it, and over or under it on
+        a facing signal layer, and their near-end and
+        far-end crosstalk (over the limit, with the gap that brings
+        the worst of them within it), and the places where the route crosses a split
+        or a gap in its reference plane; checks them against limits; and works out the Altium rules (width,
         pair gap, uncoupled length, length from the loss budget) that hold
         the net to its targets.
 
@@ -327,13 +330,18 @@ def _register_si_net_tools(mcp) -> None:
                 expect_file reads the open board live, or board_json_path
                 and stackup_json_path name saved files.
             options: from_pin, to_pin (DESIGNATOR.PIN), data_rate_gbps,
-                f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
+                modulation ("pam4"), f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
                 z_target, z_tol_pct (10), il_max_db, rl_min_db,
                 skew_max_ps, tand (0.02), foil, mask_mils, etch_mils,
                 rules (true); crosstalk from the copper beside the net:
                 xtalk (true), xtalk_max_pct (5, of the aggressors' swing),
                 xtalk_reach_mils, xtalk_quiet (name globs of nets that do
-                not switch). sim_engines lists every key.
+                not switch), xtalk_aggressors ([{match, rise_ps,
+                swing_mv}]: neighbours with their own edge and swing),
+                xtalk_swing_mv (the swing of the rest), xtalk_max_mv
+                (limit on crosstalk in mV on the net); gaps in the reference copper under the
+                route: return_path (true), return_gap_min_mils (8).
+                sim_engines lists every key.
             apply_rules: create the rules in Altium (pcb_create_design_rule).
                 Changes the board; only when the user asked for it.
             title: a name for the job list.
@@ -341,6 +349,9 @@ def _register_si_net_tools(mcp) -> None:
 
         Returns:
             ``metrics``, ``verdicts``, ``path`` (sections, vias, stubs),
+            ``crosstalk`` (each aggressor: nets, layer, gap, shared length,
+            near and far end, where), ``return_path`` (each gap in the
+            reference copper under the route: layer, length, where),
             ``altium_steps`` (the rules), ``applied`` when written,
             ``snapshot`` with ``stale``, ``job`` and ``folder``.
         """
@@ -370,6 +381,9 @@ def _register_si_net_tools(mcp) -> None:
                 "files": res.get("files", {}), "notes": res.get("notes", []),
                 "altium_steps": res.get("altium_steps", []),
                 "path": (res.get("figures") or {}).get("path")}
+            for key in ("crosstalk", "return_path"):
+                if key in (res.get("figures") or {}):
+                    reply[key] = res["figures"][key]
             if out.get("errors"):
                 reply["errors"] = out["errors"]
             if apply_rules and reply["altium_steps"]:
@@ -432,13 +446,30 @@ def _register_si_time_tools(mcp) -> None:
         the circuit simulator's waveform is from the convolution's.
 
         Args:
-            data_rate_gbps: NRZ data rate.
+            data_rate_gbps: data rate in bits (options modulation "pam4"
+                halves the symbol rate; default NRZ).
             touchstone_file: the channel's .s2p or .s4p; or ``net_job``: a
                 net-channel job id (its channel file is used).
             engines: default ["eda-agent", "spice"] (spice when ngspice or
                 LTspice is installed).
             options: rise_ps (0.3 UI), amplitude_mv (800, differential
-                for a pair), prbs (7, 9, 11, 15), repeats (2),
+                for a pair), noise_mv (0; peak noise at the receiver, the
+                eye loses twice this), prbs (7, 9, 11, 15), repeats (2),
+                overshoot_max_pct, ringback_max_pct,
+                edge_reversal_max_pct (limits on one edge at the receiver,
+                percent of its settled level; no check if absent),
+                tx_ffe (transmitter taps one UI apart, e.g.
+                [-0.1, 0.7, -0.2]; scaled to a peak of 1; or "auto": the
+                best tx_ffe_pre + 1 + tx_ffe_post taps), ctle_db
+                (receiver CTLE boost over DC, 0-30, or "auto": the best
+                up to ctle_max_db), ctle_peak_ghz (its
+                first pole, default Nyquist), dfe_taps (receiver DFE taps,
+                0-32), dfe_max (most one tap takes off, part of the main
+                cursor, 0.5; equalisation is in the eda-agent engine only),
+                ber (1e-12), noise_rms_mv, rj_rms_ps, dj_pp_ps, sj_pp_ps (any
+                of them adds the eye at that bit error rate with Gaussian
+                noise and random, deterministic and sine jitter), with limits
+                eye_at_ber_min_mv and eye_at_ber_min_ui,
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
                 tx_model (an IBIS driver: its output resistance, C_comp,
@@ -669,13 +700,12 @@ def _register_si_board_tools(mcp) -> None:
         """Check every high-speed net and pair of a board, and place each fault on it.
 
         Each net or pair the targets name is modelled end to end (as
-        si_net_channel does) and checked against its target's limits:
-        impedance, insertion and return loss, skew, stub resonance, and
-        optionally the eye. A failure becomes a finding placed where it is:
-        an impedance fault where the TDR sees it (walked along the routed
-        path at each section's own delay), a stub where it leaves the path,
-        a via stub at its via, crosstalk at the stretch beside the worst
-        neighbour, other faults at the driving pin. Writes
+        si_net_channel does) and checked against its target's limits. A
+        failure becomes a finding placed where it is: an impedance fault
+        where the TDR sees it, a stub where it leaves the path, a via stub
+        at its via, crosstalk beside (or across from) the worst neighbour,
+        a reference-plane gap where the route crosses it, an edge fault
+        at the receiving pin, others at the driving pin. Writes
         report.html (self-contained), findings.json and summary.csv.
 
         Args:
@@ -685,17 +715,23 @@ def _register_si_board_tools(mcp) -> None:
             targets: a list of {match: net or pair name glob, or class: an
                 Altium net class; kind: "pair" or "net"; data_rate_gbps,
                 z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
-                stub_margin, xtalk_max_pct (crosstalk from neighbours, 5);
-                eye: true to add the eye, eye_min_mv,
-                eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
-                is taken by the first target that matches it. Default: every
-                differential pair.
+                stub_margin, delay_match_ps (each of the target's nets may
+                be this far ahead of the slowest), xtalk_max_pct (5),
+                xtalk_max_mv, xtalk_swing_mv (the neighbours' swing, which
+                closes the eye), xtalk_aggressors ([{match, rise_ps,
+                swing_mv}]); eye: true to add the eye, eye_min_mv,
+                eye_min_ui, overshoot_max_pct, ringback_max_pct,
+                edge_reversal_max_pct, and si_channel_eye's driver,
+                receiver, equaliser and bit-error-rate options}. A net is taken by the
+                first target that matches it. Default: every differential
+                pair.
             options: data_rate_gbps (for targets without one), eye,
                 max_items (40), workers (4), f_max_ghz, points (200),
                 temperature_c or thermal_npz (a thermal analysis'
                 result.npz: hot copper loses more), tand, foil, mask_mils,
                 etch_mils, xtalk (true), xtalk_max_pct, xtalk_reach_mils,
-                xtalk_quiet.
+                xtalk_quiet, xtalk_aggressors, xtalk_swing_mv, xtalk_max_mv,
+                return_path (true), return_gap_min_mils.
             mark: "none"; "highlight" highlights the failing nets in
                 Altium; "text" also writes each error's id and check as
                 text on ``marker_layer`` at its place (changes the board;

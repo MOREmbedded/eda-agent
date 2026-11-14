@@ -4,7 +4,8 @@
 Features: every feature with its state, its dependencies with versions
 and licenses, an install button that runs the same installer as
 ``eda-agent install-deps`` (one install at a time, its output streamed
-to the page), and the on/off switch of the simulation engines.
+to the page), the on/off switches (simulation engines, the Rust kernels)
+and the saved locations of programs eda-agent did not find by itself.
 
 Simulation: the engines, the jobs, a job's results from each engine side
 by side, and runs started from the page (the same ``simulation.submit``
@@ -99,6 +100,17 @@ def register(app: Flask) -> None:
         except (KeyError, ValueError) as exc:
             return jsonify({"ok": False, "error": str(exc.args[0] if exc.args else exc)})
         return jsonify({"ok": True, "off": sorted(off)})
+
+    @app.route("/api/wb/features/path", methods=["POST"])
+    def wb_features_path() -> Response:
+        """Save (or, with an empty value, forget) where a program is."""
+        from ..features import state
+        body = request.get_json(silent=True) or {}
+        try:
+            saved = state.set_path(str(body.get("name") or ""), str(body.get("value") or ""))
+        except (KeyError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc.args[0] if exc.args else exc)})
+        return jsonify({"ok": True, "paths": saved})
 
     @app.route("/api/wb/features/plan", methods=["POST"])
     def wb_features_plan() -> Response:

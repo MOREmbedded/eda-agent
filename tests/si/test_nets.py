@@ -200,6 +200,39 @@ def test_copper_between_two_pads_runs_the_way_the_path_does():
         == pytest.approx(p.length)
 
 
+def test_free_pads_end_a_path_when_the_net_has_fewer_than_two_component_pins():
+    # a bare test board: two free pads and a track
+    b = single_net(with_stub=False, with_return_via=False, inner=0)
+    b.vias = []
+    b.pads = [smd("", "A", 0, 0, "SIG"), smd("", "B", 1000, 0, "SIG")]
+    b.tracks = [Track("TopLayer", 0, 0, 1000, 0, 5, "SIG")]
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"~A@0.00,0.00", "~B@1000.00,0.00"}
+    assert p.length == pytest.approx(1000) and len(p.pins) == 2
+    assert any("2 free pads of the net taken as pins" in n for n in p.notes)
+    assert extract.pins_of(b, "SIG") == sorted([p.start, p.end])
+    # one part's pin and a test point as a free pad
+    b.pads[0] = smd("U1", "1", 0, 0, "SIG")
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"U1.1", "~B@1000.00,0.00"}
+    assert any("1 free pad of the net taken as a pin" in n for n in p.notes)
+    # a free pad can be named as an end
+    p = extract.net_path(b, "SIG", "~B@1000.00,0.00", "U1.1")
+    assert p.start == "~B@1000.00,0.00" and p.length == pytest.approx(1000)
+    # with two component pins a free pad on the way is not an end and brings no note
+    b.pads.append(smd("U2", "1", 600, 0, "SIG"))
+    b.tracks = [Track("TopLayer", 0, 0, 600, 0, 5, "SIG"), Track("TopLayer", 600, 0, 1000, 0, 5, "SIG")]
+    p = extract.net_path(b, "SIG")
+    assert {p.start, p.end} == {"U1.1", "U2.1"} and p.pins == ["U1.1", "U2.1"]
+    assert not any("free pad" in n for n in p.notes)
+    assert extract.pins_of(b, "SIG") == ["U1.1", "U2.1"]
+    # one pad alone is still no path
+    b.pads = [smd("", "A", 0, 0, "SIG")]
+    b.tracks = [Track("TopLayer", 0, 0, 1000, 0, 5, "SIG")]
+    with pytest.raises(extract.ExtractError, match="fewer than two pins or pads"):
+        extract.net_path(b, "SIG")
+
+
 def test_explicit_pins_and_a_stub_end_as_the_target():
     p = extract.net_path(single_net(), "SIG", "U1.1", "TP1.1")
     assert p.length == pytest.approx(900) and p.vias == 0
@@ -440,6 +473,42 @@ def test_length_budget_spends_headroom_at_the_lines_loss():
     assert "2 x Nyquist = 2.50 GHz needed" in slow["stub resonance"]["detail"]
 
 
+def test_pam4_limits_follow_the_symbol_rate(tmp_path):
+    """Two bits a symbol: PAM4 at twice the data rate is NRZ's Nyquist,
+    unit interval and so every figure and limit."""
+    from eda_agent.si.net_jobs import run_net_channel, symbol_rate_gbd
+
+    def run(name, **more):
+        return run_net_channel({"pair": "D", "f_max_ghz": 8, "points": 80, **more},
+                               pair_board(skew=0).to_dict(), STACKUP, tmp_path / name)
+    nrz = run("a", data_rate_gbps=8)
+    pam = run("b", data_rate_gbps=16, modulation="PAM4")
+    assert pam["metrics"] == nrz["metrics"] and pam["verdicts"] == nrz["verdicts"]
+    assert pam["altium_steps"] == nrz["altium_steps"]
+    skew = next(v for v in pam["verdicts"] if v["check"] == "skew")
+    assert "6.25 ps allowed" in skew["detail"]
+    same_bits = run("c", data_rate_gbps=8, modulation="pam4")
+    skew = next(v for v in same_bits["verdicts"] if v["check"] == "skew")
+    assert "12.50 ps allowed" in skew["detail"]
+    assert same_bits["metrics"]["insertion_loss_db"]["value"] \
+        < nrz["metrics"]["insertion_loss_db"]["value"]
+    assert symbol_rate_gbd({"data_rate_gbps": 10}) == 10
+    assert symbol_rate_gbd({"data_rate_gbps": 10, "modulation": "pam4"}) == 5
+    assert symbol_rate_gbd({"modulation": "pam4"}) is None
+    with pytest.raises(ValueError, match="nrz or pam4"):
+        run("d", data_rate_gbps=8, modulation="pam8")
+
+
+def test_pam4_stub_limit_is_twice_the_symbol_nyquist():
+    from eda_agent.si.net_jobs import run_net_channel
+    import tempfile
+    r = run_net_channel({"net": "SIG", "data_rate_gbps": 5.0, "modulation": "pam4",
+                         "il_max_db": 20, "f_max_ghz": 12, "points": 120},
+                        single_net(inner=2000).to_dict(), STACKUP, tempfile.mkdtemp())
+    stub = next(v for v in r["verdicts"] if v["check"] == "stub resonance")
+    assert "2 x Nyquist = 2.50 GHz needed" in stub["detail"]
+
+
 def test_job_refuses_a_net_it_cannot_find(tmp_path):
     bp, sp = _files(tmp_path, single_net())
     r = sim.submit("net-channel", "eda-agent", {"net": "NOPE", "points": 40},
@@ -465,7 +534,9 @@ def test_tool_runs_from_files_and_applies_rules(tmp_path, monkeypatch):
     monkeypatch.setattr(pcb_tools, "_rule_edit", fake_edit)
     m = FastMCP("t")
     register_si_tools(m)
-    bp, sp = _files(tmp_path, single_net())
+    board = single_net()
+    board.tracks.append(Track("TopLayer", 100, -9, 500, -9, 5, "AGG"))   # 4 mil beside it
+    bp, sp = _files(tmp_path, board)
     snap_reply = _call(m, "si_board_snapshot", {"board_json_path": bp, "stackup_json_path": sp})
     assert snap_reply["ok"] and snap_reply["has_stackup"]
     out = _call(m, "si_net_channel", {"net": "SIG", "snapshot": snap_reply["id"],
@@ -474,6 +545,9 @@ def test_tool_runs_from_files_and_applies_rules(tmp_path, monkeypatch):
                                       "apply_rules": True})
     assert out["ok"], out
     assert out["snapshot"]["id"] == snap_reply["id"]
+    assert [(a["aggressor"], a["gap_mils"], a["length_mils"]) for a in out["crosstalk"]] \
+        == [("AGG", 4.0, 400.0)]
+    assert out["return_path"] == []        # no plane shapes in this board: taken as solid
     assert [c for c, _ in sent] == ["pcb.create_design_rule"] * len(out["altium_steps"])
     assert sent and all("name" in p for _, p in sent)
     # a snapshot of a board saved since: results come back, rules are not written

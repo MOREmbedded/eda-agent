@@ -86,6 +86,23 @@ def test_flat_channel_eye_is_the_full_swing():
     # rising and falling linear edges cross at half swing, so a flat
     # channel's eye shuts only at that instant: open for all but a sample
     assert se["eye_width_ui"] == pytest.approx(1.0, abs=1.5 / 32)
+    assert se["eye_width_ui"] <= 1.0
+
+
+def test_an_eye_open_at_every_sample_is_under_one_interval_wide():
+    """When the crossing falls between two samples every sample is open:
+    the width is then a sample short of the interval, never more than it
+    (it read 33 / 32 UI)."""
+    spui = 32
+    rows = np.vstack([np.full(spui, 0.4), np.full(spui, -0.4)] * 4)
+    bits = np.array([1, 0] * 4)
+    m = eye.eye_metrics(rows, bits, 1e-9)
+    assert m["eye_width_ui"] == pytest.approx(31 / 32) and m["eye_width"] == pytest.approx(31 / 32 * 1e-9)
+    # a closed sample anywhere: counted as before
+    rows[:, 5] = 0.0
+    assert eye.eye_metrics(rows, bits, 1e-9)["eye_width_ui"] == pytest.approx(31 / 32)
+    rows[:, 6] = 0.0
+    assert eye.eye_metrics(rows, bits, 1e-9)["eye_width_ui"] == pytest.approx(30 / 32)
 
 
 def test_worst_case_eye_bounds_every_pattern():
@@ -427,3 +444,1090 @@ def test_tools_eye_spice_model_and_ibis(tmp_path):
     by = {x["name"]: x for x in r["models"]}
     assert by["DRV18"]["driver"]["r_out_ohms"] == pytest.approx(R_OUT)
     assert by["RX18"]["model_type"] == "Input"
+
+
+# -- the single edge: overshoot, ringback, a reversal on the way up ------------------
+
+def test_edge_figures_of_known_steps():
+    t = np.linspace(0, 10e-9, 2001)
+    w, a = 2 * math.pi * 1e9, 0.4e9
+    ring = 1 - np.exp(-a * t) * np.cos(w * t)          # rings about 1: peaks at half periods
+    e = eye.edge_figures(t, 3.0 * ring)
+    assert e["final"] == pytest.approx(3.0, rel=0.01)
+    assert e["overshoot"] == pytest.approx(math.exp(-a * 0.5e-9), abs=0.01)     # first peak
+    assert e["ringback"] == pytest.approx(math.exp(-a * 1.0e-9), abs=0.01)      # the dip after
+    assert e["reversal"] == 0
+    # within 5 % once exp(-a t) < 0.05, counted from the half level
+    assert e["settle"] == pytest.approx(math.log(20) / a, rel=0.1)
+    # a falling edge is the same picture upside down
+    assert eye.edge_figures(t, -3.0 * ring)["overshoot"] == pytest.approx(e["overshoot"])
+    # an overdamped edge has none of it
+    slow = eye.edge_figures(t, 1 - np.exp(-t / 0.5e-9))
+    assert slow["overshoot"] < 1e-3 and slow["ringback"] == 0 and slow["reversal"] == 0
+    assert slow["settle"] == pytest.approx(0.5e-9 * (math.log(20) - math.log(2)), rel=0.05)
+    # the level is read at the very end: an edge that is slow to arrive has no overshoot
+    late = eye.edge_figures(t, 1 - np.exp(-t / 2e-9))
+    assert late["final"] == pytest.approx(1 - math.exp(-4.875), abs=2e-3) and late["overshoot"] < 2e-3
+    # a shelf that dips on the way up: half way, back by 0.15, then on to the level
+    shelf = np.interp(t, [0, 1e-9, 2e-9, 3e-9, 4e-9, 10e-9], [0, 0.5, 0.35, 0.5, 1.0, 1.0])
+    e = eye.edge_figures(t, shelf)
+    assert e["reversal"] == pytest.approx(0.15, abs=0.005) and e["overshoot"] < 1e-6
+    # a dip after the level is reached is ringback's business, not a reversal
+    late = np.interp(t, [0, 1e-9, 2e-9, 3e-9, 10e-9], [0, 1.2, 0.8, 1.0, 1.0])
+    e = eye.edge_figures(t, late)
+    assert e["reversal"] == 0 and e["overshoot"] == pytest.approx(0.2, abs=0.005)
+    assert e["ringback"] == pytest.approx(0.2, abs=0.005)
+    # nothing to measure
+    assert eye.edge_figures(t, np.zeros_like(t))["overshoot"] == 0
+    assert eye.edge_figures(t[:2], np.ones(2))["final"] == 0
+
+
+def _edge_job(ts, **opt):
+    r = sim.submit("channel-eye", "eda-agent", {"data_rate_gbps": 1, "repeats": 1, **opt},
+                   {"touchstone": ts}, "edge", True)
+    assert r["state"] in ("done", "failed"), r
+    return sim.refresh(r["job"])["runs"]["eda-agent"]
+
+
+def test_a_strong_driver_into_an_open_end_overshoots_and_a_matched_one_does_not(tmp_path):
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0)             # 4 inches, about 0.67 ns one way
+    ts = str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+    res = _edge_job(ts)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["overshoot_pct"] < 0.5 and m["ringback_pct"] < 0.5 and m["edge_reversal_pct"] < 0.5
+    assert not any(v["check"] in ("overshoot", "ringback") for v in res["verdicts"])
+    # 15 ohm into an open end: the first wave is 2 x 50 / 65 of the level, 54 % over,
+    # and it comes back (15 - 50) / (15 + 50) of that later
+    res = _edge_job(ts, tx_r_ohms=15, rx_r_ohms="open", rise_ps=100, overshoot_max_pct=20,
+                    ringback_max_pct=40)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["overshoot_pct"] == pytest.approx(100 * (2 * 50 / 65 - 1), abs=4)
+    assert m["ringback_pct"] == pytest.approx(100 * (1 - (100 / 65) * (1 - 35 / 65)), abs=4)
+    assert m["settling_ps"] > 2 * 1340
+    v = {x["check"]: x for x in res["verdicts"]}
+    assert not v["overshoot"]["pass"] and v["ringback"]["pass"]
+    assert v["overshoot"]["detail"].startswith(
+        f"{m['overshoot_pct']:.1f} % of the settled level, 20 % allowed; ")
+    # a weak driver climbs in steps and never overshoots
+    res = _edge_job(ts, tx_r_ohms=75, rx_r_ohms="open", rise_ps=100, overshoot_max_pct=5)
+    m = {k: v["value"] for k, v in res["results"]["metrics"].items()}
+    assert m["overshoot_pct"] < 2
+    assert next(x for x in res["results"]["verdicts"] if x["check"] == "overshoot")["pass"]
+    bad = _edge_job(ts, overshoot_max_pct=-1)
+    assert bad["state"] == "failed" and "overshoot_max_pct is 0 or more" in json.dumps(bad)
+
+
+def test_a_reflection_inside_the_edge_is_told(tmp_path):
+    # a 20 ohm stretch in a 50 ohm line, a weak driver, an open end: the edge climbs in
+    # steps, and the wave the open end sent back returns inverted from the stretch
+    f = ch.uniform_band(10e9, 800)
+    c = ch.Channel(f, 1)
+    for z, length in ((50.0, 0.03), (20.0, 0.03), (50.0, 0.03)):
+        c.add(ch.line_block(_rlgc(f, z0=z, loss=False), length))
+    ts = str(write_touchstone(tmp_path / "step.s2p", list(f), c.s(50.0).tolist(), 50.0))
+    opt = {"data_rate_gbps": 0.2, "tx_r_ohms": 100, "rx_r_ohms": "open", "rise_ps": 100}
+    res = _edge_job(ts, **opt, edge_reversal_max_pct=5)["results"]
+    rev = res["metrics"]["edge_reversal_pct"]["value"]
+    assert 15 < rev < 30 and res["metrics"]["overshoot_pct"]["value"] < 2
+    assert any(f"turns back by {rev:.1f} %" in n for n in res["notes"])
+    v = next(x for x in res["verdicts"] if x["check"] == "edge reversal")
+    assert not v["pass"] and v["detail"] == f"{rev:.1f} % of the settled level, 5 % allowed"
+    # the same line between matched ends climbs once
+    res = _edge_job(ts, data_rate_gbps=0.2, rise_ps=100, edge_reversal_max_pct=5)["results"]
+    assert res["metrics"]["edge_reversal_pct"]["value"] < 2
+    assert not any("turns back" in n for n in res["notes"])
+    assert next(x for x in res["verdicts"] if x["check"] == "edge reversal")["pass"]
+
+
+def test_the_step_settles_to_the_dc_of_the_s_matrix():
+    from eda_agent.si import eye_jobs
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)
+    s0 = eye.dc_matrix(s)                               # a lossless line at DC: a through
+    assert s0 == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=2e-3)
+    assert eye.dc_matrix(s[:1]) == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=1e-9)
+    # a long line swept coarsely: the first point is nowhere near DC, the magnitude is
+    f2 = ch.uniform_band(30e9, 200)
+    far = lossy_line(f2, length=0.5, z0=50.0, loss=False)
+    assert far[0, 1, 0].real < -0.9
+    assert eye.dc_matrix(far) == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=2e-3)
+    lossy = eye.dc_matrix(lossy_line(f2, length=0.5, z0=50.0))
+    assert 0.96 < lossy[1, 0] < 1.0 and lossy[0, 0] == pytest.approx(1 - lossy[1, 0])
+    # a pair: each side to its own far end, nothing across
+    four = np.zeros((2, 4, 4), dtype=complex)
+    four[:, 0, 2] = four[:, 2, 0] = four[:, 1, 3] = four[:, 3, 1] = [0.95j, -0.93]
+    four[:, 0, 1] = four[:, 1, 0] = [0.02, 0.04]
+    for k in range(4):
+        four[:, k, k] = [0.3, 0.25j]                    # a reflection in the band says nothing of DC
+    d4 = eye.dc_matrix(four)
+    assert d4[2, 0] == pytest.approx(0.97) and d4[1, 0] == 0 and d4[0, 0] == pytest.approx(0.03)
+    assert s[0, 1, 0].real < 0.98                       # the first point is not DC
+    # matched it settles to 1, into an open end to 2, whatever the driver: also a weak one,
+    # whose transfer is a low-pass with its corner near the frequency step
+    for term, level in (({"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0, "matched": True}, 1.0),
+                        ({"rs": 15.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}, 2.0),
+                        ({"rs": 215.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}, 2.0),
+                        ({"rs": 25.0, "cs": 0.0, "rl": 75.0, "cl": 1e-12, "matched": False}, 1.5)):
+        t, v = eye_jobs._step(f, s, 50.0, term, 100e-12)
+        assert v[-20:].mean() == pytest.approx(level, rel=0.01), term
+    # the first point taken as DC leaves a slope on a pure delay
+    t, v = eye.step_response(f, s[:, 1, 0], 100e-12)
+    late = v[t > 2e-9]
+    assert late.max() - late.min() > 0.015
+    t, v = eye_jobs._step(f, s, 50.0, {"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0,
+                                       "matched": True}, 100e-12)
+    late = v[t > 2e-9]
+    assert late.max() - late.min() < 0.01
+
+
+def test_a_failed_overshoot_names_the_series_resistor_that_cures_it(tmp_path):
+    from eda_agent.si import eye_jobs
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)
+    ts = str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+    opt = {"tx_r_ohms": 15, "rx_r_ohms": "open", "rise_ps": 100}
+    res = _edge_job(ts, **opt, overshoot_max_pct=10)["results"]
+    r = res["metrics"]["series_r_ohms"]["value"]
+    # into an open end the first wave is 2 Z / (R + Z) of the level: 10 % over at R = 40.9
+    assert r == pytest.approx(2 * 50 / 1.1 - 50 - 15, abs=3) and r == int(r)
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    assert v["detail"].endswith(f"; {r:.0f} ohm in series at the driver brings it within 10 %")
+    # with it in, the edge passes; one ohm and a half less, it does not
+    ok = _edge_job(ts, **{**opt, "tx_r_ohms": 15 + r}, overshoot_max_pct=10)["results"]
+    assert next(x for x in ok["verdicts"] if x["check"] == "overshoot")["pass"]
+    assert "series_r_ohms" not in ok["metrics"]
+    assert "in series" not in next(x for x in ok["verdicts"] if x["check"] == "overshoot")["detail"]
+    less = _edge_job(ts, **{**opt, "tx_r_ohms": 15 + r - 1.5}, overshoot_max_pct=10)["results"]
+    assert not next(x for x in less["verdicts"] if x["check"] == "overshoot")["pass"]
+    # a tighter limit asks for more; no limit, no resistor
+    tight = _edge_job(ts, **opt, overshoot_max_pct=3)["results"]["metrics"]["series_r_ohms"]["value"]
+    assert tight > r
+    assert "series_r_ohms" not in _edge_job(ts, **opt)["results"]["metrics"]
+    # overshoot that the line makes itself is not the driver's to cure: a short
+    # high-impedance stretch before an open end rings whatever the source
+    c = ch.Channel(f, 1)
+    for z, length in ((50.0, 0.05), (150.0, 0.012)):
+        c.add(ch.line_block(_rlgc(f, z0=z, loss=False), length))
+    term = {"rs": 50.0, "cs": 0.0, "rl": None, "cl": 2e-12}
+    sp = c.s(50.0)
+    got = eye_jobs.series_resistor(f, sp, 50.0, term, 100e-12, 0.0005)
+    assert got is None
+    ts2 = str(write_touchstone(tmp_path / "ring.s2p", list(f), sp.tolist(), 50.0))
+    res = _edge_job(ts2, rx_r_ohms="open", rx_c_pf=2, rise_ps=100, overshoot_max_pct=0.05)["results"]
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    assert not v["pass"] and v["detail"].endswith("a series resistor at the driver does not bring it within")
+    assert "series_r_ohms" not in res["metrics"]
+
+
+def test_a_pairs_series_resistor_is_each_sides(tmp_path):
+    ts = _channel(tmp_path, ports=4)
+    res = _edge_job(ts, data_rate_gbps=2, tx_r_ohms=10, rx_r_ohms="open", rise_ps=60,
+                    overshoot_max_pct=10)["results"]
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    r = res["metrics"]["series_r_ohms"]["value"]
+    assert not v["pass"] and f"{r:.0f} ohm in series at the driver (each side) brings" in v["detail"]
+
+
+def test_the_eye_takes_its_dc_level_from_the_s_matrix(tmp_path):
+    """The pulse is a step less the same step a bit later. With the first
+    frequency point taken as DC the step slopes, every bit leaves a small
+    offset behind, and the offsets of all the bits add up as ISI that is
+    not there; behind a weak driver the slope was steep enough to be
+    refused as a channel still ringing."""
+    from eda_agent.si import eye_jobs
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)          # a pure delay
+    term = {"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0, "matched": True}
+    h, _ = eye_jobs.channel_transfer(f, s, 50.0, term)
+    assert eye_jobs.dc_level(s, 50.0, term) == pytest.approx(1.0, abs=1e-3)
+    good = eye.worst_case_eye(eye.pulse_response(f, h, 1e-9, 100e-12, 32, dc=1.0), 0.8)
+    old = eye.worst_case_eye(eye.pulse_response(f, h, 1e-9, 100e-12, 32), 0.8)
+    assert good["isi_sum"] < 0.004 and old["isi_sum"] > 2 * good["isi_sum"]
+    assert good["eye_height"] == pytest.approx(0.8, abs=0.006)
+    # the job: a matched lossless line gives the full swing
+    ts = str(write_touchstone(tmp_path / "delay.s2p", list(f), s.tolist(), 50.0))
+    res = _edge_job(ts)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["worst_case_eye_height_mv"] == pytest.approx(800, abs=6) and m["isi_mv"] < 4
+    # 150 ohm into an open end climbs in steps and settles inside the window: it runs,
+    # and settles to twice the incident wave
+    run = _edge_job(ts, tx_r_ohms=150, rx_r_ohms="open", rise_ps=100)
+    assert run["state"] == "done", run
+    weak = {"rs": 150.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}
+    assert eye_jobs.dc_level(s, 50.0, weak) == pytest.approx(2.0, rel=0.005)
+    hw, _ = eye_jobs.channel_transfer(f, s, 50.0, weak)
+    with pytest.raises(ValueError, match="still ringing"):
+        eye.pulse_response(f, hw, 1e-9, 100e-12, 32)             # the first point as DC
+    eye.pulse_response(f, hw, 1e-9, 100e-12, 32, dc=2.0)
+
+
+# -- equalisation: transmitter FFE, receiver CTLE and DFE ----------------------------
+
+def _tri_pulse(cursors, spui=16, ui=1e-10, lead=2):
+    """A pulse of triangles half an interval wide each side, their tops ``cursors`` at the
+    sampling points: the first is ``lead`` intervals in."""
+    n = (len(cursors) + lead + 2) * spui
+    p = np.zeros(n)
+    x = np.arange(n)
+    for k, c in enumerate(cursors):
+        centre = (lead + k) * spui
+        p += c * np.clip(1 - np.abs(x - centre) / (spui // 2), 0, None)
+    return eye.Pulse(np.arange(n) * ui / spui, p, ui, spui)
+
+
+def test_ctle_gains_its_boost_from_dc_to_the_poles():
+    f = np.array([0.0, 1e7, 5e9, 1e10, 4e10, 1e12])
+    g = eye.ctle(f, 6.0, 5e9)
+    assert g[0] == pytest.approx(10 ** (-6 / 20)) and g[0].imag == 0
+    assert abs(g[1]) == pytest.approx(abs(g[0]), rel=1e-3)
+    # by hand at the first pole: g (1 + j / g) / ((1 + j) (1 + j / 4))
+    k = 10 ** (-6 / 20)
+    assert g[2] == pytest.approx(k * (1 + 1j / k) / ((1 + 1j) * (1 + 0.25j)))
+    assert 0.8 < abs(g[3]) < 1.0                        # near 1 between the poles
+    assert abs(g[5]) < 0.03                             # and it rolls off above the second
+    assert abs(eye.ctle(f, 12.0, 5e9)[0]) == pytest.approx(10 ** (-12 / 20))
+    assert abs(eye.ctle(np.array([8e9]), 6.0, 8e9)[0]) == pytest.approx(abs(g[2]))
+
+
+def test_ffe_adds_the_pulse_tap_by_tap_and_keeps_the_peak_swing():
+    p = _tri_pulse([1.0], spui=16)
+    out = eye.ffe(p, [3.0, -1.0])                       # scaled to 0.75, -0.25
+    c = p.center_index
+    assert out.p[c] == pytest.approx(0.75) and out.p[c + 16] == pytest.approx(-0.25)
+    assert len(out.p) == len(p.p) + 16 and out.spui == 16 and out.ui == p.ui
+    assert out.center_index == c
+    # a pre-cursor tap comes first: the main cursor is then one interval later
+    out = eye.ffe(p, [-0.1, 0.7, -0.2])
+    assert [out.p[c + 16 * k] for k in range(3)] == pytest.approx([-0.1, 0.7, -0.2])
+    assert out.center_index == c + 16
+    assert eye.ffe(p, [5.0]).p == pytest.approx(p.p)    # one tap: the pulse itself
+    for bad in ([], [0.0, 0.0]):
+        with pytest.raises(ValueError, match="tx_ffe"):
+            eye.ffe(p, bad)
+    # de-emphasis on a flat channel: full swing at a transition, 0.75 - 0.25 after it
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    m = eye.simulated_eye(eye.ffe(flat, [0.75, -0.25]), 0.8)
+    assert m["eye_height"] == pytest.approx(0.5 * 0.8)
+    # the post-cursor of a channel is cancelled by the tap that mirrors it
+    chan = _tri_pulse([1.0, 0.3])
+    eq = eye.ffe(chan, [1.0, -0.3])
+    c = eq.center_index
+    assert eq.p[c + 16] == pytest.approx(0.0, abs=1e-12)
+    assert eye.worst_case_eye(eq, 1.0)["isi_sum"] < eye.worst_case_eye(chan, 1.0)["isi_sum"]
+
+
+def test_dfe_takes_off_the_post_cursors_up_to_its_limit():
+    p = _tri_pulse([0.2, 1.0, 0.4, -0.1, 0.05], lead=1)
+    c = p.center_index
+    assert p.p[c] == pytest.approx(1.0)
+    out, taps = eye.dfe(p, 2)
+    assert taps == pytest.approx([0.4, -0.1])
+    assert out.p[c + 16] == pytest.approx(0.0, abs=1e-12)
+    assert out.p[c + 32] == pytest.approx(0.0, abs=1e-12)
+    assert out.p[c + 48] == pytest.approx(0.05)         # beyond its taps
+    assert out.p[c] == pytest.approx(1.0) and out.p[c - 16] == pytest.approx(0.2)   # nor before
+    # each tap holds for its whole interval, as the decided bit does
+    assert out.p[c + 16 - 8] == pytest.approx(-0.4) and out.p[c + 16 + 7] == pytest.approx(
+        p.p[c + 16 + 7] - 0.4)
+    assert out.p[c + 16 - 9] == pytest.approx(p.p[c + 16 - 9])
+    before, after = eye.worst_case_eye(p, 2.0), eye.worst_case_eye(out, 2.0)
+    assert before["isi_sum"] == pytest.approx(0.2 + 0.4 + 0.1 + 0.05)
+    assert after["isi_sum"] == pytest.approx(0.2 + 0.05)
+    assert after["eye_height"] == pytest.approx(2 * (1 - 0.25))
+    # a tap is held to its limit, and taps past the pulse's end are not made up
+    out, taps = eye.dfe(p, 1, limit=0.25)
+    assert taps == [0.25] and out.p[c + 16] == pytest.approx(0.15)
+    out, taps = eye.dfe(p, 20)
+    assert len(taps) < 20 and taps[:3] == pytest.approx([0.4, -0.1, 0.05])
+    assert eye.dfe(p, 0)[1] == [] and eye.dfe(p, 0)[0].p == pytest.approx(p.p)
+
+
+def _long_channel(tmp_path):
+    f = ch.uniform_band(40e9, 800)
+    s = lossy_line(f, length=0.8, z0=50.0)             # 32 inches: about 15 dB at 5 GHz
+    return str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+
+
+def test_equalisation_opens_the_eye_of_a_long_channel(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    plain, res0 = run()
+    # some pattern closes it: more ISI than main cursor
+    assert plain["worst_case_eye_height_mv"] == 0 and plain["isi_mv"] > plain["main_cursor_mv"]
+    assert "dfe_tap1_mv" not in plain and not any("equalisation" in n for n in res0["notes"])
+    ffe, res = run(tx_ffe=[-0.1, 0.7, -0.2])
+    assert ffe["worst_case_eye_height_mv"] > 80 and ffe["eye_height_mv"] > 3 * plain["eye_height_mv"]
+    assert ffe["isi_mv"] < 0.4 * plain["isi_mv"] and ffe["main_cursor_mv"] < plain["main_cursor_mv"]
+    assert any("transmitter FFE taps -0.100, +0.700, -0.200" in n for n in res["notes"])
+    ctle, res = run(ctle_db=6)
+    assert ctle["worst_case_eye_height_mv"] > 10 and ctle["eye_height_mv"] > 1.5 * plain["eye_height_mv"]
+    assert ctle["eye_width_ui"] > plain["eye_width_ui"]
+    assert any("receiver CTLE: 6 dB of boost over DC, first pole at 5 GHz" in n
+               for n in res["notes"])
+    assert run(ctle_db=6, ctle_peak_ghz=2)[0]["eye_height_mv"] != ctle["eye_height_mv"]
+    dfe, res = run(dfe_taps=4)
+    assert dfe["worst_case_eye_height_mv"] > 80
+    assert dfe["main_cursor_mv"] == plain["main_cursor_mv"]           # it adds no loss
+    assert dfe["dfe_tap1_mv"] == pytest.approx(plain["isi_mv"] - run(dfe_taps=1)[0]["isi_mv"],
+                                               abs=0.5)
+    assert any(n.startswith(f"receiver DFE taps (mV): +{dfe['dfe_tap1_mv']:.1f}, ")
+               for n in res["notes"])
+    held = run(dfe_taps=4, dfe_max=0.05)[0]
+    assert held["dfe_tap1_mv"] == pytest.approx(0.05 * plain["main_cursor_mv"], abs=0.3)
+    assert plain["eye_height_mv"] < held["eye_height_mv"] < dfe["eye_height_mv"]
+    # the channel's own figures stay: loss and the edge are not the equaliser's
+    for got in (ffe, ctle, dfe):
+        assert got["insertion_loss_db_at_nyquist"] == plain["insertion_loss_db_at_nyquist"]
+        assert got["overshoot_pct"] == plain["overshoot_pct"]
+    assert any("after equalisation" in n for n in res["notes"])
+
+
+@pytest.mark.parametrize("opt, word", [
+    ({"tx_ffe": [0, 0]}, "tx_ffe needs one tap"), ({"tx_ffe": ["a"]}, "tx_ffe is a list"),
+    ({"tx_ffe": [1] * 9}, "8 taps at most"), ({"ctle_db": -1}, "ctle_db is 0 to 30"),
+    ({"ctle_db": 31}, "ctle_db is 0 to 30"), ({"ctle_db": 3, "ctle_peak_ghz": 0}, "ctle_peak_ghz"),
+    ({"dfe_taps": 1.5}, "dfe_taps is a whole number"), ({"dfe_taps": 33}, "dfe_taps"),
+    ({"dfe_taps": 2, "dfe_max": 0}, "dfe_max"), ({"dfe_taps": 2, "dfe_max": 1.5}, "dfe_max"),
+    ({"tx_ffe": "best"}, "tx_ffe is a list of tap weights"),
+    ({"tx_ffe": "auto", "tx_ffe_pre": 4}, "tx_ffe_pre is a whole number, 0 to 3"),
+    ({"tx_ffe": "auto", "tx_ffe_post": 1.5}, "tx_ffe_post 0 to 4"),
+    ({"tx_ffe": "auto", "tx_ffe_pre": 0, "tx_ffe_post": 0}, "needs a tap beside the main one"),
+    ({"ctle_db": "most"}, "ctle_db"), ({"ctle_db": "auto", "ctle_max_db": 0}, "ctle_max_db"),
+    ({"ctle_db": "auto", "ctle_max_db": 31}, "ctle_max_db is a whole number, 1 to 30")])
+def test_equaliser_settings_are_checked(opt, word):
+    from eda_agent.si import eye_jobs
+    with pytest.raises(ValueError, match=word):
+        eye_jobs.equaliser({"data_rate_gbps": 10, **opt}, {"rate": 10e9})
+
+
+def test_equaliser_defaults_and_the_spice_engine_refuses_it(tmp_path):
+    from eda_agent.si import eye_jobs
+    eq = eye_jobs.equaliser({}, {"rate": 8e9})
+    assert eq == {"ffe": [], "ctle_db": 0.0, "ctle_peak": 4e9, "dfe_taps": 0, "dfe_max": 0.5,
+                  "auto_ffe": None, "auto_ctle": None}
+    auto = eye_jobs.equaliser({"tx_ffe": "Auto", "ctle_db": "auto"}, {"rate": 8e9})
+    assert auto == {**eq, "auto_ffe": (1, 1), "auto_ctle": 12}
+    auto = eye_jobs.equaliser({"tx_ffe": "auto", "tx_ffe_pre": 0, "tx_ffe_post": 3,
+                               "ctle_db": "auto", "ctle_max_db": 6}, {"rate": 8e9})
+    assert auto["auto_ffe"] == (0, 3) and auto["auto_ctle"] == 6
+    # the counts and the ceiling mean nothing without "auto"
+    assert eye_jobs.equaliser({"tx_ffe_post": 3, "ctle_max_db": 6}, {"rate": 8e9}) == eq
+    assert eye_jobs.equaliser({"tx_ffe": [], "dfe_taps": 3, "ctle_peak_ghz": 6},
+                              {"rate": 8e9}) == {**eq, "dfe_taps": 3, "ctle_peak": 6e9}
+    ts = _channel(tmp_path)
+    for opt in ({"tx_ffe": [0.8, -0.2]}, {"ctle_db": 3}, {"dfe_taps": 1}, {"tx_ffe": "auto"},
+                {"ctle_db": "auto"}):
+        with pytest.raises(ValueError, match="eda-agent engine only"):
+            eye_jobs.run_spice({"data_rate_gbps": 5, **opt}, ts, tmp_path / "s")
+
+
+def _margin(p, taps, dfe_taps=0):
+    q = eye.ffe(p, taps)
+    if dfe_taps:
+        q = eye.dfe(q, dfe_taps, 1.0)[0]
+    return eye.worst_case_eye(q, 2.0)["margin"]
+
+
+def test_best_ffe_is_the_optimum_of_the_worst_case_eye():
+    clean = _tri_pulse([1.0])
+    assert eye.best_ffe(clean, 0, 0) == [1.0]
+    assert eye.best_ffe(clean, 1, 2) == [0.0, 1.0, 0.0, 0.0]
+    # one post-cursor: a tap that cancels it costs the main cursor as much as it gains,
+    # and between equal eyes the least equalisation is taken
+    assert eye.best_ffe(_tri_pulse([1.0, 0.3]), 0, 1) == [1.0, 0.0]
+    p = _tri_pulse([0.2, 1.0, 0.4, 0.1], lead=3)
+    taps = eye.best_ffe(p, 1, 1)
+    assert sum(abs(x) for x in taps) == pytest.approx(1.0, abs=2e-4)
+    assert taps[1] > 0.6 and taps[0] < -0.1 and taps[2] < -0.1
+    best = _margin(p, taps)
+    assert best > _margin(p, [1.0]) + 0.3 and best == pytest.approx(0.931, abs=0.002)
+    # no other taps do better: a grid of them, and steps around the answer
+    rng = np.random.default_rng(3)
+    for a in np.arange(-0.4, 0.41, 0.05):
+        for b in np.arange(-0.4, 0.41, 0.05):
+            assert _margin(p, [a, 1 - abs(a) - abs(b), b]) <= best + 1e-3, (a, b)
+    for _ in range(40):
+        near = np.array(taps) + rng.normal(0, 0.02, 3)
+        assert _margin(p, list(near)) <= best + 1e-3
+    # more taps never do worse
+    assert _margin(p, eye.best_ffe(p, 1, 2)) >= best - 1e-4
+    assert _margin(p, eye.best_ffe(p, 2, 2)) >= _margin(p, eye.best_ffe(p, 1, 2)) - 1e-4
+    # what a DFE takes off is left to it: the post-cursor tap is not spent on it
+    with_dfe = eye.best_ffe(p, 1, 1, dfe_taps=2)
+    assert with_dfe[2] == 0.0
+    assert _margin(p, with_dfe, 2) >= _margin(p, taps, 2) - 1e-4
+    for a in np.arange(-0.4, 0.41, 0.05):
+        assert _margin(p, [a, 1 - abs(a), 0.0], 2) <= _margin(p, with_dfe, 2) + 1e-3
+
+
+@pytest.mark.parametrize("rate", [5e9, 2e9])
+def test_best_ffe_works_where_the_eye_is_tallest(rate):
+    # reflections put the tallest eye a few samples off the pulse's middle; taps worked
+    # out at the middle would leave a smaller eye than none
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / rate, 0.3 / rate, 32)
+    wc = eye.worst_case_eye(p, 1.0)
+    c = wc["sample_index"]
+    assert c != p.center_index
+    # it is the sample the worst-case eye is read at: main cursor less all the others
+    others = np.sum(np.abs(p.p[c % 32::32])) - abs(p.p[c])
+    assert wc["margin"] == pytest.approx(p.p[c] - others, rel=1e-12)
+    taps = eye.best_ffe(p, 1, 1)
+    assert taps[1] < 0.995 and _margin(p, taps) > _margin(p, [1.0]) + 0.002
+
+
+def test_the_eye_job_chooses_its_equaliser(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    hand = run(tx_ffe=[-0.1, 0.7, -0.2])[0]
+    assert "ffe_main_tap" not in hand and "ctle_db" not in hand
+    auto, res = run(tx_ffe="auto")
+    assert auto["worst_case_eye_height_mv"] > hand["worst_case_eye_height_mv"] + 20
+    assert 0.5 < auto["ffe_main_tap"] < 0.7
+    note = [n for n in res["notes"] if n.startswith("transmitter FFE taps")][0]
+    assert note.endswith("(magnitudes add up to 1) (chosen for the largest worst-case eye)")
+    taps = [float(x) for x in note.split("taps ")[1].split(" (")[0].split(", ")]
+    assert len(taps) == 3 and max(taps) == pytest.approx(auto["ffe_main_tap"], abs=1e-3)
+    # the taps it names, given back by hand, are the same eye; taps beside them are worse
+    again = run(tx_ffe=taps)[0]
+    assert again["worst_case_eye_height_mv"] == pytest.approx(auto["worst_case_eye_height_mv"],
+                                                              abs=0.5)
+    for d in (-0.04, 0.04):
+        worse = run(tx_ffe=[taps[0] + d, taps[1], taps[2] - d])[0]
+        assert worse["worst_case_eye_height_mv"] < auto["worst_case_eye_height_mv"]
+    # more taps are counted when asked for
+    more, res = run(tx_ffe="auto", tx_ffe_pre=2, tx_ffe_post=3)
+    assert more["worst_case_eye_height_mv"] >= auto["worst_case_eye_height_mv"] - 0.5
+    assert [n for n in res["notes"] if n.startswith("transmitter FFE")][0].count(",") == 5
+    # the CTLE: the best whole dB, which each one tried by hand confirms
+    ctle, res = run(ctle_db="auto")
+    each = {b: run(ctle_db=b)[0]["worst_case_eye_height_mv"] for b in range(0, 13)}
+    assert ctle["ctle_db"] == max(each, key=each.get) and ctle["ctle_db"] > 6
+    assert ctle["worst_case_eye_height_mv"] == each[int(ctle["ctle_db"])]
+    assert any(f"receiver CTLE: {ctle['ctle_db']:g} dB of boost" in n and n.endswith(
+        "(chosen for the largest worst-case eye)") for n in res["notes"])
+    low = run(ctle_db="auto", ctle_max_db=4)[0]
+    assert low["ctle_db"] == 4 and low["worst_case_eye_height_mv"] == each[4]
+    # with a DFE the taps are worked out for what it leaves: the post-cursor tap is not
+    # spent, and the eye beats the taps chosen without it
+    with_dfe, res = run(tx_ffe="auto", dfe_taps=4)
+    note = [n for n in res["notes"] if n.startswith("transmitter FFE taps")][0]
+    assert note.split("taps ")[1].split(" (")[0].endswith(", +0.000")
+    assert with_dfe["worst_case_eye_height_mv"] > \
+        run(tx_ffe=taps, dfe_taps=4)[0]["worst_case_eye_height_mv"] + 5
+    # both, with a DFE: no worse than either alone
+    both = run(tx_ffe="auto", ctle_db="auto", dfe_taps=4)[0]
+    assert both["worst_case_eye_height_mv"] >= max(
+        run(tx_ffe="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"],
+        run(ctle_db="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"]) - 0.01
+
+
+@pytest.mark.parametrize("rate", [10, 1])
+def test_chosen_taps_never_leave_a_smaller_eye_than_none(tmp_path, rate):
+    # an 85 ohm line between 50 ohm ends: the ISI is reflections, which taps one bit
+    # apart seldom meet, and the eye's best sampling point is not the pulse's middle
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+
+    def worst(**opt):
+        res = _edge_job(ts, data_rate_gbps=rate, **opt)["results"]
+        return res["metrics"]["worst_case_eye_height_mv"]["value"]
+    plain = worst()
+    for more in ({}, {"tx_ffe_pre": 2, "tx_ffe_post": 3}, {"ctle_db": "auto"}):
+        assert worst(tx_ffe="auto", **more) >= plain, more
+    assert worst(tx_ffe="auto", dfe_taps=4) >= worst(dfe_taps=4)
+    if rate == 1:
+        assert worst(tx_ffe="auto") > plain + 5         # here a post-cursor tap does help
+
+
+def test_a_clean_channel_is_given_no_equaliser(tmp_path):
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.02, z0=50.0)
+    ts = str(write_touchstone(tmp_path / "short.s2p", list(f), s.tolist(), 50.0))
+    plain = _edge_job(ts)["results"]
+    res = _edge_job(ts, tx_ffe="auto", ctle_db="auto")["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["ctle_db"] == 0 and m["ffe_main_tap"] > 0.97
+    assert m["worst_case_eye_height_mv"] >= plain["metrics"]["worst_case_eye_height_mv"]["value"] - 0.01
+    assert any(n == "receiver CTLE: none; no boost up to 12 dB leaves a larger worst-case eye"
+               for n in res["notes"])
+
+
+# --- the eye at a bit error rate -------------------------------------------------------
+
+def test_jitter_weights_hold_the_whole_probability_where_it_falls():
+    dt = 1e-12
+    assert eye.jitter_weights(dt, 0, 0, 8).tolist() == [1.0]
+    w = eye.jitter_weights(dt, 1.5e-12, 0, 40)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-15) and w == pytest.approx(w[::-1])
+    assert n >= 13                                       # past 8.5 sigma
+    assert np.sum(w * x ** 2) == pytest.approx(1.5e-12 ** 2 + dt ** 2 / 12, rel=1e-3)
+    # the tail beyond 7 sigma is still there
+    from scipy.special import ndtr
+    assert np.sum(w[x > 10e-12]) == pytest.approx(ndtr(-10.5 / 1.5), rel=1e-6)
+    # deterministic jitter alone: two points
+    w = eye.jitter_weights(dt, 0, 6e-12, 40)
+    assert w[len(w) // 2 - 3] == w[len(w) // 2 + 3] == 0.5 and np.sum(w) == 1.0
+    # both: the Gaussian around each of the two
+    w = eye.jitter_weights(dt, 1e-12, 6e-12, 40)
+    n = len(w) // 2
+    assert w[n + 3] == pytest.approx(0.5 * (ndtr(0.5) - ndtr(-0.5)), rel=1e-6)
+    assert w[n] == pytest.approx(ndtr(-2.5) - ndtr(-3.5), rel=1e-6)
+    # what the reach allowed cannot hold lands on its ends
+    w = eye.jitter_weights(dt, 3e-12, 0, 2)
+    assert len(w) == 5 and np.sum(w) == pytest.approx(1.0) and w[0] == pytest.approx(ndtr(-0.5))
+
+
+def test_statistical_eye_of_noise_alone_is_the_gaussian_quantile():
+    from scipy.special import ndtr, ndtri
+    p = _tri_pulse([1.0])
+    for ber in (1e-3, 1e-6, 1e-12, 1e-15, 1e-18):
+        r = eye.statistical_eye(p, 0.8, ber, noise_rms=0.02)
+        assert r["eye_height"] == pytest.approx(2 * (0.4 + ndtri(ber) * 0.02), rel=2e-6), ber
+    # the triangle is over the level for the part of the bit the quantile leaves
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.02)
+    open_part = 1 + ndtri(1e-12) * 0.02 / 0.4
+    assert r["eye_width_ui"] == pytest.approx(open_part, abs=1.5 / 16)
+    assert r["phase"] == 8 and r["eye_width"] == pytest.approx(r["eye_width_ui"] * 1e-10)
+    # and the error rate at the threshold is the tail below it
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1)
+    assert r["bit_error_rate"] == pytest.approx(ndtr(-4.0), rel=1e-4, abs=0)
+    assert r["eye_height"] == 0.0 and r["eye_width_ui"] == 0.0
+    assert eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.05)["bit_error_rate"] == \
+        pytest.approx(ndtr(-8.0), rel=1e-3, abs=0)          # 6e-16
+    for bad in (0.2, 1e-19, 0.0):
+        with pytest.raises(ValueError, match="ber is"):
+            eye.statistical_eye(p, 0.8, bad)
+
+
+def test_statistical_eye_of_isi_alone_steps_through_the_patterns():
+    # four cursors beside the main one: 16 patterns, each 1 in 16
+    p = _tri_pulse([0.05, 1.0, 0.2, -0.1, 0.03], lead=2)
+    wc = eye.worst_case_eye(p, 0.8)
+    assert wc["eye_height"] == pytest.approx(0.8 * (1 - 0.38))
+    # rarer than any pattern: the worst case, less the grid's own width
+    for ber in (1e-3, 1e-6, 1e-12, 1e-18):
+        r = eye.statistical_eye(p, 0.8, ber)
+        assert wc["eye_height"] - 0.004 < r["eye_height"] <= wc["eye_height"] + 1e-4, ber
+    # between 1 and 2 patterns in 16: the second worst, which has the smallest cursor turned
+    r = eye.statistical_eye(p, 0.8, 0.1)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 0.38 + 0.06), abs=0.002)
+    # the threshold is crossed by no pattern
+    assert r["bit_error_rate"] == eye.BER_FLOOR / 10
+    # noise rounds the steps off: lower at 1e-12, and more so further down
+    a = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.01)["eye_height"]
+    b = eye.statistical_eye(p, 0.8, 1e-15, noise_rms=0.01)["eye_height"]
+    assert b < a < wc["eye_height"] - 2 * 6 * 0.01
+    # yet no lower than the worst pattern with the noise's own quantile off it
+    from scipy.special import ndtri
+    assert a > wc["eye_height"] + 2 * ndtri(1e-12) * 0.01 - 1e-3
+    # sixteen cursors of 0.07: all against the bit close the eye, once in 65536 bits; 14 or
+    # more against it come 137 times in 65536, 15 or more 17 times, so 1e-3 is 14 against
+    many = _tri_pulse([1.0] + [0.07, -0.07] * 8)
+    assert eye.worst_case_eye(many, 0.8)["eye_height"] == 0.0
+    r = eye.statistical_eye(many, 0.8, 1e-3)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 12 * 0.07), abs=0.004)
+    assert r["bit_error_rate"] == pytest.approx(1 / 65536, rel=1e-6, abs=0)
+    assert eye.statistical_eye(many, 0.8, 1e-6)["eye_height"] == 0.0
+
+
+def test_small_cursors_go_through_the_series_and_come_out_the_same(monkeypatch):
+    from scipy.special import ndtri
+    # ln cos by its series, against cos itself, over the range it is used in
+    x = np.array([0.05, 0.4, np.pi / 4, 0.6 - 0.3j])
+    assert np.exp(eye._small_cursors(np.array([1.0]), x)) == pytest.approx(np.cos(x), rel=1e-10)
+    both = eye._small_cursors(np.array([0.3, -0.5, 1.0]), x)
+    assert np.exp(both) == pytest.approx(np.cos(0.3 * x) * np.cos(0.5 * x) * np.cos(x), rel=1e-10)
+    assert eye._small_cursors(np.array([]), x) == pytest.approx(0)
+    # one level's density: cursors of 0.24 and of 0.6 of a step lie either side of where
+    # the series ends; it is the same with every cursor multiplied out
+    span = 0.5
+    dv = 2 * span / eye.STAT_BINS
+    main = 9830 * dv                                     # on a bin, about 0.3
+    cur = np.array([0.24 * dv] * 60 + [0.6 * dv] * 40 + [0.05, -0.02, 0.0])
+    pdf = eye._level_density(main, cur, 3 * dv, span)
+    v = (np.arange(eye.STAT_BINS) - eye.STAT_BINS // 2) * dv
+    # the lower half is half the probability (the upper part is not kept: no contour is
+    # read from it), and its spread is that of the sum
+    k = eye.STAT_BINS // 2 + 9830
+    assert np.sum(pdf[:k]) + pdf[k] / 2 == pytest.approx(0.5, abs=1e-9)
+    assert 2 * np.sum(pdf[:k] * (v[:k] - main) ** 2) == pytest.approx(
+        np.sum(cur ** 2) + (3 * dv) ** 2, rel=1e-6)
+    with monkeypatch.context() as mp:
+        mp.setattr(eye, "STAT_SERIES_BINS", 0.0)
+        assert eye._level_density(main, cur, 3 * dv, span)[:k + 500] == pytest.approx(
+            pdf[:k + 500], abs=1e-12)
+    # 2000 cursors of 15 millionths: each a fifth of a voltage step, together a Gaussian
+    # of 0.4 x 15e-6 x sqrt(2000) = 0.27 mV beside the grid's own 2.8 steps
+    base = _tri_pulse([1.0, 0.2])
+    tail = _tri_pulse([1.0, 0.2] + [1.5e-5, -1.5e-5] * 1000)
+    a = eye.statistical_eye(base, 0.8, 1e-12)["eye_height"]
+    b = eye.statistical_eye(tail, 0.8, 1e-12)["eye_height"]
+    dv = 2 * 0.4 * 1.23 * 1.05 / eye.STAT_BINS
+    own, added = 2.8 * dv, 0.4 * 1.5e-5 * math.sqrt(2000)
+    assert 0.4 * 1.5e-5 < eye.STAT_SERIES_BINS * dv
+    assert a - b == pytest.approx(-2 * ndtri(1e-12 * 4) * (math.hypot(own, added) - own), rel=0.05)
+    # the same with every cursor multiplied out one by one
+    monkeypatch.setattr(eye, "STAT_SERIES_BINS", 0.0)
+    assert eye.statistical_eye(tail, 0.8, 1e-12)["eye_height"] == pytest.approx(b, abs=1e-6)
+
+
+def test_jitter_takes_the_eye_where_the_sampling_instant_can_be():
+    p = _tri_pulse([1.0])                                # 16 steps a bit: 1/8 off per step
+    step = 1e-10 / 16
+    flat = eye.statistical_eye(p, 0.8, 1e-12)
+    assert flat["eye_height"] == pytest.approx(0.8, abs=0.004)
+    # two points 3 steps either side: the level there, whichever it is
+    r = eye.statistical_eye(p, 0.8, 1e-12, dj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 3 / 8), abs=0.004)
+    assert r["eye_width_ui"] == pytest.approx(flat["eye_width_ui"] - 6 / 16, abs=1.01 / 16)
+    # random jitter of half a step: 4 steps off holds 2.6e-12 of it (past 7 sigma, both
+    # sides) and 5 steps next to nothing, so 1e-12 is 4 steps off; 2 steps off holds
+    # 2.7e-3 and 3 steps 5.7e-7, so 1e-3 is 2 steps off
+    deep = eye.statistical_eye(p, 0.8, 1e-12, rj_rms=0.5 * step)
+    shallow = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step)
+    assert deep["eye_height"] == pytest.approx(0.8 * (1 - 4 / 8), abs=0.004)
+    assert shallow["eye_height"] == pytest.approx(0.8 * (1 - 2 / 8), abs=0.004)
+    assert deep["eye_width_ui"] < shallow["eye_width_ui"] < flat["eye_width_ui"]
+    both = eye.statistical_eye(p, 0.8, 1e-12, rj_rms=0.5 * step, dj_pp=6 * step)
+    assert both["eye_height"] < min(deep["eye_height"], r["eye_height"])
+
+
+def test_the_eye_job_gives_the_statistical_eye_when_asked(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=5, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    plain, res = run()
+    assert "eye_height_at_ber_mv" not in plain and "bit_error_rate" not in plain
+    assert not any(v["check"] == "eye at the bit error rate" for v in res["verdicts"])
+    m, res = run(ber=1e-12)
+    # between the worst case and the pattern's eye
+    assert plain["worst_case_eye_height_mv"] - 3 < m["eye_height_at_ber_mv"] < plain["eye_height_mv"]
+    assert m["eye_width_at_ber_ps"] == pytest.approx(m["eye_width_at_ber_ui"] * 200, abs=0.05)
+    assert m["bit_error_rate"] == 1e-19
+    v = {x["check"]: x for x in res["verdicts"]}["eye at the bit error rate"]
+    assert v["pass"] and v["detail"] == (f"{m['eye_height_at_ber_mv']:.1f} mV by "
+                                         f"{m['eye_width_at_ber_ui']:.3f} UI at 1e-12, must be open")
+    assert any(n.startswith("statistical eye: ISI as independent random bits; jitter")
+               for n in res["notes"])
+    # noise and jitter each cost, and are named
+    n, res = run(noise_rms_mv=10)
+    assert " UI at 1e-12, " in {x["check"]: x for x in res["verdicts"]}[
+        "eye at the bit error rate"]["detail"]              # the rate where none is given
+    assert n["eye_height_at_ber_mv"] == run(noise_rms_mv=10, ber=1e-12)[0]["eye_height_at_ber_mv"]
+    assert n["eye_height_at_ber_mv"] < run(noise_rms_mv=10, ber=1e-9)[0]["eye_height_at_ber_mv"]
+    # at most its own 7 sigma off each rail, and less than that beside the ISI's spread
+    assert m["eye_height_at_ber_mv"] - 2 * 7.04 * 10 < n["eye_height_at_ber_mv"] \
+        < m["eye_height_at_ber_mv"] - 2 * 3 * 10
+    j, res = run(rj_rms_ps=3, dj_pp_ps=20, noise_rms_mv=10)
+    assert j["eye_height_at_ber_mv"] < n["eye_height_at_ber_mv"]
+    assert j["eye_width_at_ber_ui"] < n["eye_width_at_ber_ui"] - 0.1
+    assert any("10 mV RMS of Gaussian noise, 3 ps RMS of random jitter, 20 ps peak to peak of "
+               "deterministic jitter; jitter is taken in steps of 6.25 ps" in x
+               for x in res["notes"])
+    # a looser error rate opens it
+    assert run(ber=1e-6, noise_rms_mv=10)[0]["eye_height_at_ber_mv"] > n["eye_height_at_ber_mv"]
+    # peak noise comes off both rails
+    pk = run(noise_rms_mv=10, noise_mv=20)[0]
+    assert pk["eye_height_at_ber_mv"] == pytest.approx(n["eye_height_at_ber_mv"] - 40, abs=0.01)
+    assert pk["eye_width_at_ber_ui"] < n["eye_width_at_ber_ui"]
+    # limits
+    lim = n["eye_height_at_ber_mv"]
+    for opt, ok, tail in (({"eye_at_ber_min_mv": lim - 1}, True, f", {lim - 1:g} mV needed"),
+                          ({"eye_at_ber_min_mv": lim + 1}, False, f", {lim + 1:g} mV needed"),
+                          ({"eye_at_ber_min_ui": 0.99}, False, ", 0.99 UI needed"),
+                          ({"eye_at_ber_min_ui": 0.1, "eye_at_ber_min_mv": 5}, True,
+                           ", 5 mV and 0.1 UI needed")):
+        v = {x["check"]: x for x in run(noise_rms_mv=10, **opt)[1]["verdicts"]}
+        v = v["eye at the bit error rate"]
+        assert v["pass"] is ok and v["detail"].endswith(tail), opt
+    # enough noise closes it, and the error rate says how badly
+    shut, res = run(noise_rms_mv=150)
+    assert shut["eye_height_at_ber_mv"] == 0 and shut["eye_width_at_ber_ui"] == 0
+    assert 1e-6 < shut["bit_error_rate"] < 0.1
+    assert not {x["check"]: x for x in res["verdicts"]}["eye at the bit error rate"]["pass"]
+
+
+@pytest.mark.parametrize("opt, text", [
+    ({"ber": 0.5}, "ber is 1e-18 to 0.1"), ({"ber": 1e-20}, "ber is 1e-18 to 0.1"),
+    ({"noise_rms_mv": -1}, "noise_rms_mv is 0 or more"), ({"rj_rms_ps": -1}, "rj_rms_ps is 0"),
+    ({"dj_pp_ps": -2}, "dj_pp_ps is 0 or more"), ({"eye_at_ber_min_ui": 1.5}, "eye_at_ber_min_ui"),
+    ({"eye_at_ber_min_mv": -1}, "eye_at_ber_min_mv"),
+    ({"rj_rms_ps": 60}, "the jitter reaches 510.0 ps"),
+    ({"dj_pp_ps": 1200}, "more than half the 1000 ps bit"),
+    ({"sj_pp_ps": -2}, "sj_pp_ps is 0 or more"),
+    ({"sj_pp_ps": 600, "dj_pp_ps": 600}, "the jitter reaches 600.0 ps"),
+])
+def test_statistical_eye_settings_are_checked(tmp_path, opt, text):
+    f = ch.uniform_band(20e9, 400)
+    ts = str(write_touchstone(tmp_path / "l.s2p", list(f), lossy_line(f, 0.05, 50.0).tolist(), 50.0))
+    run = _edge_job(ts, **opt)
+    assert run["state"] == "failed" and text in run["error"], run
+
+
+# --- PAM4 ------------------------------------------------------------------------------
+
+def test_pam4_symbols_are_gray_coded_pairs_of_bits():
+    assert eye.symbols([0, 1, 1, 0], 2).tolist() == [0, 1, 1, 0]
+    #                     00    01    11    10   and an odd bit left over
+    assert eye.symbols([0, 0, 0, 1, 1, 1, 1, 0, 1], 4).tolist() == [0, 1, 2, 3]
+    with pytest.raises(ValueError, match="levels is 2"):
+        eye.symbols([0, 1], 3)
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    _, v = eye.waveform(flat, [0, 0, 0, 1, 1, 1, 1, 0], 0.9, 4)
+    assert v[8::16].tolist() == pytest.approx([-0.45, -0.15, 0.15, 0.45])
+    # neighbours differ in one bit: a level taken for the next costs one bit, not two
+    for a, b in ((0, 1), (1, 2), (2, 3)):
+        ka = [k for k, i in eye.PAM4_GRAY.items() if i == a][0]
+        kb = [k for k, i in eye.PAM4_GRAY.items() if i == b][0]
+        assert sum(x != y for x, y in zip(ka, kb)) == 1
+        assert eye.symbols(list(ka) + list(kb), 4).tolist() == [a, b]
+
+
+def test_pam4_eyes_of_a_flat_channel_are_a_third_of_the_swing_each():
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    m = eye.simulated_eye(flat, 0.9, levels=4)
+    assert set(m["bits"].tolist()) == {0, 1, 2, 3} and len(m["bits"]) >= 127
+    assert m["eye_heights"] == pytest.approx([0.3, 0.3, 0.3]) and m["eye_height"] == pytest.approx(0.3)
+    assert m["level_one"] == pytest.approx(0.45) and m["level_zero"] == pytest.approx(-0.45)
+    assert eye.worst_case_eye(flat, 0.9, 4)["eye_height"] == pytest.approx(0.3)
+    nrz = eye.simulated_eye(flat, 0.9)
+    assert nrz["eye_height"] == pytest.approx(0.9) and nrz["eye_heights"] == pytest.approx([0.9])
+    # a post-cursor of 0.1: any symbol before can be at an outer level
+    p = _tri_pulse([1.0, 0.1])
+    wc = eye.worst_case_eye(p, 0.9, 4)
+    assert wc["eye_height"] == pytest.approx(0.9 * (1 / 3 - 0.1)) == wc["margin"]
+    m = eye.simulated_eye(p, 0.9, levels=4)
+    assert m["eye_height"] == pytest.approx(wc["eye_height"])          # PRBS7 holds them all
+    # the smallest of the three is the eye; here ISI above a third of the cursor shuts all
+    shut = eye.worst_case_eye(_tri_pulse([1.0, 0.35]), 0.9, 4)
+    assert shut["eye_height"] == 0.0
+    assert eye.worst_case_eye(_tri_pulse([1.0, 0.35]), 0.9)["eye_height"] == pytest.approx(0.585)
+    with pytest.raises(ValueError, match="every level"):
+        eye.eye_metrics(np.zeros((4, 8)), np.array([0, 1, 2, 2]), 1e-10, levels=4)
+
+
+def test_pam4_statistical_eye_counts_four_levels_a_cursor():
+    from scipy.special import ndtr, ndtri
+    x = np.array([0.05, 0.4, np.pi / 4, 0.6 - 0.3j])
+    assert np.exp(eye._small_cursors(np.array([1.0]), x, 4)) == pytest.approx(
+        (np.cos(x) + np.cos(x / 3)) / 2, rel=1e-10)
+    assert np.exp(eye._small_cursors(np.array([0.5, -1.0]), x, 4)) == pytest.approx(
+        (np.cos(x) + np.cos(x / 3)) * (np.cos(x / 2) + np.cos(x / 6)) / 4, rel=1e-10)
+    # noise alone: half the spacing of two levels, a third of the cursor, less the quantile
+    p = _tri_pulse([1.0])
+    for ber in (1e-3, 1e-12):
+        r = eye.statistical_eye(p, 0.9, ber, noise_rms=0.01, levels=4)
+        assert r["eye_height"] == pytest.approx(2 * (0.15 + ndtri(ber) * 0.01), rel=1e-5)
+    # six of the eight sides a symbol has can be crossed, and a crossing costs one bit of two
+    r = eye.statistical_eye(p, 0.9, 1e-12, noise_rms=0.05, levels=4)
+    assert r["bit_error_rate"] == pytest.approx(0.75 * ndtr(-3.0), rel=1e-4, abs=0)
+    assert eye.statistical_eye(p, 0.9, 1e-12, noise_rms=0.05)["bit_error_rate"] == pytest.approx(
+        ndtr(-9.0), rel=1e-3, abs=0)
+    # two cursors, 16 pairs of symbols: both at the outer level against the bit come once
+    # in 16; twice in 16 the smaller is at a third, which is the level at 0.1
+    q = _tri_pulse([1.0, 0.2, 0.06])
+    assert eye.statistical_eye(q, 0.9, 0.05, levels=4)["eye_height"] == pytest.approx(
+        0.9 * (1 / 3 - 0.26), abs=0.003)
+    assert eye.statistical_eye(q, 0.9, 0.1, levels=4)["eye_height"] == pytest.approx(
+        0.9 * (1 / 3 - 0.22), abs=0.003)
+    assert eye.statistical_eye(q, 0.9, 1e-12, levels=4)["eye_height"] == pytest.approx(
+        eye.worst_case_eye(q, 0.9, 4)["eye_height"], abs=0.003)
+
+
+def test_pam4_taps_are_chosen_for_a_third_of_the_cursor():
+    # one post-cursor of 0.3: for NRZ a tap gains nothing; between PAM4 levels, a third of
+    # the cursor apart, it does, and the tap that cancels it is the best
+    p = _tri_pulse([1.0, 0.3])
+    assert eye.best_ffe(p, 0, 1) == [1.0, 0.0]
+    taps = eye.best_ffe(p, 0, 1, levels=4)
+    assert taps == pytest.approx([1 / 1.3, -0.3 / 1.3], abs=2e-4)
+
+    def margin(t):
+        return eye.worst_case_eye(eye.ffe(p, t), 2.0, 4)["margin"]
+    assert margin(taps) == pytest.approx(2 * (1 / 3.9 - 0.09 / 1.3), abs=1e-3)
+    assert margin(taps) > margin([1.0]) + 0.3
+    for c in np.arange(0.0, 0.5, 0.02):
+        assert margin([1 - c, -c]) <= margin(taps) + 1e-3
+
+
+def test_noise_cuts_the_spectrum_short_and_leaves_the_density_as_it_was(monkeypatch):
+    span = 0.5
+    dv = 2 * span / eye.STAT_BINS
+    main = 9830 * dv
+    cur = np.array([0.05, -0.02, 0.004, 0.3 * dv, 40 * dv, 0.0])
+    k = eye.STAT_BINS // 2 + 9830
+    for levels in (2, 4):
+        pdf = eye._level_density(main, cur, 200 * dv, span, levels)
+        assert np.sum(pdf[:k]) + pdf[k] / 2 == pytest.approx(0.5, abs=1e-9)
+        with monkeypatch.context() as mp:
+            mp.setattr(eye, "STAT_CUT", 1e9)                    # every frequency
+            mp.setattr(eye, "STAT_SERIES_BINS", 0.0)            # and every cursor on its own
+            whole = eye._level_density(main, cur, 200 * dv, span, levels)
+        assert pdf[:k + 500] == pytest.approx(whole[:k + 500], rel=1e-6, abs=1e-12)
+
+
+def _pam_job(ts, **opt):
+    res = _edge_job(ts, **opt)["results"]
+    return {k: v["value"] for k, v in res["metrics"].items()}, res
+
+
+def test_the_eye_job_runs_pam4(tmp_path):
+    f = ch.uniform_band(40e9, 800)
+    s = lossy_line(f, length=0.3, z0=50.0)
+    ts = str(write_touchstone(tmp_path / "pam.s2p", list(f), s.tolist(), 50.0))
+    nrz, res0 = _pam_job(ts, data_rate_gbps=10)
+    assert not any(k.startswith("eye_height_lower") for k in nrz)
+    assert not any("PAM4" in n for n in res0["notes"])
+    assert _pam_job(ts, data_rate_gbps=10, modulation="NRZ")[0] == nrz
+    # twice the data rate in PAM4 is the same symbol: the same pulse, cursors and loss
+    pam, res = _pam_job(ts, data_rate_gbps=20, modulation="pam4")
+    for k in ("main_cursor_mv", "isi_mv", "insertion_loss_db_at_nyquist"):
+        assert pam[k] == nrz[k], k
+    # but its eyes are between levels a third of the cursor apart
+    assert pam["worst_case_eye_height_mv"] == pytest.approx(
+        max(2 * (pam["main_cursor_mv"] / 3 - pam["isi_mv"]), 0.0), abs=0.01)
+    assert nrz["worst_case_eye_height_mv"] == pytest.approx(
+        2 * (nrz["main_cursor_mv"] - nrz["isi_mv"]), abs=0.01)
+    three = [pam[f"eye_height_{n}_mv"] for n in ("lower", "middle", "upper")]
+    assert pam["eye_height_mv"] == min(three) and 0 < pam["eye_height_mv"] < nrz["eye_height_mv"] / 3
+    assert max(three) - min(three) < 0.2 * max(three)            # alike, on a linear channel
+    note = [n for n in res["notes"] if n.startswith("PAM4")]
+    assert len(note) == 1 and note[0].startswith("PAM4: 20 Gb/s is 10 GBd, a symbol of 100 ps;")
+    # the same data rate: half the symbol rate, so less loss, yet a smaller eye here
+    same, _ = _pam_job(ts, data_rate_gbps=10, modulation="pam4")
+    assert same["insertion_loss_db_at_nyquist"] < nrz["insertion_loss_db_at_nyquist"] - 2
+    assert same["eye_width_ps"] > nrz["eye_width_ps"] and same["eye_height_mv"] < nrz["eye_height_mv"]
+    # the eye at a bit error rate and the chosen equaliser work on it
+    stat, res = _pam_job(ts, data_rate_gbps=10, modulation="pam4", ber=1e-12, noise_rms_mv=2)
+    assert same["worst_case_eye_height_mv"] - 2 * 7.04 * 2 - 1 < stat["eye_height_at_ber_mv"] \
+        < same["eye_height_mv"]
+    assert any("ISI as independent random symbols" in n for n in res["notes"])
+    eq, res = _pam_job(ts, data_rate_gbps=20, modulation="pam4", tx_ffe="auto", dfe_taps=2)
+    assert pam["worst_case_eye_height_mv"] == 0 and eq["worst_case_eye_height_mv"] > 80
+    # the CTLE's default pole follows the symbol rate
+    assert any("first pole at 5 GHz" in n for n in
+               _pam_job(ts, data_rate_gbps=20, modulation="pam4", ctle_db=3)[1]["notes"])
+    bad = _edge_job(ts, data_rate_gbps=10, modulation="pam8")
+    assert bad["state"] == "failed" and "modulation is nrz or pam4" in bad["error"]
+    from eda_agent.si import eye_jobs
+    with pytest.raises(ValueError, match="PAM4 is modelled by the eda-agent engine only"):
+        eye_jobs.run_spice({"data_rate_gbps": 5, "modulation": "pam4"}, ts, tmp_path / "s")
+
+
+def test_pam4_is_given_taps_where_nrz_on_the_same_pulse_needs_none(tmp_path):
+    # an 85 ohm line between 50 ohm ends, 100 ps a symbol: for NRZ no taps beat none; a
+    # third of the cursor apart, the same reflections are worth a small tap
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+    nrz, plain = _pam_job(ts, data_rate_gbps=10, tx_ffe="auto")[0], _pam_job(ts, data_rate_gbps=10)[0]
+    assert nrz["ffe_main_tap"] == 1 and nrz["worst_case_eye_height_mv"] == plain["worst_case_eye_height_mv"]
+    pam = _pam_job(ts, data_rate_gbps=20, modulation="pam4", tx_ffe="auto")[0]
+    none = _pam_job(ts, data_rate_gbps=20, modulation="pam4")[0]
+    assert pam["ffe_main_tap"] < 0.999
+    assert pam["worst_case_eye_height_mv"] > none["worst_case_eye_height_mv"] + 1
+
+
+def test_the_waveform_is_the_symbols_convolved_with_the_pulse():
+    rng = np.random.default_rng(5)
+    for n, spui in ((333, 16), (50, 7), (700, 32)):          # shorter and longer than the bits
+        p = eye.Pulse(np.arange(n) * 1e-10 / spui, rng.normal(size=n), 1e-10, spui)
+        bits = rng.integers(0, 2, 40)
+        for levels in (2, 4):
+            t, v = eye.waveform(p, bits, 0.8, levels)
+            sym = (2 * eye.symbols(bits, levels) / (levels - 1) - 1) * 0.4
+            up = np.zeros(len(sym) * spui)
+            up[::spui] = sym
+            assert v == pytest.approx(np.convolve(up, p.p)[: len(up)], abs=1e-12)
+            assert len(t) == len(v) == len(sym) * spui and t[1] - t[0] == pytest.approx(1e-10 / spui)
+
+
+@pytest.mark.parametrize("levels", [2, 4])
+def test_the_worst_case_is_made_of_the_cursors_it_reports(levels):
+    """The main cursor and the ISI are those of the phase the eye is read
+    at, not of the pulse's peak: the height is 2 (main / (L - 1) - ISI)."""
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / 8e9, 0.3 / 8e9, 32)
+    wc = eye.worst_case_eye(p, 0.8, levels)
+    c = wc["sample_index"]
+    assert c != p.peak_index
+    assert wc["main_cursor"] == pytest.approx(0.4 * p.p[c], rel=1e-12)
+    assert wc["main_cursor"] < 0.4 * p.p[p.peak_index]
+    assert wc["eye_height"] == pytest.approx(
+        2 * (wc["main_cursor"] / (levels - 1) - wc["isi_sum"]), rel=1e-12)
+    at_peak = np.sum(np.abs(p.p[p.peak_index % 32::32])) - abs(p.p[p.peak_index])
+    assert wc["isi_sum"] < 0.4 * at_peak
+
+
+def test_sinusoidal_jitter_stays_where_a_sine_does():
+    dt, half = 1e-12, 4e-12
+    w = eye.jitter_weights(dt, 0, 0, 40, sj_pp=2 * half)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-15) and w == pytest.approx(w[::-1])
+    # the step at 4 ps holds the sine from 3.5 ps to its end; the middle step the least
+    assert w[n + 4] == pytest.approx(0.5 - np.arcsin(3.5 / 4) / np.pi, rel=1e-12)
+    assert w[n] == pytest.approx(2 * np.arcsin(0.5 / 4) / np.pi, rel=1e-12)
+    assert w[n + 5] == 0 and w[n + 4] == np.max(w) and w[n] == np.min(w[n - 4: n + 5])
+    assert np.sum(w * x ** 2) == pytest.approx(half ** 2 / 2 + dt ** 2 / 12, rel=0.03)
+    # around each of the two points of the deterministic part
+    two = eye.jitter_weights(dt, 0, 20e-12, 40, sj_pp=2 * half)
+    m = len(two) // 2
+    assert two[m + 10 - 4: m + 10 + 5] == pytest.approx(0.5 * w[n - 4: n + 5], abs=1e-15)
+    assert two[m - 5: m + 6] == pytest.approx(0, abs=1e-15)
+
+
+def test_sinusoidal_and_random_jitter_are_the_sine_under_the_gaussian():
+    from scipy.special import ndtr
+    dt, half, rj = 1e-12, 4e-12, 0.7e-12
+    w = eye.jitter_weights(dt, rj, 0, 40, sj_pp=2 * half)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-14) and w == pytest.approx(w[::-1], rel=1e-9)
+    assert np.sum(w * x ** 2) == pytest.approx(rj ** 2 + half ** 2 / 2 + dt ** 2 / 12, rel=1e-3)
+    # against the sine at 200000 instants of its period, the Gaussian around each
+    phase = (np.arange(200000) + 0.5) / 200000 * 2 * np.pi
+    s = half * np.sin(phase)
+    for k in (0, 3, 4, 6, 8):
+        want = np.mean(ndtr(((k + 0.5) * dt - s) / rj) - ndtr(((k - 0.5) * dt - s) / rj))
+        assert w[n + k] == pytest.approx(want, rel=2e-4), k
+    # the tail past the sine is the Gaussian's: 3.5 ps beyond its end is 5 sigma
+    assert 1e-9 < np.sum(w[x > half + 3e-12]) < ndtr(-3.5e-12 / rj)
+    # with the two points of the deterministic part: all of it around each
+    three = eye.jitter_weights(dt, rj, 40e-12, 60, sj_pp=2 * half)
+    m = len(three) // 2
+    assert three[m + 20 - n + 3: m + 20 + n - 2] == pytest.approx(0.5 * w[3:-3], rel=1e-6)
+    assert three == pytest.approx(three[::-1], rel=1e-6, abs=1e-14)
+    # a sine of next to nothing leaves the random jitter alone
+    assert eye.jitter_weights(dt, rj, 0, 40, sj_pp=1e-17) == pytest.approx(
+        eye.jitter_weights(dt, rj, 0, 40), rel=1e-9, abs=0)
+
+
+def test_sinusoidal_jitter_takes_the_eye_to_the_sines_end():
+    p = _tri_pulse([1.0])                                # 16 steps a bit: 1/8 off per step
+    step = 1e-10 / 16
+    r = eye.statistical_eye(p, 0.8, 1e-12, sj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 3 / 8), abs=0.004)
+    two = eye.statistical_eye(p, 0.8, 1e-12, dj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(two["eye_height"], abs=0.004)
+    # at a shallow error rate the sine's middle counts where two points have none:
+    # with random jitter the sine's eye is the taller of the two
+    a = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step, sj_pp=6 * step)
+    b = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step, dj_pp=6 * step)
+    assert a["eye_height"] >= b["eye_height"]
+    none = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step)
+    assert a["eye_height"] < none["eye_height"]
+
+
+def test_the_eye_job_takes_sinusoidal_jitter(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=5, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    none = run(ber=1e-12)[0]
+    sj, res = run(sj_pp_ps=30)                              # asks for the eye by itself
+    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.1
+    assert sj["eye_height_at_ber_mv"] < none["eye_height_at_ber_mv"]
+    assert any("30 ps peak to peak of sinusoidal jitter" in n for n in res["notes"])
+    # bounded: at 1e-12 it reaches where two points as far apart do
+    dj = run(dj_pp_ps=30)[0]
+    assert sj["eye_width_at_ber_ui"] == pytest.approx(dj["eye_width_at_ber_ui"], abs=1.01 / 32)
+    # they add: the sine around each of the two points
+    both = run(sj_pp_ps=30, dj_pp_ps=30)[0]
+    assert both["eye_width_at_ber_ui"] < sj["eye_width_at_ber_ui"] - 0.1
+
+
+# --- DFE error propagation -------------------------------------------------------------
+
+def test_burst_errors_with_no_taps_or_no_effect_is_the_one_error():
+    never = lambda x: np.zeros_like(x, dtype=float)                     # noqa: E731
+    assert eye.burst_errors(never, []) == 1.0
+    assert eye.burst_errors(never, [0.0, 0.0]) == 1.0
+    assert eye.burst_errors(never, [0.1, 0.05]) == 1.0
+
+
+@pytest.mark.parametrize("m", [1, 2, 5])
+@pytest.mark.parametrize("q", [0.01, 0.3])
+def test_burst_errors_at_a_fixed_chance_is_the_wait_for_a_clean_run(m, q):
+    # each decision wrong with chance q while any of the last m was: the burst ends at m
+    # right ones in a row, and the wrong ones before that number (1 - q)^-m - 1
+    same = lambda x: np.full(np.shape(x), q)                            # noqa: E731
+    assert eye.burst_errors(same, [0.1] * m) == pytest.approx((1 - q) ** -m, rel=1e-12)
+    # a tap of 0 in the middle still holds the burst open; taps of 0 at the end do not
+    assert eye.burst_errors(same, [0.1] * m + [0.0, 0.0]) == pytest.approx((1 - q) ** -m, rel=1e-12)
+
+
+def test_burst_errors_are_those_of_a_receiver_played_out():
+    from scipy.special import ndtr
+    main, sigma, steps = 1.0, 0.45, np.array([0.9, 0.5, 0.3])
+    error_at = lambda x: ndtr((np.asarray(x) - main) / sigma)           # noqa: E731
+    want = eye.burst_errors(error_at, steps)
+    rng = np.random.default_rng(7)
+    total, bursts = 0, 40000
+    for _ in range(bursts):
+        wrong = [True, False, False]                      # newest first
+        total += 1
+        while any(wrong):
+            left = sum(s * rng.choice((-1.0, 1.0)) for s, w in zip(steps, wrong) if w)
+            err = main + sigma * rng.standard_normal() + left < 0
+            total += err
+            wrong = [bool(err)] + wrong[:-1]
+    assert 1.15 < want < 3
+    assert total / bursts == pytest.approx(want, rel=0.02)
+
+
+def test_statistical_eye_multiplies_its_error_rate_by_the_burst():
+    from scipy.special import ndtr
+    p = _tri_pulse([1.0])
+    plain = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1)
+    assert plain["burst_errors"] == 1.0
+    # a tap of 0.6 of the pulse: a wrong decision leaves 2 x 0.6 x 0.4 V on the next
+    # sample, for or against: against, the level is 0.4 - 0.48 with 0.1 of noise
+    r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1, dfe_taps=[0.6])
+    q = 0.5 * (ndtr((-0.4 + 0.48) / 0.1) + ndtr((-0.4 - 0.48) / 0.1))
+    assert r["burst_errors"] == pytest.approx(1 / (1 - q), rel=2e-3)
+    assert r["bit_error_rate"] == pytest.approx(plain["bit_error_rate"] * r["burst_errors"], rel=1e-12)
+    assert r["eye_height"] == plain["eye_height"]         # the contour takes decisions as right
+    # a small tap leaves next to nothing
+    small = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.02, dfe_taps=[0.1, -0.05])
+    assert 1.0 <= small["burst_errors"] < 1 + 1e-9
+    # PAM4: a neighbouring level taken instead leaves a third of that, with levels a third apart
+    r4 = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.03, levels=4, dfe_taps=[0.6])
+    q4 = 0.5 * (ndtr((-0.4 / 3 + 0.16) / 0.03) + ndtr((-0.4 / 3 - 0.16) / 0.03))
+    assert r4["burst_errors"] == pytest.approx(1 / (1 - q4), rel=2e-3)
+
+
+def test_the_eye_job_counts_the_errors_a_dfe_propagates(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    # no DFE, or no eye at a bit error rate: nothing to report
+    assert "dfe_burst_errors" not in run(ber=1e-12, noise_rms_mv=20)[0]
+    assert "dfe_burst_errors" not in run(dfe_taps=3)[0]
+    m, res = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=40)
+    assert m["dfe_burst_errors"] > 1.0005
+    assert any("a wrong DFE decision followed through 3 taps" in n for n in res["notes"])
+    # more noise: a wrong decision is likelier to bring another
+    worse = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=80)[0]
+    assert worse["dfe_burst_errors"] > m["dfe_burst_errors"]
+    # taps held small propagate less
+    held = run(dfe_taps=3, dfe_max=0.02, ber=1e-12, noise_rms_mv=40)[0]
+    assert 1.0 <= held["dfe_burst_errors"] < m["dfe_burst_errors"]

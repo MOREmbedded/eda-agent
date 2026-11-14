@@ -45,12 +45,29 @@ def write_json(path: Path, data: Any) -> None:
     replace_with_retry(tmp, path)
 
 
+READ_RETRIES = 20
+READ_RETRY_S = 0.005
+
+
 def read_json(path: Path) -> Optional[dict]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    """The file's object, or None when it is missing or is not one.
+
+    On Windows a file cannot be opened in the instant another thread is
+    replacing it (``write_json``): that read is refused, not empty. It is
+    tried again for a moment, so a status being rewritten by its run is
+    never mistaken for a status that is not there."""
+    for attempt in range(READ_RETRIES + 1):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == READ_RETRIES:
+                return None
+            time.sleep(READ_RETRY_S)
+        except (OSError, ValueError):
+            return None
+        else:
+            return data if isinstance(data, dict) else None
+    return None
 
 
 def _sha256(path: Path) -> str:

@@ -110,9 +110,10 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_THERMAL_RUNS` | `%USERPROFILE%\EDA Agent\thermal` | Where each `sim_thermal_analysis` run writes its heat maps, fields and report, one folder per run. |
 | `EDA_AGENT_PDN_RUNS` | `%USERPROFILE%\EDA Agent\pdn` | Where `sim_pdn_ir_drop` and `sim_pdn_impedance` write their maps, curves and SPICE decks, one folder per run. |
 | `EDA_AGENT_SIM_JOBS` | `%USERPROFILE%\EDA Agent\jobs` | Where simulation jobs (`sim_job_run`, the dashboard's Simulation page) keep their folders: one per problem, one subfolder per engine. |
-| `EDA_AGENT_ENGINES_DIR` | `%USERPROFILE%\EDA Agent\engines` | Where engines that run in their own Python environment are installed (`eda-agent install-deps`); install logs go beside it. |
-| `EDA_AGENT_FEATURES_FILE` | `%USERPROFILE%\.eda-agent\features.json` | Which switchable features (simulation engines) are turned off (`eda-agent features --off`, the dashboard's Features page). |
-| `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` and `PYTHONPATH` for the solver run. |
+| `EDA_AGENT_ENGINES_DIR` | `%USERPROFILE%\EDA Agent\engines` | Where `eda-agent install-deps` puts what it builds or installs apart from eda-agent: engines in their own Python environment, and programs built with Rust (pcb-toolkit). Install logs go beside it. |
+| `EDA_AGENT_FEATURES_FILE` | `%USERPROFILE%\.eda-agent\features.json` | The choices made on the dashboard's Features page and with `eda-agent features`: switchable features turned off or on (`--off`, `--on`), and saved program locations (`--set-path`), which apply to every later session unless the environment sets the same variable. |
+| `EDA_AGENT_NGSPICE` | `ngspice_con` or `ngspice` on `PATH`, then `C:\Spice64\bin` | The ngspice console program, or the folder it was unzipped to. |
+| `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` for the solver run, so the bindings find their DLLs. |
 | `EDA_AGENT_OPENEMS_PYTHON` | this Python, then `python` on PATH | A Python that can `import openEMS`, used to run the solver. |
 
 ### 3D models and Altium SDK
@@ -122,12 +123,14 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_STEP_WRITER` | cadquery | `freecad` tries FreeCAD before CadQuery when building a STEP model. With neither, the body is extruded and the reply says so. |
 | `EDA_AGENT_SDK_JSON` | `reference/altium_sdk.json` | The reflected Altium SDK that `sdk-coverage` reads. |
 | `EDA_AGENT_SDK_SYMBOLS` | Altium's `ScriptingSystem.dll` | The scripting DLL `sdk-symbols` reads its symbol table from. |
-| `EDA_AGENT_PCB_TOOLKIT` | `pcb-toolkit` on `PATH` | Path to a locally built pcb-toolkit binary for `calc-cross-check`. |
+| `EDA_AGENT_PCB_TOOLKIT` | `pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built | Path to a pcb-toolkit binary for `calc-cross-check` and `pcb_calc_cross_check`. |
+| `EDA_AGENT_FREECADCMD` | `freecadcmd` on `PATH`, then FreeCAD's install folders | FreeCAD's headless `freecadcmd`, used for STEP models when CadQuery is not installed. |
 
 ### KiCad and EasyEDA Pro
 
 | Variable | Default | What it does |
 |---|---|---|
+| `EDA_AGENT_KICAD_CLI` | `kicad-cli` on `PATH`, then the newest `Program Files\KiCad` | KiCad's `kicad-cli`, used for the Altium to KiCad conversion and the KiCad exports. |
 | `EDA_AGENT_EASYEDA_HOST` | 127.0.0.1 | Address the server listens on for the EasyEDA Pro extension. |
 | `EDA_AGENT_EASYEDA_PORT` | 8787 | Port the server listens on for the EasyEDA Pro extension. |
 | `EDA_AGENT_EASYEDA_VERIFIED` | next to the extension build | The file that records which EasyEDA tools were verified live. |
@@ -311,6 +314,8 @@ List features and dependencies: installed, missing, versions
 | `--json` | switch | Machine-readable output. |
 | `--on` | `FEATURE` | Switch a switchable feature (an engine) on. |
 | `--off` | `FEATURE` | Switch a switchable feature (an engine) off. |
+| `--set-path` | `VARIABLE=PATH` | Save where a program is, e.g. EDA_AGENT_OPENEMS_DIR=F:\openEMS; used by every later session unless the environment sets it. |
+| `--clear-path` | `VARIABLE` | Forget a saved program location. |
 
 #### `eda-agent install-deps`
 

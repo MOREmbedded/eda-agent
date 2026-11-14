@@ -21,7 +21,15 @@ It runs as a [simulation job](SIMULATION.md) of kind `board-si`, through the `si
 | `data_rate_gbps` | The data rate: Nyquist, the default skew limit and the eye follow from it |
 | `z_target`, `z_tol_pct`, `il_max_db`, `rl_min_db`, `skew_max_ps`, `stub_margin` | The limits of a [net channel](SI_NETS.md) |
 | `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`, `xtalk` | Crosstalk from the copper beside it: the limit (5 % of the aggressors' swing), how far a neighbour counts, nets that do not switch, and `false` to leave it out ([Crosstalk](SI_NETS.md#crosstalk)) |
+| `delay_match_ps` | Hold the target's nets and pairs to one another in delay: each may be this much ahead of the slowest of them. A signal can be delayed by adding trace and never sped up, so the slowest sets the time. Each target is its own group |
 | `eye`, `eye_min_mv`, `eye_min_ui` | Also run the eye, and its limits (open by default) |
+| `overshoot_max_pct`, `ringback_max_pct`, `edge_reversal_max_pct` | Limits on one edge at the receiver, with the eye's driver and receiver ([Time domain](SI_TIME.md#what-a-run-gives)). A failure is placed at the receiving pin |
+| `return_path`, `return_gap_min_mils` | Gaps in the reference copper under the route: `false` to leave it out, and the shortest gap that counts (8 mil) ([Return path](SI_NETS.md#return-path)) |
+| `xtalk_aggressors`, `xtalk_max_mv` | Neighbours with an edge and a swing of their own (`{match, rise_ps, swing_mv}`), and a limit on crosstalk in millivolts ([Crosstalk](SI_NETS.md#crosstalk)). Both can also be set for the whole board |
+| `xtalk_swing_mv` | The swing of the neighbours that are given none (default the eye's own `amplitude_mv`). Each neighbour's crosstalk times its swing is noise on both rails of the eye: `eye_min_mv` is held against what is left (`eye_height_with_noise_mv`) |
+| `ber`, `noise_rms_mv`, `rj_rms_ps`, `dj_pp_ps`, `sj_pp_ps`, `eye_at_ber_min_mv`, `eye_at_ber_min_ui` | The eye at a bit error rate, with random noise and jitter, and its limits ([The eye at a bit error rate](SI_TIME.md#the-eye-at-a-bit-error-rate)). The net's crosstalk comes off it as peak noise |
+| `modulation` | `pam4`: two bits a symbol, so Nyquist, the default skew limit and the stub limit follow half the data rate, and the eye runs on four levels ([PAM4](SI_TIME.md#pam4)) |
+| `tx_ffe`, `tx_ffe_pre`, `tx_ffe_post`, `ctle_db`, `ctle_max_db`, `ctle_peak_ghz`, `dfe_taps`, `dfe_max` | The eye's equalisation: transmitter taps, receiver CTLE and DFE; `tx_ffe` and `ctle_db` take `auto` ([Equalisation](SI_TIME.md#equalisation)). `eye_min_mv` is then held against the equalised eye |
 | `tx_ibis`, `rx_ibis`, ... | The eye's driver and receiver ([Eyes and SPICE models](SI_TIME.md)) |
 
 - A net or pair is taken by the first target that matches it. A broad target last (`{"match": "*", ...}`) catches what the others leave.
@@ -34,7 +42,7 @@ Job options:
 - `f_max_ghz` (1.5 times the highest data rate, at least 10);
 - `points` (200);
 - the laminate settings (`tand`, `foil`, `mask_mils`, `etch_mils`);
-- the crosstalk settings (`xtalk`, `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`) for targets that give none;
+- the crosstalk settings (`xtalk`, `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`, `xtalk_aggressors`, `xtalk_swing_mv`, `xtalk_max_mv`) and the return-path settings (`return_path`, `return_gap_min_mils`) for targets that give none;
 - the copper temperature (below).
 
 A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warning; the rest of the board still runs.
@@ -46,8 +54,11 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Impedance | Where the TDR sees the fault. The fault starts where the TDR first moves half way to its worst value (a tee holds its dip until the stub's own reflection returns, so the worst point is its end). Half that time is the one-way time. The routed path is walked at each trace section's own delay per mil, with vias as instant, and the point reached is the fault. |
 | Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most five per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
-| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap. |
-| Loss, return loss, skew, eye | The driving pin. |
+| Return path | Each gap where the route crosses it, with what is crossed (a split between two nets, a slot, no copper) and how far along the route. At most six per net; a stripline with its other plane whole is a warning. |
+| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap; for an aggressor on the facing signal layer, its layer and the dielectric between the two. The finding's detail ends with the gap that brings it within the limit. |
+| Delay match | The driving pin of each net too far ahead of the slowest of its target, with how far ahead it is and about how much trace matches it (its own delay per mil). |
+| Loss, return loss, skew | The driving pin. |
+| Eye, eye at the bit error rate, overshoot, ringback, edge reversal | The receiving pin: where the signal is judged. |
 
 On the test board, the 300 mil test-point stub that leaves the route 600 mil from the driver is placed at 618 mil.
 
@@ -103,7 +114,9 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
   - the tee is placed within 45 mil of its true point (618 mil against 600 mil);
   - the stub is placed at its tee;
   - the skew fault is placed at the driving pin.
+- **Return path:** two slots under a microstrip and one under a stripline give three findings, each at its gap, the stripline's as a warning.
 - **Crosstalk:** a neighbour 4 mil from a net for 600 mil is placed at the start of that stretch, with its name, length and gap.
+- **Delay match:** of four bus nets, one 10 mil and one 300 mil shorter than the others, with 10 ps allowed: only the 300 mil one is a finding, at its driving pin, and the trace to add reads 300 mil within 8.
 - **Selection:** first-target-wins, net classes, and a pair taken as a pair are each tested.
 - **Thermal link:**
   - DC resistance scales by exactly (1 + alpha dT), and a skin-effect R by its square root.
@@ -116,6 +129,6 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
 
 ## Limits
 
-- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer only. The channel itself (loss, TDR, eye) is still each net on its own: a neighbour's noise is not added to the eye.
+- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer and on a facing signal layer. The channel itself (loss, TDR) is still each net on its own. The eye takes crosstalk as its peak on both rails whenever it arrives, which is the worst case; the neighbours' waveforms are not simulated.
 - **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it. A stretch that follows a large step is placed late, because the step's own reflections blur the TDR behind it.
 - **Altium markers:** marking uses highlights and text. Altium's violation list is not written.

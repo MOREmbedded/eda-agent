@@ -600,6 +600,11 @@ def plan_model(spec: Any, model: Any) -> Optional[ModelPlan]:
 # --------------------------------------------------------------------------
 
 def _freecadcmd() -> Optional[str]:
+    """FreeCAD's headless program: the file EDA_AGENT_FREECADCMD names,
+    else PATH, else FreeCAD's usual Windows install folders."""
+    named = os.environ.get("EDA_AGENT_FREECADCMD", "").strip().strip('"')
+    if named and os.path.isfile(named):
+        return named
     found = shutil.which("freecadcmd") or shutil.which("FreeCADCmd")
     if found:
         return found

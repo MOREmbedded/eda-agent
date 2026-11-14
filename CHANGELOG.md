@@ -34,6 +34,74 @@ maturity classification for every tool.
   copper temperature, uniform or from a thermal analysis' map. Jobs record
   the snapshot and jobs their inputs came from; the Simulation page shows
   that graph and marks results stale once the board is saved.
+- **Signal integrity: delay matching.** A board-check target takes
+  `delay_match_ps`: its nets and pairs are held to the slowest of them
+  (a bus, a byte lane, a clock with its data). A net too far ahead is a
+  finding at its driving pin, with how far ahead it is and about how much
+  trace matches it.
+- **Signal integrity: the eye at a bit error rate.** `si_channel_eye` and
+  a board-check target take `ber` (default 1e-12), `noise_rms_mv`,
+  `rj_rms_ps` and `dj_pp_ps`, and give the statistical eye:
+  `eye_height_at_ber_mv`, `eye_width_at_ber_ps` / `_ui` and
+  `bit_error_rate`, with the limits `eye_at_ber_min_mv` and
+  `eye_at_ber_min_ui`. Every pattern is counted with its probability, so
+  a long channel whose worst-case eye is closed is judged at the rate it
+  has to meet. Down to 1e-18. See
+  [The eye at a bit error rate](docs/SI_TIME.md#the-eye-at-a-bit-error-rate).
+- **Signal integrity: the equaliser chosen for you.** `tx_ffe: "auto"`
+  works out the transmitter taps that leave the largest worst-case eye
+  (`tx_ffe_pre`, `tx_ffe_post` set how many), as the exact solution of a
+  linear programme; `ctle_db: "auto"` picks the boost, up to
+  `ctle_max_db`. A clean channel gets none. `ffe_main_tap`, `ctle_db` and
+  the notes say what was chosen. See
+  [Equalisation](docs/SI_TIME.md#equalisation).
+- **Signal integrity: PAM4 eyes.** `modulation: "pam4"` in
+  `si_channel_eye` and in a board-check target runs the eye on four
+  levels, two bits a symbol: the three eyes of the pattern
+  (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
+  at a bit error rate and the equalisers, chosen ones included. See
+  [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: DFE error propagation.** With `dfe_taps` and the eye
+  at a bit error rate, `bit_error_rate` now counts the errors a wrong
+  decision of the DFE brings after it: the decisions of the last taps are
+  a Markov chain, solved for the length of the burst (`dfe_burst_errors`;
+  1 is no propagation). The contour still takes decisions as right.
+- **Signal integrity: sinusoidal jitter.** `sj_pp_ps` in `si_channel_eye`
+  and in a board-check target adds sinusoidal jitter to the eye at a bit
+  error rate, with the density of a sine (not two points), together with
+  the random and deterministic parts.
+- **Signal integrity: PAM4 limits at the symbol rate.** A routed net, a
+  pair and a board-check target with `modulation: "pam4"` are now checked
+  at half the data rate: the loss at Nyquist, the stub limit and the
+  default skew limit follow the symbol, as the eye already did.
+- **Signal integrity: the cursors of the worst case.** `main_cursor_mv`
+  and `isi_mv` are now read at the sampling phase where the worst-case eye
+  is tallest, not at the pulse's peak, so the reported eye is exactly
+  twice their difference. They move a little where reflections put the
+  best phase off the peak; the eye itself does not change.
+- **Signal integrity: the eye pattern quick on long sweeps.** The bit
+  pattern of `si_channel_eye` is now convolved with the pulse one sample
+  phase at a time instead of through a pattern padded with zeros: the
+  same waveform to rounding, several times quicker where the sweep is
+  long and fine.
+- **Simulation jobs: a running job is not shown as queued.** On Windows a
+  status file read in the instant its run was rewriting it was refused
+  and taken for missing, so a poll could show `queued` for a job already
+  running. The read is now tried again for a moment.
+- **Signal integrity: the return path.** A net channel and the board check
+  now look at the reference copper under each route (split planes, pours
+  and regions, with their holes) and report every place where it stops:
+  a split between two plane nets, a slot, a missing pour. Each is a
+  finding placed where the route crosses it (check `return path`,
+  `return_gaps`, `return_gap_mils`); a stripline with its other plane
+  whole there is a warning.
+- **Signal integrity: a crosstalk failure says its fix.** A net channel
+  and the board check now end a failed crosstalk check with the gap at
+  which the worst neighbour brings the total within the limit ("AGG at
+  7.8 mil or more brings it within 5 %"), every other neighbour left where
+  it is; on a facing signal layer it is the offset to the side. When the
+  other neighbours alone are over the limit the detail says so. The
+  figures are in `crosstalk.json` under `fix`.
 - **Signal integrity: crosstalk across the board.** A net channel and the
   board check now search the board for the copper that runs beside each
   net: other nets' tracks on the same layer, within reach, with the length
@@ -45,7 +113,21 @@ maturity classification for every tool.
   `crosstalk` (limit `xtalk_max_pct`, default 5 % of the aggressors' swing)
   is placed on the board at the coupled stretch, with the aggressor, the
   length and the gap. Against the coupled line solved in full the near end
-  is within 5 %.
+  is within 5 %. In a board check with eyes, crosstalk times the
+  neighbours' swing (`xtalk_swing_mv`) is noise on both rails of the eye,
+  and the eye limit is held against what is left; `si_channel_eye` takes
+  such noise from any source as `noise_mv`. `si_net_channel` lists the
+  aggressors in its reply (`crosstalk`).
+- **Signal integrity: neighbours with their own edge and swing.**
+  `xtalk_aggressors` gives nets an edge and a swing of their own by name
+  (`{"match": "CLK*", "rise_ps": 300, "swing_mv": 3300}`), in a net channel
+  and in the board check. A slower neighbour couples less at the far end
+  and over a short run. With every swing known, crosstalk is also given in
+  millivolts on the net (`crosstalk_noise_mv`), each neighbour at its own
+  swing, and `xtalk_max_mv` holds it to a limit (the check `crosstalk
+  noise`): the figure that matters where 3.3 V logic runs beside a
+  low-swing pair. The eye of the board check takes each neighbour's noise
+  at its own swing.
 - **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
   and engine `spice`. The `eda-agent` engine convolves a channel's pulse
   response with a PRBS pattern and adds the worst-case eye by peak
@@ -57,6 +139,26 @@ maturity classification for every tool.
   values and are the same circuit in both routes. New tools
   `si_channel_eye`, `si_spice_model` and `si_ibis_models`. See
   [Eyes and SPICE models](docs/SI_TIME.md).
+- **Signal integrity: the edge at the receiver.** The eye job and the
+  board check now also give what one edge does where it arrives:
+  overshoot, ringback, the deepest fall on the way up (a reflection inside
+  the edge, which a clock input can see twice) and the settling time, with
+  the driver and receiver given (resistances, capacitances or IBIS).
+  `overshoot_max_pct`, `ringback_max_pct` and `edge_reversal_max_pct` hold
+  them to limits; the board check places a failure at the receiving pin.
+  A failed overshoot names the series resistor at the driver that cures
+  it (`series_r_ohms`), or says that none does. The level a step settles
+  to is worked out from the S-matrix at 0 Hz and the terminations, so it
+  is right behind a weak driver too.
+- **Signal integrity: equalisation in the eye.** `si_channel_eye` and a
+  board-check target take a transmitter FFE (`tx_ffe`, taps one unit
+  interval apart, scaled to the driver's peak swing), a receiver CTLE
+  (`ctle_db`, `ctle_peak_ghz`) and a receiver DFE (`dfe_taps`, `dfe_max`).
+  The eye, the worst-case eye and the cursors are then those the receiver
+  decides on, so a long channel whose plain eye is closed can be judged as
+  the link runs it. `dfe_tap1_mv` and the notes give the taps. All off by
+  default; convolution engine only. See
+  [Equalisation](docs/SI_TIME.md#equalisation).
 - **Signal integrity: routed nets and pairs.** A routed net or differential
   pair is modelled from pin to pin: its path is found in the board's copper
   (tees, stubs and layer changes included), every trace section uses the RLGC
@@ -364,6 +466,38 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Signal integrity: eye findings sit at the receiving pin.** A board
+  check placed a failed eye at the driving pin; it is judged at the
+  receiver, where the edge findings already are.
+- **Signal integrity: the eye at a bit error rate is quick on long
+  sweeps.** Cursors far below a voltage step now go through the series of
+  ln cos together instead of one by one: a response of 1000 bits takes a
+  fifth of the time, and they are no longer taken at their worst. With
+  noise given, only the part of the spectrum the noise leaves is worked
+  out: 0.1 s where it took 3 s.
+- **Signal integrity: the eye settles to the right level.** The pulse
+  response took the first frequency point as DC. The step then sloped
+  over its window, every bit left a small offset behind, and the offsets
+  added up as ISI that was not there (8 mV instead of 3 mV on a matched
+  4 inch line at 800 mV); behind a weak driver into an open end the slope
+  was steep enough for the eye to be refused as "still ringing". The level
+  is now worked out from the S-matrix read back to 0 Hz and the
+  terminations. Eye heights rise slightly; worst-case eyes rise more.
+  The read-back uses magnitudes, which do not turn with the delay, so the
+  level also holds on a long channel swept in coarse steps.
+- **Signal integrity: dual striplines.** Two signal layers between a pair
+  of planes are now modelled as they are built. A trace there is referenced
+  to the planes on either side, past the other signal layer (which used to
+  be taken as a solid reference, and gave too low an impedance); the result
+  names the layer passed over. Crosstalk now also searches the facing signal
+  layer: a track that runs over or under the net with no plane between
+  couples through the dielectric between the two layers, worked out by the
+  field solver from both traces at their own heights and the offset to the
+  side. Each such aggressor is reported with its layer (`aggressor_layer`),
+  its offset (`offset_mils`) and the dielectric between; the board check
+  places it like any other. The near end agrees with the coupled line
+  solved in full within 5 %. See
+  [docs/SI_NETS.md](docs/SI_NETS.md#crosstalk).
 - **The placer's annealing polish scores each move incrementally.** It
   used to re-score the whole board (every net's pins, every courtyard
   pair, the whole congestion grid) on every move; it now re-scores only
@@ -466,6 +600,21 @@ maturity classification for every tool.
 - **A simulation job's kept answer is tied to the code that made it.** The
   same job asked again after an update returned the older code's results
   unless forced; it is now solved again.
+
+- **Crosstalk sees curved routes.** A neighbour's arcs were not searched,
+  and a neighbour beside a curved stretch was dropped because each chord
+  of the curve is shorter than the 10 mil a run had to be. Arcs now count,
+  and it is a net's whole shared length that must reach 10 mil.
+
+- **A net between free pads can be modelled.** A net with fewer than two
+  component pins (a bare test board, edge fingers, a test point at one
+  end) was refused as having no pins. Its free pads now count as pins, with
+  a note.
+
+- **An eye is never wider than its unit interval.** An eye open at every
+  sample of the interval read 33 / 32 UI (1.031 UI in a board check). It
+  now reads one sample short of the interval: the crossing lies between
+  two samples.
 
 - **IBIS buffers as vendors write them.** A driver's output resistance was
   read from the two table points either side of 0 V, which on a real file

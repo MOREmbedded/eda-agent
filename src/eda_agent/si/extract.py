@@ -228,7 +228,12 @@ def _pad_index(board: LayoutBoard, net: str, key: str) -> int:
 
 
 def _component_pads(board: LayoutBoard, g: nx.MultiGraph) -> list[int]:
-    return [n[1] for n in g.nodes if n[0] == "pad" and board.pads[n[1]].comp]
+    """The pads a path may end at: the pins of components, and where the net
+    has fewer than two of those (a bare test board, an edge connector drawn
+    as free pads, a test point at one end) its free pads as well."""
+    pads = [n[1] for n in g.nodes if n[0] == "pad"]
+    pins = [i for i in pads if board.pads[i].comp]
+    return pins if len(pins) >= 2 else pads
 
 
 def _ends(board: LayoutBoard, g: nx.MultiGraph, net: str, start: str, end: str
@@ -237,7 +242,7 @@ def _ends(board: LayoutBoard, g: nx.MultiGraph, net: str, start: str, end: str
         return _pad_index(board, net, start), _pad_index(board, net, end)
     pins = _component_pads(board, g)
     if len(pins) < 2:
-        raise ExtractError(f"net {net} has fewer than two component pins")
+        raise ExtractError(f"net {net} has fewer than two pins or pads")
     if start:
         a = _pad_index(board, net, start)
         dist = nx.single_source_dijkstra_path_length(g, ("pad", a), weight="length")
@@ -358,7 +363,12 @@ def net_path(board: LayoutBoard, net: str, start: str = "", end: str = "") -> Ne
     breaks = frozenset(n for n in nodes[1:-1] if g.degree(n) > 2)
     sections, edge_sec = _sections(_edge_sequence(g, nodes, board), breaks)
     notes = []
-    pins = sorted(board.pads[n[1]].key for n in g.nodes if n[0] == "pad" and board.pads[n[1]].comp)
+    pins = sorted(board.pads[i].key for i in _component_pads(board, g))
+    free = [k for k in pins if k.startswith("~")]
+    if free:
+        notes.append(f"{len(free)} free pad{'s' if len(free) != 1 else ''} of the net "
+                     f"taken as {'pins' if len(free) != 1 else 'a pin'}: it has fewer than "
+                     "two component pins")
     stubs = _stubs(board, g, nodes, edge_sec)
     if len(pins) > 2:
         notes.append(f"net has {len(pins)} pins; the path runs {board.pads[a].key} to "
@@ -487,7 +497,11 @@ def pair_path(board: LayoutBoard, name: str, pos: str, neg: str,
 
 
 def pins_of(board: LayoutBoard, net: str) -> list[str]:
-    return sorted(p.key for p in board.pads if p.net == net and p.comp)
+    """The net's component pins; with fewer than two, its free pads too."""
+    pins = sorted(p.key for p in board.pads if p.net == net and p.comp)
+    if len(pins) >= 2:
+        return pins
+    return sorted(p.key for p in board.pads if p.net == net)
 
 
 def find_pair(board: LayoutBoard, name: str) -> tuple[str, str]:
