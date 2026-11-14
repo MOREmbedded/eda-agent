@@ -416,8 +416,10 @@ def test_length_budget_spends_headroom_at_the_lines_loss():
     assert "per 1000 mil" in rule["why"] and "notches at" in rule["why"]
     stub = checks["stub resonance"]
     assert stub["pass"] is False and "300 mil trace stub" in stub["detail"]
-    _, slow, _ = _length_rule(single_net(inner=2000), rate=2.0)
+    _, slow, _ = _length_rule(single_net(inner=2000), rate=2.5)
     assert slow["stub resonance"]["pass"] is True
+    # the limit follows the data rate, not the nearest point of the sweep
+    assert "2 x Nyquist = 2.50 GHz needed" in slow["stub resonance"]["detail"]
 
 
 def test_job_refuses_a_net_it_cannot_find(tmp_path):

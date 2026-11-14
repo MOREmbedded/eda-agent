@@ -215,7 +215,7 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
                          "detail": f"{figs['return_loss_db_worst']:.2f} dB worst, {lim:g} dB needed"})
     if "stub_resonance_hz" in figs and rate:
         margin = _num(spec, "stub_margin", 2.0)
-        fq, fn = figs["stub_resonance_hz"], figs["f_nyquist_hz"]
+        fq, fn = figs["stub_resonance_hz"], figs["f_nyquist_asked_hz"]
         verdicts.append({"check": "stub resonance", "pass": fq >= margin * fn,
                          "detail": f"{figs['stub_resonance_of']} notches at {fq / 1e9:.2f} GHz, "
                                    f"{margin:g} x Nyquist = {margin * fn / 1e9:.2f} GHz needed"})
@@ -323,7 +323,7 @@ def rule_steps(spec: dict[str, Any], figs: dict[str, Any], path, stack, opt,
             budget = length + (lim - il) / per_mil
             why = (f"{lim:g} dB at Nyquist: the lines lose {per_mil * 1000:.3g} dB per 1000 mil, "
                    f"vias, stubs and mismatch {fixed:.2f} dB whatever the length")
-            if figs.get("stub_resonance_hz") and figs["stub_resonance_hz"] < 2 * figs["f_nyquist_hz"]:
+            if figs.get("stub_resonance_hz") and figs["stub_resonance_hz"] < 2 * figs["f_nyquist_asked_hz"]:
                 why += (f"; the {figs['stub_resonance_of']} notches at "
                         f"{figs['stub_resonance_hz'] / 1e9:.2f} GHz, so shorten it (or back-drill) "
                         "before trusting this budget")
