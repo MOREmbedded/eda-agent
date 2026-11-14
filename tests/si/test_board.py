@@ -431,6 +431,10 @@ def test_nets_of_a_target_are_matched_in_delay_to_the_slowest(tmp_path):
     res = board_jobs.run_board_si({**spec, "targets": two}, b.to_dict(), STACKUP,
                                   tmp_path / "d", snapshot="t")
     assert not [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    alone = next(r for r in json.loads((tmp_path / "d" / "findings.json").read_text())["items"]
+                 if r["name"] == "B2")
+    assert "delay_lead_ps" not in alone["metrics"]
+    assert not any(x["check"] == "delay match" for x in alone["verdicts"])
     with pytest.raises(ValueError, match="delay_match_ps"):
         board_jobs.run_board_si({**spec, "targets": [{**plain, "delay_match_ps": -1}]},
                                 b.to_dict(), STACKUP, tmp_path / "e", snapshot="t")
