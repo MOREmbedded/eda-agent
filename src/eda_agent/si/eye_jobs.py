@@ -449,15 +449,23 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         gain = _eye.ctle(f0, boost, eq["ctle_peak"]) if boost else np.ones(len(f0))
         out = _eye.pulse_response(f, h * gain[1:], st["ui"], st["rise"], st["spui"],
                                   dc=level * float(gain[0].real))
-        taps = eq["ffe"]
-        if eq["auto_ffe"]:
-            taps = _eye.best_ffe(out, *eq["auto_ffe"], dfe_taps=eq["dfe_taps"])
-        if taps:
-            out = _eye.ffe(out, taps)
-        fed: list[float] = []
-        if eq["dfe_taps"]:
-            out, fed = _eye.dfe(out, eq["dfe_taps"], eq["dfe_max"])
-        return out, taps, fed
+        def after(taps):
+            got = _eye.ffe(out, taps) if taps else out
+            fed: list[float] = []
+            if eq["dfe_taps"]:
+                got, fed = _eye.dfe(got, eq["dfe_taps"], eq["dfe_max"])
+            return got, taps, fed
+
+        if not eq["auto_ffe"]:
+            return after(eq["ffe"])
+        pre, post = eq["auto_ffe"]
+        best = after(_eye.best_ffe(out, pre, post, dfe_taps=eq["dfe_taps"]))
+        # The taps are worked out at one sampling point and with the DFE
+        # taken as ideal; the eye is read over the whole bit with the DFE
+        # as it is. Should the eye without them be the larger, it stands.
+        none = after([0.0] * pre + [1.0] + [0.0] * post)
+        return max(none, best, key=lambda r: round(
+            _eye.worst_case_eye(r[0], st["amp"])["margin"], 9))
 
     if eq["auto_ctle"] is not None:
         # every whole dB, from none up: the first of equal eyes is the least boost

@@ -864,6 +864,23 @@ def test_best_ffe_is_the_optimum_of_the_worst_case_eye():
         assert _margin(p, [a, 1 - abs(a), 0.0], 2) <= _margin(p, with_dfe, 2) + 1e-3
 
 
+@pytest.mark.parametrize("rate", [5e9, 2e9])
+def test_best_ffe_works_where_the_eye_is_tallest(rate):
+    # reflections put the tallest eye a few samples off the pulse's middle; taps worked
+    # out at the middle would leave a smaller eye than none
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / rate, 0.3 / rate, 32)
+    wc = eye.worst_case_eye(p, 1.0)
+    c = wc["sample_index"]
+    assert c != p.center_index
+    # it is the sample the worst-case eye is read at: main cursor less all the others
+    others = np.sum(np.abs(p.p[c % 32::32])) - abs(p.p[c])
+    assert wc["margin"] == pytest.approx(p.p[c] - others, rel=1e-12)
+    taps = eye.best_ffe(p, 1, 1)
+    assert taps[1] < 0.995 and _margin(p, taps) > _margin(p, [1.0]) + 0.002
+
+
 def test_the_eye_job_chooses_its_equaliser(tmp_path):
     ts = _long_channel(tmp_path)
 
@@ -911,6 +928,25 @@ def test_the_eye_job_chooses_its_equaliser(tmp_path):
     assert both["worst_case_eye_height_mv"] >= max(
         run(tx_ffe="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"],
         run(ctle_db="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"]) - 0.01
+
+
+@pytest.mark.parametrize("rate", [10, 1])
+def test_chosen_taps_never_leave_a_smaller_eye_than_none(tmp_path, rate):
+    # an 85 ohm line between 50 ohm ends: the ISI is reflections, which taps one bit
+    # apart seldom meet, and the eye's best sampling point is not the pulse's middle
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+
+    def worst(**opt):
+        res = _edge_job(ts, data_rate_gbps=rate, **opt)["results"]
+        return res["metrics"]["worst_case_eye_height_mv"]["value"]
+    plain = worst()
+    for more in ({}, {"tx_ffe_pre": 2, "tx_ffe_post": 3}, {"ctle_db": "auto"}):
+        assert worst(tx_ffe="auto", **more) >= plain, more
+    assert worst(tx_ffe="auto", dfe_taps=4) >= worst(dfe_taps=4)
+    if rate == 1:
+        assert worst(tx_ffe="auto") > plain + 5         # here a post-cursor tap does help
 
 
 def test_a_clean_channel_is_given_no_equaliser(tmp_path):
