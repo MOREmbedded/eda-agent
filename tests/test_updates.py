@@ -13,6 +13,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -64,6 +65,7 @@ def clones(tmp_path, monkeypatch):
         return {"ok": True, "output": ""}
 
     monkeypatch.setattr(updates, "_step", fake_step)
+    monkeypatch.setattr(updates, "_install_works", lambda: (True, ""))
     monkeypatch.setattr(updates, "_altium_running", lambda: True)
     # Never the real launchers of the eda-agent running these tests.
     monkeypatch.setattr(updates, "_launchers", lambda: [])
@@ -134,6 +136,65 @@ def test_changed_dependencies_reinstall(clones):
     _publish(pub, "pyproject.toml", "[project]\nname='x'\nversion='2'\n", "Bump")
     assert updates.apply()["updated"] is True
     assert steps == [["-m", "pip", "install"]]
+
+
+def test_a_reinstall_that_left_nothing_installed_is_a_failed_step(clones, monkeypatch):
+    pub, _, steps = clones
+    monkeypatch.setattr(updates, "_install_works", lambda: (False, "No module named 'eda_agent.updates'"))
+    _publish(pub, "pyproject.toml", "[project]\nname='x'\nversion='2'\n", "Bump")
+    out = updates.apply()
+    assert out["updated"] is True and out["failed_steps"] == ["reinstall (dependencies changed)"]
+    assert steps == [["-m", "pip", "install"]] * 2      # tried once more
+    said = out["steps"][0]["output"]
+    assert "eda-agent is not installed (No module named 'eda_agent.updates')" in said
+    assert "-m pip install -e" in said and sys.executable in said
+
+
+def _pip_and_probe(monkeypatch, pip_ok, works):
+    """Record the pip calls; ``works`` is what each probe of the install answers."""
+    calls, answers = [], list(works)
+    monkeypatch.setattr(updates, "_launchers", lambda: [])
+    monkeypatch.setattr(updates, "_step", lambda argv, cwd, timeout: (
+        calls.append(argv[1:5]), {"ok": pip_ok, "output": "pip said"})[1])
+    monkeypatch.setattr(updates, "_install_works", lambda: (answers.pop(0), "why"))
+    return calls, answers
+
+
+def test_a_reinstall_asks_a_new_python_for_the_install(monkeypatch, tmp_path):
+    calls, left = _pip_and_probe(monkeypatch, True, [True])
+    out = updates._reinstall(tmp_path)
+    assert out == {"ok": True, "output": "pip said", "python": sys.executable}
+    assert calls == [["-m", "pip", "install", "-e"]] and not left
+
+
+def test_a_reinstall_that_did_not_take_is_done_once_more(monkeypatch, tmp_path):
+    calls, left = _pip_and_probe(monkeypatch, True, [False, True])
+    out = updates._reinstall(tmp_path)
+    assert out["ok"] is True and len(calls) == 2 and not left
+    assert out["output"].startswith("the first install left eda-agent uninstalled; installed again")
+    calls, left = _pip_and_probe(monkeypatch, True, [False, False])
+    out = updates._reinstall(tmp_path)
+    assert out["ok"] is False and len(calls) == 2 and not left
+    assert "pip ended without an error, but eda-agent is not installed (why)" in out["output"]
+    assert str(tmp_path) in out["output"]
+
+
+def test_a_reinstall_pip_failed_is_not_asked_about(monkeypatch, tmp_path):
+    calls, left = _pip_and_probe(monkeypatch, False, [True])
+    out = updates._reinstall(tmp_path)
+    assert out["ok"] is False and out["output"] == "pip said"
+    assert len(calls) == 1 and left == [True]
+
+
+def test_the_install_is_asked_for_from_a_new_python(monkeypatch):
+    ok, why = updates._install_works()                  # the install running these tests
+    assert ok is True, why
+    monkeypatch.setattr(updates, "_PROBE", "import eda_agent.no_such_module_here")
+    ok, why = updates._install_works()
+    assert ok is False and "No module named" in why
+    monkeypatch.setattr(updates, "_PROBE", "import importlib.metadata as m; m.version('no-such-dist-x')")
+    ok, why = updates._install_works()
+    assert ok is False and "no-such-dist-x" in why
 
 
 def test_no_relaunch_leaves_the_loop_and_says_so(clones):
