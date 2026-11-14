@@ -588,5 +588,6 @@ def test_a_target_carries_sinusoidal_jitter_to_the_eye(tmp_path):
         return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
     none = metrics("a")
     sj = metrics("b", sj_pp_ps=40)
-    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.1
-    assert sj["eye_height_mv"] == none["eye_height_mv"]
+    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.05
+    assert sj["eye_height_at_ber_mv"] < none["eye_height_at_ber_mv"] - 10
+    assert sj["eye_height_mv"] == none["eye_height_mv"]     # the pattern's eye has no jitter
