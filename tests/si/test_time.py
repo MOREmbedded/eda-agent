@@ -850,10 +850,10 @@ def test_statistical_eye_of_noise_alone_is_the_gaussian_quantile():
     assert r["phase"] == 8 and r["eye_width"] == pytest.approx(r["eye_width_ui"] * 1e-10)
     # and the error rate at the threshold is the tail below it
     r = eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.1)
-    assert r["bit_error_rate"] == pytest.approx(ndtr(-4.0), rel=1e-4)
+    assert r["bit_error_rate"] == pytest.approx(ndtr(-4.0), rel=1e-4, abs=0)
     assert r["eye_height"] == 0.0 and r["eye_width_ui"] == 0.0
-    assert eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.04)["bit_error_rate"] == \
-        pytest.approx(ndtr(-10.0), rel=1e-3)
+    assert eye.statistical_eye(p, 0.8, 1e-12, noise_rms=0.05)["bit_error_rate"] == \
+        pytest.approx(ndtr(-8.0), rel=1e-3, abs=0)          # 6e-16
     for bad in (0.2, 1e-19, 0.0):
         with pytest.raises(ValueError, match="ber is"):
             eye.statistical_eye(p, 0.8, bad)
@@ -886,8 +886,17 @@ def test_statistical_eye_of_isi_alone_steps_through_the_patterns():
     assert eye.worst_case_eye(many, 0.8)["eye_height"] == 0.0
     r = eye.statistical_eye(many, 0.8, 1e-3)
     assert r["eye_height"] == pytest.approx(0.8 * (1 - 12 * 0.07), abs=0.004)
-    assert r["bit_error_rate"] == pytest.approx(1 / 65536, rel=1e-6)
+    assert r["bit_error_rate"] == pytest.approx(1 / 65536, rel=1e-6, abs=0)
     assert eye.statistical_eye(many, 0.8, 1e-6)["eye_height"] == 0.0
+
+
+def test_cursors_too_small_for_the_grid_count_at_their_worst():
+    # 300 cursors of a ten-millionth each: far below a voltage step, 3e-5 together
+    base = _tri_pulse([1.0, 0.2])
+    tail = _tri_pulse([1.0, 0.2] + [1e-7, -1e-7] * 150)
+    a = eye.statistical_eye(base, 0.8, 1e-12)["eye_height"]
+    b = eye.statistical_eye(tail, 0.8, 1e-12)["eye_height"]
+    assert a - b == pytest.approx(0.8 * 300e-7, rel=0.05, abs=0)
 
 
 def test_jitter_takes_the_eye_where_the_sampling_instant_can_be():
@@ -932,6 +941,10 @@ def test_the_eye_job_gives_the_statistical_eye_when_asked(tmp_path):
                for n in res["notes"])
     # noise and jitter each cost, and are named
     n, res = run(noise_rms_mv=10)
+    assert " UI at 1e-12, " in {x["check"]: x for x in res["verdicts"]}[
+        "eye at the bit error rate"]["detail"]              # the rate where none is given
+    assert n["eye_height_at_ber_mv"] == run(noise_rms_mv=10, ber=1e-12)[0]["eye_height_at_ber_mv"]
+    assert n["eye_height_at_ber_mv"] < run(noise_rms_mv=10, ber=1e-9)[0]["eye_height_at_ber_mv"]
     # at most its own 7 sigma off each rail, and less than that beside the ISI's spread
     assert m["eye_height_at_ber_mv"] - 2 * 7.04 * 10 < n["eye_height_at_ber_mv"] \
         < m["eye_height_at_ber_mv"] - 2 * 3 * 10

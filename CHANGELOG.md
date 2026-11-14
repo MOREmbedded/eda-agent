@@ -39,6 +39,15 @@ maturity classification for every tool.
   (a bus, a byte lane, a clock with its data). A net too far ahead is a
   finding at its driving pin, with how far ahead it is and about how much
   trace matches it.
+- **Signal integrity: the eye at a bit error rate.** `si_channel_eye` and
+  a board-check target take `ber` (default 1e-12), `noise_rms_mv`,
+  `rj_rms_ps` and `dj_pp_ps`, and give the statistical eye:
+  `eye_height_at_ber_mv`, `eye_width_at_ber_ps` / `_ui` and
+  `bit_error_rate`, with the limits `eye_at_ber_min_mv` and
+  `eye_at_ber_min_ui`. Every pattern is counted with its probability, so
+  a long channel whose worst-case eye is closed is judged at the rate it
+  has to meet. Down to 1e-18. See
+  [The eye at a bit error rate](docs/SI_TIME.md#the-eye-at-a-bit-error-rate).
 - **Signal integrity: the return path.** A net channel and the board check
   now look at the reference copper under each route (split planes, pours
   and regions, with their holes) and report every place where it stops:

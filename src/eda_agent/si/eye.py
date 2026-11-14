@@ -456,7 +456,11 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     for i in range(spui):
         k = int(np.searchsorted(cdf[i], ber))
         lo = cdf[i, k - 1] if k else 0.0
-        frac = (ber - lo) / max(cdf[i, k] - lo, 1e-300)
+        hi = cdf[i, k]
+        if lo > 0:                                      # a tail climbs by a factor a bin
+            frac = np.log(ber / lo) / np.log(hi / lo)
+        else:
+            frac = ber / max(hi, 1e-300)
         inner[i] = v[k] - dv / 2 + frac * dv
         errors[i] = cdf[i, zero - 1] + 0.5 * pdfs[i, zero]
     heights = 2 * inner

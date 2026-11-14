@@ -100,6 +100,23 @@ The CTLE multiplies the channel's transfer, the FFE adds shifted copies of the p
 
 The taps are the ones given: nothing is adapted or searched. The DFE takes every decision as right, so error propagation is not in the eye. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
 
+## The eye at a bit error rate
+
+The worst-case eye asks whether any pattern can close the eye; on a long channel one usually can, once in more bits than the link will ever send. The statistical eye asks what is left at a bit error rate. It is worked out when one of these is given:
+
+| Option | Meaning |
+|---|---|
+| `ber` | The bit error rate the eye is drawn at (default 1e-12; 1e-18 to 0.1) |
+| `noise_rms_mv` | Random (Gaussian) noise at the receiver, RMS |
+| `rj_rms_ps`, `dj_pp_ps` | Jitter of the sampling instant against the data: random (Gaussian, RMS) and deterministic (peak to peak, as two points: the dual-Dirac model) |
+| `eye_at_ber_min_mv`, `eye_at_ber_min_ui` | The height and width needed at that rate (default: open) |
+
+At each sampling phase the level of a one is its main cursor plus every other cursor with the sign of an independent random bit. The probability density of that sum is the transform of its characteristic function, the product of cos(w a_k) over the cursors times the noise's Gaussian: every pattern is in it, with its probability, without running one. Jitter mixes the densities of the phases it reaches, each with its probability. The inner contour is the level a one falls below with probability `ber`; a zero mirrors it, and the eye is what lies between.
+
+The run then gives `eye_height_at_ber_mv`, `eye_width_at_ber_ps` and `eye_width_at_ber_ui`, the check "eye at the bit error rate", and `bit_error_rate`: the error rate at the best sampling instant with the threshold in the middle (1e-19 stands for that or less). Peak noise (`noise_mv`, the crosstalk of a board check) comes off both rails as it does for the pattern's eye. Equalisation is applied before it.
+
+What it assumes: bits independent and equally likely (scrambled data, not a coded pattern), a linear channel, and jitter in steps of one time sample, so `samples_per_ui` sets how finely a small jitter is resolved. The levels are worked out on 32768 voltage steps and always carry a Gaussian width of at least 2.8 steps, which costs an eye of ISI alone under 2 mV in 500.
+
 ## What a run gives
 
 | Metric | Engine | Meaning |
@@ -110,6 +127,7 @@ The taps are the ones given: nothing is adapted or searched. The DFE takes every
 | `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
 | `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
+| `eye_height_at_ber_mv`, `eye_width_at_ber_ps`, `eye_width_at_ber_ui`, `bit_error_rate` | `eda-agent` | With `ber`, noise or jitter given: [the eye at a bit error rate](#the-eye-at-a-bit-error-rate) |
 | `dfe_tap1_mv` | `eda-agent` | With `dfe_taps`: the first tap, as the voltage it takes off |
 | `series_r_ohms` | `eda-agent` | When the overshoot is over its limit: the resistor in series with the driver (each side of a pair) that brings it within, to the whole ohm above. It is worked out as more source resistance with everything else as it is, up to four reference impedances; when that is not enough the overshoot comes from the line and the check says so |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
@@ -151,6 +169,11 @@ The taps are the ones given: nothing is adapted or searched. The DFE takes every
   - A flat channel's eye and worst-case eye are the full swing.
   - On a lossy line, the worst case lies below the PRBS eye.
   - The worst case is reached by the pattern that peak distortion analysis names.
+- **The eye at a bit error rate:**
+  - With noise alone it is the Gaussian quantile, main cursor + sigma x Phi^-1(ber), within 2 parts in a million from 1e-3 down to 1e-18; the error rate at the threshold is the Gaussian tail within 0.1 % at 6e-16.
+  - With ISI alone it steps through the patterns: four cursors give the worst case at any rate below 1 in 16 and the second-worst pattern at 0.1. Sixteen cursors of 0.07 close the worst-case eye; all sixteen line up once in 65536 bits, which is the error rate reported, and at 1e-3 the eye is that of fourteen against the bit.
+  - Deterministic jitter of 3 samples either way gives the level 3 samples off the centre; random jitter of half a sample gives the level 4 samples off at 1e-12 and 2 samples off at 1e-3, as its tail probabilities say.
+  - On a 0.8 m line at 5 Gb/s it lies between the worst-case eye and the PRBS eye; noise and jitter each lower it, a looser rate raises it, and peak noise takes twice its value off.
 - **Equalisation:**
   - The CTLE is 1 / boost at DC, and at its first pole it is the formula's value by hand; with no boost it is 1 everywhere.
   - On a flat channel, FFE taps [0.75, -0.25] give the de-emphasis they should: the eye is 0.75 - 0.25 = 0.5 of the swing. A tap that mirrors a channel's post-cursor cancels it.
@@ -168,7 +191,7 @@ The taps are the ones given: nothing is adapted or searched. The DFE takes every
 
 ## Limits
 
-- The eye is NRZ with no jitter, and noise only as the peak given. Statistical (BER) eyes are not modelled.
+- The eye is NRZ. The statistical eye takes bits as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion, sinusoidal jitter and the clock recovery's tracking are not modelled.
 - Equalisation is the taps and the boost given: no adaptation, no tap search, no DFE error propagation, and not in the SPICE engine.
 - The DC level takes the channel as conductors alone. A Touchstone file with a shunt element or a series capacitor in it gets an approximate level.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
