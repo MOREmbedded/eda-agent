@@ -588,3 +588,15 @@ def test_the_net_job_and_the_board_check_say_the_fix(tmp_path):
     res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "x", snapshot="t")
     f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
     assert f["detail"].endswith("mil or more brings it within 5 %") and "; AGG at " in f["detail"]
+
+
+def test_the_fix_moves_the_worst_neighbour_on_the_layer_its_row_tells(dual):
+    def board(offset):
+        b = under(dual_victim(), "BUS", offset=offset, y1=200, y2=600)
+        b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))   # 8 mil beside
+        return b
+    fix = of(board(0), dual, limit_pct=7.0)["fix"]
+    assert fix["aggressor_layer"] == "MidLayer2"
+    # the track beside it stays where it is: only the one under it moves aside
+    assert of(board(fix["offset_mils"]), dual)["worst_pct"] <= 7.0
+    assert of(board(fix["offset_mils"] - 1), dual)["worst_pct"] > 7.0
