@@ -703,6 +703,12 @@ def test_the_net_job_gives_millivolts_and_holds_them_to_a_limit(tmp_path):
     with pytest.raises(ValueError, match="xtalk_max_mv needs the swing of every neighbour"):
         net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_max_mv": 100},
                                  b.to_dict(), STACKUP, tmp_path / "f")
+    # with nothing beside it there is no figure to show, and any limit holds
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_mv": 10}, victim().to_dict(), STACKUP,
+                                   tmp_path / "i")
+    assert "crosstalk_noise_mv" not in res["metrics"]
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk noise")
+    assert v["pass"] and v["detail"].startswith("0.0 mV")
     with pytest.raises(ValueError, match="xtalk_swing_mv is 0 or more"):
         net_jobs.run_net_channel({**spec, "xtalk_swing_mv": -5}, b.to_dict(), STACKUP,
                                  tmp_path / "g")
@@ -714,7 +720,7 @@ def test_the_net_job_gives_millivolts_and_holds_them_to_a_limit(tmp_path):
 def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
     b = beside(victim(), x1=300, x2=900)
     target = {"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2, "eye": True,
-              "amplitude_mv": 800, "xtalk_max_pct": 50}
+              "amplitude_mv": 600, "xtalk_max_pct": 50}
     spec = {"targets": [target], "points": 80, "f_max_ghz": 10}
 
     def noise(name, **more):
@@ -723,7 +729,7 @@ def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
         item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
         return item["metrics"], item
     m0, _ = noise("a")
-    assert m0["eye_noise_mv"] == pytest.approx(8 * m0["crosstalk_pct"], abs=0.01)   # its own 800 mV
+    assert m0["eye_noise_mv"] == pytest.approx(6 * m0["crosstalk_pct"], abs=0.01)   # its own 600 mV
     m1, _ = noise("b", xtalk_aggressors=[{"match": "AGG", "swing_mv": 3300}])
     assert m1["eye_noise_mv"] == pytest.approx(33 * m1["crosstalk_pct"], abs=0.02)
     assert m1["crosstalk_noise_mv"] == m1["eye_noise_mv"] and "crosstalk_noise_mv" not in m0

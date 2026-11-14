@@ -276,11 +276,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
                                               "neighbour at its own swing")
         if spec.get("xtalk_max_mv") is not None:
             lim_mv = _num(spec, "xtalk_max_mv", 0.0)
-            if "noise_mv" not in xt:
+            got = xt.get("noise_mv", None if xt["aggressors"] else 0.0)
+            if got is None:
                 raise ValueError("xtalk_max_mv needs the swing of every neighbour: give "
                                  "xtalk_swing_mv, or xtalk_aggressors for each of them")
-            verdicts.append({"check": "crosstalk noise", "pass": xt["noise_mv"] <= lim_mv,
-                             "detail": f"{xt['noise_mv']:.1f} mV from the neighbours at their "
+            verdicts.append({"check": "crosstalk noise", "pass": got <= lim_mv,
+                             "detail": f"{got:.1f} mV from the neighbours at their "
                                        f"own swings, {lim_mv:g} mV allowed"})
     rp = None
     if spec.get("return_path", True):
