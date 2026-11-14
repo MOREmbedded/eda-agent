@@ -697,14 +697,12 @@ def _register_si_board_tools(mcp) -> None:
         """Check every high-speed net and pair of a board, and place each fault on it.
 
         Each net or pair the targets name is modelled end to end (as
-        si_net_channel does) and checked against its target's limits:
-        impedance, insertion and return loss, skew, stub resonance, and
-        optionally the eye. A failure becomes a finding placed where it is:
-        an impedance fault where the TDR sees it (walked along the routed
-        path at each section's own delay), a stub where it leaves the path,
-        a via stub at its via, crosstalk at the stretch beside (or on a
-        facing signal layer, across from) the worst neighbour, each gap in the reference plane where the route crosses
-        it, other faults at the driving pin. Writes
+        si_net_channel does) and checked against its target's limits. A
+        failure becomes a finding placed where it is: an impedance fault
+        where the TDR sees it, a stub where it leaves the path, a via stub
+        at its via, crosstalk beside (or across from) the worst neighbour,
+        a reference-plane gap where the route crosses it, an edge fault
+        at the receiving pin, others at the driving pin. Writes
         report.html (self-contained), findings.json and summary.csv.
 
         Args:
@@ -715,21 +713,15 @@ def _register_si_board_tools(mcp) -> None:
                 Altium net class; kind: "pair" or "net"; data_rate_gbps,
                 z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
                 stub_margin, delay_match_ps (each of the target's nets may
-                be this far ahead of the slowest of them),
-                xtalk_max_pct (crosstalk from neighbours, 5),
-                xtalk_swing_mv (the neighbours' swing: crosstalk then
-                closes the eye; default the eye's amplitude),
-                xtalk_aggressors ([{match, rise_ps, swing_mv}]: neighbours
-                with their own edge and swing), xtalk_max_mv (limit in mV);
-                eye: true to add the eye, eye_min_mv,
-                overshoot_max_pct, ringback_max_pct, edge_reversal_max_pct
-                (one edge at the receiver, placed at the receiving pin),
-                eye_min_ui, the eye's tx_ibis/rx_ibis options and its
-                equalisation (tx_ffe, ctle_db, ctle_peak_ghz, dfe_taps,
-                dfe_max) and its statistical eye (ber, noise_rms_mv,
-                rj_rms_ps, dj_pp_ps, eye_at_ber_min_mv, eye_at_ber_min_ui)}. A net
-                is taken by the first target that matches it. Default: every
-                differential pair.
+                be this far ahead of the slowest), xtalk_max_pct (5),
+                xtalk_max_mv, xtalk_swing_mv (the neighbours' swing, which
+                closes the eye), xtalk_aggressors ([{match, rise_ps,
+                swing_mv}]); eye: true to add the eye, eye_min_mv,
+                eye_min_ui, overshoot_max_pct, ringback_max_pct,
+                edge_reversal_max_pct, and si_channel_eye's driver,
+                receiver, equaliser and bit-error-rate options}. A net is taken by the
+                first target that matches it. Default: every differential
+                pair.
             options: data_rate_gbps (for targets without one), eye,
                 max_items (40), workers (4), f_max_ghz, points (200),
                 temperature_c or thermal_npz (a thermal analysis'
