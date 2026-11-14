@@ -179,6 +179,19 @@ def test_a_net_that_cannot_be_modelled_is_a_warning(tmp_path):
         board_jobs.run_board_si({"targets": [{"match": "SIG"}]}, b.to_dict(), STACKUP, tmp_path)
 
 
+def test_a_slow_net_with_an_eye_gets_a_sweep_that_holds_its_bit():
+    item = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 0.2}}
+    # 10 GHz in 200 points covers 20 ns, four of this net's 5 ns bits
+    s = board_jobs._item_spec(item, {}, 10.0, 200)
+    assert s["points"] == 400                           # 8 bits: a 25 MHz step
+    fast = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 10}}
+    assert board_jobs._item_spec(fast, {}, 15.0, 200)["points"] == 200
+    no_eye = {"kind": "net", "name": "SIG", "settings": {"data_rate_gbps": 0.2}}
+    assert board_jobs._item_spec(no_eye, {}, 10.0, 200)["points"] == 200
+    crawl = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 0.001}}
+    assert board_jobs._item_spec(crawl, {}, 10.0, 200)["points"] == board_jobs.MAX_EYE_POINTS
+
+
 def test_a_wide_section_in_an_off_target_line_gets_its_own_finding(tmp_path):
     from eda_agent.layout.model import Track
     b = single_net(with_stub=False, with_return_via=False, inner=0)

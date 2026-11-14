@@ -75,12 +75,24 @@ class BufferModel:
     pulldown: list[tuple[float, float]] = field(default_factory=list)   # (V, I typ)
     pullup: list[tuple[float, float]] = field(default_factory=list)
     voltage: Optional[float] = None
+    gnd_clamp: list[tuple[float, float]] = field(default_factory=list)
+    power_clamp: list[tuple[float, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "model_type": self.model_type, "c_comp_f": self.c_comp,
                 "ramp_r": self.ramp_r, "ramp_f": self.ramp_f, "r_load": self.r_load,
                 "pulldown_points": len(self.pulldown), "pullup_points": len(self.pullup),
+                "clamp_points": len(self.gnd_clamp) + len(self.power_clamp),
                 "voltage": self.voltage}
+
+
+#: The V-I tables kept, by keyword. [Pullup] and [POWER Clamp] voltages are
+#: measured down from the supply: Vtable = Vcc - Vout.
+_TABLES = {"pulldown": "pulldown", "pullup": "pullup", "gnd clamp": "gnd_clamp",
+           "power clamp": "power_clamp"}
+
+#: Model types that do not drive a line.
+NOT_DRIVERS = ("input", "terminator", "series", "series_switch")
 
 
 def parse(text: str) -> dict[str, BufferModel]:
@@ -126,11 +138,11 @@ def parse(text: str) -> dict[str, BufferModel]:
                 cur.ramp_f = _ratio(words[1])
             elif low == "r_load" and len(words) > 1:
                 cur.r_load = number(words[-1]) or 50.0
-        elif section in ("pulldown", "pullup"):
+        elif section in _TABLES:
             if len(words) >= 2:
                 v, i = number(words[0]), number(words[1])
                 if v is not None and i is not None:
-                    (cur.pulldown if section == "pulldown" else cur.pullup).append((v, i))
+                    getattr(cur, _TABLES[section]).append((v, i))
         elif section == "voltage range" and words:
             v = number(words[0])
             if v is not None:
@@ -142,22 +154,65 @@ def read(path: str | Path) -> dict[str, BufferModel]:
     return parse(Path(path).read_text(encoding="utf-8", errors="replace"))
 
 
-def _slope_r(table: list[tuple[float, float]], v0: float) -> Optional[float]:
-    """dV/dI of a V-I table at v0, from the two points that straddle it."""
+def _current(table: list[tuple[float, float]], v: float) -> Optional[float]:
+    """I of a V-I table at v, between its points; None outside it."""
     pts = sorted(table)
     for (va, ia), (vb, ib) in zip(pts, pts[1:]):
-        if va <= v0 <= vb and ib != ia:
-            r = (vb - va) / (ib - ia)
-            return abs(r) if r != 0 else None
+        if va <= v <= vb and vb > va:
+            return ia + (ib - ia) * (v - va) / (vb - va)
     return None
 
 
+def _chord_r(table: list[tuple[float, float]], v0: float, v1: float) -> Optional[float]:
+    """dV/dI of a V-I table between v0 and v1."""
+    i0, i1 = _current(table, v0), _current(table, v1)
+    if i0 is None or i1 is None or i1 == i0:
+        return None
+    return abs((v1 - v0) / (i1 - i0))
+
+
+#: The part of the supply a driver's output sits from its rail while it
+#: drives a line of about its own impedance: where its V-I table is read.
+DRIVE_SPAN = 0.3
+
+
+#: Pull-up and pull-down resistances further apart than this are not averaged.
+UNEVEN = 10.0
+
+
+def _span(model: BufferModel, table: list[tuple[float, float]]) -> float:
+    """The table voltage the output resistance is read up to."""
+    if model.voltage:
+        return DRIVE_SPAN * model.voltage
+    top = max((v for v, _ in table), default=0.0)
+    return DRIVE_SPAN * top / 2 if top > 0 else 0.0
+
+
 def driver(model: BufferModel) -> dict[str, Any]:
-    """Output resistance, 10-90 % rise time and C_comp of a driver."""
+    """Output resistance, 10-90 % rise time and C_comp of a driver.
+
+    The resistance is the chord of the pull-down and pull-up V-I tables
+    from the rail (0 V in the table) to ``DRIVE_SPAN`` of the supply into
+    the driving range. That is the side of the table the buffer works on:
+    below 0 V the table is the clamp diode, not the transistor."""
+    if model.model_type.lower() in NOT_DRIVERS:
+        raise ValueError(f"model {model.name} is of type {model.model_type}: it does not "
+                         "drive a line")
     out: dict[str, Any] = {"model": model.name}
-    rs = [r for r in (_slope_r(model.pulldown, 0.0),
-                      _slope_r(model.pullup, 0.0)) if r]
-    if rs:
+    rs = []
+    for key, table in (("r_pulldown_ohms", model.pulldown), ("r_pullup_ohms", model.pullup)):
+        v1 = _span(model, table)
+        r = _chord_r(table, 0.0, v1) if v1 > 0 else None
+        if r:
+            rs.append(r)
+            out[key] = r
+    if len(rs) == 2 and max(rs) > UNEVEN * min(rs):
+        # one side barely conducts near its rail (an n-channel pull-up, an
+        # open drain with a weak keeper): the mean would be that side alone
+        out["r_out_ohms"] = min(rs)
+        out["note"] = (f"pull-down {out['r_pulldown_ohms']:.3g} ohm and pull-up "
+                       f"{out['r_pullup_ohms']:.3g} ohm differ widely; the stronger is used")
+    elif rs:
         out["r_out_ohms"] = sum(rs) / len(rs)
     ramp = model.ramp_r or model.ramp_f
     if ramp:
@@ -170,10 +225,36 @@ def driver(model: BufferModel) -> dict[str, Any]:
     return out
 
 
+#: An on-die termination weaker than this is taken as none.
+TERMINATION_MAX_OHMS = 2000.0
+
+
+def _termination(model: BufferModel) -> Optional[float]:
+    """The resistance an input shows inside its rails: its clamp tables
+    carry the on-die termination there (a clamp diode alone carries
+    nothing between the rails). Both clamps in parallel, each read over
+    the middle half of the supply."""
+    if not model.voltage:
+        return None
+    g = 0.0
+    for table in (model.gnd_clamp, model.power_clamp):
+        r = _chord_r(table, 0.25 * model.voltage, 0.75 * model.voltage)
+        if r:
+            g += 1.0 / r
+    if g <= 1.0 / TERMINATION_MAX_OHMS:
+        return None
+    return 1.0 / g
+
+
 def receiver(model: BufferModel) -> dict[str, Any]:
+    """C_comp of a receiver and, where its clamp tables carry one, its
+    on-die termination."""
     out: dict[str, Any] = {"model": model.name}
     if model.c_comp[0] is not None:
         out["c_comp_f"] = model.c_comp[0]
+    r = _termination(model)
+    if r is not None:
+        out["r_term_ohms"] = r
     return out
 
 

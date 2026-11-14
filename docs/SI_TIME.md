@@ -68,8 +68,8 @@ By default, both ends are the reference impedance. Real ends change the eye: a 4
 
 | Option | Meaning |
 |---|---|
-| `tx_ibis`, `tx_model` | An IBIS driver. Its output resistance (the slope of its pull-down and pull-up V-I tables at 0 V), its C_comp, its 10-90 % edge (8/6 of the 20-80 % [Ramp] time) and its swing (rail to rail) replace the defaults. |
-| `rx_ibis`, `rx_model` | An IBIS receiver: its C_comp at the far end, high impedance. |
+| `tx_ibis`, `tx_model` | An IBIS driver. Its output resistance, its C_comp, its 10-90 % edge (8/6 of the 20-80 % [Ramp] time) and its swing (rail to rail) replace the defaults. The resistance is read from the pull-down and pull-up V-I tables between the rail and 30 % of the supply into the driving range: the side the transistor works on, not the clamp diode below the rail. Where one of the two barely conducts there (an n-channel pull-up), the stronger is used and a note says so. An input, terminator or series model is refused as a driver. |
+| `rx_ibis`, `rx_model` | An IBIS receiver: its C_comp at the far end. Where its clamp tables carry an on-die termination (current between the rails), that resistance loads the line; otherwise it is high impedance. `rx_r_ohms` overrides either. |
 | `tx_r_ohms`, `tx_c_pf` | Driver resistance and pad capacitance per side. |
 | `rx_r_ohms`, `rx_c_pf` | Receiver termination per side to ground (a number, or `open`) and pad capacitance. |
 
@@ -138,4 +138,6 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 - The eye is NRZ with no equalisation, jitter or noise. Transmitter FIR, CTLE and DFE, and statistical (BER) eyes, are not modelled.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
 - The convolution needs the channel on a uniform grid from df. Another grid is resampled through a fitted model, and the job says so.
+- The channel's frequency step sets the time its response covers (1/df). The eye is refused, with the step it needs, when that time is under three bits or the response is still ringing at its end: the response would wrap round onto itself. A board check gives a slow net with an eye more points so its sweep covers eight bits.
+- The linear IBIS buffer has no clamp diodes, so overshoot past the rails is not clipped.
 - A channel with very long delay needs many poles (about one per 50 ps of delay per 10 GHz of band). Fitting time grows with them.
