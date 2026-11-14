@@ -56,7 +56,8 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Return path | Each gap where the route crosses it, with what is crossed (a split between two nets, a slot, no copper) and how far along the route. At most six per net; a stripline with its other plane whole is a warning. |
 | Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap; for an aggressor on the facing signal layer, its layer and the dielectric between the two. The finding's detail ends with the gap that brings it within the limit. |
 | Delay match | The driving pin of each net too far ahead of the slowest of its target, with how far ahead it is and about how much trace matches it (its own delay per mil). |
-| Loss, return loss, skew, eye | The driving pin. |
+| Loss, return loss, skew | The driving pin. |
+| Eye, eye at the bit error rate, overshoot, ringback, edge reversal | The receiving pin: where the signal is judged. |
 
 On the test board, the 300 mil test-point stub that leaves the route 600 mil from the driver is placed at 618 mil.
 

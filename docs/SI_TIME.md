@@ -176,6 +176,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
   - With noise alone it is the Gaussian quantile, main cursor + sigma x Phi^-1(ber), within 2 parts in a million from 1e-3 down to 1e-18; the error rate at the threshold is the Gaussian tail within 0.1 % at 6e-16.
   - With ISI alone it steps through the patterns: four cursors give the worst case at any rate below 1 in 16 and the second-worst pattern at 0.1. Sixteen cursors of 0.07 close the worst-case eye; all sixteen line up once in 65536 bits, which is the error rate reported, and at 1e-3 the eye is that of fourteen against the bit.
   - Deterministic jitter of 3 samples either way gives the level 3 samples off the centre; random jitter of half a sample gives the level 4 samples off at 1e-12 and 2 samples off at 1e-3, as its tail probabilities say.
+  - 2000 cursors of 15 millionths, each a fifth of a voltage step, widen the levels as the Gaussian of their sum does (within 5 %), and the series they go through gives the eye that multiplying them out one by one gives, within a microvolt.
   - On a 0.8 m line at 5 Gb/s it lies between the worst-case eye and the PRBS eye; noise and jitter each lower it, a looser rate raises it, and peak noise takes twice its value off.
 - **Equalisation:**
   - The CTLE is 1 / boost at DC, and at its first pole it is the formula's value by hand; with no boost it is 1 everywhere.

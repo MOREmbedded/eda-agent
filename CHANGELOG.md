@@ -433,6 +433,13 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Signal integrity: eye findings sit at the receiving pin.** A board
+  check placed a failed eye at the driving pin; it is judged at the
+  receiver, where the edge findings already are.
+- **Signal integrity: the eye at a bit error rate is quick on long
+  sweeps.** Cursors far below a voltage step now go through the series of
+  ln cos together instead of one by one: a response of 1000 bits takes a
+  fifth of the time, and they are no longer taken at their worst.
 - **Signal integrity: the eye settles to the right level.** The pulse
   response took the first frequency point as DC. The step then sloped
   over its window, every bit left a small offset behind, and the offsets
