@@ -1168,6 +1168,8 @@ def test_the_eye_job_gives_the_statistical_eye_when_asked(tmp_path):
     ({"eye_at_ber_min_mv": -1}, "eye_at_ber_min_mv"),
     ({"rj_rms_ps": 60}, "the jitter reaches 510.0 ps"),
     ({"dj_pp_ps": 1200}, "more than half the 1000 ps bit"),
+    ({"sj_pp_ps": -2}, "sj_pp_ps is 0 or more"),
+    ({"sj_pp_ps": 600, "dj_pp_ps": 600}, "the jitter reaches 600.0 ps"),
 ])
 def test_statistical_eye_settings_are_checked(tmp_path, opt, text):
     f = ch.uniform_band(20e9, 400)
@@ -1370,3 +1372,82 @@ def test_the_worst_case_is_made_of_the_cursors_it_reports(levels):
         2 * (wc["main_cursor"] / (levels - 1) - wc["isi_sum"]), rel=1e-12)
     at_peak = np.sum(np.abs(p.p[p.peak_index % 32::32])) - abs(p.p[p.peak_index])
     assert wc["isi_sum"] < 0.4 * at_peak
+
+
+def test_sinusoidal_jitter_stays_where_a_sine_does():
+    dt, half = 1e-12, 4e-12
+    w = eye.jitter_weights(dt, 0, 0, 40, sj_pp=2 * half)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-15) and w == pytest.approx(w[::-1])
+    # the step at 4 ps holds the sine from 3.5 ps to its end; the middle step the least
+    assert w[n + 4] == pytest.approx(0.5 - np.arcsin(3.5 / 4) / np.pi, rel=1e-12)
+    assert w[n] == pytest.approx(2 * np.arcsin(0.5 / 4) / np.pi, rel=1e-12)
+    assert w[n + 5] == 0 and w[n + 4] == np.max(w) and w[n] == np.min(w[n - 4: n + 5])
+    assert np.sum(w * x ** 2) == pytest.approx(half ** 2 / 2 + dt ** 2 / 12, rel=0.03)
+    # around each of the two points of the deterministic part
+    two = eye.jitter_weights(dt, 0, 20e-12, 40, sj_pp=2 * half)
+    m = len(two) // 2
+    assert two[m + 10 - 4: m + 10 + 5] == pytest.approx(0.5 * w[n - 4: n + 5], abs=1e-15)
+    assert two[m - 5: m + 6] == pytest.approx(0, abs=1e-15)
+
+
+def test_sinusoidal_and_random_jitter_are_the_sine_under_the_gaussian():
+    from scipy.special import ndtr
+    dt, half, rj = 1e-12, 4e-12, 0.7e-12
+    w = eye.jitter_weights(dt, rj, 0, 40, sj_pp=2 * half)
+    n = len(w) // 2
+    x = np.arange(-n, n + 1) * dt
+    assert np.sum(w) == pytest.approx(1.0, abs=1e-14) and w == pytest.approx(w[::-1], rel=1e-9)
+    assert np.sum(w * x ** 2) == pytest.approx(rj ** 2 + half ** 2 / 2 + dt ** 2 / 12, rel=1e-3)
+    # against the sine at 200000 instants of its period, the Gaussian around each
+    phase = (np.arange(200000) + 0.5) / 200000 * 2 * np.pi
+    s = half * np.sin(phase)
+    for k in (0, 3, 4, 6, 8):
+        want = np.mean(ndtr(((k + 0.5) * dt - s) / rj) - ndtr(((k - 0.5) * dt - s) / rj))
+        assert w[n + k] == pytest.approx(want, rel=2e-4), k
+    # the tail past the sine is the Gaussian's: 3.5 ps beyond its end is 5 sigma
+    assert 1e-9 < np.sum(w[x > half + 3e-12]) < ndtr(-3.5e-12 / rj)
+    # with the two points of the deterministic part: all of it around each
+    three = eye.jitter_weights(dt, rj, 40e-12, 60, sj_pp=2 * half)
+    m = len(three) // 2
+    assert three[m + 20 - n + 3: m + 20 + n - 2] == pytest.approx(0.5 * w[3:-3], rel=1e-6)
+    assert three == pytest.approx(three[::-1], rel=1e-6, abs=1e-14)
+    # a sine of next to nothing leaves the random jitter alone
+    assert eye.jitter_weights(dt, rj, 0, 40, sj_pp=1e-17) == pytest.approx(
+        eye.jitter_weights(dt, rj, 0, 40), rel=1e-9, abs=0)
+
+
+def test_sinusoidal_jitter_takes_the_eye_to_the_sines_end():
+    p = _tri_pulse([1.0])                                # 16 steps a bit: 1/8 off per step
+    step = 1e-10 / 16
+    r = eye.statistical_eye(p, 0.8, 1e-12, sj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(0.8 * (1 - 3 / 8), abs=0.004)
+    two = eye.statistical_eye(p, 0.8, 1e-12, dj_pp=6 * step)
+    assert r["eye_height"] == pytest.approx(two["eye_height"], abs=0.004)
+    # at a shallow error rate the sine's middle counts where two points have none:
+    # with random jitter the sine's eye is the taller of the two
+    a = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step, sj_pp=6 * step)
+    b = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step, dj_pp=6 * step)
+    assert a["eye_height"] >= b["eye_height"]
+    none = eye.statistical_eye(p, 0.8, 1e-3, rj_rms=0.5 * step)
+    assert a["eye_height"] < none["eye_height"]
+
+
+def test_the_eye_job_takes_sinusoidal_jitter(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=5, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    none = run(ber=1e-12)[0]
+    sj, res = run(sj_pp_ps=30)                              # asks for the eye by itself
+    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.1
+    assert sj["eye_height_at_ber_mv"] < none["eye_height_at_ber_mv"]
+    assert any("30 ps peak to peak of sinusoidal jitter" in n for n in res["notes"])
+    # bounded: at 1e-12 it reaches where two points as far apart do
+    dj = run(dj_pp_ps=30)[0]
+    assert sj["eye_width_at_ber_ui"] == pytest.approx(dj["eye_width_at_ber_ui"], abs=1.01 / 32)
+    # they add: the sine around each of the two points
+    both = run(sj_pp_ps=30, dj_pp_ps=30)[0]
+    assert both["eye_width_at_ber_ui"] < sj["eye_width_at_ber_ui"] - 0.1

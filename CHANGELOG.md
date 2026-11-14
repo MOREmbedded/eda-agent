@@ -61,6 +61,10 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: sinusoidal jitter.** `sj_pp_ps` in `si_channel_eye`
+  and in a board-check target adds sinusoidal jitter to the eye at a bit
+  error rate, with the density of a sine (not two points), together with
+  the random and deterministic parts.
 - **Signal integrity: PAM4 limits at the symbol rate.** A routed net, a
   pair and a board-check target with `modulation: "pam4"` are now checked
   at half the data rate: the loss at Nyquist, the stub limit and the

@@ -574,3 +574,20 @@ def test_a_pam4_target_is_checked_at_its_symbol_rate(tmp_path):
     with pytest.raises(ValueError, match="no data rate"):
         target.pop("data_rate_gbps")
         board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "f", snapshot="t")
+
+
+def test_a_target_carries_sinusoidal_jitter_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 5, "z_tol_pct": 60, "eye": True,
+              "ber": 1e-12}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def metrics(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    none = metrics("a")
+    sj = metrics("b", sj_pp_ps=40)
+    assert sj["eye_width_at_ber_ui"] < none["eye_width_at_ber_ui"] - 0.05
+    assert sj["eye_height_at_ber_mv"] < none["eye_height_at_ber_mv"] - 10
+    assert sj["eye_height_mv"] == none["eye_height_mv"]     # the pattern's eye has no jitter
