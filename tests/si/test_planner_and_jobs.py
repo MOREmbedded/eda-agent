@@ -255,7 +255,9 @@ def test_signal_layer_references_are_named_and_warned():
         {"layer_id": 32, "name": "Bottom", "copper_thickness_mils": 1.4}]}
     secs = {s["label"]: s for s in planner.layer_sections(stack_from_stackup(st), planner.Options())}
     assert secs["Top"]["reference_label"] == "GND" and "note" not in secs["Top"]
-    assert secs["In1"]["reference_label"] == ["GND", "In2"]
+    # past the other signal layer to the plane beyond it, and the note names the layer passed
+    assert secs["In1"]["reference_label"] == ["GND", "PWR"] == secs["In2"]["reference_label"]
+    assert secs["In1"]["h_below_mils"] == pytest.approx(35.0)
     assert "In2" in secs["In1"]["note"] and "In1" in secs["In2"]["note"]
     res = si_jobs.run_stackup_plan({"se_ohms": 50, "diff_ohms": [], "layers": ["In1"]}, st,
                                    __import__("pathlib").Path(__import__("tempfile").mkdtemp()))

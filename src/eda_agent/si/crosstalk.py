@@ -253,20 +253,22 @@ class Coupling:
         cs, c0, _ = _rlgc.capacitance(sec, [self.f], self.res)
         c = cs[0].real
         ind = MU0 * EPS0 * np.linalg.inv(c0)
-        return (abs(c[0, 1]) / c[0, 0], abs(ind[0, 1]) / ind[0, 0],
-                math.sqrt(ind[0, 0] * c[0, 0]))
+        return (float(abs(c[0, 1]) / c[0, 0]), float(abs(ind[0, 1]) / ind[0, 0]),
+                float(math.sqrt(ind[0, 0] * c[0, 0])))
 
     # -- two layers that face each other ---------------------------------------------
 
     def facing(self, layer: str) -> list[tuple[str, float]]:
         """The signal layers right above and below ``layer`` with no plane
         between, each with the dielectric between them in mils."""
-        if self.stack is None:
-            return []
+        if self.stack is None or not any(x.kind == "plane" for x in self.stack.layers):
+            return []                 # with no plane there is no section to solve
         i = self.stack.index(layer)
         if i < 0:
             return []
         me = self.stack.layers[i]
+        if me.kind == "plane":
+            return []
         out = []
         for j in (i - 1, i + 1):
             if 0 <= j < len(self.stack.layers) and self.stack.layers[j].kind != "plane":
@@ -305,8 +307,9 @@ class Coupling:
             slabs.append(Slab(y2, top, lam(far_, cap)))
         w = {layer: width * MIL, other: other_width * MIL}
         x = {layer: 0.0, other: offset * MIL}
-        t = {near.name: Trace(x[near.name], w[near.name], y1, t1),
-             far_.name: Trace(x[far_.name], w[far_.name], y2, t2)}
+        etch = self.opt.etch_mils * MIL
+        t = {near.name: Trace(x[near.name], w[near.name], y1, t1, etch),
+             far_.name: Trace(x[far_.name], w[far_.name], y2, t2, etch)}
         return Section([t[layer], t[other]], slabs, 0.0, top, self.opt.plane_mils * MIL, None,
                        self.opt.copper, kind="broadside")
 
@@ -391,7 +394,9 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
         shared[r.aggressor] = shared.get(r.aggressor, 0.0) + r.length
     # runs that follow one another along the victim are one stretch: a curve
     # is many chords, and the stretch starts where its first chord does
-    stretch: dict[tuple[str, int], list] = {}    # (net, side) -> [start, end, length]
+    stretch: dict[tuple[str, int, str], list] = {}    # (net, side, facing layer) -> [start, end, length]
+    #: the longest stretch of each aggressor on its own layer and on each facing one
+    place: dict[tuple[str, str], list] = {}
     for r in runs:
         if shared[r.aggressor] < MIN_RUN_MILS:
             continue
@@ -411,17 +416,19 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
             g.strongest, g.layer = top, r.layer
             g.gap_mils, g.other, g.offset_mils = (r.sep, r.other, r.gap) if r.other \
                 else (r.gap, "", 0.0)
-        cur = stretch.get((r.aggressor, r.side))
+        cur = stretch.get((r.aggressor, r.side, r.other))
         if cur is not None and r.end is not None and math.dist(cur[1], r.at) <= JOIN_MILS:
             cur[1], cur[2] = r.end, cur[2] + r.length
         else:
-            cur = stretch[(r.aggressor, r.side)] = [r.at, r.end or r.at, r.length]
-        if cur[2] > g.longest:
-            g.longest, g.at = cur[2], cur[0]
+            cur = stretch[(r.aggressor, r.side, r.other)] = [r.at, r.end or r.at, r.length]
+        best = place.setdefault((key, r.other), [0.0, r.at])
+        if cur[2] > best[0]:
+            best[0], best[1] = cur[2], cur[0]
     for (key, _net, _side), (grow, top, sign) in near.items():
         groups[key].next += sign * min(grow, top)
-    for g in groups.values():
+    for key, g in groups.items():
         g.fext = max(-FEXT_CAP, min(FEXT_CAP, g.fext))
+        g.longest, g.at = place[(key, g.other)]
     rows = sorted(groups.values(), key=lambda g: -max(abs(g.next), abs(g.fext)))
     total_next = sum(abs(g.next) for g in rows)
     total_fext = min(sum(abs(g.fext) for g in rows), FEXT_CAP)

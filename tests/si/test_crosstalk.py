@@ -18,7 +18,8 @@ from eda_agent.si import channel as ch
 from eda_agent.si.jobs import plan_options
 from eda_agent.si.section import MIL
 
-from .boards import LAYERS, STACKUP, pair_board, single_net, smd
+from .boards import (DUAL_LAYERS, DUAL_STACKUP, LAYERS, STACKUP, pair_board, single_net,
+                     smd)
 
 RISE = 100e-12
 
@@ -348,3 +349,153 @@ def test_crosstalk_closes_the_eye_by_its_noise_on_both_rails(tmp_path):
     assert not next(x for x in res["verdicts"] if x["check"] == "eye open with noise")["pass"]
     with pytest.raises(ValueError, match="noise_mv"):
         eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": -1}, ts, tmp_path / "eye3")
+
+
+# -- the facing signal layer (broadside) --------------------------------------------
+
+@pytest.fixture(scope="module")
+def dual():
+    opt = plan_options({})
+    stack = stack_from_stackup(DUAL_STACKUP, DUAL_LAYERS)
+    info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+    return crosstalk.Coupling(info, opt, 0.35 / RISE, stack=stack)
+
+
+def dual_victim():
+    """The victim on a dual stripline board: its 2000 mil along x = 1000 is
+    on Sig1, 8 mil of dielectric above Sig2."""
+    b = victim()
+    b.layers = list(DUAL_LAYERS)
+    return b
+
+
+def under(b, net="AGG", offset=0.0, y1=200.0, y2=1800.0, width=4.0, layer="MidLayer2"):
+    """A track on the facing layer, ``offset`` to the side of the victim's
+    inner run, centre to centre."""
+    b.tracks.append(Track(layer, 1000 + offset, y1, 1000 + offset, y2, width, net))
+    return b
+
+
+def test_layers_face_each_other_only_with_no_plane_between(dual, coupling):
+    assert dual.facing("MidLayer1") == [("MidLayer2", 8.0)]
+    assert dual.facing("MidLayer2") == [("MidLayer1", 8.0)]
+    assert dual.facing("TopLayer") == [] and dual.facing("BottomLayer") == []
+    assert dual.facing("InternalPlane1") == [] and dual.facing("Nowhere") == []
+    assert coupling.facing("MidLayer1") == []          # no stack given: same layer only
+    stack = stack_from_stackup(STACKUP, LAYERS)        # a plane between every two signal layers
+    assert crosstalk.Coupling(coupling.info, coupling.opt, 1e9, stack=stack).facing("MidLayer1") == []
+    # two layers and no plane: nothing to solve the pair against
+    two = stack_from_stackup({"layers": [STACKUP["layers"][0], STACKUP["layers"][-1]]},
+                             [LAYERS[0], LAYERS[-1]])
+    assert [x.name for x in two.layers] == ["TopLayer", "BottomLayer"]
+    assert crosstalk.Coupling({}, coupling.opt, 1e9, stack=two).facing("TopLayer") == []
+
+
+def test_the_facing_section_stands_both_traces_between_their_planes(dual):
+    sec = dual.facing_section("MidLayer1", 4, "MidLayer2", 6, 3)
+    up, low = sec.traces                               # the first trace is the layer asked for
+    assert sec.kind == "broadside" and len(sec.traces) == 2
+    assert low.y == pytest.approx(5 * MIL) and low.width == pytest.approx(6 * MIL)
+    assert low.x == pytest.approx(3 * MIL) and up.x == 0 and up.width == pytest.approx(4 * MIL)
+    assert up.y == pytest.approx((5 + 0.7 + 8) * MIL)
+    assert sec.plane_above == pytest.approx((5 + 0.7 + 8 + 0.7 + 5) * MIL)
+    # asked from the other layer, the same picture with the traces swapped
+    low2, up2 = dual.facing_section("MidLayer2", 6, "MidLayer1", 4, 3).traces
+    assert (low2.y, low2.width, up2.y, up2.width) == (low.y, low.width, up.y, up.width)
+    assert low2.x == 0 and up2.x == pytest.approx(3 * MIL)
+
+
+def test_the_facing_formulas_agree_with_the_coupled_line_solved_in_full(dual):
+    """A trace on Sig2 right under one on Sig1 for 800 mil, and 6 mil to its
+    side: the near-end peak of the full four-port against the closed form."""
+    f = ch.uniform_band(20e9, 300)
+    for offset in (0.0, 6.0):
+        sec = dual.facing_section("MidLayer1", 4, "MidLayer2", 4, offset)
+        s = mtl.s_params(rlgc.compute(sec, f), 800 * MIL, 50.0)
+        _, near = net_model.step_response(f, s[:, 1, 0], RISE)
+        res = of(under(dual_victim(), offset=offset, y1=600, y2=1400), dual)
+        a = res["aggressors"][0]
+        assert a["next_pct"] == pytest.approx(100 * np.abs(near).max(), rel=0.05)
+        assert a["fext_pct"] < 0.3                      # one dielectric: no far end
+    assert 6 < a["next_pct"] < 9
+
+
+def test_a_track_on_the_facing_layer_is_an_aggressor(dual, coupling):
+    res = of(under(dual_victim()), dual)
+    a, = res["aggressors"]
+    assert a["aggressor"] == "AGG" and a["layer"] == "MidLayer1"
+    assert a["aggressor_layer"] == "MidLayer2" and a["offset_mils"] == 0
+    assert a["gap_mils"] == 8.0 and a["length_mils"] == 1600 and a["at_mils"] == [1000, 200]
+    assert 9 < a["next_pct"] < 12
+    # it falls as the track moves aside, the same on either side, and ends at the reach
+    side = [of(under(dual_victim(), offset=o), dual)["worst_pct"] for o in (0, 8, -8, 16, 30)]
+    assert side[0] > side[1] > side[3] > side[4] > 0 and side[1] == pytest.approx(side[2])
+    assert side[1] == pytest.approx(6.2, abs=0.6) and side[4] < 0.5
+    assert not of(under(dual_victim(), offset=40), dual)["aggressors"]
+    assert len(of(under(dual_victim(), offset=40), dual, reach_mils=50)["aggressors"]) == 1
+    # a wider track over it couples more
+    assert of(under(dual_victim(), width=12), dual)["worst_pct"] > side[0]
+    # crossing at right angles, on a layer that does not face it, or with no
+    # stack to say what faces what: nothing
+    b = dual_victim()
+    b.tracks.append(Track("MidLayer2", 600, 1000, 1400, 1000, 4, "AGG"))
+    assert not of(b, dual)["aggressors"]
+    assert not of(under(dual_victim(), layer="BottomLayer"), dual)["aggressors"]
+    assert not of(under(dual_victim()), crosstalk.Coupling(dual.info, dual.opt, dual.f))["aggressors"]
+    b = under(victim())
+    b.tracks[-1].layer = "BottomLayer"                  # the plane PWR lies between
+    stack = stack_from_stackup(STACKUP, LAYERS)
+    c = crosstalk.Coupling(coupling.info, coupling.opt, coupling.f, stack=stack)
+    assert not of(b, c)["aggressors"]
+
+
+def test_the_facing_layer_adds_to_the_same_layer_and_the_row_tells_the_stronger(dual):
+    b = under(dual_victim(), "BUS", y1=200, y2=600)
+    b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))   # 8 mil beside
+    a, = of(b, dual)["aggressors"]
+    alone = of(under(dual_victim(), "BUS", y1=200, y2=600), dual)["aggressors"][0]
+    assert a["length_mils"] == 1200 and a["next_pct"] >= alone["next_pct"]
+    assert a["aggressor_layer"] == "MidLayer2" and a["gap_mils"] == 8.0
+    assert a["at_mils"] == [1000, 200]
+    # with the facing track far to the side, the row is the one beside it
+    b = under(dual_victim(), "BUS", offset=24, y1=200, y2=600)
+    b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))
+    a, = of(b, dual)["aggressors"]
+    assert "aggressor_layer" not in a and a["gap_mils"] == 8.0 and a["at_mils"] == [1000, 1000]
+
+
+def test_a_dual_stripline_is_referenced_to_its_planes():
+    opt = plan_options({})
+    stack = stack_from_stackup(DUAL_STACKUP, DUAL_LAYERS)
+    info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+    s1, s2 = info["MidLayer1"], info["MidLayer2"]
+    assert s1["structure"] == "stripline"
+    assert s1["reference"] == ["InternalPlane1", "InternalPlane2"] == s2["reference"]
+    assert (s1["h_above_mils"], s1["h_below_mils"]) == (5.0, 13.0)
+    assert (s2["h_above_mils"], s2["h_below_mils"]) == (13.0, 5.0)
+    assert "signal layer Sig2 lies between" in s1["note"] and "Sig1 lies between" in s2["note"]
+    assert "note" not in info["TopLayer"] and info["TopLayer"]["reference"] == "InternalPlane1"
+    z = planner.impedances(planner.build(s1, opt, 4 * MIL), 1e9)["z0"]
+    assert 54 < z < 60                                  # 5 mil to one plane, 13.7 to the other
+    # with no plane on a side, the next layer is the reference as before
+    two = stack_from_stackup({"layers": [STACKUP["layers"][0], STACKUP["layers"][-1]]},
+                             [LAYERS[0], LAYERS[-1]])
+    top = planner.layer_sections(two, opt)[0]
+    assert top["reference"] == "BottomLayer" and "keep it solid" in top["note"]
+
+
+def test_the_net_job_and_the_board_check_say_which_layer(tmp_path):
+    b = under(dual_victim())
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), DUAL_STACKUP, tmp_path / "a")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert not v["pass"]
+    assert "1600 mil on MidLayer2 across 8.0 mil of dielectric from MidLayer1" in v["detail"], v["detail"]
+    row = res["figures"]["crosstalk"][0]
+    assert row["aggressor_layer"] == "MidLayer2" and row["offset_mils"] == 0
+    spec = {"targets": [{"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2}],
+            "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), DUAL_STACKUP, tmp_path / "x", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
+    assert f["at_mils"] == [1000.0, 200.0] and f["layer"] == "MidLayer1"
+    assert f["where"] == "runs 1600 mil across from AGG on MidLayer2, 8.0 mil of dielectric between"
