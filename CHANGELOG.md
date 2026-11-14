@@ -428,6 +428,14 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **The dashboard's background threads can be stopped.** `create_app`
+  started a log tailer, a sentinel watcher and a heartbeat that ran until
+  the process ended; `eda_agent.web.dashboard.stop_background()` now ends
+  them, and the test run calls it after every module. The tailer waits on
+  its stop event instead of sleeping, so it ends at once. Before, each
+  test module that built an app left three threads polling in its xdist
+  worker, and a test that patched `time.sleep` counted the tailer's sleeps
+  as its own (592 where it expected 2).
 - **eda-agent installs on Python 3.15 again.** pyamg 5.4 has no wheel for
   3.15 yet, so pip built it from source and, without a C++ toolchain, the
   whole `pip install` failed. pyamg is now required only below 3.15. The

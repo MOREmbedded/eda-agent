@@ -42,7 +42,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from eda_agent.atomicfile import replace_with_retry
 
 from flask import Flask, Response, jsonify, send_from_directory, stream_with_context
@@ -462,19 +462,22 @@ class ActivityTailer:
         return offset
 
     def _run(self) -> None:
+        # The pauses wait on the stop event, not time.sleep: stop() then
+        # ends the thread at once, and a test that patches time.sleep for
+        # its own thread does not turn this loop into a busy spin.
         offset = 0
         while not self._stop.is_set():
             try:
                 if not self.log_path.exists():
-                    time.sleep(0.5)
+                    self._stop.wait(0.5)
                     continue
                 if self.log_path.stat().st_size == offset:
-                    time.sleep(0.3)
+                    self._stop.wait(0.3)
                     continue
                 offset = self.read_new(offset)
             except OSError as e:
                 logger.debug("dashboard tailer read failed: %s", e)
-                time.sleep(0.5)
+                self._stop.wait(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +825,27 @@ def _static_icon(name: str, mimetype: str) -> Response:
 SHUTDOWN: dict[str, Any] = {}
 
 
+#: One stop function per app create_app built: its log tailer, sentinel
+#: watcher and heartbeat, which otherwise run as daemon threads until the
+#: process ends. The dashboard process never needs this; a test run that
+#: builds an app in many test modules does, or every module leaves three
+#: threads polling in its xdist worker.
+_BACKGROUND: list[Callable[[], None]] = []
+
+
+def stop_background() -> int:
+    """Stop the background threads of every app built so far; how many."""
+    n = 0
+    while _BACKGROUND:
+        stop = _BACKGROUND.pop()
+        try:
+            stop()
+        except Exception:  # noqa: BLE001 - stopping is best effort
+            logger.debug("dashboard background stop failed", exc_info=True)
+        n += 1
+    return n
+
+
 def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     if workspace_dir is None:
         workspace_dir = get_config().workspace_dir
@@ -885,6 +909,14 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         except OSError: pass
     import atexit as _atexit
     _atexit.register(_remove_heartbeat)
+
+    def _stop_threads() -> None:
+        tailer.stop()
+        sentinel_stop.set()
+        heartbeat_stop.set()
+        sentinel_thread.join(timeout=2.0)
+        heartbeat_thread.join(timeout=2.0)
+    _BACKGROUND.append(_stop_threads)
 
     app = Flask("eda-agent-dashboard")
     # Before any route, and before anything reads the body.
