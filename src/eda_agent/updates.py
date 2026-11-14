@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -480,11 +481,49 @@ def remove_old_launchers() -> int:
     return removed
 
 
+_PROBE = ("import importlib.metadata as m; m.version('eda-agent'); "
+          "import eda_agent.updates")
+
+
+def _install_works() -> tuple[bool, str]:
+    """Whether a new Python finds eda-agent installed and can import it.
+
+    pip can end an editable reinstall with the old install removed and the
+    new one not written (a file held open, a stopped build) and still be
+    taken for done; what is left is an empty ``eda_agent`` folder that
+    imports as nothing. Asked from a new process, away from the clone, so
+    that neither this process's modules nor the folder it stands in answer
+    for the install."""
+    try:
+        done = subprocess.run([sys.executable, "-c", _PROBE], cwd=tempfile.gettempdir(),
+                              capture_output=True, text=True, timeout=_STEP_TIMEOUT_S,
+                              **no_window())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    lines = (done.stdout + done.stderr).strip().splitlines()
+    return done.returncode == 0, lines[-1] if lines else ""
+
+
 def _reinstall(root: Path) -> dict[str, Any]:
-    """pip install -e of the clone, with the running launchers set aside."""
+    """pip install -e of the clone, with the running launchers set aside.
+    The install is then asked for from a new Python; one that is not there
+    is installed once more, and reported as failed if it still is not."""
     moved = _set_launchers_aside()
-    result = _step([sys.executable, "-m", "pip", "install", "-e", str(root)],
-                   root, _PIP_TIMEOUT_S)
+    argv = [sys.executable, "-m", "pip", "install", "-e", str(root)]
+    result = _step(argv, root, _PIP_TIMEOUT_S)
+    if result["ok"]:
+        works, why = _install_works()
+        if not works:
+            result = _step(argv, root, _PIP_TIMEOUT_S)
+            if result["ok"]:
+                works, why = _install_works()
+            if result["ok"] and not works:
+                result = {"ok": False, "output": (
+                    f"pip ended without an error, but eda-agent is not installed ({why}). "
+                    f"Run: \"{sys.executable}\" -m pip install -e \"{root}\"")}
+            elif result["ok"]:
+                result["output"] = ("the first install left eda-agent uninstalled; "
+                                    "installed again\n" + result["output"]).strip()
     if not result["ok"]:
         _put_launchers_back(moved)
     result["python"] = sys.executable
