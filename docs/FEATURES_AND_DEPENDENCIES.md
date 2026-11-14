@@ -121,7 +121,13 @@ install** (or **Location**, once found). The variables are the ones in
 `EDA_AGENT_NGSPICE`, `EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_KICAD_CLI`,
 `EDA_AGENT_FREECADCMD` and `EDA_AGENT_PCB_TOOLKIT`. A saved location is a
 default: the same variable set in the environment wins. A path that does
-not exist is refused.
+not exist is refused, and when a variable names a place where nothing
+usable is found, the report says so instead of only "missing".
+
+A program that is found but too old to work is reported as **wrong
+version** with the reason: eda-agent needs ngspice 30 or later, and the
+ngspice 26 that EAGLE ships ignores a deck's `.control` block in batch
+mode, so its runs do nothing.
 
 Switches and locations live in `%USERPROFILE%\.eda-agent\features.json`
 (`EDA_AGENT_FEATURES_FILE` names another file).

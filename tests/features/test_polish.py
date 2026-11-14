@@ -170,6 +170,38 @@ def test_ngspice_is_found_where_it_is_named(tmp_path, choices, monkeypatch):
     assert ng.find_ngspice() == str(exe)
 
 
+def test_both_ngspice_banners_give_a_version():
+    from eda_agent.sim.ngspice import parse_ngspice_version
+    assert parse_ngspice_version("******\n** ngspice-47 : Circuit level simulation") == "47"
+    assert parse_ngspice_version("ngspice compiled from ngspice revision 26") == "26"
+    assert parse_ngspice_version("nothing here") == ""
+
+
+def test_an_ngspice_too_old_for_the_decks_is_flagged(monkeypatch):
+    monkeypatch.setitem(detect.PROGRAMS, "ngspice", lambda deep: ("/x/ngspice", "26"))
+    st = detect.dependency_status(cat.dependency("ngspice"), deep=True)
+    assert st.state == detect.OUTDATED and ".control" in st.detail
+    f = cat.feature("spice")
+    deps = {"ngspice": st, "ltspice": detect.DepStatus("ltspice", detect.MISSING)}
+    assert detect.feature_status(f, deps, False).state == detect.NEEDS
+    monkeypatch.setitem(detect.PROGRAMS, "ngspice", lambda deep: ("/x/ngspice", "47"))
+    assert detect.dependency_status(cat.dependency("ngspice")).state == detect.PRESENT
+    monkeypatch.setitem(detect.PROGRAMS, "ngspice", lambda deep: ("/x/ngspice", ""))
+    assert detect.dependency_status(cat.dependency("ngspice")).state == detect.PRESENT
+
+
+def test_a_wrong_location_says_so(tmp_path, choices, monkeypatch):
+    monkeypatch.setitem(detect.PROGRAMS, "ngspice", lambda deep: ("", ""))
+    monkeypatch.setenv("EDA_AGENT_NGSPICE", str(tmp_path / "gone"))
+    st = detect.dependency_status(cat.dependency("ngspice"))
+    assert st.state == detect.MISSING and "does not exist" in st.detail
+    monkeypatch.setenv("EDA_AGENT_NGSPICE", str(tmp_path))
+    st = detect.dependency_status(cat.dependency("ngspice"))
+    assert "no usable ngspice" in st.detail
+    monkeypatch.delenv("EDA_AGENT_NGSPICE")
+    assert detect.dependency_status(cat.dependency("ngspice")).detail == ""
+
+
 def test_freecad_and_kicad_cli_follow_their_variables(tmp_path, choices, monkeypatch):
     from eda_agent.convert.altium_kicad import pipeline
     from eda_agent.design import models3d

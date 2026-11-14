@@ -221,7 +221,8 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("ngspice", "ngspice", PROGRAM, "BSD-3-Clause",
                "https://ngspice.sourceforge.io/download.html",
                env=("EDA_AGENT_NGSPICE",),
-               manual="Windows: unzip the ngspice release from "
+               manual="eda-agent needs ngspice 30 or later; the copy EAGLE ships "
+                      "(ngspice 26) is too old. Windows: unzip the ngspice release from "
                       "ngspice.sourceforge.io (to C:\\Spice64 or Program Files, "
                       "where eda-agent looks), or `scoop install ngspice`, or "
                       "set EDA_AGENT_NGSPICE to ngspice_con.exe. Linux: install "

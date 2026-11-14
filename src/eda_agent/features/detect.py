@@ -326,9 +326,42 @@ def _dependency_status(dep: Dependency, deep: bool,
             except Exception as exc:  # noqa: BLE001 - a broken finder is "not found"
                 return DepStatus(dep.id, MISSING, detail=f"the check failed: {exc}")
         if path:
+            too_old = _too_old(dep.id, ver)
+            if too_old:
+                return DepStatus(dep.id, OUTDATED, ver, where=path, detail=too_old)
             return DepStatus(dep.id, PRESENT, ver, where=path)
-        return DepStatus(dep.id, UNSUPPORTED if why else MISSING, detail=why)
+        return DepStatus(dep.id, UNSUPPORTED if why else MISSING,
+                         detail=why or _bad_setting(dep))
     raise ValueError(f"unknown dependency kind {dep.kind!r}")
+
+
+def _too_old(dep_id: str, version: str) -> str:
+    """Why a program found here is too old to use, or ""."""
+    if dep_id != "ngspice" or not version:
+        return ""
+    from ..sim.ngspice import NGSPICE_MIN
+    try:
+        major = int(float(version))
+    except ValueError:
+        return ""
+    if major >= NGSPICE_MIN:
+        return ""
+    return (f"ngspice {version} is too old: it ignores a deck's .control block in "
+            f"batch mode, so eda-agent's runs do nothing. Install ngspice "
+            f"{NGSPICE_MIN} or later (the current release is best).")
+
+
+def _bad_setting(dep: Dependency) -> str:
+    """When a variable names where a program is and nothing usable is
+    there, say so: a wrong setting reads like a missing program."""
+    for name in dep.env:
+        value = os.environ.get(name, "").strip().strip('"')
+        if not value:
+            continue
+        if not Path(value).exists():
+            return f"{name} points at {value}, which does not exist"
+        return f"{name} points at {value}, where no usable {dep.title} was found"
+    return ""
 
 
 def applies_here(dep: Dependency) -> bool:

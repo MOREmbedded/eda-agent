@@ -117,8 +117,23 @@ def ngspice_version(path: str) -> str:
                              timeout=20, **no_window()).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
-    m = re.search(r"ngspice-(\d+(?:\.\d+)?)", out)
+    return parse_ngspice_version(out)
+
+
+def parse_ngspice_version(banner: str) -> str:
+    """The version in ``ngspice -v``'s banner: "ngspice-47" in current
+    releases, "ngspice compiled from ngspice revision 26" in old ones
+    (the copy EAGLE ships)."""
+    m = re.search(r"ngspice-(\d+(?:\.\d+)?)", banner) \
+        or re.search(r"ngspice revision (\d+(?:\.\d+)?)", banner)
     return m.group(1) if m else ""
+
+
+#: The oldest ngspice eda-agent's decks are known to need. ngspice 26
+#: (shipped with EAGLE 9) ignores a deck's .control block in batch mode,
+#: so nothing runs; ngspice 47 is the release the decks are checked in.
+#: Releases between the two are untested; 30 is a conservative floor.
+NGSPICE_MIN = 30
 
 
 def simulator_backends() -> dict:
