@@ -511,6 +511,25 @@ def validate_error_response(resp: dict, request_id: str,
         assert resp["error"]["code"] == expected_code
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _stop_dashboard_threads():
+    """Stop the dashboard threads a test module started, when it ends.
+
+    ``create_app`` starts a log tailer, a sentinel watcher and a heartbeat
+    as daemon threads, and nothing stopped them: every module that built an
+    app left three threads polling in its xdist worker for the rest of the
+    run. A later test that patched ``time.sleep`` then counted the tailer's
+    sleeps too (592 of them, where it expected 2). Per module, not per
+    test, so a module whose tests share one app keeps its tailer running.
+    The dashboard is only looked up, never imported here, so Flask is not
+    loaded for modules that never touched it."""
+    import sys
+    yield
+    dashboard = sys.modules.get("eda_agent.web.dashboard")
+    if dashboard is not None and hasattr(dashboard, "stop_background"):
+        dashboard.stop_background()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_workspace_pointer(tmp_path_factory):
     r"""Keep the whole test session away from the machine-global pointer.
