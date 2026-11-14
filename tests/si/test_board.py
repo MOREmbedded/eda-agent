@@ -131,7 +131,9 @@ def board_run(tmp_path_factory):
 def test_findings_are_placed_where_the_faults_are(board_run):
     res, _ = board_run
     fs = res["figures"]["findings"]
-    by = {(f["item"], f["check"]): f for f in fs}
+    by: dict = {}
+    for f in fs:
+        by.setdefault((f["item"], f["check"]), f)
     tee = by[("SIG", "impedance")]
     # the 300 mil test-point stub leaves the top run 600 mil from U1.1 (at y = 3000)
     assert tee["at_mils"][1] == pytest.approx(3000, abs=1)
@@ -175,6 +177,29 @@ def test_a_net_that_cannot_be_modelled_is_a_warning(tmp_path):
                                                  "vias": [], "arcs": [], "diff_pairs": []}), {})
     with pytest.raises(ValueError, match="no data rate"):
         board_jobs.run_board_si({"targets": [{"match": "SIG"}]}, b.to_dict(), STACKUP, tmp_path)
+
+
+def test_a_wide_section_in_an_off_target_line_gets_its_own_finding(tmp_path):
+    from eda_agent.layout.model import Track
+    b = single_net(with_stub=False, with_return_via=False, inner=0)
+    b.vias = []
+    b.pads[1].x, b.pads[1].y = 2400, 0
+    b.tracks = [Track("TopLayer", 0, 0, 1000, 0, 4, "SIG"),
+                Track("TopLayer", 1000, 0, 1400, 0, 20, "SIG"),
+                Track("TopLayer", 1400, 0, 2400, 0, 4, "SIG")]
+    res = board_jobs.run_board_si({"targets": [{"match": "SIG", "data_rate_gbps": 10,
+                                                "z_target": 50, "z_tol_pct": 10}],
+                                   "points": 200, "f_max_ghz": 20}, b.to_dict(), STACKUP,
+                                  tmp_path)
+    imp = [f for f in res["figures"]["findings"] if f["check"] == "impedance"]
+    zs = [float(f["where"].split("TDR ")[1].split(" ohm")[0]) for f in imp]
+    assert len(imp) >= 2 and min(zs) < 45 < 55 < max(zs)
+    low = min(imp, key=lambda f: float(f["where"].split("TDR ")[1].split(" ohm")[0]))
+    # the 20 mil section starts 1000 mil from U1.1
+    assert low["at_mils"][0] == pytest.approx(1000, abs=60) and low["at_mils"][1] == 0
+    assert len({tuple(f["at_mils"]) for f in imp}) == len(imp)
+    assert [f["id"] for f in res["figures"]["findings"]] == \
+        [f"F{i + 1}" for i in range(len(res["figures"]["findings"]))]
 
 
 # -- the job graph -----------------------------------------------------------------------------
@@ -247,6 +272,12 @@ def test_tool_marks_failing_nets_in_altium(tmp_path, monkeypatch):
     errs = [f for f in out["findings"] if f["severity"] == "error"]
     assert len(texts) == len(errs) and all(p["layer"] == "Mechanical13" for p in texts)
     assert texts[0]["text"].startswith("SI F1 ")
+    # the markers of an earlier run are removed first, and only those
+    cmds = [c for c, _ in br.sent]
+    assert cmds.index("generic.delete_objects") < cmds.index("pcb.place_text")
+    gone = next(p for c, p in br.sent if c == "generic.delete_objects")
+    assert gone["object_type"] == "eTextObject"
+    assert gone["filter"] == "Text~SI F* *|InComponent=false"
     # a stale snapshot: results, but no text written on the board
     pcb = tmp_path / "b.PcbDoc"
     pcb.write_text("x")
@@ -260,3 +291,74 @@ def test_tool_marks_failing_nets_in_altium(tmp_path, monkeypatch):
     assert stale["snapshot"]["stale"] is True and "changed" in stale["marked"]["error"]
     assert not br.sent
     assert _call(m, "si_board_check", {"mark": "paint"})["ok"] is False
+    # an edit that is not saved leaves the file as it was: the board is read again
+    import eda_agent.layout.read_altium as ra
+    rec = snap.save(LayoutBoard.load(str(bp)), STACKUP, str(pcb))
+    args = {"snapshot": rec["id"], "mark": "text",
+            "options": {"data_rate_gbps": 8, "points": 80, "f_max_ghz": 8}}
+    edited = LayoutBoard.load(str(bp))
+    edited.tracks[0].x2 += 10
+    for live, written in ((edited, False), (LayoutBoard.load(str(bp)), True)):
+        monkeypatch.setattr(ra, "read_live_board", lambda path, live=live: live)
+        br.sent.clear()
+        out = _call(m, "si_board_check", args)
+        assert out["snapshot"]["stale"] is False
+        assert bool([c for c, _ in br.sent if c == "pcb.place_text"]) is written
+        assert ("not saved yet" in out["marked"].get("error", "")) is not written
+
+    def gone_board(path):
+        raise RuntimeError("another document is in front")
+    monkeypatch.setattr(ra, "read_live_board", gone_board)
+    br.sent.clear()
+    out = _call(m, "si_board_check", args)
+    assert "another document is in front" in out["marked"]["error"] and not br.sent
+    # highlighting writes nothing on the board and needs no second read
+    out = _call(m, "si_board_check", {**args, "mark": "highlight"})
+    assert out["marked"]["highlighted"] == ["D_P", "D_N"]
+
+
+def test_dielectric_layers_of_the_physical_stack_fill_a_bare_stackup(monkeypatch):
+    from eda_agent.emc.stack import fill_dielectrics
+    from eda_agent.si import planner
+    from eda_agent.tools.si import read_live_stackup
+    bare = {"layers": [
+        {"layer_id": 1, "name": "Top Layer", "copper_thickness_mils": 1.4,
+         "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0},
+        {"layer_id": 32, "name": "Bottom Layer", "copper_thickness_mils": 1.4,
+         "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0}]}
+    phys = {"layers": [
+        {"name": "Top Solder", "kind": "dielectric", "thickness_mils": 0.4, "constant": 3.5,
+         "dielectric_type": 3},
+        {"name": "Top Layer", "kind": "copper", "thickness_mils": 1.4},
+        {"name": "Dielectric 1", "kind": "dielectric", "thickness_mils": 6.0, "constant": 4.8,
+         "material": "FR-4", "dielectric_type": 1},
+        {"name": "Dielectric 2", "kind": "dielectric", "thickness_mils": 2.0, "constant": 4.0,
+         "material": "PP", "dielectric_type": 2},
+        {"name": "Bottom Layer", "kind": "copper", "thickness_mils": 1.4},
+        {"name": "Bottom Solder", "kind": "dielectric", "thickness_mils": 0.4, "constant": 3.5,
+         "dielectric_type": 3}]}
+    out = fill_dielectrics(bare, phys)
+    top = out["layers"][0]
+    assert top["dielectric_height_mils"] == 8.0 and top["dielectric_type"] == "Core"
+    assert top["dielectric_constant"] == pytest.approx((6 * 4.8 + 2 * 4.0) / 8)
+    assert out["dielectric_from_physical_stack"] == ["Top Layer"]
+    assert bare["layers"][0]["dielectric_height_mils"] == 0          # a copy
+    info = planner.layer_sections(stack_from_stackup(out), planner.Options())[0]
+    assert info["h_mils"] == pytest.approx(8.0)
+    # a stackup that has its dielectric is left alone, and so is a mismatch
+    assert fill_dielectrics(STACKUP, phys) is STACKUP
+    assert fill_dielectrics(bare, {"layers": phys["layers"][:3]}) is bare
+
+    class B:
+        def __init__(self, st):
+            self.st, self.sent = st, []
+
+        async def send_command_async(self, command, params, timeout=None):
+            self.sent.append(command)
+            return self.st if command == "pcb.get_layer_stackup" else phys
+    b = B(bare)
+    got = asyncio.run(read_live_stackup(b))
+    assert got["layers"][0]["dielectric_height_mils"] == 8.0
+    assert b.sent == ["pcb.get_layer_stackup", "pcb.physical_stack"]
+    b = B(STACKUP)
+    assert asyncio.run(read_live_stackup(b)) is STACKUP and b.sent == ["pcb.get_layer_stackup"]

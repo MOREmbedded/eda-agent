@@ -42,6 +42,7 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Check | Placed at |
 |---|---|
 | Impedance | Where the TDR sees the fault. The fault starts where the TDR first moves half way to its worst value (a tee holds its dip until the stub's own reflection returns, so the worst point is its end). Half that time is the one-way time. The routed path is walked at each trace section's own delay per mil, with vias as instant, and the point reached is the fault. |
+| Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most three per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
 | Loss, return loss, skew, eye | The driving pin. |
 
@@ -78,7 +79,10 @@ The job folder holds:
 `si_board_check(..., mark=...)`:
 - `none` (default): results only.
 - `highlight`: the failing nets are highlighted on the board (the first clears earlier highlights).
-- `text`: also writes each error's id and check (`SI F3 impedance`) as text on `marker_layer` (default `Mechanical13`) at its place. This changes the board, so it is used only when the user asked for it. It is refused when the snapshot is stale, because the board has changed since and the places may no longer be right.
+- `text`: also writes each error's id and check (`SI F3 impedance`) as text on `marker_layer` (default `Mechanical13`) at its place. This changes the board, so it is used only when the user asked for it.
+  - The free texts of an earlier run (those that start with `SI F`) are removed first, so a second run replaces the markers.
+  - It is refused when the snapshot is stale, because the board has changed since and the places may no longer be right.
+  - An edit that is not saved yet leaves the file as it was. So the board is read again before anything is written, and the markers are refused if it differs from the snapshot or if another document is in front.
 
 ## The job graph
 
@@ -109,5 +113,5 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
 ## Limits
 
 - **Coupling between nets:** each net is modelled on its own. Crosstalk between neighbouring nets is in the [line models](SI_LINES.md) for a uniform stretch but not yet board-wide.
-- **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it.
+- **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it. A stretch that follows a large step is placed late, because the step's own reflections blur the TDR behind it.
 - **Altium markers:** marking uses highlights and text. Altium's violation list is not written.

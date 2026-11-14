@@ -17,7 +17,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 
 ## From the board to a channel
 
-1. **Snapshot.** `si_board_snapshot` reads the board's copper and stackup from Altium once and keeps them in a folder named by their content hash. Every job made from one snapshot is about the same board.
+1. **Snapshot.** `si_board_snapshot` reads the board's copper and stackup from Altium once and keeps them in a folder named by their content hash. Every job made from one snapshot is about the same board. Where the stackup carries no dielectric beneath a copper layer, it is taken from Altium's own dielectric layers between the two coppers (several add up, with the thickness-weighted permittivity).
    - A snapshot also records the board file's size and save time. Once the file is saved again, the snapshot, and each result made from it, reports `stale: true`.
    - The rules are not applied from a stale snapshot.
 2. **Path.**
