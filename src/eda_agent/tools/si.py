@@ -129,7 +129,7 @@ def register_si_tools(mcp) -> None:
                     inputs["stackup"] = stackup_file
                 else:
                     from ..bridge import get_bridge
-                    st = await get_bridge().send_command_async("pcb.get_layer_stackup", {})
+                    st = await read_live_stackup(get_bridge())
                     if not isinstance(st, dict) or not st.get("layers"):
                         return {"ok": False, "error": "could not read the board's stackup; "
                                 "pass stackup_file or give the cross-section by numbers"}
@@ -187,7 +187,7 @@ def register_si_tools(mcp) -> None:
             else:
                 from ..bridge import get_bridge
                 bridge = get_bridge()
-                st = await bridge.send_command_async("pcb.get_layer_stackup", {})
+                st = await read_live_stackup(bridge)
                 if not isinstance(st, dict) or not st.get("layers"):
                     return {"ok": False, "error": "could not read the board's stackup; "
                             "open a board or pass stackup_file"}
@@ -249,7 +249,7 @@ async def _snapshot_from_args(snapshot: str, expect_file: str, board_json_path: 
     if stackup_json_path:
         stackup = json.loads(open(stackup_json_path, encoding="utf-8").read())
     else:
-        reply = await get_bridge().send_command_async("pcb.get_layer_stackup", {})
+        reply = await read_live_stackup(get_bridge())
         if isinstance(reply, dict) and reply.get("layers"):
             stackup = reply
     rec = await asyncio.to_thread(snap.save, board, stackup, expect_file)
@@ -561,6 +561,49 @@ def _ibis_models_tool(mcp) -> None:
             return _failed(exc)
 
 
+#: What every marker text starts with: "SI F3 impedance". A marking run
+#: removes the free texts that start so before it writes its own.
+MARKER_PREFIX = "SI F"
+
+
+async def unsaved_edit(rec: dict[str, Any]) -> str:
+    """Why the focused board is not the snapshot's board as it was read,
+    or "". The snapshot's own staleness looks at the saved file, and an
+    edit that is not saved yet leaves the file as it was: so the board is
+    read again and compared before anything is written on it."""
+    from ..layout.read_altium import read_live_board
+    try:
+        live = await asyncio.to_thread(read_live_board, rec["source_file"])
+    except Exception as exc:  # noqa: BLE001
+        return f"the board could not be read again ({exc})"
+    now = json.dumps(live.to_dict(), sort_keys=True, separators=(",", ":"))
+    try:
+        then = open(rec["board"], encoding="utf-8").read()
+    except OSError as exc:
+        return f"the snapshot's board is not readable ({exc})"
+    return "" if now == then else "the board was edited since the snapshot (not saved yet)"
+
+
+async def read_live_stackup(bridge) -> Any:
+    """The focused board's stackup, with the dielectric taken from its
+    physical stack where the stackup reply carries none."""
+    from ..emc.stack import fill_dielectrics, stack_from_stackup
+    st = await bridge.send_command_async("pcb.get_layer_stackup", {})
+    if not isinstance(st, dict) or not st.get("layers"):
+        return st
+    try:
+        bare = any(a.z_mils == b.z_mils for a, b in
+                   zip(stack_from_stackup(st).layers, stack_from_stackup(st).layers[1:]))
+    except Exception:  # noqa: BLE001
+        bare = True
+    if not bare:
+        return st
+    phys = await bridge.send_command_async("pcb.physical_stack", {})
+    if isinstance(phys, dict) and phys.get("layers"):
+        return fill_dielectrics(st, phys)
+    return st
+
+
 async def mark_findings(findings: list[dict[str, Any]], board_nets: dict[str, list[str]],
                         mode: str, layer: str, height: float = 40.0) -> dict[str, Any]:
     """Show board-SI findings in Altium: highlight the failing nets, and
@@ -582,6 +625,15 @@ async def mark_findings(findings: list[dict[str, Any]], board_nets: dict[str, li
         (out["highlighted"] if not (isinstance(r, dict) and r.get("error")) else out["errors"]
          ).append(n if not (isinstance(r, dict) and r.get("error")) else f"{n}: {r.get('error')}")
     if mode == "text":
+        # the markers of an earlier run go first, or each run adds a set
+        from ..scope import to_wire
+        r = await bridge.send_command_async("generic.delete_objects", {
+            "scope": to_wire("active_doc"), "object_type": "eTextObject",
+            "filter": f"Text~{MARKER_PREFIX}* *|InComponent=false"})
+        if isinstance(r, dict) and r.get("error"):
+            out["errors"].append(f"earlier markers not removed: {r.get('error')}")
+        else:
+            out["removed"] = int((r or {}).get("matched", 0) or 0) if isinstance(r, dict) else 0
         for f in errs:
             at = f.get("at_mils")
             if not at:
@@ -684,6 +736,12 @@ def _register_si_board_tools(mcp) -> None:
                     reply["marked"] = {"error": "no markers written: the board changed since "
                                                 "the snapshot"}
                     return reply
+                if mark == "text" and rec.get("stale") is False:
+                    why = await unsaved_edit(rec)
+                    if why:
+                        reply["marked"] = {"error": f"no markers written: {why}; take a new "
+                                                    "snapshot and run it again"}
+                        return reply
                 from ..layout.model import LayoutBoard
                 board = await asyncio.to_thread(LayoutBoard.load, rec["board"])
                 nets = {f"pair {d.name}": [d.positive, d.negative] for d in board.diff_pairs}

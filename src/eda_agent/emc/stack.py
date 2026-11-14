@@ -163,6 +163,49 @@ def _build(entries: list[tuple[str, str, str, float, float, float, str]],
     return stack
 
 
+def fill_dielectrics(stackup: dict, physical: dict) -> dict:
+    """``stackup`` (a ``pcb_get_layer_stackup`` reply) with the dielectric
+    beneath each copper layer taken from ``physical`` (a
+    ``pcb_physical_stack`` reply) where the stackup has none.
+
+    Altium keeps core and prepreg as layers of their own between the
+    copper. The stackup reply carries only what each copper layer says
+    about the dielectric beneath it, and on some boards that is nothing.
+    The copper layers of the two replies are matched in order; several
+    dielectric layers between two coppers add up, with the thickness
+    weighted permittivity. Returns a copy; ``stackup`` is left as it is
+    when the two do not have the same number of copper layers."""
+    rows = [dict(r) for r in (stackup.get("layers") or [])]
+    kept = [r for r in (physical.get("layers") or []) if r.get("kind") in ("copper", "dielectric")]
+    while kept and kept[0].get("kind") != "copper":
+        kept.pop(0)
+    gaps: list[list[dict]] = []
+    for r in kept:
+        if r.get("kind") == "copper":
+            gaps.append([])
+        elif gaps:
+            gaps[-1].append(r)
+    if not rows or len(gaps) != len(rows):
+        return stackup
+    filled = []
+    for row, gap in zip(rows[:-1], gaps[:-1]):
+        has = not _no_dielectric(row.get("dielectric_type")) \
+            and _f(row.get("dielectric_height_mils")) > 0
+        h = sum(_f(g.get("thickness_mils")) for g in gap)
+        if has or h <= 0:
+            continue
+        er = sum(_f(g.get("thickness_mils")) * (_f(g.get("constant"), DEFAULT_ER) or DEFAULT_ER)
+                 for g in gap) / h
+        kind = {1: "Core", 2: "Prepreg"}.get(int(_f(gap[0].get("dielectric_type"), 0)), "Core")
+        row.update(dielectric_height_mils=round(h, 4), dielectric_constant=round(er, 4),
+                   dielectric_type=kind,
+                   dielectric_material=str(gap[0].get("material") or ""))
+        filled.append(str(row.get("name") or ""))
+    if not filled:
+        return stackup
+    return {**stackup, "layers": rows, "dielectric_from_physical_stack": filled}
+
+
 def stack_from_stackup(stackup: dict, board_layers: Optional[list] = None) -> Stack:
     """Build the stack from a ``pcb_get_layer_stackup`` reply.
 

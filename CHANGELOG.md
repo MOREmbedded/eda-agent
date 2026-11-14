@@ -416,6 +416,15 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **Signal integrity in Altium, from a run on real copper.** The stackup
+  the SI tools read now takes the dielectric from Altium's separate
+  dielectric layers where the copper layers carry none (the line model and
+  stackup planner reported "no dielectric" on such boards). Marker text is
+  refused when the board was edited since the snapshot but not saved yet,
+  or when another document is in front; a second marking run replaces the
+  earlier markers; and each stretch of a route outside the impedance band
+  gets its own placed finding, not only the worst.
+
 - **Fan-out vias keep off copper the router does not see.** A BGA's
   fan-out and the plane fan-out laid their vias outside the search, so
   they skipped its hole-to-hole and hidden-copper guards: a fan-out via

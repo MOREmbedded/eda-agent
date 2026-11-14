@@ -259,15 +259,20 @@ def _ends(board: LayoutBoard, g: nx.MultiGraph, net: str, start: str, end: str
     return pair
 
 
-def _edge_sequence(g: nx.MultiGraph, nodes: list) -> list[dict[str, Any]]:
+def _edge_sequence(g: nx.MultiGraph, nodes: list, board: Optional[LayoutBoard] = None
+                   ) -> list[dict[str, Any]]:
     out = []
     for u, v in zip(nodes, nodes[1:]):
         data = min(g.get_edge_data(u, v).values(), key=lambda d: d["length"])
         pts = data["pts"]
-        # orient the polyline from u to v
-        if u[0] == "pt" and (round(pts[0][0] / SNAP), round(pts[0][1] / SNAP)) != (u[2], u[3]):
-            pts = pts[::-1]
-        elif v[0] == "pt" and (round(pts[-1][0] / SNAP), round(pts[-1][1] / SNAP)) != (v[2], v[3]):
+        # orient the polyline from u to v. A pad or a via is a node too, and
+        # copper between two of them (a pad's link to a test pad) has no
+        # corner point to go by: take the end nearer each node.
+        a = _node_xy(board, u) if board is not None or u[0] == "pt" else None
+        b = _node_xy(board, v) if board is not None or v[0] == "pt" else None
+        fwd = (math.dist(pts[0], a) if a else 0.0) + (math.dist(pts[-1], b) if b else 0.0)
+        rev = (math.dist(pts[-1], a) if a else 0.0) + (math.dist(pts[0], b) if b else 0.0)
+        if rev < fwd:
             pts = pts[::-1]
         out.append({**data, "pts": pts, "u": u, "v": v})
     return out
@@ -351,7 +356,7 @@ def net_path(board: LayoutBoard, net: str, start: str = "", end: str = "") -> Ne
         raise ExtractError(f"{board.pads[a].key} and {board.pads[b].key} are not connected "
                            f"by copper on net {net}") from None
     breaks = frozenset(n for n in nodes[1:-1] if g.degree(n) > 2)
-    sections, edge_sec = _sections(_edge_sequence(g, nodes), breaks)
+    sections, edge_sec = _sections(_edge_sequence(g, nodes, board), breaks)
     notes = []
     pins = sorted(board.pads[n[1]].key for n in g.nodes if n[0] == "pad" and board.pads[n[1]].comp)
     stubs = _stubs(board, g, nodes, edge_sec)

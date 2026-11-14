@@ -180,6 +180,84 @@ def _tdr_fault(folder: Path, z_target: float, rise_s: float, delay_s: float
     return float(t[inside][k]) / 2, float(z[inside][worst])
 
 
+#: Further stretches outside the impedance band placed per net, beside the worst.
+MAX_EXTRA_FAULTS = 5
+
+
+def _tdr_stretches(folder: Path, z_target: float, tol: float, rise_s: float, delay_s: float,
+                   skip_s: Optional[float] = None) -> list[tuple[float, float, float]]:
+    """The stretches of the TDR outside ``z_target`` by more than ``tol``
+    (a fraction): (one-way time of the start, one-way time of the end,
+    the impedance furthest from the target). A stretch shorter than the
+    rise time is the edge of a step, not a stretch of line; the one that
+    holds ``skip_s`` (a one-way time) is left out: the worst fault is
+    placed by ``_tdr_fault``."""
+    try:
+        data = np.loadtxt(folder / "tdr.csv", delimiter=",", skiprows=1)
+    except (OSError, ValueError):
+        return []
+    t = data[:, 0] * 1e-12
+    z = data[:, 1]
+    inside = (t > 0.5 * rise_s) & (t < 2 * delay_s)
+    t, z = t[inside], z[inside]
+    if len(t) < 2:
+        return []
+    side = np.where(z > z_target * (1 + tol), 1, np.where(z < z_target * (1 - tol), -1, 0))
+    out: list[tuple[float, float, float]] = []
+    a = 0
+    for b in range(1, len(side) + 1):
+        if b < len(side) and side[b] == side[a]:
+            continue
+        if side[a] != 0 and t[b - 1] - t[a] >= rise_s:
+            seg = z[a:b]
+            worst = float(seg[int(np.argmax(np.abs(seg - z_target)))])
+            t0, t1 = float(t[a]) / 2, float(t[b - 1]) / 2
+            if skip_s is None or not (t0 <= skip_s <= t1):
+                out.append((t0, t1, worst))
+        a = b
+    out.sort(key=lambda r: -abs(r[2] - z_target))
+    return sorted(out[:MAX_EXTRA_FAULTS])
+
+
+def _tpd(folder: Path) -> dict[str, float]:
+    """Seconds per mil of each cross-section the net model wrote."""
+    try:
+        xs = json.loads((folder / "sections.json").read_text(encoding="utf-8"))
+        return {k: v["delay_ps_per_in"] * 1e-12 / 1000
+                for k, v in xs.get("cross_sections", {}).items() if "delay_ps_per_in" in v}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def _more_impedance(item: dict[str, Any], res: dict[str, Any], folder: Path, rise_s: float,
+                    z_target: float, tol: float, paths, first: dict[str, Any]
+                    ) -> list[dict[str, Any]]:
+    """The other stretches of the route outside the impedance band: a
+    wide section in a line that is itself off target is a fault of its
+    own, and the worst point alone would hide it."""
+    path = paths[1] if item["kind"] == "pair" else paths[0]
+    if path is None or not path.length or "delay_ps" not in res["metrics"]:
+        return []
+    delay = res["metrics"]["delay_ps"]["value"] * 1e-12
+    hit = _tdr_fault(folder, z_target, rise_s, delay)
+    tpd = _tpd(folder)
+    out = []
+    for t0, t1, z in _tdr_stretches(folder, z_target, tol, rise_s, delay,
+                                    hit[0] if hit else None):
+        a = _walk(path, t0, tpd, delay / path.length)
+        b = _walk(path, t1, tpd, delay / path.length)
+        if a is None or b is None:
+            continue
+        if first.get("at_mils") and math.dist(first["at_mils"], a[:2]) < 1.0:
+            continue
+        out.append({"check": "impedance", "severity": "error",
+                    "detail": f"TDR {z:.1f} ohm over {max(b[3] - a[3], 0):.0f} mil, "
+                              f"{z_target:g} ohm +/- {tol * 100:g} % wanted",
+                    "at_mils": [round(a[0], 2), round(a[1], 2)], "layer": a[2],
+                    "where": f"{a[3]:.0f} mil from {path.start} (TDR {z:.1f} ohm)"})
+    return out
+
+
 def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: dict[str, Any],
             folder: Path, rise_s: float, z_target: float, paths) -> dict[str, Any]:
     path = paths[1] if item["kind"] == "pair" else paths[0]
@@ -192,12 +270,7 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
     if v["check"] == "impedance" and "delay_ps" in res["metrics"] and path.length:
         delay = res["metrics"]["delay_ps"]["value"] * 1e-12
         hit = _tdr_fault(folder, z_target, rise_s, delay)
-        try:
-            xs = json.loads((folder / "sections.json").read_text(encoding="utf-8"))
-            tpd = {k: v2["delay_ps_per_in"] * 1e-12 / 1000
-                   for k, v2 in xs.get("cross_sections", {}).items() if "delay_ps_per_in" in v2}
-        except (OSError, ValueError, KeyError):
-            tpd = {}
+        tpd = _tpd(folder)
         if hit is not None:
             one_way, z = hit
             pt = _walk(path, one_way, tpd, delay / path.length)
@@ -302,6 +375,9 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
              "detail": v["detail"]}
         f.update(_locate(board, item, v, res, sub, rise, z_target, paths))
         out["findings"].append(f)
+        if v["check"] == "impedance":
+            tol = float(s.get("z_tol_pct", 10)) / 100
+            out["findings"].extend(_more_impedance(item, res, sub, rise, z_target, tol, paths, f))
     return out
 
 
