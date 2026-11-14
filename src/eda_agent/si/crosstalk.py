@@ -42,7 +42,7 @@ from __future__ import annotations
 import fnmatch
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 import numpy as np
@@ -81,6 +81,9 @@ GAP_STEP = 1.35
 #: The far-end fraction stops growing here: the weak-coupling result does
 #: not hold beyond it.
 FEXT_CAP = 0.5
+#: How far the worst aggressor is moved away, at least, before the other
+#: neighbours alone are held to be over the limit, mils.
+REMEDY_FAR_MILS = 100.0
 
 
 @dataclass
@@ -438,10 +441,46 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
             "rise_ps": round(rise * 1e12, 2)}
 
 
+def remedy(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
+           limit_pct: float) -> Optional[dict[str, Any]]:
+    """What brings ``runs`` within ``limit_pct``: how far the worst
+    aggressor has to stand from the net, everything else left where it
+    is. It is moved away as it is routed (a pair keeps its own gap), on
+    the layer its row describes; ``gap_mils`` (``offset_mils`` on a facing
+    layer) is then its closest approach. With ``rest_pct`` instead, the
+    other neighbours alone are over the limit. None within the limit."""
+    base = assess(board, runs, coupling, rise)
+    if not base["aggressors"] or base["worst_pct"] <= limit_pct:
+        return None
+    row = base["aggressors"][0]
+    nets, other = set(row["nets"]), row.get("aggressor_layer", "")
+    now = row["offset_mils"] if other else row["gap_mils"]
+
+    def worst(shift: float) -> float:
+        moved = [replace(r, gap=r.gap + shift) if r.aggressor in nets and r.other == other
+                 else r for r in runs]
+        return assess(board, moved, coupling, rise)["worst_pct"]
+
+    out: dict[str, Any] = {"aggressor": row["aggressor"], "limit_pct": limit_pct}
+    if other:
+        out["aggressor_layer"] = other
+    lo, hi = 0.0, max(REMEDY_FAR_MILS, 4.0 * now)
+    rest = worst(hi)
+    if rest > limit_pct:
+        return {**out, "rest_pct": round(rest, 3)}
+    for _ in range(14):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if worst(mid) > limit_pct else (lo, mid)
+    out["offset_mils" if other else "gap_mils"] = math.ceil(10 * (now + hi) - 1e-6) / 10
+    return out
+
+
 def of_path(board: LayoutBoard, path, coupling: Coupling, rise: float,
-            reach_mils: Optional[float] = None, quiet=()) -> dict[str, Any]:
+            reach_mils: Optional[float] = None, quiet=(),
+            limit_pct: Optional[float] = None) -> dict[str, Any]:
     """Crosstalk onto a routed net (a ``NetPath``) or pair (a ``PairPath``).
-    Nets of ``quiet`` are not aggressors."""
+    Nets of ``quiet`` are not aggressors. Over ``limit_pct``, the result
+    carries ``fix``: what brings it within (``remedy``)."""
     def reach(layer: str, width: float) -> float:
         if reach_mils is not None:
             return float(reach_mils)
@@ -458,4 +497,8 @@ def of_path(board: LayoutBoard, path, coupling: Coupling, rise: float,
             + find_runs(board, own, path.n.sections, reach, -1, across)
     else:
         runs = find_runs(board, {path.net} | set(quiet), path.sections, reach, 1, across)
-    return assess(board, runs, coupling, rise)
+    out = assess(board, runs, coupling, rise)
+    fix = remedy(board, runs, coupling, rise, limit_pct) if limit_pct is not None else None
+    if fix:
+        out["fix"] = fix
+    return out
