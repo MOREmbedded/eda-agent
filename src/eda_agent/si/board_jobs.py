@@ -38,7 +38,7 @@ from .net_jobs import NET_SPEC, run_net_channel
 
 #: Keys a target may carry: the net job's limits and models, and the eye's.
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
-_EYE_KEYS = {"overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
+_EYE_KEYS = {"tx_ffe", "ctle_db", "ctle_peak_ghz", "dfe_taps", "dfe_max", "overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
              "rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
 _TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",

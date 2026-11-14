@@ -157,6 +157,65 @@ class Pulse:
         return (a + b) // 2
 
 
+# -- equalisation -------------------------------------------------------------------
+
+#: The second pole of the receiver's CTLE, in first poles.
+CTLE_POLE_RATIO = 4.0
+
+
+def ctle(f: np.ndarray, boost_db: float, f_peak: float) -> np.ndarray:
+    """A receiver's continuous-time linear equaliser, one zero and two
+    poles: g (1 + j f / fz) / ((1 + j f / fp) (1 + j f / (4 fp))) with
+    g = 10^(-boost/20) and fz = g fp. Its gain is g at DC and rises from
+    the zero to about 1 between the poles. ``boost_db`` is what the high
+    frequencies gain over DC; ``f_peak`` is the first pole fp, usually the
+    Nyquist frequency."""
+    g = 10.0 ** (-boost_db / 20.0)
+    f = np.asarray(f, dtype=float)
+    fz = f_peak * g
+    return g * (1 + 1j * f / fz) / ((1 + 1j * f / f_peak) * (1 + 1j * f / (CTLE_POLE_RATIO * f_peak)))
+
+
+def ffe(pulse: Pulse, taps: Sequence[float]) -> Pulse:
+    """The pulse as a transmitter with a feed-forward equaliser sends it:
+    the sum of the pulse weighted by each tap, one unit interval apart.
+    The taps are scaled so their magnitudes add up to 1 (the driver's peak
+    swing stays what it is); the largest is the main one, those before it
+    are pre-cursor taps."""
+    c = np.asarray(list(taps), dtype=float)
+    total = float(np.abs(c).sum())
+    if not len(c) or total <= 0:
+        raise ValueError("tx_ffe needs one tap or more that is not zero")
+    c = c / total
+    out = np.zeros(len(pulse.p) + (len(c) - 1) * pulse.spui)
+    for k, w in enumerate(c):
+        out[k * pulse.spui:k * pulse.spui + len(pulse.p)] += w * pulse.p
+    t = pulse.t[0] + np.arange(len(out)) * (pulse.ui / pulse.spui)
+    return Pulse(t, out, pulse.ui, pulse.spui)
+
+
+def dfe(pulse: Pulse, taps: int, limit: float = 0.5) -> tuple[Pulse, list[float]]:
+    """The pulse after a decision-feedback equaliser of ``taps`` taps, and
+    the taps (in the pulse's units). Tap k takes off what the pulse still
+    holds k unit intervals after its sampling point, for the whole of that
+    interval, as the receiver does with the bit it decided k bits ago. A
+    tap reaches at most ``limit`` of the main cursor. Decisions are taken
+    as right: error propagation is not modelled."""
+    c = pulse.center_index
+    main = abs(float(pulse.p[c]))
+    p = pulse.p.copy()
+    got: list[float] = []
+    for k in range(1, int(taps) + 1):
+        i = c + k * pulse.spui
+        if i >= len(p):
+            break
+        d = float(np.clip(pulse.p[i], -limit * main, limit * main))
+        got.append(d)
+        a = i - pulse.spui // 2
+        p[a:a + pulse.spui] -= d
+    return Pulse(pulse.t, p, pulse.ui, pulse.spui), got
+
+
 #: A pulse response needs the sweep to cover this many unit intervals.
 MIN_WINDOW_UI = 3.0
 #: ... and the step to move less than this part of its final value over the
