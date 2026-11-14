@@ -40,7 +40,8 @@ from .net_jobs import NET_SPEC, run_net_channel
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
 _EYE_KEYS = {"rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
-_TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui"} | _NET_KEYS | _EYE_KEYS
+_TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",
+                "xtalk_swing_mv"} | _NET_KEYS | _EYE_KEYS
 
 BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "targets": ("list", False, "what to check: a list of {match (net or pair name glob) or "
@@ -64,6 +65,8 @@ BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "xtalk_max_pct": ("number", False, "allowed crosstalk where a target gives none (default 5)"),
     "xtalk_reach_mils": ("number", False, "how far a neighbour still counts"),
     "xtalk_quiet": ("list", False, "nets that do not switch, as name globs"),
+    "xtalk_swing_mv": ("number", False, "swing of the neighbours, which turns crosstalk into noise "
+                                        "on the eye (default the eye's own amplitude)"),
 }
 
 #: Checks whose failure is a warning rather than an error.
@@ -365,6 +368,11 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
         es = {k: v for k, v in item["settings"].items() if k in _EYE_KEYS}
         es["data_rate_gbps"] = s["data_rate_gbps"]
         es["repeats"] = 1
+        xt = out["metrics"].get("crosstalk_pct")
+        if xt:
+            swing = item["settings"].get("xtalk_swing_mv", spec.get("xtalk_swing_mv"))
+            swing = float(es.get("amplitude_mv", 800)) if swing is None else float(swing)
+            es["noise_mv"] = round(xt / 100 * max(swing, 0.0), 3)
         try:
             ts = sub / res["files"]["touchstone"]
             er = eye_jobs.run_convolution(es, ts, sub / "eye")
@@ -375,7 +383,9 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
                 out["files"]["eye"] = f"{out['folder']}/eye/{er['files']['plot']}"
             lim_mv = item["settings"].get("eye_min_mv")
             lim_ui = item["settings"].get("eye_min_ui")
-            h, w = em["eye_height_mv"], em["eye_width_ui"]
+            h, w = em.get("eye_height_with_noise_mv", em["eye_height_mv"]), em["eye_width_ui"]
+            noisy = (f" with {em['noise_mv']:g} mV of crosstalk on each rail "
+                     f"({em['eye_height_mv']:.1f} mV without)" if "noise_mv" in em else "")
             ok = h > (float(lim_mv) if lim_mv is not None else 0.0) and \
                 (lim_ui is None or w >= float(lim_ui))
             need = []
@@ -384,7 +394,7 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
             if lim_ui is not None:
                 need.append(f"{float(lim_ui):g} UI")
             out["verdicts"].append({"check": "eye", "pass": bool(ok),
-                                    "detail": f"{h:.1f} mV by {w:.3f} UI"
+                                    "detail": f"{h:.1f} mV by {w:.3f} UI{noisy}"
                                               + (f", {' and '.join(need)} needed" if need
                                                  else ", must be open")})
         except Exception as exc:  # noqa: BLE001

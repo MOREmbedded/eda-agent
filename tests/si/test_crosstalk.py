@@ -252,3 +252,46 @@ def test_the_board_check_places_a_crosstalk_finding_at_the_coupled_stretch(tmp_p
     assert not any(x["check"] == "crosstalk" for x in res["figures"]["findings"])
     items = json.loads((tmp_path / "z" / "findings.json").read_text())["items"]
     assert "crosstalk_pct" not in items[0]["metrics"] and "delay_ps" in items[0]["metrics"]
+
+
+def test_crosstalk_closes_the_eye_by_its_noise_on_both_rails(tmp_path):
+    from eda_agent.si import eye_jobs
+    b = beside(victim(), x1=300, x2=900)
+    target = {"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2, "eye": True,
+              "xtalk_max_pct": 50}
+    spec = {"targets": [target], "points": 200, "f_max_ghz": 10}
+
+    def run(name, **more):
+        board_jobs.run_board_si({"targets": [{**target, **more}], **{k: v for k, v in spec.items()
+                                                                     if k != "targets"}},
+                                b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
+        return item["metrics"], next(v for v in item["verdicts"] if v["check"] == "eye")
+
+    m, v = run("a")
+    # the neighbours swing as the net does (800 mV) unless told otherwise
+    assert m["eye_noise_mv"] == pytest.approx(m["crosstalk_pct"] / 100 * 800, abs=0.01)
+    assert m["eye_height_with_noise_mv"] == pytest.approx(
+        m["eye_height_mv"] - 2 * m["eye_noise_mv"], abs=0.01)
+    assert v["pass"] and "of crosstalk on each rail" in v["detail"]
+    assert f"{m['eye_height_with_noise_mv']:.1f} mV by" in v["detail"]
+    # 3.3 V neighbours: four times the noise, and the limit is held against what is left
+    m3, v3 = run("b", xtalk_swing_mv=3300, eye_min_mv=m["eye_height_with_noise_mv"] - 1)
+    assert m3["eye_noise_mv"] == pytest.approx(m["eye_noise_mv"] * 3300 / 800, rel=1e-3)
+    assert not v3["pass"] and m3["eye_height_mv"] == pytest.approx(m["eye_height_mv"])
+    # no crosstalk asked, no noise
+    m0, v0 = run("c", xtalk=False)
+    assert "eye_noise_mv" not in m0 and "crosstalk" not in v0["detail"]
+    # the eye job itself takes noise from any source
+    ts = next((tmp_path / "a").rglob("channel.s2p"))
+    res = eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": 50, "repeats": 1}, ts,
+                                   tmp_path / "eye")
+    em = {k: x["value"] for k, x in res["metrics"].items()}
+    assert em["eye_height_with_noise_mv"] == pytest.approx(em["eye_height_mv"] - 100, abs=0.01)
+    assert next(x for x in res["verdicts"] if x["check"] == "eye open with noise")["pass"]
+    res = eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": 500, "repeats": 1}, ts,
+                                   tmp_path / "eye2")
+    assert res["metrics"]["eye_height_with_noise_mv"]["value"] == 0
+    assert not next(x for x in res["verdicts"] if x["check"] == "eye open with noise")["pass"]
+    with pytest.raises(ValueError, match="noise_mv"):
+        eye_jobs.run_convolution({"data_rate_gbps": 2, "noise_mv": -1}, ts, tmp_path / "eye3")

@@ -22,6 +22,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `board-si`, through the `si
 | `z_target`, `z_tol_pct`, `il_max_db`, `rl_min_db`, `skew_max_ps`, `stub_margin` | The limits of a [net channel](SI_NETS.md) |
 | `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`, `xtalk` | Crosstalk from the copper beside it: the limit (5 % of the aggressors' swing), how far a neighbour counts, nets that do not switch, and `false` to leave it out ([Crosstalk](SI_NETS.md#crosstalk)) |
 | `eye`, `eye_min_mv`, `eye_min_ui` | Also run the eye, and its limits (open by default) |
+| `xtalk_swing_mv` | The neighbours' swing (default the eye's own `amplitude_mv`). Crosstalk times this is noise on both rails of the eye: `eye_min_mv` is held against what is left (`eye_height_with_noise_mv`) |
 | `tx_ibis`, `rx_ibis`, ... | The eye's driver and receiver ([Eyes and SPICE models](SI_TIME.md)) |
 
 - A net or pair is taken by the first target that matches it. A broad target last (`{"match": "*", ...}`) catches what the others leave.
@@ -116,6 +117,6 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
 
 ## Limits
 
-- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer only. The channel itself (loss, TDR, eye) is still each net on its own: a neighbour's noise is not added to the eye.
+- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer only. The channel itself (loss, TDR) is still each net on its own. The eye takes crosstalk as its peak on both rails whenever it arrives, which is the worst case; the neighbours' waveforms are not simulated.
 - **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it. A stretch that follows a large step is placed late, because the step's own reflections blur the TDR behind it.
 - **Altium markers:** marking uses highlights and text. Altium's violation list is not written.

@@ -111,7 +111,7 @@ The IBIS reduction is linear: the driver is its resistance at the typical corner
 
 - `si_channel_eye(data_rate_gbps, touchstone_file or net_job, engines, options)`.
   - `net_job` takes the channel of a `net-channel` job, so a routed net goes from the board to its eye in two calls.
-  - `options`: `rise_ps` (0.3 UI), `amplitude_mv` (800), `prbs` (7), `repeats` (2), `samples_per_ui` (32), `spice_oversample` (4), `simulator`, `fit_tol` (0.002), and the driver and receiver options above.
+  - `options`: `rise_ps` (0.3 UI), `amplitude_mv` (800), `noise_mv` (0: noise at the receiver from crosstalk or the supply, peak; the eye loses twice this in height, reported as `eye_height_with_noise_mv` with the check `eye open with noise`), `prbs` (7), `repeats` (2), `samples_per_ui` (32), `spice_oversample` (4), `simulator`, `fit_tol` (0.002), and the driver and receiver options above.
 - `si_spice_model(touchstone_file or net_job, name, out_folder, fit_tol)` writes the subcircuit and symbol.
 - `si_ibis_models(ibis_file)` lists an IBIS file's buffers.
 
