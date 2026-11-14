@@ -41,13 +41,13 @@ _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin
 _EYE_KEYS = {"rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
 _TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",
-                "xtalk_swing_mv"} | _NET_KEYS | _EYE_KEYS
+                "xtalk_swing_mv", "delay_match_ps"} | _NET_KEYS | _EYE_KEYS
 
 BOARD_SPEC: dict[str, tuple[str, bool, str]] = {
     "targets": ("list", False, "what to check: a list of {match (net or pair name glob) or "
                                "class (an Altium net class), kind (pair or net), and limits: "
                                "data_rate_gbps, z_target, z_tol_pct, il_max_db, rl_min_db, "
-                               "skew_max_ps, stub_margin, eye, eye_min_mv, eye_min_ui, and the "
+                               "skew_max_ps, stub_margin, delay_match_ps, eye, eye_min_mv, eye_min_ui, and the "
                                "eye's driver and receiver}; default every differential pair"),
     "data_rate_gbps": ("number", False, "data rate where a target gives none"),
     "eye": ("bool", False, "also run the eye of every item (default false)"),
@@ -320,6 +320,39 @@ EYE_WINDOW_UI = 8.0
 MAX_EYE_POINTS = 4000
 
 
+def _delay_match(results: list[dict[str, Any]]) -> None:
+    """Hold the items of each target that gives ``delay_match_ps`` to the
+    slowest of them: a signal can be delayed by adding trace, never sped
+    up, so the slowest sets the time the others are matched to."""
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for r in results:
+        if r.get("delay_match_ps") is not None and "delay_ps" in r.get("metrics", {}):
+            groups.setdefault(r["target"], []).append(r)
+    for rs in groups.values():
+        if len(rs) < 2:
+            continue
+        slow = max(rs, key=lambda r: r["metrics"]["delay_ps"])
+        top = slow["metrics"]["delay_ps"]
+        for r in rs:
+            tol = float(r["delay_match_ps"])
+            d = r["metrics"]["delay_ps"]
+            lead = top - d
+            r["metrics"]["delay_lead_ps"] = round(lead, 3)
+            ok = lead <= tol
+            if r is slow:
+                detail = f"{d:.1f} ps, the slowest of the {len(rs)} matched to it"
+            else:
+                detail = (f"{lead:.1f} ps ahead of {slow['kind']} {slow['name']} "
+                          f"({top:.1f} ps), {tol:g} ps allowed")
+                length = r["metrics"].get("length_mils")
+                if not ok and length and d > 0:
+                    detail += f": about {lead * length / d:.0f} mil more trace matches it"
+            r["verdicts"].append({"check": "delay match", "pass": bool(ok), "detail": detail})
+            if not ok:
+                r["findings"].append({"check": "delay match", "severity": "error",
+                                      "detail": detail, **r.get("start", {})})
+
+
 def _item_spec(item: dict[str, Any], spec: dict[str, Any], f_max: float, points: int
                ) -> dict[str, Any]:
     s = {k: v for k, v in item["settings"].items() if k in _NET_KEYS}
@@ -348,6 +381,10 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
     s = _item_spec(item, spec, f_max, points)
     out: dict[str, Any] = {"kind": item["kind"], "name": item["name"], "target": item["target"],
                            "folder": str(sub.relative_to(folder)), "findings": []}
+    if item["settings"].get("delay_match_ps") is not None:
+        out["delay_match_ps"] = float(item["settings"]["delay_match_ps"])
+        if out["delay_match_ps"] < 0:
+            raise ValueError(f"target {item['target']}: delay_match_ps is 0 or more")
     try:
         res = run_net_channel(s, board_data, stackup, sub)
     except Exception as exc:  # noqa: BLE001 - one bad net must not stop the board
@@ -368,6 +405,12 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
             paths = (extract.net_path(board, item["name"]), None)
     except Exception:  # noqa: BLE001
         paths = (None, None)
+    first = paths[1] if pair else paths[0]
+    if first is not None:
+        xy = _pin_xy(board, first.start)
+        if xy is not None:
+            out["start"] = {"at_mils": [round(xy[0], 2), round(xy[1], 2)],
+                            "where": f"at {first.start}"}
     z_ref = float(s.get("z_ref", 50))
     z_target = float(s.get("z_target", 2 * z_ref if pair else z_ref))
     rise = float(s.get("rise_ps", 35)) * 1e-12
@@ -468,6 +511,7 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(work, items))
+    _delay_match(results)
 
     findings = []
     for r in results:
@@ -521,7 +565,7 @@ def run_board_si(spec: dict[str, Any], board_data: dict, stackup: Optional[dict]
 
 def _summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
     keys = ["insertion_loss_db", "return_loss_db", "line_loss_db", "delay_ps", "tdr_min_ohms",
-            "tdr_max_ohms", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
+            "tdr_max_ohms", "delay_lead_ps", "skew_ps", "mode_conversion_db", "stub_resonance_ghz",
             "crosstalk_next_pct", "crosstalk_fext_pct", "return_gaps", "return_gap_mils",
             "length_mils", "vias", "eye_height_mv", "eye_width_ui"]
     with open(path, "w", newline="", encoding="utf-8") as fh:

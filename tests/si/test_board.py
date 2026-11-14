@@ -15,12 +15,14 @@ from mcp.server.fastmcp import FastMCP
 
 from eda_agent import simulation as sim
 from eda_agent.emc.stack import stack_from_stackup
+from eda_agent.layout.model import LayoutBoard, Track
 from eda_agent.si import board_jobs, extract, net_model
 from eda_agent.si import snapshot as snap
 from eda_agent.si import thermal_link as th
 from eda_agent.simulation import jobs as _jobs
 
-from .boards import STACKUP, mixed_board, pair_board, single_net
+
+from .boards import LAYERS, STACKUP, mixed_board, pair_board, single_net, smd
 from .test_nets import _rlgc
 
 
@@ -375,3 +377,64 @@ def test_dielectric_layers_of_the_physical_stack_fill_a_bare_stackup(monkeypatch
     assert b.sent == ["pcb.get_layer_stackup", "pcb.physical_stack"]
     b = B(STACKUP)
     assert asyncio.run(read_live_stackup(b)) is STACKUP and b.sent == ["pcb.get_layer_stackup"]
+
+
+def _bus(lengths):
+    """Nets B0, B1, ... side by side on the top layer, 200 mil apart, each
+    from UA to UB over its own length."""
+    b = LayoutBoard(name="bus.PcbDoc", layers=list(LAYERS))
+    for i, length in enumerate(lengths):
+        y = 200.0 * i
+        net = f"B{i}"
+        b.pads += [smd("UA", str(i + 1), 0, y, net), smd("UB", str(i + 1), length, y, net)]
+        b.tracks.append(Track("TopLayer", 0, y, length, y, 5, net))
+    b.net_classes = {"BUS": [f"B{i}" for i in range(len(lengths))]}
+    return b
+
+
+def test_nets_of_a_target_are_matched_in_delay_to_the_slowest(tmp_path):
+    b = _bus([2000, 1990, 1700, 2000])
+    spec = {"targets": [{"class": "BUS", "data_rate_gbps": 2, "z_tol_pct": 60,
+                         "delay_match_ps": 10}], "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "a", snapshot="t")
+    items = {r["name"]: r for r in json.loads((tmp_path / "a" / "findings.json").read_text())["items"]}
+    d = {k: r["metrics"]["delay_ps"] for k, r in items.items()}
+    per_mil = d["B0"] / 2000
+    assert items["B0"]["metrics"]["delay_lead_ps"] == pytest.approx(0, abs=0.01)
+    assert items["B2"]["metrics"]["delay_lead_ps"] == pytest.approx(300 * per_mil, rel=0.02)
+    fs = [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    # 10 mil short is inside 10 ps; 300 mil short is not
+    assert [f["item"] for f in fs] == ["B2"] and fs[0]["severity"] == "error"
+    assert fs[0]["at_mils"] == [0.0, 400.0] and fs[0]["where"] == "at UA.3"
+    lead = items["B2"]["metrics"]["delay_lead_ps"]
+    assert f"{lead:.1f} ps ahead of net B" in fs[0]["detail"] and "10 ps allowed" in fs[0]["detail"]
+    # the trace to add is the missing length
+    add = float(fs[0]["detail"].split("about ")[1].split(" mil")[0])
+    assert add == pytest.approx(300, abs=8)
+    v = {k: next(x for x in r["verdicts"] if x["check"] == "delay match") for k, r in items.items()}
+    assert [v[k]["pass"] for k in ("B0", "B1", "B2", "B3")] == [True, True, False, True]
+    assert sum("the slowest of the 4 matched to it" in x["detail"] for x in v.values()) == 1
+    assert "delay_lead_ps" in (tmp_path / "a" / "summary.csv").read_text().splitlines()[0]
+    # a wider window passes; without the key nothing is matched; one net alone has no group
+    res = board_jobs.run_board_si({**spec, "targets": [{**spec["targets"][0], "delay_match_ps": 80}]},
+                                  b.to_dict(), STACKUP, tmp_path / "b", snapshot="t")
+    assert not [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    plain = {k: v for k, v in spec["targets"][0].items() if k != "delay_match_ps"}
+    res = board_jobs.run_board_si({**spec, "targets": [plain]}, b.to_dict(), STACKUP,
+                                  tmp_path / "c", snapshot="t")
+    items = json.loads((tmp_path / "c" / "findings.json").read_text())["items"]
+    assert all("delay_lead_ps" not in r["metrics"] for r in items)
+    assert not any(x["check"] == "delay match" for r in items for x in r["verdicts"])
+    # each target is its own group: B2 alone in a second target is matched to nothing
+    two = [{"match": "B2", "data_rate_gbps": 2, "z_tol_pct": 60, "delay_match_ps": 10},
+           spec["targets"][0]]
+    res = board_jobs.run_board_si({**spec, "targets": two}, b.to_dict(), STACKUP,
+                                  tmp_path / "d", snapshot="t")
+    assert not [f for f in res["figures"]["findings"] if f["check"] == "delay match"]
+    alone = next(r for r in json.loads((tmp_path / "d" / "findings.json").read_text())["items"]
+                 if r["name"] == "B2")
+    assert "delay_lead_ps" not in alone["metrics"]
+    assert not any(x["check"] == "delay match" for x in alone["verdicts"])
+    with pytest.raises(ValueError, match="delay_match_ps"):
+        board_jobs.run_board_si({**spec, "targets": [{**plain, "delay_match_ps": -1}]},
+                                b.to_dict(), STACKUP, tmp_path / "e", snapshot="t")
