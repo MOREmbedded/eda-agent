@@ -830,6 +830,21 @@ def test_copper_is_a_guard_only_where_it_is_quiet_and_runs_the_whole_stretch(cou
     b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "OTHER"))
     rows = {a["aggressor"]: a for a in of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"]}
     assert set(rows) == {"AGG", "OTHER"} and "guard_mils" not in rows["AGG"]
+    # nor is a signal's copper where the board has quiet copper elsewhere, nor quiet
+    # copper over the gap on another layer
+    far = (100, 400.0, 900, 400.0, 4, "GND")
+    b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "OTHER"))
+    b.tracks.append(Track("TopLayer", *far))
+    quiet = crosstalk.quiet_nets(b)
+    assert quiet == {"GND"}
+    rows = {a["aggressor"]: a for a in of(b, coupling, quiet=quiet)["aggressors"]}
+    assert set(rows) == {"AGG", "OTHER"} and "guard_mils" not in rows["AGG"]
+    b = _guarded(region=(box, [], "OTHER", "pour"))
+    b.tracks.append(Track("TopLayer", *far))
+    assert "guard_mils" not in of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0]
+    b = _guarded()
+    b.tracks.append(Track("BottomLayer", 100, 8.5, 900, 8.5, 4, "GND"))
+    assert of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0] == open_
     # copper beyond the aggressor, or on the victim's other side, is not in the gap
     for y in (26.0, -8.5):
         b = _guarded(guard=(100, y, 900, y, 4, "GND"))
