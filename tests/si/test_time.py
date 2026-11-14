@@ -612,3 +612,36 @@ def test_a_pairs_series_resistor_is_each_sides(tmp_path):
     v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
     r = res["metrics"]["series_r_ohms"]["value"]
     assert not v["pass"] and f"{r:.0f} ohm in series at the driver (each side) brings" in v["detail"]
+
+
+def test_the_eye_takes_its_dc_level_from_the_s_matrix(tmp_path):
+    """The pulse is a step less the same step a bit later. With the first
+    frequency point taken as DC the step slopes, every bit leaves a small
+    offset behind, and the offsets of all the bits add up as ISI that is
+    not there; behind a weak driver the slope was steep enough to be
+    refused as a channel still ringing."""
+    from eda_agent.si import eye_jobs
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)          # a pure delay
+    term = {"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0, "matched": True}
+    h, _ = eye_jobs.channel_transfer(f, s, 50.0, term)
+    assert eye_jobs.dc_level(s, 50.0, term) == pytest.approx(1.0, abs=1e-3)
+    good = eye.worst_case_eye(eye.pulse_response(f, h, 1e-9, 100e-12, 32, dc=1.0), 0.8)
+    old = eye.worst_case_eye(eye.pulse_response(f, h, 1e-9, 100e-12, 32), 0.8)
+    assert good["isi_sum"] < 0.004 and old["isi_sum"] > 2 * good["isi_sum"]
+    assert good["eye_height"] == pytest.approx(0.8, abs=0.006)
+    # the job: a matched lossless line gives the full swing
+    ts = str(write_touchstone(tmp_path / "delay.s2p", list(f), s.tolist(), 50.0))
+    res = _edge_job(ts)["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["worst_case_eye_height_mv"] == pytest.approx(800, abs=6) and m["isi_mv"] < 4
+    # 150 ohm into an open end climbs in steps and settles inside the window: it runs,
+    # and settles to twice the incident wave
+    run = _edge_job(ts, tx_r_ohms=150, rx_r_ohms="open", rise_ps=100)
+    assert run["state"] == "done", run
+    weak = {"rs": 150.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}
+    assert eye_jobs.dc_level(s, 50.0, weak) == pytest.approx(2.0, rel=0.005)
+    hw, _ = eye_jobs.channel_transfer(f, s, 50.0, weak)
+    with pytest.raises(ValueError, match="still ringing"):
+        eye.pulse_response(f, hw, 1e-9, 100e-12, 32)             # the first point as DC
+    eye.pulse_response(f, hw, 1e-9, 100e-12, 32, dc=2.0)
