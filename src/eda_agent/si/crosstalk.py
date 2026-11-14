@@ -30,6 +30,14 @@ difference between what reaches its two sides, and a differential
 aggressor the difference between its two sides: each contribution carries
 the sign of the victim's side and the aggressor's side it belongs to.
 
+Quiet copper lying in the gap between the victim and an aggressor on its
+layer (a ground pour flooded between them, a guard track) is a third
+conductor of the cross-section, held at the reference: the coupling is
+that of the two traces with it there. It is taken as tied to the plane
+along its length (stitched); an unstitched guard is not one. The width
+counted is the least found across the gap along the stretch, in eighths
+of the gap, rounded down.
+
 One aggressor's near end grows with the length it shares with the victim
 until it reaches (Kc + Kl) / 4 of its tightest gap, however the stretch is
 cut into segments. Aggressors add up as their magnitudes (all switching
@@ -81,6 +89,15 @@ GAP_STEP = 1.35
 #: The far-end fraction stops growing here: the weak-coupling result does
 #: not hold beyond it.
 FEXT_CAP = 0.5
+#: Quiet copper in a gap is counted in this many parts of the gap, rounded
+#: down, and at most ``GUARD_MOST`` of them: the rest is its clearance.
+GUARD_PARTS = 8
+GUARD_MOST = 6
+#: Points across the gap where copper is looked for, on lines across it
+#: every ``GUARD_EVERY`` gaps along the stretch (3 to ``GUARD_LINES`` lines).
+GUARD_SAMPLES = 32
+GUARD_EVERY = 2.0
+GUARD_LINES = 64
 #: How far the worst aggressor is moved away, at least, before the other
 #: neighbours alone are held to be over the limit, mils.
 REMEDY_FAR_MILS = 100.0
@@ -103,6 +120,8 @@ class Run:
     other: str = ""
     other_width: float = 0.0
     sep: float = 0.0
+    #: Quiet copper in the gap on the same layer, mils across.
+    guard: float = 0.0
 
 
 @dataclass
@@ -122,6 +141,7 @@ class Aggressor:
     offset_mils: float = 0.0              # and its offset to the side
     rise: Optional[float] = None          # its own edge, seconds, when it was given one
     swing: Optional[float] = None         # its own swing, mV
+    guard_mils: float = 0.0               # quiet copper in the gap of that run
 
     def to_dict(self) -> dict[str, Any]:
         out = {"aggressor": self.name, "nets": self.nets, "layer": self.layer,
@@ -133,6 +153,8 @@ class Aggressor:
             # gap_mils is then the dielectric between the two layers
             out["aggressor_layer"] = self.other
             out["offset_mils"] = round(self.offset_mils, 2)
+        if self.guard_mils > 0:
+            out["guard_mils"] = round(self.guard_mils, 2)
         if self.rise is not None:
             out["rise_ps"] = round(self.rise * 1e12, 2)
         if self.swing is not None:
@@ -162,15 +184,66 @@ def _tracks_by_layer(board: LayoutBoard, own: set[str]) -> dict[str, dict[str, n
     return out
 
 
+class QuietCopper:
+    """The copper of nets that do not switch on one layer: pours, regions
+    and tracks, asked point by point."""
+
+    def __init__(self, board: LayoutBoard, layer: str, quiet):
+        from .return_path import Copper
+        quiet = set(quiet)
+        self.regions = Copper(board, layer)
+        self.is_quiet = np.array([n in quiet for n in self.regions.nets] + [False], dtype=bool)
+        ts = [(t.x1, t.y1, t.x2, t.y2, t.width) for t in board.tracks
+              if t.layer == layer and t.net in quiet and not t.keepout]
+        for a in board.arcs:
+            if a.layer == layer and a.net in quiet and not a.keepout:
+                pts = geom.arc_points(a.cx, a.cy, a.radius, a.a1, a.a2, ARC_TOL_MILS)
+                ts += [(x1, y1, x2, y2, a.width) for (x1, y1), (x2, y2) in zip(pts, pts[1:])]
+        self.tracks = np.array(ts, dtype=float).reshape(-1, 5)
+        self.any = bool(self.is_quiet.any() or len(self.tracks))
+
+    def at(self, pts: np.ndarray) -> np.ndarray:
+        """For each point, whether quiet copper is there."""
+        got = self.is_quiet[self.regions.under(pts)] if self.is_quiet.any() \
+            else np.zeros(len(pts), dtype=bool)
+        if len(self.tracks):
+            a, b, w = self.tracks[:, :2], self.tracks[:, 2:4], self.tracks[:, 4]
+            d = b - a
+            dd = np.maximum(np.einsum("ij,ij->i", d, d), 1e-12)
+            rel = pts[:, None, :] - a[None, :, :]
+            u = np.clip(np.einsum("pij,ij->pi", rel, d) / dd, 0.0, 1.0)
+            off = rel - u[:, :, None] * d[None, :, :]
+            got = got | (np.hypot(off[:, :, 0], off[:, :, 1]) <= 0.5 * w[None, :]).any(axis=1)
+        return got
+
+
+def guard_of(run: Run, toward: np.ndarray, copper: QuietCopper) -> float:
+    """Quiet copper in the gap of a same-layer ``run``, mils across: the
+    least found on lines across the gap, evenly along the stretch. An
+    opening shorter than the lines are apart can pass between them.
+    ``toward`` is the unit vector from the victim to the aggressor."""
+    if not copper.any or run.gap <= 0 or run.end is None:
+        return 0.0
+    a, b = np.asarray(run.at, dtype=float), np.asarray(run.end, dtype=float)
+    across = 0.5 * run.width + (np.arange(GUARD_SAMPLES) + 0.5) * run.gap / GUARD_SAMPLES
+    lines = int(min(max(math.ceil(run.length / (GUARD_EVERY * run.gap)), 3), GUARD_LINES))
+    along = a[None, :] + (b - a)[None, :] * ((np.arange(lines) + 0.5) / lines)[:, None]
+    pts = (along[:, None, :] + across[None, :, None] * toward[None, None, :]).reshape(-1, 2)
+    return float(copper.at(pts).reshape(lines, -1).mean(axis=1).min()) * run.gap
+
+
 def find_runs(board: LayoutBoard, own: set[str], sections, reach, side: int = 1,
-              across=None) -> list[Run]:
+              across=None, quiet=()) -> list[Run]:
     """The stretches of ``sections`` (a path's line sections) that run
     beside tracks of nets outside ``own``. ``reach(layer, width)`` is how
     far edge to edge the search looks. ``across(layer, width)`` lists the
     signal layers that face ``layer`` with no plane between, each as
     (layer, dielectric between in mils, reach to the side centre to
-    centre): tracks there that run over or under the stretch count too."""
+    centre): tracks there that run over or under the stretch count too.
+    Copper of the ``quiet`` nets in the gap of a run on the victim's own
+    layer is measured into the run (``guard``)."""
     tracks = _tracks_by_layer(board, own)
+    shields: dict[str, QuietCopper] = {}
     sin_max = math.sin(math.radians(PARALLEL_DEG))
     runs: list[Run] = []
     for s in sections:
@@ -181,12 +254,18 @@ def find_runs(board: LayoutBoard, own: set[str], sections, reach, side: int = 1,
             where.append((other, sep, far_b, True))
         for layer, sep, far, facing in where:
             if layer in tracks:
+                shield = None
+                if quiet and not facing:
+                    if layer not in shields:
+                        shields[layer] = QuietCopper(board, layer, quiet)
+                    shield = shields[layer]
                 _runs_on(runs, s, tracks[layer], far, side, sin_max,
-                         (layer, sep) if facing else None)
+                         (layer, sep) if facing else None, shield)
     return runs
 
 
-def _runs_on(runs: list[Run], s, tr, far: float, side: int, sin_max: float, facing) -> None:
+def _runs_on(runs: list[Run], s, tr, far: float, side: int, sin_max: float, facing,
+             shield: Optional[QuietCopper] = None) -> None:
     """Add the runs of section ``s`` beside the tracks ``tr`` of one layer:
     its own, or with ``facing`` = (layer, dielectric between) the one over
     or under it."""
@@ -229,6 +308,10 @@ def _runs_on(runs: list[Run], s, tr, far: float, side: int, sin_max: float, faci
             if facing:
                 run.other, run.sep = facing
                 run.other_width = float(tr["w"][k])
+            elif shield is not None:
+                normal = np.array([-u[1], u[0]])
+                way = float((pt[k] - p) @ normal)
+                run.guard = guard_of(run, normal if way >= 0 else -normal, shield)
             runs.append(run)
 
 
@@ -248,20 +331,28 @@ class Coupling:
         hs = [i[k] for k in ("h_mils", "h_below_mils", "h_above_mils") if k in i]
         return min(hs) if hs else 0.0
 
-    def _at(self, layer: str, width: float, k: int) -> tuple[float, float, float]:
-        key = (layer, round(width, 2), k)
+    def _at(self, layer: str, width: float, k: int, parts: int = 0) -> tuple[float, float, float]:
+        """At the gap GAP_STEP ** k, with quiet copper over ``parts`` of the
+        ``GUARD_PARTS`` parts of the gap, in its middle."""
+        key = (layer, round(width, 2), k) + ((parts,) if parts else ())
         if key not in self.solved:
             if layer not in self.info:
                 raise ValueError(f"layer {layer} has no reference copper in the stack")
             gap = GAP_STEP ** k
             sec = planner.build(self.info[layer], self.opt, width * MIL, 2, gap * MIL)
+            if parts:
+                between = replace(sec.traces[0], x=0.0, width=gap * MIL * parts / GUARD_PARTS)
+                sec = replace(sec, traces=sec.traces + [between])
             self.solved[key] = self._figures(sec)
         return self.solved[key]
 
     def _figures(self, sec) -> tuple[float, float, float]:
         cs, c0, _ = _rlgc.capacitance(sec, [self.f], self.res)
-        c = cs[0].real
-        ind = MU0 * EPS0 * np.linalg.inv(c0)
+        # a third trace is quiet copper at the reference: at 0 V it drops out
+        # of the charges of the two, and with it part of the reference their
+        # inductances are those of what is left
+        c = cs[0].real[:2, :2]
+        ind = MU0 * EPS0 * np.linalg.inv(c0[:2, :2])
         return (float(abs(c[0, 1]) / c[0, 0]), float(abs(ind[0, 1]) / ind[0, 0]),
                 float(math.sqrt(ind[0, 0] * c[0, 0])))
 
@@ -348,13 +439,16 @@ class Coupling:
         if run.other:
             return self.get_facing(run.layer, run.width, run.other, run.other_width,
                                    run.gap, run.sep)
-        return self.get(run.layer, run.width, run.gap)
+        return self.get(run.layer, run.width, run.gap, run.guard)
 
-    def get(self, layer: str, width: float, gap: float) -> tuple[float, float, float]:
-        """(Kc, Kl, seconds per metre) at ``gap`` mils."""
+    def get(self, layer: str, width: float, gap: float, guard: float = 0.0
+            ) -> tuple[float, float, float]:
+        """(Kc, Kl, seconds per metre) at ``gap`` mils, with ``guard`` mils
+        of quiet copper in the gap."""
         x = math.log(max(gap, 0.5)) / math.log(GAP_STEP)
         k0 = math.floor(x)
-        a, b = self._at(layer, width, k0), self._at(layer, width, k0 + 1)
+        parts = min(int(GUARD_PARTS * guard / max(gap, 0.5) + 1e-9), GUARD_MOST) if guard > 0 else 0
+        a, b = self._at(layer, width, k0, parts), self._at(layer, width, k0 + 1, parts)
         t = x - k0
         # coupling falls close to a power of the gap: read it on log scales
         out = []
@@ -378,7 +472,7 @@ def quiet_nets(board: LayoutBoard, patterns=()) -> set[str]:
     planes = {x.plane_net for x in board.layers if x.plane_net}
     pats = [str(x) for x in patterns or ()]
     out = set()
-    for net in {t.net for t in board.tracks if t.net}:
+    for net in {t.net for t in board.tracks if t.net} | {r.net for r in board.regions if r.net}:
         up = net.upper()
         if (net in planes or up.startswith(GROUND_PREFIXES) or SUPPLY.match(up)
                 or any(fnmatch.fnmatchcase(up, x.upper()) for x in pats)):
@@ -479,7 +573,7 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
         g.length_mils += r.length
         g.runs.append(r)
         if top > g.strongest:        # the row describes its most coupled run
-            g.strongest, g.layer = top, r.layer
+            g.strongest, g.layer, g.guard_mils = top, r.layer, r.guard
             g.gap_mils, g.other, g.offset_mils = (r.sep, r.other, r.gap) if r.other \
                 else (r.gap, "", 0.0)
         cur = stretch.get((r.aggressor, r.side, r.other))
@@ -556,10 +650,10 @@ def of_path(board: LayoutBoard, path, coupling: Coupling, rise: float,
 
     if hasattr(path, "p") and hasattr(path, "n"):
         own = {path.p.net, path.n.net} | set(quiet)
-        runs = find_runs(board, own, path.p.sections, reach, 1, across) \
-            + find_runs(board, own, path.n.sections, reach, -1, across)
+        runs = find_runs(board, own, path.p.sections, reach, 1, across, quiet) \
+            + find_runs(board, own, path.n.sections, reach, -1, across, quiet)
     else:
-        runs = find_runs(board, {path.net} | set(quiet), path.sections, reach, 1, across)
+        runs = find_runs(board, {path.net} | set(quiet), path.sections, reach, 1, across, quiet)
     out = assess(board, runs, coupling, rise, table)
     fix = remedy(board, runs, coupling, rise, limit_pct, table) \
         if limit_pct is not None else None

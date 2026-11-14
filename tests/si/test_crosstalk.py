@@ -742,3 +742,133 @@ def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
     f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk noise")
     assert f["at_mils"] == [300.0, 0.0] and "50 mV allowed" in f["detail"]
     assert f["where"] == "runs 600 mil beside AGG at 4.0 mil"
+
+
+# --- quiet copper in the gap ------------------------------------------------------------
+
+def test_copper_at_the_reference_between_two_traces_takes_most_of_their_coupling(coupling):
+    plain = coupling.get("TopLayer", 5.0, 12.0)
+    got = [coupling.get("TopLayer", 5.0, 12.0, guard) for guard in (0.0, 1.4, 1.5, 3.0, 6.0, 9.0, 11.5)]
+    assert got[0] == plain and got[1] == plain            # under an eighth of the gap: none
+    kc = [g[0] for g in got[2:]]
+    kl = [g[1] for g in got[2:]]
+    assert kc == sorted(kc, reverse=True) and kl == sorted(kl, reverse=True)
+    # half the gap filled: about a third is left over a plane 4 mil away, which
+    # already holds most of the field
+    assert kc[2] < 0.35 * plain[0] and kl[2] < 0.35 * plain[1]
+    # between two planes next to nothing is left
+    inner = coupling.get("MidLayer1", 4.0, 12.0)
+    assert coupling.get("MidLayer1", 4.0, 12.0, 6.0)[0] < 0.1 * inner[0]
+    assert got[-1] == got[-2]                              # six eighths at most: its clearance
+    # it leaves the delay of the line about where it was
+    assert got[4][2] == pytest.approx(plain[2], rel=0.03)
+
+
+def test_the_guarded_inductance_is_the_one_with_the_guard_carrying_its_current(coupling):
+    """Dropping the guard from the capacitances (it is at 0 V) is, for the
+    inductances, the guard closed on the reference at both ends: no voltage
+    along it, whatever current it takes."""
+    from dataclasses import replace
+    gap = crosstalk.GAP_STEP ** 10
+    sec = planner.build(coupling.info["TopLayer"], coupling.opt, 5 * MIL, 2, gap * MIL)
+    sec = replace(sec, traces=sec.traces + [replace(sec.traces[0], x=0.0, width=gap * MIL / 2)])
+    _, c0, _ = rlgc.capacitance(sec, [coupling.f], coupling.res)
+    full = np.linalg.inv(c0)                               # all three, in units of mu0 eps0
+    a, b, g = full[:2, :2], full[:2, 2:], full[2:, 2:]
+    closed = a - b @ np.linalg.inv(g) @ b.T
+    kl = abs(closed[0, 1]) / closed[0, 0]
+    assert coupling._at("TopLayer", 5.0, 10, 4)[1] == pytest.approx(kl, rel=1e-9)
+    assert kl < abs(a[0, 1]) / a[0, 0]
+
+
+def _guarded(guard=None, region=None, gap=12.0):
+    b = beside(victim(), gap=gap)
+    if guard:
+        b.tracks.append(Track("TopLayer", *guard))
+    if region:
+        from eda_agent.layout.model import Region
+        b.regions.append(Region("TopLayer", *region))
+    return b
+
+
+def test_a_guard_track_or_a_pour_in_the_gap_is_found_and_counted(coupling):
+    open_ = of(_guarded(), coupling)["aggressors"][0]
+    assert "guard_mils" not in open_
+    # the gap runs from y = 2.5 to 14.5: a GND track 4 mil wide down its middle
+    b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "GND"))
+    row = of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0]
+    assert row["aggressor"] == "AGG" and row["guard_mils"] == pytest.approx(4.0, abs=0.4)
+    assert row["next_pct"] < 0.6 * open_["next_pct"]
+    # a pour 3 mil clear of both: 6 mil of the 12
+    box = [(100, 5.5), (900, 5.5), (900, 11.5), (100, 11.5)]
+    b = _guarded(region=(box, [], "GND", "pour"))
+    quiet = crosstalk.quiet_nets(b)
+    assert "GND" in quiet                                  # a net with pours and no tracks
+    pour = of(b, coupling, quiet=quiet)["aggressors"][0]
+    assert pour["guard_mils"] == pytest.approx(6.0, abs=0.4)
+    assert pour["next_pct"] < row["next_pct"] < open_["next_pct"]
+    assert pour["gap_mils"] == open_["gap_mils"] and pour["length_mils"] == open_["length_mils"]
+
+
+def test_copper_is_a_guard_only_where_it_is_quiet_and_runs_the_whole_stretch(coupling):
+    open_ = of(_guarded(), coupling)["aggressors"][0]
+    # half the stretch: the rest is open, and the coupling is the open one's
+    b = _guarded(guard=(100, 8.5, 500, 8.5, 4, "GND"))
+    assert of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0] == open_
+    # a hole in the pour under the middle of the stretch
+    box = [(100, 5.5), (900, 5.5), (900, 11.5), (100, 11.5)]
+    hole = [(450, 5.0), (550, 5.0), (550, 12.0), (450, 12.0)]
+    b = _guarded(region=(box, [hole], "GND", "pour"))
+    holed = of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0]
+    whole = _guarded(region=(box, [], "GND", "pour"))
+    whole = of(whole, coupling, quiet=crosstalk.quiet_nets(whole))["aggressors"][0]
+    # the victim's track ends at x = 600: its first 500 mil, with the hole, is open, and
+    # the 300 mil after it guarded. The near end is the open stretch's; the far end adds up
+    assert holed["next_pct"] == open_["next_pct"] and "guard_mils" not in holed
+    assert whole["fext_pct"] < holed["fext_pct"] < open_["fext_pct"]
+    # a signal's track there is no guard: it is the nearer aggressor
+    b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "OTHER"))
+    rows = {a["aggressor"]: a for a in of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"]}
+    assert set(rows) == {"AGG", "OTHER"} and "guard_mils" not in rows["AGG"]
+    # nor is a signal's copper where the board has quiet copper elsewhere, nor quiet
+    # copper over the gap on another layer
+    far = (100, 400.0, 900, 400.0, 4, "GND")
+    b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "OTHER"))
+    b.tracks.append(Track("TopLayer", *far))
+    quiet = crosstalk.quiet_nets(b)
+    assert quiet == {"GND"}
+    rows = {a["aggressor"]: a for a in of(b, coupling, quiet=quiet)["aggressors"]}
+    assert set(rows) == {"AGG", "OTHER"} and "guard_mils" not in rows["AGG"]
+    b = _guarded(region=(box, [], "OTHER", "pour"))
+    b.tracks.append(Track("TopLayer", *far))
+    assert "guard_mils" not in of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0]
+    b = _guarded()
+    b.tracks.append(Track("BottomLayer", 100, 8.5, 900, 8.5, 4, "GND"))
+    assert of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0] == open_
+    # copper beyond the aggressor, or on the victim's other side, is not in the gap
+    for y in (26.0, -8.5):
+        b = _guarded(guard=(100, y, 900, y, 4, "GND"))
+        assert of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0] == open_
+    # nets named quiet by the job count too
+    b = _guarded(guard=(100, 8.5, 900, 8.5, 4, "SHIELD"))
+    assert of(b, coupling, quiet=crosstalk.quiet_nets(b))["aggressors"][0]["aggressor"] == "SHIELD"
+    row = of(b, coupling, quiet=crosstalk.quiet_nets(b, ["SHIELD"]))["aggressors"][0]
+    assert row["aggressor"] == "AGG" and row["guard_mils"] > 3
+
+
+def test_the_net_job_counts_a_pour_in_the_gap(tmp_path):
+    from eda_agent.layout.model import Region
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100, "xtalk_max_pct": 2.0}
+    b = beside(victim(), gap=12.0)
+    open_ = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "a")
+    b.regions.append(Region("TopLayer", [(100, 5.5), (900, 5.5), (900, 11.5), (100, 11.5)],
+                            [], "GND", "pour"))
+    res = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "b")
+    row = res["figures"]["crosstalk"][0]
+    assert row["aggressor"] == "AGG" and row["guard_mils"] == pytest.approx(6.0, abs=0.4)
+    assert "guard_mils" not in open_["figures"]["crosstalk"][0]
+    a, g = (r["metrics"]["crosstalk_pct"]["value"] for r in (open_, res))
+    assert g < 0.6 * a
+    verdict = lambda r: next(x for x in r["verdicts"] if x["check"] == "crosstalk")   # noqa: E731
+    assert not verdict(open_)["pass"] and verdict(res)["pass"]
+    assert json.loads((tmp_path / "b" / "crosstalk.json").read_text())["quiet"] == ["GND"]
