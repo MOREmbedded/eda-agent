@@ -600,3 +600,6 @@ def test_the_fix_moves_the_worst_neighbour_on_the_layer_its_row_tells(dual):
     # the track beside it stays where it is: only the one under it moves aside
     assert of(board(fix["offset_mils"]), dual)["worst_pct"] <= 7.0
     assert of(board(fix["offset_mils"] - 1), dual)["worst_pct"] > 7.0
+    # and under what the one beside it gives alone, moving the other is not enough
+    fix = of(board(0), dual, limit_pct=4.0)["fix"]
+    assert "offset_mils" not in fix and 4.0 < fix["rest_pct"] < 6.0
