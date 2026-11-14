@@ -23,7 +23,7 @@ from eda_agent.si import snapshot as snap
 from eda_agent.si import via as V
 from eda_agent.si.rlgc import RLGC
 
-from .boards import STACKUP, pair_board, single_net
+from .boards import STACKUP, pair_board, single_net, smd
 
 C = 299792458.0
 
@@ -180,6 +180,24 @@ def test_path_sections_vias_and_stub():
     assert st.length == pytest.approx(300) and st.to == "TP1.1" and st.at == 0
     assert st.xy == pytest.approx((600, 0), abs=0.1)
     assert p.length == pytest.approx(3500)
+
+
+def test_copper_between_two_pads_runs_the_way_the_path_does():
+    # a part's pin linked to a free pad at the start of the route, with the
+    # link drawn from the free pad back to the pin: no corner point between
+    # the two pads tells which way the copper runs
+    b = single_net(with_stub=False, with_return_via=False, inner=0)
+    b.vias = []
+    b.pads = [smd("U1", "1", -150, 0, "SIG"), smd("", "", 0, 0, "SIG"),
+              smd("U2", "1", 1000, 0, "SIG")]
+    b.tracks = [Track("TopLayer", 0, 0, -150, 0, 5, "SIG"),
+                Track("TopLayer", 0, 0, 1000, 0, 5, "SIG")]
+    p = extract.net_path(b, "SIG")
+    assert (p.start, p.end) == ("U1.1", "U2.1") and p.length == pytest.approx(1150)
+    xs = [x for s in p.sections for x, _ in s.pts]
+    assert xs == sorted(xs) and xs[0] == -150 and xs[-1] == 1000
+    assert sum(math.dist(a, c) for s in p.sections for a, c in zip(s.pts, s.pts[1:])) \
+        == pytest.approx(p.length)
 
 
 def test_explicit_pins_and_a_stub_end_as_the_target():

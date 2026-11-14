@@ -181,7 +181,7 @@ def _tdr_fault(folder: Path, z_target: float, rise_s: float, delay_s: float
 
 
 #: Further stretches outside the impedance band placed per net, beside the worst.
-MAX_EXTRA_FAULTS = 3
+MAX_EXTRA_FAULTS = 5
 
 
 def _tdr_stretches(folder: Path, z_target: float, tol: float, rise_s: float, delay_s: float,

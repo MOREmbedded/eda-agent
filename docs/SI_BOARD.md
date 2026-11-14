@@ -42,7 +42,7 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Check | Placed at |
 |---|---|
 | Impedance | Where the TDR sees the fault. The fault starts where the TDR first moves half way to its worst value (a tee holds its dip until the stub's own reflection returns, so the worst point is its end). Half that time is the one-way time. The routed path is walked at each trace section's own delay per mil, with vias as instant, and the point reached is the fault. |
-| Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most three per net, the furthest from the target first. |
+| Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most five per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
 | Loss, return loss, skew, eye | The driving pin. |
 
