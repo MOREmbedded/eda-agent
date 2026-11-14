@@ -86,6 +86,23 @@ def test_flat_channel_eye_is_the_full_swing():
     # rising and falling linear edges cross at half swing, so a flat
     # channel's eye shuts only at that instant: open for all but a sample
     assert se["eye_width_ui"] == pytest.approx(1.0, abs=1.5 / 32)
+    assert se["eye_width_ui"] <= 1.0
+
+
+def test_an_eye_open_at_every_sample_is_under_one_interval_wide():
+    """When the crossing falls between two samples every sample is open:
+    the width is then a sample short of the interval, never more than it
+    (it read 33 / 32 UI)."""
+    spui = 32
+    rows = np.vstack([np.full(spui, 0.4), np.full(spui, -0.4)] * 4)
+    bits = np.array([1, 0] * 4)
+    m = eye.eye_metrics(rows, bits, 1e-9)
+    assert m["eye_width_ui"] == pytest.approx(31 / 32) and m["eye_width"] == pytest.approx(31 / 32 * 1e-9)
+    # a closed sample anywhere: counted as before
+    rows[:, 5] = 0.0
+    assert eye.eye_metrics(rows, bits, 1e-9)["eye_width_ui"] == pytest.approx(31 / 32)
+    rows[:, 6] = 0.0
+    assert eye.eye_metrics(rows, bits, 1e-9)["eye_width_ui"] == pytest.approx(30 / 32)
 
 
 def test_worst_case_eye_bounds_every_pattern():

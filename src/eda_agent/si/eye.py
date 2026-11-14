@@ -179,7 +179,9 @@ def eye_metrics(eye: np.ndarray, bits: np.ndarray, ui: float, threshold: float =
         while open_[(j + 1) % len(open_)] and width < len(open_):
             j += 1
             width += 1
-        width += 1
+        # open at every sample: the crossing lies between two samples, so the
+        # eye is a little under one interval wide, never more
+        width = min(width + 1, len(open_) - 1)
     spui = eye.shape[1]
     return {"eye_height": float(max(height[k], 0.0)), "eye_width_ui": width / spui,
             "eye_width": width / spui * ui, "phase": k,
