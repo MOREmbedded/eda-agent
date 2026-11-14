@@ -34,6 +34,18 @@ maturity classification for every tool.
   copper temperature, uniform or from a thermal analysis' map. Jobs record
   the snapshot and jobs their inputs came from; the Simulation page shows
   that graph and marks results stale once the board is saved.
+- **Signal integrity: crosstalk across the board.** A net channel and the
+  board check now search the board for the copper that runs beside each
+  net: other nets' tracks on the same layer, within reach, with the length
+  they share. Each neighbour's capacitive and inductive coupling comes from
+  the field solver at its gap, and gives the near-end and far-end
+  crosstalk for the net's edge (`crosstalk_next_pct`, `crosstalk_fext_pct`).
+  A pair counts as the difference of its sides, as victim and as
+  aggressor; grounds and supply rails are left out. The new check
+  `crosstalk` (limit `xtalk_max_pct`, default 5 % of the aggressors' swing)
+  is placed on the board at the coupled stretch, with the aggressor, the
+  length and the gap. Against the coupled line solved in full the near end
+  is within 5 %.
 - **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
   and engine `spice`. The `eda-agent` engine convolves a channel's pulse
   response with a PRBS pattern and adds the worst-case eye by peak

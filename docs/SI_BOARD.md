@@ -20,6 +20,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `board-si`, through the `si
 | `kind` | `pair` or `net`; both when absent |
 | `data_rate_gbps` | The data rate: Nyquist, the default skew limit and the eye follow from it |
 | `z_target`, `z_tol_pct`, `il_max_db`, `rl_min_db`, `skew_max_ps`, `stub_margin` | The limits of a [net channel](SI_NETS.md) |
+| `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`, `xtalk` | Crosstalk from the copper beside it: the limit (5 % of the aggressors' swing), how far a neighbour counts, nets that do not switch, and `false` to leave it out ([Crosstalk](SI_NETS.md#crosstalk)) |
 | `eye`, `eye_min_mv`, `eye_min_ui` | Also run the eye, and its limits (open by default) |
 | `tx_ibis`, `rx_ibis`, ... | The eye's driver and receiver ([Eyes and SPICE models](SI_TIME.md)) |
 
@@ -33,6 +34,7 @@ Job options:
 - `f_max_ghz` (1.5 times the highest data rate, at least 10);
 - `points` (200);
 - the laminate settings (`tand`, `foil`, `mask_mils`, `etch_mils`);
+- the crosstalk settings (`xtalk`, `xtalk_max_pct`, `xtalk_reach_mils`, `xtalk_quiet`) for targets that give none;
 - the copper temperature (below).
 
 A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warning; the rest of the board still runs.
@@ -44,6 +46,7 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Impedance | Where the TDR sees the fault. The fault starts where the TDR first moves half way to its worst value (a tee holds its dip until the stub's own reflection returns, so the worst point is its end). Half that time is the one-way time. The routed path is walked at each trace section's own delay per mil, with vias as instant, and the point reached is the fault. |
 | Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most five per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
+| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap. |
 | Loss, return loss, skew, eye | The driving pin. |
 
 On the test board, the 300 mil test-point stub that leaves the route 600 mil from the driver is placed at 618 mil.
@@ -100,6 +103,7 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
   - the tee is placed within 45 mil of its true point (618 mil against 600 mil);
   - the stub is placed at its tee;
   - the skew fault is placed at the driving pin.
+- **Crosstalk:** a neighbour 4 mil from a net for 600 mil is placed at the start of that stretch, with its name, length and gap.
 - **Selection:** first-target-wins, net classes, and a pair taken as a pair are each tested.
 - **Thermal link:**
   - DC resistance scales by exactly (1 + alpha dT), and a skin-effect R by its square root.
@@ -112,6 +116,6 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
 
 ## Limits
 
-- **Coupling between nets:** each net is modelled on its own. Crosstalk between neighbouring nets is in the [line models](SI_LINES.md) for a uniform stretch but not yet board-wide.
+- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer only. The channel itself (loss, TDR, eye) is still each net on its own: a neighbour's noise is not added to the eye.
 - **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it. A stretch that follows a large step is placed late, because the step's own reflections blur the TDR behind it.
 - **Altium markers:** marking uses highlights and text. Altium's violation list is not written.

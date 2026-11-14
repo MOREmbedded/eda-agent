@@ -19,7 +19,7 @@ from ..emc.stack import stack_from_stackup
 from ..emc.touchstone import write_touchstone
 from ..layout.model import LayoutBoard
 from . import channel as ch
-from . import extract, net_model, planner
+from . import crosstalk, extract, net_model, planner
 from .jobs import _metric, _num, plan_options
 
 _PLOT_LOCK = threading.Lock()
@@ -52,6 +52,14 @@ NET_SPEC: dict[str, tuple[str, bool, str]] = {
     "foil": ("text", False, "copper roughness preset"),
     "mask_mils": ("number", False, "solder mask on outer layers (default 0.6)"),
     "etch_mils": ("number", False, "etch narrowing of the top face (default 0)"),
+    "xtalk": ("bool", False, "also work out crosstalk from the copper beside the net "
+                             "(default true)"),
+    "xtalk_max_pct": ("number", False, "allowed crosstalk, near or far end, in percent of the "
+                                       "aggressors' swing (default 5)"),
+    "xtalk_reach_mils": ("number", False, "how far, edge to edge, a neighbour still counts "
+                                          "(default 4 heights above the plane, at least 3 widths)"),
+    "xtalk_quiet": ("list", False, "nets that do not switch, as name globs; grounds, plane nets "
+                                   "and supply rails are left out already"),
     "rules": ("bool", False, "also work out Altium design rules for the net (default true)"),
 }
 
@@ -226,6 +234,27 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         if lim is not None:
             verdicts.append({"check": "skew", "pass": abs(figs["skew_ps"]) <= float(lim),
                              "detail": f"{figs['skew_ps']:.2f} ps, {float(lim):.2f} ps allowed"})
+    xt = None
+    if spec.get("xtalk", True):
+        say("crosstalk from the copper beside it", 0.9)
+        xt = _crosstalk(spec, board, stack, opt, path, rise)
+        (folder / "crosstalk.json").write_text(json.dumps(xt, indent=1), encoding="utf-8")
+        files["crosstalk"] = "crosstalk.json"
+        m["crosstalk_next_pct"] = _metric(xt["next_pct"], "%", "Near-end crosstalk, every "
+                                          "neighbour switching, of their swing")
+        m["crosstalk_fext_pct"] = _metric(xt["fext_pct"], "%", "Far-end crosstalk")
+        m["crosstalk_pct"] = _metric(xt["worst_pct"], "%", "Crosstalk, the worse end")
+        m["aggressors"] = _metric(len(xt["aggressors"]), "", "Nets routed beside it")
+        lim = _num(spec, "xtalk_max_pct", 5.0)
+        if xt["aggressors"]:
+            a = xt["aggressors"][0]
+            detail = (f"near end {xt['next_pct']:.2f} %, far end {xt['fext_pct']:.2f} % of the "
+                      f"aggressors' swing at {rise * 1e12:g} ps, {lim:g} % allowed; worst is "
+                      f"{a['aggressor']}, {a['length_mils']:.0f} mil at {a['gap_mils']:.1f} mil "
+                      f"on {a['layer']}")
+        else:
+            detail = "no switching net runs beside it"
+        verdicts.append({"check": "crosstalk", "pass": xt["worst_pct"] <= lim, "detail": detail})
     notes = [
         f"path {path.p.start if pair else path.start} to {path.p.end if pair else path.end}; "
         "lines from the 2D field and eddy-current solvers of each cross-section, vias from "
@@ -235,14 +264,40 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
     for name, figs_ in model.sections.items():
         notes.append(f"cross-section {name}: " + ", ".join(
             f"{k} {v:g}" for k, v in figs_.items() if isinstance(v, (int, float))))
+    if xt is not None:
+        notes.append("crosstalk from the two-trace cross-section at each neighbour's gap "
+                     "(weak coupling, matched ends, aggressors' edges as fast as this net's, "
+                     "all switching together)")
+        if xt["quiet"]:
+            notes.append("taken as not switching: " + ", ".join(xt["quiet"]))
     out = {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files,
            "figures": {"path": path.to_dict(), "blocks": model.blocks}}
+    if xt is not None:
+        out["figures"]["crosstalk"] = xt["aggressors"]
     if spec.get("rules", True):
         say("design rules for Altium", 0.95)
         try:
             out["altium_steps"] = rule_steps(spec, figs, path, stack, opt, z_target)
         except (ValueError, KeyError) as exc:
             out["notes"].append(f"no design rules worked out: {exc}")
+    return out
+
+
+def _crosstalk(spec: dict[str, Any], board: LayoutBoard, stack, opt, path, rise: float
+               ) -> dict[str, Any]:
+    info = {i["layer"]: i for i in planner.layer_sections(stack, opt)}
+    quiet = spec.get("xtalk_quiet") or ()
+    if isinstance(quiet, str):
+        quiet = [quiet]
+    still = crosstalk.quiet_nets(board, quiet)
+    reach = spec.get("xtalk_reach_mils")
+    if reach is not None and float(reach) <= 0:
+        raise ValueError("xtalk_reach_mils is above 0")
+    # the edge's energy sits around 0.35 / rise
+    coupling = crosstalk.Coupling(info, opt, 0.35 / rise)
+    out = crosstalk.of_path(board, path, coupling, rise,
+                            None if reach is None else float(reach), still)
+    out["quiet"] = sorted(still)
     return out
 
 
