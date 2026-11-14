@@ -100,7 +100,7 @@ The CTLE multiplies the channel's transfer, the FFE adds shifted copies of the p
 
 **Chosen for you.** `tx_ffe: "auto"` works out the taps, with `tx_ffe_pre` taps before the main one (default 1, up to 3) and `tx_ffe_post` after it (default 1, up to 4). At the sampling point where the eye without them is tallest, the worst-case opening, the main cursor less the magnitudes of all the others, is piecewise linear in the taps, and the taps' magnitudes add up to 1: the best taps are the solution of a linear programme, exact and not a search. Cursors a DFE takes off are left out of it. No taps at all is one of the choices, and the run keeps it whenever the eye over the whole bit is no larger with the taps: an automatic equaliser never leaves a smaller worst-case eye than none. `ctle_db: "auto"` tries every whole dB from 0 to `ctle_max_db` (default 12), with the taps worked out again at each, and keeps the one with the largest worst-case eye; between equal eyes the least equalisation wins, so a clean channel gets none. The run reports what it chose: `ffe_main_tap` (1 means no taps were needed), `ctle_db`, and the taps in the notes, which can be given back by hand.
 
-Otherwise the taps are the ones given. The DFE takes every decision as right, so error propagation is not in the eye. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
+Otherwise the taps are the ones given. The eye takes every decision of the DFE as right. Error propagation is in the bit error rate of [the eye at a bit error rate](#the-eye-at-a-bit-error-rate): a wrong decision leaves twice its tap on the following samples (two thirds of it in PAM4), for or against the symbol as often, and the decisions of the last taps (up to 10) are a Markov chain that ends when all are right again. The errors one wrong decision brings on the way, itself included, are solved for and reported as `dfe_burst_errors`; `bit_error_rate` is multiplied by it. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
 
 ## The eye at a bit error rate
 
@@ -144,6 +144,7 @@ The SPICE engine refuses PAM4. A routed net, a pair and a board-check target tak
 | `eye_height_at_ber_mv`, `eye_width_at_ber_ps`, `eye_width_at_ber_ui`, `bit_error_rate` | `eda-agent` | With `ber`, noise or jitter given: [the eye at a bit error rate](#the-eye-at-a-bit-error-rate) |
 | `ffe_main_tap`, `ctle_db` | `eda-agent` | With `tx_ffe` or `ctle_db` set to `auto`: the main tap and the boost chosen |
 | `dfe_tap1_mv` | `eda-agent` | With `dfe_taps`: the first tap, as the voltage it takes off |
+| `dfe_burst_errors` | `eda-agent` | With `dfe_taps` and the eye at a bit error rate: the wrong decisions one wrong decision brings, itself included (1 is no propagation) |
 | `series_r_ohms` | `eda-agent` | When the overshoot is over its limit: the resistor in series with the driver (each side of a pair) that brings it within, to the whole ohm above. It is worked out as more source resistance with everything else as it is, up to four reference impedances; when that is not enough the overshoot comes from the line and the check says so |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
 | `spice_vs_convolution_rms_mv` | `spice` | The two routes' difference |
@@ -214,8 +215,8 @@ The SPICE engine refuses PAM4. A routed net, a pair and a board-check target tak
 
 ## Limits
 
-- The eye is NRZ or PAM4; in PAM4 the levels are evenly spaced (no level mismatch or compression). The statistical eye takes symbols as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion, sinusoidal jitter and the clock recovery's tracking are not modelled.
-- Equalisation is not adaptive: taps and boost are given, or chosen once for the largest worst-case eye at the nominal sampling point (not for the eye at a bit error rate). No DFE error propagation, and not in the SPICE engine.
+- The eye is NRZ or PAM4; in PAM4 the levels are evenly spaced (no level mismatch or compression). The statistical eye takes symbols as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion and the clock recovery's tracking are not modelled.
+- Equalisation is not adaptive: taps and boost are given, or chosen once for the largest worst-case eye at the nominal sampling point (not for the eye at a bit error rate). DFE error propagation is in the bit error rate only, not in the contour, and equalisation is not in the SPICE engine.
 - The DC level takes the channel as conductors alone. A Touchstone file with a shunt element or a series capacitor in it gets an approximate level.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
 - The convolution needs the channel on a uniform grid from df. Another grid is resampled through a fitted model, and the job says so.

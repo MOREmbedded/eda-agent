@@ -24,7 +24,7 @@ single line driven with +/- A/2 receives S21 * A/2; a pair driven with
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
@@ -612,9 +612,50 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float,
         return tilted * weight * np.exp(np.clip(theta * (v - main), None, 60.0))
 
 
+#: A wrong decision is followed through this many DFE taps at most.
+BURST_TAPS = 10
+
+
+def burst_errors(error_at: Callable[[np.ndarray], np.ndarray], steps: Sequence[float]) -> float:
+    """Errors a DFE makes of one wrong decision, itself included.
+
+    A wrong decision k symbols back leaves ``steps[k - 1]`` on the sample
+    instead of taking the cursor off, for or against the symbol as often
+    (the two symbols are independent). ``error_at(x)`` is the probability
+    of a wrong decision with x against the sample. The decisions of the
+    last taps are a Markov chain that ends when all of them are right;
+    the expected number of wrong ones on the way is solved for, not
+    simulated. Taps past ``BURST_TAPS`` are left out."""
+    steps = np.abs(np.asarray(steps, dtype=float))[:BURST_TAPS]
+    while len(steps) and steps[-1] == 0:
+        steps = steps[:-1]
+    m = len(steps)
+    if not m:
+        return 1.0
+    n = 1 << m                                           # bit k - 1: wrong k symbols back
+    q = np.zeros(n)
+    for state in range(1, n):
+        on = steps[[k for k in range(m) if state >> k & 1]]
+        signs = 1 - 2 * (np.arange(1 << len(on))[:, None] >> np.arange(len(on)) & 1)
+        q[state] = float(np.mean(error_at(signs @ on)))
+    q = np.clip(q, 0.0, 1.0 - 1e-9)                      # a burst that never ends has no count
+    # more[s]: wrong decisions still to come from state s; more[0] = 0
+    a = np.eye(n)
+    b = q.copy()
+    for state in range(1, n):
+        older = (state << 1) & (n - 1)
+        a[state, older | 1] -= q[state]
+        a[state, older] -= 1 - q[state]
+    a[0] = 0.0
+    a[0, 0] = 1.0
+    b[0] = 0.0
+    more = np.linalg.solve(a, b)
+    return float(1.0 + more[1])
+
+
 def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rms: float = 0.0,
                     rj_rms: float = 0.0, dj_pp: float = 0.0, levels: int = 2,
-                    sj_pp: float = 0.0) -> dict[str, Any]:
+                    sj_pp: float = 0.0, dfe_taps: Sequence[float] = ()) -> dict[str, Any]:
     """The eye at a bit error rate, from the pulse response.
 
     At each sampling phase the received level of a one is its main cursor
@@ -629,6 +670,11 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
     and the eye is the one between two neighbouring levels, a third of the
     main cursor apart: all three are alike. ``bit_error_rate`` counts the
     six ways a symbol can be taken for its neighbour, over its two bits.
+
+    ``dfe_taps`` are the taps of a DFE already taken off the pulse (in the
+    pulse's units). The contour takes its decisions as right; the error
+    rate is multiplied by the errors one wrong decision brings
+    (``burst_errors``), read at the best sampling instant.
     """
     if not BER_FLOOR <= ber <= 0.1:
         raise ValueError(f"ber is {BER_FLOOR:g} to 0.1")
@@ -685,11 +731,25 @@ def statistical_eye(pulse: Pulse, amplitude: float, ber: float = 1e-12, noise_rm
         while b < spui - 1 and open_[b + 1]:
             b += 1
         width = b - a + 1
+    burst = 1.0
+    if len(dfe_taps):
+        e = int(np.argmin(errors))
+        middle = rows[e + reach][0]
+        edges = v + dv / 2
+
+        def error_at(x):
+            # below the level's middle the density is right; above, its mirror
+            x = np.asarray(x, dtype=float)
+            low = np.interp(np.minimum(x, 2 * middle - x), edges, cdf[e])
+            return np.where(x <= middle, low, 1.0 - low)
+        # a neighbouring level taken instead: 2 / (levels - 1) of the tap left on
+        burst = burst_errors(error_at, [2 * d * amplitude / 2 / (levels - 1) for d in dfe_taps])
     return {"eye_height": float(max(heights[k], 0.0)), "eye_width_ui": width / spui,
             "eye_width": width / spui * pulse.ui, "phase": k,
             "bit_error_rate": float(max(
-                np.min(errors) * 2 * (levels - 1) / levels / np.log2(levels), BER_FLOOR / 10)),
-            "heights": heights, "errors": errors}
+                np.min(errors) * burst * 2 * (levels - 1) / levels / np.log2(levels),
+                BER_FLOOR / 10)),
+            "burst_errors": burst, "heights": heights, "errors": errors}
 
 
 def plot_eye(path, eye: np.ndarray, ui: float, title: str, extra: Optional[np.ndarray] = None
