@@ -297,8 +297,11 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
         if rows:
             a = rows[0]
             where = {"at_mils": a["at_mils"], "layer": a["layer"],
-                     "where": f"runs {a['length_mils']:.0f} mil beside {a['aggressor']} at "
-                              f"{a['gap_mils']:.1f} mil"}
+                     "where": (f"runs {a['length_mils']:.0f} mil across from {a['aggressor']} "
+                               f"on {a['aggressor_layer']}, {a['gap_mils']:.1f} mil of "
+                               "dielectric between" if a.get("aggressor_layer") else
+                               f"runs {a['length_mils']:.0f} mil beside {a['aggressor']} at "
+                               f"{a['gap_mils']:.1f} mil")}
     elif v["check"] == "stub resonance":
         blocks = res.get("figures", {}).get("blocks", [])
         worst = min((b for b in blocks if b.get("stub_resonance_ghz")),
