@@ -134,6 +134,29 @@ def _finish(engine: Engine, job: _jobs.Job, folder, out: dict[str, Any]) -> dict
     return {"state": _jobs.DONE, "results": res}
 
 
+_code_stamp: Optional[str] = None
+
+
+def code_stamp() -> str:
+    """A hash of this package's Python source: what a finished run was
+    computed with. A run kept from other code is not handed back as the
+    answer to the same problem; it is computed again."""
+    global _code_stamp
+    if _code_stamp is None:
+        import hashlib
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        h = hashlib.sha256()
+        for path in sorted(root.rglob("*.py")):
+            h.update(path.relative_to(root).as_posix().encode())
+            try:
+                h.update(path.read_bytes())
+            except OSError:
+                pass
+        _code_stamp = h.hexdigest()[:16]
+    return _code_stamp
+
+
 def _execute(engine: Engine, job: _jobs.Job, folder) -> dict[str, Any]:
     work = folder / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -157,7 +180,8 @@ def submit(kind: str, engine_id: str, spec: Optional[dict] = None,
     ``wait`` runs a library engine here and returns its results; without
     it the run goes to a background thread and this returns at once. An
     external engine always returns once its program has started; poll
-    with ``refresh``. A finished run is not repeated unless ``force``.
+    with ``refresh``. A finished run is not repeated unless ``force``, or
+    unless it was computed by other code than this (``code_stamp``).
     """
     spec, inputs = dict(spec or {}), dict(inputs or {})
     engine = get_engine(engine_id)
@@ -183,7 +207,8 @@ def submit(kind: str, engine_id: str, spec: Optional[dict] = None,
         if current.get("state") == _jobs.RUNNING:
             return {"ok": True, "job": job.id, "engine": engine_id, "state": _jobs.RUNNING,
                     "note": "already running"}
-        if current.get("state") == _jobs.DONE and not force:
+        if current.get("state") == _jobs.DONE and not force \
+                and current.get("code") == code_stamp():
             return {"ok": True, "job": job.id, "engine": engine_id, "state": _jobs.DONE,
                     "results": _jobs.read_json(folder / "results.json"), "cached": True}
         folder.mkdir(parents=True, exist_ok=True)
@@ -191,7 +216,7 @@ def submit(kind: str, engine_id: str, spec: Optional[dict] = None,
             (folder / stale).unlink(missing_ok=True)
         _jobs.write_json(folder / "status.json", {"state": _jobs.QUEUED})
         _jobs.set_status(folder, _jobs.RUNNING, message="starting", progress=0.0,
-                         owner_pid=os.getpid())
+                         owner_pid=os.getpid(), code=code_stamp())
     if wait or engine.info.process == EXTERNAL:
         out = _execute(engine, job, folder)
     else:
