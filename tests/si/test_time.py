@@ -864,6 +864,23 @@ def test_best_ffe_is_the_optimum_of_the_worst_case_eye():
         assert _margin(p, [a, 1 - abs(a), 0.0], 2) <= _margin(p, with_dfe, 2) + 1e-3
 
 
+@pytest.mark.parametrize("rate", [5e9, 2e9])
+def test_best_ffe_works_where_the_eye_is_tallest(rate):
+    # reflections put the tallest eye a few samples off the pulse's middle; taps worked
+    # out at the middle would leave a smaller eye than none
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / rate, 0.3 / rate, 32)
+    wc = eye.worst_case_eye(p, 1.0)
+    c = wc["sample_index"]
+    assert c != p.center_index and c != p.peak_index
+    # it is the sample the worst-case eye is read at: main cursor less all the others
+    others = np.sum(np.abs(p.p[c % 32::32])) - abs(p.p[c])
+    assert wc["margin"] == pytest.approx(p.p[c] - others, rel=1e-12)
+    taps = eye.best_ffe(p, 1, 1)
+    assert taps[1] < 0.995 and _margin(p, taps) > _margin(p, [1.0]) + 0.002
+
+
 def test_the_eye_job_chooses_its_equaliser(tmp_path):
     ts = _long_channel(tmp_path)
 
