@@ -60,6 +60,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 | `stub_resonance_ghz` | The lowest quarter-wave notch of any trace stub or via stub on the path |
 | `length_mils`, `vias`, `stubs` | What the path is made of |
 | `crosstalk_next_pct`, `crosstalk_fext_pct`, `crosstalk_pct` | Near-end and far-end crosstalk from the copper beside the net, and the worse of the two, in percent of the aggressors' swing |
+| `crosstalk_noise_mv` | The same in millivolts on the net, each neighbour at its own swing (when every swing is known) |
 | `aggressors` | Nets routed beside it |
 | `return_gaps`, `return_gap_mils` | Gaps in the reference copper under the route, and the longest |
 | `skew_ps`, `mode_conversion_db`, `length_n_mils` | For a pair |
@@ -112,12 +113,14 @@ Each neighbour's coupling comes from the field solver's cross-section of the two
 | Near end = (Kc + Kl) / 4 | Reached once the shared length is longer than half the edge; 2 TD / tr of it below that |
 | Far end = (Kc - Kl) / 2 x TD / tr | Grows with the shared length and with a faster edge. Zero in a stripline (one dielectric), negative on a microstrip |
 
-TD is the delay of the shared length and tr the edge (`rise_ps`, taken for the aggressor too). Gaps are solved on a grid and read between its points, so a board with many neighbours costs a few fast solves per layer and width.
+TD is the delay of the shared length and tr the aggressor's edge: `rise_ps` unless the neighbour is given its own (below). Gaps are solved on a grid and read between its points, so a board with many neighbours costs a few fast solves per layer and width.
 
 - One aggressor's stretches add up; its near end stops at the ceiling of its tightest gap however the route is cut into segments.
 - A differential aggressor counts as the difference between its two sides, and a differential victim hears the difference between what reaches its two sides. A pair routed beside a net therefore disturbs it far less than one of its sides alone.
 - Aggressors add up as magnitudes: all switching together, the worst case.
 - Over the limit, the result says the fix: how far the worst aggressor has to stand from the net for the total to come within the limit, with every other neighbour left where it is. The aggressor is moved away as it is routed (a pair keeps its own gap) and the answer is its closest gap, or its offset to the side on a facing layer (`fix` in `crosstalk.json`: `gap_mils` or `offset_mils`). When the other neighbours alone are over the limit, it says so with what they give (`rest_pct`).
+- Neighbours are not all alike. `xtalk_aggressors` gives nets an edge and a swing of their own, by name glob, the first match taken: `[{"match": "CLK*", "rise_ps": 300, "swing_mv": 3300}, {"match": "LVDS_*", "swing_mv": 350}]`. A slower edge lowers the far end and the near end of a short run. `xtalk_swing_mv` is the swing of the neighbours that are given none.
+- With every neighbour's swing known, crosstalk is also given in millivolts on the net (`crosstalk_noise_mv`): each neighbour's share times its own swing, the worse of the near and far end. That is the figure that matters where 3.3 V logic runs beside a low-swing pair. `xtalk_max_mv` holds it to a limit (the check `crosstalk noise`); the percent limit stays as it is, each neighbour in percent of its own swing.
 - Grounds, plane nets and supply rails (by name: `GND*`, `VCC*`, `VDD*`, `+3V3`, `1V8`, ...) do not switch and are left out. `xtalk_quiet` names more, as globs (`["LED_*", "RESET_N"]`).
 - `xtalk: false` leaves the check out.
 
@@ -178,7 +181,7 @@ Each run works out `pcb_create_design_rule` calls:
   - Tracks and arcs on the same layer and on a facing signal layer count. Vias beside vias are not searched, nor is a layer two or more signal layers away. A copper pour on the facing layer is not taken as a shield.
   - On a facing layer the full solution shows a far end of about a tenth of the near end, from the two modes' unequal loss; the closed form gives none.
   - A board with no plane at all gives no coupling to the facing layer: there is nothing to solve the two traces against.
-  - The aggressor's edge is taken as fast as the victim's `rise_ps`. Beside a slower neighbour the far end is overstated.
+  - A neighbour's edge is taken as fast as the victim's `rise_ps` unless `xtalk_aggressors` gives it one. Beside a slower neighbour the far end is then overstated.
 
 - **Vias:**
   - The via model is an engineering model: right in shape to the first stub resonance, and good to a few GHz for a typical via. Above that, or where a via field matters, model the via in 3D (`em-3d`, openEMS) and use its S-parameters.

@@ -120,6 +120,8 @@ class Aggressor:
     strongest: float = -1.0               # coupling of the run the row describes
     other: str = ""                       # broadside: the aggressor's layer
     offset_mils: float = 0.0              # and its offset to the side
+    rise: Optional[float] = None          # its own edge, seconds, when it was given one
+    swing: Optional[float] = None         # its own swing, mV
 
     def to_dict(self) -> dict[str, Any]:
         out = {"aggressor": self.name, "nets": self.nets, "layer": self.layer,
@@ -131,6 +133,10 @@ class Aggressor:
             # gap_mils is then the dielectric between the two layers
             out["aggressor_layer"] = self.other
             out["offset_mils"] = round(self.offset_mils, 2)
+        if self.rise is not None:
+            out["rise_ps"] = round(self.rise * 1e12, 2)
+        if self.swing is not None:
+            out["swing_mv"] = self.swing
         return out
 
 
@@ -380,10 +386,64 @@ def quiet_nets(board: LayoutBoard, patterns=()) -> set[str]:
     return out
 
 
-def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
-           ) -> dict[str, Any]:
+def aggressor_table(rows) -> list[tuple[str, Optional[float], Optional[float]]]:
+    """``xtalk_aggressors`` checked and read: a list of {match (a net name
+    glob), rise_ps, swing_mv} as (glob, edge in seconds or None, swing in
+    mV or None). The first entry that matches a net is the one it takes."""
+    out = []
+    for row in rows or ():
+        if not isinstance(row, dict) or not str(row.get("match") or "").strip():
+            raise ValueError("xtalk_aggressors is a list of {match, rise_ps, swing_mv}")
+        extra = set(row) - {"match", "rise_ps", "swing_mv"}
+        if extra:
+            raise ValueError(f"xtalk_aggressors: unknown key {sorted(extra)[0]}")
+        vals: list[Optional[float]] = []
+        for key in ("rise_ps", "swing_mv"):
+            v = row.get(key)
+            if v is None:
+                vals.append(None)
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = 0.0
+            if not v > 0:
+                raise ValueError(f"xtalk_aggressors: {key} of {row['match']} is above 0")
+            vals.append(v)
+        if vals == [None, None]:
+            raise ValueError(f"xtalk_aggressors: {row['match']} gives no rise_ps or swing_mv")
+        out.append((str(row["match"]).strip().upper(),
+                    None if vals[0] is None else vals[0] * 1e-12, vals[1]))
+    return out
+
+
+def _driver(net: str, table) -> tuple[Optional[float], Optional[float]]:
+    up = net.upper()
+    for pat, edge, swing in table or ():
+        if fnmatch.fnmatchcase(up, pat):
+            return edge, swing
+    return None, None
+
+
+def noise_mv(result: dict[str, Any], swing_mv: Optional[float] = None) -> Optional[float]:
+    """Crosstalk as millivolts on the victim: each aggressor's share times
+    its own swing (``swing_mv`` where it has none), the worse of the near
+    and far end. None when an aggressor's swing is not known."""
+    near = far = 0.0
+    for row in result.get("aggressors") or ():
+        s = row.get("swing_mv", swing_mv)
+        if s is None:
+            return None
+        near += row["next_pct"] * float(s) / 100
+        far += row["fext_pct"] * float(s) / 100
+    return round(max(near, far), 3)
+
+
+def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
+           table=()) -> dict[str, Any]:
     """Per aggressor and in total: the near-end and far-end crosstalk of
-    ``runs`` for an aggressor edge of ``rise`` seconds."""
+    ``runs`` for an aggressor edge of ``rise`` seconds. ``table`` (an
+    ``aggressor_table``) gives nets an edge and a swing of their own."""
     pair_of: dict[str, tuple[str, int]] = {}
     for d in board.diff_pairs:
         pair_of[d.positive] = (d.name, 1)
@@ -408,7 +468,10 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
         g = groups.setdefault(key, Aggressor(key, []))
         if r.aggressor not in g.nets:
             g.nets.append(r.aggressor)
-        grow, top, far = _of_run(r, coupling, rise)
+        edge, swing = _driver(r.aggressor, table)
+        if g.rise is None and g.swing is None:
+            g.rise, g.swing = edge, swing
+        grow, top, far = _of_run(r, coupling, edge or rise)
         acc = near.setdefault((key, r.aggressor, r.side), [0.0, 0.0, r.side * sign])
         acc[0] += grow
         acc[1] = max(acc[1], top)
@@ -442,14 +505,14 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
 
 
 def remedy(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
-           limit_pct: float) -> Optional[dict[str, Any]]:
+           limit_pct: float, table=()) -> Optional[dict[str, Any]]:
     """What brings ``runs`` within ``limit_pct``: how far the worst
     aggressor has to stand from the net, everything else left where it
     is. It is moved away as it is routed (a pair keeps its own gap), on
     the layer its row describes; ``gap_mils`` (``offset_mils`` on a facing
     layer) is then its closest approach. With ``rest_pct`` instead, the
     other neighbours alone are over the limit. None within the limit."""
-    base = assess(board, runs, coupling, rise)
+    base = assess(board, runs, coupling, rise, table)
     if not base["aggressors"] or base["worst_pct"] <= limit_pct:
         return None
     row = base["aggressors"][0]
@@ -459,7 +522,7 @@ def remedy(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
     def worst(shift: float) -> float:
         moved = [replace(r, gap=r.gap + shift) if r.aggressor in nets and r.other == other
                  else r for r in runs]
-        return assess(board, moved, coupling, rise)["worst_pct"]
+        return assess(board, moved, coupling, rise, table)["worst_pct"]
 
     out: dict[str, Any] = {"aggressor": row["aggressor"], "limit_pct": limit_pct}
     if other:
@@ -477,7 +540,7 @@ def remedy(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float,
 
 def of_path(board: LayoutBoard, path, coupling: Coupling, rise: float,
             reach_mils: Optional[float] = None, quiet=(),
-            limit_pct: Optional[float] = None) -> dict[str, Any]:
+            limit_pct: Optional[float] = None, table=()) -> dict[str, Any]:
     """Crosstalk onto a routed net (a ``NetPath``) or pair (a ``PairPath``).
     Nets of ``quiet`` are not aggressors. Over ``limit_pct``, the result
     carries ``fix``: what brings it within (``remedy``)."""
@@ -497,8 +560,9 @@ def of_path(board: LayoutBoard, path, coupling: Coupling, rise: float,
             + find_runs(board, own, path.n.sections, reach, -1, across)
     else:
         runs = find_runs(board, {path.net} | set(quiet), path.sections, reach, 1, across)
-    out = assess(board, runs, coupling, rise)
-    fix = remedy(board, runs, coupling, rise, limit_pct) if limit_pct is not None else None
+    out = assess(board, runs, coupling, rise, table)
+    fix = remedy(board, runs, coupling, rise, limit_pct, table) \
+        if limit_pct is not None else None
     if fix:
         out["fix"] = fix
     return out
