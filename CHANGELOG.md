@@ -456,6 +456,7 @@ maturity classification for every tool.
   component pins (a bare test board, edge fingers, a test point at one
   end) was refused as having no pins. Its free pads now count as pins, with
   a note.
+
 - **An eye is never wider than its unit interval.** An eye open at every
   sample of the interval read 33 / 32 UI (1.031 UI in a board check). It
   now reads one sample short of the interval: the crossing lies between
