@@ -29,9 +29,13 @@ eda-agent install-deps --all
 ```
 
 Name features to install only some (`eda-agent install-deps render
-models3d`), and run `eda-agent features` to see them all. Programs such as
-openEMS, LTspice and KiCad are not pip packages: the installer prints their
-steps instead. See [Features and dependencies](FEATURES_AND_DEPENDENCIES.md).
+models3d`), and run `eda-agent features` to see them all, the built-in
+analysis tools included. With Rust installed it also builds the Rust
+kernels, the path tracer and pcb-toolkit. Programs such as openEMS,
+LTspice and KiCad are not pip packages: the installer prints their steps
+instead, and `eda-agent features --set-path` (or the dashboard's Features
+page) points eda-agent at one installed somewhere unusual. See
+[Features and dependencies](FEATURES_AND_DEPENDENCIES.md).
 
 Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
 

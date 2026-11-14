@@ -60,6 +60,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 | `length_mils`, `vias`, `stubs` | What the path is made of |
 | `crosstalk_next_pct`, `crosstalk_fext_pct`, `crosstalk_pct` | Near-end and far-end crosstalk from the copper beside the net, and the worse of the two, in percent of the aggressors' swing |
 | `aggressors` | Nets routed beside it |
+| `return_gaps`, `return_gap_mils` | Gaps in the reference copper under the route, and the longest |
 | `skew_ps`, `mode_conversion_db`, `length_n_mils` | For a pair |
 
 **Checks:**
@@ -69,6 +70,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `net-channel`.
 - `il_max_db`, `rl_min_db` and `skew_max_ps` when they are given;
 - stub resonance: with a data rate, every stub's first notch must lie at least `stub_margin` (default 2) times above Nyquist. A notch near Nyquist is a fault of its own that no length limit fixes: shorten the stub or back-drill the via.
 - crosstalk: the worse of the near and far end within `xtalk_max_pct` (default 5) of the aggressors' swing (below).
+- return path: no gap in the reference copper under the route (below).
 
 When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 
@@ -78,7 +80,21 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 - `sections.json`, every block and the figures of each cross-section;
 - `tdr.csv`;
 - `crosstalk.json`, every aggressor with its gap, shared length and place;
+- `return_path.json`, every gap under the route;
 - `channel.png`.
+
+## Return path
+
+A trace's return current runs in the reference copper right beneath it. Where that copper stops, the current goes round: the loop is an impedance step, it radiates, and every other trace crossing the same gap couples to it.
+
+- The reference layers of each trace section come from the stackup: the plane under a microstrip, the two planes of a stripline.
+- The route is sampled every 2 mil along its centre line and looked up in the copper the board carries for those layers: split planes, pours and solid regions, with their holes and cutouts.
+- A stretch with no copper beneath is a gap. It is reported with its length, where it starts, how far along the route that is, and the plane nets either side: `crosses the split between GND and +3V3 (12 mil) in InternalPlane1`, `crosses a gap of 30 mil in InternalPlane1`, `crosses no copper in BottomLayer`.
+- A gap shorter than `return_gap_min_mils` (8) is no finding, unless the plane's net changes across it: a split is always one.
+- A gap of up to 40 mil at the end of a trace section is the antipad of the net's own via and is left out.
+- A stripline with a gap in one plane while the other is whole there is the milder case: the check fails as a warning.
+- A plane layer with no shapes in the board data is taken as solid and a note says so. A signal layer taken as reference must carry copper under the route.
+- `return_path: false` leaves the check out.
 
 ## Crosstalk
 
@@ -146,11 +162,13 @@ Each run works out `pcb_create_design_rule` calls:
 - **Line loss:** the lines' loss equals the sum of each cross-section's own loss per inch to 0.1 %; a pair's is the odd mode's exactly.
 - **Length budget:** the same stubbed net routed 2000 and 5000 mil long gets the same length limit within 3 % (scaling the whole loss by the routed length moved it by over 30 %).
 - **Curved routes:** an arc following the net's own arc 4 mil away for a quarter circle of 500 mil radius couples as much as the same length side by side on a straight run, within 2 %.
+- **Return path:** a 30 mil slot across a microstrip is found within 2 mil of its place and length; a 5 mil split between two plane nets is named with both nets; a slot beside the trace, the antipad of the net's own via and a polygon's outline without poured copper give nothing.
 - **Crosstalk:** for two traces 4 mil apart over 800 mil of microstrip and a 100 ps edge, the near end is within 5 % and the far end within 15 % of the peaks of the coupled line solved in full (the four-port from the eddy-current solver, between 50 ohm ports). A stripline's far end is under 0.3 %. A pair with one side each side of the net cancels to zero.
 - **Pair skew:** the skew of a pair with a 49 mil length mismatch matches the mismatch times the line's delay per mil within 1.5 ps.
 
 ## Limits
 
+- **Return path:** the check is geometric. It says where the reference copper stops under the centre line; it does not model the gap in the channel (the loss, TDR and eye are those of a whole plane), does not look for stitching capacitors or return vias across a split, and does not see a trace running along the edge of a plane without crossing it.
 - **Crosstalk:**
   - The weak-coupling results hold for matched ends and coupling of a few percent to about 15 %. Reflections at mismatched ends add to them.
   - Only tracks and arcs on the same layer count. Copper on the next signal layer with no plane between (broadside coupling) and vias beside vias are not searched.

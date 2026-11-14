@@ -42,9 +42,15 @@ class DepStatus:
     where: str = ""
     wanted: str = ""
     detail: str = ""
+    #: False for a dependency only some platforms need (pywin32 off
+    #: Windows): it is left out of what a feature needs here.
+    applies: bool = True
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in asdict(self).items() if v not in ("", None)}
+        out = {k: v for k, v in asdict(self).items() if v not in ("", None)}
+        if self.applies:
+            out.pop("applies", None)
+        return out
 
 
 @dataclass
@@ -124,16 +130,43 @@ def _marker_holds(marker: str) -> bool:
         return True
 
 
+def core_requirements(dist: str = "eda-agent") -> list[str]:
+    """The requirements every installation has (no extra marker), with
+    other markers that do not hold here left out."""
+    try:
+        reqs = md.requires(dist) or []
+    except md.PackageNotFoundError:
+        return []
+    out = []
+    for r in reqs:
+        req = _parse(r)
+        if req is None:
+            continue
+        name, spec, marker = req
+        if "extra ==" in marker.replace('"', "'"):
+            continue
+        if marker and not _marker_holds(marker):
+            continue
+        out.append(name + spec)
+    return out
+
+
 def requirement_for(dep: Dependency, feature: Optional[Feature] = None) -> str:
     """The pip requirement for a Python dependency: the one its feature's
-    extra declares, else the catalogue's, else the bare name."""
+    extra declares, else the core requirement, else the catalogue's, else
+    the bare name."""
     extras = [feature.extra] if feature and feature.extra else [
         f.extra for f in cat.FEATURES if f.extra and dep.id in f.all_deps()]
+    want = _norm(dep.dist or dep.id)
     for extra in extras:
         for r in extra_requirements(extra):
             parsed = _parse(r)
-            if parsed and _norm(parsed[0]) == _norm(dep.dist or dep.id):
+            if parsed and _norm(parsed[0]) == want:
                 return r
+    for r in core_requirements():
+        parsed = _parse(r)
+        if parsed and _norm(parsed[0]) == want:
+            return r
     return dep.requirement or (dep.dist or dep.id)
 
 
@@ -162,6 +195,13 @@ def _which_any(*names: str) -> str:
     return ""
 
 
+def engine_program(dep_id: str, exe: str) -> str:
+    """A program the installer built into ``<engines folder>/<dep_id>``."""
+    name = exe + (".exe" if sys.platform == "win32" else "")
+    path = engines_dir() / dep_id / "bin" / name
+    return str(path) if path.is_file() else ""
+
+
 def _program_ngspice(deep: bool) -> tuple[str, str]:
     from ..sim.ngspice import find_ngspice, ngspice_version
     path = find_ngspice() or ""
@@ -174,7 +214,10 @@ def _program_ltspice(deep: bool) -> tuple[str, str]:
 
 
 def _program_freecad(deep: bool) -> tuple[str, str]:
-    return _which_any("freecadcmd", "FreeCADCmd"), ""
+    # The same search the STEP generator uses, so the report and the
+    # tool agree on whether FreeCAD is here.
+    from ..design.models3d import _freecadcmd
+    return _freecadcmd() or "", ""
 
 
 def _program_pcb_toolkit(deep: bool) -> tuple[str, str]:
@@ -183,15 +226,8 @@ def _program_pcb_toolkit(deep: bool) -> tuple[str, str]:
 
 
 def _program_kicad(deep: bool) -> tuple[str, str]:
-    path = _which_any("kicad-cli")
-    if not path and sys.platform == "win32":
-        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),):
-            root = Path(base) / "KiCad"
-            if root.is_dir():
-                found = sorted(root.glob("*/bin/kicad-cli.exe"), reverse=True)
-                if found:
-                    path = str(found[0])
-    return path, ""
+    from ..convert.altium_kicad.pipeline import find_kicad_cli
+    return find_kicad_cli(), ""
 
 
 def _program_openems(deep: bool) -> tuple[str, str]:
@@ -258,6 +294,13 @@ def unsupported_reason(dep: Dependency) -> str:
 
 def dependency_status(dep: Dependency, deep: bool = False,
                       feature: Optional[Feature] = None) -> DepStatus:
+    st = _dependency_status(dep, deep, feature)
+    st.applies = applies_here(dep)
+    return st
+
+
+def _dependency_status(dep: Dependency, deep: bool,
+                       feature: Optional[Feature]) -> DepStatus:
     why = unsupported_reason(dep)
     if dep.kind in (PYTHON, LOCAL):
         ver = _version(dep.dist or dep.id)
@@ -283,20 +326,67 @@ def dependency_status(dep: Dependency, deep: bool = False,
             except Exception as exc:  # noqa: BLE001 - a broken finder is "not found"
                 return DepStatus(dep.id, MISSING, detail=f"the check failed: {exc}")
         if path:
+            too_old = _too_old(dep.id, ver)
+            if too_old:
+                return DepStatus(dep.id, OUTDATED, ver, where=path, detail=too_old)
             return DepStatus(dep.id, PRESENT, ver, where=path)
-        return DepStatus(dep.id, UNSUPPORTED if why else MISSING, detail=why)
+        return DepStatus(dep.id, UNSUPPORTED if why else MISSING,
+                         detail=why or _bad_setting(dep))
     raise ValueError(f"unknown dependency kind {dep.kind!r}")
 
 
+def _too_old(dep_id: str, version: str) -> str:
+    """Why a program found here is too old to use, or ""."""
+    if dep_id != "ngspice" or not version:
+        return ""
+    from ..sim.ngspice import NGSPICE_MIN
+    try:
+        major = int(float(version))
+    except ValueError:
+        return ""
+    if major >= NGSPICE_MIN:
+        return ""
+    return (f"ngspice {version} is too old: it ignores a deck's .control block in "
+            f"batch mode, so eda-agent's runs do nothing. Install ngspice "
+            f"{NGSPICE_MIN} or later (the current release is best).")
+
+
+def _bad_setting(dep: Dependency) -> str:
+    """When a variable names where a program is and nothing usable is
+    there, say so: a wrong setting reads like a missing program."""
+    for name in dep.env:
+        value = os.environ.get(name, "").strip().strip('"')
+        if not value:
+            continue
+        if not Path(value).exists():
+            return f"{name} points at {value}, which does not exist"
+        return f"{name} points at {value}, where no usable {dep.title} was found"
+    return ""
+
+
+def applies_here(dep: Dependency) -> bool:
+    """Whether this platform needs ``dep`` at all. A dependency made for
+    other platforms only (pywin32) is conditional, like a pip marker: a
+    feature does not miss it here."""
+    return not dep.platforms or sys.platform in dep.platforms
+
+
 def feature_status(f: Feature, deps: dict[str, DepStatus], switched_off: bool) -> FeatureStatus:
-    if f.core:
-        return FeatureStatus(f.id, READY)
     ok = {d for d, s in deps.items() if s.state == PRESENT}
-    missing = [d for d in f.needs if d not in ok]
+    needs = [d for d in f.needs if not (deps.get(d) and not deps[d].applies)]
+    if f.core:
+        # Built in: ready unless the environment lost a package it needs.
+        missing = [d for d in needs if d not in ok]
+        if missing:
+            return FeatureStatus(f.id, NEEDS, missing,
+                                 detail="part of the core install is missing: "
+                                        "eda-agent install-deps --all repairs it")
+        return FeatureStatus(f.id, READY)
+    missing = [d for d in needs if d not in ok]
     for group in f.any_of:
         if not any(d in ok for d in group):
             missing.append(" or ".join(group))
-    impossible = [d for d in f.needs if deps.get(d) and deps[d].state == UNSUPPORTED]
+    impossible = [d for d in needs if deps.get(d) and deps[d].state == UNSUPPORTED]
     impossible += [" or ".join(g) for g in f.any_of
                    if all(deps.get(d) and deps[d].state == UNSUPPORTED for d in g)]
     if switched_off:

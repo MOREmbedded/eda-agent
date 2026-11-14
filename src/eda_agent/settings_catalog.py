@@ -230,14 +230,22 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "Where simulation jobs (`sim_job_run`, the dashboard's Simulation "
            "page) keep their folders: one per problem, one subfolder per engine."),
     EnvVar("EDA_AGENT_ENGINES_DIR", "Simulation", r"`%USERPROFILE%\EDA Agent\engines`",
-           "Where engines that run in their own Python environment are "
-           "installed (`eda-agent install-deps`); install logs go beside it."),
+           "Where `eda-agent install-deps` puts what it builds or installs "
+           "apart from eda-agent: engines in their own Python environment, "
+           "and programs built with Rust (pcb-toolkit). Install logs go "
+           "beside it."),
     EnvVar("EDA_AGENT_FEATURES_FILE", "Simulation", r"`%USERPROFILE%\.eda-agent\features.json`",
-           "Which switchable features (simulation engines) are turned off "
-           "(`eda-agent features --off`, the dashboard's Features page)."),
+           "The choices made on the dashboard's Features page and with "
+           "`eda-agent features`: switchable features turned off or on "
+           "(`--off`, `--on`), and saved program locations (`--set-path`), "
+           "which apply to every later session unless the environment sets "
+           "the same variable."),
+    EnvVar("EDA_AGENT_NGSPICE", "Simulation",
+           r"`ngspice_con` or `ngspice` on `PATH`, then `C:\Spice64\bin`",
+           "The ngspice console program, or the folder it was unzipped to."),
     EnvVar("EDA_AGENT_OPENEMS_DIR", "Simulation", "none",
-           "The unzipped openEMS folder (Windows build). Added to `PATH` and "
-           "`PYTHONPATH` for the solver run."),
+           "The unzipped openEMS folder (Windows build). Added to `PATH` for "
+           "the solver run, so the bindings find their DLLs."),
     EnvVar("EDA_AGENT_OPENEMS_PYTHON", "Simulation", "this Python, then `python` on PATH",
            "A Python that can `import openEMS`, used to run the solver."),
     # ---- 3D and SDK -----------------------------------------------------
@@ -251,10 +259,18 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "Altium's `ScriptingSystem.dll`",
            "The scripting DLL `sdk-symbols` reads its symbol table from."),
     EnvVar("EDA_AGENT_PCB_TOOLKIT", "3D models and Altium SDK",
-           "`pcb-toolkit` on `PATH`",
-           "Path to a locally built pcb-toolkit binary for "
-           "`calc-cross-check`."),
+           "`pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built",
+           "Path to a pcb-toolkit binary for `calc-cross-check` and "
+           "`pcb_calc_cross_check`."),
+    EnvVar("EDA_AGENT_FREECADCMD", "3D models and Altium SDK",
+           "`freecadcmd` on `PATH`, then FreeCAD's install folders",
+           "FreeCAD's headless `freecadcmd`, used for STEP models when "
+           "CadQuery is not installed."),
     # ---- KiCad and EasyEDA ----------------------------------------------
+    EnvVar("EDA_AGENT_KICAD_CLI", "KiCad and EasyEDA Pro",
+           r"`kicad-cli` on `PATH`, then the newest `Program Files\KiCad`",
+           "KiCad's `kicad-cli`, used for the Altium to KiCad conversion and "
+           "the KiCad exports."),
     EnvVar("EDA_AGENT_EASYEDA_HOST", "KiCad and EasyEDA Pro", "127.0.0.1",
            "Address the server listens on for the EasyEDA Pro extension."),
     EnvVar("EDA_AGENT_EASYEDA_PORT", "KiCad and EasyEDA Pro", "8787",

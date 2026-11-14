@@ -2073,7 +2073,7 @@ def register_design_tools(mcp) -> None:
 
         from ..design.loops import find_loops, graph_from_plan
         from ..sim.deck import deck_from_plan
-        from ..sim.ngspice import find_ngspice, loop_gain, simulator_backends
+        from ..sim.ngspice import find_usable_ngspice, loop_gain, simulator_backends
 
         payload = plan_json
         if isinstance(payload, str):
@@ -2091,7 +2091,7 @@ def register_design_tools(mcp) -> None:
         loops = find_loops(graph_from_plan(plan, pin_names), ["feedback"])
         if not loops:
             return {"ok": True, "loops": [], "note": "no feedback loop found"}
-        if not find_ngspice():
+        if not find_usable_ngspice()[0]:
             return {"ok": True, "ran": False, "loops": [l.as_dict() for l in loops],
                     "simulators": await asyncio.to_thread(simulator_backends)}
 

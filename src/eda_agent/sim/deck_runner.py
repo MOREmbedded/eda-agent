@@ -33,7 +33,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 from ..noconsole import no_window
-from .ngspice import INSTALL_OFFERS, find_ltspice, find_ngspice
+from .ngspice import INSTALL_OFFERS, find_ltspice, find_ngspice, ngspice_too_old
 
 SIMULATORS = ("auto", "ngspice", "ltspice")
 
@@ -45,19 +45,27 @@ def pick_simulator(wanted: str = "auto") -> dict:
     if wanted not in SIMULATORS:
         return {"engine": "", "reason": "engine is auto, ngspice or ltspice"}
     found = {"ngspice": find_ngspice(), "ltspice": find_ltspice()}
+    # An ngspice too old to run the decks (EAGLE ships ngspice 26) would
+    # take every run and do nothing; it counts as not there, with the reason.
+    too_old = ngspice_too_old(found["ngspice"]) if found["ngspice"] else ""
+    if too_old:
+        found["ngspice"] = None
     if wanted != "auto":
         if found[wanted]:
             return {"engine": wanted, "path": found[wanted], "why": "asked for"}
         label = "LTspice" if wanted == "ltspice" else "ngspice"
-        return {"engine": "", "reason": f"{label} is not installed",
+        reason = too_old if wanted == "ngspice" and too_old else f"{label} is not installed"
+        return {"engine": "", "reason": reason,
                 "install_offers": {wanted: INSTALL_OFFERS[wanted]}}
     if found["ngspice"]:
         return {"engine": "ngspice", "path": found["ngspice"],
                 "why": "ngspice is installed and comes first"}
     if found["ltspice"]:
         return {"engine": "ltspice", "path": found["ltspice"],
-                "why": "LTspice is installed and ngspice is not"}
-    return {"engine": "", "reason": "neither ngspice nor LTspice is installed",
+                "why": (f"LTspice is installed; {too_old}" if too_old
+                        else "LTspice is installed and ngspice is not")}
+    return {"engine": "", "reason": (f"{too_old} LTspice is not installed either."
+                                     if too_old else "neither ngspice nor LTspice is installed"),
             "install_offers": {k: INSTALL_OFFERS[k] for k in ("ngspice", "ltspice")}}
 
 

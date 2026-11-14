@@ -150,7 +150,12 @@ def find_binary() -> Optional[str]:
     override = os.environ.get(_ENV_VAR, "").strip()
     if override:
         return override if os.path.isfile(override) else None
-    return shutil.which("pcb-toolkit")
+    found = shutil.which("pcb-toolkit")
+    if found:
+        return found
+    # Where `eda-agent install-deps pcb-toolkit` builds it.
+    from ..features.detect import engine_program
+    return engine_program("pcb-toolkit", "pcb-toolkit") or None
 
 
 def _normalise(key: str) -> str:
