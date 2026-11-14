@@ -46,6 +46,13 @@ maturity classification for every tool.
   finding placed where the route crosses it (check `return path`,
   `return_gaps`, `return_gap_mils`); a stripline with its other plane
   whole there is a warning.
+- **Signal integrity: a crosstalk failure says its fix.** A net channel
+  and the board check now end a failed crosstalk check with the gap at
+  which the worst neighbour brings the total within the limit ("AGG at
+  7.8 mil or more brings it within 5 %"), every other neighbour left where
+  it is; on a facing signal layer it is the offset to the side. When the
+  other neighbours alone are over the limit the detail says so. The
+  figures are in `crosstalk.json` under `fix`.
 - **Signal integrity: crosstalk across the board.** A net channel and the
   board check now search the board for the copper that runs beside each
   net: other nets' tracks on the same layer, within reach, with the length

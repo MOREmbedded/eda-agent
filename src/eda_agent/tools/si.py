@@ -317,7 +317,8 @@ def _register_si_net_tools(mcp) -> None:
         return loss at Nyquist, and for a pair mode conversion and skew;
         finds the other nets routed beside it, and over or under it on
         a facing signal layer, and their near-end and
-        far-end crosstalk, and the places where the route crosses a split
+        far-end crosstalk (over the limit, with the gap that brings
+        the worst of them within it), and the places where the route crosses a split
         or a gap in its reference plane; checks them against limits; and works out the Altium rules (width,
         pair gap, uncoupled length, length from the loss budget) that hold
         the net to its targets.

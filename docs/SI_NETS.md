@@ -80,7 +80,7 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 - `path.json`, the path as found;
 - `sections.json`, every block and the figures of each cross-section;
 - `tdr.csv`;
-- `crosstalk.json`, every aggressor with its gap, shared length and place (for one on the facing signal layer: `aggressor_layer`, `offset_mils` to the side, and `gap_mils` the dielectric between the layers);
+- `crosstalk.json`, every aggressor with its gap, shared length and place, and over the limit the `fix` (for one on the facing signal layer: `aggressor_layer`, `offset_mils` to the side, and `gap_mils` the dielectric between the layers);
 - `return_path.json`, every gap under the route;
 - `channel.png`.
 
@@ -117,6 +117,7 @@ TD is the delay of the shared length and tr the edge (`rise_ps`, taken for the a
 - One aggressor's stretches add up; its near end stops at the ceiling of its tightest gap however the route is cut into segments.
 - A differential aggressor counts as the difference between its two sides, and a differential victim hears the difference between what reaches its two sides. A pair routed beside a net therefore disturbs it far less than one of its sides alone.
 - Aggressors add up as magnitudes: all switching together, the worst case.
+- Over the limit, the result says the fix: how far the worst aggressor has to stand from the net for the total to come within the limit, with every other neighbour left where it is. The aggressor is moved away as it is routed (a pair keeps its own gap) and the answer is its closest gap, or its offset to the side on a facing layer (`fix` in `crosstalk.json`: `gap_mils` or `offset_mils`). When the other neighbours alone are over the limit, it says so with what they give (`rest_pct`).
 - Grounds, plane nets and supply rails (by name: `GND*`, `VCC*`, `VDD*`, `+3V3`, `1V8`, ...) do not switch and are left out. `xtalk_quiet` names more, as globs (`["LED_*", "RESET_N"]`).
 - `xtalk: false` leaves the check out.
 

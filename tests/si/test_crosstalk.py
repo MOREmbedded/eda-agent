@@ -504,3 +504,102 @@ def test_the_net_job_and_the_board_check_say_which_layer(tmp_path):
     f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
     assert f["at_mils"] == [1000.0, 200.0] and f["layer"] == "MidLayer1"
     assert f["where"] == "runs 1600 mil across from AGG on MidLayer2, 8.0 mil of dielectric between"
+
+
+# -- what brings it within the limit ------------------------------------------------
+
+def test_the_fix_is_the_gap_that_brings_the_worst_neighbour_within_the_limit(coupling):
+    b = beside(victim())                                # 4 mil for 800 mil: about 10 %
+    res = of(b, coupling, limit_pct=5.0)
+    fix = res["fix"]
+    assert fix["aggressor"] == "AGG" and fix["limit_pct"] == 5.0 and "rest_pct" not in fix
+    g = fix["gap_mils"]
+    assert 6 < g < 12
+    # routed at that gap it passes, and a little closer it does not
+    assert of(beside(victim(), gap=g), coupling)["worst_pct"] <= 5.0
+    assert of(beside(victim(), gap=g - 0.4), coupling)["worst_pct"] > 5.0
+    # a looser limit asks for less, and within the limit there is nothing to fix
+    assert of(b, coupling, limit_pct=8.0)["fix"]["gap_mils"] < g
+    assert "fix" not in of(b, coupling, limit_pct=15.0) and "fix" not in of(b, coupling)
+    assert "fix" not in of(victim(), coupling, limit_pct=5.0)
+
+
+def test_the_fix_moves_only_the_worst_and_says_when_that_is_not_enough(coupling):
+    # a second neighbour on the other side, further off: the first has to go further
+    b = beside(beside(victim()), "B", gap=12, side=-1)
+    alone = of(beside(victim()), coupling, limit_pct=5.0)["fix"]["gap_mils"]
+    fix = of(b, coupling, limit_pct=5.0)["fix"]
+    assert fix["aggressor"] == "AGG" and fix["gap_mils"] > alone + 1
+    moved = beside(beside(victim(), gap=fix["gap_mils"]), "B", gap=12, side=-1)
+    assert of(moved, coupling, reach_mils=60)["worst_pct"] == pytest.approx(5.0, abs=0.15)
+    # two close neighbours: with one gone the other is still over
+    b = beside(beside(victim()), "B", gap=4.5, side=-1)
+    fix = of(b, coupling, limit_pct=5.0)["fix"]
+    assert fix["aggressor"] == "AGG" and "gap_mils" not in fix
+    assert fix["rest_pct"] == pytest.approx(of(beside(victim(), "B", gap=4.5, side=-1),
+                                               coupling)["worst_pct"], abs=0.1)
+
+
+def test_the_fix_moves_a_pair_as_it_is_routed_and_a_facing_track_to_the_side(coupling, dual):
+    b = victim()
+    for net, y in (("D_P", 9.0), ("D_N", 18.0)):        # a pair 4 mil from the net, 4 mil gap
+        b.tracks.append(Track("TopLayer", 100, y, 900, y, 5, net))
+    b.diff_pairs.append(DiffPair("D", "D_P", "D_N"))
+    res = of(b, coupling, limit_pct=1.0, reach_mils=60)
+    assert res["worst_pct"] > 1.0
+    fix = res["fix"]
+    assert fix["aggressor"] == "pair D" and 4.0 < fix["gap_mils"] < 20
+    shift = fix["gap_mils"] - 4.0
+    for t in b.tracks[-2:]:
+        t.y1 += shift
+        t.y2 += shift
+    assert of(b, coupling, reach_mils=60)["worst_pct"] == pytest.approx(1.0, abs=0.1)
+    # on the facing layer it is the offset to the side
+    fix = of(under(dual_victim()), dual, limit_pct=5.0)["fix"]
+    assert fix["aggressor_layer"] == "MidLayer2" and "gap_mils" not in fix
+    assert 8 < fix["offset_mils"] < 20
+    assert of(under(dual_victim(), offset=fix["offset_mils"]), dual)["worst_pct"] <= 5.0
+    assert of(under(dual_victim(), offset=fix["offset_mils"] - 1), dual)["worst_pct"] > 5.0
+
+
+def test_the_net_job_and_the_board_check_say_the_fix(tmp_path):
+    b = beside(victim())
+    spec = {"net": "SIG", "points": 80, "rules": False, "rise_ps": 100}
+    res = net_jobs.run_net_channel(spec, b.to_dict(), STACKUP, tmp_path / "a")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    saved = json.loads((tmp_path / "a" / "crosstalk.json").read_text())
+    g = saved["fix"]["gap_mils"]
+    assert v["detail"].endswith(f"; AGG at {g:.1f} mil or more brings it within 5 %"), v["detail"]
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_pct": 8}, b.to_dict(), STACKUP,
+                                   tmp_path / "b")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert "brings it within 8 %" in v["detail"]
+    assert json.loads((tmp_path / "b" / "crosstalk.json").read_text())["fix"]["gap_mils"] < g
+    res = net_jobs.run_net_channel({**spec, "xtalk_max_pct": 15}, b.to_dict(), STACKUP,
+                                   tmp_path / "c")
+    v = next(x for x in res["verdicts"] if x["check"] == "crosstalk")
+    assert v["pass"] and "brings" not in v["detail"]
+    assert net_jobs._fix_text({"aggressor": "B", "rest_pct": 6.123}, 5) == \
+        "; moving B away is not enough, the other neighbours alone give 6.12 %"
+    assert net_jobs._fix_text({"aggressor": "B", "offset_mils": 14.0}, 5) == \
+        "; B 14.0 mil or more to the side brings it within 5 %"
+    spec = {"targets": [{"match": "SIG", "kind": "net", "z_tol_pct": 60, "data_rate_gbps": 2}],
+            "points": 80, "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "x", snapshot="t")
+    f = next(x for x in res["figures"]["findings"] if x["check"] == "crosstalk")
+    assert f["detail"].endswith("mil or more brings it within 5 %") and "; AGG at " in f["detail"]
+
+
+def test_the_fix_moves_the_worst_neighbour_on_the_layer_its_row_tells(dual):
+    def board(offset):
+        b = under(dual_victim(), "BUS", offset=offset, y1=200, y2=600)
+        b.tracks.append(Track("MidLayer1", 1012, 1000, 1012, 1800, 4, "BUS"))   # 8 mil beside
+        return b
+    fix = of(board(0), dual, limit_pct=7.0)["fix"]
+    assert fix["aggressor_layer"] == "MidLayer2"
+    # the track beside it stays where it is: only the one under it moves aside
+    assert of(board(fix["offset_mils"]), dual)["worst_pct"] <= 7.0
+    assert of(board(fix["offset_mils"] - 1), dual)["worst_pct"] > 7.0
+    # and under what the one beside it gives alone, moving the other is not enough
+    fix = of(board(0), dual, limit_pct=4.0)["fix"]
+    assert "offset_mils" not in fix and 4.0 < fix["rest_pct"] < 6.0
