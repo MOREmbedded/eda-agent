@@ -55,6 +55,12 @@ maturity classification for every tool.
   `ctle_max_db`. A clean channel gets none. `ffe_main_tap`, `ctle_db` and
   the notes say what was chosen. See
   [Equalisation](docs/SI_TIME.md#equalisation).
+- **Signal integrity: PAM4 eyes.** `modulation: "pam4"` in
+  `si_channel_eye` and in a board-check target runs the eye on four
+  levels, two bits a symbol: the three eyes of the pattern
+  (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
+  at a bit error rate and the equalisers, chosen ones included. See
+  [PAM4](docs/SI_TIME.md#pam4).
 - **Signal integrity: the return path.** A net channel and the board check
   now look at the reference copper under each route (split planes, pours
   and regions, with their holes) and report every place where it stops:
@@ -439,7 +445,9 @@ maturity classification for every tool.
 - **Signal integrity: the eye at a bit error rate is quick on long
   sweeps.** Cursors far below a voltage step now go through the series of
   ln cos together instead of one by one: a response of 1000 bits takes a
-  fifth of the time, and they are no longer taken at their worst.
+  fifth of the time, and they are no longer taken at their worst. With
+  noise given, only the part of the spectrum the noise leaves is worked
+  out: 0.1 s where it took 3 s.
 - **Signal integrity: the eye settles to the right level.** The pulse
   response took the first frequency point as DC. The step then sloped
   over its window, every bit left a small offset behind, and the offsets

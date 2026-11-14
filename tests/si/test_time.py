@@ -1324,3 +1324,17 @@ def test_the_eye_job_runs_pam4(tmp_path):
     from eda_agent.si import eye_jobs
     with pytest.raises(ValueError, match="PAM4 is modelled by the eda-agent engine only"):
         eye_jobs.run_spice({"data_rate_gbps": 5, "modulation": "pam4"}, ts, tmp_path / "s")
+
+
+def test_pam4_is_given_taps_where_nrz_on_the_same_pulse_needs_none(tmp_path):
+    # an 85 ohm line between 50 ohm ends, 100 ps a symbol: for NRZ no taps beat none; a
+    # third of the cursor apart, the same reflections are worth a small tap
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+    nrz, plain = _pam_job(ts, data_rate_gbps=10, tx_ffe="auto")[0], _pam_job(ts, data_rate_gbps=10)[0]
+    assert nrz["ffe_main_tap"] == 1 and nrz["worst_case_eye_height_mv"] == plain["worst_case_eye_height_mv"]
+    pam = _pam_job(ts, data_rate_gbps=20, modulation="pam4", tx_ffe="auto")[0]
+    none = _pam_job(ts, data_rate_gbps=20, modulation="pam4")[0]
+    assert pam["ffe_main_tap"] < 0.999
+    assert pam["worst_case_eye_height_mv"] > none["worst_case_eye_height_mv"] + 1

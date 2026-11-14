@@ -539,7 +539,6 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float,
     # the Gaussian takes the spectrum under rounding from STAT_CUT / sigma on:
     # with real noise that is a small part of the grid, and the rest is left at 0
     keep = min(len(omega), int(np.ceil(STAT_CUT / sigma / omega[1])) + 2)
-    full = len(omega)
     omega = omega[:keep]
     # the series holds while a cursor's argument is under pi / 4 at the top kept
     small = STAT_SERIES_BINS * np.pi / omega[-1]
@@ -567,7 +566,7 @@ def _level_density(main: float, cur: np.ndarray, sigma: float, span: float,
     weight = float(phi[0].real)
     # 0 V sits mid-grid
     phi = phi / weight * np.exp(-1j * omega * (main + span))
-    tilted = np.fft.irfft(np.concatenate([phi, np.zeros(full - keep)]), STAT_BINS)
+    tilted = np.fft.irfft(phi, STAT_BINS)                # the frequencies left out are 0
     # the transform's rounding, about level across the grid
     floor = 20 * np.finfo(float).eps * np.log2(STAT_BINS) * np.sqrt(
         2 * float(np.sum(np.abs(phi) ** 2)) / STAT_BINS)

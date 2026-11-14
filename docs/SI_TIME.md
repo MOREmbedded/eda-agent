@@ -26,7 +26,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `channel-eye`.
 1. **Transfer.** S21 for a line, or SDD21 for a pair (ports 1 and 2 near P and N, 3 and 4 far). With real terminations, the transfer comes from the whole circuit; see [Driver and receiver](#driver-and-receiver).
 2. **Edge.** The transmitter's edge is a linear ramp of the given 10-90 % rise time, the shape a SPICE PWL source makes. Its spectrum multiplies the transfer. The top tenth of the band is tapered by a half cosine, so the band edge does not ring.
 3. **Pulse response.** The step response is the inverse FFT of the edged transfer, integrated. One unit interval of it, less the same delayed by one UI, is the pulse response.
-4. **Pattern.** A PRBS of order 7, 9, 11 or 15 from the ITU-T O.150 generators is played as NRZ symbols of plus and minus half the amplitude. The pattern settles for one channel length and then runs `repeats` more times.
+4. **Pattern.** A PRBS of order 7, 9, 11 or 15 from the ITU-T O.150 generators is played as NRZ symbols of plus and minus half the amplitude (or as [PAM4](#pam4)). The pattern settles for one channel length and then runs `repeats` more times.
 5. **Eye.** The waveform is folded onto one UI, with the pulse peak as the sampling reference.
    - Eye height is the lowest one less the highest zero at the best phase.
    - Eye width is the open span around that phase.
@@ -117,7 +117,18 @@ At each sampling phase the level of a one is its main cursor plus every other cu
 
 The run then gives `eye_height_at_ber_mv`, `eye_width_at_ber_ps` and `eye_width_at_ber_ui`, the check "eye at the bit error rate", and `bit_error_rate`: the error rate at the best sampling instant with the threshold in the middle (1e-19 stands for that or less). Peak noise (`noise_mv`, the crosstalk of a board check) comes off both rails as it does for the pattern's eye. Equalisation is applied before it.
 
-What it assumes: bits independent and equally likely (scrambled data, not a coded pattern), a linear channel, and jitter in steps of one time sample, so `samples_per_ui` sets how finely a small jitter is resolved. The levels are worked out on 32768 voltage steps and always carry a Gaussian width of at least 2.8 steps, which costs an eye of ISI alone under 2 mV in 500.
+What it assumes: bits independent and equally likely (scrambled data, not a coded pattern), a linear channel, and jitter in steps of one time sample, so `samples_per_ui` sets how finely a small jitter is resolved. The levels are worked out on 32768 voltage steps and always carry a Gaussian width of at least 2.8 steps, which costs an eye of ISI alone under 2 mV in 500. With noise given, the spectrum is worked out only as far as the noise leaves any of it, which makes such a run many times quicker than one without.
+
+## PAM4
+
+`modulation: "pam4"` sends two bits a symbol on four levels: -1, -1/3, +1/3 and +1 of half the amplitude, Gray coded so that a level taken for its neighbour costs one bit. `data_rate_gbps` stays the bit rate, so the symbol rate is half of it: a symbol is twice as long, and the Nyquist frequency, the default edge (0.3 of a symbol) and the CTLE's default pole follow the symbol rate.
+
+- **The pattern's eye.** The PRBS is taken twice round (its length is odd) and paired into symbols. There is an eye between each two neighbouring levels: `eye_height_lower_mv`, `eye_height_middle_mv`, `eye_height_upper_mv`. `eye_height_mv` is the smallest of them at the best sampling phase, and the width is where all three are open.
+- **The worst case.** Neighbouring levels are a third of the main cursor apart while every other symbol can still be at an outer level: the eye is the swing times (main cursor / 3 - ISI). That is why PAM4 needs about 9.5 dB more signal over ISI than NRZ at the same symbol rate.
+- **The eye at a bit error rate.** Each cursor carries +/-1 or +/-1/3 of itself with equal probability, so its characteristic function is (cos(w a) + cos(w a / 3)) / 2. The three eyes are alike. `bit_error_rate` counts the six of a symbol's eight sides that can be crossed, over its two bits: 3/4 of the probability of crossing one threshold.
+- **Equalisers.** FFE, CTLE and DFE work on the pulse as before; taps are chosen (`tx_ffe: "auto"`) for a third of the main cursor less the ISI, so PAM4 is given taps where NRZ needs none.
+
+The SPICE engine refuses PAM4. A board check's own limits (loss at Nyquist, skew) still take the target's `data_rate_gbps` as a bit rate of NRZ; only the eye follows `modulation`.
 
 ## What a run gives
 
@@ -126,6 +137,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
 | `eye_height_mv`, `eye_width_ps`, `eye_width_ui` | both | The eye of the pattern |
 | `worst_case_eye_height_mv`, `worst_case_eye_width_ps` | `eda-agent` | Peak distortion analysis |
 | `main_cursor_mv`, `isi_mv` | `eda-agent` | The main cursor and the sum of the others |
+| `eye_height_lower_mv`, `eye_height_middle_mv`, `eye_height_upper_mv` | `eda-agent` | With [PAM4](#pam4): the three eyes; `eye_height_mv` is the smallest |
 | `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
 | `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
@@ -178,6 +190,12 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
   - Deterministic jitter of 3 samples either way gives the level 3 samples off the centre; random jitter of half a sample gives the level 4 samples off at 1e-12 and 2 samples off at 1e-3, as its tail probabilities say.
   - 2000 cursors of 15 millionths, each a fifth of a voltage step, widen the levels as the Gaussian of their sum does (within 5 %), and the series they go through gives the eye that multiplying them out one by one gives, within a microvolt.
   - On a 0.8 m line at 5 Gb/s it lies between the worst-case eye and the PRBS eye; noise and jitter each lower it, a looser rate raises it, and peak noise takes twice its value off.
+- **PAM4:**
+  - On a flat channel the three eyes are a third of the swing each; with one post-cursor of 0.1 the worst case is swing x (1/3 - 0.1), and the PRBS7 eye reaches it.
+  - With noise alone the eye at a bit error rate is the Gaussian quantile off a sixth of the swing, and the error rate is 3/4 of the tail (within 0.01 %). With two cursors it steps through the sixteen pairs of symbols as their probabilities say.
+  - The series for small cursors gives (cos x + cos(x/3)) / 2 to 1e-10.
+  - One post-cursor of 0.3 gets no tap for NRZ and the tap that cancels it for PAM4.
+  - PAM4 at twice the data rate has the pulse, the cursors and the loss at Nyquist of NRZ, and a worst-case eye of 2 x (main / 3 - ISI).
 - **Equalisation:**
   - The CTLE is 1 / boost at DC, and at its first pole it is the formula's value by hand; with no boost it is 1 everywhere.
   - On a flat channel, FFE taps [0.75, -0.25] give the de-emphasis they should: the eye is 0.75 - 0.25 = 0.5 of the swing. A tap that mirrors a channel's post-cursor cancels it.
@@ -196,7 +214,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
 
 ## Limits
 
-- The eye is NRZ. The statistical eye takes bits as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion, sinusoidal jitter and the clock recovery's tracking are not modelled.
+- The eye is NRZ or PAM4; in PAM4 the levels are evenly spaced (no level mismatch or compression). The statistical eye takes symbols as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion, sinusoidal jitter and the clock recovery's tracking are not modelled.
 - Equalisation is not adaptive: taps and boost are given, or chosen once for the largest worst-case eye at the nominal sampling point (not for the eye at a bit error rate). No DFE error propagation, and not in the SPICE engine.
 - The DC level takes the channel as conductors alone. A Touchstone file with a shunt element or a series capacitor in it gets an approximate level.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
