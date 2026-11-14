@@ -458,8 +458,10 @@ def _register_si_time_tools(mcp) -> None:
                 edge_reversal_max_pct (limits on one edge at the receiver,
                 percent of its settled level; no check if absent),
                 tx_ffe (transmitter taps one UI apart, e.g.
-                [-0.1, 0.7, -0.2]; scaled to a peak of 1), ctle_db
-                (receiver CTLE boost over DC, 0-30), ctle_peak_ghz (its
+                [-0.1, 0.7, -0.2]; scaled to a peak of 1; or "auto": the
+                best tx_ffe_pre + 1 + tx_ffe_post taps), ctle_db
+                (receiver CTLE boost over DC, 0-30, or "auto": the best
+                up to ctle_max_db), ctle_peak_ghz (its
                 first pole, default Nyquist), dfe_taps (receiver DFE taps,
                 0-32), dfe_max (most one tap takes off, part of the main
                 cursor, 0.5; equalisation is in the eda-agent engine only),

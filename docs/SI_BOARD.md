@@ -28,7 +28,7 @@ It runs as a [simulation job](SIMULATION.md) of kind `board-si`, through the `si
 | `xtalk_aggressors`, `xtalk_max_mv` | Neighbours with an edge and a swing of their own (`{match, rise_ps, swing_mv}`), and a limit on crosstalk in millivolts ([Crosstalk](SI_NETS.md#crosstalk)). Both can also be set for the whole board |
 | `xtalk_swing_mv` | The swing of the neighbours that are given none (default the eye's own `amplitude_mv`). Each neighbour's crosstalk times its swing is noise on both rails of the eye: `eye_min_mv` is held against what is left (`eye_height_with_noise_mv`) |
 | `ber`, `noise_rms_mv`, `rj_rms_ps`, `dj_pp_ps`, `eye_at_ber_min_mv`, `eye_at_ber_min_ui` | The eye at a bit error rate, with random noise and jitter, and its limits ([The eye at a bit error rate](SI_TIME.md#the-eye-at-a-bit-error-rate)). The net's crosstalk comes off it as peak noise |
-| `tx_ffe`, `ctle_db`, `ctle_peak_ghz`, `dfe_taps`, `dfe_max` | The eye's equalisation: transmitter taps, receiver CTLE and DFE ([Equalisation](SI_TIME.md#equalisation)). `eye_min_mv` is then held against the equalised eye |
+| `tx_ffe`, `tx_ffe_pre`, `tx_ffe_post`, `ctle_db`, `ctle_max_db`, `ctle_peak_ghz`, `dfe_taps`, `dfe_max` | The eye's equalisation: transmitter taps, receiver CTLE and DFE; `tx_ffe` and `ctle_db` take `auto` ([Equalisation](SI_TIME.md#equalisation)). `eye_min_mv` is then held against the equalised eye |
 | `tx_ibis`, `rx_ibis`, ... | The eye's driver and receiver ([Eyes and SPICE models](SI_TIME.md)) |
 
 - A net or pair is taken by the first target that matches it. A broad target last (`{"match": "*", ...}`) catches what the others leave.

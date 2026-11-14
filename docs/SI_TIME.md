@@ -98,7 +98,9 @@ A long channel closes the plain eye well before the link stops working, because 
 
 The CTLE multiplies the channel's transfer, the FFE adds shifted copies of the pulse and the DFE subtracts from it; the eye, the worst-case eye, the waveform and the cursors are then those after equalisation. The edge figures and the insertion loss stay the channel's own. `dfe_tap1_mv` gives the first DFE tap, and the notes list all taps, so they can be compared with what the receiver allows.
 
-The taps are the ones given: nothing is adapted or searched. The DFE takes every decision as right, so error propagation is not in the eye. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
+**Chosen for you.** `tx_ffe: "auto"` works out the taps, with `tx_ffe_pre` taps before the main one (default 1, up to 3) and `tx_ffe_post` after it (default 1, up to 4). At the sampling point where the eye without them is tallest, the worst-case opening, the main cursor less the magnitudes of all the others, is piecewise linear in the taps, and the taps' magnitudes add up to 1: the best taps are the solution of a linear programme, exact and not a search. Cursors a DFE takes off are left out of it. No taps at all is one of the choices, and the run keeps it whenever the eye over the whole bit is no larger with the taps: an automatic equaliser never leaves a smaller worst-case eye than none. `ctle_db: "auto"` tries every whole dB from 0 to `ctle_max_db` (default 12), with the taps worked out again at each, and keeps the one with the largest worst-case eye; between equal eyes the least equalisation wins, so a clean channel gets none. The run reports what it chose: `ffe_main_tap` (1 means no taps were needed), `ctle_db`, and the taps in the notes, which can be given back by hand.
+
+Otherwise the taps are the ones given. The DFE takes every decision as right, so error propagation is not in the eye. The SPICE engine refuses equalisation; run it without to compare the two routes on the plain channel.
 
 ## The eye at a bit error rate
 
@@ -128,6 +130,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
 | `settling_ps` | `eda-agent` | From half the level until the edge stays within 5 % of it |
 | `eye_height_at_ber_mv`, `eye_width_at_ber_ps`, `eye_width_at_ber_ui`, `bit_error_rate` | `eda-agent` | With `ber`, noise or jitter given: [the eye at a bit error rate](#the-eye-at-a-bit-error-rate) |
+| `ffe_main_tap`, `ctle_db` | `eda-agent` | With `tx_ffe` or `ctle_db` set to `auto`: the main tap and the boost chosen |
 | `dfe_tap1_mv` | `eda-agent` | With `dfe_taps`: the first tap, as the voltage it takes off |
 | `series_r_ohms` | `eda-agent` | When the overshoot is over its limit: the resistor in series with the driver (each side of a pair) that brings it within, to the whole ohm above. It is worked out as more source resistance with everything else as it is, up to four reference impedances; when that is not enough the overshoot comes from the line and the check says so |
 | `insertion_loss_db_at_nyquist` | `eda-agent` | Of the transfer used |
@@ -179,6 +182,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
   - On a flat channel, FFE taps [0.75, -0.25] give the de-emphasis they should: the eye is 0.75 - 0.25 = 0.5 of the swing. A tap that mirrors a channel's post-cursor cancels it.
   - A DFE with enough taps and range takes the post-cursors off to zero and leaves the main cursor and the pre-cursors alone; a tap at its limit takes off the limit and no more.
   - A 0.8 m lossy line at 10 Gb/s has a closed worst-case eye. FFE taps [-0.1, 0.7, -0.2] open it, and so do four DFE taps, each above 80 mV at 800 mV; 6 dB of CTLE opens it too and widens the eye.
+  - Chosen taps: for a pulse with cursors 0.2, 1, 0.4, 0.1 the programme's three taps give a worst-case opening no grid of other taps (steps of 0.05) and no random step around them beats; one post-cursor alone is left unequalised, as a tap would cost the main cursor what it gains. On the 0.8 m line the chosen taps open the worst-case eye 36 mV further than [-0.1, 0.7, -0.2], and the chosen CTLE boost is the best of the thirteen run by hand. A short clean line gets no equaliser, and an 85 ohm line between 50 ohm ends, whose ISI is reflections, is never left with a smaller eye than without.
 - **Vector fitting:** known poles come back to 1e-5 with an RMS error under 1e-8. Fits stay stable and reciprocal.
 - **Passivity:** a model with gain above 1 is brought to at most 1 everywhere on the check grid.
 - **Subcircuit:** ngspice AC of a 2-port and a 4-port subcircuit equals the model's S to 1e-6.
@@ -192,7 +196,7 @@ What it assumes: bits independent and equally likely (scrambled data, not a code
 ## Limits
 
 - The eye is NRZ. The statistical eye takes bits as independent, the channel as linear and jitter as that of the sampling instant; transmitter duty-cycle distortion, sinusoidal jitter and the clock recovery's tracking are not modelled.
-- Equalisation is the taps and the boost given: no adaptation, no tap search, no DFE error propagation, and not in the SPICE engine.
+- Equalisation is not adaptive: taps and boost are given, or chosen once for the largest worst-case eye at the nominal sampling point (not for the eye at a bit error rate). No DFE error propagation, and not in the SPICE engine.
 - The DC level takes the channel as conductors alone. A Touchstone file with a shunt element or a series capacitor in it gets an approximate level.
 - The IBIS reduction is linear at the typical corner. Package parasitics ([Package]) are not added; include them in the channel if they matter.
 - The convolution needs the channel on a uniform grid from df. Another grid is resampled through a fitted model, and the job says so.

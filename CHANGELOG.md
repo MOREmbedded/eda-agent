@@ -48,6 +48,13 @@ maturity classification for every tool.
   a long channel whose worst-case eye is closed is judged at the rate it
   has to meet. Down to 1e-18. See
   [The eye at a bit error rate](docs/SI_TIME.md#the-eye-at-a-bit-error-rate).
+- **Signal integrity: the equaliser chosen for you.** `tx_ffe: "auto"`
+  works out the transmitter taps that leave the largest worst-case eye
+  (`tx_ffe_pre`, `tx_ffe_post` set how many), as the exact solution of a
+  linear programme; `ctle_db: "auto"` picks the boost, up to
+  `ctle_max_db`. A clean channel gets none. `ffe_main_tap`, `ctle_db` and
+  the notes say what was chosen. See
+  [Equalisation](docs/SI_TIME.md#equalisation).
 - **Signal integrity: the return path.** A net channel and the board check
   now look at the reference copper under each route (split planes, pours
   and regions, with their holes) and report every place where it stops:
