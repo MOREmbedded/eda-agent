@@ -89,6 +89,12 @@ def layer_sections(stack: Stack, opt: Options) -> list[dict[str, Any]]:
                 info["note"] = (f"signal layer {' and '.join(signal_refs)} is taken as a "
                                 "reference; keep it solid copper under these traces or the "
                                 "figures do not hold")
+        for key, other in (("h_mils", None), ("h_below_mils", below), ("h_above_mils", above)):
+            if key in info and info[key] <= 0:
+                other = other or (below if below is not None else above)
+                raise ValueError(
+                    f"the stackup has no dielectric thickness between {label(layer)} and "
+                    f"{label(other)}; set it in the Layer Stack Manager")
         out.append(info)
     return out
 
