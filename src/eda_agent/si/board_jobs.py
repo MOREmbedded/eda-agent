@@ -38,7 +38,8 @@ from .net_jobs import NET_SPEC, run_net_channel
 
 #: Keys a target may carry: the net job's limits and models, and the eye's.
 _NET_KEYS = {k for k in NET_SPEC if k not in ("net", "pair", "from_pin", "to_pin", "rules")}
-_EYE_KEYS = {"rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
+_EYE_KEYS = {"overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct",
+             "rise_ps", "amplitude_mv", "prbs", "tx_ibis", "tx_model", "rx_ibis", "rx_model",
              "tx_r_ohms", "tx_c_pf", "rx_r_ohms", "rx_c_pf"}
 _TARGET_KEYS = {"match", "class", "kind", "eye", "eye_min_mv", "eye_min_ui",
                 "xtalk_swing_mv", "delay_match_ps"} | _NET_KEYS | _EYE_KEYS
@@ -279,6 +280,11 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
         where = {"at_mils": [round(start[0], 2), round(start[1], 2)], "where": f"at {path.start}"}
     if path is None:
         return where
+    if v["check"] in EDGE_CHECKS:
+        # the edge is seen where it arrives
+        end = _pin_xy(board, path.end)
+        if end is not None:
+            where = {"at_mils": [round(end[0], 2), round(end[1], 2)], "where": f"at {path.end}"}
     if v["check"] == "impedance" and "delay_ps" in res["metrics"] and path.length:
         delay = res["metrics"]["delay_ps"]["value"] * 1e-12
         hit = _tdr_fault(folder, z_target, rise_s, delay)
@@ -319,6 +325,9 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
                      "where": f"via stub of {worst.get('stub_mils', 0):.0f} mil"}
     return where
 
+
+#: Checks of the single edge at the receiver, placed at the receiving pin.
+EDGE_CHECKS = ("overshoot", "ringback", "edge reversal")
 
 #: The unit intervals an item's sweep covers when its eye is wanted, and
 #: the most points it is given for that.
@@ -454,6 +463,7 @@ def _one(item: dict[str, Any], spec: dict[str, Any], board_data: dict, stackup: 
                 need.append(f"{float(lim_mv):g} mV")
             if lim_ui is not None:
                 need.append(f"{float(lim_ui):g} UI")
+            out["verdicts"] += [v for v in er["verdicts"] if v["check"] in EDGE_CHECKS]
             out["verdicts"].append({"check": "eye", "pass": bool(ok),
                                     "detail": f"{h:.1f} mV by {w:.3f} UI{noisy}"
                                               + (f", {' and '.join(need)} needed" if need

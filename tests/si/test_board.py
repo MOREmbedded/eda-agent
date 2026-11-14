@@ -438,3 +438,29 @@ def test_nets_of_a_target_are_matched_in_delay_to_the_slowest(tmp_path):
     with pytest.raises(ValueError, match="delay_match_ps"):
         board_jobs.run_board_si({**spec, "targets": [{**plain, "delay_match_ps": -1}]},
                                 b.to_dict(), STACKUP, tmp_path / "e", snapshot="t")
+
+
+def test_the_edge_checks_of_the_eye_are_placed_at_the_receiving_pin(tmp_path):
+    b = _bus([3000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 1, "z_tol_pct": 60, "eye": True,
+              "tx_r_ohms": 15, "rx_r_ohms": "open", "rise_ps": 100,
+              "overshoot_max_pct": 20, "ringback_max_pct": 60, "edge_reversal_max_pct": 5}
+    spec = {"targets": [target], "f_max_ghz": 10}
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "a", snapshot="t")
+    item = json.loads((tmp_path / "a" / "findings.json").read_text())["items"][0]
+    m = item["metrics"]
+    assert 30 < m["eye_overshoot_pct"] < 70 and m["eye_ringback_pct"] > 10
+    assert m["eye_edge_reversal_pct"] < 5 and m["eye_settling_ps"] > 0
+    checks = {v["check"]: v["pass"] for v in item["verdicts"]}
+    assert checks["overshoot"] is False and checks["ringback"] and checks["edge reversal"]
+    f, = [x for x in res["figures"]["findings"] if x["check"] in board_jobs.EDGE_CHECKS]
+    assert f["check"] == "overshoot" and f["severity"] == "error"
+    assert f["at_mils"] == [3000.0, 0.0] and f["where"] == "at UB.1"
+    assert f["detail"] == f"{m['eye_overshoot_pct']:.1f} % of the settled level, 20 % allowed"
+    # with no limits the figures are there and nothing is judged
+    for k in ("overshoot_max_pct", "ringback_max_pct", "edge_reversal_max_pct"):
+        target.pop(k)
+    res = board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / "b", snapshot="t")
+    item = json.loads((tmp_path / "b" / "findings.json").read_text())["items"][0]
+    assert item["metrics"]["eye_overshoot_pct"] == m["eye_overshoot_pct"]
+    assert not any(v["check"] in board_jobs.EDGE_CHECKS for v in item["verdicts"])
