@@ -445,6 +445,11 @@ maturity classification for every tool.
   same job asked again after an update returned the older code's results
   unless forced; it is now solved again.
 
+- **Crosstalk sees curved routes.** A neighbour's arcs were not searched,
+  and a neighbour beside a curved stretch was dropped because each chord
+  of the curve is shorter than the 10 mil a run had to be. Arcs now count,
+  and it is a net's whole shared length that must reach 10 mil.
+
 - **IBIS buffers as vendors write them.** A driver's output resistance was
   read from the two table points either side of 0 V, which on a real file
   is the clamp diode below the rail: a 50 ohm driver came out as 0.18 ohm.

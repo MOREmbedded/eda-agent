@@ -82,7 +82,7 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 
 ## Crosstalk
 
-The board is searched for what runs beside the net. For each stretch of the route, tracks of other nets on the same layer count when they run within 10 degrees of it, for at least 10 mil, and within reach: four heights above the reference plane edge to edge, and at least three trace widths (`xtalk_reach_mils` sets it).
+The board is searched for what runs beside the net. For each stretch of the route, tracks and arcs of other nets on the same layer count when they run within 10 degrees of it and within reach, and the net shares at least 10 mil with the route in all (a curve is many short chords, so it is the net's whole shared length that counts): four heights above the reference plane edge to edge, and at least three trace widths (`xtalk_reach_mils` sets it).
 
 Each neighbour's coupling comes from the field solver's cross-section of the two traces at their gap:
 
@@ -145,6 +145,7 @@ Each run works out `pcb_create_design_rule` calls:
 - **Via stub:** the via stub's notch falls within 5 % of c / (4 l sqrt Er), and back-drilling removes it.
 - **Line loss:** the lines' loss equals the sum of each cross-section's own loss per inch to 0.1 %; a pair's is the odd mode's exactly.
 - **Length budget:** the same stubbed net routed 2000 and 5000 mil long gets the same length limit within 3 % (scaling the whole loss by the routed length moved it by over 30 %).
+- **Curved routes:** an arc following the net's own arc 4 mil away for a quarter circle of 500 mil radius couples as much as the same length side by side on a straight run, within 2 %.
 - **Crosstalk:** for two traces 4 mil apart over 800 mil of microstrip and a 100 ps edge, the near end is within 5 % and the far end within 15 % of the peaks of the coupled line solved in full (the four-port from the eddy-current solver, between 50 ohm ports). A stripline's far end is under 0.3 %. A pair with one side each side of the net cancels to zero.
 - **Pair skew:** the skew of a pair with a 49 mil length mismatch matches the mismatch times the line's delay per mil within 1.5 ps.
 
@@ -152,7 +153,7 @@ Each run works out `pcb_create_design_rule` calls:
 
 - **Crosstalk:**
   - The weak-coupling results hold for matched ends and coupling of a few percent to about 15 %. Reflections at mismatched ends add to them.
-  - Only tracks on the same layer count. Copper on the next signal layer with no plane between (broadside coupling), arcs, and vias beside vias are not searched.
+  - Only tracks and arcs on the same layer count. Copper on the next signal layer with no plane between (broadside coupling) and vias beside vias are not searched.
   - The aggressor's edge is taken as fast as the victim's `rise_ps`. Beside a slower neighbour the far end is overstated.
 
 - **Vias:**
