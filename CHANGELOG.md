@@ -452,6 +452,11 @@ maturity classification for every tool.
   same job asked again after an update returned the older code's results
   unless forced; it is now solved again.
 
+- **An eye is never wider than its unit interval.** An eye open at every
+  sample of the interval read 33 / 32 UI (1.031 UI in a board check). It
+  now reads one sample short of the interval: the crossing lies between
+  two samples.
+
 - **IBIS buffers as vendors write them.** A driver's output resistance was
   read from the two table points either side of 0 V, which on a real file
   is the clamp diode below the rail: a 50 ohm driver came out as 0.18 ohm.
