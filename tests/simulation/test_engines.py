@@ -92,6 +92,17 @@ def test_builtin_touchstone_check(tmp_path):
     assert again["cached"] and again["job"] == r["job"]
     forced = sim.submit("touchstone-check", "eda-agent", {}, {"touchstone": str(p)}, force=True)
     assert forced["state"] == "done" and "cached" not in forced
+    # an answer kept from other code is computed again, not handed back
+    again = sim.submit("touchstone-check", "eda-agent", {}, {"touchstone": str(p)})
+    assert again["cached"]
+    sim._code_stamp = "an-older-eda-agent"
+    try:
+        newer = sim.submit("touchstone-check", "eda-agent", {}, {"touchstone": str(p)})
+        assert newer["state"] == "done" and "cached" not in newer
+        assert sim.submit("touchstone-check", "eda-agent", {}, {"touchstone": str(p)})["cached"]
+    finally:
+        sim._code_stamp = None
+    assert len(sim.code_stamp()) == 16 and sim.code_stamp() == sim.code_stamp()
 
 
 @pytest.mark.skipif(not HAVE_SKRF, reason="scikit-rf not installed")

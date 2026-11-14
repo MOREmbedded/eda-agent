@@ -59,7 +59,9 @@ touchstone-check-3f9a1c0b2d4e/
 The folder name is a hash of the kind, the spec and the content of the
 inputs. The same problem is therefore the same job: asking again returns
 the finished answer without solving (unless forced), and a second engine
-lands beside the first. A changed input file is a new job.
+lands beside the first. A changed input file is a new job. A finished
+run also records the code that computed it: after an update, asking again
+solves the same job again instead of returning the older code's answer.
 
 Every engine writes the same `results.json` shape: named metrics with
 units, pass/fail verdicts, notes and files. Metrics with the same name
