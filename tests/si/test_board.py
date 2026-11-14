@@ -467,3 +467,19 @@ def test_the_edge_checks_of_the_eye_are_placed_at_the_receiving_pin(tmp_path):
     item = json.loads((tmp_path / "b" / "findings.json").read_text())["items"][0]
     assert item["metrics"]["eye_overshoot_pct"] == m["eye_overshoot_pct"]
     assert not any(v["check"] in board_jobs.EDGE_CHECKS for v in item["verdicts"])
+
+
+def test_a_target_carries_its_equaliser_to_the_eye(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    plain = eye_of("a")
+    eq = eye_of("b", tx_ffe=[0.8, -0.2], dfe_taps=2)
+    assert "eye_dfe_tap1_mv" in eq and "eye_dfe_tap1_mv" not in plain
+    assert eq["eye_isi_mv"] < plain["eye_isi_mv"]
+    assert eq["eye_main_cursor_mv"] < plain["eye_main_cursor_mv"]     # the FFE's price

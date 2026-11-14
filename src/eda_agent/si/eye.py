@@ -56,16 +56,28 @@ def ramp_spectrum(f: np.ndarray, rise: float) -> np.ndarray:
 
 
 def dc_matrix(s: np.ndarray) -> np.ndarray:
-    """The S-matrix at 0 Hz, read back from its first points on the band
-    df, 2 df, ...: each real part is even in f, so a + b f^2 through the
-    first two gives a. S of a line changes slowly there (as the cosine of
-    its delay), where the transfer between real terminations may not: a
-    weak driver into an open line is a low-pass with its corner near df.
-    The transfer worked out from this matrix is the level a step settles
-    to; taking the first point as DC leaves a slope over the whole window."""
-    if len(s) < 2:
-        return np.array(s[0].real, dtype=float)
-    return (4.0 * s[0].real - s[1].real) / 3.0
+    """The S-matrix at 0 Hz of a channel made of conductors, read back from
+    its first points on the band df, 2 df, ...
+
+    At DC such a channel is a small resistance in series between each port
+    and its far end, and nothing between the lines. So each transmission
+    is real and positive, and its magnitude, which changes slowly and does
+    not turn with the channel's delay, is carried back along the line
+    through its first two points; each reflection is 1 less the
+    transmissions out of its port (r / (r + 2 z0) beside 2 z0 / (r + 2 z0)
+    for a series r). Coupling between lines falls with frequency and comes
+    out as nothing.
+
+    The real and imaginary parts themselves turn with the delay: on a
+    long channel swept with a coarse step the first point is far from DC
+    (the cosine of a radian or more), and a step response that takes it
+    as DC slopes over its whole window."""
+    mag = np.abs(s[0]) if len(s) < 2 else 2.0 * np.abs(s[0]) - np.abs(s[1])
+    out = np.clip(np.asarray(mag, dtype=float), 0.0, 1.0)
+    if out.ndim == 2:
+        np.fill_diagonal(out, 0.0)
+        np.fill_diagonal(out, np.clip(1.0 - out.sum(axis=0), 0.0, 1.0))
+    return out
 
 
 def step_response(f: np.ndarray, h: np.ndarray, rise: float, pad: int = 8,
