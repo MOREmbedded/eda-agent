@@ -55,14 +55,17 @@ def ramp_spectrum(f: np.ndarray, rise: float) -> np.ndarray:
     return np.sinc(f * tr) * np.exp(-1j * x)
 
 
-def dc_gain(h: np.ndarray) -> float:
-    """The transfer at 0 Hz, read back from its first points on the band
-    df, 2 df, ...: its real part is even in f, so a + b f^2 through the
-    first two gives a. Taking the first point itself as DC leaves a step
-    response with a slope over its whole window."""
-    if len(h) < 2:
-        return float(h[0].real)
-    return float((4.0 * h[0].real - h[1].real) / 3.0)
+def dc_matrix(s: np.ndarray) -> np.ndarray:
+    """The S-matrix at 0 Hz, read back from its first points on the band
+    df, 2 df, ...: each real part is even in f, so a + b f^2 through the
+    first two gives a. S of a line changes slowly there (as the cosine of
+    its delay), where the transfer between real terminations may not: a
+    weak driver into an open line is a low-pass with its corner near df.
+    The transfer worked out from this matrix is the level a step settles
+    to; taking the first point as DC leaves a slope over the whole window."""
+    if len(s) < 2:
+        return np.array(s[0].real, dtype=float)
+    return (4.0 * s[0].real - s[1].real) / 3.0
 
 
 def step_response(f: np.ndarray, h: np.ndarray, rise: float, pad: int = 8,

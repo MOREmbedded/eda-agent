@@ -507,7 +507,8 @@ def test_a_strong_driver_into_an_open_end_overshoots_and_a_matched_one_does_not(
     assert m["settling_ps"] > 2 * 1340
     v = {x["check"]: x for x in res["verdicts"]}
     assert not v["overshoot"]["pass"] and v["ringback"]["pass"]
-    assert v["overshoot"]["detail"] == f"{m['overshoot_pct']:.1f} % of the settled level, 20 % allowed"
+    assert v["overshoot"]["detail"].startswith(
+        f"{m['overshoot_pct']:.1f} % of the settled level, 20 % allowed; ")
     # a weak driver climbs in steps and never overshoots
     res = _edge_job(ts, tx_r_ohms=75, rx_r_ohms="open", rise_ps=100, overshoot_max_pct=5)
     m = {k: v["value"] for k, v in res["results"]["metrics"].items()}
@@ -539,14 +540,75 @@ def test_a_reflection_inside_the_edge_is_told(tmp_path):
     assert next(x for x in res["verdicts"] if x["check"] == "edge reversal")["pass"]
 
 
-def test_the_step_takes_its_dc_from_the_first_points():
+def test_the_step_settles_to_the_dc_of_the_s_matrix():
+    from eda_agent.si import eye_jobs
     f = ch.uniform_band(20e9, 400)
-    h = lossy_line(f, length=0.1, z0=50.0, loss=False)[:, 1, 0]     # a pure delay: 1 at DC
-    assert h[0].real < 0.98 and eye.dc_gain(h) == pytest.approx(1.0, abs=1e-3)
-    assert eye.dc_gain(h[:1]) == h[0].real
-    t, v = eye.step_response(f, h, 100e-12, dc=eye.dc_gain(h))
-    late = v[t > 2e-9]
-    assert late.max() - late.min() < 0.01               # flat once it has arrived
-    t, v = eye.step_response(f, h, 100e-12)             # the first point as DC: it slopes
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)
+    s0 = eye.dc_matrix(s)                               # a lossless line at DC: a through
+    assert s0 == pytest.approx(np.array([[0.0, 1.0], [1.0, 0.0]]), abs=2e-3)
+    assert eye.dc_matrix(s[:1]) == pytest.approx(s[0].real)
+    assert s[0, 1, 0].real < 0.98                       # the first point is not DC
+    # matched it settles to 1, into an open end to 2, whatever the driver: also a weak one,
+    # whose transfer is a low-pass with its corner near the frequency step
+    for term, level in (({"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0, "matched": True}, 1.0),
+                        ({"rs": 15.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}, 2.0),
+                        ({"rs": 215.0, "cs": 0.0, "rl": None, "cl": 0.0, "matched": False}, 2.0),
+                        ({"rs": 25.0, "cs": 0.0, "rl": 75.0, "cl": 1e-12, "matched": False}, 1.5)):
+        t, v = eye_jobs._step(f, s, 50.0, term, 100e-12)
+        assert v[-20:].mean() == pytest.approx(level, rel=0.01), term
+    # the first point taken as DC leaves a slope on a pure delay
+    t, v = eye.step_response(f, s[:, 1, 0], 100e-12)
     late = v[t > 2e-9]
     assert late.max() - late.min() > 0.015
+    t, v = eye_jobs._step(f, s, 50.0, {"rs": 50.0, "cs": 0.0, "rl": 50.0, "cl": 0.0,
+                                       "matched": True}, 100e-12)
+    late = v[t > 2e-9]
+    assert late.max() - late.min() < 0.01
+
+
+def test_a_failed_overshoot_names_the_series_resistor_that_cures_it(tmp_path):
+    from eda_agent.si import eye_jobs
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.1, z0=50.0, loss=False)
+    ts = str(write_touchstone(tmp_path / "long.s2p", list(f), s.tolist(), 50.0))
+    opt = {"tx_r_ohms": 15, "rx_r_ohms": "open", "rise_ps": 100}
+    res = _edge_job(ts, **opt, overshoot_max_pct=10)["results"]
+    r = res["metrics"]["series_r_ohms"]["value"]
+    # into an open end the first wave is 2 Z / (R + Z) of the level: 10 % over at R = 40.9
+    assert r == pytest.approx(2 * 50 / 1.1 - 50 - 15, abs=3) and r == int(r)
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    assert v["detail"].endswith(f"; {r:.0f} ohm in series at the driver brings it within 10 %")
+    # with it in, the edge passes; one ohm and a half less, it does not
+    ok = _edge_job(ts, **{**opt, "tx_r_ohms": 15 + r}, overshoot_max_pct=10)["results"]
+    assert next(x for x in ok["verdicts"] if x["check"] == "overshoot")["pass"]
+    assert "series_r_ohms" not in ok["metrics"]
+    assert "in series" not in next(x for x in ok["verdicts"] if x["check"] == "overshoot")["detail"]
+    less = _edge_job(ts, **{**opt, "tx_r_ohms": 15 + r - 1.5}, overshoot_max_pct=10)["results"]
+    assert not next(x for x in less["verdicts"] if x["check"] == "overshoot")["pass"]
+    # a tighter limit asks for more; no limit, no resistor
+    tight = _edge_job(ts, **opt, overshoot_max_pct=3)["results"]["metrics"]["series_r_ohms"]["value"]
+    assert tight > r
+    assert "series_r_ohms" not in _edge_job(ts, **opt)["results"]["metrics"]
+    # overshoot that the line makes itself is not the driver's to cure: a short
+    # high-impedance stretch before an open end rings whatever the source
+    c = ch.Channel(f, 1)
+    for z, length in ((50.0, 0.05), (150.0, 0.012)):
+        c.add(ch.line_block(_rlgc(f, z0=z, loss=False), length))
+    term = {"rs": 50.0, "cs": 0.0, "rl": None, "cl": 2e-12}
+    sp = c.s(50.0)
+    got = eye_jobs.series_resistor(f, sp, 50.0, term, 100e-12, 0.0005)
+    assert got is None
+    ts2 = str(write_touchstone(tmp_path / "ring.s2p", list(f), sp.tolist(), 50.0))
+    res = _edge_job(ts2, rx_r_ohms="open", rx_c_pf=2, rise_ps=100, overshoot_max_pct=0.05)["results"]
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    assert not v["pass"] and v["detail"].endswith("a series resistor at the driver does not bring it within")
+    assert "series_r_ohms" not in res["metrics"]
+
+
+def test_a_pairs_series_resistor_is_each_sides(tmp_path):
+    ts = _channel(tmp_path, ports=4)
+    res = _edge_job(ts, data_rate_gbps=2, tx_r_ohms=10, rx_r_ohms="open", rise_ps=60,
+                    overshoot_max_pct=10)["results"]
+    v = next(x for x in res["verdicts"] if x["check"] == "overshoot")
+    r = res["metrics"]["series_r_ohms"]["value"]
+    assert not v["pass"] and f"{r:.0f} ohm in series at the driver (each side) brings" in v["detail"]

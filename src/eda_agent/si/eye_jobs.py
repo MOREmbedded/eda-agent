@@ -204,11 +204,46 @@ def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
                  "by that much, whenever it arrives: the worst case")
 
 
-def _edge(spec: dict[str, Any], f: np.ndarray, h: np.ndarray, st: dict[str, Any],
+def _step(f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any], rise: float
+          ) -> tuple[np.ndarray, np.ndarray]:
+    """The step at the receiver with the terminations of ``term``, its DC
+    level worked out from the S-matrix at 0 Hz."""
+    h, _ = channel_transfer(f, s, z0, term)
+    dc, _ = channel_transfer(np.array([0.0]), _eye.dc_matrix(s)[None].astype(complex), z0, term)
+    return _eye.step_response(f, h, rise, dc=float(dc[0].real))
+
+
+#: The most a series resistor is tried at, in reference impedances.
+SERIES_R_MAX_Z0 = 4.0
+
+
+def series_resistor(f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any],
+                    rise: float, limit: float) -> Optional[float]:
+    """The resistance in series with the driver, in ohms per side and
+    rounded up to a whole ohm, that brings the overshoot at the receiver
+    within ``limit`` (a fraction of the settled level). It is taken as
+    more source resistance, everything else as it is. None when four
+    reference impedances of it are not enough: the overshoot then comes
+    from the line, not from the driver's strength."""
+    def over(extra: float) -> float:
+        t = {**term, "rs": term["rs"] + extra, "matched": False}
+        return _eye.edge_figures(*_step(f, s, z0, t, rise))["overshoot"]
+
+    lo, hi = 0.0, SERIES_R_MAX_Z0 * z0
+    if over(hi) > limit:
+        return None
+    for _ in range(12):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if over(mid) > limit else (lo, mid)
+    return float(math.ceil(hi - 1e-9))
+
+
+def _edge(spec: dict[str, Any], f: np.ndarray, s: np.ndarray, z0: float, term: dict[str, Any],
+          st: dict[str, Any],
           m: dict[str, Any], verdicts: list[dict[str, Any]], notes: list[str]) -> None:
     """The single edge at the receiver: overshoot, ringback, a reversal on
     the way up and the settling time, with the limits the spec gives."""
-    e = _eye.edge_figures(*_eye.step_response(f, h, st["rise"], dc=_eye.dc_gain(h)))
+    e = _eye.edge_figures(*_step(f, s, z0, term, st["rise"]))
     over, back, rev = (round(100 * e[k], 2) for k in ("overshoot", "ringback", "reversal"))
     m["overshoot_pct"] = _metric(over, "%", "Overshoot of one edge at the receiver, of the "
                                  "level it settles to")
@@ -225,8 +260,18 @@ def _edge(spec: dict[str, Any], f: np.ndarray, h: np.ndarray, st: dict[str, Any]
         lim = _num(spec, key, 0.0)
         if lim < 0:
             raise ValueError(f"{key} is 0 or more")
-        verdicts.append({"check": name, "pass": got <= lim,
-                         "detail": f"{got:.1f} % of the settled level, {lim:g} % allowed"})
+        detail = f"{got:.1f} % of the settled level, {lim:g} % allowed"
+        if name == "overshoot" and got > lim:
+            r = series_resistor(f, s, z0, term, st["rise"], lim / 100)
+            if r is None:
+                detail += "; a series resistor at the driver does not bring it within"
+            else:
+                m["series_r_ohms"] = _metric(r, "ohm", "Series resistor at the driver that "
+                                             "brings the overshoot within its limit")
+                detail += (f"; {r:.0f} ohm in series at the driver"
+                           + (" (each side)" if s.shape[1] == 4 else "")
+                           + f" brings it within {lim:g} %")
+        verdicts.append({"check": name, "pass": got <= lim, "detail": detail})
     if rev >= 2.0:
         notes.append(f"the edge turns back by {rev:.1f} % of its level on the way up: a "
                      "reflection arrives inside the edge, and a clock input can see it twice")
@@ -283,7 +328,7 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
     _with_noise(spec, se["eye_height"], m, verdicts, notes)
-    _edge(spec, f, h, st, m, verdicts, notes)
+    _edge(spec, f, s, z0, term, st, m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 
 
