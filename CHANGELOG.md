@@ -45,7 +45,11 @@ maturity classification for every tool.
   `crosstalk` (limit `xtalk_max_pct`, default 5 % of the aggressors' swing)
   is placed on the board at the coupled stretch, with the aggressor, the
   length and the gap. Against the coupled line solved in full the near end
-  is within 5 %.
+  is within 5 %. In a board check with eyes, crosstalk times the
+  neighbours' swing (`xtalk_swing_mv`) is noise on both rails of the eye,
+  and the eye limit is held against what is left; `si_channel_eye` takes
+  such noise from any source as `noise_mv`. `si_net_channel` lists the
+  aggressors in its reply (`crosstalk`).
 - **Signal integrity: eyes and SPICE models.** New job kind `channel-eye`
   and engine `spice`. The `eda-agent` engine convolves a channel's pulse
   response with a PRBS pattern and adds the worst-case eye by peak

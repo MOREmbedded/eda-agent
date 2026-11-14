@@ -341,6 +341,8 @@ def _register_si_net_tools(mcp) -> None:
 
         Returns:
             ``metrics``, ``verdicts``, ``path`` (sections, vias, stubs),
+            ``crosstalk`` (each aggressor: nets, layer, gap, shared length,
+            near and far end, where),
             ``altium_steps`` (the rules), ``applied`` when written,
             ``snapshot`` with ``stale``, ``job`` and ``folder``.
         """
@@ -370,6 +372,8 @@ def _register_si_net_tools(mcp) -> None:
                 "files": res.get("files", {}), "notes": res.get("notes", []),
                 "altium_steps": res.get("altium_steps", []),
                 "path": (res.get("figures") or {}).get("path")}
+            if "crosstalk" in (res.get("figures") or {}):
+                reply["crosstalk"] = res["figures"]["crosstalk"]
             if out.get("errors"):
                 reply["errors"] = out["errors"]
             if apply_rules and reply["altium_steps"]:
@@ -438,7 +442,8 @@ def _register_si_time_tools(mcp) -> None:
             engines: default ["eda-agent", "spice"] (spice when ngspice or
                 LTspice is installed).
             options: rise_ps (0.3 UI), amplitude_mv (800, differential
-                for a pair), prbs (7, 9, 11, 15), repeats (2),
+                for a pair), noise_mv (0; peak noise at the receiver, the
+                eye loses twice this), prbs (7, 9, 11, 15), repeats (2),
                 samples_per_ui (32), spice_oversample (4), simulator (auto,
                 ngspice, ltspice), fit_tol (0.002); the ends: tx_ibis and
                 tx_model (an IBIS driver: its output resistance, C_comp,
@@ -685,7 +690,9 @@ def _register_si_board_tools(mcp) -> None:
             targets: a list of {match: net or pair name glob, or class: an
                 Altium net class; kind: "pair" or "net"; data_rate_gbps,
                 z_target, z_tol_pct, il_max_db, rl_min_db, skew_max_ps,
-                stub_margin, xtalk_max_pct (crosstalk from neighbours, 5);
+                stub_margin, xtalk_max_pct (crosstalk from neighbours, 5),
+                xtalk_swing_mv (the neighbours' swing: crosstalk then
+                closes the eye; default the eye's amplitude);
                 eye: true to add the eye, eye_min_mv,
                 eye_min_ui, and the eye's tx_ibis/rx_ibis options}. A net
                 is taken by the first target that matches it. Default: every

@@ -465,7 +465,9 @@ def test_tool_runs_from_files_and_applies_rules(tmp_path, monkeypatch):
     monkeypatch.setattr(pcb_tools, "_rule_edit", fake_edit)
     m = FastMCP("t")
     register_si_tools(m)
-    bp, sp = _files(tmp_path, single_net())
+    board = single_net()
+    board.tracks.append(Track("TopLayer", 100, -9, 500, -9, 5, "AGG"))   # 4 mil beside it
+    bp, sp = _files(tmp_path, board)
     snap_reply = _call(m, "si_board_snapshot", {"board_json_path": bp, "stackup_json_path": sp})
     assert snap_reply["ok"] and snap_reply["has_stackup"]
     out = _call(m, "si_net_channel", {"net": "SIG", "snapshot": snap_reply["id"],
@@ -474,6 +476,8 @@ def test_tool_runs_from_files_and_applies_rules(tmp_path, monkeypatch):
                                       "apply_rules": True})
     assert out["ok"], out
     assert out["snapshot"]["id"] == snap_reply["id"]
+    assert [(a["aggressor"], a["gap_mils"], a["length_mils"]) for a in out["crosstalk"]] \
+        == [("AGG", 4.0, 400.0)]
     assert [c for c, _ in sent] == ["pcb.create_design_rule"] * len(out["altium_steps"])
     assert sent and all("name" in p for _, p in sent)
     # a snapshot of a board saved since: results come back, rules are not written

@@ -31,6 +31,9 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "rise_ps": ("number", False, "transmitter 10-90 % edge (default 0.3 UI)"),
     "amplitude_mv": ("number", False, "transmitter swing into a matched load, peak to peak "
                                       "(differential for a pair; default 800)"),
+    "noise_mv": ("number", False, "noise at the receiver from other sources (crosstalk, supply), "
+                                  "peak, each side of zero: the eye loses twice this in height "
+                                  "(default 0)"),
     "prbs": ("number", False, "PRBS order: 7, 9, 11, 15 (default 7)"),
     "repeats": ("number", False, "times the pattern runs after settling (default 2)"),
     "samples_per_ui": ("number", False, "time steps per unit interval (default 32)"),
@@ -174,6 +177,25 @@ def _eye_metrics(m: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     }
 
 
+def _with_noise(spec: dict[str, Any], height: float, m: dict[str, Any],
+                verdicts: list[dict[str, Any]], notes: list[str]) -> None:
+    """The eye of ``height`` volts with ``noise_mv`` on both rails."""
+    noise = _num(spec, "noise_mv", 0)
+    if noise < 0:
+        raise ValueError("noise_mv is 0 or more")
+    if noise == 0:
+        return
+    left = max(height * 1e3 - 2 * noise, 0.0)
+    m["noise_mv"] = _metric(round(noise, 3), "mV", "Noise at the receiver, peak")
+    m["eye_height_with_noise_mv"] = _metric(round(left, 3), "mV",
+                                            "Eye height with the noise on both rails")
+    verdicts.append({"check": "eye open with noise", "pass": left > 0,
+                     "detail": f"{left:.1f} mV left of {height * 1e3:.1f} mV with "
+                               f"{noise:g} mV of noise on each rail"})
+    notes.append(f"noise of {noise:g} mV peak lowers the high rail and raises the low rail "
+                 "by that much, whenever it arrives: the worst case")
+
+
 def _write_wave(path: Path, t: np.ndarray, v: np.ndarray) -> None:
     np.savetxt(path, np.column_stack([t * 1e12, v * 1e3]), delimiter=",",
                header="time_ps,mv", comments="", fmt="%.6g")
@@ -224,6 +246,7 @@ def run_convolution(spec: dict[str, Any], touchstone: Path, folder: Path, progre
     if model is not None:
         notes.append(f"the file's frequencies were not evenly spaced from df; resampled "
                      f"through a {len(model.poles)}-pole fit")
+    _with_noise(spec, se["eye_height"], m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
 
 
@@ -332,4 +355,5 @@ def run_spice(spec: dict[str, Any], touchstone: Path, folder: Path, progress=Non
              *term["notes"],
              "place channel.asy in an LTspice schematic (with channel.sub beside it) to drive "
              "the channel with real driver and receiver models"]
+    _with_noise(spec, em["eye_height"], m, verdicts, notes)
     return {"metrics": m, "verdicts": verdicts, "notes": notes, "files": files}
