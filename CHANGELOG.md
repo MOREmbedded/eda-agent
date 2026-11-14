@@ -428,6 +428,18 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **UI automation lost by a process that started beside another.** The
+  first process in a venv that needs oleacc's or UI Automation's comtypes
+  wrapper generates it into `comtypes/gen`. Two processes doing that at
+  the same moment read each other's half-written file, and the one that
+  lost ran without menu walking, dialog reading or control access for its
+  whole life (`_AVAILABLE = False`, no error shown). The generation now
+  runs under a lock file, one process at a time, and is tried again after
+  a failure (`eda_agent.ui.comgen`). In a test of 4 processes starting
+  together on a fresh wrapper, 8 rounds each, the old code lost one or more
+  processes in 4 rounds and the new code in none. This was also the cause
+  of the 8 menu tests that failed on one worker in the first `pytest -n 4`
+  run of every new venv.
 - **Signal integrity in Altium, from a run on real copper.** The stackup
   the SI tools read now takes the dielectric from Altium's separate
   dielectric layers where the copper layers carry none (the line model and

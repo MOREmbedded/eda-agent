@@ -41,7 +41,8 @@ from .captions import plain
 try:                                            # pragma: no cover - platform
     import comtypes.client as _cc
 
-    _cc.GetModule("UIAutomationCore.dll")
+    from .comgen import get_module as _get_module
+    _get_module("UIAutomationCore.dll")
     from comtypes.gen import UIAutomationClient as _UIA
 
     _AVAILABLE = True
