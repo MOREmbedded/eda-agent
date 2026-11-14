@@ -457,6 +457,11 @@ maturity classification for every tool.
   of the curve is shorter than the 10 mil a run had to be. Arcs now count,
   and it is a net's whole shared length that must reach 10 mil.
 
+- **A net between free pads can be modelled.** A net with fewer than two
+  component pins (a bare test board, edge fingers, a test point at one
+  end) was refused as having no pins. Its free pads now count as pins, with
+  a note.
+
 - **An eye is never wider than its unit interval.** An eye open at every
   sample of the interval read 33 / 32 UI (1.031 UI in a board check). It
   now reads one sample short of the interval: the crossing lies between
