@@ -428,16 +428,18 @@ def worst_case_eye(pulse: Pulse, amplitude: float, levels: int = 2) -> dict[str,
     ``levels`` levels, neighbours are 1 / (levels - 1) of the swing apart
     while every other symbol can still be at an outer level: the eye
     between two neighbours is that much of the main cursor less all the
-    ISI."""
+    ISI. ``main_cursor`` and ``isi_sum`` are those of the phase where the
+    eye is tallest (``sample_index``), so the height is theirs."""
     spui = pulse.spui
     p = pulse.p * amplitude / 2
     pk = pulse.peak_index
-    heights = np.empty(spui)
+    heights, mains, isis = np.empty(spui), np.empty(spui), np.empty(spui)
     for ph in range(spui):
         c = pk - spui // 2 + ph
         idx = np.arange(c % spui, len(p), spui)
         main = p[c] if 0 <= c < len(p) else 0.0
         isi = np.sum(np.abs(p[idx])) - abs(main)
+        mains[ph], isis[ph] = main, isi
         heights[ph] = 2 * (main / (levels - 1) - isi)
     k = int(np.argmax(heights))
     open_ = heights > 0
@@ -445,8 +447,8 @@ def worst_case_eye(pulse: Pulse, amplitude: float, levels: int = 2) -> dict[str,
     return {"eye_height": float(max(heights[k], 0.0)), "margin": float(heights[k]),
             "sample_index": int(pk - spui // 2 + k),
             "eye_width_ui": width / spui,
-            "eye_width": width / spui * pulse.ui, "main_cursor": float(p[pk]),
-            "isi_sum": float(np.sum(np.abs(p[np.arange(pk % spui, len(p), spui)])) - abs(p[pk]))}
+            "eye_width": width / spui * pulse.ui, "main_cursor": float(mains[k]),
+            "isi_sum": float(isis[k])}
 
 
 #: Voltage bins of the statistical eye, and the lowest bit error rate it is

@@ -1352,3 +1352,21 @@ def test_the_waveform_is_the_symbols_convolved_with_the_pulse():
             up[::spui] = sym
             assert v == pytest.approx(np.convolve(up, p.p)[: len(up)], abs=1e-12)
             assert len(t) == len(v) == len(sym) * spui and t[1] - t[0] == pytest.approx(1e-10 / spui)
+
+
+@pytest.mark.parametrize("levels", [2, 4])
+def test_the_worst_case_is_made_of_the_cursors_it_reports(levels):
+    """The main cursor and the ISI are those of the phase the eye is read
+    at, not of the pulse's peak: the height is 2 (main / (L - 1) - ISI)."""
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / 8e9, 0.3 / 8e9, 32)
+    wc = eye.worst_case_eye(p, 0.8, levels)
+    c = wc["sample_index"]
+    assert c != p.peak_index
+    assert wc["main_cursor"] == pytest.approx(0.4 * p.p[c], rel=1e-12)
+    assert wc["main_cursor"] < 0.4 * p.p[p.peak_index]
+    assert wc["eye_height"] == pytest.approx(
+        2 * (wc["main_cursor"] / (levels - 1) - wc["isi_sum"]), rel=1e-12)
+    at_peak = np.sum(np.abs(p.p[p.peak_index % 32::32])) - abs(p.p[p.peak_index])
+    assert wc["isi_sum"] < 0.4 * at_peak

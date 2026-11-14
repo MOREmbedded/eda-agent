@@ -65,6 +65,11 @@ maturity classification for every tool.
   pair and a board-check target with `modulation: "pam4"` are now checked
   at half the data rate: the loss at Nyquist, the stub limit and the
   default skew limit follow the symbol, as the eye already did.
+- **Signal integrity: the cursors of the worst case.** `main_cursor_mv`
+  and `isi_mv` are now read at the sampling phase where the worst-case eye
+  is tallest, not at the pulse's peak, so the reported eye is exactly
+  twice their difference. They move a little where reflections put the
+  best phase off the peak; the eye itself does not change.
 - **Signal integrity: the eye pattern quick on long sweeps.** The bit
   pattern of `si_channel_eye` is now convolved with the pulse one sample
   phase at a time instead of through a pattern padded with zeros: the
