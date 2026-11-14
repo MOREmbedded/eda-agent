@@ -49,7 +49,8 @@ try:                                            # pragma: no cover - platform
         from comtypes import COMError
         from comtypes.automation import VARIANT
 
-        comtypes.client.GetModule("oleacc.dll")
+        from .comgen import get_module
+        get_module("oleacc.dll")
         from comtypes.gen.Accessibility import IAccessible
 
     import win32con

@@ -52,7 +52,11 @@ dependencies = [
     # Algebraic multigrid for the thermal solver (thermal/solver.py): the
     # preconditioner that makes a board of a million unknowns solve in
     # seconds. MIT. The solver falls back to a direct solve without it.
-    "pyamg>=5.0,<6",
+    # Not on Python 3.15 yet: pyamg 5.4 has no 3.15 wheel, pip then builds
+    # it from source, and without a C++ toolchain that failed the whole
+    # install (measured 2026-11-14 on Windows). Lift the marker once pyamg
+    # publishes 3.15 wheels; until then `pip install pyamg` adds it by hand.
+    "pyamg>=5.0,<6; python_version < '3.15'",
     # Text search in datasheet PDFs (design/datasheet_search.py): finds the
     # page a manufacturer's land pattern is on. Pure Python, BSD.
     "pypdf>=4,<7",
