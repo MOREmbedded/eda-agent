@@ -1174,3 +1174,199 @@ def test_statistical_eye_settings_are_checked(tmp_path, opt, text):
     ts = str(write_touchstone(tmp_path / "l.s2p", list(f), lossy_line(f, 0.05, 50.0).tolist(), 50.0))
     run = _edge_job(ts, **opt)
     assert run["state"] == "failed" and text in run["error"], run
+
+
+# --- PAM4 ------------------------------------------------------------------------------
+
+def test_pam4_symbols_are_gray_coded_pairs_of_bits():
+    assert eye.symbols([0, 1, 1, 0], 2).tolist() == [0, 1, 1, 0]
+    #                     00    01    11    10   and an odd bit left over
+    assert eye.symbols([0, 0, 0, 1, 1, 1, 1, 0, 1], 4).tolist() == [0, 1, 2, 3]
+    with pytest.raises(ValueError, match="levels is 2"):
+        eye.symbols([0, 1], 3)
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    _, v = eye.waveform(flat, [0, 0, 0, 1, 1, 1, 1, 0], 0.9, 4)
+    assert v[8::16].tolist() == pytest.approx([-0.45, -0.15, 0.15, 0.45])
+    # neighbours differ in one bit: a level taken for the next costs one bit, not two
+    for a, b in ((0, 1), (1, 2), (2, 3)):
+        ka = [k for k, i in eye.PAM4_GRAY.items() if i == a][0]
+        kb = [k for k, i in eye.PAM4_GRAY.items() if i == b][0]
+        assert sum(x != y for x, y in zip(ka, kb)) == 1
+        assert eye.symbols(list(ka) + list(kb), 4).tolist() == [a, b]
+
+
+def test_pam4_eyes_of_a_flat_channel_are_a_third_of_the_swing_each():
+    flat = eye.Pulse(np.arange(64) * 1e-10 / 16, np.r_[np.ones(16), np.zeros(48)], 1e-10, 16)
+    m = eye.simulated_eye(flat, 0.9, levels=4)
+    assert set(m["bits"].tolist()) == {0, 1, 2, 3} and len(m["bits"]) >= 127
+    assert m["eye_heights"] == pytest.approx([0.3, 0.3, 0.3]) and m["eye_height"] == pytest.approx(0.3)
+    assert m["level_one"] == pytest.approx(0.45) and m["level_zero"] == pytest.approx(-0.45)
+    assert eye.worst_case_eye(flat, 0.9, 4)["eye_height"] == pytest.approx(0.3)
+    nrz = eye.simulated_eye(flat, 0.9)
+    assert nrz["eye_height"] == pytest.approx(0.9) and nrz["eye_heights"] == pytest.approx([0.9])
+    # a post-cursor of 0.1: any symbol before can be at an outer level
+    p = _tri_pulse([1.0, 0.1])
+    wc = eye.worst_case_eye(p, 0.9, 4)
+    assert wc["eye_height"] == pytest.approx(0.9 * (1 / 3 - 0.1)) == wc["margin"]
+    m = eye.simulated_eye(p, 0.9, levels=4)
+    assert m["eye_height"] == pytest.approx(wc["eye_height"])          # PRBS7 holds them all
+    # the smallest of the three is the eye; here ISI above a third of the cursor shuts all
+    shut = eye.worst_case_eye(_tri_pulse([1.0, 0.35]), 0.9, 4)
+    assert shut["eye_height"] == 0.0
+    assert eye.worst_case_eye(_tri_pulse([1.0, 0.35]), 0.9)["eye_height"] == pytest.approx(0.585)
+    with pytest.raises(ValueError, match="every level"):
+        eye.eye_metrics(np.zeros((4, 8)), np.array([0, 1, 2, 2]), 1e-10, levels=4)
+
+
+def test_pam4_statistical_eye_counts_four_levels_a_cursor():
+    from scipy.special import ndtr, ndtri
+    x = np.array([0.05, 0.4, np.pi / 4, 0.6 - 0.3j])
+    assert np.exp(eye._small_cursors(np.array([1.0]), x, 4)) == pytest.approx(
+        (np.cos(x) + np.cos(x / 3)) / 2, rel=1e-10)
+    assert np.exp(eye._small_cursors(np.array([0.5, -1.0]), x, 4)) == pytest.approx(
+        (np.cos(x) + np.cos(x / 3)) * (np.cos(x / 2) + np.cos(x / 6)) / 4, rel=1e-10)
+    # noise alone: half the spacing of two levels, a third of the cursor, less the quantile
+    p = _tri_pulse([1.0])
+    for ber in (1e-3, 1e-12):
+        r = eye.statistical_eye(p, 0.9, ber, noise_rms=0.01, levels=4)
+        assert r["eye_height"] == pytest.approx(2 * (0.15 + ndtri(ber) * 0.01), rel=1e-5)
+    # six of the eight sides a symbol has can be crossed, and a crossing costs one bit of two
+    r = eye.statistical_eye(p, 0.9, 1e-12, noise_rms=0.05, levels=4)
+    assert r["bit_error_rate"] == pytest.approx(0.75 * ndtr(-3.0), rel=1e-4, abs=0)
+    assert eye.statistical_eye(p, 0.9, 1e-12, noise_rms=0.05)["bit_error_rate"] == pytest.approx(
+        ndtr(-9.0), rel=1e-3, abs=0)
+    # two cursors, 16 pairs of symbols: both at the outer level against the bit come once
+    # in 16; twice in 16 the smaller is at a third, which is the level at 0.1
+    q = _tri_pulse([1.0, 0.2, 0.06])
+    assert eye.statistical_eye(q, 0.9, 0.05, levels=4)["eye_height"] == pytest.approx(
+        0.9 * (1 / 3 - 0.26), abs=0.003)
+    assert eye.statistical_eye(q, 0.9, 0.1, levels=4)["eye_height"] == pytest.approx(
+        0.9 * (1 / 3 - 0.22), abs=0.003)
+    assert eye.statistical_eye(q, 0.9, 1e-12, levels=4)["eye_height"] == pytest.approx(
+        eye.worst_case_eye(q, 0.9, 4)["eye_height"], abs=0.003)
+
+
+def test_pam4_taps_are_chosen_for_a_third_of_the_cursor():
+    # one post-cursor of 0.3: for NRZ a tap gains nothing; between PAM4 levels, a third of
+    # the cursor apart, it does, and the tap that cancels it is the best
+    p = _tri_pulse([1.0, 0.3])
+    assert eye.best_ffe(p, 0, 1) == [1.0, 0.0]
+    taps = eye.best_ffe(p, 0, 1, levels=4)
+    assert taps == pytest.approx([1 / 1.3, -0.3 / 1.3], abs=2e-4)
+
+    def margin(t):
+        return eye.worst_case_eye(eye.ffe(p, t), 2.0, 4)["margin"]
+    assert margin(taps) == pytest.approx(2 * (1 / 3.9 - 0.09 / 1.3), abs=1e-3)
+    assert margin(taps) > margin([1.0]) + 0.3
+    for c in np.arange(0.0, 0.5, 0.02):
+        assert margin([1 - c, -c]) <= margin(taps) + 1e-3
+
+
+def test_noise_cuts_the_spectrum_short_and_leaves_the_density_as_it_was(monkeypatch):
+    span = 0.5
+    dv = 2 * span / eye.STAT_BINS
+    main = 9830 * dv
+    cur = np.array([0.05, -0.02, 0.004, 0.3 * dv, 40 * dv, 0.0])
+    k = eye.STAT_BINS // 2 + 9830
+    for levels in (2, 4):
+        pdf = eye._level_density(main, cur, 200 * dv, span, levels)
+        assert np.sum(pdf[:k]) + pdf[k] / 2 == pytest.approx(0.5, abs=1e-9)
+        with monkeypatch.context() as mp:
+            mp.setattr(eye, "STAT_CUT", 1e9)                    # every frequency
+            mp.setattr(eye, "STAT_SERIES_BINS", 0.0)            # and every cursor on its own
+            whole = eye._level_density(main, cur, 200 * dv, span, levels)
+        assert pdf[:k + 500] == pytest.approx(whole[:k + 500], rel=1e-6, abs=1e-12)
+
+
+def _pam_job(ts, **opt):
+    res = _edge_job(ts, **opt)["results"]
+    return {k: v["value"] for k, v in res["metrics"].items()}, res
+
+
+def test_the_eye_job_runs_pam4(tmp_path):
+    f = ch.uniform_band(40e9, 800)
+    s = lossy_line(f, length=0.3, z0=50.0)
+    ts = str(write_touchstone(tmp_path / "pam.s2p", list(f), s.tolist(), 50.0))
+    nrz, res0 = _pam_job(ts, data_rate_gbps=10)
+    assert not any(k.startswith("eye_height_lower") for k in nrz)
+    assert not any("PAM4" in n for n in res0["notes"])
+    assert _pam_job(ts, data_rate_gbps=10, modulation="NRZ")[0] == nrz
+    # twice the data rate in PAM4 is the same symbol: the same pulse, cursors and loss
+    pam, res = _pam_job(ts, data_rate_gbps=20, modulation="pam4")
+    for k in ("main_cursor_mv", "isi_mv", "insertion_loss_db_at_nyquist"):
+        assert pam[k] == nrz[k], k
+    # but its eyes are between levels a third of the cursor apart
+    assert pam["worst_case_eye_height_mv"] == pytest.approx(
+        max(2 * (pam["main_cursor_mv"] / 3 - pam["isi_mv"]), 0.0), abs=0.01)
+    assert nrz["worst_case_eye_height_mv"] == pytest.approx(
+        2 * (nrz["main_cursor_mv"] - nrz["isi_mv"]), abs=0.01)
+    three = [pam[f"eye_height_{n}_mv"] for n in ("lower", "middle", "upper")]
+    assert pam["eye_height_mv"] == min(three) and 0 < pam["eye_height_mv"] < nrz["eye_height_mv"] / 3
+    assert max(three) - min(three) < 0.2 * max(three)            # alike, on a linear channel
+    note = [n for n in res["notes"] if n.startswith("PAM4")]
+    assert len(note) == 1 and note[0].startswith("PAM4: 20 Gb/s is 10 GBd, a symbol of 100 ps;")
+    # the same data rate: half the symbol rate, so less loss, yet a smaller eye here
+    same, _ = _pam_job(ts, data_rate_gbps=10, modulation="pam4")
+    assert same["insertion_loss_db_at_nyquist"] < nrz["insertion_loss_db_at_nyquist"] - 2
+    assert same["eye_width_ps"] > nrz["eye_width_ps"] and same["eye_height_mv"] < nrz["eye_height_mv"]
+    # the eye at a bit error rate and the chosen equaliser work on it
+    stat, res = _pam_job(ts, data_rate_gbps=10, modulation="pam4", ber=1e-12, noise_rms_mv=2)
+    assert same["worst_case_eye_height_mv"] - 2 * 7.04 * 2 - 1 < stat["eye_height_at_ber_mv"] \
+        < same["eye_height_mv"]
+    assert any("ISI as independent random symbols" in n for n in res["notes"])
+    eq, res = _pam_job(ts, data_rate_gbps=20, modulation="pam4", tx_ffe="auto", dfe_taps=2)
+    assert pam["worst_case_eye_height_mv"] == 0 and eq["worst_case_eye_height_mv"] > 80
+    # the CTLE's default pole follows the symbol rate
+    assert any("first pole at 5 GHz" in n for n in
+               _pam_job(ts, data_rate_gbps=20, modulation="pam4", ctle_db=3)[1]["notes"])
+    bad = _edge_job(ts, data_rate_gbps=10, modulation="pam8")
+    assert bad["state"] == "failed" and "modulation is nrz or pam4" in bad["error"]
+    from eda_agent.si import eye_jobs
+    with pytest.raises(ValueError, match="PAM4 is modelled by the eda-agent engine only"):
+        eye_jobs.run_spice({"data_rate_gbps": 5, "modulation": "pam4"}, ts, tmp_path / "s")
+
+
+def test_pam4_is_given_taps_where_nrz_on_the_same_pulse_needs_none(tmp_path):
+    # an 85 ohm line between 50 ohm ends, 100 ps a symbol: for NRZ no taps beat none; a
+    # third of the cursor apart, the same reflections are worth a small tap
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+    nrz, plain = _pam_job(ts, data_rate_gbps=10, tx_ffe="auto")[0], _pam_job(ts, data_rate_gbps=10)[0]
+    assert nrz["ffe_main_tap"] == 1 and nrz["worst_case_eye_height_mv"] == plain["worst_case_eye_height_mv"]
+    pam = _pam_job(ts, data_rate_gbps=20, modulation="pam4", tx_ffe="auto")[0]
+    none = _pam_job(ts, data_rate_gbps=20, modulation="pam4")[0]
+    assert pam["ffe_main_tap"] < 0.999
+    assert pam["worst_case_eye_height_mv"] > none["worst_case_eye_height_mv"] + 1
+
+
+def test_the_waveform_is_the_symbols_convolved_with_the_pulse():
+    rng = np.random.default_rng(5)
+    for n, spui in ((333, 16), (50, 7), (700, 32)):          # shorter and longer than the bits
+        p = eye.Pulse(np.arange(n) * 1e-10 / spui, rng.normal(size=n), 1e-10, spui)
+        bits = rng.integers(0, 2, 40)
+        for levels in (2, 4):
+            t, v = eye.waveform(p, bits, 0.8, levels)
+            sym = (2 * eye.symbols(bits, levels) / (levels - 1) - 1) * 0.4
+            up = np.zeros(len(sym) * spui)
+            up[::spui] = sym
+            assert v == pytest.approx(np.convolve(up, p.p)[: len(up)], abs=1e-12)
+            assert len(t) == len(v) == len(sym) * spui and t[1] - t[0] == pytest.approx(1e-10 / spui)
+
+
+@pytest.mark.parametrize("levels", [2, 4])
+def test_the_worst_case_is_made_of_the_cursors_it_reports(levels):
+    """The main cursor and the ISI are those of the phase the eye is read
+    at, not of the pulse's peak: the height is 2 (main / (L - 1) - ISI)."""
+    f = ch.uniform_band(10e9, 1000)
+    s = np.asarray(lossy_line(f, length=0.0765, z0=85.0))
+    p = eye.pulse_response(f, s[:, 1, 0], 1 / 8e9, 0.3 / 8e9, 32)
+    wc = eye.worst_case_eye(p, 0.8, levels)
+    c = wc["sample_index"]
+    assert c != p.peak_index
+    assert wc["main_cursor"] == pytest.approx(0.4 * p.p[c], rel=1e-12)
+    assert wc["main_cursor"] < 0.4 * p.p[p.peak_index]
+    assert wc["eye_height"] == pytest.approx(
+        2 * (wc["main_cursor"] / (levels - 1) - wc["isi_sum"]), rel=1e-12)
+    at_peak = np.sum(np.abs(p.p[p.peak_index % 32::32])) - abs(p.p[p.peak_index])
+    assert wc["isi_sum"] < 0.4 * at_peak

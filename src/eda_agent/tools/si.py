@@ -446,7 +446,8 @@ def _register_si_time_tools(mcp) -> None:
         the circuit simulator's waveform is from the convolution's.
 
         Args:
-            data_rate_gbps: NRZ data rate.
+            data_rate_gbps: data rate in bits (options modulation "pam4"
+                halves the symbol rate; default NRZ).
             touchstone_file: the channel's .s2p or .s4p; or ``net_job``: a
                 net-channel job id (its channel file is used).
             engines: default ["eda-agent", "spice"] (spice when ngspice or
