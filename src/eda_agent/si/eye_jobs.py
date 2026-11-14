@@ -42,7 +42,7 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
     "edge_reversal_max_pct": ("number", False, "allowed fall on the way up, between 10 % and "
                                                "90 % of the level: a clock wants none (no check "
                                                "if absent)"),
-    "tx_ffe": ("list", False, "transmitter feed-forward equaliser taps, one unit interval "
+    "tx_ffe": ("list|text", False, "transmitter feed-forward equaliser taps, one unit interval "
                               "apart, e.g. [-0.1, 0.7, -0.2]: the largest is the main tap, "
                               "those before it pre-cursor taps; scaled so their magnitudes "
                               "add up to 1; or \"auto\": the taps that leave the largest "
@@ -50,7 +50,7 @@ EYE_SPEC: dict[str, tuple[str, bool, str]] = {
                               "tx_ffe_post after it"),
     "tx_ffe_pre": ("number", False, "pre-cursor taps of an automatic tx_ffe (default 1, 0 to 3)"),
     "tx_ffe_post": ("number", False, "post-cursor taps of an automatic tx_ffe (default 1, 0 to 4)"),
-    "ctle_db": ("number", False, "receiver CTLE: what the high frequencies gain over DC, in dB "
+    "ctle_db": ("number|text", False, "receiver CTLE: what the high frequencies gain over DC, in dB "
                                  "(default 0: none); or \"auto\": the whole dB from 0 to "
                                  "ctle_max_db that leaves the largest worst-case eye"),
     "ctle_max_db": ("number", False, "the most an automatic ctle_db takes (default 12)"),
@@ -402,7 +402,10 @@ def equaliser(spec: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("tx_ffe has 8 taps at most")
     raw_db = spec.get("ctle_db")
     auto_ctle = isinstance(raw_db, str) and raw_db.strip().lower() == "auto"
-    db = 0.0 if auto_ctle else _num(spec, "ctle_db", 0.0)
+    try:
+        db = 0.0 if auto_ctle else _num(spec, "ctle_db", 0.0)
+    except ValueError:
+        db = -1.0
     if not 0 <= db <= 30:
         raise ValueError("ctle_db is 0 to 30, or \"auto\"")
     most_db = _num(spec, "ctle_max_db", 12)

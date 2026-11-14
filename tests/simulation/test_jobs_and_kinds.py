@@ -72,6 +72,12 @@ def test_delete_removes_only_a_job_folder(tmp_path):
     ("touchstone-check", {}, {"touchstone": "x", "board": "y"}, "unknown input 'board'"),
     ("xsection-2d", {}, {}, "'calculator' is required"),
     ("em-3d", {"nets": "RF"}, {"board": "b.json"}, "must be a list"),
+    ("channel-eye", {"data_rate_gbps": 1, "ctle_db": [3]}, {"touchstone": "x"},
+     "'ctle_db' must be a number or a text"),
+    ("channel-eye", {"data_rate_gbps": 1, "ctle_db": True}, {"touchstone": "x"},
+     "'ctle_db' must be a number or a text"),
+    ("channel-eye", {"data_rate_gbps": 1, "tx_ffe": 0.5}, {"touchstone": "x"},
+     "'tx_ffe' must be a list or a text"),
 ])
 def test_check_spec(kind, spec, inputs, needle):
     problems = check_spec(kind, spec, inputs)

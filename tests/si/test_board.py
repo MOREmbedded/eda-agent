@@ -506,3 +506,19 @@ def test_a_target_carries_its_bit_error_rate_to_the_eye(tmp_path):
     f = [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
     assert len(f) == 1 and f[0]["severity"] == "error"
     assert f[0]["detail"].endswith(f", {m['eye_height_at_ber_mv'] + 5:g} mV needed")
+
+
+def test_a_target_has_its_equaliser_chosen(tmp_path):
+    b = _bus([8000])
+    target = {"match": "B0", "kind": "net", "data_rate_gbps": 10, "z_tol_pct": 60, "eye": True}
+    spec = {"targets": [target], "f_max_ghz": 30}
+
+    def eye_of(name, **more):
+        target.update(more)
+        board_jobs.run_board_si(spec, b.to_dict(), STACKUP, tmp_path / name, snapshot="t")
+        return json.loads((tmp_path / name / "findings.json").read_text())["items"][0]["metrics"]
+    plain = eye_of("a")
+    auto = eye_of("b", tx_ffe="auto", tx_ffe_post=2, ctle_db="auto", ctle_max_db=3)
+    assert "eye_ffe_main_tap" in auto and 0 <= auto["eye_ctle_db"] <= 3
+    assert "eye_ffe_main_tap" not in plain and "eye_ctle_db" not in plain
+    assert auto["worst_case_eye_height_mv"] >= plain["worst_case_eye_height_mv"]

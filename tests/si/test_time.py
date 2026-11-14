@@ -791,7 +791,13 @@ def test_equalisation_opens_the_eye_of_a_long_channel(tmp_path):
     ({"tx_ffe": [1] * 9}, "8 taps at most"), ({"ctle_db": -1}, "ctle_db is 0 to 30"),
     ({"ctle_db": 31}, "ctle_db is 0 to 30"), ({"ctle_db": 3, "ctle_peak_ghz": 0}, "ctle_peak_ghz"),
     ({"dfe_taps": 1.5}, "dfe_taps is a whole number"), ({"dfe_taps": 33}, "dfe_taps"),
-    ({"dfe_taps": 2, "dfe_max": 0}, "dfe_max"), ({"dfe_taps": 2, "dfe_max": 1.5}, "dfe_max")])
+    ({"dfe_taps": 2, "dfe_max": 0}, "dfe_max"), ({"dfe_taps": 2, "dfe_max": 1.5}, "dfe_max"),
+    ({"tx_ffe": "best"}, "tx_ffe is a list of tap weights"),
+    ({"tx_ffe": "auto", "tx_ffe_pre": 4}, "tx_ffe_pre is a whole number, 0 to 3"),
+    ({"tx_ffe": "auto", "tx_ffe_post": 1.5}, "tx_ffe_post 0 to 4"),
+    ({"tx_ffe": "auto", "tx_ffe_pre": 0, "tx_ffe_post": 0}, "needs a tap beside the main one"),
+    ({"ctle_db": "most"}, "ctle_db"), ({"ctle_db": "auto", "ctle_max_db": 0}, "ctle_max_db"),
+    ({"ctle_db": "auto", "ctle_max_db": 31}, "ctle_max_db is a whole number, 1 to 30")])
 def test_equaliser_settings_are_checked(opt, word):
     from eda_agent.si import eye_jobs
     with pytest.raises(ValueError, match=word):
@@ -801,13 +807,116 @@ def test_equaliser_settings_are_checked(opt, word):
 def test_equaliser_defaults_and_the_spice_engine_refuses_it(tmp_path):
     from eda_agent.si import eye_jobs
     eq = eye_jobs.equaliser({}, {"rate": 8e9})
-    assert eq == {"ffe": [], "ctle_db": 0.0, "ctle_peak": 4e9, "dfe_taps": 0, "dfe_max": 0.5}
+    assert eq == {"ffe": [], "ctle_db": 0.0, "ctle_peak": 4e9, "dfe_taps": 0, "dfe_max": 0.5,
+                  "auto_ffe": None, "auto_ctle": None}
+    auto = eye_jobs.equaliser({"tx_ffe": "Auto", "ctle_db": "auto"}, {"rate": 8e9})
+    assert auto == {**eq, "auto_ffe": (1, 1), "auto_ctle": 12}
+    auto = eye_jobs.equaliser({"tx_ffe": "auto", "tx_ffe_pre": 0, "tx_ffe_post": 3,
+                               "ctle_db": "auto", "ctle_max_db": 6}, {"rate": 8e9})
+    assert auto["auto_ffe"] == (0, 3) and auto["auto_ctle"] == 6
+    # the counts and the ceiling mean nothing without "auto"
+    assert eye_jobs.equaliser({"tx_ffe_post": 3, "ctle_max_db": 6}, {"rate": 8e9}) == eq
     assert eye_jobs.equaliser({"tx_ffe": [], "dfe_taps": 3, "ctle_peak_ghz": 6},
                               {"rate": 8e9}) == {**eq, "dfe_taps": 3, "ctle_peak": 6e9}
     ts = _channel(tmp_path)
-    for opt in ({"tx_ffe": [0.8, -0.2]}, {"ctle_db": 3}, {"dfe_taps": 1}):
+    for opt in ({"tx_ffe": [0.8, -0.2]}, {"ctle_db": 3}, {"dfe_taps": 1}, {"tx_ffe": "auto"},
+                {"ctle_db": "auto"}):
         with pytest.raises(ValueError, match="eda-agent engine only"):
             eye_jobs.run_spice({"data_rate_gbps": 5, **opt}, ts, tmp_path / "s")
+
+
+def _margin(p, taps, dfe_taps=0):
+    q = eye.ffe(p, taps)
+    if dfe_taps:
+        q = eye.dfe(q, dfe_taps, 1.0)[0]
+    return eye.worst_case_eye(q, 2.0)["margin"]
+
+
+def test_best_ffe_is_the_optimum_of_the_worst_case_eye():
+    clean = _tri_pulse([1.0])
+    assert eye.best_ffe(clean, 0, 0) == [1.0]
+    assert eye.best_ffe(clean, 1, 2) == [0.0, 1.0, 0.0, 0.0]
+    # one post-cursor: a tap that cancels it costs the main cursor as much as it gains,
+    # and between equal eyes the least equalisation is taken
+    assert eye.best_ffe(_tri_pulse([1.0, 0.3]), 0, 1) == [1.0, 0.0]
+    p = _tri_pulse([0.2, 1.0, 0.4, 0.1], lead=3)
+    taps = eye.best_ffe(p, 1, 1)
+    assert sum(abs(x) for x in taps) == pytest.approx(1.0, abs=2e-4)
+    assert taps[1] > 0.6 and taps[0] < -0.1 and taps[2] < -0.1
+    best = _margin(p, taps)
+    assert best > _margin(p, [1.0]) + 0.3 and best == pytest.approx(0.931, abs=0.002)
+    # no other taps do better: a grid of them, and steps around the answer
+    rng = np.random.default_rng(3)
+    for a in np.arange(-0.4, 0.41, 0.05):
+        for b in np.arange(-0.4, 0.41, 0.05):
+            assert _margin(p, [a, 1 - abs(a) - abs(b), b]) <= best + 1e-3, (a, b)
+    for _ in range(40):
+        near = np.array(taps) + rng.normal(0, 0.02, 3)
+        assert _margin(p, list(near)) <= best + 1e-3
+    # more taps never do worse
+    assert _margin(p, eye.best_ffe(p, 1, 2)) >= best - 1e-4
+    assert _margin(p, eye.best_ffe(p, 2, 2)) >= _margin(p, eye.best_ffe(p, 1, 2)) - 1e-4
+    # what a DFE takes off is left to it: the post-cursor tap is not spent on it
+    with_dfe = eye.best_ffe(p, 1, 1, dfe_taps=2)
+    assert with_dfe[2] == 0.0
+    assert _margin(p, with_dfe, 2) >= _margin(p, taps, 2) - 1e-4
+    for a in np.arange(-0.4, 0.41, 0.05):
+        assert _margin(p, [a, 1 - abs(a), 0.0], 2) <= _margin(p, with_dfe, 2) + 1e-3
+
+
+def test_the_eye_job_chooses_its_equaliser(tmp_path):
+    ts = _long_channel(tmp_path)
+
+    def run(**opt):
+        res = _edge_job(ts, data_rate_gbps=10, **opt)["results"]
+        return {k: v["value"] for k, v in res["metrics"].items()}, res
+    hand = run(tx_ffe=[-0.1, 0.7, -0.2])[0]
+    assert "ffe_main_tap" not in hand and "ctle_db" not in hand
+    auto, res = run(tx_ffe="auto")
+    assert auto["worst_case_eye_height_mv"] > hand["worst_case_eye_height_mv"] + 20
+    assert 0.5 < auto["ffe_main_tap"] < 0.7
+    note = [n for n in res["notes"] if n.startswith("transmitter FFE taps")][0]
+    assert note.endswith("(magnitudes add up to 1) (chosen for the largest worst-case eye)")
+    taps = [float(x) for x in note.split("taps ")[1].split(" (")[0].split(", ")]
+    assert len(taps) == 3 and max(taps) == pytest.approx(auto["ffe_main_tap"], abs=1e-3)
+    # the taps it names, given back by hand, are the same eye; taps beside them are worse
+    again = run(tx_ffe=taps)[0]
+    assert again["worst_case_eye_height_mv"] == pytest.approx(auto["worst_case_eye_height_mv"],
+                                                              abs=0.5)
+    for d in (-0.04, 0.04):
+        worse = run(tx_ffe=[taps[0] + d, taps[1], taps[2] - d])[0]
+        assert worse["worst_case_eye_height_mv"] < auto["worst_case_eye_height_mv"]
+    # more taps are counted when asked for
+    more, res = run(tx_ffe="auto", tx_ffe_pre=2, tx_ffe_post=3)
+    assert more["worst_case_eye_height_mv"] >= auto["worst_case_eye_height_mv"] - 0.5
+    assert [n for n in res["notes"] if n.startswith("transmitter FFE")][0].count(",") == 5
+    # the CTLE: the best whole dB, which each one tried by hand confirms
+    ctle, res = run(ctle_db="auto")
+    each = {b: run(ctle_db=b)[0]["worst_case_eye_height_mv"] for b in range(0, 13)}
+    assert ctle["ctle_db"] == max(each, key=each.get) and ctle["ctle_db"] > 6
+    assert ctle["worst_case_eye_height_mv"] == each[int(ctle["ctle_db"])]
+    assert any(f"receiver CTLE: {ctle['ctle_db']:g} dB of boost" in n and n.endswith(
+        "(chosen for the largest worst-case eye)") for n in res["notes"])
+    low = run(ctle_db="auto", ctle_max_db=4)[0]
+    assert low["ctle_db"] == 4 and low["worst_case_eye_height_mv"] == each[4]
+    # both, with a DFE: no worse than either alone
+    both = run(tx_ffe="auto", ctle_db="auto", dfe_taps=4)[0]
+    assert both["worst_case_eye_height_mv"] >= max(
+        run(tx_ffe="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"],
+        run(ctle_db="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"]) - 0.01
+
+
+def test_a_clean_channel_is_given_no_equaliser(tmp_path):
+    f = ch.uniform_band(20e9, 400)
+    s = lossy_line(f, length=0.02, z0=50.0)
+    ts = str(write_touchstone(tmp_path / "short.s2p", list(f), s.tolist(), 50.0))
+    plain = _edge_job(ts)["results"]
+    res = _edge_job(ts, tx_ffe="auto", ctle_db="auto")["results"]
+    m = {k: v["value"] for k, v in res["metrics"].items()}
+    assert m["ctle_db"] == 0 and m["ffe_main_tap"] > 0.97
+    assert m["worst_case_eye_height_mv"] >= plain["metrics"]["worst_case_eye_height_mv"]["value"] - 0.01
+    assert any(n == "receiver CTLE: none; no boost up to 12 dB leaves a larger worst-case eye"
+               for n in res["notes"])
 
 
 # --- the eye at a bit error rate -------------------------------------------------------
