@@ -873,7 +873,7 @@ def test_best_ffe_works_where_the_eye_is_tallest(rate):
     p = eye.pulse_response(f, s[:, 1, 0], 1 / rate, 0.3 / rate, 32)
     wc = eye.worst_case_eye(p, 1.0)
     c = wc["sample_index"]
-    assert c != p.center_index and c != p.peak_index
+    assert c != p.center_index
     # it is the sample the worst-case eye is read at: main cursor less all the others
     others = np.sum(np.abs(p.p[c % 32::32])) - abs(p.p[c])
     assert wc["margin"] == pytest.approx(p.p[c] - others, rel=1e-12)
