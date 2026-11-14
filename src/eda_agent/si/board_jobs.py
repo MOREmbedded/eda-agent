@@ -281,8 +281,8 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
         where = {"at_mils": [round(start[0], 2), round(start[1], 2)], "where": f"at {path.start}"}
     if path is None:
         return where
-    if v["check"] in EDGE_CHECKS:
-        # the edge is seen where it arrives
+    if v["check"] in RECEIVER_CHECKS:
+        # the edge and the eye are seen where the signal arrives
         end = _pin_xy(board, path.end)
         if end is not None:
             where = {"at_mils": [round(end[0], 2), round(end[1], 2)], "where": f"at {path.end}"}
@@ -329,6 +329,8 @@ def _locate(board: LayoutBoard, item: dict[str, Any], v: dict[str, Any], res: di
 
 #: Checks of the single edge at the receiver, placed at the receiving pin.
 EDGE_CHECKS = ("overshoot", "ringback", "edge reversal")
+#: Checks of what the receiver sees: their findings sit at the receiving pin.
+RECEIVER_CHECKS = EDGE_CHECKS + ("eye", "eye at the bit error rate")
 
 #: The unit intervals an item's sweep covers when its eye is wanted, and
 #: the most points it is given for that.

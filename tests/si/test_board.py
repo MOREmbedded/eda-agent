@@ -505,6 +505,11 @@ def test_a_target_carries_its_bit_error_rate_to_the_eye(tmp_path):
     it = item_of("c", eye_at_ber_min_mv=m["eye_height_at_ber_mv"] + 5)
     f = [f for f in it["findings"] if f["check"] == "eye at the bit error rate"]
     assert len(f) == 1 and f[0]["severity"] == "error"
+    # where the signal is judged: the far pin of the 8000 mil route, as the eye itself
+    assert f[0]["at_mils"] == [8000.0, 0.0] and f[0]["where"].startswith("at ")
+    it = item_of("d", eye_min_mv=5000)
+    e = [x for x in it["findings"] if x["check"] == "eye"]
+    assert len(e) == 1 and e[0]["at_mils"] == f[0]["at_mils"] and e[0]["where"] == f[0]["where"]
     assert f[0]["detail"].endswith(f", {m['eye_height_at_ber_mv'] + 5:g} mV needed")
 
 
