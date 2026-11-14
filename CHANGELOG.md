@@ -425,6 +425,10 @@ maturity classification for every tool.
   earlier markers; and each stretch of a route outside the impedance band
   gets its own placed finding, not only the worst.
 
+- **A simulation job's kept answer is tied to the code that made it.** The
+  same job asked again after an update returned the older code's results
+  unless forced; it is now solved again.
+
 - **IBIS buffers as vendors write them.** A driver's output resistance was
   read from the two table points either side of 0 V, which on a real file
   is the clamp diode below the rail: a 50 ohm driver came out as 0.18 ohm.
