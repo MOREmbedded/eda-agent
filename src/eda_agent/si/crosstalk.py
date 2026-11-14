@@ -2,9 +2,9 @@
 """Crosstalk onto a routed net from the copper that runs beside it.
 
 For each stretch of the victim's route the board is searched for tracks
-of other nets on the same layer that run parallel to it within reach. The
-stretches are added up per aggressor and gap, and each gap's coupling is
-taken from the field solver's two-trace cross-section:
+and arcs of other nets on the same layer that run parallel to it within
+reach. The stretches are added up per aggressor and gap, and each gap's
+coupling is taken from the field solver's two-trace cross-section:
 
     Kc = |C12| / C11        capacitive coupling
     Kl = L12 / L11          inductive coupling (L from the air-filled C)
@@ -41,6 +41,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from ..layout import geom
 from ..layout.model import LayoutBoard
 from . import planner
 from . import rlgc as _rlgc
@@ -55,8 +56,15 @@ SUPPLY = re.compile(r"^(?:[+-]?\d+(?:\.\d+)?V\d*|[+-]\d+V?|[AD]?V(?:CC|DD|EE|BAT
 
 #: Two tracks within this angle of each other run side by side.
 PARALLEL_DEG = 10.0
-#: A side-by-side run shorter than this is a crossing, not a coupled stretch.
+#: A net that runs beside the victim for less than this in all is a
+#: crossing or a corner, not an aggressor. It is the net's whole shared
+#: length that counts: a curve is many short chords.
 MIN_RUN_MILS = 10.0
+#: Two runs beside the same net whose end and start lie this close along the
+#: victim are one stretch.
+JOIN_MILS = 2.0
+#: An aggressor's arc is followed by chords this close to it.
+ARC_TOL_MILS = 0.05
 #: Reach of the search, in heights above the reference plane (edge to edge),
 #: when the spec does not give ``xtalk_reach_mils``.
 REACH_HEIGHTS = 4.0
@@ -78,6 +86,7 @@ class Run:
     length: float             # mils
     at: tuple[float, float]   # where the stretch starts on the victim
     side: int = 1             # +1 the victim's positive side (or a single net), -1 negative
+    end: Optional[tuple[float, float]] = None   # where it ends on the victim
 
 
 @dataclass
@@ -102,17 +111,24 @@ class Aggressor:
 
 
 def _tracks_by_layer(board: LayoutBoard, own: set[str]) -> dict[str, dict[str, np.ndarray]]:
+    # (x1, y1, x2, y2, width, net) per layer; an arc as its chords
     by: dict[str, list] = {}
     for t in board.tracks:
         if not t.net or t.net in own or t.keepout:
             continue
-        by.setdefault(t.layer, []).append(t)
+        by.setdefault(t.layer, []).append((t.x1, t.y1, t.x2, t.y2, t.width, t.net))
+    for a in board.arcs:
+        if not a.net or a.net in own or a.keepout:
+            continue
+        pts = geom.arc_points(a.cx, a.cy, a.radius, a.a1, a.a2, ARC_TOL_MILS)
+        for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+            by.setdefault(a.layer, []).append((x1, y1, x2, y2, a.width, a.net))
     out = {}
     for layer, ts in by.items():
-        out[layer] = {"a": np.array([(t.x1, t.y1) for t in ts], dtype=float),
-                      "b": np.array([(t.x2, t.y2) for t in ts], dtype=float),
-                      "w": np.array([t.width for t in ts], dtype=float),
-                      "net": np.array([t.net for t in ts], dtype=object)}
+        out[layer] = {"a": np.array([t[:2] for t in ts], dtype=float),
+                      "b": np.array([t[2:4] for t in ts], dtype=float),
+                      "w": np.array([t[4] for t in ts], dtype=float),
+                      "net": np.array([t[5] for t in ts], dtype=object)}
     return out
 
 
@@ -152,11 +168,13 @@ def find_runs(board: LayoutBoard, own: set[str], sections, reach, side: int = 1)
             pt = tr["a"] + d * frac[:, None]
             off = np.abs((pt[:, 0] - p[0]) * u[1] - (pt[:, 1] - p[1]) * u[0])
             gap = off - 0.5 * (s.width + tr["w"])
-            keep = ok & (cross <= sin_max) & (hi - lo >= MIN_RUN_MILS) & (gap > 0) & (gap <= far)
-            for k in np.nonzero(keep)[0]:
-                start = p + u * lo[k]
+            keep = ok & (cross <= sin_max) & (hi - lo > 1e-6) & (gap > 0) & (gap <= far)
+            # in the order the victim meets them, whichever way they were drawn
+            for k in sorted(np.nonzero(keep)[0], key=lambda i: lo[i]):
+                start, stop = p + u * lo[k], p + u * hi[k]
                 runs.append(Run(str(tr["net"][k]), s.layer, float(s.width), float(gap[k]),
-                                float(hi[k] - lo[k]), (float(start[0]), float(start[1])), side))
+                                float(hi[k] - lo[k]), (float(start[0]), float(start[1])), side,
+                                (float(stop[0]), float(stop[1]))))
     return runs
 
 
@@ -236,7 +254,15 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
     # the near end of one aggressor net beside one side of the victim grows
     # with the length they share until it reaches the tightest gap's ceiling
     near: dict[tuple[str, str, int], list[float]] = {}
+    shared: dict[str, float] = {}
     for r in runs:
+        shared[r.aggressor] = shared.get(r.aggressor, 0.0) + r.length
+    # runs that follow one another along the victim are one stretch: a curve
+    # is many chords, and the stretch starts where its first chord does
+    stretch: dict[tuple[str, int], list] = {}    # (net, side) -> [start, end, length]
+    for r in runs:
+        if shared[r.aggressor] < MIN_RUN_MILS:
+            continue
         pname, sign = pair_of.get(r.aggressor, ("", 1))
         key = f"pair {pname}" if pname else r.aggressor
         g = groups.setdefault(key, Aggressor(key, []))
@@ -251,8 +277,13 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
         g.runs.append(r)
         if not g.gap_mils or r.gap < g.gap_mils:
             g.gap_mils, g.layer = r.gap, r.layer
-        if r.length > g.longest:
-            g.longest, g.at = r.length, r.at
+        cur = stretch.get((r.aggressor, r.side))
+        if cur is not None and r.end is not None and math.dist(cur[1], r.at) <= JOIN_MILS:
+            cur[1], cur[2] = r.end, cur[2] + r.length
+        else:
+            cur = stretch[(r.aggressor, r.side)] = [r.at, r.end or r.at, r.length]
+        if cur[2] > g.longest:
+            g.longest, g.at = cur[2], cur[0]
     for (key, _net, _side), (grow, top, sign) in near.items():
         groups[key].next += sign * min(grow, top)
     for g in groups.values():

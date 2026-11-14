@@ -18,7 +18,7 @@ from eda_agent.si import channel as ch
 from eda_agent.si.jobs import plan_options
 from eda_agent.si.section import MIL
 
-from .boards import LAYERS, STACKUP, pair_board, single_net
+from .boards import LAYERS, STACKUP, pair_board, single_net, smd
 
 RISE = 100e-12
 
@@ -92,6 +92,59 @@ def test_only_copper_running_beside_the_net_within_reach_counts(coupling):
     names = {a["aggressor"]: a for a in wide["aggressors"]}
     assert set(names) == {"AGG", "FAR"}
     assert names["FAR"]["next_pct"] < 0.1 * names["AGG"]["next_pct"]
+
+
+def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(coupling):
+    from eda_agent.layout.model import Arc
+    # the victim turns a quarter circle of 500 mil radius; the aggressor follows
+    # it on the outside, 4 mil away edge to edge
+    b = victim()
+    b.pads = [smd("U1", "1", 500, 0, "SIG"), smd("U2", "1", 0, 500, "SIG")]
+    b.vias = []
+    b.tracks = []
+    b.arcs = [Arc("TopLayer", 0, 0, 500, 0, 90, 5, "SIG"),
+              Arc("TopLayer", 0, 0, 509, 0, 90, 5, "AGG")]
+    curved = of(b, coupling)["aggressors"][0]
+    quarter = math.pi / 2 * 500
+    assert curved["aggressor"] == "AGG" and curved["layer"] == "TopLayer"
+    assert curved["length_mils"] == pytest.approx(quarter, rel=0.01)
+    assert curved["gap_mils"] == pytest.approx(4.0, abs=0.1)
+    assert of(b, coupling, quiet={"AGG"})["aggressors"] == []     # a quiet net's arcs too
+    # the place given is where the curved stretch starts on the route (U1.1 at
+    # 0 degrees), not where one of its chords does
+    assert curved["at_mils"] == pytest.approx([500, 0], abs=0.5)
+    # walked the other way (from U2.1), against the way the neighbour's arc was drawn
+    back = crosstalk.of_path(b, extract.net_path(b, "SIG", "U2.1", "U1.1"), coupling, RISE)
+    assert back["aggressors"][0]["at_mils"] == pytest.approx([0, 500], abs=0.5)
+    assert back["aggressors"][0]["length_mils"] == pytest.approx(curved["length_mils"], rel=1e-6)
+    # an aggressor beside the last third only: the stretch starts at 60 degrees
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 60, 90, 5, "AGG")
+    third = of(b, coupling)["aggressors"][0]
+    assert third["at_mils"] == pytest.approx([250, 500 * math.sin(math.radians(60))], abs=6)
+    assert third["length_mils"] == pytest.approx(quarter / 3, rel=0.02)
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 0, 90, 5, "AGG")
+    # as much as the same length side by side on a straight run
+    straight = of(beside(victim(), x1=100, x2=100 + quarter), coupling)["aggressors"][0]
+    assert curved["next_pct"] == pytest.approx(straight["next_pct"], rel=0.02)
+    assert curved["fext_pct"] == pytest.approx(straight["fext_pct"], rel=0.03)
+    # a straight neighbour drawn as 160 tracks of 5 mil is one run of 800 mil
+    cut = victim()
+    for i in range(160):
+        beside(cut, x1=100 + 5 * i, x2=105 + 5 * i)
+    whole = of(beside(victim()), coupling)["aggressors"][0]
+    pieces = of(cut, coupling)["aggressors"][0]
+    assert pieces["length_mils"] == pytest.approx(800)
+    assert pieces["next_pct"] == pytest.approx(whole["next_pct"], rel=1e-6)
+    assert pieces["at_mils"] == [100.0, 0.0]
+    # two separate stretches beside one net: the longer one is the place
+    two = of(beside(beside(victim(), x1=50, x2=150), x1=400, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [400.0, 0.0] and two["length_mils"] == pytest.approx(600)
+    two = of(beside(beside(victim(), x1=50, x2=550), x1=800, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [50.0, 0.0]
+    # an arc of another net that only crosses is still nothing
+    b = victim()
+    b.arcs = [Arc("TopLayer", 500, 300, 300, 180, 360, 5, "LOOP")]
+    assert of(b, coupling)["aggressors"] == []
 
 
 def test_a_track_at_a_slight_angle_still_runs_beside_and_only_where_it_overlaps(coupling):

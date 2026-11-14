@@ -452,6 +452,11 @@ maturity classification for every tool.
   same job asked again after an update returned the older code's results
   unless forced; it is now solved again.
 
+- **Crosstalk sees curved routes.** A neighbour's arcs were not searched,
+  and a neighbour beside a curved stretch was dropped because each chord
+  of the curve is shorter than the 10 mil a run had to be. Arcs now count,
+  and it is a net's whole shared length that must reach 10 mil.
+
 - **A net between free pads can be modelled.** A net with fewer than two
   component pins (a bare test board, edge fingers, a test point at one
   end) was refused as having no pins. Its free pads now count as pins, with
