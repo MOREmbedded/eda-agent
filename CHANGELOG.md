@@ -61,6 +61,12 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: ground copper in the gap shields.** A ground pour
+  flooded between a net and its neighbour, or a guard track, now counts
+  in the crosstalk of a net channel and the board check: the coupling is
+  solved with that copper in the cross-section, held at the reference,
+  and the aggressor's row says how much was found (`guard_mils`). A net
+  that has pours and no tracks is now among the quiet nets.
 - **Update: a reinstall that did not take is caught.** `eda-agent update`
   reinstalls the package when `pyproject.toml` changed. pip could end
   that with the old install removed and the new one not written, leaving

@@ -122,6 +122,7 @@ TD is the delay of the shared length and tr the aggressor's edge: `rise_ps` unle
 - Neighbours are not all alike. `xtalk_aggressors` gives nets an edge and a swing of their own, by name glob, the first match taken: `[{"match": "CLK*", "rise_ps": 300, "swing_mv": 3300}, {"match": "LVDS_*", "swing_mv": 350}]`. A slower edge lowers the far end and the near end of a short run. `xtalk_swing_mv` is the swing of the neighbours that are given none.
 - With every neighbour's swing known, crosstalk is also given in millivolts on the net (`crosstalk_noise_mv`): each neighbour's share times its own swing, the worse of the near and far end. That is the figure that matters where 3.3 V logic runs beside a low-swing pair. `xtalk_max_mv` holds it to a limit (the check `crosstalk noise`); the percent limit stays as it is, each neighbour in percent of its own swing.
 - Grounds, plane nets and supply rails (by name: `GND*`, `VCC*`, `VDD*`, `+3V3`, `1V8`, ...) do not switch and are left out. `xtalk_quiet` names more, as globs (`["LED_*", "RESET_N"]`).
+- Copper of those quiet nets lying in the gap between the net and an aggressor on its layer (a ground pour flooded between them, a guard track) shields: the coupling is solved with it in the cross-section as a third conductor held at the reference. Its width is the least found across the gap along the stretch, counted in eighths of the gap and rounded down, six at most; the aggressor's row then carries `guard_mils`. The guard is taken as tied to the plane along its length: one that is not stitched does not shield like this.
 - `xtalk: false` leaves the check out.
 
 The figures are fractions of the aggressor's swing. A 3.3 V neighbour at 4 % puts 132 mV on the net, whatever the net's own swing is.
@@ -178,7 +179,7 @@ Each run works out `pcb_create_design_rule` calls:
 - **Return path:** the check is geometric. It says where the reference copper stops under the centre line; it does not model the gap in the channel (the loss, TDR and eye are those of a whole plane), does not look for stitching capacitors or return vias across a split, and does not see a trace running along the edge of a plane without crossing it.
 - **Crosstalk:**
   - The weak-coupling results hold for matched ends and coupling of a few percent to about 15 %. Reflections at mismatched ends add to them.
-  - Tracks and arcs on the same layer and on a facing signal layer count. Vias beside vias are not searched, nor is a layer two or more signal layers away. A copper pour on the facing layer is not taken as a shield.
+  - Tracks and arcs on the same layer and on a facing signal layer count. Vias beside vias are not searched, nor is a layer two or more signal layers away. Quiet copper shields only in the gap on the net's own layer: a pour on the facing layer is not taken as a shield, and an opening in a guard shorter than twice the gap can go unseen.
   - On a facing layer the full solution shows a far end of about a tenth of the near end, from the two modes' unequal loss; the closed form gives none.
   - A board with no plane at all gives no coupling to the facing layer: there is nothing to solve the two traces against.
   - A neighbour's edge is taken as fast as the victim's `rise_ps` unless `xtalk_aggressors` gives it one. Beside a slower neighbour the far end is then overstated.
