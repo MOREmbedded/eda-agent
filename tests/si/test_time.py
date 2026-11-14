@@ -558,6 +558,8 @@ def test_the_step_settles_to_the_dc_of_the_s_matrix():
     four = np.zeros((2, 4, 4), dtype=complex)
     four[:, 0, 2] = four[:, 2, 0] = four[:, 1, 3] = four[:, 3, 1] = [0.95j, -0.93]
     four[:, 0, 1] = four[:, 1, 0] = [0.02, 0.04]
+    for k in range(4):
+        four[:, k, k] = [0.3, 0.25j]                    # a reflection in the band says nothing of DC
     d4 = eye.dc_matrix(four)
     assert d4[2, 0] == pytest.approx(0.97) and d4[1, 0] == 0 and d4[0, 0] == pytest.approx(0.03)
     assert s[0, 1, 0].real < 0.98                       # the first point is not DC
