@@ -569,6 +569,17 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **A board edited by script reads modified.** After a stack edit
+  (`pcb_set_dielectric`), and on other scripted edits, Altium's own
+  modified flag read false while its title showed
+  `BoosterTest.PcbDoc * - Altium Designer`. So `app_get_active_document`
+  and `app_list_documents` called an edited board clean, and
+  `app_close_document` let it through to Altium's modal save prompt. The
+  title of the document in front is now read as well (`ui/title_state.py`):
+  a `*` there reports `modified: true` with `modified_from: "window title"`,
+  and a close without `discard_changes` is refused before it reaches
+  Altium. The title only adds a modified the API missed; it never clears
+  one, and it answers only for the document in front.
 - **The dashboard's background threads can be stopped.** `create_app`
   started a log tailer, a sentinel watcher and a heartbeat that ran until
   the process ended; `eda_agent.web.dashboard.stop_background()` now ends
