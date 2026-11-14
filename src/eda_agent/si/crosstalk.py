@@ -60,6 +60,9 @@ PARALLEL_DEG = 10.0
 #: crossing or a corner, not an aggressor. It is the net's whole shared
 #: length that counts: a curve is many short chords.
 MIN_RUN_MILS = 10.0
+#: Two runs beside the same net whose end and start lie this close along the
+#: victim are one stretch.
+JOIN_MILS = 2.0
 #: An aggressor's arc is followed by chords this close to it.
 ARC_TOL_MILS = 0.05
 #: Reach of the search, in heights above the reference plane (edge to edge),
@@ -83,6 +86,7 @@ class Run:
     length: float             # mils
     at: tuple[float, float]   # where the stretch starts on the victim
     side: int = 1             # +1 the victim's positive side (or a single net), -1 negative
+    end: Optional[tuple[float, float]] = None   # where it ends on the victim
 
 
 @dataclass
@@ -165,10 +169,12 @@ def find_runs(board: LayoutBoard, own: set[str], sections, reach, side: int = 1)
             off = np.abs((pt[:, 0] - p[0]) * u[1] - (pt[:, 1] - p[1]) * u[0])
             gap = off - 0.5 * (s.width + tr["w"])
             keep = ok & (cross <= sin_max) & (hi - lo > 1e-6) & (gap > 0) & (gap <= far)
-            for k in np.nonzero(keep)[0]:
-                start = p + u * lo[k]
+            # in the order the victim meets them, whichever way they were drawn
+            for k in sorted(np.nonzero(keep)[0], key=lambda i: lo[i]):
+                start, stop = p + u * lo[k], p + u * hi[k]
                 runs.append(Run(str(tr["net"][k]), s.layer, float(s.width), float(gap[k]),
-                                float(hi[k] - lo[k]), (float(start[0]), float(start[1])), side))
+                                float(hi[k] - lo[k]), (float(start[0]), float(start[1])), side,
+                                (float(stop[0]), float(stop[1]))))
     return runs
 
 
@@ -251,6 +257,9 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
     shared: dict[str, float] = {}
     for r in runs:
         shared[r.aggressor] = shared.get(r.aggressor, 0.0) + r.length
+    # runs that follow one another along the victim are one stretch: a curve
+    # is many chords, and the stretch starts where its first chord does
+    stretch: dict[tuple[str, int], list] = {}    # (net, side) -> [start, end, length]
     for r in runs:
         if shared[r.aggressor] < MIN_RUN_MILS:
             continue
@@ -268,8 +277,13 @@ def assess(board: LayoutBoard, runs: list[Run], coupling: Coupling, rise: float
         g.runs.append(r)
         if not g.gap_mils or r.gap < g.gap_mils:
             g.gap_mils, g.layer = r.gap, r.layer
-        if r.length > g.longest:
-            g.longest, g.at = r.length, r.at
+        cur = stretch.get((r.aggressor, r.side))
+        if cur is not None and r.end is not None and math.dist(cur[1], r.at) <= JOIN_MILS:
+            cur[1], cur[2] = r.end, cur[2] + r.length
+        else:
+            cur = stretch[(r.aggressor, r.side)] = [r.at, r.end or r.at, r.length]
+        if cur[2] > g.longest:
+            g.longest, g.at = cur[2], cur[0]
     for (key, _net, _side), (grow, top, sign) in near.items():
         groups[key].next += sign * min(grow, top)
     for g in groups.values():

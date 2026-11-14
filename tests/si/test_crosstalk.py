@@ -110,6 +110,19 @@ def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(couplin
     assert curved["length_mils"] == pytest.approx(quarter, rel=0.01)
     assert curved["gap_mils"] == pytest.approx(4.0, abs=0.1)
     assert of(b, coupling, quiet={"AGG"})["aggressors"] == []     # a quiet net's arcs too
+    # the place given is where the curved stretch starts on the route (U1.1 at
+    # 0 degrees), not where one of its chords does
+    assert curved["at_mils"] == pytest.approx([500, 0], abs=0.5)
+    # walked the other way (from U2.1), against the way the neighbour's arc was drawn
+    back = crosstalk.of_path(b, extract.net_path(b, "SIG", "U2.1", "U1.1"), coupling, RISE)
+    assert back["aggressors"][0]["at_mils"] == pytest.approx([0, 500], abs=0.5)
+    assert back["aggressors"][0]["length_mils"] == pytest.approx(curved["length_mils"], rel=1e-6)
+    # an aggressor beside the last third only: the stretch starts at 60 degrees
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 60, 90, 5, "AGG")
+    third = of(b, coupling)["aggressors"][0]
+    assert third["at_mils"] == pytest.approx([250, 500 * math.sin(math.radians(60))], abs=6)
+    assert third["length_mils"] == pytest.approx(quarter / 3, rel=0.02)
+    b.arcs[1] = Arc("TopLayer", 0, 0, 509, 0, 90, 5, "AGG")
     # as much as the same length side by side on a straight run
     straight = of(beside(victim(), x1=100, x2=100 + quarter), coupling)["aggressors"][0]
     assert curved["next_pct"] == pytest.approx(straight["next_pct"], rel=0.02)
@@ -122,6 +135,10 @@ def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(couplin
     pieces = of(cut, coupling)["aggressors"][0]
     assert pieces["length_mils"] == pytest.approx(800)
     assert pieces["next_pct"] == pytest.approx(whole["next_pct"], rel=1e-6)
+    assert pieces["at_mils"] == [100.0, 0.0]
+    # two separate stretches beside one net: the longer one is the place
+    two = of(beside(beside(victim(), x1=50, x2=150), x1=400, x2=900), coupling)["aggressors"][0]
+    assert two["at_mils"] == [400.0, 0.0] and two["length_mils"] == pytest.approx(600)
     # an arc of another net that only crosses is still nothing
     b = victim()
     b.arcs = [Arc("TopLayer", 500, 300, 300, 180, 360, 5, "LOOP")]
