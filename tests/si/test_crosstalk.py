@@ -697,7 +697,9 @@ def test_the_net_job_gives_millivolts_and_holds_them_to_a_limit(tmp_path):
         10 * res["metrics"]["crosstalk_pct"]["value"], abs=0.02)
     res = net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_swing_mv": 400},
                                    b.to_dict(), STACKUP, tmp_path / "e")
-    assert res["metrics"]["crosstalk_noise_mv"]["value"] > mv      # AGG at its fast edge again
+    # AGG at its fast edge again: 800 mil is at its ceiling at either edge, the far end is not
+    assert res["metrics"]["crosstalk_noise_mv"]["value"] == pytest.approx(mv, abs=0.01)
+    assert res["figures"]["crosstalk"][0]["fext_pct"] > 1.4 * saved["aggressors"][0]["fext_pct"]
     with pytest.raises(ValueError, match="xtalk_max_mv needs the swing of every neighbour"):
         net_jobs.run_net_channel({**spec, "xtalk_aggressors": aggs[1:], "xtalk_max_mv": 100},
                                  b.to_dict(), STACKUP, tmp_path / "f")
@@ -721,13 +723,13 @@ def test_the_board_check_takes_each_neighbours_swing_into_the_eye(tmp_path):
         item = json.loads((tmp_path / name / "findings.json").read_text())["items"][0]
         return item["metrics"], item
     m0, _ = noise("a")
-    assert m0["noise_mv"] == pytest.approx(8 * m0["crosstalk_pct"], abs=0.01)   # its own 800 mV
+    assert m0["eye_noise_mv"] == pytest.approx(8 * m0["crosstalk_pct"], abs=0.01)   # its own 800 mV
     m1, _ = noise("b", xtalk_aggressors=[{"match": "AGG", "swing_mv": 3300}])
-    assert m1["noise_mv"] == pytest.approx(33 * m1["crosstalk_pct"], abs=0.02)
-    assert m1["crosstalk_noise_mv"] == m1["noise_mv"]
+    assert m1["eye_noise_mv"] == pytest.approx(33 * m1["crosstalk_pct"], abs=0.02)
+    assert m1["crosstalk_noise_mv"] == m1["eye_noise_mv"] and "crosstalk_noise_mv" not in m0
     assert m1["eye_height_with_noise_mv"] < m0["eye_height_with_noise_mv"]
     m2, _ = noise("c", xtalk_swing_mv=1600)
-    assert m2["noise_mv"] == pytest.approx(16 * m2["crosstalk_pct"], abs=0.01)
+    assert m2["eye_noise_mv"] == pytest.approx(16 * m2["crosstalk_pct"], abs=0.01)
     # a limit in mV on the board reaches the item and the finding is placed with the copper
     res = board_jobs.run_board_si({**spec, "xtalk_swing_mv": 3300, "xtalk_max_mv": 50},
                                   b.to_dict(), STACKUP, tmp_path / "d", snapshot="t")
