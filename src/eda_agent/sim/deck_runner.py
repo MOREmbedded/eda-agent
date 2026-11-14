@@ -55,6 +55,13 @@ def pick_simulator(wanted: str = "auto") -> dict:
             return {"engine": wanted, "path": found[wanted], "why": "asked for"}
         label = "LTspice" if wanted == "ltspice" else "ngspice"
         reason = too_old if wanted == "ngspice" and too_old else f"{label} is not installed"
+        named = os.environ.get("EDA_AGENT_NGSPICE" if wanted == "ngspice"
+                               else "EDA_AGENT_LTSPICE_EXE", "").strip().strip('"')
+        if named and not too_old:
+            var = "EDA_AGENT_NGSPICE" if wanted == "ngspice" else "EDA_AGENT_LTSPICE_EXE"
+            reason += (f" ({var} points at {named}, which does not exist)"
+                       if not Path(named).exists()
+                       else f" ({var} points at {named}, where no {label} was found)")
         return {"engine": "", "reason": reason,
                 "install_offers": {wanted: INSTALL_OFFERS[wanted]}}
     if found["ngspice"]:

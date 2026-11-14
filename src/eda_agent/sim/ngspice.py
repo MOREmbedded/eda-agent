@@ -181,7 +181,7 @@ def simulator_backends() -> dict:
                  for m in ("openEMS", "CSXCAD"))
     report = {
         "ngspice": {"available": bool(ng), "path": ng or found or "",
-                    "version": ngspice_version(ng) if ng else "",
+                    "version": ngspice_version(ng or found) if (ng or found) else "",
                     **({"too_old": too_old} if too_old else {}),
                     "kicad_library_only": kicad_dll if not ng else []},
         # Runs a deck when asked for, or when ngspice is not installed

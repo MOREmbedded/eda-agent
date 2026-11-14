@@ -480,3 +480,20 @@ def test_runs_and_the_backend_report_refuse_an_old_ngspice(old_ngspice):
     rep = ng.simulator_backends()["ngspice"]
     assert rep["available"] is False and "too old" in rep["too_old"]
     assert ng.find_usable_ngspice()[0] is None
+
+
+def test_the_details_reach_the_text_report_and_the_simulator_choice(tmp_path, choices,
+                                                                   monkeypatch, capsys):
+    from eda_agent.sim import deck_runner
+    monkeypatch.setitem(detect.PROGRAMS, "ngspice", lambda deep: ("", ""))
+    monkeypatch.setattr(deck_runner, "find_ngspice", lambda: None)
+    monkeypatch.setenv("EDA_AGENT_NGSPICE", str(tmp_path / "gone.exe"))
+    assert cli.cmd_features() == 0
+    assert f"EDA_AGENT_NGSPICE points at {tmp_path / 'gone.exe'}" in capsys.readouterr().out
+    asked = deck_runner.pick_simulator("ngspice")
+    assert asked["engine"] == "" and "does not exist" in asked["reason"]
+
+
+def test_the_backend_report_gives_the_old_version(old_ngspice):
+    from eda_agent.sim import ngspice as ng
+    assert ng.simulator_backends()["ngspice"]["version"] == "26"
