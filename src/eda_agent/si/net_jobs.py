@@ -253,10 +253,12 @@ def run_net_channel(spec: dict[str, Any], board_data: dict, stackup: Optional[di
         lim = _num(spec, "xtalk_max_pct", 5.0)
         if xt["aggressors"]:
             a = xt["aggressors"][0]
+            how = (f"on {a['aggressor_layer']} across {a['gap_mils']:.1f} mil of dielectric "
+                   f"from {a['layer']}" if a.get("aggressor_layer")
+                   else f"at {a['gap_mils']:.1f} mil on {a['layer']}")
             detail = (f"near end {xt['next_pct']:.2f} %, far end {xt['fext_pct']:.2f} % of the "
                       f"aggressors' swing at {rise * 1e12:g} ps, {lim:g} % allowed; worst is "
-                      f"{a['aggressor']}, {a['length_mils']:.0f} mil at {a['gap_mils']:.1f} mil "
-                      f"on {a['layer']}")
+                      f"{a['aggressor']}, {a['length_mils']:.0f} mil {how}")
         else:
             detail = "no switching net runs beside it"
         verdicts.append({"check": "crosstalk", "pass": xt["worst_pct"] <= lim, "detail": detail})
@@ -327,7 +329,7 @@ def _crosstalk(spec: dict[str, Any], board: LayoutBoard, stack, opt, path, rise:
     if reach is not None and float(reach) <= 0:
         raise ValueError("xtalk_reach_mils is above 0")
     # the edge's energy sits around 0.35 / rise
-    coupling = crosstalk.Coupling(info, opt, 0.35 / rise)
+    coupling = crosstalk.Coupling(info, opt, 0.35 / rise, stack=stack)
     out = crosstalk.of_path(board, path, coupling, rise,
                             None if reach is None else float(reach), still)
     out["quiet"] = sorted(still)

@@ -80,7 +80,7 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 - `path.json`, the path as found;
 - `sections.json`, every block and the figures of each cross-section;
 - `tdr.csv`;
-- `crosstalk.json`, every aggressor with its gap, shared length and place;
+- `crosstalk.json`, every aggressor with its gap, shared length and place (for one on the facing signal layer: `aggressor_layer`, `offset_mils` to the side, and `gap_mils` the dielectric between the layers);
 - `return_path.json`, every gap under the route;
 - `channel.png`.
 
@@ -88,7 +88,7 @@ When a data rate is given, the skew limit defaults to 5 % of a unit interval.
 
 A trace's return current runs in the reference copper right beneath it. Where that copper stops, the current goes round: the loop is an impedance step, it radiates, and every other trace crossing the same gap couples to it.
 
-- The reference layers of each trace section come from the stackup: the plane under a microstrip, the two planes of a stripline.
+- The reference layers of each trace section come from the stackup: the plane under a microstrip, the two planes of a stripline. Where another signal layer lies between a trace and its plane (a dual stripline), the plane beyond it is the reference.
 - The route is sampled every 2 mil along its centre line and looked up in the copper the board carries for those layers: split planes, pours and solid regions, with their holes and cutouts.
 - A stretch with no copper beneath is a gap. It is reported with its length, where it starts, how far along the route that is, and the plane nets either side: `crosses the split between GND and +3V3 (12 mil) in InternalPlane1`, `crosses a gap of 30 mil in InternalPlane1`, `crosses no copper in BottomLayer`.
 - A gap shorter than `return_gap_min_mils` (8) is no finding, unless the plane's net changes across it: a split is always one.
@@ -101,7 +101,9 @@ A trace's return current runs in the reference copper right beneath it. Where th
 
 The board is searched for what runs beside the net. For each stretch of the route, tracks and arcs of other nets on the same layer count when they run within 10 degrees of it and within reach, and the net shares at least 10 mil with the route in all (a curve is many short chords, so it is the net's whole shared length that counts): four heights above the reference plane edge to edge, and at least three trace widths (`xtalk_reach_mils` sets it).
 
-Each neighbour's coupling comes from the field solver's cross-section of the two traces at their gap:
+Where two signal layers face each other with no plane between (a dual stripline), tracks on the facing layer that run over or under the route count as well: within four times the dielectric between the two layers to either side, centre to centre, and at least three trace widths. A track that crosses the route at an angle does not count, which is why such layers are routed at right angles to each other.
+
+Each neighbour's coupling comes from the field solver's cross-section of the two traces at their gap; for a track on the facing layer, of the two traces at their own heights between the planes that enclose both layers, at its offset to the side:
 
 | | |
 |---|---|
@@ -164,7 +166,7 @@ Each run works out `pcb_create_design_rule` calls:
 - **Length budget:** the same stubbed net routed 2000 and 5000 mil long gets the same length limit within 3 % (scaling the whole loss by the routed length moved it by over 30 %).
 - **Curved routes:** an arc following the net's own arc 4 mil away for a quarter circle of 500 mil radius couples as much as the same length side by side on a straight run, within 2 %.
 - **Return path:** a 30 mil slot across a microstrip is found within 2 mil of its place and length; a 5 mil split between two plane nets is named with both nets; a slot beside the trace, the antipad of the net's own via and a polygon's outline without poured copper give nothing.
-- **Crosstalk:** for two traces 4 mil apart over 800 mil of microstrip and a 100 ps edge, the near end is within 5 % and the far end within 15 % of the peaks of the coupled line solved in full (the four-port from the eddy-current solver, between 50 ohm ports). A stripline's far end is under 0.3 %. A pair with one side each side of the net cancels to zero.
+- **Crosstalk:** for two traces 4 mil apart over 800 mil of microstrip and a 100 ps edge, the near end is within 5 % and the far end within 15 % of the peaks of the coupled line solved in full (the four-port from the eddy-current solver, between 50 ohm ports). A stripline's far end is under 0.3 %. A pair with one side each side of the net cancels to zero. For a trace right under another on the facing layer of a dual stripline (8 mil between them, 5 mil to each plane), and 6 mil to its side, the near end is within 5 % of the coupled line solved in full.
 - **Pair skew:** the skew of a pair with a 49 mil length mismatch matches the mismatch times the line's delay per mil within 1.5 ps.
 
 ## Limits
@@ -172,7 +174,9 @@ Each run works out `pcb_create_design_rule` calls:
 - **Return path:** the check is geometric. It says where the reference copper stops under the centre line; it does not model the gap in the channel (the loss, TDR and eye are those of a whole plane), does not look for stitching capacitors or return vias across a split, and does not see a trace running along the edge of a plane without crossing it.
 - **Crosstalk:**
   - The weak-coupling results hold for matched ends and coupling of a few percent to about 15 %. Reflections at mismatched ends add to them.
-  - Only tracks and arcs on the same layer count. Copper on the next signal layer with no plane between (broadside coupling) and vias beside vias are not searched.
+  - Tracks and arcs on the same layer and on a facing signal layer count. Vias beside vias are not searched, nor is a layer two or more signal layers away. A copper pour on the facing layer is not taken as a shield.
+  - On a facing layer the full solution shows a far end of about a tenth of the near end, from the two modes' unequal loss; the closed form gives none.
+  - A board with no plane at all gives no coupling to the facing layer: there is nothing to solve the two traces against.
   - The aggressor's edge is taken as fast as the victim's `rise_ps`. Beside a slower neighbour the far end is overstated.
 
 - **Vias:**
