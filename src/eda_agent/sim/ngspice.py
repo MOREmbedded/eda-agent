@@ -25,6 +25,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,21 @@ INSTALL_OFFERS = {
 
 
 def find_ngspice() -> Optional[str]:
+    """The ngspice console program: the file EDA_AGENT_NGSPICE names, else
+    PATH, else Scoop's shims, else the folders the Windows release is
+    usually unzipped to (``C:\\Spice64``, ``Program Files\\Spice64``)."""
+    import os
+    named = os.environ.get("EDA_AGENT_NGSPICE", "").strip().strip('"')
+    if named:
+        p = Path(named)
+        if p.is_dir():          # the folder, or its bin folder, was named
+            for base in (p / "bin", p):
+                for name in NGSPICE_NAMES:
+                    for exe in (base / f"{name}.exe", base / name):
+                        if exe.is_file():
+                            return str(exe)
+        elif p.is_file():
+            return str(p)
     for name in NGSPICE_NAMES:
         path = shutil.which(name)
         if path:
@@ -65,6 +81,15 @@ def find_ngspice() -> Optional[str]:
         exe = shims / f"{name}.exe"
         if exe.exists():
             return str(exe)
+    if sys.platform == "win32":
+        roots = [Path(os.environ.get("SystemDrive", "C:") + "\\")]
+        roots += [Path(os.environ[k]) for k in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA")
+                  if os.environ.get(k)]
+        for root in roots:
+            for name in NGSPICE_NAMES:
+                exe = root / "Spice64" / "bin" / f"{name}.exe"
+                if exe.is_file():
+                    return str(exe)
     return None
 
 
@@ -92,21 +117,72 @@ def ngspice_version(path: str) -> str:
                              timeout=20, **no_window()).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
-    m = re.search(r"ngspice-(\d+(?:\.\d+)?)", out)
+    return parse_ngspice_version(out)
+
+
+def parse_ngspice_version(banner: str) -> str:
+    """The version in ``ngspice -v``'s banner: "ngspice-47" in current
+    releases, "ngspice compiled from ngspice revision 26" in old ones
+    (the copy EAGLE ships)."""
+    m = re.search(r"ngspice-(\d+(?:\.\d+)?)", banner) \
+        or re.search(r"ngspice revision (\d+(?:\.\d+)?)", banner)
     return m.group(1) if m else ""
+
+
+#: The oldest ngspice eda-agent's decks are known to need. ngspice 26
+#: (shipped with EAGLE 9) ignores a deck's .control block in batch mode,
+#: so nothing runs; ngspice 47 is the release the decks are checked in.
+#: Releases between the two are untested; 30 is a conservative floor.
+NGSPICE_MIN = 30
+
+_VERSIONS: dict = {}
+
+
+def ngspice_too_old(path: str) -> str:
+    """Why the ngspice at ``path`` cannot run eda-agent's decks, or "".
+    An unknown version is given the benefit of the doubt. The version is
+    asked once per file (path and modification time)."""
+    try:
+        key = (path, Path(path).stat().st_mtime)
+    except OSError:
+        return ""
+    if key not in _VERSIONS:
+        _VERSIONS[key] = ngspice_version(path)
+    version = _VERSIONS[key]
+    try:
+        major = int(float(version))
+    except ValueError:
+        return ""
+    if major >= NGSPICE_MIN:
+        return ""
+    return (f"ngspice {version} at {path} is too old: it ignores a deck's .control "
+            f"block in batch mode, so its runs do nothing. eda-agent needs ngspice "
+            f"{NGSPICE_MIN} or later.")
+
+
+def find_usable_ngspice() -> tuple[Optional[str], str]:
+    """(path, "") for an ngspice that can run eda-agent's decks, or
+    (None, why not): not installed, or too old."""
+    path = find_ngspice()
+    if not path:
+        return None, "ngspice is not installed"
+    old = ngspice_too_old(path)
+    return (None, old) if old else (path, "")
 
 
 def simulator_backends() -> dict:
     """Which simulators are here, with versions, and offers for the rest."""
-    ng = find_ngspice()
+    found = find_ngspice()
+    ng, too_old = find_usable_ngspice() if found else (None, "")
     lt = find_ltspice()
     kicad_dll = sorted(glob.glob(r"C:/Program Files/KiCad/*/bin/ngspice.dll"))
     ems_exe = shutil.which("openEMS")
     ems_py = all(importlib.util.find_spec(m) is not None
                  for m in ("openEMS", "CSXCAD"))
     report = {
-        "ngspice": {"available": bool(ng), "path": ng or "",
+        "ngspice": {"available": bool(ng), "path": ng or found or "",
                     "version": ngspice_version(ng) if ng else "",
+                    **({"too_old": too_old} if too_old else {}),
                     "kicad_library_only": kicad_dll if not ng else []},
         # Runs a deck when asked for, or when ngspice is not installed
         # (design_simulate_deck); ngspice comes first when both are here.
@@ -133,9 +209,13 @@ def run_deck(deck: str, outputs: tuple[str, ...] = (), timeout: float = 120,
              ngspice: Optional[str] = None) -> dict:
     """Run a deck in batch mode in a scratch folder; return the text of the
     files its .control block writes (``outputs``) with the log."""
-    exe = ngspice or find_ngspice()
+    if ngspice:
+        exe, why = ngspice, ngspice_too_old(ngspice)
+        exe = None if why else exe
+    else:
+        exe, why = find_usable_ngspice()
     if not exe:
-        return {"ok": False, "reason": "ngspice is not installed",
+        return {"ok": False, "reason": why or "ngspice is not installed",
                 "install_offer": INSTALL_OFFERS["ngspice"]}
     with tempfile.TemporaryDirectory(prefix="eda_ngspice_") as tmp:
         (Path(tmp) / "deck.cir").write_text(deck, encoding="utf-8")
