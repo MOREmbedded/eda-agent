@@ -330,7 +330,7 @@ def _register_si_net_tools(mcp) -> None:
                 expect_file reads the open board live, or board_json_path
                 and stackup_json_path name saved files.
             options: from_pin, to_pin (DESIGNATOR.PIN), data_rate_gbps,
-                f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
+                modulation ("pam4"), f_max_ghz (20), points (400), rise_ps (35), z_ref (50),
                 z_target, z_tol_pct (10), il_max_db, rl_min_db,
                 skew_max_ps, tand (0.02), foil, mask_mils, etch_mils,
                 rules (true); crosstalk from the copper beside the net:

@@ -61,6 +61,10 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: PAM4 limits at the symbol rate.** A routed net, a
+  pair and a board-check target with `modulation: "pam4"` are now checked
+  at half the data rate: the loss at Nyquist, the stub limit and the
+  default skew limit follow the symbol, as the eye already did.
 - **Signal integrity: the eye pattern quick on long sweeps.** The bit
   pattern of `si_channel_eye` is now convolved with the pulse one sample
   phase at a time instead of through a pattern padded with zeros: the
