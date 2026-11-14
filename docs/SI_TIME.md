@@ -136,7 +136,7 @@ The SPICE engine refuses PAM4. A board check's own limits (loss at Nyquist, skew
 |---|---|---|
 | `eye_height_mv`, `eye_width_ps`, `eye_width_ui` | both | The eye of the pattern |
 | `worst_case_eye_height_mv`, `worst_case_eye_width_ps` | `eda-agent` | Peak distortion analysis |
-| `main_cursor_mv`, `isi_mv` | `eda-agent` | The main cursor and the sum of the others |
+| `main_cursor_mv`, `isi_mv` | `eda-agent` | The main cursor and the sum of the others at the sampling phase where the worst-case eye is tallest: that eye is 2 x (main - ISI), or 2 x (main / 3 - ISI) in PAM4 |
 | `eye_height_lower_mv`, `eye_height_middle_mv`, `eye_height_upper_mv` | `eda-agent` | With [PAM4](#pam4): the three eyes; `eye_height_mv` is the smallest |
 | `overshoot_pct`, `ringback_pct` | `eda-agent` | One edge at the receiver: how far it goes above the level it settles to, and how far it falls back below it afterwards |
 | `edge_reversal_pct` | `eda-agent` | The deepest fall on the way up, between 10 % and 90 % of the level. A reflection that arrives inside the edge turns it back, and a clock input can see the edge twice |
