@@ -435,6 +435,11 @@ def test_a_track_on_the_facing_layer_is_an_aggressor(dual, coupling):
     assert len(of(under(dual_victim(), offset=40), dual, reach_mils=50)["aggressors"]) == 1
     # a wider track over it couples more
     assert of(under(dual_victim(), width=12), dual)["worst_pct"] > side[0]
+    # the victim is the first trace of the section: its own width, on its own layer
+    run = crosstalk.Run("AGG", "MidLayer1", 4.0, 0.0, 800.0, (0, 0), other="MidLayer2",
+                        other_width=12.0, sep=8.0)
+    assert dual.of(run) == dual.get_facing("MidLayer1", 4, "MidLayer2", 12, 0, 8)
+    assert dual.of(run)[0] > 1.2 * dual.get_facing("MidLayer2", 12, "MidLayer1", 4, 0, 8)[0]
     # crossing at right angles, on a layer that does not face it, or with no
     # stack to say what faces what: nothing
     b = dual_victim()
