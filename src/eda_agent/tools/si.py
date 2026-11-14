@@ -315,7 +315,8 @@ def _register_si_net_tools(mcp) -> None:
         reference plane changes), and each stub off the path. Gives the
         channel's S-parameters (Touchstone), TDR, delay, insertion and
         return loss at Nyquist, and for a pair mode conversion and skew;
-        finds the other nets routed beside it and their near-end and
+        finds the other nets routed beside it, and over or under it on
+        a facing signal layer, and their near-end and
         far-end crosstalk, and the places where the route crosses a split
         or a gap in its reference plane; checks them against limits; and works out the Altium rules (width,
         pair gap, uncoupled length, length from the loss budget) that hold
@@ -684,8 +685,8 @@ def _register_si_board_tools(mcp) -> None:
         optionally the eye. A failure becomes a finding placed where it is:
         an impedance fault where the TDR sees it (walked along the routed
         path at each section's own delay), a stub where it leaves the path,
-        a via stub at its via, crosstalk at the stretch beside the worst
-        neighbour, each gap in the reference plane where the route crosses
+        a via stub at its via, crosstalk at the stretch beside (or on a
+        facing signal layer, across from) the worst neighbour, each gap in the reference plane where the route crosses
         it, other faults at the driving pin. Writes
         report.html (self-contained), findings.json and summary.csv.
 

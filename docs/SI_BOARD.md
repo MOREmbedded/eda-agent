@@ -49,7 +49,7 @@ A net that cannot be modelled (nothing routed, a pin it cannot reach) is a warni
 | Impedance, further stretches | Every other stretch of the route outside the band, longer than the rise time, is a finding of its own, placed where it starts: a wide section in a line that is itself off target, for example. At most five per net, the furthest from the target first. |
 | Stub resonance | The point where the stub leaves the path; for a via stub, the via. |
 | Return path | Each gap where the route crosses it, with what is crossed (a split between two nets, a slot, no copper) and how far along the route. At most six per net; a stripline with its other plane whole is a warning. |
-| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap. |
+| Crosstalk | The start of the longest stretch beside the worst aggressor, with the aggressor, the shared length and the gap; for an aggressor on the facing signal layer, its layer and the dielectric between the two. |
 | Loss, return loss, skew, eye | The driving pin. |
 
 On the test board, the 300 mil test-point stub that leaves the route 600 mil from the driver is placed at 618 mil.
@@ -120,6 +120,6 @@ Each link opens that job. A stale job says to take a new snapshot and run it aga
 
 ## Limits
 
-- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer only. The channel itself (loss, TDR) is still each net on its own. The eye takes crosstalk as its peak on both rails whenever it arrives, which is the worst case; the neighbours' waveforms are not simulated.
+- **Coupling between nets:** crosstalk is worked out from each neighbour's gap and shared length ([Crosstalk](SI_NETS.md#crosstalk)), on the same layer and on a facing signal layer. The channel itself (loss, TDR) is still each net on its own. The eye takes crosstalk as its peak on both rails whenever it arrives, which is the worst case; the neighbours' waveforms are not simulated.
 - **Fault placement** is as good as the delay per mil of each section. Vias count as instant, and a fault within about a rise time of another merges with it. A stretch that follows a large step is placed late, because the step's own reflections blur the TDR behind it.
 - **Altium markers:** marking uses highlights and text. Altium's violation list is not written.

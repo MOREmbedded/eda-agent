@@ -67,8 +67,10 @@ and solves the field for:
 
 Outer layers are microstrip over the next copper, with solder mask
 (0.6 mil, Er 3.5 by default); inner layers are stripline between the
-nearest copper above and below. When an adjacent layer is a signal layer
-it is taken as the reference and the result says so. A target the
+nearest planes above and below. A signal layer between a trace and its
+plane (a dual stripline) is passed over and the result names it: copper
+on it over or under the trace changes the figures. With no plane on a
+side, the next signal layer is taken as the reference and the result says so. A target the
 layer cannot reach within the width limits is reported with the range it
 can reach.
 

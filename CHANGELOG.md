@@ -375,6 +375,19 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Signal integrity: dual striplines.** Two signal layers between a pair
+  of planes are now modelled as they are built. A trace there is referenced
+  to the planes on either side, past the other signal layer (which used to
+  be taken as a solid reference, and gave too low an impedance); the result
+  names the layer passed over. Crosstalk now also searches the facing signal
+  layer: a track that runs over or under the net with no plane between
+  couples through the dielectric between the two layers, worked out by the
+  field solver from both traces at their own heights and the offset to the
+  side. Each such aggressor is reported with its layer (`aggressor_layer`),
+  its offset (`offset_mils`) and the dielectric between; the board check
+  places it like any other. The near end agrees with the coupled line
+  solved in full within 5 %. See
+  [docs/SI_NETS.md](docs/SI_NETS.md#crosstalk).
 - **The placer's annealing polish scores each move incrementally.** It
   used to re-score the whole board (every net's pins, every courtyard
   pair, the whole congestion grid) on every move; it now re-scores only
