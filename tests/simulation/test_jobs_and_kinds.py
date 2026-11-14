@@ -89,3 +89,41 @@ def test_check_spec_accepts_a_good_spec_and_an_optional_input():
     assert check_spec("touchstone-check", {"tolerance": 0.01}, {"touchstone": "x"}) == []
     with pytest.raises(KeyError, match="known"):
         check_spec("nope", {}, {})
+
+
+def test_a_status_being_replaced_is_read_not_taken_for_missing(tmp_path, monkeypatch):
+    """Windows refuses to open a file in the instant it is being replaced."""
+    from pathlib import Path
+    path = tmp_path / "status.json"
+    jobs.write_json(path, {"state": "running"})
+    real, refused = Path.read_text, []
+
+    def read_text(self, *a, **k):
+        if self == path and len(refused) < 3:
+            refused.append(1)
+            raise PermissionError(13, "being replaced")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(jobs, "READ_RETRY_S", 0.0)
+    assert jobs.read_json(path) == {"state": "running"}
+    assert len(refused) == 3
+
+
+def test_a_file_that_stays_refused_or_is_missing_reads_as_none(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = tmp_path / "status.json"
+    jobs.write_json(path, {"state": "running"})
+    calls = []
+
+    def read_text(self, *a, **k):
+        calls.append(self)
+        raise PermissionError(13, "locked") if self == path else FileNotFoundError(2, "gone")
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(jobs, "READ_RETRY_S", 0.0)
+    assert jobs.read_json(path) is None
+    assert len(calls) == jobs.READ_RETRIES + 1
+    del calls[:]
+    assert jobs.read_json(tmp_path / "none.json") is None
+    assert len(calls) == 1, "a missing file is not waited for"

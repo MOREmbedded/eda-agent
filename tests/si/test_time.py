@@ -1338,3 +1338,17 @@ def test_pam4_is_given_taps_where_nrz_on_the_same_pulse_needs_none(tmp_path):
     none = _pam_job(ts, data_rate_gbps=20, modulation="pam4")[0]
     assert pam["ffe_main_tap"] < 0.999
     assert pam["worst_case_eye_height_mv"] > none["worst_case_eye_height_mv"] + 1
+
+
+def test_the_waveform_is_the_symbols_convolved_with_the_pulse():
+    rng = np.random.default_rng(5)
+    for n, spui in ((333, 16), (50, 7), (700, 32)):          # shorter and longer than the bits
+        p = eye.Pulse(np.arange(n) * 1e-10 / spui, rng.normal(size=n), 1e-10, spui)
+        bits = rng.integers(0, 2, 40)
+        for levels in (2, 4):
+            t, v = eye.waveform(p, bits, 0.8, levels)
+            sym = (2 * eye.symbols(bits, levels) / (levels - 1) - 1) * 0.4
+            up = np.zeros(len(sym) * spui)
+            up[::spui] = sym
+            assert v == pytest.approx(np.convolve(up, p.p)[: len(up)], abs=1e-12)
+            assert len(t) == len(v) == len(sym) * spui and t[1] - t[0] == pytest.approx(1e-10 / spui)

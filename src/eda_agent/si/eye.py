@@ -346,9 +346,13 @@ def waveform(pulse: Pulse, bits: Sequence[int], amplitude: float, levels: int = 
     between them."""
     idx = symbols(bits, levels)
     sym = (2 * idx / (levels - 1) - 1) * amplitude / 2
-    up = np.zeros(len(sym) * pulse.spui)
-    up[::pulse.spui] = sym
-    v = np.convolve(up, pulse.p)[: len(up)]
+    spui = pulse.spui
+    # One symbol every spui samples: sample r of every interval is the symbols
+    # convolved with every spui-th sample of the pulse from r on. The same sum
+    # as convolving the symbols spread out with zeros, without the zeros.
+    v = np.empty(len(sym) * spui)
+    for r in range(spui):
+        v[r::spui] = np.convolve(sym, pulse.p[r::spui])[: len(sym)]
     t = pulse.t[0] + np.arange(len(v)) * (pulse.ui / pulse.spui)
     return t, v
 

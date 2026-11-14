@@ -61,6 +61,15 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Signal integrity: the eye pattern quick on long sweeps.** The bit
+  pattern of `si_channel_eye` is now convolved with the pulse one sample
+  phase at a time instead of through a pattern padded with zeros: the
+  same waveform to rounding, several times quicker where the sweep is
+  long and fine.
+- **Simulation jobs: a running job is not shown as queued.** On Windows a
+  status file read in the instant its run was rewriting it was refused
+  and taken for missing, so a poll could show `queued` for a job already
+  running. The read is now tried again for a moment.
 - **Signal integrity: the return path.** A net channel and the board check
   now look at the reference copper under each route (split planes, pours
   and regions, with their holes) and report every place where it stops:
