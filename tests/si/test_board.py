@@ -169,6 +169,10 @@ def test_a_net_that_cannot_be_modelled_is_a_warning(tmp_path):
                                    "points": 60, "f_max_ghz": 8}, b.to_dict(), STACKUP, tmp_path)
     fs = res["figures"]["findings"]
     assert len(fs) == 1 and fs[0]["severity"] == "warning" and fs[0]["check"] == "modelled"
+    from eda_agent.layout.model import LayoutBoard
+    with pytest.raises(ValueError, match="no nets with copper"):
+        board_jobs.select(LayoutBoard.from_dict({**b.to_dict(), "pads": [], "tracks": [],
+                                                 "vias": [], "arcs": [], "diff_pairs": []}), {})
     with pytest.raises(ValueError, match="no data rate"):
         board_jobs.run_board_si({"targets": [{"match": "SIG"}]}, b.to_dict(), STACKUP, tmp_path)
 

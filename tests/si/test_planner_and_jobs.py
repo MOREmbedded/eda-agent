@@ -260,3 +260,15 @@ def test_signal_layer_references_are_named_and_warned():
     res = si_jobs.run_stackup_plan({"se_ohms": 50, "diff_ohms": [], "layers": ["In1"]}, st,
                                    __import__("pathlib").Path(__import__("tempfile").mkdtemp()))
     assert any(n.startswith("In1: signal layer In2") for n in res["notes"])
+
+
+def test_a_stackup_with_no_dielectric_names_the_layers():
+    # an empty two-layer board from Altium: copper, and nothing between
+    bare = {"layers": [
+        {"layer": "TopLayer", "name": "Top Layer", "copper_thickness_mils": 1.4,
+         "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0},
+        {"layer": "BottomLayer", "name": "Bottom Layer", "copper_thickness_mils": 1.4,
+         "dielectric_type": "none", "dielectric_height_mils": 0, "dielectric_constant": 0}]}
+    with pytest.raises(ValueError, match="no dielectric thickness between Top Layer and "
+                                         "Bottom Layer.*Layer Stack Manager"):
+        planner.layer_sections(stack_from_stackup(bare), planner.Options())

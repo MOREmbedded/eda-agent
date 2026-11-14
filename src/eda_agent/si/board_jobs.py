@@ -77,6 +77,8 @@ def select(board: LayoutBoard, spec: dict[str, Any]) -> list[dict[str, Any]]:
     in_pair = {n for d in board.diff_pairs for n in (d.positive, d.negative)}
     nets = [n for n in board.nets() if n]
     targets = list(spec.get("targets") or [])
+    if not nets:
+        raise ValueError("the board has no nets with copper: there is nothing to check")
     if not targets:
         if not pairs:
             raise ValueError("the board has no differential pairs; name what to check in "
