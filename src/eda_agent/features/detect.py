@@ -203,9 +203,12 @@ def engine_program(dep_id: str, exe: str) -> str:
 
 
 def _program_ngspice(deep: bool) -> tuple[str, str]:
-    from ..sim.ngspice import find_ngspice, ngspice_version
+    """ngspice and its version, also in the quick check: the simulator
+    choice refuses one too old for the decks, and the report must agree
+    with it. The version is asked once per file (sim.ngspice caches it)."""
+    from ..sim.ngspice import cached_ngspice_version, find_ngspice
     path = find_ngspice() or ""
-    return path, (ngspice_version(path) if path and deep else "")
+    return path, (cached_ngspice_version(path) if path else "")
 
 
 def _program_ltspice(deep: bool) -> tuple[str, str]:

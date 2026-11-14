@@ -497,3 +497,12 @@ def test_the_details_reach_the_text_report_and_the_simulator_choice(tmp_path, ch
 def test_the_backend_report_gives_the_old_version(old_ngspice):
     from eda_agent.sim import ngspice as ng
     assert ng.simulator_backends()["ngspice"]["version"] == "26"
+
+
+def test_the_quick_report_agrees_with_the_simulator_choice(old_ngspice, monkeypatch):
+    """Without --deep the report still reads ngspice's version, so an old
+    copy the simulators refuse is not called usable."""
+    from eda_agent.sim import ngspice as ng
+    monkeypatch.setattr(ng, "find_ngspice", lambda: str(old_ngspice[0]))
+    st = detect.dependency_status(cat.dependency("ngspice"), deep=False)
+    assert st.state == detect.OUTDATED and st.version == "26"
