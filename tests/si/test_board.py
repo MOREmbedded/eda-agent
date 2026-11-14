@@ -192,6 +192,10 @@ def test_a_slow_net_with_an_eye_gets_a_sweep_that_holds_its_bit():
     assert board_jobs._item_spec(no_eye, {}, 10.0, 200)["points"] == 200
     crawl = {"kind": "net", "name": "SIG", "settings": {"eye": True, "data_rate_gbps": 0.001}}
     assert board_jobs._item_spec(crawl, {}, 10.0, 200)["points"] == board_jobs.MAX_EYE_POINTS
+    # PAM4 symbols are two bits long: twice the points for the same eight
+    pam = {"kind": "net", "name": "SIG",
+           "settings": {"eye": True, "data_rate_gbps": 0.2, "modulation": "pam4"}}
+    assert board_jobs._item_spec(pam, {}, 10.0, 200)["points"] == 800
 
 
 def test_a_wide_section_in_an_off_target_line_gets_its_own_finding(tmp_path):
