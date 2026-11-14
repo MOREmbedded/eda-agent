@@ -1408,6 +1408,11 @@ def test_sinusoidal_and_random_jitter_are_the_sine_under_the_gaussian():
         assert w[n + k] == pytest.approx(want, rel=2e-4), k
     # the tail past the sine is the Gaussian's: 3.5 ps beyond its end is 5 sigma
     assert 1e-9 < np.sum(w[x > half + 3e-12]) < ndtr(-3.5e-12 / rj)
+    # with the two points of the deterministic part: all of it around each
+    three = eye.jitter_weights(dt, rj, 40e-12, 60, sj_pp=2 * half)
+    m = len(three) // 2
+    assert three[m + 20 - n + 3: m + 20 + n - 2] == pytest.approx(0.5 * w[3:-3], rel=1e-6)
+    assert three == pytest.approx(three[::-1], rel=1e-6, abs=1e-14)
     # a sine of next to nothing leaves the random jitter alone
     assert eye.jitter_weights(dt, rj, 0, 40, sj_pp=1e-17) == pytest.approx(
         eye.jitter_weights(dt, rj, 0, 40), rel=1e-9, abs=0)
