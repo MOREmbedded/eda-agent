@@ -485,6 +485,9 @@ def test_a_target_carries_its_equaliser_to_the_eye(tmp_path):
     plain = eye_of("a")
     eq = eye_of("b", tx_ffe=[0.8, -0.2], dfe_taps=2)
     assert "eye_dfe_tap1_mv" in eq and "eye_dfe_tap1_mv" not in plain
+    # the burst a wrong decision brings comes with the eye at a bit error rate
+    assert "eye_dfe_burst_errors" not in eq
+    assert eye_of("c", tx_ffe=[0.8, -0.2], dfe_taps=2, ber=1e-12)["eye_dfe_burst_errors"] >= 1
     assert eq["eye_isi_mv"] < plain["eye_isi_mv"]
     assert eq["eye_main_cursor_mv"] < plain["eye_main_cursor_mv"]     # the FFE's price
 

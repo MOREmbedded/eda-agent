@@ -1524,7 +1524,9 @@ def test_the_eye_job_counts_the_errors_a_dfe_propagates(tmp_path):
     assert "dfe_burst_errors" not in run(dfe_taps=3)[0]
     m, res = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=40)
     assert m["dfe_burst_errors"] > 1.0005
-    assert any("a wrong DFE decision followed through 3 taps" in n for n in res["notes"])
+    assert any(f"a wrong DFE decision followed through 3 taps (in all {m['dfe_burst_errors']:.4g} "
+               "for each one, in the error rate; the contour takes decisions as right)" in n
+               for n in res["notes"])
     # more noise: a wrong decision is likelier to bring another
     worse = run(dfe_taps=3, dfe_max=1, ber=1e-12, noise_rms_mv=80)[0]
     assert worse["dfe_burst_errors"] > m["dfe_burst_errors"]

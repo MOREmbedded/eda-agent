@@ -311,7 +311,7 @@ def _statistical(spec: dict[str, Any], pulse: "_eye.Pulse", st: dict[str, Any],
         parts.append(f"{peak:g} mV of peak noise off each rail")
     if len(dfe_taps):
         parts.append(f"a wrong DFE decision followed through {min(len(dfe_taps), _eye.BURST_TAPS)} "
-                     f"taps ({se['burst_errors']:.4g} errors each, in the error rate; the "
+                     f"taps (in all {se['burst_errors']:.4g} for each one, in the error rate; the "
                      "contour takes decisions as right)")
     notes.append("statistical eye: " + ", ".join(parts)
                  + f"; jitter is taken in steps of {step:.3g} ps (samples_per_ui)")
