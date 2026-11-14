@@ -16,6 +16,13 @@ maturity classification for every tool.
 
 ### Added
 
+- **An app icon.** The Altium status window, the web dashboard's browser tab
+  and the desktop shortcut now show one eda-agent icon instead of Windows'
+  blank default: a gold "A" drawn as two PCB traces ending in via pads,
+  with a blue spark, on the dashboard's dark tile. The 16 to 32 px sizes are
+  drawn on their own pixel grid so the taskbar button stays sharp. Sources
+  are in `assets/icon`; `python scripts/build_icons.py` rebuilds the favicon,
+  the `.ico` and the status window's `Icon.Data`. Scripts 2026.11.14.1.
 - **Signal integrity: the whole board.** New job kind `board-si` and tool
   `si_board_check`: every high-speed net and pair, chosen by name or Altium
   net class, checked against its own limits (impedance, loss, return loss,

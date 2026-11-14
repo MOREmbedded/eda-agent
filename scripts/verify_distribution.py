@@ -22,6 +22,7 @@ REQUIRED = [
     "eda_agent/scripts/Main.pas",
     "eda_agent/scripts/Altium_API.PrjScr",
     "eda_agent/scripts/StatusForm.dfm",
+    "eda_agent/web/dashboard_static/eda-agent.ico",
     "eda_agent/easyeda_extension/main.js",
     "eda_agent/easyeda_extension/extension.json",
     "eda_agent/easyeda_extension/build.py",
