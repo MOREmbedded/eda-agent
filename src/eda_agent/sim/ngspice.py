@@ -138,17 +138,22 @@ NGSPICE_MIN = 30
 _VERSIONS: dict = {}
 
 
-def ngspice_too_old(path: str) -> str:
-    """Why the ngspice at ``path`` cannot run eda-agent's decks, or "".
-    An unknown version is given the benefit of the doubt. The version is
-    asked once per file (path and modification time)."""
+def cached_ngspice_version(path: str) -> str:
+    """``ngspice_version``, asked once per file (path and modification
+    time) for the life of the process."""
     try:
         key = (path, Path(path).stat().st_mtime)
     except OSError:
         return ""
     if key not in _VERSIONS:
         _VERSIONS[key] = ngspice_version(path)
-    version = _VERSIONS[key]
+    return _VERSIONS[key]
+
+
+def ngspice_too_old(path: str) -> str:
+    """Why the ngspice at ``path`` cannot run eda-agent's decks, or "".
+    An unknown version is given the benefit of the doubt."""
+    version = cached_ngspice_version(path)
     try:
         major = int(float(version))
     except ValueError:
