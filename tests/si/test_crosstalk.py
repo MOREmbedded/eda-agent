@@ -109,6 +109,7 @@ def test_curves_count_arcs_as_aggressors_and_a_run_cut_into_short_chords(couplin
     assert curved["aggressor"] == "AGG" and curved["layer"] == "TopLayer"
     assert curved["length_mils"] == pytest.approx(quarter, rel=0.01)
     assert curved["gap_mils"] == pytest.approx(4.0, abs=0.1)
+    assert of(b, coupling, quiet={"AGG"})["aggressors"] == []     # a quiet net's arcs too
     # as much as the same length side by side on a straight run
     straight = of(beside(victim(), x1=100, x2=100 + quarter), coupling)["aggressors"][0]
     assert curved["next_pct"] == pytest.approx(straight["next_pct"], rel=0.02)
