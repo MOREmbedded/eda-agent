@@ -49,9 +49,29 @@ class _Sticky:
 
 @pytest.fixture()
 def no_sleep(monkeypatch):
-    """The retry must not actually wait during tests."""
+    """The retry must not actually wait during tests.
+
+    ``atomicfile.time`` is the global ``time`` module, so this patch
+    reaches every thread in the process. Only this test's own thread is
+    recorded and skipped; any other thread still sleeps. A dashboard log
+    tailer left running by an earlier test in the same xdist worker
+    sleeps 0.5 s in a loop: with every sleep recorded and turned into a
+    no-op it spun hundreds of times during this test, and
+    ``len(no_sleep) == 2`` read 592 on a full Windows run."""
+    import threading
+    import time as _time
+
     slept: list[float] = []
-    monkeypatch.setattr(atomicfile.time, "sleep", slept.append)
+    real_sleep = _time.sleep
+    me = threading.get_ident()
+
+    def fake_sleep(seconds: float) -> None:
+        if threading.get_ident() == me:
+            slept.append(seconds)
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(atomicfile.time, "sleep", fake_sleep)
     return slept
 
 

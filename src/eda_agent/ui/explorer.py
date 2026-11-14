@@ -388,7 +388,8 @@ def scan_models(roots: Iterable[str],
     """Read the 3D models (or any items) in the Explorer folders ``roots``.
     Needs COM on the calling thread."""
     import comtypes.client
-    comtypes.client.GetModule("UIAutomationCore.dll")
+    from .comgen import get_module
+    get_module("UIAutomationCore.dll")
     from comtypes.gen import UIAutomationClient as U
 
     automation = comtypes.client.CreateObject(U.CUIAutomation, interface=U.IUIAutomation)
