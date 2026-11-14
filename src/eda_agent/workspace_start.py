@@ -319,6 +319,12 @@ def run_start(settings: WorkspaceSettings, *, dashboard: bool = True,
 
 # --- shortcut --------------------------------------------------------------------
 
+def _shortcut_icon() -> str:
+    """The app icon file for the shortcut, or "" to keep the console's."""
+    icon = Path(__file__).resolve().parent / "web" / "dashboard_static" / "eda-agent.ico"
+    return str(icon) if icon.exists() else ""
+
+
 def create_shortcut(root: Path, say: Callable[[str], None] = print) -> int:
     """A desktop shortcut that opens a console running `start` for ``root``."""
     from .noconsole import no_window
@@ -336,9 +342,10 @@ def create_shortcut(root: Path, say: Callable[[str], None] = print) -> int:
         "$l.Arguments = '/k ' + $env:_EDA_WS_CMD;"
         "$l.WorkingDirectory = $env:_EDA_WS_ROOT;"
         "$l.Description = 'Start eda-agent for ' + $env:_EDA_WS_NAME;"
+        "if ($env:_EDA_WS_ICON) { $l.IconLocation = $env:_EDA_WS_ICON + ',0' };"
         "$l.Save(); $l.FullName")
     env = {**os.environ, "_EDA_WS_NAME": root.name, "_EDA_WS_CMD": command,
-           "_EDA_WS_ROOT": str(root)}
+           "_EDA_WS_ROOT": str(root), "_EDA_WS_ICON": _shortcut_icon()}
     done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                           env=env, capture_output=True, text=True, check=False,
                           **no_window())
