@@ -428,6 +428,12 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **eda-agent installs on Python 3.15 again.** pyamg 5.4 has no wheel for
+  3.15 yet, so pip built it from source and, without a C++ toolchain, the
+  whole `pip install` failed. pyamg is now required only below 3.15. The
+  thermal solver already falls back to a direct solve without it (and says
+  so in its notes); that is slower on fine grids. `pip install pyamg` adds
+  it back by hand once a 3.15 wheel exists.
 - **UI automation lost by a process that started beside another.** The
   first process in a venv that needs oleacc's or UI Automation's comtypes
   wrapper generates it into `comtypes/gen`. Two processes doing that at
