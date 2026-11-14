@@ -208,8 +208,10 @@ def ffe(pulse: Pulse, taps: Sequence[float]) -> Pulse:
 
 def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float]:
     """The transmitter taps (``pre`` before the main one, ``post`` after)
-    that leave the largest worst-case eye at the pulse's sampling point,
-    with their magnitudes adding up to 1.
+    that leave the largest worst-case eye at the sampling point where the
+    pulse's own worst-case eye is tallest, with their magnitudes adding up
+    to 1. Taps of [.., 0, 1, 0, ..] are one of the choices, so at that point
+    the eye is never smaller than without them.
 
     At a fixed sampling point the worst-case opening, main cursor less the
     magnitudes of all the others, is piecewise linear in the taps, so the
@@ -217,12 +219,13 @@ def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float
     The first ``dfe_taps`` cursors after the main one are left out, as a
     DFE takes them off.
     """
+    from scipy import sparse
     from scipy.optimize import linprog
     n = pre + 1 + post
     if n == 1:
         return [1.0]
     spui = pulse.spui
-    c0 = pulse.center_index
+    c0 = worst_case_eye(pulse, 1.0)["sample_index"]
     first = c0 % spui
     samples = pulse.p[first::spui]                      # the cursors, main at index m0
     m0 = (c0 - first) // spui
@@ -244,8 +247,11 @@ def best_ffe(pulse: Pulse, pre: int, post: int, dfe_taps: int = 0) -> list[float
     side = np.ones(n)
     side[pre] = 0.0
     cost[:2 * n] += 1e-6 * np.concatenate([side, side])
-    upper = np.block([[rest, -rest, -np.eye(m)], [-rest, rest, -np.eye(m)],
-                      [np.ones((1, 2 * n)), np.zeros((1, m))]])
+    eye_m = sparse.identity(m, format="csr")
+    upper = sparse.vstack([
+        sparse.hstack([sparse.csr_matrix(rest), sparse.csr_matrix(-rest), -eye_m]),
+        sparse.hstack([sparse.csr_matrix(-rest), sparse.csr_matrix(rest), -eye_m]),
+        sparse.csr_matrix(np.concatenate([np.ones(2 * n), np.zeros(m)])[None, :])], format="csr")
     res = linprog(cost, A_ub=upper, b_ub=np.concatenate([np.zeros(2 * m), [1.0]]),
                   bounds=[(0, None)] * (2 * n + m), method="highs")
     if not res.success:
@@ -399,6 +405,7 @@ def worst_case_eye(pulse: Pulse, amplitude: float) -> dict[str, Any]:
     open_ = heights > 0
     width = int(np.sum(open_)) if open_[k] else 0
     return {"eye_height": float(max(heights[k], 0.0)), "margin": float(heights[k]),
+            "sample_index": int(pk - spui // 2 + k),
             "eye_width_ui": width / spui,
             "eye_width": width / spui * pulse.ui, "main_cursor": float(p[pk]),
             "isi_sum": float(np.sum(np.abs(p[np.arange(pk % spui, len(p), spui)])) - abs(p[pk]))}

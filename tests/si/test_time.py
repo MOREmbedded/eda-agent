@@ -913,6 +913,25 @@ def test_the_eye_job_chooses_its_equaliser(tmp_path):
         run(ctle_db="auto", dfe_taps=4)[0]["worst_case_eye_height_mv"]) - 0.01
 
 
+@pytest.mark.parametrize("rate", [10, 1])
+def test_chosen_taps_never_leave_a_smaller_eye_than_none(tmp_path, rate):
+    # an 85 ohm line between 50 ohm ends: the ISI is reflections, which taps one bit
+    # apart seldom meet, and the eye's best sampling point is not the pulse's middle
+    f = ch.uniform_band(10e9, 1000)
+    s = lossy_line(f, length=0.0765, z0=85.0)
+    ts = str(write_touchstone(tmp_path / "refl.s2p", list(f), s.tolist(), 50.0))
+
+    def worst(**opt):
+        res = _edge_job(ts, data_rate_gbps=rate, **opt)["results"]
+        return res["metrics"]["worst_case_eye_height_mv"]["value"]
+    plain = worst()
+    for more in ({}, {"tx_ffe_pre": 2, "tx_ffe_post": 3}, {"ctle_db": "auto"}):
+        assert worst(tx_ffe="auto", **more) >= plain, more
+    assert worst(tx_ffe="auto", dfe_taps=4) >= worst(dfe_taps=4)
+    if rate == 1:
+        assert worst(tx_ffe="auto") > plain + 5         # here a post-cursor tap does help
+
+
 def test_a_clean_channel_is_given_no_equaliser(tmp_path):
     f = ch.uniform_band(20e9, 400)
     s = lossy_line(f, length=0.02, z0=50.0)
