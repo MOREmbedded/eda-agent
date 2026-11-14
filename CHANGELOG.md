@@ -456,6 +456,7 @@ maturity classification for every tool.
   and a neighbour beside a curved stretch was dropped because each chord
   of the curve is shorter than the 10 mil a run had to be. Arcs now count,
   and it is a net's whole shared length that must reach 10 mil.
+
 - **An eye is never wider than its unit interval.** An eye open at every
   sample of the interval read 33 / 32 UI (1.031 UI in a board check). It
   now reads one sample short of the interval: the crossing lies between
