@@ -61,6 +61,13 @@ maturity classification for every tool.
   (`eye_height_lower_mv`, `_middle_`, `_upper_`), the worst case, the eye
   at a bit error rate and the equalisers, chosen ones included. See
   [PAM4](docs/SI_TIME.md#pam4).
+- **Update: a reinstall that did not take is caught.** `eda-agent update`
+  reinstalls the package when `pyproject.toml` changed. pip could end
+  that with the old install removed and the new one not written, leaving
+  a Python that no longer finds eda-agent, and the update said nothing.
+  The install is now asked for from a new Python; if it is not there it is
+  installed once more, and if it still is not the step is reported as
+  failed with the command to run.
 - **Signal integrity: DFE error propagation.** With `dfe_taps` and the eye
   at a bit error rate, `bit_error_rate` now counts the errors a wrong
   decision of the DFE brings after it: the decisions of the last taps are
