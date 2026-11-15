@@ -55,6 +55,8 @@ SESSION = {
     "PerfTotalStrs", "PerfMaxStrs", "LastActivityTick", "LastPingMs",
     "OpenWebEnabled", "StatsFileStamp", "SavedHintHidePause", "StatusStartTick",
     "StatusRequestCount", "StatusLastCommand", "StatusTotalAltiumMs",
+    # The app icon, handed to the form once per show.
+    "AppIconDone",
 }
 
 

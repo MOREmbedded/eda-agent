@@ -12,6 +12,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from .atomicfile import replace_with_retry
+
 logger = logging.getLogger(__name__)
 
 #: The name StatusForm.pas looks for (APP_ICON_FILE) in the workspace.
@@ -34,7 +36,7 @@ def publish_icon(workspace_dir: Path) -> bool:
             return True
         tmp = target.with_name(ICON_NAME + ".tmp")
         shutil.copyfile(PACKAGED_ICON, tmp)
-        tmp.replace(target)
+        replace_with_retry(tmp, target)
         return True
     except OSError as exc:
         logger.debug("could not publish the app icon to %s: %s", target, exc)
