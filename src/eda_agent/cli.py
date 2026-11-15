@@ -959,6 +959,8 @@ def _install_scripts_into(dst: Path, force: bool) -> int:
     workspace_dir = Path(get_config().workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
+    from .app_icon import publish_icon
+    publish_icon(workspace_dir)
 
     prjscr = dst / "Altium_API.PrjScr"
     print(f"Copied {copied} files to: {dst}")

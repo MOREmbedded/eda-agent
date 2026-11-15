@@ -3,7 +3,7 @@
 desktop shortcut.
 
 scripts/build_icons.py turns the SVG sources in assets/icon into the
-favicon, the shortcut's .ico and the status window's ``Icon.Data``. These
+favicon and the .ico the shortcut and the status window use. These
 tests keep the built files in step with the sources and check each place
 that shows the icon still points at it.
 """
@@ -31,7 +31,7 @@ def _load_builder():
 
 
 build = _load_builder()
-DFM_TEXT = build.DFM.read_text(encoding="utf-8")
+DFM_TEXT = (ROOT / "scripts" / "altium" / "StatusForm.dfm").read_text(encoding="utf-8")
 
 
 def _entries(ico: bytes) -> list[tuple[int, bytes]]:
@@ -84,43 +84,76 @@ def test_web_svg_is_the_master_drawing():
 
 
 # -- the status window ----------------------------------------------------------
+#
+# Altium's script form loader drops Icon.Data from a .dfm, and an icon
+# another process loads dies with that process, so the form loads the
+# icon itself from the copy the server puts in the workspace.
 
-def test_status_window_carries_the_icon():
-    data = build.dfm_icon(DFM_TEXT)
-    assert data is not None, "StatusForm.dfm has no form-level Icon.Data"
-    assert data == build.ico_bytes(build.DFM_SIZES)
-
-
-def test_status_window_icon_uses_bitmap_entries_only():
-    """PNG-compressed entries need a newer TIcon than every Altium has."""
-    for size, image in _entries(build.dfm_icon(DFM_TEXT)):
-        assert not image.startswith(b"\x89PNG"), size
-        header_size, width, height = struct.unpack_from("<Iii", image, 0)
-        assert (header_size, width, height) == (40, size, 2 * size)
+PAS = (ROOT / "scripts" / "altium" / "StatusForm.pas").read_text(encoding="utf-8")
 
 
-def test_icon_data_is_a_property_of_the_form_itself():
-    """Before the first child object, at the form's own indent."""
-    first_child = DFM_TEXT.index("\n  object ")
-    at = DFM_TEXT.index("\n  Icon.Data = {")
-    assert at < first_child
-    assert DFM_TEXT.count("Icon.Data") == 1
+def _procedure(name: str) -> str:
+    start = PAS.index(f"Procedure {name}(")
+    return PAS[start:PAS.index("\nEnd;", start)]
 
 
-def test_icon_data_survives_the_control_name_parse():
-    """The hex block must not look like an `object` line to other tests."""
-    names = re.findall(r"^\s*object\s+(\w+)\s*:", DFM_TEXT, flags=re.MULTILINE)
-    assert names[0] == "StatusForm"
-    assert all(not re.fullmatch(r"[0-9A-F]+", n) for n in names)
+def test_form_and_server_agree_on_the_icon_name():
+    from eda_agent import app_icon
+    assert f"APP_ICON_FILE        = '{app_icon.ICON_NAME}';" in PAS
+    assert app_icon.PACKAGED_ICON == build.WEB_ICO.resolve()
 
 
-def test_dfm_block_round_trips():
-    data = bytes(range(256)) * 3
-    text = "object F: TF\n  FormStyle = fsNormal\n  object p: TPanel\n  end\nend\n"
-    built = build.dfm_with_icon(text, data)
-    assert build.dfm_icon(built) == data
-    assert build.dfm_with_icon(built, data) == built
-    assert build.dfm_icon(build.dfm_with_icon(built, b"\x01\x02")) == b"\x01\x02"
+def test_form_loads_the_icon_from_the_workspace():
+    body = _procedure("ApplyAppIcon")
+    assert "IconPath := WorkspaceDir + APP_ICON_FILE;" in body
+    assert "StatusForm.Icon.LoadFromFile(IconPath);" in body
+    assert "If AppIconDone Then Exit;" in body
+
+
+def test_form_applies_the_icon_on_refresh_and_on_show():
+    refresh = PAS[PAS.index("UpdateUpdateBadge(0);"):][:200]
+    assert "ApplyAppIcon(0);" in refresh
+    show = _procedure("ShowStatusForm")
+    shown = show.index("StatusForm.Show;")
+    assert show.index("AppIconDone := False;") > shown
+    assert show.index("ApplyAppIcon(0);") > shown
+
+
+def test_dfm_holds_no_icon_data():
+    """Altium ignores it; 26 kB of hex the form would carry for nothing."""
+    assert "Icon.Data" not in DFM_TEXT
+
+
+def test_publish_copies_the_icon_once(tmp_path):
+    from eda_agent import app_icon
+    assert app_icon.publish_icon(tmp_path)
+    target = tmp_path / app_icon.ICON_NAME
+    assert target.read_bytes() == build.WEB_ICO.read_bytes()
+    stamp = target.stat().st_mtime_ns
+    assert app_icon.publish_icon(tmp_path)
+    assert target.stat().st_mtime_ns == stamp
+    target.write_bytes(b"old")
+    assert app_icon.publish_icon(tmp_path)
+    assert target.read_bytes() == build.WEB_ICO.read_bytes()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_publish_never_raises(tmp_path):
+    from eda_agent import app_icon
+    assert app_icon.publish_icon(tmp_path / "missing" / "dir") is False
+
+
+def test_workspace_setup_publishes_the_icon():
+    from eda_agent import config
+    source = Path(config.__file__).read_text(encoding="utf-8")
+    body = source[source.index("def ensure_workspace(self)"):]
+    body = body[:body.index("\n    def ")]
+    assert "publish_icon(self.workspace_dir)" in body
+    from eda_agent import cli
+    cli_source = Path(cli.__file__).read_text(encoding="utf-8")
+    install = cli_source[cli_source.index("def _install_scripts_into("):]
+    install = install[:install.index("\ndef ")]
+    assert "publish_icon(workspace_dir)" in install
 
 
 # -- the web dashboard ------------------------------------------------------------
