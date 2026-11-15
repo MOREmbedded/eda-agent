@@ -110,12 +110,15 @@
 .ea-shots { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .ea-shots figure { margin: 0; }
 .ea-shots img { border-radius: 0.6rem; box-shadow: 0 0.4rem 1.4rem rgba(0,0,0,0.18); }
-@media screen and (max-width: 45em) { .ea-shots { grid-template-columns: 1fr; } }
+.ea-shots--three { grid-template-columns: repeat(3, 1fr); max-width: 54rem; margin: 0 auto; }
+.ea-shot-wide { margin: 0 0 1rem; }
+.ea-shot-wide img { border-radius: 0.6rem; box-shadow: 0 0.4rem 1.4rem rgba(0,0,0,0.18); }
+@media screen and (max-width: 45em) { .ea-shots, .ea-shots--three { grid-template-columns: 1fr; } }
 
 .ea-examples { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
 @media screen and (max-width: 45em) { .ea-examples { grid-template-columns: 1fr; } }
 
-/* Eight feature cards: four across on wide screens, two rows. */
+/* Ten feature cards: as many across as fit, at least 13rem each. */
 .md-typeset .grid.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
 
 /* Setting and flag names stay on one line in reference tables. */

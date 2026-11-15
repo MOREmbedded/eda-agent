@@ -4,8 +4,9 @@
 
 **Let an AI work inside your live Altium Designer session.**
 
-An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
-schematic, PCB, library, project and review. You watch every change happen in Altium.
+An MCP server that gives Claude, or any MCP client, about 770 tools on the design you have open:
+schematic, PCB, library, project, review, signal and power integrity, and thermal analysis.
+You watch every change happen in Altium.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
@@ -35,7 +36,9 @@ schematic, PCB, library, project and review. You watch every change happen in Al
 - **Datasheet first.** The tools tell the AI to fetch the vendor datasheet, and never to make values up.
 - **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step. The auto-placer scores only what each move changed (6 to 13 times faster), and an optional Rust core speeds up routing.
 - **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
-- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface. 773+ with both backends registered.
+- **Analysis on the real copper.** Signal integrity from line models to eyes and a whole-board check, PDN IR drop and impedance, and 3D thermal analysis, all read from the board you have open.
+- **You stay in control.** A status window inside Altium shows every command as it runs and holds the switches for what the AI may change; a local web dashboard covers review, calculators, simulation and the optional features.
+- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface: about 920 tools with Altium and KiCad registered together.
 
 ## Quick start
 
@@ -117,9 +120,30 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 🚦 **NPI phase gates** | EVT, DVT and PVT checklists, answered by tools where possible. See [NPI phase gates](docs/NPI_PHASE_GATES.md) |
 | ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly, plus an offline copy of the managed library. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
 
+## See it at work
+
+**The status window** lives inside Altium. It shows every command the AI sends, with its time,
+and colours the slow ones and the errors. The toolbar pauses the bridge, keeps it awake, turns
+saving off and disconnects the AI. The **Perf** tab totals each command, and the **Config** tab
+decides what the AI may change: edits, deletes, closing documents, and menus and dialogs.
+
 <p align="center">
-<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer" width="300">
-<img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with AI permission switches" width="300">
+<img src="assets/dashboard.png" alt="eda-agent status window in Altium, Log tab with the commands of a board review" width="260">
+<img src="assets/status_perf.png" alt="eda-agent status window, Perf tab with totals per command" width="260">
+<img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="260">
+</p>
+
+**The web dashboard** runs on your PC next to Altium (`eda-agent dashboard`). It places,
+routes and reviews the board you pick, and carries the calculators, the simulation engines
+and the list of optional features.
+
+<p align="center">
+<img src="assets/web_calculators.png" alt="eda-agent web dashboard, Calculators tab: a microstrip from the 2D field solver with its sources and accuracy" width="880">
+</p>
+
+<p align="center">
+<img src="assets/web_features.png" alt="eda-agent web dashboard, Features page: what is built in, installed or missing, with an installer" width="434">
+<img src="assets/web_simulation.png" alt="eda-agent web dashboard, Simulation page: the engines, a Touchstone check and a transmission line" width="434">
 </p>
 
 ## Documentation
