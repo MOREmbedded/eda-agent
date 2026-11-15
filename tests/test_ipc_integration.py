@@ -59,7 +59,15 @@ def test_request_reader_avoids_ad26_sharing_violation_modal():
 # The Layer Stack Manager document has no load-from-string, so the stack
 # resync writes its model to a file and loads that. It is the document's own
 # reader, not a TStringList, and the file is one the handler has just written.
-_LOAD_FROM_FILE_EXEMPT = {("PCB.pas", "Doc.LoadFromFile(Path, 0);")}
+#
+# The status window's icon is read by the form's TIcon, which has no
+# string or handle reader. It is off the request path, runs only after
+# FileExists, and the server replaces the file atomically (app_icon.py),
+# so the open cannot meet a missing or half-written file.
+_LOAD_FROM_FILE_EXEMPT = {
+    ("PCB.pas", "Doc.LoadFromFile(Path, 0);"),
+    ("StatusForm.pas", "StatusForm.Icon.LoadFromFile(IconPath);"),
+}
 
 
 def test_no_script_reads_a_file_with_load_from_file():

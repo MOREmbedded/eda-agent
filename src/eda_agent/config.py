@@ -303,6 +303,8 @@ class AltiumConfig(BaseModel):
                 f"Set EDA_AGENT_WORKSPACE to a writable location."
             ) from exc
         write_workspace_pointer(self.workspace_dir)
+        from .app_icon import publish_icon
+        publish_icon(self.workspace_dir)
         self.write_runtime_config()
         self._write_schemas()
 

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.15.1';
+    SCRIPT_VERSION = '2026.11.15.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -102372,6 +102372,8 @@ End;
 {..............................................................................}
 
 Var
+    { True once the app icon has been handed to the form (ApplyAppIcon). }
+    AppIconDone      : Boolean;
     HidePingsFlag    : Boolean;
     OnlySlowFlag     : Boolean;
     AlwaysOnTopFlag  : Boolean;
@@ -102451,6 +102453,8 @@ Const
     COLOR_TEXT_MUTED    = $00C0B8AE;   { #AEB8C0 }
     COLOR_TEXT_FAINT    = $009E958A;   { #8A959E }
     UPDATE_FLAG_FILE     = 'update_available.flag';
+    { The app icon, copied to the workspace by the MCP server (app_icon.py). }
+    APP_ICON_FILE        = 'eda-agent.ico';
     { Written by the MCP server after each tool call (diag/usage.py). }
     USAGE_STATUS_FILE    = 'tool_usage.txt';
 
@@ -103061,6 +103065,28 @@ Begin
     Except End;
 End;
 
+{ App icon: the taskbar button and title bar. Icon.Data in the .dfm is   }
+{ dropped by Altium's form loader, so the icon is loaded here, inside      }
+{ Altium's own process, where its handle lives as long as the form. A      }
+{ change of Icon makes the form send WM_SETICON, which also refreshes the  }
+{ taskbar button. Tried on each refresh until the file is there, then      }
+{ once more whenever the form is shown again.                              }
+Procedure ApplyAppIcon(Dummy : Integer);
+Var
+    IconPath : String;
+Begin
+    If AppIconDone Then Exit;
+    IconPath := WorkspaceDir + APP_ICON_FILE;
+    If Not FileExists(IconPath) Then Exit;
+    { A failed load leaves Altium's own icon on the button: cosmetic only. }
+    Try
+        StatusForm.Icon.LoadFromFile(IconPath);
+        AppIconDone := True;
+    Except
+        AppIconDone := True;
+    End;
+End;
+
 Procedure btn_UpdateClick(Sender : TObject);
 Begin
     ShowNotice('a newer eda-agent is out: ask your AI assistant to update it');
@@ -103203,6 +103229,7 @@ Begin
     ColorCountdown(IdleSecToShutdown);
     UpdateOpenWebState(0);
     UpdateUpdateBadge(0);
+    ApplyAppIcon(0);
     Try
         If mmo_Stats.Visible Then RefreshStatsPanel(False);
     Except End;
@@ -103597,6 +103624,8 @@ Begin
         Try StatusForm.Top  := NewTop;  Except End;
 
         If Not StatusForm.Visible Then StatusForm.Show;
+        AppIconDone := False;
+        ApplyAppIcon(0);
         { Keep the polling status available in the taskbar without covering }
         { the Altium workspace. Agents can restore it when diagnostics are  }
         { needed; autonomous COM starts should always begin minimized.      }
