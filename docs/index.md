@@ -48,10 +48,30 @@ hide:
 
     ---
 
-    Spacing, fusing, vias, impedance, PDN. Every result says whether it
-    is exact, published or an estimate, and they work on the command line too.
+    44 calculators: impedance and pairs from a 2D field solver, trace
+    and via current, planes, crosstalk. Every result shows its model,
+    its measured accuracy and its sources.
 
-    [:octicons-arrow-right-24: Calculators](FAB_AND_CALCULATORS.md#calculators)
+    [:octicons-arrow-right-24: PCB toolkit](PCB_TOOLKIT.md)
+
+-   :material-sine-wave:{ .lg .middle } **Signal integrity**
+
+    ---
+
+    Line models from the real stackup, routed nets and pairs from pin
+    to pin, eyes with IBIS drivers, and a whole-board check whose
+    findings are marked in Altium.
+
+    [:octicons-arrow-right-24: Board signal integrity](SI_BOARD.md)
+
+-   :material-flash-outline:{ .lg .middle } **Power and thermal**
+
+    ---
+
+    DC IR drop and PDN impedance on the real copper, and 3D board
+    temperatures and hotspots from the part powers.
+
+    [:octicons-arrow-right-24: PDN analysis](PDN.md) · [Thermal](THERMAL.md)
 
 -   :material-account-cog:{ .lg .middle } **Your house style**
 
@@ -136,16 +156,37 @@ hide:
 [Full setup guide :octicons-arrow-right-24:](GETTING_STARTED.md){ .md-button .md-button--primary }
 
 <h2 class="ea-section-title">See it inside Altium</h2>
-<p class="ea-section-lead">A status window lives in Altium, and a web dashboard covers design review. The Config tab decides what the AI may change.</p>
+<p class="ea-section-lead">A status window lives in Altium: every command as it runs, totals per command, and the Config tab that decides what the AI may change.</p>
 
-<div class="ea-shots" markdown>
+<div class="ea-shots ea-shots--three" markdown>
 <figure markdown>
-![eda-agent status window inside Altium Designer, command log](../assets/dashboard.png)
+![eda-agent status window in Altium, Log tab with the commands of a board review](../assets/dashboard.png)
+</figure>
+<figure markdown>
+![eda-agent status window, Perf tab with totals per command](../assets/status_perf.png)
 </figure>
 <figure markdown>
 ![eda-agent status window, Config tab with the AI permission switches](../assets/dashboard_config.png)
 </figure>
 </div>
+
+<h2 class="ea-section-title">And a dashboard beside it</h2>
+<p class="ea-section-lead">A local web dashboard places, routes and reviews the board, and carries the calculators, the simulation engines and the optional features.</p>
+
+<figure class="ea-shot-wide" markdown>
+![eda-agent web dashboard, Calculators tab: a microstrip from the 2D field solver with its sources and accuracy](../assets/web_calculators.png)
+</figure>
+
+<div class="ea-shots" markdown>
+<figure markdown>
+![eda-agent web dashboard, Features page: what is built in, installed or missing, with an installer](../assets/web_features.png)
+</figure>
+<figure markdown>
+![eda-agent web dashboard, Simulation page: the engines, a Touchstone check and a transmission line](../assets/web_simulation.png)
+</figure>
+</div>
+
+[More about the dashboards :octicons-arrow-right-24:](FEATURES.md#dashboard)
 
 <h2 class="ea-section-title">Ask it like a reviewer would</h2>
 
