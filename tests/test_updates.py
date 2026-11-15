@@ -179,11 +179,34 @@ def test_a_reinstall_that_did_not_take_is_done_once_more(monkeypatch, tmp_path):
     assert str(tmp_path) in out["output"]
 
 
-def test_a_reinstall_pip_failed_is_not_asked_about(monkeypatch, tmp_path):
+def test_a_reinstall_pip_failed_cleanly_is_reported_as_pip_said(monkeypatch, tmp_path):
     calls, left = _pip_and_probe(monkeypatch, False, [True])
     out = updates._reinstall(tmp_path)
     assert out["ok"] is False and out["output"] == "pip said"
-    assert len(calls) == 1 and left == [True]
+    assert len(calls) == 1 and not left                 # asked, and still installed
+
+
+def test_a_failed_reinstall_that_took_the_install_away_is_repaired(monkeypatch, tmp_path):
+    # pip stopping on a held file (WinError 32) has already uninstalled the
+    # old copy; its error says nothing of that, so the install is asked for.
+    calls, answers = [], [False, True]
+    monkeypatch.setattr(updates, "_launchers", lambda: [])
+    oks = [False, True]
+    monkeypatch.setattr(updates, "_step", lambda argv, cwd, timeout: (
+        calls.append(argv[1:5]), {"ok": oks.pop(0), "output": "pip said"})[1])
+    monkeypatch.setattr(updates, "_install_works", lambda: (answers.pop(0), "why"))
+    out = updates._reinstall(tmp_path)
+    assert out["ok"] is True and len(calls) == 2 and not answers
+    assert out["output"].startswith("the first install left eda-agent uninstalled; installed again")
+
+
+def test_a_failed_reinstall_that_stays_uninstalled_says_how_to_repair(monkeypatch, tmp_path):
+    calls, left = _pip_and_probe(monkeypatch, False, [False])
+    out = updates._reinstall(tmp_path)
+    assert out["ok"] is False and len(calls) == 2 and not left
+    said = out["output"]
+    assert said.startswith("pip said\npip failed and left eda-agent uninstalled (why)")
+    assert f'"{sys.executable}" -m pip install -e "{tmp_path}"' in said
 
 
 def test_the_install_is_asked_for_from_a_new_python(monkeypatch):
@@ -539,6 +562,80 @@ def test_a_set_aside_launcher_goes_once_nothing_holds_it(running_launcher, monke
     proc.wait()
     assert updates.remove_old_launchers() == 1
     assert not list(exe.parent.glob("*.old-*")) and exe.exists()
+
+
+def test_a_launcher_held_open_is_not_reinstalled_over(running_launcher, monkeypatch, tmp_path):
+    """The failure of 2026-11-15, seeded: the launcher is held open as a
+    file (the way Python holds the zip it ran), so it cannot be renamed,
+    and `pip install -e` would uninstall eda-agent and then stop on it."""
+    exe, _ = running_launcher
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n'
+        'dependencies = ["numpy>=1", "pywin32; sys_platform == \'win32\'"]\n',
+        encoding="utf-8")
+    before = exe.read_bytes()
+    calls = []
+    monkeypatch.setattr(updates, "_step", lambda argv, cwd, timeout: (
+        calls.append(argv[1:]), {"ok": True, "output": ""})[1])
+    monkeypatch.setattr(updates, "_install_works", lambda: (True, ""))
+    with open(exe, "rb"):
+        with pytest.raises(PermissionError):
+            exe.rename(exe.with_name("moved.exe"))      # the WinError 32 the update hit
+        out = updates._reinstall(tmp_path)
+    assert calls == [["-m", "pip", "install", "numpy>=1", "pywin32; sys_platform == 'win32'"]]
+    assert out["ok"] is True
+    assert "eda-agent.exe is in use" in out["note"] and "-m pip install -e" in out["note"]
+    assert exe.read_bytes() == before and not list(exe.parent.glob("*.old-*"))
+
+
+def test_a_held_launcher_with_eda_agent_gone_is_a_failed_step(running_launcher, monkeypatch, tmp_path):
+    exe, _ = running_launcher
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    monkeypatch.setattr(updates, "_step", lambda *a: pytest.fail("nothing to install"))
+    monkeypatch.setattr(updates, "_install_works", lambda: (False, "No module named eda_agent"))
+    with open(exe, "rb"):
+        out = updates._reinstall(tmp_path)
+    assert out["ok"] is False and "No module named eda_agent" in out["output"]
+    assert "-m pip install -e" in out["output"]
+
+
+def _zip_launcher(path: Path, body: str) -> None:
+    """A stand-in for pip's eda-agent.exe: a zip whose __main__ Python runs."""
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("__main__.py", body)
+
+
+@pytest.mark.parametrize("import_eda_agent", [False, True])
+def test_a_process_started_from_the_launcher_lets_go_of_it(tmp_path, import_eda_agent):
+    """What held eda-agent.exe: Python runs the launcher as a zip on
+    sys.path, and the first importlib.metadata lookup keeps that zip open.
+    Without eda_agent's import the file stays held; with it, it moves."""
+    if os.name != "nt":
+        pytest.skip("the launcher lock is Windows'")
+    exe = tmp_path / "eda-agent.exe"
+    _zip_launcher(exe, (
+        ("import eda_agent\n" if import_eda_agent else "")
+        + "import importlib.metadata as m, sys\n"
+          "m.version('eda-agent')\n"
+          "print('ready', flush=True)\n"
+          "sys.stdin.read()\n"))
+    src = str(Path(updates.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    proc = subprocess.Popen([sys.executable, str(exe)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, env=env, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        try:
+            exe.rename(exe.with_name("moved.exe"))
+            moved = True
+        except PermissionError:
+            moved = False
+        assert moved is import_eda_agent
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 # ---- a current clone with stale scripts --------------------------------

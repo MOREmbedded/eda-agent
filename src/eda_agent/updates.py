@@ -438,22 +438,29 @@ def _launchers() -> list[Path]:
     return out
 
 
-def _set_launchers_aside() -> list[tuple[Path, Path]]:
+def _set_launchers_aside() -> tuple[list[tuple[Path, Path]], list[Path]]:
     """Rename the launchers out of pip's way: Windows will not overwrite or
     remove one a running server holds open (WinError 32), but it will
-    rename it. (old, new) per launcher moved."""
+    rename one that is only running. ((old, new) per launcher moved, and
+    the launchers that would not move.)
+
+    One that will not move is held open as a file, not only run: a
+    Python started from an older launcher keeps it open as the zip it
+    ran (see eda_agent._let_go_of_the_launcher). pip cannot get past
+    that one either, and finds out only after it has taken the old
+    install apart."""
     if os.name != "nt":
-        return []
+        return [], []
     stamp = int(time.time())
-    moved = []
+    moved, held = [], []
     for exe in _launchers():
         aside = exe.with_name(f"{exe.name}.old-{stamp}")
         try:
             exe.rename(aside)
             moved.append((exe, aside))
         except OSError:
-            pass
-    return moved
+            held.append(exe)
+    return moved, held
 
 
 def _put_launchers_back(moved: list[tuple[Path, Path]]) -> None:
@@ -504,26 +511,85 @@ def _install_works() -> tuple[bool, str]:
     return done.returncode == 0, lines[-1] if lines else ""
 
 
-def _reinstall(root: Path) -> dict[str, Any]:
-    """pip install -e of the clone, with the running launchers set aside.
-    The install is then asked for from a new Python; one that is not there
-    is installed once more, and reported as failed if it still is not."""
-    moved = _set_launchers_aside()
-    argv = [sys.executable, "-m", "pip", "install", "-e", str(root)]
-    result = _step(argv, root, _PIP_TIMEOUT_S)
+def _dependencies(root: Path) -> list[str]:
+    """The clone's ``[project] dependencies``, markers and all, as pip
+    takes them on its command line."""
+    import tomllib
+
+    with open(root / "pyproject.toml", "rb") as f:
+        return list(tomllib.load(f).get("project", {}).get("dependencies", []))
+
+
+def _repair_command(root: Path) -> str:
+    return f"\"{sys.executable}\" -m pip install -e \"{root}\""
+
+
+def _install_dependencies(root: Path, held: list[Path]) -> dict[str, Any]:
+    """The reinstall when a launcher cannot be moved: the dependencies
+    alone, leaving eda-agent's own install as it is.
+
+    ``pip install -e`` would uninstall eda-agent first, stop on the held
+    launcher, and leave nothing installed. The dependencies are what a
+    changed pyproject.toml is usually about, and the editable install
+    already runs the pulled code; only eda-agent's recorded version and
+    its command launchers wait for a reinstall."""
+    names = ", ".join(sorted(p.name for p in held))
+    try:
+        deps = _dependencies(root)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "output": (
+            f"{names} is in use, so eda-agent was not reinstalled, and its "
+            f"dependencies could not be read from pyproject.toml ({exc}). Close "
+            f"every eda-agent (MCP servers, the status window), then run: "
+            f"{_repair_command(root)}")}
+    result = (_step([sys.executable, "-m", "pip", "install", *deps], root, _PIP_TIMEOUT_S)
+              if deps else {"ok": True, "output": ""})
     if result["ok"]:
         works, why = _install_works()
         if not works:
-            result = _step(argv, root, _PIP_TIMEOUT_S)
-            if result["ok"]:
-                works, why = _install_works()
-            if result["ok"] and not works:
-                result = {"ok": False, "output": (
-                    f"pip ended without an error, but eda-agent is not installed ({why}). "
-                    f"Run: \"{sys.executable}\" -m pip install -e \"{root}\"")}
-            elif result["ok"]:
-                result["output"] = ("the first install left eda-agent uninstalled; "
-                                    "installed again\n" + result["output"]).strip()
+            return {"ok": False, "output": (
+                f"eda-agent is not installed ({why}). Close every eda-agent "
+                f"(MCP servers, the status window), then run: {_repair_command(root)}")}
+    result["note"] = (
+        f"{names} is in use by a running eda-agent, so only the dependencies were "
+        f"installed; eda-agent itself was left installed as it was. To refresh its "
+        f"version and commands, close every eda-agent and run: {_repair_command(root)}")
+    return result
+
+
+def _reinstall(root: Path) -> dict[str, Any]:
+    """pip install -e of the clone, with the running launchers set aside.
+
+    With a launcher that will not move, only the dependencies are
+    installed (see _install_dependencies). Otherwise, after pip, the
+    install is asked for from a new Python whether pip succeeded or not:
+    pip that fails on a held file has already uninstalled the old copy,
+    and reports the error, not that nothing is left. One that is not
+    there is installed once more, and reported with the command that
+    repairs it if it still is not."""
+    moved, held = _set_launchers_aside()
+    if held:
+        _put_launchers_back(moved)
+        result = _install_dependencies(root, held)
+        result["python"] = sys.executable
+        return result
+    argv = [sys.executable, "-m", "pip", "install", "-e", str(root)]
+    first = result = _step(argv, root, _PIP_TIMEOUT_S)
+    works, why = _install_works()
+    if not works:
+        result = _step(argv, root, _PIP_TIMEOUT_S)
+        if result["ok"]:
+            works, why = _install_works()
+        if works:
+            result["output"] = ("the first install left eda-agent uninstalled; "
+                                "installed again\n" + result["output"]).strip()
+        else:
+            said = ("pip ended without an error, but eda-agent is not installed"
+                    if first["ok"] else
+                    f"{first['output']}\npip failed and left eda-agent uninstalled")
+            result = {"ok": False, "output": (
+                f"{said} ({why}). Close every eda-agent (MCP servers, the status "
+                f"window), then run: {_repair_command(root)}").strip()}
     if not result["ok"]:
         _put_launchers_back(moved)
     result["python"] = sys.executable
