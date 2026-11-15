@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.15.2';
+    SCRIPT_VERSION = '2026.11.15.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -102389,17 +102389,19 @@ Var
 
     { Spinner state. SpinnerFrame indexes into a 4-phase moon glyph cycle. }
     SpinnerFrame     : Integer;
+    { Where the log row being written has reached (LogLine). }
+    LogPos           : Integer;
     InFlightCommand  : String;
     InFlightStartMs  : Cardinal;
     InFlightActive   : Boolean;
 
-    { Free-text filter applied at WRITE time to lst_Log.Items. Empty = no   }
+    { Free-text filter applied at WRITE time to re_Log.Lines. Empty = no   }
     { text filter. Changing the filter only affects new entries; old ones   }
     { stay until you click Clear log. (We used to keep a TStringList buffer }
     { and re-render on filter change, but DelphiScript's TStringList API is }
     { broken in too many spots, .Insert and .Clear undeclared, typed-param   }
     { dispatch loses methods, empty-literal arguments trip the parser; the  }
-    { committed pattern wrote straight to lst_Log.Items and we're back to    }
+    { committed pattern wrote straight to re_Log.Lines and we're back to    }
     { that.)                                                                 }
     FilterText       : String;
 
@@ -102534,7 +102536,7 @@ Begin
 End;
 
 
-{ Used to re-render lst_Log from a TStringList buffer when filter flags     }
+{ Used to re-render re_Log from a TStringList buffer when filter flags     }
 { changed. The buffer was a DelphiScript minefield, so we dropped it; this   }
 { procedure now just clears the visible memo. Callers that previously       }
 { wanted "apply new filter to old entries" now just see a clean slate after }
@@ -102542,11 +102544,11 @@ End;
 Procedure RebuildVisibleLog(Dummy : Integer);
 Begin
     Try
-        lst_Log.Items.BeginUpdate;
+        re_Log.Lines.BeginUpdate;
         Try
-            lst_Log.Items.Clear;
+            re_Log.Lines.Clear;
         Finally
-            lst_Log.Items.EndUpdate;
+            re_Log.Lines.EndUpdate;
         End;
     Except End;
 End;
@@ -102684,11 +102686,12 @@ End;
 { command. The row shows the part of RequestId that names ONE call, which is }
 { what bridge_trace.log writes, so grepping that log for it finds the call.  }
 
-{ The log is an owner-drawn list so each part of a row has its colour: the }
-{ time green under 100 ms, amber under a second, red beyond; the call id   }
-{ faint; the command bright. A detail row (it starts with spaces) is red   }
-{ under an error and muted otherwise. The list is 18 px wider than its     }
-{ panel, so the panel clips the light Windows scrollbar; the wheel scrolls. }
+{ The log is a rich-text box written row by row, newest on top, each part }
+{ in its colour: the time green under 100 ms, amber under a second, red   }
+{ beyond; the call's sequence number faint; the command bright. An error  }
+{ detail sits red under its command, and notes are faint. (An owner-drawn }
+{ list was tried first: Altium's script engine never calls OnDrawItem, so }
+{ its rows came out plain grey.) The wheel scrolls; no scrollbar is shown. }
 Function LogTimeColour(Ms : Integer) : Cardinal;
 Begin
     If Ms >= 1000 Then Result := COLOR_ACCENT_RED
@@ -102696,62 +102699,66 @@ Begin
     Else Result := COLOR_ACCENT_GREEN;
 End;
 
-Procedure lst_LogDrawItem(Control : TWinControl; Idx : Integer; ARect : TRect;
-                          State : TOwnerDrawState);
+{ One coloured run at LogPos, the place the row being written has reached. }
+Procedure LogRun(Text : String; Col : Cardinal);
+Begin
+    re_Log.SelStart := LogPos;
+    re_Log.SelLength := 0;
+    re_Log.SelAttributes.Color := Col;
+    re_Log.SelText := Text;
+    LogPos := LogPos + Length(Text);
+End;
+
+{ Write one row at the top of the log. A row is "<ms> ms  <id>  <command>",  }
+{ an error detail "`-- <text>", or a note. Should colouring fail, the row   }
+{ goes in plain, so nothing is lost.                                        }
+Procedure LogLine(S : String);
 Var
-    S, TimePart, Rest, IdPart, Cmd : String;
-    P, X, Y, Ms : Integer;
-    Cv : TCanvas;
+    TimePart, Rest, IdPart, Cmd : String;
+    P, Ms : Integer;
 Begin
     Try
-        Cv := lst_Log.Canvas;
-        S := lst_Log.Items[Idx];
-        Cv.Brush.Color := COLOR_BG_LOG;
-        Cv.FillRect(ARect);
-        X := ARect.Left + 4;
-        Y := ARect.Top + 2;
+        LogPos := 0;
         P := Pos(' ms  ', S);
         If P = 0 Then
         Begin
-            { An error detail sits red under its command; a note is faint. }
             P := Pos('`-- ', S);
             If P > 0 Then
-            Begin
-                Cv.Font.Color := COLOR_ACCENT_RED;
-                Cv.TextOut(X + 64 + Cv.TextWidth('00000000'), Y,
-                           Copy(S, P + 4, Length(S)));
-            End
+                LogRun('                    ' + Copy(S, P + 4, Length(S)), COLOR_ACCENT_RED)
             Else
-            Begin
-                Cv.Font.Color := COLOR_TEXT_FAINT;
-                Cv.TextOut(X, Y, Trim(S));
-            End;
-            Exit;
-        End;
-        TimePart := Trim(Copy(S, 1, P - 1));
-        Ms := StrToIntDef(TimePart, 0);
-        Rest := Copy(S, P + 5, Length(S));
-        P := Pos('  ', Rest);
-        If P > 0 Then
-        Begin
-            IdPart := Copy(Rest, 1, P - 1);
-            Cmd := Copy(Rest, P + 2, Length(Rest));
+                LogRun('  ' + Trim(S), COLOR_TEXT_FAINT);
         End
         Else
         Begin
-            IdPart := '';
-            Cmd := Rest;
+            TimePart := Trim(Copy(S, 1, P - 1));
+            Ms := StrToIntDef(TimePart, 0);
+            Rest := Copy(S, P + 5, Length(S));
+            P := Pos('  ', Rest);
+            If P > 0 Then
+            Begin
+                IdPart := Copy(Rest, 1, P - 1);
+                Cmd := Copy(Rest, P + 2, Length(Rest));
+            End
+            Else
+            Begin
+                IdPart := '';
+                Cmd := Rest;
+            End;
+            { The id's leading 8 name the session, the same on every row; }
+            { the sequence after the dash names the call.                  }
+            If Copy(IdPart, 9, 1) = '-' Then IdPart := Copy(IdPart, 10, 8);
+            LogRun(PadLeft(TimePart + ' ms', 8), LogTimeColour(Ms));
+            LogRun('  ' + PadRight(IdPart, 8) + '  ', COLOR_TEXT_FAINT);
+            LogRun(Cmd, COLOR_TEXT_BODY);
         End;
-        Cv.Font.Color := LogTimeColour(Ms);
-        Cv.TextOut(X + 44 - Cv.TextWidth(TimePart + ' ms'), Y, TimePart + ' ms');
-        Cv.Font.Color := COLOR_TEXT_FAINT;
-        { The id's leading 8 name the session, the same on every row; the }
-        { sequence after the dash names the call. Copy log keeps it whole. }
-        If Copy(IdPart, 9, 1) = '-' Then IdPart := Copy(IdPart, 10, 8);
-        Cv.TextOut(X + 54, Y, IdPart);
-        Cv.Font.Color := COLOR_TEXT_BODY;
-        Cv.TextOut(X + 54 + Cv.TextWidth('00000000') + 10, Y, Cmd);
-    Except { display only: a row that fails to paint stays blank } End;
+        LogRun(#13#10, COLOR_TEXT_BODY);
+    Except
+        Try re_Log.Lines.Insert(0, S); Except { display only } End;
+    End;
+    Try
+        While re_Log.Lines.Count > MAX_LOG_LINES Do
+            re_Log.Lines.Delete(re_Log.Lines.Count - 1);
+    Except { display only } End;
 End;
 
 Procedure AppendLogLine(Command : String; DurationMs : Cardinal; IsError : Boolean;
@@ -102782,16 +102789,15 @@ Begin
           + IdShort + '  ' + Command;
 
     { Apply the filter at write time. The committed pattern wrote straight  }
-    { to lst_Log.Items via TStrings (TMemo property), which DelphiScript    }
+    { to re_Log.Lines via TStrings (TMemo property), which DelphiScript    }
     { routes through fine. Skipping an entry just means the user doesn't    }
     { see it until a future entry matches the new filter.                   }
     If Not ShouldShowLine(Line) Then Exit;
     Try
-        lst_Log.Items.Insert(0, Line);
+        { The detail first, so the row lands on top of it. }
         If IsError And (ErrorDetail <> '') Then
-            lst_Log.Items.Insert(1, '      `-- ' + ErrorDetail);
-        While lst_Log.Items.Count > MAX_LOG_LINES Do
-            lst_Log.Items.Delete(lst_Log.Items.Count - 1);
+            LogLine('      `-- ' + ErrorDetail);
+        LogLine(Line);
     Except End;
 
     If IsError Then
@@ -103634,6 +103640,8 @@ Begin
     Except End;
     { A grey hint in the empty filter field; older VCLs lack it. }
     Try edt_Filter.TextHint := 'Filter the log'; Except { display only } End;
+    { The log opens with a line, so an empty list never looks broken. }
+    LogLine('      v' + SCRIPT_VERSION + ' ready, waiting for requests');
 End;
 
 Procedure HideStatusForm(Dummy : Integer);
@@ -103662,7 +103670,7 @@ End;
 
 Procedure btn_ClearLogClick(Sender : TObject);
 Begin
-    Try lst_Log.Items.Clear; Except End;
+    Try re_Log.Lines.Clear; Except End;
     ShowNotice('');
 End;
 
@@ -103776,7 +103784,7 @@ Begin
         Else If mmo_Stats.Visible Then
             Clipboard.AsText := mmo_Stats.Lines.Text
         Else
-            Clipboard.AsText := lst_Log.Items.Text;
+            Clipboard.AsText := re_Log.Lines.Text;
         btn_CopyLog.Caption := #59643;
     Except End;
 End;
@@ -103824,9 +103832,9 @@ Begin
         StoreSavingSwitch(0);
         PaintSavingSwitch(0);
         If SavingOff Then
-            lst_Log.Items.Insert(0, '      saving switched OFF: the bridge writes no documents')
+            LogLine('      saving switched OFF: the bridge writes no documents')
         Else
-            lst_Log.Items.Insert(0, '      saving switched on');
+            LogLine('      saving switched on');
     Except End;
 End;
 
@@ -104041,7 +104049,7 @@ Begin
         ValueUnit := UnitChoice;
         StorePreferences(0);
         PaintValueFormat(0);
-        lst_Log.Items.Insert(0, '      value format set to ' + Choice + ', unit '
+        LogLine('      value format set to ' + Choice + ', unit '
             + UnitChoice);
     Except End;
 End;
@@ -104072,7 +104080,7 @@ Begin
         Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
-        lst_Log.Items.Insert(0, '      ' + Setting + ' set to ' + Choice);
+        LogLine('      ' + Setting + ' set to ' + Choice);
     Except End;
 End;
 
@@ -104160,9 +104168,9 @@ Begin
         StorePreferences(0);
         PaintAgentSettings(0);
         If TurnOn Then
-            lst_Log.Items.Insert(0, '      check ' + CheckName + ' on')
+            LogLine('      check ' + CheckName + ' on')
         Else
-            lst_Log.Items.Insert(0, '      check ' + CheckName + ' off');
+            LogLine('      check ' + CheckName + ' off');
     Except End;
 End;
 
