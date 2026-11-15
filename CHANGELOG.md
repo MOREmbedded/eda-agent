@@ -14,6 +14,14 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The status window's taskbar icon.** Altium's script form loader drops
+  `Icon.Data` from a .dfm, so the icon added in 2026.11.14.1 never reached
+  the window and its taskbar button kept Windows' blank picture. The form
+  now loads `eda-agent.ico` itself (ApplyAppIcon), from the copy the MCP
+  server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.1.
+
 ### Added
 
 - **An app icon.** The Altium status window, the web dashboard's browser tab
@@ -21,8 +29,8 @@ maturity classification for every tool.
   blank default: a gold "A" drawn as two PCB traces ending in via pads,
   with a blue spark, on the dashboard's dark tile. The 16 to 32 px sizes are
   drawn on their own pixel grid so the taskbar button stays sharp. Sources
-  are in `assets/icon`; `python scripts/build_icons.py` rebuilds the favicon,
-  the `.ico` and the status window's `Icon.Data`. Scripts 2026.11.14.1.
+  are in `assets/icon`; `python scripts/build_icons.py` rebuilds the favicon
+  and the `.ico`. Scripts 2026.11.14.1.
 - **Signal integrity: the whole board.** New job kind `board-si` and tool
   `si_board_check`: every high-speed net and pair, chosen by name or Altium
   net class, checked against its own limits (impedance, loss, return loss,

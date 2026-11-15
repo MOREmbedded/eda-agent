@@ -11,21 +11,23 @@ Outputs:
 * ``assets/icon/png/eda-agent-<n>.png``: one PNG per size (committed, so
   the ICO steps below need no SVG renderer).
 * ``src/eda_agent/web/dashboard_static/eda-agent.ico`` and ``.svg``: the
-  web dashboard's favicon, also the desktop shortcut's icon.
-* ``scripts/altium/StatusForm.dfm``: the status window's ``Icon.Data``,
-  which Windows shows on its taskbar button and title bar.
+  web dashboard's favicon, the desktop shortcut's icon and the Altium
+  status window's taskbar icon.
+
+The status window loads the same ``.ico`` at run time (ApplyAppIcon in
+StatusForm.pas, from the copy src/eda_agent/app_icon.py puts in the IPC
+workspace): Altium's form loader drops ``Icon.Data`` from a .dfm.
 
 Usage::
 
     python scripts/build_icons.py            # render PNGs (needs cairosvg), write all
-    python scripts/build_icons.py --no-render # rebuild ICOs and the DFM from the PNGs
+    python scripts/build_icons.py --no-render # rebuild the ICO from the PNGs
     python scripts/build_icons.py --check     # exit 1 if any output is stale
 """
 from __future__ import annotations
 
 import argparse
 import io
-import re
 import struct
 import sys
 from pathlib import Path
@@ -36,19 +38,14 @@ PNG_DIR = SRC / "png"
 STATIC = ROOT / "src" / "eda_agent" / "web" / "dashboard_static"
 WEB_ICO = STATIC / "eda-agent.ico"
 WEB_SVG = STATIC / "eda-agent.svg"
-DFM = ROOT / "scripts" / "altium" / "StatusForm.dfm"
 
 #: Every size rendered to PNG.
 SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
 #: Sizes drawn separately on the pixel grid.
 HINTED = (16, 20, 24, 32)
-#: The favicon and shortcut icon: every size; 256 stored as PNG.
+#: Every size; below 256 px as classic bitmap entries, which every reader,
+#: VCL's TIcon included, accepts. 256 px is stored as PNG.
 WEB_SIZES = SIZES
-#: The status window icon: classic bitmap entries only, which every VCL
-#: TIcon reads, from 16 px (title bar) to 48 px (large taskbar buttons).
-DFM_SIZES = (16, 20, 24, 32, 40, 48)
-
-DFM_KEY = "Icon.Data"
 
 
 def source_for(size: int) -> Path:
@@ -121,43 +118,10 @@ def ico_bytes(sizes, png_from: int = 256) -> bytes:
     return bytes(out)
 
 
-def dfm_block(data: bytes, indent: str = "  ") -> str:
-    """``Icon.Data = {...}`` the way Delphi writes binary properties."""
-    hexed = data.hex().upper()
-    lines = [hexed[i:i + 64] for i in range(0, len(hexed), 64)]
-    body = "\n".join(indent + "  " + line for line in lines)
-    return f"{indent}{DFM_KEY} = {{\n{body}}}\n"
-
-
-_BLOCK_RE = re.compile(r"^  Icon\.Data = \{\n(?:    [0-9A-F]+\n)*    [0-9A-F]+\}\n", re.M)
-
-
-def dfm_with_icon(text: str, data: bytes) -> str:
-    block = dfm_block(data)
-    if _BLOCK_RE.search(text):
-        return _BLOCK_RE.sub(lambda _m: block, text, count=1)
-    # First build: the form's own properties end at its first child object.
-    anchor = re.search(r"^  FormStyle = .*\n", text, re.M)
-    if not anchor:
-        raise ValueError("StatusForm.dfm has no FormStyle line to place Icon.Data after")
-    return text[:anchor.end()] + block + text[anchor.end():]
-
-
-def dfm_icon(text: str) -> bytes | None:
-    """The ICO bytes a DFM's form-level ``Icon.Data`` holds, or None."""
-    m = _BLOCK_RE.search(text)
-    if not m:
-        return None
-    hexed = re.sub(r"[^0-9A-F]", "", m.group(0).split("{", 1)[1])
-    return bytes.fromhex(hexed)
-
-
 def outputs() -> dict[Path, bytes]:
-    dfm_text = DFM.read_text(encoding="utf-8")
     return {
         WEB_ICO: ico_bytes(WEB_SIZES),
         WEB_SVG: (SRC / "eda-agent.svg").read_bytes(),
-        DFM: dfm_with_icon(dfm_text, ico_bytes(DFM_SIZES)).encode("utf-8"),
     }
 
 
