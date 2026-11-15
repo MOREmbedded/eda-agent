@@ -4,7 +4,7 @@
 
 **Let an AI work inside your live Altium Designer session.**
 
-An MCP server that gives Claude, or any MCP client, about 770 tools on the design you have open:
+An MCP server that gives Claude, or any MCP client, around 770 tools on the design you have open:
 schematic, PCB, library, project, review, signal and power integrity, and thermal analysis.
 You watch every change happen in Altium.
 
@@ -38,7 +38,7 @@ You watch every change happen in Altium.
 - **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
 - **Analysis on the real copper.** Signal integrity from line models to eyes and a whole-board check, PDN IR drop and impedance, and 3D thermal analysis, all read from the board you have open.
 - **You stay in control.** A status window inside Altium shows every command as it runs and holds the switches for what the AI may change; a local web dashboard covers review, calculators, simulation and the optional features.
-- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface: about 920 tools with Altium and KiCad registered together.
+- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface: 920+ with both backends (Altium and KiCad) registered.
 
 ## Quick start
 
