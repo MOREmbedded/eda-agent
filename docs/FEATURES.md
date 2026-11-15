@@ -18,7 +18,7 @@ Two windows show what eda-agent is doing: a status window inside Altium, and a w
 
 ### The status window in Altium
 
-<img src="../assets/dashboard.png" alt="eda-agent status window in Altium, Log tab with the commands of a board review" width="240"> <img src="../assets/status_perf.png" alt="eda-agent status window, Perf tab with totals per command" width="240"> <img src="../assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="240"> <img src="../assets/status_stats.png" alt="eda-agent status window, Stats tab with the estimated token use" width="240">
+<img src="../assets/dashboard.png" alt="eda-agent status window in Altium, Log tab with the commands of a board review" width="240"> <img src="../assets/status_perf.png" alt="eda-agent status window, Perf tab with totals per command" width="240"> <img src="../assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="240">
 
 The status window opens with the bridge and stays beside your design, in the same dark look as the web dashboard.
 
