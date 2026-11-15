@@ -400,8 +400,7 @@ def test_token_stats_are_kept_and_default_to_on(tmp_path):
     (tmp_path / "preferences.json").write_text('{"usage_stats":"off"}')
     assert not preferences.usage_stats_on(tmp_path)
 _CHECK_STUBS = """
-type TLog = record Items : TStringList; end;
-var lst_Log : TLog;
+procedure LogLine(S : String); begin end;
 procedure PaintAgentSettings(Dummy : Integer); begin end;
 """
 
@@ -429,7 +428,6 @@ def test_the_panel_turns_checks_off_and_on_and_keeps_them(tmp_path):
     _STUBS = saved + _CHECK_STUBS
     try:
         out = _run(tmp_path, [
-            "  lst_Log.Items := TStringList.Create;",
             "  LoadPreferences(0); WriteLn('[', ChecksOff, ']');",
             "  ChooseCheck('spice_model', False); ChooseCheck('fab_export', False);",
             "  ChooseCheck('spice_model', False);",

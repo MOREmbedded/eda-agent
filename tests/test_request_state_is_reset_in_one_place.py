@@ -54,7 +54,7 @@ SESSION = {
     "InFlightActive", "FilterText", "PerfNames", "PerfCountStrs",
     "PerfTotalStrs", "PerfMaxStrs", "LastActivityTick", "LastPingMs",
     "OpenWebEnabled", "StatsFileStamp", "SavedHintHidePause", "StatusStartTick",
-    "StatusRequestCount", "StatusLastCommand", "StatusTotalAltiumMs",
+    "StatusRequestCount", "StatusLastCommand", "StatusTotalAltiumMs", "LogPos",
 }
 
 

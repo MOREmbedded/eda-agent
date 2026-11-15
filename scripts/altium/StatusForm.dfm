@@ -1621,12 +1621,12 @@ object StatusForm: TStatusForm
       BevelOuter = bvNone
       Color = $001C1712
       TabOrder = 0
-      object lst_Log: TListBox
+      object re_Log: TRichEdit
         Left = 0
         Top = 0
-        Width = 382
+        Width = 364
         Height = 394
-        Anchors = [akLeft, akTop, akRight, akBottom]
+        Align = alClient
         BorderStyle = bsNone
         Color = $001C1712
         Font.Charset = DEFAULT_CHARSET
@@ -1634,11 +1634,13 @@ object StatusForm: TStatusForm
         Font.Height = -11
         Font.Name = 'Consolas'
         Font.Style = []
-        ItemHeight = 18
+        HideSelection = True
         ParentFont = False
-        Style = lbOwnerDrawFixed
+        PlainText = False
+        ReadOnly = True
+        ScrollBars = ssNone
         TabOrder = 0
-        OnDrawItem = lst_LogDrawItem
+        WordWrap = False
       end
     end
     object mmo_Perf: TMemo
