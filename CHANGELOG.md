@@ -20,7 +20,7 @@ maturity classification for every tool.
   `Icon.Data` from a .dfm, so the icon added in 2026.11.14.1 never reached
   the window and its taskbar button kept Windows' blank picture. The form
   now loads `eda-agent.ico` itself (ApplyAppIcon), from the copy the MCP
-  server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.1.
+  server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.2.
 
 ### Added
 
