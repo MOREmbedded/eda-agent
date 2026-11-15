@@ -16,6 +16,19 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`eda-agent update` no longer leaves eda-agent uninstalled when
+  eda-agent.exe is in use.** Python runs pip's launcher as a zip on
+  `sys.path`, and its first metadata lookup kept that zip open for the
+  life of the process, so Windows would not let the update rename the
+  launcher out of pip's way (WinError 32). pip then uninstalled eda-agent,
+  stopped on the launcher and left nothing installed. eda-agent now takes
+  the launcher off `sys.path` as it is imported, so a process started from
+  it no longer holds it. A launcher still held (a server started before
+  this fix) means only the dependencies are installed and eda-agent is
+  left as it was, with the command that finishes the job. A pip run that
+  fails is now followed by the same install check as one that succeeds, a
+  missing install is installed once more, and one still missing is
+  reported with the repair command.
 - **The status window's taskbar icon.** Altium's script form loader drops
   `Icon.Data` from a .dfm, so the icon added in 2026.11.14.1 never reached
   the window and its taskbar button kept Windows' blank picture. The form

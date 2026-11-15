@@ -669,6 +669,8 @@ def cmd_update_apply(check_only: bool = False, assume_yes: bool = False,
         print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
         if not step["ok"] and step.get("output"):
             print("    " + step["output"].replace("\n", "\n    "))
+        if step.get("note"):
+            print("    " + step["note"])
     print(out["next_step"])
     return 1 if out.get("failed_steps") else 0
 
