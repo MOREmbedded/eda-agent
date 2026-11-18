@@ -1048,5 +1048,7 @@
  "{0} forgotten.": "已清除 {0}。",
  "{0} is off.": "{0} 已关闭。",
  "{0} of {1} installed": "已安装 {0} / {1}",
- "{0} saved. Checking again.": "已保存 {0}，正在重新检查。"
+ "{0} saved. Checking again.": "已保存 {0}，正在重新检查。",
+ "All workspaces": "所有工作区",
+ "Other workspaces hidden: {0}": "已隐藏的其他工作区：{0}"
 }

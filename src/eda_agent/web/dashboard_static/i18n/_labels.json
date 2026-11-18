@@ -1051,5 +1051,7 @@
 "{0} forgotten.",
 "{0} is off.",
 "{0} of {1} installed",
-"{0} saved. Checking again."
+"{0} saved. Checking again.",
+"All workspaces",
+"Other workspaces hidden: {0}"
 ]
