@@ -1778,11 +1778,14 @@ async function wsPaneClick(e) {
 /* ================================================================ usage */
 // The tokens the AI spent on the EDA tools: what each call's arguments and
 // result cost, estimated from their size (eda_agent.diag.usage). Kept per
-// workspace; every workspace with records can be picked.
+// workspace; this dashboard's own workspace is offered, every workspace
+// with records only once "All workspaces" is ticked.
 const tok = n => n == null ? "-" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n);
 const msText = ms => ms >= 60000 ? Math.floor(ms / 60000) + "m" + String(Math.floor(ms % 60000 / 1000)).padStart(2, "0") + "s" : ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms";
 async function loadUsage() {
-  const q = new URLSearchParams({workspace: S.usageWs || "", days: String(S.usageDays || 0)});
+  // Only this dashboard's own workspace unless "All workspaces" is ticked:
+  // each workspace is usually one client's, and the others' paths name them.
+  const q = new URLSearchParams({workspace: S.usageWs || "", days: String(S.usageDays || 0), all: S.usageAll ? "1" : ""});
   const r = await get("/api/wb/usage?" + q);
   if (!r || !r.ok) return;
   S.usage = r; if (!S.usageWs) S.usageWs = r.workspace;
@@ -1814,7 +1817,8 @@ function paintUsagePane() {
       ${fig(T("Today"), tok(td.tokens || 0))}
       ${ses ? fig(T("This session"), tok(ses.total.tokens)) : ""}
       ${fig(T("Average per call"), tok(t.avg_tokens))}
-    </div><span class="sp"></span>${span}${picker}</div>
+    </div><span class="sp"></span>${span}${picker}<label class="check" style="margin:0"><input type="checkbox" data-usageall${u.all ? " checked" : ""}> ${esc(T("All workspaces"))}</label></div>
+    ${!u.all && u.hidden ? `<p class="hint">${esc(T("Other workspaces hidden: {0}", u.hidden))}</p>` : ""}
     ${u.on ? "" : `<div class="result fail">${esc(T("Token usage statistics are off, so no new calls are counted. Switch them on with Token stats on the Config tab in Altium, or in Workspace, Settings."))}</div>`}
     <p class="hint">${esc(T("Estimated from the size of each call: about {0} characters a token, images by their size. Kept in {1}.", u.chars_per_token, (u.workspace || "") + "/.eda-agent/usage"))}</p>
     ${chart}
@@ -3015,6 +3019,7 @@ $("#pane").addEventListener("change", e => {
   if (S.mode === "usage" && e.target.dataset) {
     if (e.target.dataset.usagews != null) { S.usageWs = e.target.value; loadUsage(); }
     else if (e.target.dataset.usagedays != null) { S.usageDays = +e.target.value; loadUsage(); }
+    else if (e.target.dataset.usageall != null) { S.usageAll = e.target.checked; S.usageWs = ""; loadUsage(); }
     return;
   }
   if (S.mode !== "workspace" || !e.target.dataset) return;

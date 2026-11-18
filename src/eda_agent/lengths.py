@@ -171,6 +171,8 @@ ADDED: dict[str, frozenset[str]] = {
     "kicad_set_design_rules": frozenset({"constraints"}),
     # This fork's tools: a board box {x1, y1, x2, y2}; a polyline of points.
     "pcb_audit_placement_plan": frozenset({"board"}),
+    # Reply distances from the near point, and the board-edge gap.
+    "pcb_find_free_spot": frozenset({"distance", "edge_clearance"}),
     "pcb_route_diff_pair": frozenset({"centerline"}),
 }
 

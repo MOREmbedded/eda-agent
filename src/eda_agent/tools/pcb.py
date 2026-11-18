@@ -9124,6 +9124,134 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": str(exc), "findings": []}
 
     @mcp.tool()
+    async def pcb_find_free_spot(
+        expect_file: str = "",
+        board_json_path: str = "",
+        diameter: float = 0,
+        width: float = 0,
+        height: float = 0,
+        clearance: Optional[float] = None,
+        edge_clearance: Optional[float] = None,
+        layers: Optional[list[str]] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        xmin: Optional[float] = None,
+        ymin: Optional[float] = None,
+        xmax: Optional[float] = None,
+        ymax: Optional[float] = None,
+        grid: Optional[float] = None,
+        spacing: Optional[float] = None,
+        count: int = 10,
+        net: str = "",
+        ignore_pours: bool = False,
+        courtyards: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Find free spots for a via or a part, nearest a point first.
+
+        Checks everything that can be in the way, not only courtyards:
+        pads and drilled holes, vias, tracks, arcs, solid regions, fills,
+        poured copper, polygon cutouts, keepouts (the Keep-Out layer
+        blocks every layer) and the board edge and cutouts. Reads the
+        board once through the layout model; writes nothing.
+
+        Lengths are in the session's unit (``length_units``; one call may
+        give ``length_units="mm"``), and the reply says which.
+
+        Args:
+            expect_file: full path of the focused board, for a live read;
+                refused if another board is focused.
+            board_json_path: a saved LayoutBoard (.json or .json.gz)
+                instead of the live board.
+            diameter: a via's pad diameter. Give this, or width and height.
+            width: a part's width (X), for a rectangle; with height.
+            height: a part's height (Y).
+            clearance: the gap kept from every obstacle; omitted, the
+                board's All-to-All clearance rule (10 mil if none).
+            edge_clearance: the gap kept from the board edge and board
+                cutouts; omitted, ``clearance``.
+            layers: copper layers to check, by name, or "top", "bottom",
+                "all". Omitted: every layer for a via (through), the top
+                layer for a part.
+            x: the point to search near (with y); candidates come nearest
+                it first, and the reply says whether it is free itself and
+                what blocks it.
+            y: see x.
+            xmin: the search box (all four); omitted, the board outline's
+                bounding box.
+            ymin: see xmin.
+            xmax: see xmin.
+            ymax: see xmin.
+            grid: the step between tried points; omitted, a quarter of
+                size plus clearance.
+            spacing: the least distance between two answers; omitted,
+                size plus clearance, so the answers are different spots.
+            count: how many spots to return (1 to 100).
+            net: the net of the new object: copper of this net does not
+                block it (a ground via inside the ground pour).
+            ignore_pours: poured polygon copper does not block (it pours
+                again round the new object); solid regions and fills still
+                do.
+            courtyards: also keep out of component courtyards on the
+                checked side; omitted, on for a part and off for a via.
+
+        Returns:
+            ``candidates`` ([{x, y, distance, gap, nearby: [{kind, layer,
+            ref, net, gap}]}], nearest first), ``near_free`` and
+            ``near_blocked_by`` when a point is given, ``blocked_by``
+            (what rejected the points tried, by kind), ``obstacles``
+            (counted by kind), the settings used, and ``length_units``.
+        """
+        import asyncio
+        from pathlib import Path
+
+        from ..layout.free_spot import find_free_spots
+        from ..layout.model import LayoutBoard
+
+        if (x is None) != (y is None):
+            return {"ok": False, "error": "give both x and y for the near point, or neither"}
+        box = (xmin, ymin, xmax, ymax)
+        if any(v is not None for v in box) and any(v is None for v in box):
+            return {"ok": False, "error": "give all of xmin, ymin, xmax and ymax, or none"}
+        if board_json_path:
+            path = Path(board_json_path)
+            if not path.is_file():
+                return {"ok": False, "error": f"no such file: {board_json_path}"}
+            try:
+                board = await asyncio.to_thread(LayoutBoard.load, path)
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return {"ok": False, "error": f"could not load {board_json_path}: {exc}"}
+            source = "file"
+        elif expect_file:
+            from ..layout.read_altium import WrongBoard, read_live_board
+            try:
+                board = await asyncio.to_thread(read_live_board, expect_file)
+            except WrongBoard as exc:
+                return {"ok": False, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return {"ok": False, "error": f"board read failed: {exc}"}
+            source = "live"
+        else:
+            return {"ok": False, "error": "pass expect_file (the focused board's full path) "
+                                          "to read it live, or board_json_path for a saved "
+                                          "LayoutBoard"}
+        rule = clearance is None
+        if rule:
+            from ..layout.rules import RuleSet
+            clearance = RuleSet.from_board(board).default_clearance() or 10.0
+        result = await asyncio.to_thread(
+            find_free_spots, board, diameter=float(diameter), width=float(width),
+            height=float(height), clearance=float(clearance),
+            edge_clearance=None if edge_clearance is None else float(edge_clearance),
+            layers=layers, near=None if x is None else (float(x), float(y)),
+            area=None if xmin is None else (float(xmin), float(ymin), float(xmax), float(ymax)),
+            grid=grid, spacing=spacing, count=max(1, min(100, int(count))), net=net,
+            ignore_pours=bool(ignore_pours), courtyards=courtyards)
+        result["board"] = board.name
+        result["source"] = source
+        result["clearance_from"] = "board rule" if rule else "given"
+        return result
+
+    @mcp.tool()
     async def pcb_place_arc(
         x_center: float,
         y_center: float,

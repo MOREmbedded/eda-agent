@@ -1048,5 +1048,7 @@
  "{0} forgotten.": "{0} vergessen.",
  "{0} is off.": "{0} ist aus.",
  "{0} of {1} installed": "{0} von {1} installiert",
- "{0} saved. Checking again.": "{0} gespeichert. Wird erneut geprüft."
+ "{0} saved. Checking again.": "{0} gespeichert. Wird erneut geprüft.",
+ "All workspaces": "Alle Arbeitsbereiche",
+ "Other workspaces hidden: {0}": "Andere Arbeitsbereiche ausgeblendet: {0}"
 }

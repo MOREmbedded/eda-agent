@@ -594,6 +594,7 @@ GAPS: dict[str, str] = {
     "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
     "pcb_audit_diff_pair": "not ported",
     "pcb_audit_placement_plan": "not ported",
+    "pcb_find_free_spot": "reads the Altium layout model; not ported",
     "pcb_check_fab_output": "reads an exported package; not wired to KiCad's exporter",
     "pcb_place_diff_pair_vias": "not written",
     "pcb_plan_bga_fanout": "not written",
