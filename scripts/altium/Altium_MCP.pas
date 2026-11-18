@@ -81648,7 +81648,7 @@ Var
     Sym : ISch_SheetSymbol;
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
-    Removed, ParamsOfSymbol, IsLibDoc : Boolean;
+    Removed, ParamsOfSymbol, IsLibDoc, LibPending : Boolean;
     SchLibDoc : ISch_Lib;
     ObjJson, SymbolRef : String;
     First : Boolean;
@@ -81678,7 +81678,18 @@ Begin
 
         If Mode = 'delete' Then
         Begin
+            { A PIN OF THE SYMBOL ON SCREEN IS HELD BY THE LIBRARY, as a     }
+            { visible parameter is (RemoveMatchingParamsFromComponent).      }
+            { LibComp.RemoveSchObject then did nothing, every pass found the }
+            { same pin again and counted it: an outside report of obj_delete }
+            { on library pins answered matched 100000 and removed nothing.   }
+            { A remove is counted only once the object it acted on is gone;  }
+            { one found again is removed through the library, and one that   }
+            { still stays is reported as a fault instead of looping.         }
             MaxIter := 100000;
+            LastAddr := 0;
+            SameTries := 0;
+            LibPending := False;
             While MaxIter > 0 Do
             Begin
                 Iterator := LibComp.SchIterator_Create;
@@ -81695,7 +81706,32 @@ Begin
                     Obj := Iterator.NextSchObject;
                 End;
                 LibComp.SchIterator_Destroy(Iterator);
+                ThisAddr := 0;
+                If FoundObj <> Nil Then
+                    Try ThisAddr := FoundObj.I_ObjectAddress; Except End;
+                { The last remove took: its object is not found again. }
+                If LibPending And ((FoundObj = Nil) Or (ThisAddr <> LastAddr)) Then
+                Begin
+                    Inc(TotalMatched);
+                    LibPending := False;
+                    SameTries := 0;
+                    If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+                End;
                 If FoundObj = Nil Then Break;
+                If LibPending And (ThisAddr = LastAddr) Then
+                Begin
+                    { Still there after the component's remove. }
+                    Inc(SameTries);
+                    If SameTries > 1 Then
+                    Begin
+                        NoteDeleteFault('an object stayed on the symbol after it was removed');
+                        Break;
+                    End;
+                    Try SchLib.RemoveSchObject(FoundObj); Except { the next pass finds it again and reports the fault } End;
+                    Dec(MaxIter);
+                    Continue;
+                End;
+                LastAddr := ThisAddr;
                 { Same rule as the doc-level remove below: a raise used 
                   to end the request with the objects already gone      
                   uncounted. Record it and stop instead.                }
@@ -81710,9 +81746,8 @@ Begin
                     NoteDeleteFault('removing an object raised an error');
                     Break;
                 End;
-                Inc(TotalMatched);
+                LibPending := True;
                 Dec(MaxIter);
-                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
             End;
         End
         Else
