@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A footprint arc read back in a mil session comes back in mils.
 
 Live on AD 26.11 (2026-11-18) the pin-1 dot of a 1.27 mm SOIC read
