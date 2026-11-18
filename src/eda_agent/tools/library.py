@@ -602,24 +602,61 @@ def _unchecked_lands(footprint_name: str, count: int,
           "build the lands another way.")}
 
 
-async def _footprint_pads(bridge, footprint_name: str, near: str = ""
-                          ) -> tuple[Optional[list[dict[str, Any]]], str]:
-    """The pads of ``footprint_name`` from the first open .PcbLib that
-    holds it, and that library; ``(None, "")`` when none does. Libraries
-    in the folder of ``near`` (the symbol's SchLib) are tried first, so
-    other open libraries are only read when the footprint is not there."""
+def _path_affinity(path: str, near: str) -> int:
+    """How many leading folders ``path`` shares with ``near``."""
+    a = [x for x in os.path.dirname(path).lower().replace("/", "\\").split("\\") if x]
+    b = [x for x in os.path.dirname(near).lower().replace("/", "\\").split("\\") if x]
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+async def _open_pcblibs(bridge) -> list[str]:
+    """Every open .PcbLib, by full path; empty when the list cannot be read."""
     from ..bridge.exceptions import AltiumError
 
     try:
         docs = await bridge.send_command_async("application.get_open_documents", {})
     except AltiumError:
-        return None, ""
+        return []
     docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
-    folder = os.path.dirname(near).lower() if near else ""
-    libs = sorted({str(d.get("file_path") or "") for d in docs
+    return sorted({str(d.get("file_path") or "") for d in docs
                    if isinstance(d, dict)
                    and str(d.get("file_path") or "").lower().endswith(".pcblib")},
-                  key=lambda f: (os.path.dirname(f).lower() != folder, f.lower()))
+                  key=str.lower)
+
+
+def _same_named(libs: list[str], chosen: str) -> list[str]:
+    """The libraries in ``libs`` other than ``chosen`` with its file name."""
+    name = os.path.basename(chosen).lower()
+    return [lib for lib in libs if os.path.basename(lib).lower() == name
+            and os.path.normcase(lib) != os.path.normcase(chosen)]
+
+
+async def _footprint_pads(bridge, footprint_name: str, near: str = "",
+                          library: str = ""
+                          ) -> tuple[Optional[list[dict[str, Any]]], str]:
+    """The pads of ``footprint_name`` from the first open .PcbLib that
+    holds it, and that library; ``(None, "")`` when none does. Libraries
+    nearest the folder of ``near`` (the symbol's SchLib) are tried first,
+    so other open libraries are only read when the footprint is not there.
+    ``library`` narrows the search: a path is the only library read, a bare
+    file name keeps the open libraries of that name."""
+    from ..bridge.exceptions import AltiumError
+
+    libs = await _open_pcblibs(bridge)
+    if library and os.path.dirname(library):
+        libs = [library]
+    elif library:
+        libs = [lib for lib in libs
+                if os.path.basename(lib).lower() == library.lower()]
+    if near:
+        folder = os.path.dirname(near).lower()
+        libs.sort(key=lambda f: (-_path_affinity(f, near),
+                                 os.path.dirname(f).lower() != folder))
     for lib in libs:
         try:
             got = await bridge.send_command_async(
@@ -1907,6 +1944,18 @@ async def _show_new_symbol(bridge: Any) -> str:
         return f"not fitted: {e}"
 
 
+async def _refresh_schlib_view(bridge: Any, name: str) -> str:
+    """Repaint the SchLib and select ``name`` again, so Altium's Properties
+    panel shows what a scripted edit wrote rather than the values from
+    before it; a report, never fatal."""
+    try:
+        await bridge.send_command_async(
+            "library.refresh_view", {"component_name": name})
+        return "refreshed"
+    except Exception as e:  # the symbol stands; only the panel may lag
+        return f"not refreshed: {e}"
+
+
 async def _fit_footprint_2d(bridge: Any, fp_name: str) -> dict:
     """Frame ``fp_name`` in 2D; a report, never fatal."""
     from ..bridge.exceptions import AltiumError
@@ -2115,7 +2164,8 @@ def register_library_tools(mcp):
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
-            extent, ``pin_table``, and the per-step bridge results.
+            extent, ``pin_table``, ``panel`` (Altium's Properties panel
+            brought up to date) and the per-step bridge results.
         """
         from eda_agent.design.symbol_gen import (
             generate_amplifier_symbol, generate_ic_symbol,
@@ -2142,6 +2192,8 @@ def register_library_tools(mcp):
             if amp is not None:
                 made = await _emit_amplifier_symbol(
                     name, amp, designator_prefix, description)
+                if isinstance(made, dict):
+                    made["panel"] = await _refresh_schlib_view(get_bridge(), name)
                 return {**made, **table} if isinstance(made, dict) else made
 
         # The generator is a pure function and raises on bad geometry;
@@ -2186,12 +2238,14 @@ def register_library_tools(mcp):
         pins_res = await bridge.send_command_async(
             "library.add_pins", {"pins": pins_payload})
         check = await _pin_check(bridge, name, geom.pins)
+        panel = await _refresh_schlib_view(bridge, name)
 
         shown = await _show_new_symbol(bridge)
         return {
             **check,
             "symbol": name,
             "shown": shown,
+            "panel": panel,
             "pins": len(geom.pins),
             "left": sum(1 for p in left_pins if p is not None),
             "right": sum(1 for p in right_pins if p is not None),
@@ -2936,8 +2990,9 @@ def register_library_tools(mcp):
         shown in 2D) from a package drawing.
 
         Give the package as the datasheet draws it: lands are the
-        manufacturer's recommended pattern where given (not the package's
-        own pads), else IPC-7351B. Writes pads, paste, silk with a pin 1
+        manufacturer's recommended pattern (``vendor``: explicit ``pads``
+        placed as given, or its sizes and spans) where given, else
+        IPC-7351B; ``land_pattern`` says which. Writes pads, paste, silk with a pin 1
         dot, assembly outline, .Designator, courtyard and height (origin
         the centroid, mm); pads read back.
 
@@ -2983,7 +3038,8 @@ def register_library_tools(mcp):
 
         Returns:
             {ok, footprint, library_path, created, layers, readback, pads
-            (a summary past 64), courtyard_mm, warnings, notes, ipc, steps}. ``ok`` only when
+            (a summary past 64), courtyard_mm, warnings, notes, land_pattern
+            (vendor or ipc), ipc, steps}. ``ok`` only when
             every step succeeded and the readback matched; a later
             failure leaves the footprint created but incomplete.
         """
@@ -3014,7 +3070,7 @@ def register_library_tools(mcp):
         try:
             model = model_from_package(package, density=density, name=name,
                                        description=description,
-                                       drafting=drafting)
+                                       drafting=drafting, vendor_lands=True)
             spec = package_spec(package)
             dims = read_dims(raw_dims)
             numbers = read_numbers(raw_numbers)
@@ -3243,7 +3299,10 @@ def register_library_tools(mcp):
             "library.get_pad_geometry",
             {"footprint_name": fp_name, "library_path": lib_path}))
         verdict = verify_altium_readback(plan, readback)
-        notes = list(plan["notes"])
+        # Where the lands came from leads: the vendor's pattern as given, or
+        # the IPC calculation.
+        notes = [n for n in model.ipc.get("notes") or []
+                 if str(n).startswith("lands: ")] + list(plan["notes"])
         if not (set_height and height > 0):
             notes.append("height: not written (set_height false, or the "
                          "package gives no height)")
@@ -3286,6 +3345,8 @@ def register_library_tools(mcp):
             "warnings": model.warnings,
             "model_3d": body,
             "notes": notes,
+            "land_pattern": ("vendor" if model.ipc.get("lands_from") == "vendor"
+                             else "ipc"),
             "ipc": model.ipc.get("calcs", {}),
             "steps": steps,
             **({} if checking else {"unchecked": check_skipped("footprint_drawing")}),
@@ -4557,13 +4618,22 @@ def register_library_tools(mcp):
 
     @mcp.tool()
     async def lib_reload_library(library_path: str) -> dict[str, Any]:
-        """Close and reopen a PcbLib so Altium rebuilds its caches from disk.
+        """Close and reopen one .PcbLib or .SchLib so Altium rebuilds its
+        caches from disk, then compile each open project holding it so its
+        models resolve against the reloaded library (an ECO sees a new
+        footprint).
 
+        Only the library named is closed, never the document in front.
         A text's extent is not refreshed after it moves or is resized until
         the library is reloaded, so reload between a write and the next read.
 
-        SAVE FIRST: this does not save, and closing a dirty document loses the
-        edits or raises a prompt. ``lib_fix_designators`` already does this.
+        SAVE FIRST: a library with unsaved changes is refused (MODIFIED)
+        rather than closed, so no save prompt is raised.
+        ``lib_fix_designators`` already saves and reloads.
+
+        Returns:
+            ``reloaded``, ``library_path``, ``was_open`` and
+            ``projects_recompiled``.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -4848,50 +4918,57 @@ def register_library_tools(mcp):
         footprint_library: str = "",
         replace: bool = True,
     ) -> dict[str, Any]:
-        """Link a footprint to a schematic component in the open SchLib
-        (brought forward itself).
+        """Link a footprint to a schematic component in the open SchLib, and
+        bring that SchLib forward afterwards.
 
         With replace=True (default) existing footprint models are removed
         first; False adds another.
 
+        The footprint's .PcbLib must be open. Its full path is written as
+        the model's library path, so the ECO does not resolve a same-named
+        library of another open project; ``warnings`` names any such twin.
+
         The symbol's pin numbers are compared with the footprint's pad
-        names first (its .PcbLib must be open): a pin with no pad or a
-        named plated pad with no pin refuses the link. Unnamed pads and
-        unplated holes are left out.
+        names first: a pin with no pad or a named plated pad with no pin
+        refuses the link. Unnamed pads and unplated holes are left out.
 
         Args:
             component_name: Name of the schematic component, made current
                 first. Empty uses the current component.
             footprint_name: Name of the footprint to link
-            footprint_library: Not applied: the footprint is bound by
-                name, so install its library and keep names unambiguous.
+            footprint_library: the .PcbLib holding it: a full path, or a
+                file name chosen among the open libraries. Empty: the open
+                library holding the footprint nearest the SchLib.
             replace: remove existing footprint models before adding (default True)
 
         Returns:
-            {success, footprint, replaced, footprints, pin_pad_parity}:
-            ``footprints`` is read back from the component. Altium's Models pane is
-            not redrawn after a scripted link and can show the previous
-            part; this list is the link as stored.
+            {success, footprint, replaced, footprint_library_path,
+            footprints, pin_pad_parity, warnings}: ``footprints`` is read
+            back from the component, ``footprint_library_path`` is the
+            library path stored on the model (empty: bound by name only).
+            Altium's Models pane is not redrawn after a scripted link.
         """
+        from ..bridge.exceptions import AltiumError
         from ..preferences import check_on, check_skipped
         bridge = get_bridge()
         checking = check_on("pins_pads")
         parity = None
+        warnings: list[str] = []
+        try:
+            front = await bridge.send_command_async(
+                "application.get_active_document", {}) or {}
+        except AltiumError:
+            front = {}
+        schlib = str(front.get("file_path") or "") if isinstance(front, dict) else ""
+        if not schlib.lower().endswith(".schlib"):
+            schlib = await _unfocused_schlib(bridge)
+        # Reading the pads brings their PcbLib forward, so the SchLib is
+        # put back afterwards.
+        pads, where = await _footprint_pads(
+            bridge, footprint_name, schlib, footprint_library)
+        if schlib:
+            await _focus_document(bridge, schlib)
         if checking:
-            # Pads first: reading them brings their PcbLib forward, so the
-            # SchLib in front is put back afterwards.
-            from ..bridge.exceptions import AltiumError
-            try:
-                front = await bridge.send_command_async(
-                    "application.get_active_document", {}) or {}
-            except AltiumError:
-                front = {}
-            schlib = str(front.get("file_path") or "") if isinstance(front, dict) else ""
-            if not schlib.lower().endswith(".schlib"):
-                schlib = ""
-            pads, where = await _footprint_pads(bridge, footprint_name, schlib)
-            if schlib:
-                await _focus_document(bridge, schlib)
             if pads is None:
                 return {"success": False, "check": "pins_pads",
                     "if_the_user_insists": if_the_user_insists("pins_pads"), "reason": (
@@ -4911,20 +4988,30 @@ def register_library_tools(mcp):
                     "if_the_user_insists": if_the_user_insists("pins_pads"),
                         "pin_pad_parity": parity,
                         "reason": parity_reason(parity, footprint_name)}
+        if where:
+            twins = _same_named(await _open_pcblibs(bridge), where)
+            if twins:
+                warnings.append(
+                    f"other open libraries are also named {os.path.basename(where)}: "
+                    + ", ".join(twins) + f"; the model is bound to {where}")
+        else:
+            warnings.append(
+                f"no open .PcbLib holds {footprint_name!r}: the model is bound "
+                "by name only, and the ECO takes the first library of any "
+                "open project that has it")
         await _bring_schlib_forward(bridge)
         result = await bridge.send_command_async(
             "library.link_footprint",
             {
                 "component_name": component_name,
                 "footprint_name": footprint_name,
-                # footprint_library is deliberately NOT sent: nothing on
-                # the Pascal side reads it, and the only place it could
-                # go is the datafile link location, which wedges AD26.
+                # Written on the datafile link in place on the Pascal side,
+                # never through AddDataFileLink, which wedges AD26 on a path.
+                "footprint_library_path": where,
                 "replace": "true" if replace else "false",
             },
         )
         if component_name and isinstance(result, dict) and result.get("success"):
-            from ..bridge.exceptions import AltiumError
             try:
                 details = await bridge.send_command_async(
                     "library.get_component_details",
@@ -4938,10 +5025,23 @@ def register_library_tools(mcp):
                     if isinstance(m, dict)
                     and str(m.get("model_type", "")).upper() == "PCBLIB"]}
         if isinstance(result, dict):
+            stored = str(result.get("footprint_library_path") or "")
+            if where and result.get("success") and (
+                    os.path.normcase(stored) != os.path.normcase(where)):
+                warnings.append(
+                    f"the library path read back as {stored!r}, not {where!r}: "
+                    "set it with lib_set_model_source")
+            # The SchLib that took the link comes forward again: reading the
+            # pads and the model left another document in front.
+            linked = str(result.get("library_path") or "")
+            await _focus_document(
+                bridge, linked if os.path.dirname(linked) else schlib)
             if parity is not None:
                 result = {**result, "pin_pad_parity": parity}
             elif not checking:
                 result = {**result, "unchecked": check_skipped("pins_pads")}
+            if warnings:
+                result = {**result, "warnings": warnings}
         return result
 
     @mcp.tool()

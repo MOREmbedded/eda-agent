@@ -65,7 +65,7 @@ def test_the_link_reply_lists_the_footprints_stored(monkeypatch):
     out = asyncio.run(_tools(monkeypatch, b)["lib_link_footprint"](
         component_name="U1", footprint_name="FP1"))
     assert out["success"] and out["footprints"] == ["FP1"]
-    assert b.calls[-1] == "library.get_component_details"
+    assert "library.get_component_details" in b.calls
     assert out["pin_pad_parity"]["ok"]
 
 
