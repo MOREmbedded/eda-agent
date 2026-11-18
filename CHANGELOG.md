@@ -16,6 +16,20 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`pcb_autoroute` with `nets=` routes those nets and nothing more.**
+  Asked for five nets on a live board, it came back with 438 tracks and
+  203 vias, 104 of them in pads. The job took every pour's copper off the
+  board before routing, so each GND or 3V3 pad a pour already joined to
+  its stitching vias read as apart and got a via of its own. A job asked
+  for some nets now keeps those nets' poured copper, routes only what the
+  board's copper leaves apart (join_existing), does not pour again, and
+  sends no copper of any other net. An inner layer used as a plane takes
+  its nets from the copper its pours left, not from the pour outlines
+  alone, so a 3V3 plane poured over a board-wide GND pour reads as 3V3
+  (default engine). `pcb_autoroute` puts no via in any pad unless
+  `pad_vias` ("bga", "ic" or "any") asks for it; the router's new
+  `pad_vias="none"` holds through its fallback.
+
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on
   `sys.path`, and its first metadata lookup kept that zip open for the

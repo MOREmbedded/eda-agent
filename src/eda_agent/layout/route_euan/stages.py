@@ -73,7 +73,9 @@ class StageOptions:
     # filled and capped, and a demo board under "ic" came out with 90 of
     # them, a USB connector's pins among them. The fallback (route_adaptive)
     # still widens it to "ic" when that alone leaves connections unmade,
-    # and says so in stage_report.fallback.
+    # and says so in stage_report.fallback. "none" puts a via in no pad at
+    # all, a BGA's ball and an exposed pad included, and the fallback
+    # keeps it so (pcb_autoroute's default: via-in-pad is opted into).
     pad_vias: str = "bga"
     # Intra-pair skew left after bumps.
     pair_skew: float = 5.0
