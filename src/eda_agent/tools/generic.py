@@ -378,6 +378,27 @@ async def _send_rule_aware(tool: str, object_types: list[str],
     return await logged_rule_edit(get_bridge(), tool, params, run)
 
 
+def _stub_records(pins: list[dict[str, Any]]) -> list[str]:
+    """``designator,pin,label`` for each floating pin, once.
+
+    A pin listed twice (a multi-part symbol's pin shared by every part can
+    come once per part) was stubbed twice: two wires and two labels drawn
+    over each other on the same pin. A designator or pin number
+    holding the record's separators cannot be sent and is left out."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for p in pins:
+        desig = str(p.get("designator", "")).strip()
+        pin_num = str(p.get("pin_number", "")).strip()
+        if not desig or not pin_num or any(c in desig + pin_num for c in ",|"):
+            continue
+        if (desig, pin_num) in seen:
+            continue
+        seen.add((desig, pin_num))
+        out.append(f"{desig},{pin_num},{desig}_{pin_num}")
+    return out
+
+
 def _cursor_to_view_centre() -> bool:
     """Put Altium's 3D cursor on the middle of its view, where the 2D fit
     put the footprint. True when the view was found and told.
@@ -2089,17 +2110,22 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Draw a short wire stub + net label on every unconnected schematic pin.
 
-        Each floating pin (as `proj_get_unconnected_pins` finds them) gets
-        a wire out from its end and a net label "<designator>_<pin_number>",
-        so ERC reports it as a named single-pin net.
+        Each floating pin (as `proj_get_unconnected_pins` finds them) on the
+        active sheet gets a wire out from its end and a net label
+        "<designator>_<pin_number>", so ERC reports it as a named single-pin
+        net. A multi-part symbol's pin is stubbed on the part that shows it,
+        once. Labels read along the stub, away from the part; one that would
+        overlap another placed in the same call gets a longer stub.
 
         Args:
             stub_length_mils: Length of each stub wire in mils (default 100)
             only_designators: If given, only stub pins on these components
 
         Returns:
-            Dictionary with "stubbed" and "failed" counts, plus the pin list
-            that was acted on
+            "stubbed" and "failed" counts, "lengthened" (stubs made longer
+            to keep labels apart), "failed_pins" (each pin not stubbed and
+            why: its part is not on the active sheet, or no part of it here
+            shows that pin) and "pins", the records acted on.
         """
         bridge = get_bridge()
         floating = await bridge.send_command_async(
@@ -2112,14 +2138,10 @@ def register_generic_tools(mcp):
         if not pins:
             return {"stubbed": 0, "failed": 0, "pins": [], "note": "no unconnected pins found"}
 
-        records = []
-        for p in pins:
-            desig = str(p.get("designator", "")).strip()
-            pin_num = str(p.get("pin_number", "")).strip()
-            if not desig or not pin_num:
-                continue
-            label = f"{desig}_{pin_num}"
-            records.append(f"{desig},{pin_num},{label}")
+        records = _stub_records(pins)
+        if not records:
+            return {"stubbed": 0, "failed": 0, "pins": [],
+                    "note": "no unconnected pin has a designator and a pin number"}
 
         result = await bridge.send_command_async(
             "generic.stub_pins",

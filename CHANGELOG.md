@@ -34,6 +34,15 @@ maturity classification for every tool.
   all 38 parts on a live sheet, the ones placed by hand included. It now
   takes `designators=[...]` (as well as `names`) and refuses a call that
   names nothing unless `all=True` is passed.
+- **`sch_stub_pins` keeps its labels apart and says which pins it left.**
+  A pin listed twice is stubbed once; a label reads along its stub and
+  away from the part (turned 90 degrees on an up or down pin, ending at
+  the stub on a left or down one), and one that would overlap a label
+  placed before it in the same call gets a longer stub. Each pin not
+  stubbed comes back in `failed_pins` with why (its part is not on the
+  active sheet, or no part of it there shows the pin). A multi-part
+  symbol's pins were already taken only from the part that shows them
+  (since 0.8.0).
 
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on
