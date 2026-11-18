@@ -173,6 +173,9 @@ ADDED: dict[str, frozenset[str]] = {
     "pcb_audit_placement_plan": frozenset({"board"}),
     # Reply distances from the near point, and the board-edge gap.
     "pcb_find_free_spot": frozenset({"distance", "edge_clearance"}),
+    # An arc read back from a footprint: its centre and radius, in mm like
+    # the tracks beside it (a mil session read them as mils, 2026-11-18).
+    "lib_get_footprint_primitives": frozenset({"xc", "yc", "r"}),
     "pcb_route_diff_pair": frozenset({"centerline"}),
 }
 
