@@ -26,6 +26,14 @@ from pathlib import Path
 _ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 
 
+@pytest.fixture(autouse=True)
+def _altium_is_alive(monkeypatch):
+    """These restarts run against a made-up pid; the process check that
+    gives up on an exited Altium is covered in
+    test_restart_probes_do_not_queue.py."""
+    monkeypatch.setattr(cli, "_altium_gone", lambda pid: "")
+
+
 def test_a_fresh_marker_is_a_restart_and_an_old_one_is_not(tmp_path):
     assert not ab.maintenance_in_progress(tmp_path)
     marker = tmp_path / ab.MAINTENANCE_FILE

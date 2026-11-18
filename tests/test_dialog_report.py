@@ -169,6 +169,20 @@ def test_ocr_copies_of_known_strings_are_dropped(monkeypatch):
     assert out["ocr_text"] == ["Real message here"]
 
 
+def test_painted_glyphs_are_not_reported_as_the_message(monkeypatch):
+    """MEASURED on a script error box (AD 26.11): the recogniser read the
+    close glyph as "x", the error icon as "Q" and OK as "0K" before the
+    real text, and every reply quoted "x" as what Altium said."""
+    monkeypatch.setattr(dr.ocr, "read_window_text", lambda *a, **k: [
+        "x", "Q", "Wrong number of params", "0K"])
+
+    out = dr.describe_dialog(_window("Error", "TMessageForm",
+                                     [("TXPExtPanel", ""), ("TXPBitBtn", "OK")]))
+
+    assert out["ocr_text"] == ["Wrong number of params"]
+    assert "Wrong number of params" in dr._summarise([out], True)
+
+
 def test_recognising_happens_once_per_dialog_not_once_per_look(monkeypatch):
     """A driver POLLS, and recognising costs about two seconds.
 

@@ -117,6 +117,49 @@ End;
                                       external={"eschcomponent"}) == []
 
 
+#: REPORTED from outside on script 2026.10.18.1: obj_modify of a SchLib
+#: pin's Designator stopped the bridge with "Undeclared identifier: Pin".
+#: SetSchProperty cast to a local it never declared, on one line inside a
+#: Begin..End; the merge of upstream 0.7.1 (0c6e729e) removed the cast.
+PIN_BREAK = """Function SetSchProperty(Obj : ISch_GraphicalObject; PropName : String; Value : String) : Integer;
+Var
+    Matched : Boolean;
+Begin
+    Matched := True;
+    If PropName = 'Designator' Then
+    Begin
+        If Obj.ObjectId = ePin Then
+        Begin Pin := Obj; Pin.Designator := Value; End;
+    End;
+    Result := 1;
+End;
+"""
+
+#: The same class stopped every obj_batch_modify on 2026.10.18.1: an
+#: undeclared assignment (Gen_BatchModify's Keyed) as the routine's first
+#: statement, while one-by-one obj_modify worked. Fixed in 8ec0cd9e.
+BATCH_BREAK = """Function Gen_BatchModify(Params : String; RequestId : String) : String;
+Var
+    Operations : String;
+Begin
+    Operations := Params;
+    Keyed := (Copy(Operations, 1, 6) = 'scope=');
+    Result := Operations;
+End;
+"""
+
+
+def test_a_one_line_cast_to_an_undeclared_pin_is_flagged(lint, unit):
+    found = lint._scan_undeclared_read([unit(PIN_BREAK)],
+                                       external={"epin"})
+    assert "Pin" in _names(found)
+
+
+def test_the_batch_crash_is_flagged(lint, unit):
+    found = lint._scan_undeclared_assignment([unit(BATCH_BREAK)])
+    assert _names(found) == {"Keyed"}
+
+
 def test_a_routine_from_another_unit_is_in_scope(lint, unit):
     a = unit("""Function Helper(X : Integer) : Integer;
 Begin

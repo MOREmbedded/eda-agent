@@ -128,6 +128,29 @@ _executor = ThreadPoolExecutor(max_workers=1)
 _CALL = threading.local()
 
 
+@contextlib.contextmanager
+def no_queue_wait():
+    """Calls on this thread end at their own deadline, never queued on.
+
+    A request nobody has taken waits on, up to _MAX_QUEUE_EXTENSIONS more
+    windows, while another session holds the loop or a restart is under
+    way (the maintenance marker). That is right for a tool call and wrong
+    for a probe whose whole question is "does the loop answer now".
+
+    MEASURED (2026-11-18, logs/crashes/*_project.close_*.json): the
+    restart after a crash wrote the maintenance marker, then its own
+    pings waited behind that marker, 30 windows each, two pings per try.
+    The loop it was waiting for never came back, and the restart said so
+    only after 206 s instead of its 90 s.
+    """
+    before = getattr(_CALL, "no_queue_wait", False)
+    _CALL.no_queue_wait = True
+    try:
+        yield
+    finally:
+        _CALL.no_queue_wait = before
+
+
 #: How a request takes its turn in Altium (ScanForRequestFile in Main.pas):
 #: inside a tool call its commands keep the turn together; background work
 #: such as the dashboard's reads waits while any session has a request.
@@ -1193,6 +1216,8 @@ class AltiumBridge:
                    else max(0, int(max_extensions)))
         extensions = 0
         queue_extensions = 0
+        queue_cap = (0 if getattr(_CALL, "no_queue_wait", False)
+                     else _MAX_QUEUE_EXTENSIONS)
         poll_count = 0
         first_appearance: Optional[float] = None
         parse_errors = 0
@@ -1369,7 +1394,7 @@ class AltiumBridge:
                 # to be asked to pause for a deploy.
                 restarting = maintenance_in_progress(workspace_dir)
                 if (not progress_path.exists()
-                        and queue_extensions < _MAX_QUEUE_EXTENSIONS
+                        and queue_extensions < queue_cap
                         and self._request_path(request_id).exists()
                         and (restarting or _queue_is_alive(workspace_dir))):
                     queue_extensions += 1
@@ -2188,7 +2213,7 @@ class AltiumBridge:
             return False
 
     def ping_with_version(
-        self, require_process: bool = True
+        self, require_process: bool = True, wait_in_queue: bool = True
     ) -> Optional[dict[str, Any]]:
         """Round-trip a ping. The response dict, or None on any failure.
 
@@ -2199,7 +2224,18 @@ class AltiumBridge:
         same table's word would make the report agree with the fault
         instead of catching it. Everywhere else the gate stays, because
         it turns a certain IPC timeout into an immediate answer.
+
+        ``wait_in_queue`` False ends the ping at its 3 s deadline even
+        while a restart or another session holds the loop (no_queue_wait).
         """
+        guard = contextlib.nullcontext() if wait_in_queue else no_queue_wait()
+        try:
+            with guard:
+                return self._ping_once(require_process)
+        except Exception:  # any failure is the answer: Altium did not reply
+            return None
+
+    def _ping_once(self, require_process: bool) -> Optional[dict[str, Any]]:
         try:
             if require_process:
                 result = self.send_command("application.ping", timeout=3.0)
