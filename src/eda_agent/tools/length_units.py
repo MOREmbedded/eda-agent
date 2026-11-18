@@ -18,6 +18,9 @@ def register_length_units_tools(mcp) -> None:
         thickness_mm may be given instead. Replies rename such keys to
         this unit and say ``length_units``. One call can use the other
         unit by giving ``length_units`` beside its own arguments.
+        A package drawing (``package``, ``drafting``, ``spec_json``) is
+        read in mm whatever this unit, unless it names its own with a
+        top-level ``"units": "mil"``; the reply says ``package_units``.
 
         The setting is this session's own; other sessions keep theirs. A
         new session starts in the unit chosen on the Config tab of the

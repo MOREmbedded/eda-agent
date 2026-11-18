@@ -355,18 +355,40 @@ def test_tool_invoke_converts_the_tool_it_runs_once(workspace, families):
 
 
 def test_a_package_is_a_millimetre_document_on_every_tool(workspace, families, monkeypatch):
+    """A package drawing is in mm whatever the session's unit. MEASURED
+    2026-11-18: read in a mil session's unit, a 1.27 mm pitch became
+    0.03 mm and the footprint came out 39 times too small."""
     server, seen = _server_with_family()
-    package = {"family": "soic", "pins": 8, "pitch": {"min": 50, "nom": 50, "max": 50},
-               "body_x": [190, 200]}
-    _call(server, "easyeda_make_part", {"package": json.dumps(package), "x": 100})
-    # Given in mils (the session's unit), it reaches the tool in mm, as
-    # text when it came as text; the pin count is not a length.
+    package = {"family": "soic", "pins": 8, "pitch": {"min": 1.27, "nom": 1.27, "max": 1.27},
+               "body_x": [4.826, 5.08]}
+    out = _call(server, "easyeda_make_part", {"package": json.dumps(package), "x": 100})
     got = seen["part"]["package"]
     got = json.loads(got) if isinstance(got, str) else got
-    assert got["pins"] == 8 and got["family"] == "soic"
-    assert got["pitch"] == {"min": 1.27, "nom": 1.27, "max": 1.27}
-    assert got["body_x"] == [4.826, 5.08]
+    assert got == package
     assert seen["part"]["x"] == 100
+    assert out["package_units"] == "mm" and out["length_units"] == "mil"
+    # The same in a mm session, and through tool_invoke.
+    _call(server, "length_units", {"to": "mm"})
+    out = _call(server, "tool_invoke", {"name": "easyeda_make_part",
+                                        "arguments": {"package": package, "x": 2.54}})
+    assert seen["part"]["package"] == package and seen["part"]["x"] == 100
+    assert out["result"]["package_units"] == "mm"
+
+
+def test_a_package_in_mils_says_so_itself(workspace, families, monkeypatch):
+    server, seen = _server_with_family()
+    _call(server, "length_units", {"to": "mm"})
+    package = {"units": "mil", "family": "soic", "pins": 8,
+               "pitch": {"min": 50, "nom": 50, "max": 50}, "body_x": [190, 200]}
+    out = _call(server, "easyeda_make_part", {"package": json.dumps(package)})
+    # Converted to mm, as text when it came as text; the pin count is not
+    # a length, and the unit it named is not passed on.
+    got = seen["part"]["package"]
+    got = json.loads(got) if isinstance(got, str) else got
+    assert got == {"family": "soic", "pins": 8,
+                   "pitch": {"min": 1.27, "nom": 1.27, "max": 1.27},
+                   "body_x": [4.826, 5.08]}
+    assert out["package_units"] == "mil"
 
 
 def test_a_tool_that_converts_itself_is_handed_the_sessions_unit(workspace, families, monkeypatch):

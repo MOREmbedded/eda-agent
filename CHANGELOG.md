@@ -16,6 +16,32 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`pcb_place_vias` places the size a via entry gives in mm.** A
+  `size_mm` / `hole_size_mm` on an entry was renamed to `size_mils` by the
+  session's unit handling and then ignored, so every via came out at the
+  50/28 mil default; in a mm session a plain `size` was not converted.
+  `lib_add_footprint_vias` entries take `size_mm` too.
+- **A package drawing is read in mm whatever the session's unit.**
+  `package`, `drafting`, `spec_json` and `solids` were read in the
+  session's unit, so in a mil session a datasheet's 1.27 mm pitch became
+  0.03 mm. A document in mils says so with a top-level `"units": "mil"`,
+  and the reply names the unit each was read in (`package_units`).
+- **`lib_save_footprint_library` writes the footprint at its own origin.**
+  On Altium 25 and later it used `SaveComponentWithLibrary`, which wrote
+  every primitive about 1270 mm (the library origin) away. Every version
+  now goes through a fresh library and a realigned copy; an existing
+  `out_path` is refused.
+- **`pcb_query_region` no longer stops the script on an unknown property.**
+  Its refusal called a helper without its argument ("Wrong number of
+  params", and a loop restart). Names are now checked before the call,
+  with the valid ones and close matches in the reply; a lint rule fails
+  any routine that takes parameters named without them.
+- **`proj_close` of a project with no loaded document no longer crashes
+  Altium.** The close loaded a member inside its walk of the project's
+  documents (an access violation in ScriptingSystem.DLL); it now refuses
+  with `no_loaded_documents`, and the tool loads the sheets in a call of
+  their own and closes again.
+
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on
   `sys.path`, and its first metadata lookup kept that zip open for the

@@ -5945,7 +5945,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 
@@ -6005,8 +6005,8 @@ Begin
         + ',"truncated":' + BoolToJsonStr((Count >= Limit) And HasMore)
         + ',"object_type":"' + EscapeJsonString(ObjTypeStr) + '"'
         + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
-        + ',"bounds":{"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
-        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}'
+        + ',"bounds":{"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1)
+        + ',"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}'
         + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 

@@ -8912,14 +8912,45 @@ End;
 { Focus follows the active DOCUMENT, so the project is focused by showing one  }
 { of its documents. Only LOADED ones: opening a member here would load it as a }
 { free document, the way App_SetActiveDocument records, and focus nothing.     }
-Function FocusProjectForClose(Project : IProject) : Boolean;
+{                                                                             }
+{ NEVER LOADS A MEMBER. It used to, when none was loaded: Client.OpenDocument }
+{ inside the walk of DM_LogicalDocuments, with the IDocument of that walk     }
+{ still held. Opening a member rebuilds the project's document model, so the }
+{ walk went on, and the close after it ran, on interfaces Altium had replaced.}
+{ MEASURED 2026-11-18 on AD 26.11.1: proj_close of a project with no loaded   }
+{ document stopped Altium's script engine with an access violation in        }
+{ ScriptingSystem.DLL, and the loop did not come back. The member paths are   }
+{ now read first, as text, and no document interface is held while a         }
+{ document is shown. A project with nothing loaded is refused with           }
+{ NoneLoaded set; proj_close loads its sheets in a call of their own and      }
+{ closes again.                                                               }
+Function ProjectMemberPaths(Project : IProject) : String;
 Var
     J : Integer;
     Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If Path = '' Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+Function FocusProjectForClose(Project : IProject; Var NoneLoaded : Boolean) : Boolean;
+Var
     ServerDoc : IServerDocument;
-    Path, Target : String;
+    Paths, Path, Target : String;
+    K : Integer;
 Begin
     Result := False;
+    NoneLoaded := False;
     If Project = Nil Then Exit;
     Target := '';
     Try Target := Project.DM_ProjectFullPath; Except Target := ''; End;
@@ -8929,36 +8960,27 @@ Begin
         Result := True;
         Exit;
     End;
-    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Paths := ProjectMemberPaths(Project);
+    NoneLoaded := True;
+    While Paths <> '' Do
     Begin
-        Doc := Project.DM_LogicalDocuments(J);
-        If Doc = Nil Then Continue;
-        Path := DocFullPath(Doc);
-        If Path = '' Then Continue;
+        K := Pos('|', Paths);
+        If K > 0 Then
+        Begin
+            Path := Copy(Paths, 1, K - 1);
+            Paths := Copy(Paths, K + 1, Length(Paths) - K);
+        End
+        Else
+        Begin
+            Path := Paths;
+            Paths := '';
+        End;
         ServerDoc := Nil;
         Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
         If ServerDoc = Nil Then Continue;
+        NoneLoaded := False;
         Try Client.ShowDocument(ServerDoc); Except End;
-        If FocusedProjectPathIs(Target) Then
-        Begin
-            Result := True;
-            Exit;
-        End;
-    End;
-    { NO MEMBER LOADED: nothing above could be shown, and the project could }
-    { not be closed. MEASURED: opening a member (load_project_sheets, or    }
-    { OpenObject) focuses the project and the close then works. The Client }
-    { API keeps the membership; RunProcess Client:OpenDocument does not.    }
-    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
-    Begin
-        Doc := Project.DM_LogicalDocuments(J);
-        If Doc = Nil Then Continue;
-        Path := DocFullPath(Doc);
-        If (Path = '') Or (Not FileExists(Path)) Then Continue;
         ServerDoc := Nil;
-        Try ServerDoc := Client.OpenDocument(Doc.DM_DocumentKind, Path); Except ServerDoc := Nil; End;
-        If ServerDoc = Nil Then Continue;
-        Try Client.ShowDocument(ServerDoc); Except End;
         If FocusedProjectPathIs(Target) Then
         Begin
             Result := True;
@@ -9053,13 +9075,14 @@ Function Proj_Close(Params : String; RequestId : String) : String;
 Var
     ProjectPath, Discarded, StillDirty, More : String;
     ClosedInstead, BeforeClose, Why : String;
-    SaveFirst, Closed : Boolean;
+    SaveFirst, Closed, NoneLoaded : Boolean;
     Attempts : Integer;
     Workspace : IWorkspace;
     Project : IProject;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     SaveFirst := ExtractJsonValue(Params, 'save') <> 'false';
+    NoneLoaded := False;
     Discarded := '';
 
     Workspace := GetWorkspace;
@@ -9076,15 +9099,16 @@ Begin
 
             { BEFORE ANY SAVE OR DISCARD, so a close that has to be refused  }
             { leaves the project exactly as it found it.                     }
-            If Not FocusProjectForClose(Project) Then
+            If Not FocusProjectForClose(Project, NoneLoaded) Then
             Begin
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":false,"closed":false,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"discarded":[],"attempts":0,"closed_instead":[]'
+                    + ',"no_loaded_documents":' + BoolToJsonStr(NoneLoaded)
                     + ',"reason":"Altium closes the FOCUSED project, and this '
-                    + 'one could not be made focused because none of its '
-                    + 'documents is loaded. Nothing was closed or changed. '
+                    + 'one could not be made focused: none of its loaded '
+                    + 'documents focused it. Nothing was closed or changed. '
                     + 'Load a sheet with proj_load_sheets, or activate one of '
                     + 'its documents, and close again."}');
                 Exit;
@@ -9131,7 +9155,7 @@ Begin
                 { says, so focus the named one before EVERY attempt: focus   }
                 { can move between one attempt and the next.                  }
                 Project := FindProjectByPath(Workspace, ProjectPath);
-                If Not FocusProjectForClose(Project) Then Break;
+                If Not FocusProjectForClose(Project, NoneLoaded) Then Break;
                 BeforeClose := OpenProjectPaths(Workspace);
                 Attempts := Attempts + 1;
                 ResetParameters;
@@ -36561,21 +36585,15 @@ Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PATH', 'out_path must name a .PcbLib');
         Exit;
     End;
-    { 25 and later: Altium's own one-footprint save, which writes over an  }
-    { existing output as it always has. AD21's script engine stopped in    }
-    { SaveComponentWithLibrary, so there the footprint goes through a fresh }
-    { library document instead, which only makes a new file.              }
-    If AltiumVersionCode(0) >= 2500 Then
-    Begin
-        Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
-        Result := BuildSuccessResponse(RequestId, JsonObj(
-            JsonStr('library', LibPath) + ','
-            + JsonStr('footprint_name', FpWanted) + ','
-            + JsonStr('out_path', OutPath) + ','
-            + JsonBool('reported', Said) + ','
-            + JsonStr('route', 'save_component_with_library')));
-        Exit;
-    End;
+    { ONE ROUTE ON EVERY VERSION: a fresh library, a full copy, realigned. }
+    { Altium's one-call SaveComponentWithLibrary was kept on 25 and later   }
+    { (AD21's script engine stopped in it), and it writes the footprint's   }
+    { primitives at their ABSOLUTE place in the source library, which sits  }
+    { at the library origin, about 50000,50000 mil (see FootprintOriginX).  }
+    { MEASURED 2026-11-18 on AD 26.11.1: the written footprint had every    }
+    { pad about 1270 mm from its origin, while lib_copy_footprint of the    }
+    { same footprint, which realigns with AlignCopiedFootprint, was right.  }
+    { This route realigns the same way and checks the copy before saving.   }
     If Client.GetDocumentByPath(OutPath) <> Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',
@@ -49617,7 +49635,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 
@@ -49677,8 +49695,8 @@ Begin
         + ',"truncated":' + BoolToJsonStr((Count >= Limit) And HasMore)
         + ',"object_type":"' + EscapeJsonString(ObjTypeStr) + '"'
         + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
-        + ',"bounds":{"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
-        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}'
+        + ',"bounds":{"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1)
+        + ',"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}'
         + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 

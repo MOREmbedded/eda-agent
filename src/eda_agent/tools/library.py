@@ -1024,14 +1024,16 @@ def _fills_payload(fills: list[dict[str, Any]]) -> tuple[str, list[str]]:
 
 
 def _vias_payload(vias: list[dict[str, Any]], size: float,
-                  hole_size: float) -> tuple[str, list[str]]:
+                  hole_size: float, units: str = "mil") -> tuple[str, list[str]]:
     """The ``vias`` batch payload for library.add_footprint_vias.
 
     Each via is ``{"x": .., "y": ..}`` with an optional ``size`` and
-    ``hole_size`` (the call's defaults otherwise). A via that is not
-    numeric, or whose hole is not inside its diameter, is named in the
-    problems and left out.
+    ``hole_size`` (the call's defaults otherwise), in ``units``, or
+    ``size_mm`` / ``size_mils`` and the like in the unit they name. A via
+    that is not numeric, or whose hole is not inside its diameter, is
+    named in the problems and left out.
     """
+    from ..units import entry_length
     ops: list[str] = []
     problems: list[str] = []
     for i, via in enumerate(vias or []):
@@ -1040,8 +1042,8 @@ def _vias_payload(vias: list[dict[str, Any]], size: float,
             continue
         try:
             x, y = float(via["x"]), float(via["y"])
-            d = float(via.get("size", size))
-            h = float(via.get("hole_size", hole_size))
+            d = float(entry_length(via, "size", units, size))
+            h = float(entry_length(via, "hole_size", units, hole_size))
         except (TypeError, ValueError, KeyError):
             problems.append(f"via {i} needs numeric x and y")
             continue
@@ -2942,8 +2944,10 @@ def register_library_tools(mcp):
         Dimensions min/nom/max, cited in ``source``; nominal-only warns.
 
         Args:
-            package: the PackageSpec as an object (or its JSON text):
-                ``family`` (chip, melf, molded, sod, sot23, sot89, sot223,
+            package: the PackageSpec as an object (or its JSON text),
+                every length in mm whatever the session's unit (a
+                top-level ``"units": "mil"`` reads it in mils; the reply
+                says ``package_units``): ``family`` (chip, melf, molded, sod, sot23, sot89, sot223,
                 dpak, soic, son, qfn, qfp, plcc, bga, lga, crystal2,
                 crystal4, dip, header, radial, axial, to220, to92,
                 connector, custom) and the dimensions it needs, each a
@@ -3444,7 +3448,8 @@ def register_library_tools(mcp):
 
         Args:
             vias: list of ``{"x": .., "y": ..}``, each with an optional
-                ``size`` and ``hole_size`` overriding the defaults below.
+                ``size`` and ``hole_size`` overriding the defaults below
+                (``size_mm`` / ``hole_size_mm`` in mm whatever ``units``).
             size: Via diameter for vias that give none (default 40 mil).
             hole_size: Drill for vias that give none (default 20 mil).
             footprint_name: footprint to write into; empty uses the
@@ -3461,7 +3466,7 @@ def register_library_tools(mcp):
         refusal = _units_refusal(units)
         if refusal:
             return refusal
-        payload, problems = _vias_payload(vias, size, hole_size)
+        payload, problems = _vias_payload(vias, size, hole_size, units)
         if not payload:
             return {"error": "No valid vias", "added": 0,
                     "total": len(vias or []), "refused": problems}
@@ -7789,14 +7794,15 @@ def register_library_tools(mcp):
 
         Args:
             footprint_name: The footprint.
-            out_path: Full path of the .PcbLib to write; never the source.
-                On Altium 25 and later an existing file is written over; on
-                older versions it must be a new file.
+            out_path: Full path of the .PcbLib to write; never the source,
+                and a new file: an existing one is refused.
             library_path: The source library. Defaults to the focused one.
 
         Returns:
-            ``written`` (a new file is at out_path) and ``reported``
-            (whether the new destination was saved).
+            ``written`` (a new file is at out_path), ``reported``
+            (whether the new destination was saved) and
+            ``primitives_realigned`` (moved to sit where they sat on the
+            source footprint's origin; -1 when the origins agreed).
         """
         import os
         if not footprint_name.strip():
@@ -7805,6 +7811,11 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": "out_path must be a full path"}
         if Path(out_path).suffix.lower() != ".pcblib":
             return {"ok": False, "reason": "out_path is a .PcbLib"}
+        if Path(out_path).exists():
+            return {"ok": False, "reason": (
+                f"{out_path} already exists; give a new file. The footprint "
+                "is written through a fresh library, which never writes "
+                "over another file.")}
         path = library_path.strip()
         if path:
             if not Path(path).is_file():

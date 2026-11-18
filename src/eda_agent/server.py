@@ -418,8 +418,10 @@ def _lengths_in(server, name: str, arguments: dict):
         if inner in _BUILT:
             converted, plan = _lengths_in(server, inner, arguments["arguments"])
             return {**arguments, "arguments": converted}, ("invoke", unit, inner, plan)
+        docs = lengths.document_units(inner, arguments["arguments"])
         args = one(inner, arguments["arguments"])
-        return {**arguments, "arguments": args}, ("invoke", unit, inner, ("tool", unit, inner, args))
+        return {**arguments, "arguments": args}, ("invoke", unit, inner,
+                                                  ("tool", unit, inner, args, docs))
     if name in _BUILT:
         key = FOLDS[name].key
 
@@ -427,8 +429,9 @@ def _lengths_in(server, name: str, arguments: dict):
             tool = _BUILT[name].get(str(call.get(key) or "").strip())
             if tool is None or not isinstance(call.get("args"), dict):
                 return call, ("tool", unit, "", {})
+            docs = lengths.document_units(tool, call["args"])
             args = one(tool, call["args"])
-            return {**call, "args": args}, ("tool", unit, tool, args)
+            return {**call, "args": args}, ("tool", unit, tool, args, docs)
 
         if isinstance(arguments.get("items"), list):
             done = [member(c) if isinstance(c, dict) else (c, ("tool", unit, "", {}))
@@ -437,8 +440,9 @@ def _lengths_in(server, name: str, arguments: dict):
                     ("items", unit, [p for _, p in done]))
         call, plan = member(arguments)
         return call, plan
+    docs = lengths.document_units(name, arguments)
     args = one(name, arguments)
-    return args, ("tool", unit, name, args)
+    return args, ("tool", unit, name, args, docs)
 
 
 def _reply_lengths(body, plan):
@@ -448,7 +452,8 @@ def _reply_lengths(body, plan):
         tool, args = plan[2], plan[3]
         if not tool:
             return {**body, lengths.OVERRIDE: unit} if isinstance(body, dict) else body
-        return lengths.reply_in(tool, body, unit, args)
+        return lengths.reply_in(tool, body, unit, args,
+                                plan[4] if len(plan) > 4 else None)
     if kind == "invoke":
         if isinstance(body, dict) and "result" in body:
             return {**body, "result": _reply_lengths(body["result"], plan[3]),
