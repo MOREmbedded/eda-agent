@@ -287,6 +287,65 @@ Begin
     Try Application.ProcessMessages; Except End;
 End;
 
+{ RefreshSchLibPanels - make the library editor AND its Properties panel show }
+{ what a scripted edit wrote. Live on AD 26.11 the panel kept the old values  }
+{ after lib_create_ic_symbol and lib_batch_set_params: it follows the        }
+{ selection, and repainting the document does not tell it anything changed. }
+{ So the component announces a modify (SCHM_BeginModify / SCHM_EndModify,    }
+{ the broadcast the panels listen to), is repainted, and is selected again:  }
+{ moved off and back, with the editor processing its messages in between,   }
+{ the way a selection is measured to take effect (see the part-1 reset      }
+{ above). Comp Nil uses the current component. Never fatal.                  }
+Procedure RefreshSchLibPanels(SchLib : ISch_Lib; Comp : ISch_Component);
+Var
+    Iter : ISch_Iterator;
+    Other, Cand : ISch_Component;
+Begin
+    If SchLib = Nil Then Exit;
+    If Comp = Nil Then
+        Try Comp := SchLib.CurrentSchComponent; Except Comp := Nil; End;
+    If Comp <> Nil Then
+    Begin
+        Try
+            SchBeginModify(Comp);
+            SchEndModify(Comp);
+        Except End;
+        Try Comp.GraphicallyInvalidate; Except End;
+    End;
+    Try SchLib.GraphicallyInvalidate; Except End;
+    If Comp <> Nil Then
+    Begin
+        Other := Nil;
+        Iter := Nil;
+        Try Iter := SchLib.SchLibIterator_Create; Except Iter := Nil; End;
+        If Iter <> Nil Then
+        Begin
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+                Cand := Iter.FirstSchObject;
+                While Cand <> Nil Do
+                Begin
+                    If Cand.I_ObjectAddress <> Comp.I_ObjectAddress Then
+                    Begin
+                        Other := Cand;
+                        Break;
+                    End;
+                    Cand := Iter.NextSchObject;
+                End;
+            Finally
+                SchLib.SchIterator_Destroy(Iter);
+            End;
+        End;
+        If Other <> Nil Then
+        Begin
+            Try SchLib.CurrentSchComponent := Other; Except End;
+            Try Application.ProcessMessages; Except End;
+        End;
+        Try SchLib.CurrentSchComponent := Comp; Except End;
+    End;
+    Try Application.ProcessMessages; Except End;
+End;
+
 { Mark the focused PcbLib document dirty. RegisterComponent persists a new }
 { footprint container, but AddPCBObject does not reliably dirty the editor  }
 { document, so newly-added pads/tracks vanished after close/reopen.          }
@@ -5931,7 +5990,33 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
-{ Lib_ReloadLibrary - Close and reopen a PcbLib so its in-memory caches are    }
+{ Lib_RefreshView - repaint the focused SchLib and select its component again }
+{ so the Properties panel shows the values a scripted edit wrote (see        }
+{ RefreshSchLibPanels). Params: component_name (optional; empty = current).  }
+Function Lib_RefreshView(Params : String; RequestId : String) : String;
+Var
+    CompName, Shown : String;
+    SchLib : ISch_Lib;
+    Comp : ISch_Component;
+Begin
+    CompName := ExtractJsonValue(Params, 'component_name');
+    SchLib := Nil;
+    Try SchLib := SchServer.GetCurrentSchDocument; Except SchLib := Nil; End;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+    Comp := Nil;
+    If CompName <> '' Then Comp := ScanLibForComponent(SchLib, CompName);
+    RefreshSchLibPanels(SchLib, Comp);
+    Shown := '';
+    Try Shown := SchLib.CurrentSchComponent.LibReference; Except Shown := ''; End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"refreshed":true,"component":"' + EscapeJsonString(Shown) + '"}');
+End;
+
+{ Lib_ReloadLibrary - Close and reopen ONE library so its in-memory caches are }
 { rebuilt from disk.                                                           }
 {                                                                              }
 { IPCB_Text.BoundingRectangle is populated when the document loads and is NOT  }
@@ -5940,21 +6025,39 @@ End;
 { the text's OLD extent, so anything that centres on the bounding box computes }
 { its correction from stale geometry and moves the text by a wrong delta.      }
 {                                                                              }
-{ Closing the document drops those caches; the next OpenObject re-reads from   }
-{ disk. Caller MUST save first -- this does not save, and a dirty close would  }
-{ either lose the edits or raise a prompt.                                     }
+{ ONLY THE LIBRARY NAMED IS CLOSED. This used WorkspaceManager:CloseObject,    }
+{ which acts on the FOCUSED document, not the one named: live on AD 26.11 it   }
+{ raised "Unsaved Changes" for the board in front, and the library was never   }
+{ reloaded, so the ECO did not see its new footprint. The library's own server }
+{ document is closed (Client.CloseDocument, as App_CloseDocument does) and     }
+{ opened again by path. A library with unsaved changes is refused rather than  }
+{ closed: that close would either lose the edits or raise the save prompt.     }
+{ Every open project holding the library is compiled again afterwards, so its  }
+{ models are resolved against what was reloaded.                               }
 {                                                                              }
-{ Params: library_path (required).                                             }
+{ Params: library_path (required, a .PcbLib or .SchLib).                       }
 Function Lib_ReloadLibrary(Params : String; RequestId : String) : String;
 Var
-    LibPath : String;
-    PcbLib : IPCB_Library;
+    LibPath, Ext : String;
+    ServerDoc, Again : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Member : IDocument;
+    WasOpen, WasModified, Holds : Boolean;
+    P, D, Recompiled : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
     If LibPath = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
             'library_path is required');
+        Exit;
+    End;
+    Ext := UpperCase(ExtractFileExt(LibPath));
+    If (Ext <> '.PCBLIB') And (Ext <> '.SCHLIB') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_LIBRARY',
+            'Only a .PcbLib or .SchLib is reloaded, never a board or sheet: ' + LibPath);
         Exit;
     End;
     If Not FileExists(LibPath) Then
@@ -5964,11 +6067,39 @@ Begin
         Exit;
     End;
 
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', LibPath);
-    Try RunProcess('WorkspaceManager:CloseObject'); Except End;
-    Try Application.ProcessMessages; Except End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(LibPath); Except ServerDoc := Nil; End;
+    WasOpen := ServerDoc <> Nil;
+    If WasOpen Then
+    Begin
+        If PathKey(ServerDoc.FileName) <> PathKey(LibPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'OTHER_DOCUMENT',
+                LibPath + ' led to ' + ServerDoc.FileName + ' instead; nothing was reloaded.');
+            Exit;
+        End;
+        WasModified := False;
+        Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
+        { Changes made through the API do not always set Modified. }
+        If DocWasEdited(LibPath) Then WasModified := True;
+        If WasModified Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODIFIED',
+                'The library has unsaved changes, so it was not reloaded and no '
+                + 'save prompt was raised. Save it (app_save_all), then reload: ' + LibPath);
+            Exit;
+        End;
+        Client.CloseDocument(ServerDoc);
+        Try Application.ProcessMessages; Except End;
+        Again := Nil;
+        Try Again := Client.GetDocumentByPath(LibPath); Except Again := Nil; End;
+        If Again <> Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_CLOSED',
+                'Altium kept the library open, so it was not reloaded: ' + LibPath);
+            Exit;
+        End;
+    End;
 
     ResetParameters;
     AddStringParameter('ObjectKind', 'Document');
@@ -5976,15 +6107,50 @@ Begin
     Try RunProcess('WorkspaceManager:OpenObject'); Except End;
     Try Application.ProcessMessages; Except End;
 
-    PcbLib := PCBServer.GetCurrentPCBLibrary;
-    If PcbLib = Nil Then
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(LibPath); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+        Result := BuildErrorResponse(RequestId, 'NOT_REOPENED',
             'Library did not reopen: ' + LibPath);
         Exit;
     End;
+
+    { The projects holding the library resolve their models again. }
+    Recompiled := 0;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        For P := 0 To Workspace.DM_ProjectCount - 1 Do
+        Begin
+            Project := Nil;
+            Try Project := Workspace.DM_Projects(P); Except Project := Nil; End;
+            If Project = Nil Then Continue;
+            Holds := False;
+            D := 0;
+            While (Not Holds) And (D < Project.DM_LogicalDocumentCount) Do
+            Begin
+                Member := Nil;
+                Try Member := Project.DM_LogicalDocuments(D); Except Member := Nil; End;
+                If Member <> Nil Then Holds := PathKey(Member.DM_FullPath) = PathKey(LibPath);
+                Inc(D);
+            End;
+            If Holds Then
+            Begin
+                Try
+                    Project.DM_Compile;
+                    Inc(Recompiled);
+                Except NoteWriteFailed('compile a project holding the library'); End;
+            End;
+        End;
+        { The compile cache would otherwise answer the next read from before. }
+        LastCompileTick := 0;
+    End;
+
     Result := BuildSuccessResponse(RequestId,
-        '{"reloaded":true,"library_path":"' + EscapeJsonString(LibPath) + '"}');
+        '{"reloaded":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"was_open":' + BoolToJsonStr(WasOpen)
+        + ',"projects_recompiled":' + IntToStr(Recompiled) + '}');
 End;
 
 { Lib_ProbeDesignator - Diagnostic. Dump the RAW geometry of one footprint's   }
@@ -6214,8 +6380,8 @@ End;
 
 Function Lib_LinkFootprint(Params : String; RequestId : String) : String;
 Var
-    FootprintName, ComponentName, ReplaceStr, MT : String;
-    Replace : Boolean;
+    FootprintName, ComponentName, ReplaceStr, MT, FpLibPath, Stored, SchLibPath : String;
+    Replace, PathSet : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Impl, Impl2, Found : ISch_Implementation;
@@ -6226,6 +6392,12 @@ Begin
     ComponentName := ExtractJsonValue(Params, 'component_name');
     ReplaceStr := ExtractJsonValue(Params, 'replace');
     Replace := (ReplaceStr = '') Or (ReplaceStr = 'true') Or (ReplaceStr = 'True') Or (ReplaceStr = '1');
+    { The full path of the .PcbLib holding the footprint. Written as the     }
+    { model's library path so a same-named library in another open project   }
+    { is not the one the ECO resolves.                                        }
+    FpLibPath := ExtractJsonValue(Params, 'footprint_library_path');
+    PathSet := False;
+    Stored := '';
 
     SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
@@ -6294,17 +6466,39 @@ Begin
         Try Impl.IsCurrent := True; Except NoteWriteFailed('footprint model IsCurrent'); End;
         { A footprint implementation MUST carry a datafile link (entity name =   }
         { the footprint) or the compiler reports "Missing Component Models".     }
-        { Bind by name: entity = footprint, EMPTY location. Never pass a full    }
-        { .PcbLib path as the location -- a path blocks/wedges AD26; empty is    }
-        { safe and is what a self-contained package wants.                       }
+        { Created by name: entity = footprint, EMPTY location. Never pass a      }
+        { .PcbLib path to AddDataFileLink -- a path there blocks/wedges AD26.    }
         Try Impl.AddDataFileLink(FootprintName, '', 'PCBLib'); Except NoteWriteFailed('footprint model library link'); End;
+        { The library path goes on the link IN PLACE, the way                 }
+        { Lib_SetModelSource writes it, never through AddDataFileLink. With   }
+        { the location empty the model is "any library", and the ECO took a   }
+        { same-named .PcbLib from another open project and reported the       }
+        { footprint not found. A path is not "use the component library".     }
+        If FpLibPath <> '' Then
+        Begin
+            Try
+                If Impl.DatafileLinkCount > 0 Then
+                Begin
+                    Impl.DatafileLink[0].Location := FpLibPath;
+                    PathSet := True;
+                End;
+            Except NoteWriteFailed('footprint model library path'); End;
+            If PathSet Then
+            Begin
+                Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('footprint model UseComponentLibrary'); End;
+            End;
+            Try Stored := Impl.DatafileLink[0].Location; Except End;
+        End;
     End;
 
     SchEndEdit(SchLib, 'Link footprint');
     MarkLibDirty(SchLib);
+    SchLibPath := ResolveLoadedDocPath(SchDocPath(SchLib));
 
     If Impl <> Nil Then
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '","replaced":' + BoolToJsonStr(Replace) + '}')
+        Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '","replaced":' + BoolToJsonStr(Replace)
+            + ',"library_path":"' + EscapeJsonString(SchLibPath) + '"'
+            + ',"footprint_library_path":"' + EscapeJsonString(Stored) + '"}')
     Else
         Result := BuildErrorResponse(RequestId, 'LINK_FAILED', 'Failed to link footprint');
 End;
@@ -7691,6 +7885,9 @@ Begin
     End;
 
     MarkLibDirty(SchLib);
+    { The Properties panel showed the old values until the symbol was }
+    { selected again by hand.                                          }
+    RefreshSchLibPanels(SchLib, Nil);
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
         ',"created":' + IntToStr(Created) +
@@ -22760,6 +22957,7 @@ Begin
         'set_designators':      Result := Lib_SetDesignators(Params, RequestId);
         'probe_designator':     Result := Lib_ProbeDesignator(Params, RequestId);
         'reload_library':       Result := Lib_ReloadLibrary(Params, RequestId);
+        'refresh_view':         Result := Lib_RefreshView(Params, RequestId);
         'convert_designators_to_stroke': Result := Lib_ConvertDesignatorsToStroke(Params, RequestId);
         'extract_intlib':       Result := Lib_ExtractIntLib(Params, RequestId);
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);

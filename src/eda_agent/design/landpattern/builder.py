@@ -44,7 +44,7 @@ from eda_agent.design.landpattern.model import (
 )
 from eda_agent.design.landpattern.spec import PackageSpec, SpecError
 
-__all__ = ["Builder", "build_footprint"]
+__all__ = ["Builder", "apply_vendor_lands", "build_footprint"]
 
 _FAMILY_TITLES = {
     "chip": "Chip", "melf": "MELF", "molded": "Molded body", "sod": "SOD",
@@ -89,6 +89,9 @@ class Builder:
         self.extra_ipc: dict[str, Any] = {}
         self.F = ipc.FAB_TOL
         self.P = ipc.PLACE_TOL
+        #: The lands are the manufacturer's recommended pattern, kept as
+        #: given: no clearance trimming, a warning instead.
+        self.lands_from_vendor = False
 
     # -- helpers for family functions ---------------------------------------
 
@@ -194,8 +197,11 @@ class Builder:
             if p.kind == "smd":
                 p.paste_expansion = r.paste_expansion
             p.mask_expansion = r.mask_expansion
-        trims = enforce_pad_gaps(self.pads, r.min_pad_gap)
-        self.notes.extend(trims)
+        if self.lands_from_vendor:
+            self._warn_tight_vendor_lands()
+        else:
+            trims = enforce_pad_gaps(self.pads, r.min_pad_gap)
+            self.notes.extend(trims)
         for p in self.pads:
             if p.shape == "roundrect":
                 p.corner_ratio = corner_ratio_for(p.width, p.height, r)
@@ -298,6 +304,18 @@ class Builder:
             ipc=self._ipc_record(court_info), warnings=self.warnings)
         return model
 
+    def _warn_tight_vendor_lands(self) -> None:
+        gap_min = self.rules.min_pad_gap
+        for i, a in enumerate(self.pads):
+            for b in self.pads[i + 1:]:
+                if a.number == b.number or a.kind != "smd" or b.kind != "smd":
+                    continue
+                gap = box_gap(a.bbox(), b.bbox())
+                if 0 < gap < gap_min - 1e-6:
+                    self.warnings.append(
+                        f"vendor lands {a.number} and {b.number} are {gap:.3f} mm "
+                        f"apart, under the {gap_min:g} mm minimum gap; kept as given")
+
     def _check_overlaps(self) -> None:
         for i, a in enumerate(self.pads):
             for b in self.pads[i + 1:]:
@@ -336,6 +354,8 @@ class Builder:
         if s.family in ("dip", "header", "radial", "axial", "to220", "to92",
                         "connector"):
             std = "IPC-2221/IPC-2222 padstacks"
+        elif self.lands_from_vendor:
+            std = "manufacturer's recommended land pattern"
         elif s.family == "custom":
             std = "custom lands"
         else:
@@ -388,12 +408,17 @@ def _pads_box(pads: Sequence[Pad]) -> Box:
 def build_footprint(spec: PackageSpec, density: Optional[str] = None,
                     rules: Optional[DraftingRules] = None, *,
                     fab_tol: Optional[float] = None,
-                    place_tol: Optional[float] = None) -> FootprintModel:
+                    place_tol: Optional[float] = None,
+                    vendor_lands: bool = False) -> FootprintModel:
     """Validate ``spec`` and build its land pattern.
 
     ``density`` overrides ``spec.density`` (``L``, ``N`` or ``M``).
     ``fab_tol`` and ``place_tol`` override F and P (see ``ipc7351``); they
     can also come from ``spec.options['fab_tol' / 'place_tol']``.
+    ``vendor_lands`` builds the lands from ``spec.vendor``, the
+    manufacturer's recommended pattern, when the package gives one
+    (:func:`apply_vendor_lands`). The default is the IPC pattern, which
+    is what the vendor cross-check measures.
     """
     from eda_agent.design.landpattern import smd, tht
 
@@ -413,4 +438,195 @@ def build_footprint(spec: PackageSpec, density: Optional[str] = None,
     fn(b)
     if not b.pads:
         raise SpecError("the family produced no lands")
+    if vendor_lands:
+        apply_vendor_lands(b)
     return b.finish()
+
+
+def apply_vendor_lands(b: Builder) -> None:
+    """Replace the IPC lands with the manufacturer's recommended land
+    pattern (``spec.vendor``) when the package carries one.
+
+    Explicit vendor ``pads`` are placed as given, in the package's frame.
+    A parametric pattern sets the land size, the row span and the pitch of
+    the rows the family laid out, and the exposed pad and tab sizes; what
+    it leaves out stays as IPC-7351B computed it, and a note says which.
+    """
+    v = b.spec.vendor
+    if v is None:
+        return
+    if v.pads:
+        _vendor_pads(b, v)
+    else:
+        _vendor_dimensions(b, v)
+
+
+def _vendor_pads(b: Builder, v: Any) -> None:
+    from eda_agent.design.landpattern.drafting import ep_paste_windows
+
+    ipc_by_number = {p.number: p for p in b.pads}
+    ipc_numbers = {p.number for p in b.pads if p.number}
+    b.pads = []
+    b.land_outlines = []
+    # Given in the finished frame (origin on the centre lines); finish()
+    # shifts every land by the family's offset, so take it off first.
+    ox, oy = b.offset
+    for cp in v.pads:
+        old = ipc_by_number.get(cp.number)
+        kind = "smd"
+        if cp.hole > 0:
+            kind = "tht" if cp.plated else "npth"
+        role = cp.role
+        if role == "signal" and old is not None and old.role in ("thermal", "tab"):
+            role = old.role
+        x, y = cp.x - ox, cp.y - oy
+        windows = None
+        if role == "thermal" and kind == "smd":
+            windows, _ = ep_paste_windows(x, y, cp.width, cp.height, b.rules)
+        b.pad(cp.number, x, y, cp.width, cp.height, shape=cp.shape,
+              role=role, group=old.group if old is not None else "vendor",
+              kind=kind, hole=cp.hole, hole_length=cp.hole_length,
+              plated=cp.plated, rotation=cp.rotation, paste_apertures=windows)
+        if cp.outline:
+            pts = [tuple(p) for p in cp.outline]  # finish() does not shift outlines
+            b.land_outlines += [
+                Polygon("copper", pts, 0.0, filled=True, kind=f"land {cp.number}"),
+                Polygon("mask", pts, 0.0, filled=True, kind=f"land {cp.number}")]
+    given = {cp.number for cp in v.pads if cp.number}
+    if ipc_numbers - given:
+        b.warnings.append(
+            "the package has pins the vendor land pattern does not: "
+            + ", ".join(sorted(ipc_numbers - given)))
+    if given - ipc_numbers:
+        b.warnings.append(
+            "the vendor land pattern has lands the package does not: "
+            + ", ".join(sorted(given - ipc_numbers)))
+    p1 = next((p for p in b.pads if p.number == b.pin1_name), b.pads[0])
+    b.pin1_name = p1.number
+    side = p1.group if p1.group in ("left", "right", "top", "bottom") else "left"
+    b.pin1_candidates = b.cands_row_end_then_toe(p1, side)
+    b.lands_from_vendor = True
+    b.extra_ipc["lands_from"] = "vendor"
+    b.notes.append(
+        f"lands: the manufacturer's recommended land pattern, {len(v.pads)} "
+        "pads placed as given (vendor.pads); IPC-7351B lands not used"
+        + (f"; {v.cite.short()}" if v.cite is not None else ""))
+
+
+def _rescale_pitch(pads: list[Pad], axis: str, pitch: float, notes: list[str]) -> None:
+    """Spread a row's lands about its centre to ``pitch`` along ``axis``."""
+    vals = sorted({round(getattr(p, axis), 6) for p in pads})
+    gaps = [b - a for a, b in zip(vals, vals[1:]) if b - a > 1e-6]
+    if not gaps:
+        return
+    have = min(gaps)
+    if abs(have - pitch) < 1e-4:
+        return
+    centre = (vals[0] + vals[-1]) / 2.0
+    for p in pads:
+        setattr(p, axis, round(centre + (getattr(p, axis) - centre) * pitch / have, 6))
+    notes.append(f"pitch {have:g} mm set to the vendor's {pitch:g} mm")
+
+
+def _vendor_dimensions(b: Builder, v: Any) -> None:
+    from eda_agent.design.landpattern.drafting import ep_paste_windows
+
+    sig = [p for p in b.pads if p.role == "signal" and p.kind == "smd"]
+    rows = {g: [p for p in sig if p.group == g]
+            for g in ("left", "right", "top", "bottom", "grid")}
+    tab = [p for p in b.pads if p.role == "tab"]
+    ep = [p for p in b.pads if p.role == "thermal"]
+    done: list[str] = []
+    kept: list[str] = []
+    horizontal = rows["left"] + rows["right"]
+    vertical = rows["top"] + rows["bottom"]
+    if v.pad_length is not None or v.pad_width is not None:
+        for p in horizontal:
+            if v.pad_length is not None:
+                p.width = float(v.pad_length)
+            if v.pad_width is not None:
+                p.height = float(v.pad_width)
+        for p in vertical:
+            if v.pad_length is not None:
+                p.height = float(v.pad_length)
+            if v.pad_width is not None:
+                p.width = float(v.pad_width)
+        if horizontal or vertical:
+            done.append("land size")
+    if v.span is not None and rows["left"]:
+        if tab:
+            # A tab family's span runs from the lead row to the tab centre.
+            x = rows["left"][0].x + float(v.span)
+            for t in tab:
+                t.x = round(x, 6)
+            done.append("span")
+        elif rows["right"]:
+            mid = (rows["left"][0].x + rows["right"][0].x) / 2.0
+            for p in rows["left"]:
+                p.x = round(mid - float(v.span) / 2.0, 6)
+            for p in rows["right"]:
+                p.x = round(mid + float(v.span) / 2.0, 6)
+            done.append("span")
+    # One span for a square quad stands for both axes.
+    sx, sy = b.spec.lead_span_x, b.spec.lead_span_y
+    square = sy is None or (sx is not None and abs(sx.nom - sy.nom) < 1e-6)
+    span_y = v.span_y if v.span_y is not None else (
+        v.span if (not horizontal or square) else None)
+    if span_y is not None and rows["top"] and rows["bottom"]:
+        mid = (rows["top"][0].y + rows["bottom"][0].y) / 2.0
+        for p in rows["top"]:
+            p.y = round(mid + float(span_y) / 2.0, 6)
+        for p in rows["bottom"]:
+            p.y = round(mid - float(span_y) / 2.0, 6)
+        done.append("span_y")
+    if v.pitch is not None:
+        pitch_notes: list[str] = []
+        for g, axis in (("left", "y"), ("right", "y"), ("top", "x"),
+                        ("bottom", "x")):
+            if len(rows[g]) > 1:
+                _rescale_pitch(rows[g], axis, float(v.pitch), pitch_notes)
+        if len(rows["grid"]) > 1:
+            _rescale_pitch(rows["grid"], "x", float(v.pitch), pitch_notes)
+            _rescale_pitch(rows["grid"], "y", float(v.pitch), pitch_notes)
+        if pitch_notes:
+            done.append("pitch")
+    if v.land_diameter is not None and rows["grid"]:
+        for p in rows["grid"]:
+            p.width = p.height = float(v.land_diameter)
+        done.append("land diameter")
+    if (v.ep_x is not None or v.ep_y is not None) and ep:
+        for p in ep:
+            if v.ep_x is not None:
+                p.width = float(v.ep_x)
+            if v.ep_y is not None:
+                p.height = float(v.ep_y)
+            p.paste_apertures, _ = ep_paste_windows(p.x, p.y, p.width,
+                                                    p.height, b.rules)
+        done.append("exposed pad")
+    if (v.tab_length is not None or v.tab_width is not None) and tab:
+        for t in tab:
+            if v.tab_length is not None:
+                t.width = float(v.tab_length)
+            if v.tab_width is not None:
+                t.height = float(v.tab_width)
+        done.append("tab")
+    if not done:
+        b.warnings.append(
+            "the vendor land pattern gives nothing this family's lands take "
+            "(pad_length, pad_width, span, pitch, ep_x/ep_y, tab, "
+            "land_diameter, or explicit pads): IPC-7351B lands used")
+        return
+    if ep and v.ep_x is None and v.ep_y is None:
+        kept.append("exposed pad")
+    if tab and v.tab_length is None and v.tab_width is None:
+        kept.append("tab")
+    if v.span is None and horizontal:
+        kept.append("span")
+    if span_y is None and rows["top"] and rows["bottom"]:
+        kept.append("span_y")
+    b.lands_from_vendor = True
+    b.extra_ipc["lands_from"] = "vendor"
+    b.notes.append(
+        "lands: the manufacturer's recommended land pattern ("
+        + ", ".join(done) + " as given)"
+        + (f"; {', '.join(kept)} as IPC-7351B computed" if kept else ""))
