@@ -34,8 +34,24 @@ maturity classification for every tool.
   the window and its taskbar button kept Windows' blank picture. The form
   now loads `eda-agent.ico` itself (ApplyAppIcon), from the copy the MCP
   server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.2.
+- **The dashboard's Usage tab shows only its own workspace.** It listed
+  every workspace with token records, and a workspace is usually one
+  client's folder, so the picker named the others. It now offers the
+  design workspace the dashboard runs in (the folder holding
+  `.eda-agent/workspace.json`, else its start folder) and the folders
+  inside it, and counts the rest without naming them. The new "All
+  workspaces" box (`/api/wb/usage?all=1`), off by default, shows them all.
 
 ### Added
+
+- **`pcb_find_free_spot`: where a via or a part fits, nearest a point.**
+  Checks pads and drilled holes, vias, tracks, arcs, solid regions, fills,
+  poured copper, polygon cutouts, keepouts and the board edge and cutouts,
+  not only courtyards (those too, for a part). Each answer lists the
+  objects closest to it; a near point that is taken says what takes it.
+  Copper of the new object's net does not block, and poured copper can be
+  ignored. Reads the layout model the audits read; writes nothing.
+  UNVERIFIED against a live board.
 
 - **An app icon.** The Altium status window, the web dashboard's browser tab
   and the desktop shortcut now show one eda-agent icon instead of Windows'
