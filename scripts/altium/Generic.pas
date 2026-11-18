@@ -19599,10 +19599,10 @@ Begin
                 Tries := Tries + 1;
             Until Clear Or (Tries > 4);
             If Tries > 1 Then Moved := Moved + 1;
-            Boxes.Add(FloatToStr(BX1));
-            Boxes.Add(FloatToStr(BY1));
-            Boxes.Add(FloatToStr(BX2));
-            Boxes.Add(FloatToStr(BY2));
+            Boxes.Add(FloatToJsonStr(BX1));
+            Boxes.Add(FloatToJsonStr(BY1));
+            Boxes.Add(FloatToJsonStr(BX2));
+            Boxes.Add(FloatToJsonStr(BY2));
 
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then

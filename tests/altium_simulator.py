@@ -1349,6 +1349,13 @@ class AltiumSimulator:
             return _build_success_response(
                 rid, '{"added":%d,"failed":0,"total":%d}' % (added, total))
 
+        elif action == "refresh_view":
+            # Mirrors Lib_RefreshView: display only, nothing in the model moves.
+            if not self.lib_has_schlib:
+                return _build_error_response(rid, "NO_SCHLIB",
+                                             "No schematic library is active")
+            return _build_success_response(rid, '{"refreshed":true}')
+
         elif action == "add_symbol_text":
             # Mirrors Lib_AddSymbolText: empty text is refused per item.
             if not self.lib_has_schlib:

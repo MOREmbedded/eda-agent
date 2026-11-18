@@ -199,8 +199,11 @@ def _ping_altium(wait_in_queue: bool = True) -> Optional[dict]:
         bridge = get_bridge()
     except Exception:  # no bridge to ping; reported as no reply
         return None
+    # Only a restart's probe names the queue: an ordinary ping keeps the
+    # bridge's own default and works with any bridge that has no such knob.
+    queue = {} if wait_in_queue else {"wait_in_queue": False}
     try:
-        result = bridge.ping_with_version(wait_in_queue=wait_in_queue)
+        result = bridge.ping_with_version(**queue)
     except Exception:  # retried below without the process check
         result = None
     if result is not None:
@@ -208,8 +211,7 @@ def _ping_altium(wait_in_queue: bool = True) -> Optional[dict]:
     try:
         # A loop that answers while the process check says otherwise is
         # still a loop; this is what finds it.
-        return bridge.ping_with_version(require_process=False,
-                                        wait_in_queue=wait_in_queue)
+        return bridge.ping_with_version(require_process=False, **queue)
     except Exception:  # the check reports no reply; that is what was found
         return None
 

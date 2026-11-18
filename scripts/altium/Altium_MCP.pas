@@ -17517,10 +17517,10 @@ Begin
         End;
         If Other <> Nil Then
         Begin
-            Try SchLib.CurrentSchComponent := Other; Except End;
+            Try SchLib.CurrentSchComponent := Other; Except { display only: a refresh that fails leaves the data as written } End;
             Try Application.ProcessMessages; Except End;
         End;
-        Try SchLib.CurrentSchComponent := Comp; Except End;
+        Try SchLib.CurrentSchComponent := Comp; Except { display only: a refresh that fails leaves the data as written } End;
     End;
     Try Application.ProcessMessages; Except End;
 End;
@@ -97037,10 +97037,10 @@ Begin
                 Tries := Tries + 1;
             Until Clear Or (Tries > 4);
             If Tries > 1 Then Moved := Moved + 1;
-            Boxes.Add(FloatToStr(BX1));
-            Boxes.Add(FloatToStr(BY1));
-            Boxes.Add(FloatToStr(BX2));
-            Boxes.Add(FloatToStr(BY2));
+            Boxes.Add(FloatToJsonStr(BX1));
+            Boxes.Add(FloatToJsonStr(BY1));
+            Boxes.Add(FloatToJsonStr(BX2));
+            Boxes.Add(FloatToJsonStr(BY2));
 
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then

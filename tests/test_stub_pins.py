@@ -101,7 +101,7 @@ def test_a_label_that_would_overlap_gets_a_longer_stub():
     assert "Clear := StubBoxClear(Boxes, BX1, BY1, BX2, BY2);" in loop
     # The wire runs to where the label went, and the box is kept for the
     # labels after it.
-    assert body.index("Until Clear") < body.index("Boxes.Add(FloatToStr(BX1));") \
+    assert body.index("Until Clear") < body.index("Boxes.Add(FloatToJsonStr(BX1));") \
         < body.index("Wire.SetState_Vertex(2, Point(MilsToCoordF(EX), MilsToCoordF(EY)));")
     boxes = load(_ALTIUM / "Generic.pas")["StubBoxClear"]
     assert "If (X1 < BX2) And (BX1 < X2) And (Y1 < BY2) And (BY1 < Y2) Then" in boxes

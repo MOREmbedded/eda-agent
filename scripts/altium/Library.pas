@@ -338,10 +338,10 @@ Begin
         End;
         If Other <> Nil Then
         Begin
-            Try SchLib.CurrentSchComponent := Other; Except End;
+            Try SchLib.CurrentSchComponent := Other; Except { display only: a refresh that fails leaves the data as written } End;
             Try Application.ProcessMessages; Except End;
         End;
-        Try SchLib.CurrentSchComponent := Comp; Except End;
+        Try SchLib.CurrentSchComponent := Comp; Except { display only: a refresh that fails leaves the data as written } End;
     End;
     Try Application.ProcessMessages; Except End;
 End;

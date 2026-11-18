@@ -43,6 +43,8 @@ _NO_HINT_NEEDED = {
     "NOT_A_WIRING_DIAGRAM": "the message names the document found and says a "
                             ".WirDoc is needed; no other open document is one",
     "NO_LIBRARY": "the message already says to supply library_path",
+    "NOT_A_LIBRARY": "lib_reload_library was given a board or sheet; the message says "
+                     "only a .PcbLib or .SchLib is reloaded",
     "NO_SCH_SERVER": "an infrastructure failure, not a document mix-up",
     "USE_DEDICATED_TOOL": "the message already names the tool to call",
     # The board is the right document and the LAYER is the wrong kind, so
