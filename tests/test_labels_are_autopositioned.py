@@ -138,5 +138,37 @@ def test_the_tool_sends_the_names_and_refuses_what_the_wire_cannot_carry(monkeyp
     asyncio.run(tool(names=["RAILS", " MCU "]))
     assert sent == [("generic.autoposition_labels", {"names": "RAILS|MCU", "method": "rotate"})]
     assert asyncio.run(tool(names=["A|B"]))["ok"] is False
-    assert asyncio.run(tool(method="spin"))["ok"] is False
+    assert asyncio.run(tool(method="spin", designators=["U1"]))["ok"] is False
     assert len(sent) == 1
+
+
+def test_with_no_part_named_it_touches_nothing_unless_told_all(monkeypatch):
+    """Called with no filter in a live demo, it re-placed the labels of all
+    38 parts on the sheet, the ones placed by hand included."""
+    sent = []
+
+    class _Bridge:
+        async def send_command_async(self, command, params=None, timeout=None):
+            sent.append((command, params))
+            return {"count": 0}
+
+    monkeypatch.setattr(generic, "get_bridge", lambda: _Bridge())
+    captured = {}
+
+    class DummyMcp:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+    generic.register_generic_tools(DummyMcp())
+    tool = captured["sch_autoposition_labels"]
+    out = asyncio.run(tool())
+    assert out["ok"] is False and "designators" in out["reason"] and "all=True" in out["reason"]
+    assert not sent, "nothing reached Altium"
+    asyncio.run(tool(designators=["U4", " C12 "], names=["U4", "MCU"]))
+    assert sent[-1] == ("generic.autoposition_labels", {"names": "U4|C12|MCU",
+                                                        "method": "rotate"})
+    asyncio.run(tool(all=True))
+    assert sent[-1] == ("generic.autoposition_labels", {"names": "", "method": "rotate"})

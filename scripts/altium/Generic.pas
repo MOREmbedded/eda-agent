@@ -19372,28 +19372,82 @@ End;
 {..............................................................................}
 
 {..............................................................................}
+{ StubLabelBox - the box, in mils, that a stub's net label covers. The label  }
+{ reads along the stub and away from the part: a right or left stub keeps it  }
+{ level (a left one right-justified, so the text ends at the anchor), an up   }
+{ or down stub turns it 90 degrees (a down one right-justified). Text is      }
+{ taken as 60 mil a character and 80 mil high: a box too large only moves a   }
+{ label further out.                                                           }
+{..............................................................................}
+Procedure StubLabelBox(Orient : Integer; EX, EY : Double; TextLen : Integer;
+    Var X1 : Double; Var Y1 : Double; Var X2 : Double; Var Y2 : Double);
+Var
+    L, H : Double;
+Begin
+    L := 60 * TextLen;
+    H := 80;
+    If Orient = 2 Then
+    Begin X1 := EX - L; X2 := EX; Y1 := EY; Y2 := EY + H; End
+    Else If Orient = 1 Then
+    Begin X1 := EX - H; X2 := EX; Y1 := EY; Y2 := EY + L; End
+    Else If Orient = 3 Then
+    Begin X1 := EX - H; X2 := EX; Y1 := EY - L; Y2 := EY; End
+    Else
+    Begin X1 := EX; X2 := EX + L; Y1 := EY; Y2 := EY + H; End;
+End;
+
+{ StubBoxClear - True when no box in Boxes (four lines a box: x1, y1, x2, y2) }
+{ overlaps this one. Boxes that only touch are clear.                          }
+Function StubBoxClear(Boxes : TStringList; X1, Y1, X2, Y2 : Double) : Boolean;
+Var
+    I : Integer;
+    BX1, BY1, BX2, BY2 : Double;
+Begin
+    Result := True;
+    I := 0;
+    While I + 3 < Boxes.Count Do
+    Begin
+        BX1 := StrToFloatDef(Boxes[I], 0);
+        BY1 := StrToFloatDef(Boxes[I + 1], 0);
+        BX2 := StrToFloatDef(Boxes[I + 2], 0);
+        BY2 := StrToFloatDef(Boxes[I + 3], 0);
+        If (X1 < BX2) And (BX1 < X2) And (Y1 < BY2) And (BY1 < Y2) Then
+        Begin
+            Result := False;
+            Exit;
+        End;
+        I := I + 4;
+    End;
+End;
+
+{..............................................................................}
 { Gen_StubPins - place a short wire stub + net label at each named pin. Pins   }
 { is a pipe-separated list of "designator,pin_number,label" records (label     }
 { optional, defaults to designator_pinnumber). The stub extends from the pin's }
 { electrical end outward along the pin orientation by stub_length_mils.        }
+{ A label that would overlap one placed before it in this call gets a longer   }
+{ stub, a stub length at a time, up to four times. Each pin not stubbed is     }
+{ reported in failed_pins with why: no part of that designator on this sheet,  }
+{ or no pin of that number shown on any of its parts here.                     }
 {..............................................................................}
 Function Gen_StubPins(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     PinsStr, RecStr, Remaining, Token : String;
-    Desig, PinNum, Lbl : String;
-    PipePos, CommaPos, FieldIdx, Stubbed, Failed : Integer;
-    StubLen : Double;
+    Desig, PinNum, Lbl, Why, FailedJson : String;
+    PipePos, CommaPos, FieldIdx, Stubbed, Failed, Tries, Moved : Integer;
+    StubLen, Len : Double;
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PX, PY, EX, EY : Double;
+    PX, PY, EX, EY, BX1, BY1, BX2, BY2 : Double;
     Orient : Integer;
-    Found : Boolean;
+    Found, CompSeen, Clear : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
     InfFont : Integer;
     StyleFound : Boolean;
+    Boxes : TStringList;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -19412,6 +19466,9 @@ Begin
 
     Stubbed := 0;
     Failed := 0;
+    Moved := 0;
+    FailedJson := '';
+    Boxes := TStringList.Create;
     { Sheet convention once, applied to every stub label below. }
     StyleFound := InferNetLabelStyle(SchDoc, InfFont);
     SchBeginEdit(SchDoc, '');
@@ -19442,6 +19499,7 @@ Begin
             If (Desig = '') Or (PinNum = '') Then Begin Failed := Failed + 1; Continue; End;
 
             Found := False;
+            CompSeen := False;
             PX := 0; PY := 0; Orient := 0;
             Iter := SchDoc.SchIterator_Create;
             Try
@@ -19451,6 +19509,7 @@ Begin
                 Begin
                     If Comp.Designator.Text = Desig Then
                     Begin
+                        CompSeen := True;
                         PinIter := Comp.SchIterator_Create;
                         Try
                             PinIter.AddFilter_ObjectSet(MkSet(ePin));
@@ -19476,13 +19535,39 @@ Begin
                 SchDoc.SchIterator_Destroy(Iter);
             End;
 
-            If Not Found Then Begin Failed := Failed + 1; Continue; End;
+            If Not Found Then
+            Begin
+                Failed := Failed + 1;
+                If CompSeen Then Why := 'pin_not_shown_on_this_sheet'
+                Else Why := 'part_not_on_this_sheet';
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"designator":"' + EscapeJsonString(Desig)
+                    + '","pin":"' + EscapeJsonString(PinNum)
+                    + '","reason":"' + Why + '"}';
+                Continue;
+            End;
 
-            EX := PX; EY := PY;
-            If Orient = 0 Then EX := PX + StubLen
-            Else If Orient = 1 Then EY := PY + StubLen
-            Else If Orient = 2 Then EX := PX - StubLen
-            Else If Orient = 3 Then EY := PY - StubLen;
+            If Lbl = '' Then Lbl := Desig + '_' + PinNum;
+            { The stub's end, a stub length further out each time the label  }
+            { there would overlap one already placed in this call.           }
+            Tries := 0;
+            Clear := False;
+            Repeat
+                Len := StubLen * (Tries + 1);
+                EX := PX; EY := PY;
+                If Orient = 0 Then EX := PX + Len
+                Else If Orient = 1 Then EY := PY + Len
+                Else If Orient = 2 Then EX := PX - Len
+                Else If Orient = 3 Then EY := PY - Len;
+                StubLabelBox(Orient, EX, EY, Length(Lbl), BX1, BY1, BX2, BY2);
+                Clear := StubBoxClear(Boxes, BX1, BY1, BX2, BY2);
+                Tries := Tries + 1;
+            Until Clear Or (Tries > 4);
+            If Tries > 1 Then Moved := Moved + 1;
+            Boxes.Add(FloatToStr(BX1));
+            Boxes.Add(FloatToStr(BY1));
+            Boxes.Add(FloatToStr(BX2));
+            Boxes.Add(FloatToStr(BY2));
 
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then
@@ -19496,12 +19581,19 @@ Begin
                 SchRegisterObject(SchDoc, Wire);
             End;
 
-            If Lbl = '' Then Lbl := Desig + '_' + PinNum;
             NetLabel := SchServer.SchObjectFactory(eNetLabel, eCreate_Default);
             If NetLabel <> Nil Then
             Begin
                 NetLabel.Text := Lbl;
                 NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
+                { Along the stub and away from the part (StubLabelBox): a    }
+                { level label on an up or down pin ran into its neighbours'. }
+                If (Orient = 1) Or (Orient = 3) Then NetLabel.Orientation := 1
+                Else NetLabel.Orientation := 0;
+                If (Orient = 2) Or (Orient = 3) Then
+                Begin
+                    Try NetLabel.Justification := 2; Except NoteWriteFailed('NetLabel.Justification'); End;
+                End;
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except NoteWriteFailed('NetLabel.FontId'); End;
@@ -19516,6 +19608,7 @@ Begin
     Finally
         SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
+        Boxes.Free;
     End;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -19527,7 +19620,10 @@ Begin
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed) + '}');
+        '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed)
+        + ',"lengthened":' + IntToStr(Moved)
+        + ',"sheet":"' + EscapeJsonString(SchDoc.DocumentName) + '"'
+        + ',"failed_pins":[' + FailedJson + ']}');
 End;
 
 {..............................................................................}

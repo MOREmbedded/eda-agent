@@ -41,6 +41,33 @@ maturity classification for every tool.
   documents (an access violation in ScriptingSystem.DLL); it now refuses
   with `no_loaded_documents`, and the tool loads the sheets in a call of
   their own and closes again.
+- **`pcb_autoroute` with `nets=` routes those nets and nothing more.**
+  Asked for five nets on a live board, it came back with 438 tracks and
+  203 vias, 104 of them in pads. The job took every pour's copper off the
+  board before routing, so each GND or 3V3 pad a pour already joined to
+  its stitching vias read as apart and got a via of its own. A job asked
+  for some nets now keeps those nets' poured copper, routes only what the
+  board's copper leaves apart (join_existing), does not pour again, and
+  sends no copper of any other net. An inner layer used as a plane takes
+  its nets from the copper its pours left, not from the pour outlines
+  alone, so a 3V3 plane poured over a board-wide GND pour reads as 3V3
+  (default engine). `pcb_autoroute` puts no via in any pad unless
+  `pad_vias` ("bga", "ic" or "any") asks for it; the router's new
+  `pad_vias="none"` holds through its fallback.
+- **`sch_autoposition_labels` no longer re-places every label on the sheet
+  when no part is named.** Called with no filter, it moved the labels of
+  all 38 parts on a live sheet, the ones placed by hand included. It now
+  takes `designators=[...]` (as well as `names`) and refuses a call that
+  names nothing unless `all=True` is passed.
+- **`sch_stub_pins` keeps its labels apart and says which pins it left.**
+  A pin listed twice is stubbed once; a label reads along its stub and
+  away from the part (turned 90 degrees on an up or down pin, ending at
+  the stub on a left or down one), and one that would overlap a label
+  placed before it in the same call gets a longer stub. Each pin not
+  stubbed comes back in `failed_pins` with why (its part is not on the
+  active sheet, or no part of it there shows the pin). A multi-part
+  symbol's pins were already taken only from the part that shows them
+  (since 0.8.0).
 
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on

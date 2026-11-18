@@ -232,6 +232,7 @@ def register_route_tools(mcp):
         neck_pads: bool = False,
         join_existing: bool = False,
         exclude_layers: Optional[list[str]] = None,
+        pad_vias: str = "none",
     ) -> dict[str, Any]:
         """Route the focused board with the in-house engine, as a job.
 
@@ -241,12 +242,15 @@ def register_route_tools(mcp):
         Nothing is written until pcb_autoroute_apply. Stages, each fixed
         for the next: differential pairs, plane fanout, IC pin lanes,
         buses, then the rest by priority. Bends are 45 degrees or less and
-        no via goes in a passive's pad.
+        no via goes in any pad unless ``pad_vias`` allows it.
 
         Args:
             expect_file: Full path of the board; refused if another board
                 is focused.
             nets: Route only these nets (default: every net with 2+ pads).
+                Strict: only their copper is added, only where the board's
+                copper (pours included) leaves their pads apart; other
+                nets' copper is never changed and is an obstacle.
             use_planes: Use inner layers a pour covers as planes (default
                 True).
             diff_pairs: Route differential pairs (defined, else _P/_N,
@@ -269,6 +273,9 @@ def register_route_tools(mcp):
                 a net it joins whole is left alone.
             exclude_layers: Copper layers no route may use (not one a
                 net's surface pad is on).
+            pad_vias: Where a via may go into a pad: "none" (default, no
+                pad at all), "bga" (BGA balls and exposed pads), "ic"
+                (also IC pins) or "any".
 
         The engine is the user's choice, not the call's: ``default``, or
         ``euan`` (Euan's router) after ``eda-agent router-use euan``. The
@@ -299,12 +306,18 @@ def register_route_tools(mcp):
                                    ("neck_pads", bool(neck_pads)),
                                    ("join_existing", bool(join_existing)),
                                    ("exclude_layers", tuple(exclude_layers or ()))) if v}
-        # All four off is the router before the stages (StageOptions.coerce
-        # False), not the stages' other defaults with four switches flipped.
-        if not any(stages.values()) and not any(extra.values()):
+        where = str(pad_vias or "none").strip().lower()
+        if where not in ("none", "bga", "ic", "any", "centre", "center"):
+            return {"error": f"pad_vias takes 'none', 'bga', 'ic' or 'any', not {pad_vias!r}"}
+        # All four off with vias allowed in any pad is the router before the
+        # stages (StageOptions.coerce False), not the stages' other defaults
+        # with four switches flipped. Its vias go anywhere, so it is only
+        # had by asking for pad_vias="any".
+        if not any(stages.values()) and not any(extra.values()) and where == "any":
             stages = False
         else:
             stages.update(extra)
+            stages["pad_vias"] = where
         bad = set(extra.get("exclude_layers", ())) - set(board.copper_layers())
         if bad:
             return {"error": f"exclude_layers names no copper layer: {sorted(bad)}",

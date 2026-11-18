@@ -41,19 +41,31 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                             "default engine routed.")
     stages_in, centre_asked = _pad_vias(params.get("stages"), which)
     stages_in = _check_stage_numbers(stages_in)
+    # Asked for some nets only, the job is strict (_strict): only those
+    # nets' copper is added, and only where the board's own copper, its
+    # pours included, leaves their pads apart.
+    wanted = frozenset(nets) if nets else None
     euan_args: dict[str, Any] = {}
     if which == "euan":
         # Before anything runs: a bad switch fails the job as it does with
         # the default engine, rather than routing without it.
         euan_args, notes = euan_kwargs(stages_in, board, params)
         engine_notes += notes
+        if wanted is not None:
+            euan_args.update(join_existing=True, pours=False)
     else:
         ignored = sorted(k for k in EUAN_ONLY_PARAMS if params.get(k) is not None)
         if ignored:
             engine_notes.append(", ".join(ignored) + " only steer the euan engine; the "
                                 "default engine ignored them.")
+        if wanted is not None:
+            stages_in = _with_join_existing(stages_in)
+    poured = [r for r in board.regions if r.kind == "pour"]
     # Euan's job matched old pours by net as well (route_euan, 2026-10-18).
-    board, old_pours = _without_old_pours(board, by_net=which == "euan")
+    # A net asked for keeps its pours' copper: it is what joins its pads
+    # today, and the router does not pour it again (pours=False below).
+    board, old_pours = _without_old_pours(board, by_net=which == "euan",
+                                          keep=wanted or frozenset())
     # The live view (design/live.py): the board before, progress while
     # routing (throttled), the routed board after.
     from ...design import live
@@ -66,15 +78,16 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         # for both engines.
         from ..route_euan.router import route_adaptive as euan_adaptive
         from ..route_euan.stages import finish_report as euan_finish
-        r = euan_adaptive(board, nets=frozenset(nets) if nets else None,
+        r = euan_adaptive(board, nets=wanted,
                           planes=bool(params.get("planes", True)), gloss=False,
                           log=live.progress_logger("route"), **euan_args)
         report_of = euan_finish
     else:
-        r = route_adaptive(board, nets=frozenset(nets) if nets else None,
+        strict = {} if wanted is None else {"pours": False, "poured": poured}
+        r = route_adaptive(board, nets=wanted,
                            planes=bool(params.get("planes", True)),
                            stages=stages_in,
-                           log=live.progress_logger("route"))
+                           log=live.progress_logger("route"), **strict)
         report_of = finish_report
         if centre_asked is not None:
             # Written now, from the attempt kept: its fallback may have
@@ -89,6 +102,9 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         glossed = gloss(out, tracks=_added(board.tracks, out.tracks)).as_dict()
     new_tracks = _added(board.tracks, out.tracks)
     added_vias = _added(board.vias, out.vias)
+    strays: list[str] = []
+    if wanted is not None:
+        new_tracks, added_vias, strays = _only_wanted(new_tracks, added_vias, wanted)
     new_vias = _unique_vias(board.vias, added_vias)
     mask_note = _mask_like_board(board, added_vias)
     # Judged as written: a via on one already there is never sent, and
@@ -105,8 +121,7 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
                       f"{len(drc.violations)} clearance violations, "
                       f"{v['counts']['mask_sliver']} mask slivers.", "route")
     rep = r.report
-    wanted = set(nets) if nets else None
-    unrouted = {n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
+    unrouted ={n: k for n, k in drc.unrouted.items() if wanted is None or n in wanted}
     return {
         "board": board.name,
         "router": which,
@@ -155,9 +170,48 @@ def route_job(params: dict[str, Any]) -> dict[str, Any]:
         "vias": [{"x": v.x, "y": v.y, "size": v.diameter, "hole_size": v.hole,
                   "low_layer": v.low_layer, "high_layer": v.high_layer, "net": v.net}
                  for v in new_vias],
-        "notes": (engine_notes + _notes(r) + _stage_notes(stages) + v["notes"] + mask_note
-                  + lost),
+        "notes": (engine_notes + _strict_notes(wanted, strays) + _notes(r)
+                  + _stage_notes(stages) + v["notes"] + mask_note + lost),
     }
+
+
+def _with_join_existing(stages: Any) -> Any:
+    """``stages`` (None, True, False, a dict or StageOptions) with
+    join_existing on, for the default engine: a job asked for some nets
+    routes only what the board's copper leaves apart."""
+    from dataclasses import asdict, is_dataclass, replace
+
+    from .stages import StageOptions
+
+    if is_dataclass(stages) and not isinstance(stages, type):
+        return replace(stages, join_existing=True)
+    if isinstance(stages, dict):
+        return {**stages, "join_existing": True}
+    if stages is False:
+        return {**asdict(StageOptions.coerce(False)), "join_existing": True}
+    return {"join_existing": True}
+
+
+def _only_wanted(tracks: list, vias: list, wanted: frozenset) -> tuple[list, list, list[str]]:
+    """The new tracks and vias of the nets asked for, and the nets of any
+    other copper the router came back with, which is never sent: a job
+    asked for five nets adds copper to those five and to nothing else."""
+    keep_t = [t for t in tracks if t.net in wanted]
+    keep_v = [v for v in vias if v.net in wanted]
+    strays = sorted({x.net or "(no net)" for x in tracks + vias if x.net not in wanted})
+    return keep_t, keep_v, strays
+
+
+def _strict_notes(wanted: frozenset | None, strays: list[str]) -> list[str]:
+    if wanted is None:
+        return []
+    notes = ["Only the nets asked for were routed, and only where the board's copper "
+             "(its pours included) leaves their pads apart; every other net's copper "
+             "stayed as it is, as an obstacle."]
+    if strays:
+        notes.append(f"Copper the router laid for nets not asked for was dropped: "
+                     f"{', '.join(strays)}.")
+    return notes
 
 
 #: Stage switches that are Router arguments in the euan engine.
@@ -264,7 +318,8 @@ def _check_stage_numbers(stages: Any) -> Any:
 
 
 #: Where a via may go into a pad (the stage option pad_vias), by engine.
-PAD_VIAS = {"default": ("bga", "ic", "any"), "euan": ("bga", "ic", "any", "centre")}
+PAD_VIAS = {"default": ("none", "bga", "ic", "any"),
+            "euan": ("none", "bga", "ic", "any", "centre")}
 
 
 def _pad_vias(stages: Any, which: str) -> tuple[Any, Any]:
@@ -288,8 +343,8 @@ def _pad_vias(stages: Any, which: str) -> tuple[Any, Any]:
     word = str(raw).strip().lower()
     word = "centre" if word == "center" else word
     if word not in PAD_VIAS["euan"]:
-        raise ValueError("pad_vias takes 'bga', 'ic' or 'any', or 'centre' with the euan "
-                         f"engine; not {raw!r}")
+        raise ValueError("pad_vias takes 'bga', 'ic' or 'any', 'none' for no via in any pad, "
+                         f"or 'centre' with the euan engine; not {raw!r}")
     if word not in PAD_VIAS.get(which, PAD_VIAS["default"]):
         return {**stages, "pad_vias": "bga"}, raw
     return {**stages, "pad_vias": word}, None
@@ -466,8 +521,15 @@ def _unique_vias(existing, new) -> list:
 
 
 def _without_old_pours(board: LayoutBoard,
-                       by_net: bool = False) -> tuple[LayoutBoard, list[str]]:
-    """The board without its polygons' poured copper.
+                       by_net: bool = False,
+                       keep: frozenset = frozenset()) -> tuple[LayoutBoard, list[str]]:
+    """The board without its polygons' poured copper, but for the pours
+    of the nets in ``keep``.
+
+    A job asked for some nets keeps those nets' poured copper: it is what
+    joins their pads today. Taken off, every GND pad a top pour joins to
+    its stitching vias reads as apart and is given a via of its own (a
+    five-net job on a live board came back with 203 vias, 104 in pads).
 
     A polygon's copper is where its last pour left it, round routing that
     may since have been taken up or moved. The router pours from the
@@ -482,7 +544,7 @@ def _without_old_pours(board: LayoutBoard,
     # source differs from its boundary's, on the boundary's layer and net.
     nets = {(r.layer, r.net) for r in board.regions
             if by_net and r.kind == "pour_boundary" and r.net}
-    old = [r for r in board.regions if r.kind == "pour"
+    old = [r for r in board.regions if r.kind == "pour" and r.net not in keep
            and ((r.layer, r.source) in outlines or (r.layer, r.net) in nets)]
     if not old:
         return board, []

@@ -279,19 +279,25 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
                                        plane_fanout=True)
     assert out["job_id"] == "job-x" and sent["kind"] == "layout_route"
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": True,
-                                        "pin_lanes": True, "bus_lanes": False}
+                                        "pin_lanes": True, "bus_lanes": False,
+                                        "pad_vias": "none"}
     assert StageOptions.coerce(sent["params"]["stages"]).diff_pairs
-    # The defaults: pairs, pin lanes and buses on, plane fanout off, and a
-    # via only in a BGA ball or an exposed pad (the fallback widens that to
-    # IC pins when it alone leaves connections unmade).
+    # The defaults: pairs, pin lanes and buses on, plane fanout off, and no
+    # via in any pad (the tool's own default; via-in-pad is opted into).
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc")
     chosen = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": False,
-                                        "pin_lanes": True, "bus_lanes": True}
-    assert chosen.pad_vias == "bga" and chosen.bends and chosen.class_order
-    # All four off is the router as it was before the stages.
+                                        "pin_lanes": True, "bus_lanes": True,
+                                        "pad_vias": "none"}
+    assert chosen.pad_vias == "none" and chosen.bends and chosen.class_order
+    # All four off is still no via in a pad, not the router before the
+    # stages, whose vias go anywhere ...
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc", diff_pairs=False,
                                  pin_lanes=False, bus_lanes=False)
+    assert StageOptions.coerce(sent["params"]["stages"]).pad_vias == "none"
+    # ... which takes pad_vias="any" as well.
+    await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc", diff_pairs=False,
+                                 pin_lanes=False, bus_lanes=False, pad_vias="any")
     plain = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] is False
     assert plain.legacy()

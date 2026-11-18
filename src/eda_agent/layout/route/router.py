@@ -188,10 +188,15 @@ class Router:
                  global_routing: bool = True, nets: frozenset | None = None,
                  pres_growth: float = 1.8, history_step: float = 0.4,
                  repair_rounds: int = 2, fanout: bool = True, pours: bool = True,
-                 stages=None, log: Callable[[str], None] | None = None):
+                 stages=None, log: Callable[[str], None] | None = None,
+                 poured: list | None = None):
         from .stages import StageOptions, StageReport
 
         self.board = board
+        # The pours' copper as Altium last poured it (Regions of kind
+        # "pour"), when the caller took it off the board: on an inner layer
+        # that is a plane, it says which net is where (_pour_planes).
+        self.poured = list(poured or [])
         # The planned stages run before the negotiation, each fixing its
         # copper for the ones after it (see stages.py).
         self.options = StageOptions.coerce(stages)
@@ -276,6 +281,9 @@ class Router:
         # _no_via_cells).
         bgas = find_bgas(board)
         self.via_pads = {i for b in bgas for i in b.pads} | set(find_exposed_pads(board))
+        if self.options.pad_vias == "none":
+            # No via in any pad, a BGA's ball and an exposed pad included.
+            self.via_pads = set()
         # Surface pads the board's own copper already takes to a via or a
         # plated hole of their net, and where: the plane fan-out and the
         # pour joining count those pads as on every layer already.
@@ -568,6 +576,16 @@ class Router:
             cover.sort(key=lambda cr: -cr[0])
             share, main = cover[0]
             if share < self.PLANE_COVER:
+                continue
+            copper = [r for r in self.poured if r.layer == layer and r.net in pads
+                      and len(r.outline) >= 3]
+            if copper:
+                # The copper the pours left says which net is where. Judged
+                # by the outlines instead, a board-wide GND pour drawn under
+                # a 3V3 plane's pour made the layer GND's, 3V3 only a split.
+                for r in copper:
+                    out.append(PourPlane(layer, r.net, list(r.outline),
+                                         [list(h) for h in r.holes]))
                 continue
             nested = [r for _, r in cover[1:] if r.net != main.net]
             out.append(PourPlane(layer, main.net, main.outline, [r.outline for r in nested]))
@@ -1143,7 +1161,7 @@ class Router:
             pad = self.board.pads[t.pad]
             if not pad.is_smd or not len(t.cells):
                 continue
-            if self.options.pad_vias == "bga" and t.pad not in self.via_pads:
+            if self.options.pad_vias in ("bga", "none") and t.pad not in self.via_pads:
                 continue
             if self.options.pad_vias == "ic" and self._is_passive(pad) \
                     and t.pad not in self.via_pads:

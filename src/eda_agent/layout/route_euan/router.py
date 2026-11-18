@@ -346,6 +346,9 @@ class Router:
         # _no_via_cells).
         bgas = find_bgas(board)
         self.via_pads = {i for b in bgas for i in b.pads} | set(find_exposed_pads(board))
+        if self.options.pad_vias == "none":
+            # No via in any pad, a BGA's ball and an exposed pad included.
+            self.via_pads = set()
         if self.options.pad_vias == "centre":
             # A via anywhere in a pad is for a real exposed pad (an IC's, with
             # pins round it) or a BGA ball; a test point's big pad is a pad.
@@ -1404,7 +1407,7 @@ class Router:
             pad = self.board.pads[t.pad]
             if not pad.is_smd or not len(t.cells):
                 continue
-            if self.options.pad_vias == "bga" and t.pad not in self.via_pads:
+            if self.options.pad_vias in ("bga", "none") and t.pad not in self.via_pads:
                 continue
             if self.options.pad_vias == "ic" and self._is_passive(pad) \
                     and t.pad not in self.via_pads:
