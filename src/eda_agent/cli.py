@@ -429,6 +429,57 @@ def _blocked_by_dialog(pid: int, consequence: str) -> bool:
     return False
 
 
+#: How long Windows may mark Altium's window not responding during a
+#: restart before the restart says so and stops waiting.
+RESTART_HUNG_GIVE_UP_S = 30.0
+
+_hung_since: dict = {}
+
+
+def _altium_gone(pid: int) -> str:
+    """Why a restart cannot succeed in this Altium any more, or "".
+
+    MEASURED (2026-11-18): a proj_close crashed Altium's scripting engine
+    with an access violation; the restart then pinged a loop that could
+    not come back for its whole wait and ended with "Check Altium's status
+    window", which named nothing a person could do. An exited process,
+    or a main window Windows has marked not responding for
+    RESTART_HUNG_GIVE_UP_S, is said at once with the next step.
+    """
+    import time
+
+    try:
+        import psutil
+
+        if not psutil.pid_exists(pid):
+            return (f"Altium (process {pid}) is no longer running, so no "
+                    f"loop can answer. Start Altium, open the script project "
+                    f"and run Dispatcher.pas > StartMCPServer, or run "
+                    f"`eda-agent relaunch`.")
+    except Exception:                            # noqa: BLE001
+        return ""
+    try:
+        import ctypes
+
+        from .ui import windows
+
+        frames = windows.visible_main_frames(pid)
+        hung = bool(frames) and all(
+            ctypes.windll.user32.IsHungAppWindow(h) for h in frames)
+    except Exception:                            # noqa: BLE001
+        hung = False
+    if not hung:
+        _hung_since.pop(pid, None)
+        return ""
+    since = _hung_since.setdefault(pid, time.monotonic())
+    if time.monotonic() - since < RESTART_HUNG_GIVE_UP_S:
+        return ""
+    return (f"Altium (process {pid}) has not responded to Windows for "
+            f"{RESTART_HUNG_GIVE_UP_S:.0f}s, so the new loop cannot start. "
+            f"Wait for it or end it in Task Manager, then start Altium and "
+            f"run Dispatcher.pas > StartMCPServer.")
+
+
 def _restart(command: list, frames_pid: int) -> int:
     """Stop the running loop and start a new one, with other sessions'
     calls waiting through it instead of failing.
@@ -450,6 +501,13 @@ def _restart(command: list, frames_pid: int) -> int:
     from .ui import windows
 
     from .bridge.script_crash import clear_error_boxes
+    from .bridge.altium_bridge import no_queue_wait
+
+    def probe():
+        """One ping that ends at its own deadline. This restart's marker
+        would otherwise hold it in the queue for 30 windows."""
+        with no_queue_wait():
+            return _ping_altium()
 
     def clear(stage: str) -> str:
         """Clear script error boxes; what still blocks, "" for nothing.
@@ -492,7 +550,7 @@ def _restart(command: list, frames_pid: int) -> int:
     import concurrent.futures
     pool = concurrent.futures.ThreadPoolExecutor(1)
     try:
-        ping = pool.submit(_ping_altium).result(timeout=5.0)
+        ping = pool.submit(probe).result(timeout=5.0)
     except concurrent.futures.TimeoutError:
         ping = None
     finally:
@@ -536,7 +594,11 @@ def _restart(command: list, frames_pid: int) -> int:
         deadline = time.monotonic() + RESTART_PING_WAIT_S
         blocked_since: Optional[float] = None
         while time.monotonic() < deadline:
-            ping = _ping_altium()
+            gone = _altium_gone(frames_pid)
+            if gone:
+                print(f"ERROR: {gone}", file=sys.stderr)
+                return 1
+            ping = probe()
             if ping is None:
                 # The new loop cannot start behind a modal: clear an error
                 # box at once, and give up on any other within seconds
