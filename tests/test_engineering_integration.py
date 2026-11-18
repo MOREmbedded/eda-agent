@@ -7,6 +7,20 @@ import inspect
 from eda_agent.engineering import ipc7351
 from eda_agent.tools.engineering import _live_pads_to_um, register_engineering_tools
 from eda_agent.tools.registry import ToolRegistry
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _bundled_ipc_goals(monkeypatch):
+    """Read the bundled IPC goals, never the machine's active profile.
+
+    A server started earlier in the same worker points EDA_AGENT_IPC_DIR at
+    the active profile (profile.apply_env), and these tests then read that
+    profile's goals: on a machine whose profile has no ipc7351b_goals.json
+    every call here failed with "No such file or directory".
+    """
+    for var in ("EDA_AGENT_IPC_DIR", "ALTIUM_AI_IPC_DIR"):
+        monkeypatch.delenv(var, raising=False)
 
 
 SOIC8 = {

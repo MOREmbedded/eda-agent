@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Application-level tools for Altium Designer MCP Server."""
 
+import asyncio
 import functools
 import os
 import re
@@ -55,6 +56,10 @@ _SESSION_REMINDER = {
 # every time.
 _REMINDER_EVERY_ENV = "EDA_AGENT_REMINDER_EVERY"
 _REMINDER_EVERY_DEFAULT = 10
+
+#: Longest app_restart_altium_bridge waits on the loop before restarting
+#: by the window route alone.
+_RESTART_PREPARE_CAP_S = 8.0
 _reminder_calls = 0
 
 
@@ -2169,15 +2174,35 @@ def register_application_tools(mcp):
         try:
             inspector = _get_ui_inspector()
             bridge = get_bridge()
+            from ..bridge.altium_bridge import maintenance_in_progress, no_queue_wait
             from ..bridge.altium_supervisor import AltiumBridgeSupervisor
             from ..config import get_config
+            # A crash recovery (or relaunch --restart) is already stopping
+            # and starting the loop. A second restart on top of it raced the
+            # first, and its own calls queued behind the first one's marker.
+            if maintenance_in_progress(get_config().workspace_dir):
+                return {
+                    "success": False,
+                    "restart_in_progress": True,
+                    "reason": ("A bridge restart is already under way (a "
+                               "crash recovery or `eda-agent relaunch "
+                               "--restart`). Wait about a minute and call "
+                               "app_ping; if it still does not answer, run "
+                               "`eda-agent relaunch --restart` in a terminal."),
+                }
             expected = _bundled_script_version() or ""
             script_document = get_bundled_scripts_path() / "Dispatcher.pas"
             prepare: dict[str, Any]
             try:
-                documents = await bridge.send_command_async(
+                # BOUNDED. These ride the session's one executor worker, which
+                # a crashed call can hold through its whole recovery (up to
+                # four minutes), so they waited behind it and the restart
+                # tool itself seemed to hang. Past the cap the supervisor
+                # still restarts by the window route, which needs no loop.
+                documents = await asyncio.wait_for(bridge.send_command_async(
                     "application.get_open_documents", {}, timeout=5.0,
-                )
+                    max_extensions=0,
+                ), timeout=_RESTART_PREPARE_CAP_S)
                 if isinstance(documents, list):
                     loaded_dispatcher = next((
                         d for d in documents
@@ -2186,24 +2211,31 @@ def register_application_tools(mcp):
                     ), None)
                     if loaded_dispatcher and loaded_dispatcher.get("file_path"):
                         script_document = Path(str(loaded_dispatcher["file_path"]))
-                prepare = await bridge.send_command_async(
+                prepare = await asyncio.wait_for(bridge.send_command_async(
                     "application.set_active_document",
                     {"file_path": str(script_document)},
-                    timeout=5.0,
-                )
+                    timeout=5.0, max_extensions=0,
+                ), timeout=_RESTART_PREPARE_CAP_S)
+            except asyncio.TimeoutError:
+                prepare = {"success": False, "error": (
+                    f"the loop did not answer within "
+                    f"{_RESTART_PREPARE_CAP_S:.0f}s; restarting without it")}
             except Exception as exc:
                 # A compile/runtime fault may already have stopped IPC. The
                 # supervisor still has a valid direct-stop recovery path.
                 prepare = {"success": False, "error": str(exc)}
+
+            def probe():
+                # Ends at its deadline: a queued ping waited 30 windows.
+                with no_queue_wait():
+                    return bridge.send_command("application.ping", timeout=2.0)
 
             def run_restart() -> None:
                 time.sleep(delay_ms / 1000.0)
                 supervisor = AltiumBridgeSupervisor(
                     inspector,
                     get_config().workspace_dir,
-                    lambda: bridge.send_command(
-                        "application.ping", timeout=2.0
-                    ),
+                    probe,
                 )
                 supervisor.restart(
                     launch_hotkey=launch_hotkey,

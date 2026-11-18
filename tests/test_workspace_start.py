@@ -134,3 +134,50 @@ def test_parser_knows_start():
          "--altium365-workspace", "https://b/"])
     assert args.command == "start" and args.port == 8777
     assert args.altium365_workspace == ["https://a/", "https://b/"]
+
+
+_PIPED_START = r'''
+import subprocess, sys
+from pathlib import Path
+from eda_agent import workspace_start as ws
+real = subprocess.Popen
+def popen(args, **kw):
+    proc = real([sys.executable, "-c", "import time; time.sleep(60)"], **kw)
+    print("CHILD", proc.pid, flush=True)
+    return proc
+ws.subprocess.Popen = popen
+ws.stop_port = lambda port, say: True
+ws._listening = lambda port, host="127.0.0.1": False
+ws.start_dashboard(ws.WorkspaceSettings(root=Path(sys.argv[1]), dashboard_port=8799),
+                   print, wait_s=0.3)
+'''
+
+
+def test_the_dashboard_does_not_hold_a_piped_caller(tmp_path):
+    """`eda-agent start | more` must end: the detached dashboard gets its
+    own log and no copy of the caller's stdout/stderr pipe, or the reader
+    waits for the dashboard to exit (what a PowerShell Start-Process with
+    -RedirectStandardOutput did to a hand-written start script)."""
+    import os
+    import subprocess
+
+    import psutil
+    script = tmp_path / "piped_start.py"
+    script.write_text(_PIPED_START, encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(script), str(tmp_path)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)})
+    child = None
+    try:
+        out, err = proc.communicate(timeout=30)
+        text = out.decode(errors="replace")
+        child = int(text.split("CHILD", 1)[1].split()[0])
+        assert "dashboard did not come up" in text, (text, err)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if child:
+            try:
+                psutil.Process(child).kill()
+            except psutil.Error:
+                pass

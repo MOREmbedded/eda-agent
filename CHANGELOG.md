@@ -16,6 +16,59 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`pcb_place_vias` places the size a via entry gives in mm.** A
+  `size_mm` / `hole_size_mm` on an entry was renamed to `size_mils` by the
+  session's unit handling and then ignored, so every via came out at the
+  50/28 mil default; in a mm session a plain `size` was not converted.
+  `lib_add_footprint_vias` entries take `size_mm` too.
+- **A package drawing is read in mm whatever the session's unit.**
+  `package`, `drafting`, `spec_json` and `solids` were read in the
+  session's unit, so in a mil session a datasheet's 1.27 mm pitch became
+  0.03 mm. A document in mils says so with a top-level `"units": "mil"`,
+  and the reply names the unit each was read in (`package_units`).
+- **`lib_save_footprint_library` writes the footprint at its own origin.**
+  On Altium 25 and later it used `SaveComponentWithLibrary`, which wrote
+  every primitive about 1270 mm (the library origin) away. Every version
+  now goes through a fresh library and a realigned copy; an existing
+  `out_path` is refused.
+- **`pcb_query_region` no longer stops the script on an unknown property.**
+  Its refusal called a helper without its argument ("Wrong number of
+  params", and a loop restart). Names are now checked before the call,
+  with the valid ones and close matches in the reply; a lint rule fails
+  any routine that takes parameters named without them.
+- **`proj_close` of a project with no loaded document no longer crashes
+  Altium.** The close loaded a member inside its walk of the project's
+  documents (an access violation in ScriptingSystem.DLL); it now refuses
+  with `no_loaded_documents`, and the tool loads the sheets in a call of
+  their own and closes again.
+- **`pcb_autoroute` with `nets=` routes those nets and nothing more.**
+  Asked for five nets on a live board, it came back with 438 tracks and
+  203 vias, 104 of them in pads. The job took every pour's copper off the
+  board before routing, so each GND or 3V3 pad a pour already joined to
+  its stitching vias read as apart and got a via of its own. A job asked
+  for some nets now keeps those nets' poured copper, routes only what the
+  board's copper leaves apart (join_existing), does not pour again, and
+  sends no copper of any other net. An inner layer used as a plane takes
+  its nets from the copper its pours left, not from the pour outlines
+  alone, so a 3V3 plane poured over a board-wide GND pour reads as 3V3
+  (default engine). `pcb_autoroute` puts no via in any pad unless
+  `pad_vias` ("bga", "ic" or "any") asks for it; the router's new
+  `pad_vias="none"` holds through its fallback.
+- **`sch_autoposition_labels` no longer re-places every label on the sheet
+  when no part is named.** Called with no filter, it moved the labels of
+  all 38 parts on a live sheet, the ones placed by hand included. It now
+  takes `designators=[...]` (as well as `names`) and refuses a call that
+  names nothing unless `all=True` is passed.
+- **`sch_stub_pins` keeps its labels apart and says which pins it left.**
+  A pin listed twice is stubbed once; a label reads along its stub and
+  away from the part (turned 90 degrees on an up or down pin, ending at
+  the stub on a left or down one), and one that would overlap a label
+  placed before it in the same call gets a longer stub. Each pin not
+  stubbed comes back in `failed_pins` with why (its part is not on the
+  active sheet, or no part of it there shows the pin). A multi-part
+  symbol's pins were already taken only from the part that shows them
+  (since 0.8.0).
+
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on
   `sys.path`, and its first metadata lookup kept that zip open for the
@@ -34,8 +87,24 @@ maturity classification for every tool.
   the window and its taskbar button kept Windows' blank picture. The form
   now loads `eda-agent.ico` itself (ApplyAppIcon), from the copy the MCP
   server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.2.
+- **The dashboard's Usage tab shows only its own workspace.** It listed
+  every workspace with token records, and a workspace is usually one
+  client's folder, so the picker named the others. It now offers the
+  design workspace the dashboard runs in (the folder holding
+  `.eda-agent/workspace.json`, else its start folder) and the folders
+  inside it, and counts the rest without naming them. The new "All
+  workspaces" box (`/api/wb/usage?all=1`), off by default, shows them all.
 
 ### Added
+
+- **`pcb_find_free_spot`: where a via or a part fits, nearest a point.**
+  Checks pads and drilled holes, vias, tracks, arcs, solid regions, fills,
+  poured copper, polygon cutouts, keepouts and the board edge and cutouts,
+  not only courtyards (those too, for a part). Each answer lists the
+  objects closest to it; a near point that is taken says what takes it.
+  Copper of the new object's net does not block, and poured copper can be
+  ignored. Reads the layout model the audits read; writes nothing.
+  UNVERIFIED against a live board.
 
 - **An app icon.** The Altium status window, the web dashboard's browser tab
   and the desktop shortcut now show one eda-agent icon instead of Windows'

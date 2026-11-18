@@ -140,6 +140,24 @@ def forget_ocr() -> None:
     _OCR_CACHE.clear()
 
 
+#: Fewest letters and digits a recognised line needs to count as text.
+_OCR_MIN_ALNUM = 3
+
+
+def is_ocr_glyph_noise(line: str) -> bool:
+    """Whether an OCR line is a painted glyph rather than words.
+
+    MEASURED (AD 26.11, a script error box): the recogniser returned
+    "x" for the box's close glyph, "Q" for its error icon and "0K" for
+    the OK button, ahead of the real message "Wrong number of params".
+    Every reply quoted the first line, so a crash was reported as an
+    error saying 'x', and an outside report could only say the tools
+    failed with "x". A line with fewer than three letters or digits is
+    such a glyph; no Altium message is that short.
+    """
+    return sum(ch.isalnum() for ch in line) < _OCR_MIN_ALNUM
+
+
 def describe_dialog(window, use_ocr: bool = True) -> dict:
     """One dialog, fully reported.
 
@@ -188,7 +206,8 @@ def describe_dialog(window, use_ocr: bool = True) -> dict:
         # leaving them in invites a caller to trust an OCR copy of a
         # string it already had perfectly.
         extra = [line for line in recognised
-                 if line not in captions and line != window.title]
+                 if line not in captions and line != window.title
+                 and not is_ocr_glyph_noise(line)]
         if extra:
             out["ocr_text"] = extra
             out["message_source"] = "ocr"

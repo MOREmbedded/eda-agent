@@ -1048,5 +1048,7 @@
  "{0} forgotten.": "{0} を削除しました。",
  "{0} is off.": "{0} はオフです。",
  "{0} of {1} installed": "{1} 個中 {0} 個インストール済み",
- "{0} saved. Checking again.": "{0} を保存しました。再確認しています。"
+ "{0} saved. Checking again.": "{0} を保存しました。再確認しています。",
+ "All workspaces": "すべてのワークスペース",
+ "Other workspaces hidden: {0}": "非表示のその他のワークスペース: {0}"
 }

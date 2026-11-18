@@ -218,7 +218,7 @@ def test_the_dashboard_usage_view_reads_the_records(tmp_path, monkeypatch):
     rec.record("pcb_get_components", {}, [TextContent(type="text", text="x" * 400)])
     usage.set_recorder(usage.Recorder(None, None, session="", remember=False, switch=lambda: True))
     try:
-        got = usage_view.state()
+        got = usage_view.state(show_all=True)
     finally:
         usage.set_recorder(None)
     assert got["workspace"] == str(tmp_path / "ws")
@@ -252,7 +252,7 @@ def test_the_view_opens_on_a_workspace_with_records(tmp_path, monkeypatch):
     usage.set_recorder(usage.Recorder(tmp_path / "dash", None, session="d",
                                       remember=False, switch=lambda: True))
     try:
-        got = usage_view.state()
+        got = usage_view.state(show_all=True)
     finally:
         usage.set_recorder(None)
     assert got["workspace"] == str(tmp_path / "ws")

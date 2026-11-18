@@ -153,6 +153,134 @@ async def _footprint_source(bridge, designator: str) -> dict:
     return {}
 
 
+#: The library files a footprint or symbol model can be bound to.
+_LIBRARY_EXTS = (".pcblib", ".schlib", ".intlib")
+
+
+def _library_key(path: str) -> str:
+    return path.replace("/", "\\").lower()
+
+
+def _library_named(datafile: dict) -> str:
+    """The library a model's datafile names without a path: its bare name,
+    or, with the location empty, the file name of the library Altium took.
+    Empty when the datafile carries a full path."""
+    import os
+    lib = str(datafile.get("library") or "")
+    if lib:
+        return "" if ("\\" in lib or "/" in lib) else lib
+    return os.path.basename(str(datafile.get("found_at") or ""))
+
+
+async def _known_libraries(bridge) -> list[str]:
+    """Every library path Altium knows of: the open documents, the
+    documents of each open project and the installed libraries."""
+    paths: list[str] = []
+
+    def add(rows):
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict):
+                path = str(row.get("file_path") or row.get("library_path") or "")
+                if path.lower().endswith(_LIBRARY_EXTS):
+                    paths.append(path)
+
+    try:
+        docs = await bridge.send_command_async("application.get_open_documents", {})
+        add(docs if isinstance(docs, list) else _rows(docs, "documents"))
+    except Exception:                           # noqa: BLE001 - fewer paths, no failure
+        pass
+    try:
+        projects = _rows(await bridge.send_command_async(
+            "project.get_open_projects", {}), "projects")
+    except Exception:                           # noqa: BLE001
+        projects = []
+    for proj in projects:
+        path = str(proj.get("project_path") or "") if isinstance(proj, dict) else ""
+        if not path:
+            continue
+        try:
+            docs = await bridge.send_command_async(
+                "project.get_documents", {"project_path": path})
+            add(docs if isinstance(docs, list) else _rows(docs, "documents"))
+        except Exception:                       # noqa: BLE001
+            continue
+    try:
+        add(_rows(await bridge.send_command_async(
+            "library.get_installed_libraries", {"with_counts": "false"}), "libraries"))
+    except Exception:                           # noqa: BLE001
+        pass
+    seen: dict[str, str] = {}
+    for path in paths:
+        seen.setdefault(_library_key(path), path)
+    return sorted(seen.values(), key=str.lower)
+
+
+def library_name_conflicts(parts: list, known: list[str]) -> list[str]:
+    """A warning per library a footprint model names without a path when
+    more than one known library carries that name: Altium resolves the
+    bare name to whichever it finds first, which may be another project's."""
+    import os
+    by_name: dict[str, dict[str, str]] = {}
+    for path in known:
+        by_name.setdefault(os.path.basename(path).lower(), {})[_library_key(path)] = path
+    hits: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        for model in part.get("models") or []:
+            if (not isinstance(model, dict) or model.get("integrated")
+                    or str(model.get("type", "")).upper() != "PCBLIB"):
+                continue
+            for f in model.get("datafiles") or []:
+                name = _library_named(f) if isinstance(f, dict) else ""
+                if not name:
+                    continue
+                paths = dict(by_name.get(name.lower(), {}))
+                found = str(f.get("found_at") or "")
+                if found:
+                    paths.setdefault(_library_key(found), found)
+                if len(paths) < 2:
+                    continue
+                hit = hits.setdefault(name.lower(), {
+                    "name": name, "paths": {}, "parts": [], "found": set()})
+                hit["paths"].update(paths)
+                if found:
+                    hit["found"].add(found)
+                desig = str(part.get("designator") or "")
+                if desig and desig not in hit["parts"]:
+                    hit["parts"].append(desig)
+    out = []
+    for hit in hits.values():
+        named = hit["parts"]
+        shown = ", ".join(named[:10]) + (
+            f" and {len(named) - 10} more" if len(named) > 10 else "")
+        out.append(
+            f"footprint library {hit['name']} is named without a path by "
+            f"{shown or 'parts'}, and {len(hit['paths'])} libraries carry that "
+            f"name: {', '.join(sorted(hit['paths'].values(), key=str.lower))}"
+            + (f"; Altium resolves it to {', '.join(sorted(hit['found']))}"
+               if hit["found"] else "")
+            + ". Bind the model to one by full path (lib_link_footprint "
+              "footprint_library, or lib_set_model_source)")
+    return out
+
+
+async def _library_conflict_warnings(bridge, models: Any = None) -> list[str]:
+    """``library_name_conflicts`` for the focused project, read here when
+    ``models`` (a project.component_models reply) is not given; empty on
+    any failure, as this is a report."""
+    try:
+        if models is None:
+            models = await bridge.send_command_async(
+                "project.component_models", {"limit": "100000"}, timeout=180.0)
+        parts = _rows(models, "parts")
+        if not parts:
+            return []
+        return library_name_conflicts(parts, await _known_libraries(bridge))
+    except Exception:                           # noqa: BLE001 - a report only
+        return []
+
+
 def _signal(name: str) -> str:
     """An entry or port name as it connects: Repeat(X) is X, case aside."""
     m = re.fullmatch(r"\s*repeat\s*\(\s*([^,()]+?)\s*\)\s*", name or "", re.I)
@@ -459,7 +587,9 @@ def register_project_tools(mcp):
         their unsaved edits (save=False).
 
         Altium closes the FOCUSED project, so this focuses the named one
-        first and refuses if it cannot; if any other project closes, it
+        first and refuses if it cannot. A named project with no loaded
+        document has its sheets loaded first, in a call of their own
+        (``loaded_sheets_to_close``). If any other project closes, it
         stops and reports it as ``closed_instead``. Without saving, it
         clears each member's modified flag so no save prompt appears; if
         one appears anyway it answers "Save None" then "OK", but only
@@ -561,7 +691,39 @@ def register_project_tools(mcp):
                     "proj_close again closed it")
             return out
         else:
+            if project_path and isinstance(result, dict) \
+                    and result.get("no_loaded_documents") and not result.get("closed"):
+                return await _close_after_loading(bridge, params, result)
             return _dedupe_discarded(result)
+
+    async def _close_after_loading(bridge, params, refused):
+        """Close a project none of whose documents was loaded.
+
+        Altium closes the FOCUSED project, and only a loaded document can
+        focus one. The close handler once loaded a member itself, inside
+        its walk of the project's documents, and Altium's script engine
+        died with an access violation (MEASURED 2026-11-18 on AD 26.11.1).
+        Now the sheets are loaded by their own command, which returns
+        before the close starts, and the close is sent once more.
+        """
+        try:
+            loaded = await bridge.send_command_async(
+                "project.load_project_sheets",
+                {"project_path": params["project_path"]})
+        except Exception as exc:                    # noqa: BLE001
+            return {**refused, "reason": (
+                refused.get("reason", "") + f" Loading its sheets failed: {exc}")}
+        if not isinstance(loaded, dict) or not (
+                loaded.get("loaded") or loaded.get("already_loaded")):
+            return {**refused, "loaded_sheets": loaded, "reason": (
+                "none of this project's documents is loaded and it has no "
+                "schematic sheet that could be loaded to focus it. Nothing "
+                "was closed or changed. Open one of its documents "
+                "(app_open_document) and close again.")}
+        result = await bridge.send_command_async("project.close", params)
+        if isinstance(result, dict):
+            result = {**result, "loaded_sheets_to_close": loaded.get("loaded", 0)}
+        return _dedupe_discarded(result)
 
     # Helpers for proj_close.
 
@@ -3479,7 +3641,9 @@ def register_project_tools(mcp):
         comes from an integrated library, and per datafile the library it
         names, the entity, the kind and ``found_at``: the full path Altium
         resolves it to, empty when it finds none. ``datafiles_not_found``
-        counts the links that resolve nowhere.
+        counts the links that resolve nowhere. ``warnings`` names a
+        footprint library given without a path when more than one open,
+        project or installed library carries that name.
 
         Args:
             project_path: The .PrjPcb. Defaults to the focused project.
@@ -3493,8 +3657,13 @@ def register_project_tools(mcp):
             params["project_path"] = project_path
         if designator:
             params["designator"] = designator
-        return await get_bridge().send_command_async(
+        bridge = get_bridge()
+        out = await bridge.send_command_async(
             "project.component_models", params, timeout=180.0)
+        warnings = await _library_conflict_warnings(bridge, out)
+        if warnings and isinstance(out, dict):
+            out["warnings"] = list(out.get("warnings") or []) + warnings
+        return out
 
     @mcp.tool()
     async def lib_library_manager(action: str, library: str = "", component: str = "",
@@ -4291,7 +4460,9 @@ def register_project_tools(mcp):
             ``change_order.failed_lines``: failed lines read by OCR (0/O,
             1/l slips); a mismatch it explains carries ``eco_line``
             and, for Footprint Not Found, ``footprint_source``: each
-            library and ``found_at`` ('' if none).
+            library and ``found_at`` ('' if none). ``warnings`` names a
+            footprint library given without a path that more than one
+            known library is named.
         """
         from ..bridge.exceptions import AltiumTimeoutError
 
@@ -4326,6 +4497,9 @@ def register_project_tools(mcp):
                 result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
             except Exception as exc:            # noqa: BLE001 - a report only
                 result["after_sync"] = {"error": f"not read: {exc}"}
+            warnings = await _library_conflict_warnings(bridge)
+            if warnings:
+                result["warnings"] = list(result.get("warnings") or []) + warnings
         return result
 
     @mcp.tool()

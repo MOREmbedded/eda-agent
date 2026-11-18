@@ -150,6 +150,8 @@ def _choose(router, job, bga: BGA, pad, placed):
     sy = 1.0 if pad.y >= cy else -1.0
     h = bga.pitch / 2.0
     spots = [(pad.x + sx * h, pad.y + sy * h, True), (pad.x, pad.y, False)]
+    if router.options.pad_vias == "none":
+        spots = spots[:1]           # a dog-bone or nothing: no via in the ball
     for x, y, stub in spots:
         room = _room(router, job, x, y)
         for style in job.vias:
@@ -413,6 +415,8 @@ def _via_array(ctx, e: int) -> bool:
     other layers. Its heat goes down them, and its connection to the
     plane or pour with it."""
     r = ctx.r
+    if r.options.pad_vias == "none":
+        return False                # no via in any pad, an exposed one included
     board = r.board
     pad = board.pads[e]
     layer = pad.copper[0].layer

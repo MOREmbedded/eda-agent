@@ -125,7 +125,8 @@ def package_spec(package: Any) -> PackageSpec:
 
 def model_from_package(package: Any, *, density: str = "", name: str = "",
                        description: str = "",
-                       drafting: Optional[dict] = None) -> FootprintModel:
+                       drafting: Optional[dict] = None,
+                       vendor_lands: bool = False) -> FootprintModel:
     """Build the land pattern a package description asks for.
 
     ``package`` is a :class:`PackageSpec`, its ``to_dict`` form, or that
@@ -133,6 +134,8 @@ def model_from_package(package: Any, *, density: str = "", name: str = "",
     empty keeps it (N unless the package says otherwise). ``name`` and
     ``description`` override the package's. ``drafting`` overrides
     :class:`DraftingRules` fields (silk width, paste coverage and so on).
+    ``vendor_lands`` takes the lands from the package's ``vendor`` pattern
+    when it carries one (see :func:`builder.apply_vendor_lands`).
 
     Raises :class:`SpecError` with the spec's own text for anything the
     engine cannot use.
@@ -144,7 +147,8 @@ def model_from_package(package: Any, *, density: str = "", name: str = "",
         spec.description = str(description)
     rules = _drafting_rules(drafting)
     try:
-        return build_footprint(spec, density or None, rules)
+        return build_footprint(spec, density or None, rules,
+                               vendor_lands=vendor_lands)
     except SpecError:
         raise
     except ValueError as exc:

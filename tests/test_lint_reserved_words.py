@@ -52,6 +52,9 @@ def test_reserved_set_matches_memory(lint):
         "As", "Of", "Out", "Index", "Reference",
         # Not a keyword: as a local name it stopped PCB.pas loading (AD 26.11).
         "DrcOn",
+        # A property directive: as a String local it stopped the loop
+        # starting, "Unknown identifier: Stored" (AD 26.11, 2026-11-18).
+        "Stored",
     }
     missing = expected - lint.RESERVED_AS_NAME
     extra = lint.RESERVED_AS_NAME - expected
@@ -171,3 +174,16 @@ def test_safe_identifier_not_caught(lint):
         assert not lint.RULE_RESERVED_IDENT.pattern.search(line), (
             f"False positive on safe line: {line!r}"
         )
+
+
+def test_stored_in_a_name_list_is_caught(lint):
+    """The declaration that stopped the loop starting on 2026-11-18."""
+    lines = [
+        "Function F : String;\n",
+        "Var\n",
+        "    FootprintName, FpLibPath, Stored, SchLibPath : String;\n",
+        "Begin\n",
+        "End;\n",
+    ]
+    findings = lint._scan_reserved_in_var_block("test.pas", lines)
+    assert [f.line for f in findings] == [3]

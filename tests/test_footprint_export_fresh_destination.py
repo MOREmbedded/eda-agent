@@ -43,14 +43,17 @@ def test_destination_rejections_exit_before_creation(guard):
     assert "Exit;" in block
 
 
-def test_the_one_call_export_runs_only_where_it_does_not_stop_the_script():
-    """SaveComponentWithLibrary stopped AD21's script engine; 25 and later
-    keep it (it writes over an existing output). The version is asked first."""
+def test_every_version_exports_through_the_realigned_fresh_library():
+    """SaveComponentWithLibrary wrote the footprint at its absolute place
+    in the source library, every pad about 1270 mm (50000 mil, the library
+    origin) from its origin (MEASURED 2026-11-18 on AD 26.11.1). No version
+    takes that route any more: the realigned copy is the only one."""
     body = routine()
-    gate = body.index("If AltiumVersionCode(0) >= 2500 Then")
-    call = body.index("PcbLib.SaveComponentWithLibrary(")
-    assert gate < call < body.index("Exit;", call) < body.index("Client.OpenNewDocument(")
-    assert body.count(".SaveComponentWithLibrary(") == 1
+    assert ".SaveComponentWithLibrary(" not in body
+    assert "AltiumVersionCode(" not in body
+    copy = body.index("Footprint.CopyTo(NewFP, eFullCopy);")
+    assert copy < body.index("AlignCopiedFootprint(Footprint, NewFP)") \
+        < body.index("OutDoc.DoFileSave('')")
 
 
 def test_export_never_calls_one_call_export_or_mutates_source():

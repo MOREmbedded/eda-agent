@@ -196,8 +196,10 @@ def test_soic8_is_created_written_in_mm_and_read_back(altium):
     assert text["text"] == ".Designator" and text["layer"] == "Mechanical13"
     assert bridge.calls[10][1]["height_mm"] == "1.75"
     assert out["readback"]["pads_read"] == 8
-    # Unrounded: the land is 1.95 mm, not 77 mil.
-    assert {p["x_size"] for p in bridge.pads} == {"1.95"}
+    # The datasheet's own land, 1.55 mm, written unrounded (not 61 mil);
+    # IPC-7351B would have made it 1.95 mm.
+    assert {p["x_size"] for p in bridge.pads} == {"1.55"}
+    assert out["land_pattern"] == "vendor"
 
 
 def test_qfn16_exposed_pad_gets_closed_paste_and_windows(altium):

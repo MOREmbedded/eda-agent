@@ -200,7 +200,13 @@ RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     # whole PCB unit fail to load (every pcb.* command
                     # "Undeclared identifier: HandlePCBCommand"); renamed,
                     # the same code loaded. Bisected by deploy.
-                    "DrcOn"}
+                    "DrcOn",
+                    # Measured 2026-11-18 on AD 26.11: a String local
+                    # `..., FpLibPath, Stored, SchLibPath : String;` in
+                    # Library.pas stopped the loop from starting with
+                    # "Unknown identifier: Stored". Delphi reads stored as a
+                    # property directive, like index.
+                    "Stored"}
 _RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",
@@ -1209,6 +1215,9 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
     for f in _scan_undeclared_read(targets):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
+    for f in _scan_bare_call_missing_args(targets):
+        by_file.setdefault(f.file, []).append(f)
+        errors += 1
 
     if verbose:
         for fname in sorted(by_file):
@@ -1866,6 +1875,69 @@ def _scan_undeclared_read(targets: list,
                         memory="altium_wrong_api_identifier_family.md",
                     ))
     return findings
+
+
+#: A routine head, its name and its parameter list when it has one.
+_HEAD_WITH_PARAMS = re.compile(
+    r"^\s*(?:Function|Procedure)\s+([A-Za-z_]\w*)\s*(\(([^)]*)\))?",
+    re.IGNORECASE)
+
+
+def _scan_bare_call_missing_args(targets: list) -> list:
+    """A routine that takes parameters, named without any.
+
+    DelphiScript resolves the bare name as a call with no arguments and
+    stops the script at run time with "Wrong number of params", in a modal
+    dialog that halts the bridge loop. Nothing catches it earlier: the
+    compiler accepts it, and the line only runs on the path that needs it.
+    PCB_QueryRegion named KnownPCBPropertyList (which takes a dummy
+    Integer) bare on its unknown-property refusal, so asking a region for
+    a property it did not know crashed the loop instead of answering.
+
+    A routine's own result assignment (``Name := ...``), a declaration
+    (``Name : Type``), a member (``Obj.Name``) and a local or parameter of
+    the same name are not calls.
+    """
+    loaded = []
+    takes_args = set()
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read().split("\n")
+        lines = _blank_block_comments(raw)
+        loaded.append((os.path.basename(path), raw, lines))
+        for line in lines:
+            m = _HEAD_WITH_PARAMS.match(strip_comments_and_strings(line))
+            if m and m.group(3) and m.group(3).strip():
+                takes_args.add(m.group(1).lower())
+    word = re.compile(r"(?<![.\w$&#])([A-Za-z_]\w*)(?!\w)")
+    findings = []
+    for rel, raw, lines in loaded:
+        local: dict = {}
+        for _name, start, begin, stop in _routine_spans(lines):
+            names = _declared_names(lines, start, begin)
+            for k in range(start, stop):
+                local[k] = names
+        for k, line in enumerate(lines):
+            clean = strip_comments_and_strings(line)
+            if _HEAD_WITH_PARAMS.match(clean):
+                continue
+            for m in word.finditer(clean):
+                low = m.group(1).lower()
+                if low not in takes_args or low in local.get(k, ()):
+                    continue
+                if clean[m.end():].lstrip()[:1] in ("(", ":"):
+                    continue
+                findings.append(Finding(
+                    file=rel, line=k + 1, col=m.start(1) + 1,
+                    rule="bare-call-missing-args", severity="error",
+                    snippet=raw[k].rstrip()
+                    + "   [%s takes parameters]" % m.group(1),
+                    memory="delphiscript_wrong_number_of_params.md",
+                ))
+    return findings
+
 
 if __name__ == "__main__":
     sys.exit(1 if run_lint() > 0 else 0)

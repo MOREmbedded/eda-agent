@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.15.3';
+    SCRIPT_VERSION = '2026.11.18.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -8912,14 +8912,45 @@ End;
 { Focus follows the active DOCUMENT, so the project is focused by showing one  }
 { of its documents. Only LOADED ones: opening a member here would load it as a }
 { free document, the way App_SetActiveDocument records, and focus nothing.     }
-Function FocusProjectForClose(Project : IProject) : Boolean;
+{                                                                             }
+{ NEVER LOADS A MEMBER. It used to, when none was loaded: Client.OpenDocument }
+{ inside the walk of DM_LogicalDocuments, with the IDocument of that walk     }
+{ still held. Opening a member rebuilds the project's document model, so the }
+{ walk went on, and the close after it ran, on interfaces Altium had replaced.}
+{ MEASURED 2026-11-18 on AD 26.11.1: proj_close of a project with no loaded   }
+{ document stopped Altium's script engine with an access violation in        }
+{ ScriptingSystem.DLL, and the loop did not come back. The member paths are   }
+{ now read first, as text, and no document interface is held while a         }
+{ document is shown. A project with nothing loaded is refused with           }
+{ NoneLoaded set; proj_close loads its sheets in a call of their own and      }
+{ closes again.                                                               }
+Function ProjectMemberPaths(Project : IProject) : String;
 Var
     J : Integer;
     Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If Path = '' Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+Function FocusProjectForClose(Project : IProject; Var NoneLoaded : Boolean) : Boolean;
+Var
     ServerDoc : IServerDocument;
-    Path, Target : String;
+    Paths, Path, Target : String;
+    K : Integer;
 Begin
     Result := False;
+    NoneLoaded := False;
     If Project = Nil Then Exit;
     Target := '';
     Try Target := Project.DM_ProjectFullPath; Except Target := ''; End;
@@ -8929,36 +8960,27 @@ Begin
         Result := True;
         Exit;
     End;
-    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Paths := ProjectMemberPaths(Project);
+    NoneLoaded := True;
+    While Paths <> '' Do
     Begin
-        Doc := Project.DM_LogicalDocuments(J);
-        If Doc = Nil Then Continue;
-        Path := DocFullPath(Doc);
-        If Path = '' Then Continue;
+        K := Pos('|', Paths);
+        If K > 0 Then
+        Begin
+            Path := Copy(Paths, 1, K - 1);
+            Paths := Copy(Paths, K + 1, Length(Paths) - K);
+        End
+        Else
+        Begin
+            Path := Paths;
+            Paths := '';
+        End;
         ServerDoc := Nil;
         Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
         If ServerDoc = Nil Then Continue;
+        NoneLoaded := False;
         Try Client.ShowDocument(ServerDoc); Except End;
-        If FocusedProjectPathIs(Target) Then
-        Begin
-            Result := True;
-            Exit;
-        End;
-    End;
-    { NO MEMBER LOADED: nothing above could be shown, and the project could }
-    { not be closed. MEASURED: opening a member (load_project_sheets, or    }
-    { OpenObject) focuses the project and the close then works. The Client }
-    { API keeps the membership; RunProcess Client:OpenDocument does not.    }
-    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
-    Begin
-        Doc := Project.DM_LogicalDocuments(J);
-        If Doc = Nil Then Continue;
-        Path := DocFullPath(Doc);
-        If (Path = '') Or (Not FileExists(Path)) Then Continue;
         ServerDoc := Nil;
-        Try ServerDoc := Client.OpenDocument(Doc.DM_DocumentKind, Path); Except ServerDoc := Nil; End;
-        If ServerDoc = Nil Then Continue;
-        Try Client.ShowDocument(ServerDoc); Except End;
         If FocusedProjectPathIs(Target) Then
         Begin
             Result := True;
@@ -9053,13 +9075,14 @@ Function Proj_Close(Params : String; RequestId : String) : String;
 Var
     ProjectPath, Discarded, StillDirty, More : String;
     ClosedInstead, BeforeClose, Why : String;
-    SaveFirst, Closed : Boolean;
+    SaveFirst, Closed, NoneLoaded : Boolean;
     Attempts : Integer;
     Workspace : IWorkspace;
     Project : IProject;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     SaveFirst := ExtractJsonValue(Params, 'save') <> 'false';
+    NoneLoaded := False;
     Discarded := '';
 
     Workspace := GetWorkspace;
@@ -9076,15 +9099,16 @@ Begin
 
             { BEFORE ANY SAVE OR DISCARD, so a close that has to be refused  }
             { leaves the project exactly as it found it.                     }
-            If Not FocusProjectForClose(Project) Then
+            If Not FocusProjectForClose(Project, NoneLoaded) Then
             Begin
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":false,"closed":false,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"discarded":[],"attempts":0,"closed_instead":[]'
+                    + ',"no_loaded_documents":' + BoolToJsonStr(NoneLoaded)
                     + ',"reason":"Altium closes the FOCUSED project, and this '
-                    + 'one could not be made focused because none of its '
-                    + 'documents is loaded. Nothing was closed or changed. '
+                    + 'one could not be made focused: none of its loaded '
+                    + 'documents focused it. Nothing was closed or changed. '
                     + 'Load a sheet with proj_load_sheets, or activate one of '
                     + 'its documents, and close again."}');
                 Exit;
@@ -9131,7 +9155,7 @@ Begin
                 { says, so focus the named one before EVERY attempt: focus   }
                 { can move between one attempt and the next.                  }
                 Project := FindProjectByPath(Workspace, ProjectPath);
-                If Not FocusProjectForClose(Project) Then Break;
+                If Not FocusProjectForClose(Project, NoneLoaded) Then Break;
                 BeforeClose := OpenProjectPaths(Workspace);
                 Attempts := Attempts + 1;
                 ResetParameters;
@@ -17442,6 +17466,65 @@ Begin
     Try Application.ProcessMessages; Except End;
 End;
 
+{ RefreshSchLibPanels - make the library editor AND its Properties panel show }
+{ what a scripted edit wrote. Live on AD 26.11 the panel kept the old values  }
+{ after lib_create_ic_symbol and lib_batch_set_params: it follows the        }
+{ selection, and repainting the document does not tell it anything changed. }
+{ So the component announces a modify (SCHM_BeginModify / SCHM_EndModify,    }
+{ the broadcast the panels listen to), is repainted, and is selected again:  }
+{ moved off and back, with the editor processing its messages in between,   }
+{ the way a selection is measured to take effect (see the part-1 reset      }
+{ above). Comp Nil uses the current component. Never fatal.                  }
+Procedure RefreshSchLibPanels(SchLib : ISch_Lib; Comp : ISch_Component);
+Var
+    Iter : ISch_Iterator;
+    Other, Cand : ISch_Component;
+Begin
+    If SchLib = Nil Then Exit;
+    If Comp = Nil Then
+        Try Comp := SchLib.CurrentSchComponent; Except Comp := Nil; End;
+    If Comp <> Nil Then
+    Begin
+        Try
+            SchBeginModify(Comp);
+            SchEndModify(Comp);
+        Except End;
+        Try Comp.GraphicallyInvalidate; Except End;
+    End;
+    Try SchLib.GraphicallyInvalidate; Except End;
+    If Comp <> Nil Then
+    Begin
+        Other := Nil;
+        Iter := Nil;
+        Try Iter := SchLib.SchLibIterator_Create; Except Iter := Nil; End;
+        If Iter <> Nil Then
+        Begin
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+                Cand := Iter.FirstSchObject;
+                While Cand <> Nil Do
+                Begin
+                    If Cand.I_ObjectAddress <> Comp.I_ObjectAddress Then
+                    Begin
+                        Other := Cand;
+                        Break;
+                    End;
+                    Cand := Iter.NextSchObject;
+                End;
+            Finally
+                SchLib.SchIterator_Destroy(Iter);
+            End;
+        End;
+        If Other <> Nil Then
+        Begin
+            Try SchLib.CurrentSchComponent := Other; Except { display only: a refresh that fails leaves the data as written } End;
+            Try Application.ProcessMessages; Except End;
+        End;
+        Try SchLib.CurrentSchComponent := Comp; Except { display only: a refresh that fails leaves the data as written } End;
+    End;
+    Try Application.ProcessMessages; Except End;
+End;
+
 { Mark the focused PcbLib document dirty. RegisterComponent persists a new }
 { footprint container, but AddPCBObject does not reliably dirty the editor  }
 { document, so newly-added pads/tracks vanished after close/reopen.          }
@@ -23086,7 +23169,33 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
-{ Lib_ReloadLibrary - Close and reopen a PcbLib so its in-memory caches are    }
+{ Lib_RefreshView - repaint the focused SchLib and select its component again }
+{ so the Properties panel shows the values a scripted edit wrote (see        }
+{ RefreshSchLibPanels). Params: component_name (optional; empty = current).  }
+Function Lib_RefreshView(Params : String; RequestId : String) : String;
+Var
+    CompName, Shown : String;
+    SchLib : ISch_Lib;
+    Comp : ISch_Component;
+Begin
+    CompName := ExtractJsonValue(Params, 'component_name');
+    SchLib := Nil;
+    Try SchLib := SchServer.GetCurrentSchDocument; Except SchLib := Nil; End;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+    Comp := Nil;
+    If CompName <> '' Then Comp := ScanLibForComponent(SchLib, CompName);
+    RefreshSchLibPanels(SchLib, Comp);
+    Shown := '';
+    Try Shown := SchLib.CurrentSchComponent.LibReference; Except Shown := ''; End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"refreshed":true,"component":"' + EscapeJsonString(Shown) + '"}');
+End;
+
+{ Lib_ReloadLibrary - Close and reopen ONE library so its in-memory caches are }
 { rebuilt from disk.                                                           }
 {                                                                              }
 { IPCB_Text.BoundingRectangle is populated when the document loads and is NOT  }
@@ -23095,21 +23204,39 @@ End;
 { the text's OLD extent, so anything that centres on the bounding box computes }
 { its correction from stale geometry and moves the text by a wrong delta.      }
 {                                                                              }
-{ Closing the document drops those caches; the next OpenObject re-reads from   }
-{ disk. Caller MUST save first -- this does not save, and a dirty close would  }
-{ either lose the edits or raise a prompt.                                     }
+{ ONLY THE LIBRARY NAMED IS CLOSED. This used WorkspaceManager:CloseObject,    }
+{ which acts on the FOCUSED document, not the one named: live on AD 26.11 it   }
+{ raised "Unsaved Changes" for the board in front, and the library was never   }
+{ reloaded, so the ECO did not see its new footprint. The library's own server }
+{ document is closed (Client.CloseDocument, as App_CloseDocument does) and     }
+{ opened again by path. A library with unsaved changes is refused rather than  }
+{ closed: that close would either lose the edits or raise the save prompt.     }
+{ Every open project holding the library is compiled again afterwards, so its  }
+{ models are resolved against what was reloaded.                               }
 {                                                                              }
-{ Params: library_path (required).                                             }
+{ Params: library_path (required, a .PcbLib or .SchLib).                       }
 Function Lib_ReloadLibrary(Params : String; RequestId : String) : String;
 Var
-    LibPath : String;
-    PcbLib : IPCB_Library;
+    LibPath, Ext : String;
+    ServerDoc, Again : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Member : IDocument;
+    WasOpen, WasModified, Holds : Boolean;
+    P, D, Recompiled : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
     If LibPath = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
             'library_path is required');
+        Exit;
+    End;
+    Ext := UpperCase(ExtractFileExt(LibPath));
+    If (Ext <> '.PCBLIB') And (Ext <> '.SCHLIB') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_LIBRARY',
+            'Only a .PcbLib or .SchLib is reloaded, never a board or sheet: ' + LibPath);
         Exit;
     End;
     If Not FileExists(LibPath) Then
@@ -23119,11 +23246,39 @@ Begin
         Exit;
     End;
 
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', LibPath);
-    Try RunProcess('WorkspaceManager:CloseObject'); Except End;
-    Try Application.ProcessMessages; Except End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(LibPath); Except ServerDoc := Nil; End;
+    WasOpen := ServerDoc <> Nil;
+    If WasOpen Then
+    Begin
+        If PathKey(ServerDoc.FileName) <> PathKey(LibPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'OTHER_DOCUMENT',
+                LibPath + ' led to ' + ServerDoc.FileName + ' instead; nothing was reloaded.');
+            Exit;
+        End;
+        WasModified := False;
+        Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
+        { Changes made through the API do not always set Modified. }
+        If DocWasEdited(LibPath) Then WasModified := True;
+        If WasModified Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODIFIED',
+                'The library has unsaved changes, so it was not reloaded and no '
+                + 'save prompt was raised. Save it (app_save_all), then reload: ' + LibPath);
+            Exit;
+        End;
+        Client.CloseDocument(ServerDoc);
+        Try Application.ProcessMessages; Except End;
+        Again := Nil;
+        Try Again := Client.GetDocumentByPath(LibPath); Except Again := Nil; End;
+        If Again <> Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_CLOSED',
+                'Altium kept the library open, so it was not reloaded: ' + LibPath);
+            Exit;
+        End;
+    End;
 
     ResetParameters;
     AddStringParameter('ObjectKind', 'Document');
@@ -23131,15 +23286,50 @@ Begin
     Try RunProcess('WorkspaceManager:OpenObject'); Except End;
     Try Application.ProcessMessages; Except End;
 
-    PcbLib := PCBServer.GetCurrentPCBLibrary;
-    If PcbLib = Nil Then
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(LibPath); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+        Result := BuildErrorResponse(RequestId, 'NOT_REOPENED',
             'Library did not reopen: ' + LibPath);
         Exit;
     End;
+
+    { The projects holding the library resolve their models again. }
+    Recompiled := 0;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        For P := 0 To Workspace.DM_ProjectCount - 1 Do
+        Begin
+            Project := Nil;
+            Try Project := Workspace.DM_Projects(P); Except Project := Nil; End;
+            If Project = Nil Then Continue;
+            Holds := False;
+            D := 0;
+            While (Not Holds) And (D < Project.DM_LogicalDocumentCount) Do
+            Begin
+                Member := Nil;
+                Try Member := Project.DM_LogicalDocuments(D); Except Member := Nil; End;
+                If Member <> Nil Then Holds := PathKey(Member.DM_FullPath) = PathKey(LibPath);
+                Inc(D);
+            End;
+            If Holds Then
+            Begin
+                Try
+                    Project.DM_Compile;
+                    Inc(Recompiled);
+                Except NoteWriteFailed('compile a project holding the library'); End;
+            End;
+        End;
+        { The compile cache would otherwise answer the next read from before. }
+        LastCompileTick := 0;
+    End;
+
     Result := BuildSuccessResponse(RequestId,
-        '{"reloaded":true,"library_path":"' + EscapeJsonString(LibPath) + '"}');
+        '{"reloaded":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"was_open":' + BoolToJsonStr(WasOpen)
+        + ',"projects_recompiled":' + IntToStr(Recompiled) + '}');
 End;
 
 { Lib_ProbeDesignator - Diagnostic. Dump the RAW geometry of one footprint's   }
@@ -23369,8 +23559,8 @@ End;
 
 Function Lib_LinkFootprint(Params : String; RequestId : String) : String;
 Var
-    FootprintName, ComponentName, ReplaceStr, MT : String;
-    Replace : Boolean;
+    FootprintName, ComponentName, ReplaceStr, MT, FpLibPath, StoredPath, SchLibPath : String;
+    Replace, PathSet : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Impl, Impl2, Found : ISch_Implementation;
@@ -23381,6 +23571,12 @@ Begin
     ComponentName := ExtractJsonValue(Params, 'component_name');
     ReplaceStr := ExtractJsonValue(Params, 'replace');
     Replace := (ReplaceStr = '') Or (ReplaceStr = 'true') Or (ReplaceStr = 'True') Or (ReplaceStr = '1');
+    { The full path of the .PcbLib holding the footprint. Written as the     }
+    { model's library path so a same-named library in another open project   }
+    { is not the one the ECO resolves.                                        }
+    FpLibPath := ExtractJsonValue(Params, 'footprint_library_path');
+    PathSet := False;
+    StoredPath := '';
 
     SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
@@ -23449,17 +23645,39 @@ Begin
         Try Impl.IsCurrent := True; Except NoteWriteFailed('footprint model IsCurrent'); End;
         { A footprint implementation MUST carry a datafile link (entity name =   }
         { the footprint) or the compiler reports "Missing Component Models".     }
-        { Bind by name: entity = footprint, EMPTY location. Never pass a full    }
-        { .PcbLib path as the location -- a path blocks/wedges AD26; empty is    }
-        { safe and is what a self-contained package wants.                       }
+        { Created by name: entity = footprint, EMPTY location. Never pass a      }
+        { .PcbLib path to AddDataFileLink -- a path there blocks/wedges AD26.    }
         Try Impl.AddDataFileLink(FootprintName, '', 'PCBLib'); Except NoteWriteFailed('footprint model library link'); End;
+        { The library path goes on the link IN PLACE, the way                 }
+        { Lib_SetModelSource writes it, never through AddDataFileLink. With   }
+        { the location empty the model is "any library", and the ECO took a   }
+        { same-named .PcbLib from another open project and reported the       }
+        { footprint not found. A path is not "use the component library".     }
+        If FpLibPath <> '' Then
+        Begin
+            Try
+                If Impl.DatafileLinkCount > 0 Then
+                Begin
+                    Impl.DatafileLink[0].Location := FpLibPath;
+                    PathSet := True;
+                End;
+            Except NoteWriteFailed('footprint model library path'); End;
+            If PathSet Then
+            Begin
+                Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('footprint model UseComponentLibrary'); End;
+            End;
+            Try StoredPath := Impl.DatafileLink[0].Location; Except End;
+        End;
     End;
 
     SchEndEdit(SchLib, 'Link footprint');
     MarkLibDirty(SchLib);
+    SchLibPath := ResolveLoadedDocPath(SchDocPath(SchLib));
 
     If Impl <> Nil Then
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '","replaced":' + BoolToJsonStr(Replace) + '}')
+        Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '","replaced":' + BoolToJsonStr(Replace)
+            + ',"library_path":"' + EscapeJsonString(SchLibPath) + '"'
+            + ',"footprint_library_path":"' + EscapeJsonString(StoredPath) + '"}')
     Else
         Result := BuildErrorResponse(RequestId, 'LINK_FAILED', 'Failed to link footprint');
 End;
@@ -24846,6 +25064,9 @@ Begin
     End;
 
     MarkLibDirty(SchLib);
+    { The Properties panel showed the old values until the symbol was }
+    { selected again by hand.                                          }
+    RefreshSchLibPanels(SchLib, Nil);
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
         ',"created":' + IntToStr(Created) +
@@ -36561,21 +36782,15 @@ Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PATH', 'out_path must name a .PcbLib');
         Exit;
     End;
-    { 25 and later: Altium's own one-footprint save, which writes over an  }
-    { existing output as it always has. AD21's script engine stopped in    }
-    { SaveComponentWithLibrary, so there the footprint goes through a fresh }
-    { library document instead, which only makes a new file.              }
-    If AltiumVersionCode(0) >= 2500 Then
-    Begin
-        Said := PcbLib.SaveComponentWithLibrary(FpWanted, OutPath);
-        Result := BuildSuccessResponse(RequestId, JsonObj(
-            JsonStr('library', LibPath) + ','
-            + JsonStr('footprint_name', FpWanted) + ','
-            + JsonStr('out_path', OutPath) + ','
-            + JsonBool('reported', Said) + ','
-            + JsonStr('route', 'save_component_with_library')));
-        Exit;
-    End;
+    { ONE ROUTE ON EVERY VERSION: a fresh library, a full copy, realigned. }
+    { Altium's one-call SaveComponentWithLibrary was kept on 25 and later   }
+    { (AD21's script engine stopped in it), and it writes the footprint's   }
+    { primitives at their ABSOLUTE place in the source library, which sits  }
+    { at the library origin, about 50000,50000 mil (see FootprintOriginX).  }
+    { MEASURED 2026-11-18 on AD 26.11.1: the written footprint had every    }
+    { pad about 1270 mm from its origin, while lib_copy_footprint of the    }
+    { same footprint, which realigns with AlignCopiedFootprint, was right.  }
+    { This route realigns the same way and checks the copy before saving.   }
     If Client.GetDocumentByPath(OutPath) <> Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',
@@ -39915,6 +40130,7 @@ Begin
         'set_designators':      Result := Lib_SetDesignators(Params, RequestId);
         'probe_designator':     Result := Lib_ProbeDesignator(Params, RequestId);
         'reload_library':       Result := Lib_ReloadLibrary(Params, RequestId);
+        'refresh_view':         Result := Lib_RefreshView(Params, RequestId);
         'convert_designators_to_stroke': Result := Lib_ConvertDesignatorsToStroke(Params, RequestId);
         'extract_intlib':       Result := Lib_ExtractIntLib(Params, RequestId);
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);
@@ -49617,7 +49833,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 
@@ -49677,8 +49893,8 @@ Begin
         + ',"truncated":' + BoolToJsonStr((Count >= Limit) And HasMore)
         + ',"object_type":"' + EscapeJsonString(ObjTypeStr) + '"'
         + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
-        + ',"bounds":{"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
-        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}'
+        + ',"bounds":{"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1)
+        + ',"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}'
         + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
@@ -81648,7 +81864,7 @@ Var
     Sym : ISch_SheetSymbol;
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
-    Removed, ParamsOfSymbol, IsLibDoc : Boolean;
+    Removed, ParamsOfSymbol, IsLibDoc, LibPending : Boolean;
     SchLibDoc : ISch_Lib;
     ObjJson, SymbolRef : String;
     First : Boolean;
@@ -81678,7 +81894,18 @@ Begin
 
         If Mode = 'delete' Then
         Begin
+            { A PIN OF THE SYMBOL ON SCREEN IS HELD BY THE LIBRARY, as a     }
+            { visible parameter is (RemoveMatchingParamsFromComponent).      }
+            { LibComp.RemoveSchObject then did nothing, every pass found the }
+            { same pin again and counted it: an outside report of obj_delete }
+            { on library pins answered matched 100000 and removed nothing.   }
+            { A remove is counted only once the object it acted on is gone;  }
+            { one found again is removed through the library, and one that   }
+            { still stays is reported as a fault instead of looping.         }
             MaxIter := 100000;
+            LastAddr := 0;
+            SameTries := 0;
+            LibPending := False;
             While MaxIter > 0 Do
             Begin
                 Iterator := LibComp.SchIterator_Create;
@@ -81695,7 +81922,32 @@ Begin
                     Obj := Iterator.NextSchObject;
                 End;
                 LibComp.SchIterator_Destroy(Iterator);
+                ThisAddr := 0;
+                If FoundObj <> Nil Then
+                    Try ThisAddr := FoundObj.I_ObjectAddress; Except End;
+                { The last remove took: its object is not found again. }
+                If LibPending And ((FoundObj = Nil) Or (ThisAddr <> LastAddr)) Then
+                Begin
+                    Inc(TotalMatched);
+                    LibPending := False;
+                    SameTries := 0;
+                    If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+                End;
                 If FoundObj = Nil Then Break;
+                If LibPending And (ThisAddr = LastAddr) Then
+                Begin
+                    { Still there after the component's remove. }
+                    Inc(SameTries);
+                    If SameTries > 1 Then
+                    Begin
+                        NoteDeleteFault('an object stayed on the symbol after it was removed');
+                        Break;
+                    End;
+                    Try SchLib.RemoveSchObject(FoundObj); Except { the next pass finds it again and reports the fault } End;
+                    Dec(MaxIter);
+                    Continue;
+                End;
+                LastAddr := ThisAddr;
                 { Same rule as the doc-level remove below: a raise used 
                   to end the request with the objects already gone      
                   uncounted. Record it and stop instead.                }
@@ -81710,9 +81962,8 @@ Begin
                     NoteDeleteFault('removing an object raised an error');
                     Break;
                 End;
-                Inc(TotalMatched);
+                LibPending := True;
                 Dec(MaxIter);
-                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
             End;
         End
         Else
@@ -96594,28 +96845,82 @@ End;
 {..............................................................................}
 
 {..............................................................................}
+{ StubLabelBox - the box, in mils, that a stub's net label covers. The label  }
+{ reads along the stub and away from the part: a right or left stub keeps it  }
+{ level (a left one right-justified, so the text ends at the anchor), an up   }
+{ or down stub turns it 90 degrees (a down one right-justified). Text is      }
+{ taken as 60 mil a character and 80 mil high: a box too large only moves a   }
+{ label further out.                                                           }
+{..............................................................................}
+Procedure StubLabelBox(Orient : Integer; EX, EY : Double; TextLen : Integer;
+    Var X1 : Double; Var Y1 : Double; Var X2 : Double; Var Y2 : Double);
+Var
+    L, H : Double;
+Begin
+    L := 60 * TextLen;
+    H := 80;
+    If Orient = 2 Then
+    Begin X1 := EX - L; X2 := EX; Y1 := EY; Y2 := EY + H; End
+    Else If Orient = 1 Then
+    Begin X1 := EX - H; X2 := EX; Y1 := EY; Y2 := EY + L; End
+    Else If Orient = 3 Then
+    Begin X1 := EX - H; X2 := EX; Y1 := EY - L; Y2 := EY; End
+    Else
+    Begin X1 := EX; X2 := EX + L; Y1 := EY; Y2 := EY + H; End;
+End;
+
+{ StubBoxClear - True when no box in Boxes (four lines a box: x1, y1, x2, y2) }
+{ overlaps this one. Boxes that only touch are clear.                          }
+Function StubBoxClear(Boxes : TStringList; X1, Y1, X2, Y2 : Double) : Boolean;
+Var
+    I : Integer;
+    BX1, BY1, BX2, BY2 : Double;
+Begin
+    Result := True;
+    I := 0;
+    While I + 3 < Boxes.Count Do
+    Begin
+        BX1 := StrToFloatDef(Boxes[I], 0);
+        BY1 := StrToFloatDef(Boxes[I + 1], 0);
+        BX2 := StrToFloatDef(Boxes[I + 2], 0);
+        BY2 := StrToFloatDef(Boxes[I + 3], 0);
+        If (X1 < BX2) And (BX1 < X2) And (Y1 < BY2) And (BY1 < Y2) Then
+        Begin
+            Result := False;
+            Exit;
+        End;
+        I := I + 4;
+    End;
+End;
+
+{..............................................................................}
 { Gen_StubPins - place a short wire stub + net label at each named pin. Pins   }
 { is a pipe-separated list of "designator,pin_number,label" records (label     }
 { optional, defaults to designator_pinnumber). The stub extends from the pin's }
 { electrical end outward along the pin orientation by stub_length_mils.        }
+{ A label that would overlap one placed before it in this call gets a longer   }
+{ stub, a stub length at a time, up to four times. Each pin not stubbed is     }
+{ reported in failed_pins with why: no part of that designator on this sheet,  }
+{ or no pin of that number shown on any of its parts here.                     }
 {..............................................................................}
 Function Gen_StubPins(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     PinsStr, RecStr, Remaining, Token : String;
-    Desig, PinNum, Lbl : String;
-    PipePos, CommaPos, FieldIdx, Stubbed, Failed : Integer;
-    StubLen : Double;
+    Desig, PinNum, Lbl, Why, FailedJson : String;
+    PipePos, CommaPos, FieldIdx, Stubbed, Failed, Tries, Moved : Integer;
+    StubLen, Len : Double;
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PX, PY, EX, EY : Double;
+    PX, PY, EX, EY, BX1, BY1, BX2, BY2 : Double;
     Orient : Integer;
-    Found : Boolean;
+    Found, CompSeen, Clear : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
     InfFont : Integer;
     StyleFound : Boolean;
+    Boxes : TStringList;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -96634,6 +96939,9 @@ Begin
 
     Stubbed := 0;
     Failed := 0;
+    Moved := 0;
+    FailedJson := '';
+    Boxes := TStringList.Create;
     { Sheet convention once, applied to every stub label below. }
     StyleFound := InferNetLabelStyle(SchDoc, InfFont);
     SchBeginEdit(SchDoc, '');
@@ -96664,6 +96972,7 @@ Begin
             If (Desig = '') Or (PinNum = '') Then Begin Failed := Failed + 1; Continue; End;
 
             Found := False;
+            CompSeen := False;
             PX := 0; PY := 0; Orient := 0;
             Iter := SchDoc.SchIterator_Create;
             Try
@@ -96673,6 +96982,7 @@ Begin
                 Begin
                     If Comp.Designator.Text = Desig Then
                     Begin
+                        CompSeen := True;
                         PinIter := Comp.SchIterator_Create;
                         Try
                             PinIter.AddFilter_ObjectSet(MkSet(ePin));
@@ -96698,13 +97008,39 @@ Begin
                 SchDoc.SchIterator_Destroy(Iter);
             End;
 
-            If Not Found Then Begin Failed := Failed + 1; Continue; End;
+            If Not Found Then
+            Begin
+                Failed := Failed + 1;
+                If CompSeen Then Why := 'pin_not_shown_on_this_sheet'
+                Else Why := 'part_not_on_this_sheet';
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"designator":"' + EscapeJsonString(Desig)
+                    + '","pin":"' + EscapeJsonString(PinNum)
+                    + '","reason":"' + Why + '"}';
+                Continue;
+            End;
 
-            EX := PX; EY := PY;
-            If Orient = 0 Then EX := PX + StubLen
-            Else If Orient = 1 Then EY := PY + StubLen
-            Else If Orient = 2 Then EX := PX - StubLen
-            Else If Orient = 3 Then EY := PY - StubLen;
+            If Lbl = '' Then Lbl := Desig + '_' + PinNum;
+            { The stub's end, a stub length further out each time the label  }
+            { there would overlap one already placed in this call.           }
+            Tries := 0;
+            Clear := False;
+            Repeat
+                Len := StubLen * (Tries + 1);
+                EX := PX; EY := PY;
+                If Orient = 0 Then EX := PX + Len
+                Else If Orient = 1 Then EY := PY + Len
+                Else If Orient = 2 Then EX := PX - Len
+                Else If Orient = 3 Then EY := PY - Len;
+                StubLabelBox(Orient, EX, EY, Length(Lbl), BX1, BY1, BX2, BY2);
+                Clear := StubBoxClear(Boxes, BX1, BY1, BX2, BY2);
+                Tries := Tries + 1;
+            Until Clear Or (Tries > 4);
+            If Tries > 1 Then Moved := Moved + 1;
+            Boxes.Add(FloatToJsonStr(BX1));
+            Boxes.Add(FloatToJsonStr(BY1));
+            Boxes.Add(FloatToJsonStr(BX2));
+            Boxes.Add(FloatToJsonStr(BY2));
 
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then
@@ -96718,12 +97054,19 @@ Begin
                 SchRegisterObject(SchDoc, Wire);
             End;
 
-            If Lbl = '' Then Lbl := Desig + '_' + PinNum;
             NetLabel := SchServer.SchObjectFactory(eNetLabel, eCreate_Default);
             If NetLabel <> Nil Then
             Begin
                 NetLabel.Text := Lbl;
                 NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
+                { Along the stub and away from the part (StubLabelBox): a    }
+                { level label on an up or down pin ran into its neighbours'. }
+                If (Orient = 1) Or (Orient = 3) Then NetLabel.Orientation := 1
+                Else NetLabel.Orientation := 0;
+                If (Orient = 2) Or (Orient = 3) Then
+                Begin
+                    Try NetLabel.Justification := 2; Except NoteWriteFailed('NetLabel.Justification'); End;
+                End;
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except NoteWriteFailed('NetLabel.FontId'); End;
@@ -96738,6 +97081,7 @@ Begin
     Finally
         SchEndEdit(SchDoc, 'Edit');
         SchDoc.GraphicallyInvalidate;
+        Boxes.Free;
     End;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -96749,7 +97093,10 @@ Begin
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed) + '}');
+        '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed)
+        + ',"lengthened":' + IntToStr(Moved)
+        + ',"sheet":"' + EscapeJsonString(SchDoc.DocumentName) + '"'
+        + ',"failed_pins":[' + FailedJson + ']}');
 End;
 
 {..............................................................................}
