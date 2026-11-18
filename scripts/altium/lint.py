@@ -200,7 +200,13 @@ RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     # whole PCB unit fail to load (every pcb.* command
                     # "Undeclared identifier: HandlePCBCommand"); renamed,
                     # the same code loaded. Bisected by deploy.
-                    "DrcOn"}
+                    "DrcOn",
+                    # Measured 2026-11-18 on AD 26.11: a String local
+                    # `..., FpLibPath, Stored, SchLibPath : String;` in
+                    # Library.pas stopped the loop from starting with
+                    # "Unknown identifier: Stored". Delphi reads stored as a
+                    # property directive, like index.
+                    "Stored"}
 _RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",

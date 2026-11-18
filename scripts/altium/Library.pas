@@ -6380,7 +6380,7 @@ End;
 
 Function Lib_LinkFootprint(Params : String; RequestId : String) : String;
 Var
-    FootprintName, ComponentName, ReplaceStr, MT, FpLibPath, Stored, SchLibPath : String;
+    FootprintName, ComponentName, ReplaceStr, MT, FpLibPath, StoredPath, SchLibPath : String;
     Replace, PathSet : Boolean;
     SchLib : ISch_Lib;
     Component : ISch_Component;
@@ -6397,7 +6397,7 @@ Begin
     { is not the one the ECO resolves.                                        }
     FpLibPath := ExtractJsonValue(Params, 'footprint_library_path');
     PathSet := False;
-    Stored := '';
+    StoredPath := '';
 
     SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
@@ -6487,7 +6487,7 @@ Begin
             Begin
                 Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('footprint model UseComponentLibrary'); End;
             End;
-            Try Stored := Impl.DatafileLink[0].Location; Except End;
+            Try StoredPath := Impl.DatafileLink[0].Location; Except End;
         End;
     End;
 
@@ -6498,7 +6498,7 @@ Begin
     If Impl <> Nil Then
         Result := BuildSuccessResponse(RequestId, '{"success":true,"footprint":"' + EscapeJsonString(FootprintName) + '","replaced":' + BoolToJsonStr(Replace)
             + ',"library_path":"' + EscapeJsonString(SchLibPath) + '"'
-            + ',"footprint_library_path":"' + EscapeJsonString(Stored) + '"}')
+            + ',"footprint_library_path":"' + EscapeJsonString(StoredPath) + '"}')
     Else
         Result := BuildErrorResponse(RequestId, 'LINK_FAILED', 'Failed to link footprint');
 End;
