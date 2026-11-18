@@ -459,7 +459,9 @@ def register_project_tools(mcp):
         their unsaved edits (save=False).
 
         Altium closes the FOCUSED project, so this focuses the named one
-        first and refuses if it cannot; if any other project closes, it
+        first and refuses if it cannot. A named project with no loaded
+        document has its sheets loaded first, in a call of their own
+        (``loaded_sheets_to_close``). If any other project closes, it
         stops and reports it as ``closed_instead``. Without saving, it
         clears each member's modified flag so no save prompt appears; if
         one appears anyway it answers "Save None" then "OK", but only
@@ -561,7 +563,39 @@ def register_project_tools(mcp):
                     "proj_close again closed it")
             return out
         else:
+            if project_path and isinstance(result, dict) \
+                    and result.get("no_loaded_documents") and not result.get("closed"):
+                return await _close_after_loading(bridge, params, result)
             return _dedupe_discarded(result)
+
+    async def _close_after_loading(bridge, params, refused):
+        """Close a project none of whose documents was loaded.
+
+        Altium closes the FOCUSED project, and only a loaded document can
+        focus one. The close handler once loaded a member itself, inside
+        its walk of the project's documents, and Altium's script engine
+        died with an access violation (MEASURED 2026-11-18 on AD 26.11.1).
+        Now the sheets are loaded by their own command, which returns
+        before the close starts, and the close is sent once more.
+        """
+        try:
+            loaded = await bridge.send_command_async(
+                "project.load_project_sheets",
+                {"project_path": params["project_path"]})
+        except Exception as exc:                    # noqa: BLE001
+            return {**refused, "reason": (
+                refused.get("reason", "") + f" Loading its sheets failed: {exc}")}
+        if not isinstance(loaded, dict) or not (
+                loaded.get("loaded") or loaded.get("already_loaded")):
+            return {**refused, "loaded_sheets": loaded, "reason": (
+                "none of this project's documents is loaded and it has no "
+                "schematic sheet that could be loaded to focus it. Nothing "
+                "was closed or changed. Open one of its documents "
+                "(app_open_document) and close again.")}
+        result = await bridge.send_command_async("project.close", params)
+        if isinstance(result, dict):
+            result = {**result, "loaded_sheets_to_close": loaded.get("loaded", 0)}
+        return _dedupe_discarded(result)
 
     # Helpers for proj_close.
 

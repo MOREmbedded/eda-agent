@@ -55,9 +55,9 @@ def test_focus_is_established_before_anything_is_changed(close):
     Checked after the save or discard, a refusal would already have
     written the project, or cleared its modified flags."""
     before_any_change = close.split("If SaveFirst Then", 1)[0]
-    assert "FocusProjectForClose(Project)" in before_any_change, (
+    assert "FocusProjectForClose(Project, NoneLoaded)" in before_any_change, (
         "the focus check runs after the save or the discard")
-    refusal = before_any_change.split("FocusProjectForClose(Project)", 1)[1]
+    refusal = before_any_change.split("FocusProjectForClose(Project, NoneLoaded)", 1)[1]
     assert '"closed":false' in refusal
     assert re.search(r"\bExit;", refusal), (
         "a refused close falls through to the save or discard anyway")
@@ -66,7 +66,7 @@ def test_focus_is_established_before_anything_is_changed(close):
 def test_every_attempt_is_focused_first(close):
     """Focus can move between attempts, so once up front is not enough."""
     loop = _loop(close)
-    assert loop.index("FocusProjectForClose(Project)") < loop.index(
+    assert loop.index("FocusProjectForClose(Project, NoneLoaded)") < loop.index(
         "'WorkspaceManager:CloseObject'")
 
 
@@ -97,11 +97,12 @@ def test_success_requires_that_nothing_else_closed(close):
         "the failure reply does not name the projects that closed")
 
 
-def test_focusing_shows_a_loaded_member_before_opening_one(project):
-    """A loaded member is shown first. Only when none is loaded is one
-    opened, through the Client API, which keeps the project membership:
-    a project with no loaded documents could not be closed at all, and
-    loading a member (as load_project_sheets does) let it close."""
+def test_focusing_shows_a_loaded_member_and_never_loads_one(project):
+    """A loaded member is shown to focus the project. None is ever loaded
+    here: loading one inside the walk of the project's documents left the
+    walk, and the close after it, on interfaces Altium had replaced, and
+    the script engine died with an access violation (MEASURED 2026-11-18
+    on AD 26.11.1). proj_close loads the sheets in a call of their own."""
     body = project["FocusProjectForClose"]
     assert "Client.GetDocumentByPath(Path)" in body
     assert "Client.ShowDocument(ServerDoc)" in body
@@ -110,11 +111,13 @@ def test_focusing_shows_a_loaded_member_before_opening_one(project):
     assert body.index("Client.ShowDocument(ServerDoc)") < body.rindex(
         "FocusedProjectPathIs(Target)"), (
         "focus is assumed rather than checked after showing a document")
-    assert body.index("Client.GetDocumentByPath(Path)") < body.index(
-        "Client.OpenDocument("), "a member is opened before a loaded one is tried"
-    for opener in ("RunProcess", "OpenObject"):
-        assert opener not in body, (
-            f"{opener} loads a member as a free document and focuses nothing")
+    for opener in ("OpenDocument", "RunProcess", "OpenObject"):
+        assert opener not in body, f"{opener} loads a member while closing"
+    # The member paths are read as text first; no document interface of
+    # the project's walk is held while a document is shown.
+    assert "DM_LogicalDocuments" not in body
+    assert "ProjectMemberPaths(Project)" in body
+    assert "NoneLoaded := False;" in body.split("Client.ShowDocument(ServerDoc)")[0]
 
 
 def test_the_gone_list_skips_the_target_and_ignores_case(project):

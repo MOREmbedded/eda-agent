@@ -81,3 +81,27 @@ def format_length(value: Any) -> str:
     if v.is_integer():
         return str(int(v))
     return f"{v:.6f}".rstrip("0").rstrip(".")
+
+
+def entry_length(entry: dict, stem: str, units: str, default: Any) -> Any:
+    """``entry``'s ``stem`` length in ``units``, whatever unit it came in.
+
+    One entry of a list (a via of a batch) may give a length plainly, in
+    ``units``, or under a name that says its unit: ``size_mm``, or
+    ``size_mils`` / ``size_mil``. The session boundary (lengths.py) renames
+    a ``size_mm`` below the top level of a call to ``size_mils`` in a mil
+    tool, so a reader that only knew ``size_mm`` missed both and placed
+    the default instead. A name with a unit wins over the plain one;
+    ``default`` (already in ``units``) when none is given.
+    """
+    want = normalise_units(units) or "mil"
+    for suffix, unit in (("mm", "mm"), ("mils", "mil"), ("mil", "mil")):
+        value = entry.get(f"{stem}_{suffix}")
+        if value is None:
+            continue
+        v = float(value)
+        if unit == want:
+            return v
+        return v * MILS_PER_MM if want == "mil" else v * MM_PER_MIL
+    value = entry.get(stem)
+    return default if value is None else value

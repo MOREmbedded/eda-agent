@@ -7611,16 +7611,25 @@ def register_pcb_tools(mcp):
                 ``eTextObject``.
             x1, y1, x2, y2: Opposite rectangle corners in mils.
             layer: Optional exact PCB layer; empty searches all layers.
-            properties: Flat PCB property names accepted by ``obj_query``.
+            properties: Flat PCB property names accepted by ``obj_query``
+                (Radius, StartAngle, EndAngle on arcs; BoundsLeft,
+                BoundsBottom, BoundsRight, BoundsTop for the extent). An
+                unknown name is refused with the valid ones, before
+                anything reaches Altium.
             filter: Optional property=value filters joined with ``|``.
             limit: Maximum returned primitives (1..10000).
 
         Returns:
             Dict with objects, count, normalized bounds, layer, board path and
-            an explicit truncation flag.
+            an explicit truncation flag; ``warnings`` names a property the
+            type does not have (it comes back empty).
         """
+        from ..pcb_properties import check_properties
+        refusal, warnings = check_properties(properties, object_type)
+        if refusal is not None:
+            return refusal
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        reply = await bridge.send_command_async(
             "pcb.query_region",
             {
                 "object_type": object_type,
@@ -7632,6 +7641,9 @@ def register_pcb_tools(mcp):
                 "limit": str(limit),
             },
         )
+        if warnings and isinstance(reply, dict):
+            reply = {**reply, "warnings": list(reply.get("warnings") or []) + warnings}
+        return reply
 
     @mcp.tool()
     async def pcb_get_used_layers() -> dict[str, Any]:
@@ -9073,14 +9085,11 @@ def register_pcb_tools(mcp):
             naming any layer pair and "unknown_nets" any net that did not
             resolve; a via on an unknown net is not placed.
         """
+        from ..units import entry_length
         parts = []
         for v in vias:
-            size = v.get("size", 50)
-            hole = v.get("hole_size", 28)
-            if v.get("size_mm") is not None:
-                size = float(v["size_mm"]) * MILS_PER_MM
-            if v.get("hole_size_mm") is not None:
-                hole = float(v["hole_size_mm"]) * MILS_PER_MM
+            size = entry_length(v, "size", "mil", 50)
+            hole = entry_length(v, "hole_size", "mil", 28)
             parts.append(",".join([
                 _mils(v["x"]), _mils(v["y"]),
                 _mils(size), _mils(hole),

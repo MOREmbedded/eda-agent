@@ -109,6 +109,13 @@ _NOT_IN_LENGTHS = re.compile(
 #: Arguments that are documents of lengths in a unit of their own, mm on
 #: every tool: a package as a datasheet draws it, the drafting rules, the
 #: drawing's totals. Given as an object or as its JSON text.
+#:
+#: A DOCUMENT IS READ IN ITS OWN UNIT, NOT THE SESSION'S. Package drawings
+#: are dimensioned in mm, and reading one in a mil session's unit made a
+#: 1.27 mm pitch 0.03 mm: every footprint came out 39 times too small
+#: unless the call happened to say length_units="mm". A document in
+#: another unit says so itself, with a top-level ``"units": "mil"``; the
+#: reply names the unit each document was read in (``package_units``).
 LENGTH_DOCUMENTS: dict[str, str] = {
     "package": "mm", "drafting": "mm", "drawing": "mm",
     # A land pattern transcribed from a datasheet; a 3D body's solids.
@@ -146,6 +153,8 @@ ADDED: dict[str, frozenset[str]] = {
     "lib_set_via_properties": frozenset({"size"}),
     "pcb_place_via": frozenset({"size"}),
     "pcb_place_via_array": frozenset({"size"}),
+    # A via's diameter, in each entry of the list.
+    "pcb_place_vias": frozenset({"size"}),
     "pcb_place_text": frozenset({"margin"}),
     "pcb_set_grids": frozenset({"track", "via", "visible", "visible_big",
                                 "component_x", "component_y"}),
@@ -374,7 +383,7 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
             out["units"] = unit
         return _walk(out, frozenset(), 1.0, _taken(names, native))
     items = out.pop("items", None)
-    documents = {key: _document(out.pop(key), unit, LENGTH_DOCUMENTS[key])
+    documents = {key: _document(out.pop(key), LENGTH_DOCUMENTS[key])
                  for key in list(out) if key in LENGTH_DOCUMENTS}
     converted = _walk(out, plain_lengths(tool, out), _factor(unit, native),
                       _taken(names, native))
@@ -384,25 +393,61 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
     return converted
 
 
-def _document(value: Any, unit: str, own: str) -> Any:
-    """A document of lengths, given in ``unit``, in its own unit; JSON
-    text stays text."""
-    text = isinstance(value, str)
-    if text:
+#: The names a document gives its own unit under.
+_DOCUMENT_UNIT_KEYS = ("units", OVERRIDE)
+
+
+def _document_body(value: Any) -> tuple[Any, bool]:
+    """A document as an object, and whether it came as JSON text."""
+    if isinstance(value, str):
         try:
-            body = json.loads(value)
+            return json.loads(value), True
         except ValueError:
-            return value
-    else:
-        body = value
+            return None, True
+    return value, False
+
+
+def document_unit(value: Any, own: str) -> str:
+    """The unit a document is given in: the one it names, else its own.
+
+    Never the session's: see LENGTH_DOCUMENTS."""
+    body, _ = _document_body(value)
+    if isinstance(body, dict):
+        for key in _DOCUMENT_UNIT_KEYS:
+            named = body.get(key)
+            if isinstance(named, str) and normalise_units(named):
+                return normalise_units(named)
+    return own
+
+
+def document_units(tool: str, args: Any) -> dict[str, str]:
+    """``{"<name>_units": unit}`` for each document a call gives: the unit
+    it was read in, for the reply to say."""
+    if not converts(tool) or not isinstance(args, dict):
+        return {}
+    return {f"{key}_units": document_unit(args[key], own)
+            for key, own in LENGTH_DOCUMENTS.items() if args.get(key) is not None}
+
+
+def _document(value: Any, own: str) -> Any:
+    """A document of lengths in its own unit; JSON text stays text. One
+    that names another unit (``"units": "mil"``) is converted from it."""
+    body, text = _document_body(value)
     if not isinstance(body, (dict, list)):
         return value
-    out = _walk(body, frozenset(), _factor(unit, own), _named(own), in_points=True)
+    given = document_unit(body, own)
+    if isinstance(body, dict) and any(k in body for k in _DOCUMENT_UNIT_KEYS):
+        body = {k: v for k, v in body.items() if k not in _DOCUMENT_UNIT_KEYS}
+    elif given == own:
+        return value
+    out = _walk(body, frozenset(), _factor(given, own), _named(own), in_points=True)
     return json.dumps(out) if text else out
 
 
-def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None) -> Any:
-    """``tool``'s reply, in its own unit, given in ``unit``."""
+def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None,
+             documents: Optional[dict] = None) -> Any:
+    """``tool``'s reply, in its own unit, given in ``unit``. ``documents``
+    (document_units) is added as it is: the unit each document was read in."""
     if not converts(tool):
         return reply
     source = native_unit(tool)
@@ -411,7 +456,7 @@ def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None) -> A
         source = normalise_units((args or {}).get("units", "")) or source
     out = _walk(reply, plain_lengths(tool, args), _factor(source, unit), _named(unit))
     if isinstance(out, dict):
-        out = {**out, OVERRIDE: unit}
+        out = {**out, **(documents or {}), OVERRIDE: unit}
     return out
 
 
