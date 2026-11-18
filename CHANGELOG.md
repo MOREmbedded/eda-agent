@@ -29,6 +29,11 @@ maturity classification for every tool.
   (default engine). `pcb_autoroute` puts no via in any pad unless
   `pad_vias` ("bga", "ic" or "any") asks for it; the router's new
   `pad_vias="none"` holds through its fallback.
+- **`sch_autoposition_labels` no longer re-places every label on the sheet
+  when no part is named.** Called with no filter, it moved the labels of
+  all 38 parts on a live sheet, the ones placed by hand included. It now
+  takes `designators=[...]` (as well as `names`) and refuses a call that
+  names nothing unless `all=True` is passed.
 
 - **`eda-agent update` no longer leaves eda-agent uninstalled when
   eda-agent.exe is in use.** Python runs pip's launcher as a zip on

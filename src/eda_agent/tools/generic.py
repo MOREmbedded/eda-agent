@@ -2272,6 +2272,8 @@ def register_generic_tools(mcp):
     async def sch_autoposition_labels(
         names: Optional[list[str]] = None,
         method: str = "rotate",
+        designators: Optional[list[str]] = None,
+        all: bool = False,  # noqa: A002 - the caller's word for it
     ) -> dict[str, Any]:
         """Put part designators and comments, and sheet-symbol names and file
         names, back where Altium positions them, on the active schematic.
@@ -2280,11 +2282,16 @@ def register_generic_tools(mcp):
         anywhere odd after a scripted placement. Each label's auto-position
         is turned back on and Altium is made to position it, as rotating a
         part and rotating it back does by hand. A label moved on purpose
-        (obj_modify Designator.Location.X) loses that position.
+        (obj_modify Designator.Location.X) loses that position, so name
+        the parts to fix: with neither ``designators`` nor ``names`` the
+        call is refused unless ``all`` is True.
 
         Args:
-            names: Designators and sheet names to fix; none means every
-                part and sheet symbol on the sheet.
+            designators: The parts to fix, e.g. ["U4", "C12"].
+            names: Designators and sheet-symbol names to fix (the same
+                list as ``designators``; both may be given).
+            all: Fix every part and sheet symbol on the sheet; needed
+                when no name is given.
             method: What makes Altium reposition: "rotate" (90 degrees and
                 back), "move" (one grid step and back) or "modify" (an
                 edit with no change).
@@ -2294,12 +2301,20 @@ def register_generic_tools(mcp):
             every label ``before`` and ``after`` (x, y in mils and
             autoposition).
         """
-        names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        names = [str(n).strip() for n in list(designators or []) + list(names or [])
+                 if str(n).strip()]
+        names = list(dict.fromkeys(names))
         bad = [n for n in names if "|" in n]
         if bad:
             return {"ok": False, "reason": f"a name cannot contain '|': {bad}"}
         if method not in ("rotate", "move", "modify"):
             return {"ok": False, "reason": "method is rotate, move or modify"}
+        if not names and not all:
+            return {"ok": False,
+                    "reason": "no part named: pass designators=[...] for the parts to fix, "
+                              "or all=True to reposition the labels of every part and "
+                              "sheet symbol on the sheet (labels placed by hand lose "
+                              "their place)"}
         return await get_bridge().send_command_async(
             "generic.autoposition_labels",
             {"names": "|".join(names), "method": method})
