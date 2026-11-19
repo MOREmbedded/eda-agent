@@ -64,7 +64,8 @@ install. See
 claude mcp add -s user altium eda-agent
 ```
 
-**"eda-agent is not recognized", or a client other than Claude Code**
+<details>
+<summary>"eda-agent is not recognized", or a client other than Claude Code</summary>
 
 If `eda-agent` is not on your `PATH`, register it through Python. The `--` tells Claude Code that the rest is the command to run:
 
@@ -73,6 +74,8 @@ claude mcp add -s user altium -- python -m eda_agent
 ```
 
 Any other MCP client: add a local **stdio** server that runs `eda-agent` (or `python -m eda_agent`).
+
+</details>
 
 **3. Load the scripts into Altium**
 
@@ -156,7 +159,8 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Using the tools](docs/USING_THE_TOOLS.md) | Finding the right tool, clients that cap the tool count, backends, modes, phase gates, part sourcing, Altium 365, performance |
 | [Known limitations and troubleshooting](docs/LIMITATIONS.md) | What can go wrong, how to recover, timeouts, common errors |
 
-**Guides**
+<details>
+<summary><b>Guides</b></summary>
 
 | Document | What it covers |
 |---|---|
@@ -183,7 +187,10 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 
-**Reference**
+</details>
+
+<details>
+<summary><b>Reference</b></summary>
 
 | Document | What it covers |
 |---|---|
@@ -196,7 +203,10 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [SDK coverage](docs/SDK_COVERAGE.md) | How much of Altium's object model the generic layer reaches |
 | [Altium scripting coverage](docs/ALTIUM_SCRIPTING_COVERAGE.md) | Official Altium scripting examples mapped to tools, with known gaps |
 
-**Development**
+</details>
+
+<details>
+<summary><b>Development</b></summary>
 
 | Document | What it covers |
 |---|---|
@@ -207,6 +217,8 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Altium autonomy runbook](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | The by-hand runbook that drives a real Altium |
 | [Changelog](CHANGELOG.md) | What each change added or fixed |
 | [Contributing](CONTRIBUTING.md) | How to send a change |
+
+</details>
 
 ## License
 
