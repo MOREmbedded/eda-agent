@@ -287,6 +287,41 @@ Begin
     Try Application.ProcessMessages; Except End;
 End;
 
+{ NudgeSchLibPanels - the step that actually moves the SCH Library list and   }
+{ the Properties panel onto the current component. MEASURED 2026-11-19 on    }
+{ AD 26.11.1: after CurrentSchComponent was set and the modify broadcast      }
+{ sent, the canvas showed the new component while the list and Properties     }
+{ still showed the previous one. Running Tools > Mode (the editor's own       }
+{ Sch:ToggleComponentDisplayMode) brought both onto it at once. The mode in   }
+{ view is kept: Normal is selected again when it is in view, otherwise one    }
+{ step back and one forward. Never fatal.                                     }
+Procedure NudgeSchLibPanels(Comp : ISch_Component);
+Var
+    Mode : Integer;
+Begin
+    Mode := 0;
+    If Comp <> Nil Then
+        Try Mode := Comp.DisplayMode; Except Mode := 0; End;
+    Try
+        If Mode = 0 Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'Mode0');
+            RunProcess('Sch:ToggleComponentDisplayMode');
+        End
+        Else
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'Previous');
+            RunProcess('Sch:ToggleComponentDisplayMode');
+            ResetParameters;
+            AddStringParameter('Action', 'Next');
+            RunProcess('Sch:ToggleComponentDisplayMode');
+        End;
+    Except End;
+    Try Application.ProcessMessages; Except End;
+End;
+
 { RefreshSchLibPanels - make the library editor AND its Properties panel show }
 { what a scripted edit wrote. Live on AD 26.11 the panel kept the old values  }
 { after lib_create_ic_symbol and lib_batch_set_params: it follows the        }
@@ -344,6 +379,7 @@ Begin
         Try SchLib.CurrentSchComponent := Comp; Except { display only: a refresh that fails leaves the data as written } End;
     End;
     Try Application.ProcessMessages; Except End;
+    NudgeSchLibPanels(Comp);
 End;
 
 { Mark the focused PcbLib document dirty. RegisterComponent persists a new }
@@ -1212,6 +1248,9 @@ Begin
             'Component not found in active library: ' + Name);
         Exit;
     End;
+    { The canvas follows CurrentSchComponent; the SCH Library list and the  }
+    { Properties panel do not until nudged (measured 2026-11-19).           }
+    NudgeSchLibPanels(Component);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
@@ -8418,6 +8457,8 @@ Begin
     SchEndEdit(SchLib, 'Edit');
 
     MarkLibDirty(SchLib);
+    { The Properties panel kept the old description (measured 2026-11-19). }
+    NudgeSchLibPanels(SchLib.CurrentSchComponent);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"component":"' + EscapeJsonString(CompName) +
         '","description":"' + EscapeJsonString(Description) + '"}');
