@@ -1,0 +1,52 @@
+name: mirror to Bitbucket
+
+# GitHub is the source of truth. Bitbucket (ei_electronics/eda-agent) is a
+# read-only copy for the team that works there. Bitbucket Cloud cannot pull
+# from GitHub, so every change here is pushed across: all branches and all
+# tags, with branches and tags deleted here deleted there too.
+#
+# Needs one secret, BITBUCKET_TOKEN: a Bitbucket repository access token
+# for ei_electronics/eda-agent with the "Repositories: Write" scope. Without
+# it the job skips instead of failing, so forks stay green.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  delete:
+  workflow_dispatch:
+  # A safety net for anything a missed or cancelled run left behind.
+  schedule:
+    - cron: '17 3 * * *'
+
+# Each run pushes the whole current state, so a newer run makes an older
+# one redundant. Never two at once, so their pushes cannot race.
+concurrency:
+  group: mirror-bitbucket
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: github.repository == 'MOREmbedded/eda-agent'
+    steps:
+      - name: Push all branches and tags to Bitbucket
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$BITBUCKET_TOKEN" ]; then
+            echo "::notice::BITBUCKET_TOKEN is not set, skipping the mirror."
+            exit 0
+          fi
+          # A bare clone holds exactly refs/heads/* and refs/tags/*, with
+          # none of GitHub's refs/pull/* that a --mirror clone would drag in.
+          git clone --bare --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo.git
+          cd repo.git
+          git push --prune \
+            "https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/ei_electronics/eda-agent.git" \
+            '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
