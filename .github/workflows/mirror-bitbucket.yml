@@ -1,12 +1,12 @@
 name: mirror to Bitbucket
 
-# GitHub is the source of truth. Bitbucket (ei_electronics/eda-agent) is a
+# GitHub is the source of truth. Bitbucket (ei_electronics/eta-agent) is a
 # read-only copy for the team that works there. Bitbucket Cloud cannot pull
 # from GitHub, so every change here is pushed across: all branches and all
 # tags, with branches and tags deleted here deleted there too.
 #
 # Needs one secret, BITBUCKET_TOKEN: a Bitbucket repository access token
-# for ei_electronics/eda-agent with the "Repositories: Write" scope. Without
+# for ei_electronics/eta-agent with the "Repositories: Write" scope. Without
 # it the job skips instead of failing, so forks stay green.
 
 on:
@@ -48,5 +48,5 @@ jobs:
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo.git
           cd repo.git
           git push --prune \
-            "https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/ei_electronics/eda-agent.git" \
+            "https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/ei_electronics/eta-agent.git" \
             '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
