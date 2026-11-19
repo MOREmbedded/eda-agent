@@ -1076,7 +1076,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             from eda_agent.bridge import get_bridge
             b = get_bridge()
             known = b.known_loop_version(max_age=b.KEEPALIVE_MAX_SKIP + 30.0)
-        except Exception:
+        except Exception:  # no bridge yet: fall through to a real ping
             known = ""
         if known:
             ping = {"pong": True, "script_version": known}
