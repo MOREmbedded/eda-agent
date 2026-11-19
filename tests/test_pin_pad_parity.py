@@ -45,3 +45,13 @@ def test_a_pin_without_a_number_fails_and_names_sort_naturally():
 
 def test_case_does_not_separate_a_pin_from_its_pad():
     assert pin_pad_parity(_pins("ep"), _pads("EP"))["ok"]
+
+
+def test_a_surface_mount_pad_stored_unplated_still_needs_its_pin():
+    # A Wurth PcbLib stores Plated=False on its SMD pads (live 2026-11-19);
+    # with no hole they are copper and must match the symbol's pins.
+    smd = [{"name": n, "plated": "false", "hole_mils": 0} for n in ("1", "2")]
+    found = pin_pad_parity(_pins("1", "2"), smd)
+    assert found["ok"] and found["pads"] == 2 and found["ignored_pads"] == 0
+    hole = [{"name": "MH", "plated": "false", "hole_mils": 125}]
+    assert pin_pad_parity(_pins("1", "2"), smd + hole)["ignored_pads"] == 1

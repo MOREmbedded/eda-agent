@@ -16,6 +16,22 @@ maturity classification for every tool.
 
 ### Fixed
 
+- **`lib_link_footprint` links vendor footprints whose SMD pads are
+  stored unplated.** A Wurth PcbLib stores `Plated=False` on its
+  surface-mount pads; the pin/pad check took them for mounting holes,
+  counted no pads and refused the link. Only a pad with a hole is now
+  left out as an unplated hole.
+- **The SCH Library list and the Properties panel follow a scripted
+  SchLib edit.** The earlier refresh moved the canvas only; the list and
+  Properties still showed the previous component (seen live on AD
+  26.11.1). `lib_set_current_component`, `lib_set_component_description`,
+  `lib_batch_set_params` and the symbol builders now finish with the
+  editor's own Tools > Mode step, which keeps the display mode in view.
+  Script 2026.11.19.1.
+- **`lib_reload_library` puts the document that was in front back in
+  front.** Reopening the library brought it forward, so the next tool
+  acting on the focused document acted on the library instead of the
+  sheet. The reply names it in `front_restored`.
 - **`pcb_place_vias` places the size a via entry gives in mm.** A
   `size_mm` / `hole_size_mm` on an entry was renamed to `size_mils` by the
   session's unit handling and then ignored, so every via came out at the

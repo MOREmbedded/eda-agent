@@ -4635,10 +4635,29 @@ def register_library_tools(mcp):
             ``reloaded``, ``library_path``, ``was_open`` and
             ``projects_recompiled``.
         """
+        from ..bridge.exceptions import AltiumError
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        try:
+            front = await bridge.send_command_async(
+                "application.get_active_document", {}) or {}
+        except AltiumError:
+            front = {}
+        before = str(front.get("file_path") or "") if isinstance(front, dict) else ""
+        result = await bridge.send_command_async(
             "library.reload_library", {"library_path": library_path},
             timeout=_GEOMETRY_TIMEOUT)
+        # MEASURED 2026-11-19: reopening the library brings it forward, so
+        # the sheet that was in front lost focus. Put it back.
+        if before and os.path.normcase(before) != os.path.normcase(str(library_path)):
+            try:
+                await bridge.send_command_async(
+                    "application.set_active_document", {"file_path": before})
+                if isinstance(result, dict):
+                    result = {**result, "front_restored": before}
+                    result.pop("active_document_changed", None)
+            except AltiumError:
+                pass
+        return result
 
     @mcp.tool()
     async def lib_probe_designator(

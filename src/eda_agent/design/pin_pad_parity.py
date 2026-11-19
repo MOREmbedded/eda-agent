@@ -15,6 +15,25 @@ def _plated(pad: dict[str, Any]) -> bool:
     return str(pad.get("plated", "true")).strip().lower() not in ("false", "0", "no")
 
 
+def _hole(pad: dict[str, Any]) -> float:
+    """The pad's hole size, 0 for a surface-mount pad. A pad that does not
+    say is taken to have one, so its ``plated`` flag still decides."""
+    for key in ("hole_mils", "hole_size", "hole_mm", "hole"):
+        if key in pad:
+            try:
+                return float(pad.get(key) or 0)
+            except (TypeError, ValueError):
+                return 1.0
+    return 1.0
+
+
+def _unplated_hole(pad: dict[str, Any]) -> bool:
+    """An unplated hole carries no net. A surface-mount pad has no hole to
+    plate, and vendor libraries (seen live in a Wurth PcbLib on
+    2026-11-19) store Plated=False on them: such a pad is still copper."""
+    return not _plated(pad) and _hole(pad) > 0
+
+
 def pin_pad_parity(pins: Iterable[dict[str, Any]],
                    pads: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """``{ok, pins, pads, pins_without_pad, pads_without_pin, ignored_pads}``.
@@ -34,7 +53,7 @@ def pin_pad_parity(pins: Iterable[dict[str, Any]],
     ignored = 0
     for pad in pads:
         name = str(pad.get("name", "")).strip()
-        if not name or not _plated(pad):
+        if not name or _unplated_hole(pad):
             ignored += 1
             continue
         named.append(name)
