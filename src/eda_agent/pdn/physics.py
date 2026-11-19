@@ -112,6 +112,18 @@ def peaceman_radius(cell_mils: float) -> float:
 
 
 _LATTICE: dict[tuple[int, int], float] = {}
+_GAUSS400 = None
+
+
+def _gauss400():
+    """The 400-point Gauss-Legendre rule, computed once: leggauss finds
+    its nodes with a 400 x 400 eigenvalue solve (0.3-0.6 s), which used to
+    run again for every new lattice offset."""
+    global _GAUSS400
+    if _GAUSS400 is None:
+        import numpy as np
+        _GAUSS400 = np.polynomial.legendre.leggauss(400)
+    return _GAUSS400
 
 
 def lattice_potential(m: int, n: int) -> float:
@@ -130,7 +142,7 @@ def lattice_potential(m: int, n: int) -> float:
             _LATTICE[key] = 0.0
         else:
             import numpy as np
-            x, w = np.polynomial.legendre.leggauss(400)
+            x, w = _gauss400()
             t = (x + 1.0) * (math.pi / 2.0)
             s = np.arccosh(2.0 - np.cos(t))
             f = (1.0 - np.exp(-m * s) * np.cos(n * t)) / np.sinh(s)

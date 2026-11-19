@@ -593,6 +593,16 @@ maturity classification for every tool.
   `pcb_get_components` takes `designators` (wildcards) and `fields`;
   `app_list_documents` takes `project`, `kind` and `loaded_only`. Without
   them both answer as before.
+- **Plane impedance (`pdn_impedance`, cavity model) is about 100x faster
+  per frequency.** Each frequency's sparse factorisation used SuperLU's
+  default COLAMD ordering; the matrix is complex symmetric, and a
+  symmetric minimum-degree ordering halves the fill: 1.8 s to 0.015 s on
+  a 4800-node cavity, the same answer to 1e-15, pivoting unchanged. The
+  slowest test in the suite went from 493 s to 12 s.
+- **Grid IR drop no longer recomputes its quadrature rule.** The lattice
+  potential built the 400-point Gauss-Legendre rule (a 400 x 400
+  eigenvalue solve) again for every new offset; it is built once. A test
+  that took 99 s takes under 10.
 
 - **Signal integrity: eye findings sit at the receiving pin.** A board
   check placed a failed eye at the driving pin; it is judged at the
