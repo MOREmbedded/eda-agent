@@ -163,3 +163,36 @@ def test_ensure_tools_registers_once():
     before = len(server.mcp._tool_manager._tools)
     assert server.ensure_tools() == server.ACTIVE_BACKEND
     assert len(server.mcp._tool_manager._tools) == before > 100
+
+
+# --- smaller replies -------------------------------------------------------
+
+_PARTS = {"count": 3, "components": [
+    {"designator": "U1", "x": 1, "y": 2, "footprint": "QFN"},
+    {"designator": "C1", "x": 3, "y": 4, "footprint": "0402"},
+    {"designator": "C12", "x": 5, "y": 6, "footprint": "0402"},
+]}
+
+
+def test_parts_are_cut_to_the_designators_and_fields_asked():
+    from eda_agent.tools.pcb import _select_parts
+    out = _select_parts(_PARTS, "c1*", "x")
+    assert out["components"] == [{"designator": "C1", "x": 3},
+                                 {"designator": "C12", "x": 5}]
+    assert (out["count"], out["total"]) == (2, 3)
+    assert _select_parts(_PARTS, "", "") is _PARTS
+    assert _PARTS["count"] == 3, "the reply it was given is not changed"
+
+
+def test_documents_are_cut_to_the_project_kind_and_loaded():
+    from eda_agent.tools.application import _filter_documents
+    docs = [
+        {"file_path": r"D:\ws\A\a.PcbDoc", "document_kind": "PCB", "loaded": True},
+        {"file_path": r"D:\ws\A\a.SchDoc", "document_kind": "SCH", "loaded": False},
+        {"file_path": r"D:\ws\B\b.PcbDoc", "document_kind": "PCB", "loaded": True},
+    ]
+    assert len(_filter_documents(docs, "d:/ws/a", "", False)) == 2
+    assert [d["file_path"] for d in _filter_documents(docs, "", "pcb", True)] \
+        == [r"D:\ws\A\a.PcbDoc", r"D:\ws\B\b.PcbDoc"]
+    assert len(_filter_documents(docs, "A", "sch", True)) == 0
+    assert _filter_documents(docs, "", "", False) == docs

@@ -588,6 +588,11 @@ maturity classification for every tool.
   call still answers at once. One session had polled a route job 102,868
   times in 12.4 minutes.
 - **GitHub CI runs the test suite with `-n auto`.**
+- **`pcb_get_components` and `app_list_documents` can answer smaller.**
+  Measured on a working PC, they averaged 59k and 40k tokens a reply.
+  `pcb_get_components` takes `designators` (wildcards) and `fields`;
+  `app_list_documents` takes `project`, `kind` and `loaded_only`. Without
+  them both answer as before.
 
 - **Signal integrity: eye findings sit at the receiving pin.** A board
   check placed a failed eye at the driving pin; it is judged at the
