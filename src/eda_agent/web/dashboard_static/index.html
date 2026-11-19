@@ -6970,6 +6970,8 @@ async function pollHealth() {
 // stale banner if the two diverge. Runs on its own slower interval --
 // 5s is plenty for surfacing "you redeployed but didn't restart".
 async function pollScriptVersion() {
+  // Each probe can cost Altium a turn; a hidden tab shows nothing.
+  if (document.hidden) return;
   try {
     const r = await fetch("/api/altium/version", { cache: "no-store" });
     if (!r.ok) return;
@@ -10655,7 +10657,7 @@ window.addEventListener("DOMContentLoaded", function dlPlaceholder(){
   pollHealth();
   setInterval(pollHealth, 3000);
   pollScriptVersion();             // initial fetch on dashboard load
-  setInterval(pollScriptVersion, 5000);
+  setInterval(pollScriptVersion, 15000);
   setInterval(pollIntent, 5000);
   setInterval(tickSparklines, 2000);
   setInterval(paintKpis, 1000);

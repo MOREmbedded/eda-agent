@@ -160,7 +160,7 @@ site = [
 ]
 
 [project.scripts]
-eda-agent = "eda_agent.server:main"
+eda-agent = "eda_agent.entry:main"
 
 [project.urls]
 Homepage = "https://github.com/MOREmbedded/eda-agent"

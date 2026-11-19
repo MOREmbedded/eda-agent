@@ -90,7 +90,8 @@ def plan(action: str, args: dict, selected: dict, view: Optional[dict],
 
 
 def _tool(name: str) -> Callable:
-    from ..server import mcp
+    from ..server import ensure_tools, mcp
+    ensure_tools()
     reg = getattr(getattr(mcp, "_tool_manager", None), "_tools", None) or {}
     tool = reg.get(name)
     if tool is None or getattr(tool, "fn", None) is None:

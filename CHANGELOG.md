@@ -569,6 +569,26 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Fewer pings take Altium's turn.** Pings were 70% of the 17,382
+  commands in a month's bridge trace on a working PC; 752 queued behind
+  real work and 809 timed out there. A session's keep-alive now skips its
+  ping when Altium answered another command within the interval (still
+  pinging at least every 5 minutes, which is what reads the running
+  script version). The dashboard's version probe runs every 15 s instead
+  of 5 s, not at all while its tab is hidden, and uses the version this
+  process already read off a recent ping instead of sending another.
+- **`eda-agent` commands that serve no tools start about 3x faster.**
+  The command used to register every tool (a pydantic model and schema
+  for each of 771) before doing anything; `update`, `scripts-path`, the
+  profile, mode, router, phase, standards, fab and stackup commands now
+  skip that (2.1 s to 0.65 s each on Linux, output byte-identical). The
+  MCP server and every other command register as before.
+- **A tight `design_job_status` loop is slowed down.** A no-wait poll of
+  the same job within a second of the last is held for 2 s; the first
+  call still answers at once. One session had polled a route job 102,868
+  times in 12.4 minutes.
+- **GitHub CI runs the test suite with `-n auto`.**
+
 - **Signal integrity: eye findings sit at the receiving pin.** A board
   check placed a failed eye at the driving pin; it is judged at the
   receiver, where the edge findings already are.

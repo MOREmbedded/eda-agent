@@ -580,6 +580,11 @@ def _usage_name(name: str, arguments, call) -> str:
     return name
 
 
+def _entry_defers_tools() -> bool:
+    from . import entry
+    return entry.DEFER_TOOLS
+
+
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.
 mcp = _CompactFastMCP(
@@ -589,7 +594,39 @@ mcp = _CompactFastMCP(
 
 # Register only the selected backend's tools. Returns the normalised name
 # (an unrecognised value falls back to the default).
-ACTIVE_BACKEND = register_backend(mcp, ACTIVE_BACKEND, ACTIVE_TOOLSET)
+#
+# Registering every tool builds a pydantic model and a JSON schema for each
+# of several hundred tools, which is most of the import time (2.7 s of 3.1 s
+# measured on Linux). A CLI command that never serves tools (``update``,
+# ``scripts-path``, the profile and standards commands) does not need it, so
+# eda_agent.entry marks those runs and registration waits until something
+# asks for the tools through ensure_tools(). Everything else, tests and
+# ``import eda_agent.server`` included, registers here exactly as before.
+_tools_registered = False
+
+
+def ensure_tools() -> str:
+    """Register the backend's tools once; return the normalised backend."""
+    global ACTIVE_BACKEND, _tools_registered
+    if not _tools_registered:
+        _tools_registered = True
+        ACTIVE_BACKEND = register_backend(mcp, ACTIVE_BACKEND, ACTIVE_TOOLSET)
+    return ACTIVE_BACKEND
+
+
+def _normalised_backend(name: str) -> str:
+    from .tools import BACKENDS
+    name = (name or DEFAULT_BACKEND).strip().lower()
+    return name if name in BACKENDS else DEFAULT_BACKEND
+
+
+if _entry_defers_tools():
+    # Same backend choice the registration would make, without the tools.
+    ACTIVE_BACKEND = _normalised_backend(ACTIVE_BACKEND)
+    from .core.backends import set_active_backend as _set_active_backend
+    _set_active_backend(ACTIVE_BACKEND)
+else:
+    ensure_tools()
 
 
 def _probe_port_owner(host: str, port: int) -> Optional[int]:
@@ -751,6 +788,7 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # main thread's stdout intact for the MCP JSON-RPC stream.
     _install_stdio_guard()
     sys.stdout.flush()
+    ensure_tools()
 
     setup_logging()
     logger.info("Starting EDA Agent MCP Server")
