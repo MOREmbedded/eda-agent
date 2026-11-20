@@ -787,6 +787,11 @@ class AltiumBridge:
     KEEPALIVE_MAX_SKIP = 300  # seconds; longest run of skipped pings
     DETACH_HINT_AFTER = 600  # seconds
 
+    #: Commands of this server waiting on Altium's reply right now. Class
+    #: defaults, so a bridge a test makes without __init__ still counts.
+    _waiting = 0
+    _WAITING_LOCK = threading.Lock()
+
     def __init__(self):
         self.config = get_config()
         self.process_manager = AltiumProcessManager()
@@ -1063,6 +1068,13 @@ class AltiumBridge:
                 else ticks_per_ping
             if tick >= due:
                 tick = 0
+                # A call of this server's is waiting on Altium: a ping
+                # could only queue behind it and run out its 5 s there.
+                # MEASURED 2026-11-20: during one long board read, three
+                # such pings in a row logged "the polling loop is likely
+                # stopped" while every read finished.
+                if self._waiting:
+                    continue
                 # MEASURED 2026-11-19 on a working PC: 70% of all bridge
                 # commands were pings, 752 of them queued behind real
                 # work and 809 timed out there. Any reply in the last
@@ -1889,12 +1901,16 @@ class AltiumBridge:
         note("Sent command: %s (id=%s)", command, trace_id(request.id))
 
         response_path = self._response_path(request.id)
+        with self._WAITING_LOCK:
+            self._waiting += 1
         try:
             response = self._poll_response(request.id, timeout, max_extensions)
         except AltiumTimeoutError as exc:
             self._withdraw_or_warn(request, exc)
             raise
         finally:
+            with self._WAITING_LOCK:
+                self._waiting -= 1
             # Always sweep our own response file on the way out,_poll_response
             # already deletes it on success, but a timeout or a late-arriving
             # response would otherwise be orphaned forever.

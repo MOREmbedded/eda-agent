@@ -27,6 +27,17 @@ Send = Callable[[str, dict], Any]
 COORD_PER_MIL = 10000.0
 COMMAND = "pcb.get_layout_model"
 PAGE = 1500
+#: The page asked for once a reply carries ``big_pages``.
+#:
+#: Each page restarts Altium's walk of the board and steps over everything
+#: before its offset, so 1500-object pages cost O(N^2). MEASURED 2026-11-20
+#: on a board with 57,962 copper objects: a page took 5.2 s at offset 0 and
+#: 23.9 s at offset 55,500, 566 s for the section. A script that sends
+#: ``big_pages`` builds a page in one pass, so the rest of the section comes
+#: in pages this big; the bridge keeps waiting while the script's heartbeat
+#: says it is working. Not the whole section in one call: other calls get a
+#: turn between pages.
+BIG_PAGE = 30000
 
 
 def _m(c) -> float:
@@ -75,6 +86,11 @@ def _outline_points(raw: list, tol: float = 0.05) -> list[tuple[float, float]]:
 
 
 def _paged(send: Send, section: str, key: str, page: int) -> list[dict]:
+    """Every item of a paged section. The first page is ``page`` long; a
+    script that answers with ``big_pages`` gets BIG_PAGE for the rest. An
+    older script builds a page by appending to one string, which costs the
+    square of the page (2,474 pads: 239 s in one call, 77 s in two), so it
+    keeps the page it was asked for."""
     items: list[dict] = []
     offset = 0
     while True:
@@ -85,6 +101,8 @@ def _paged(send: Send, section: str, key: str, page: int) -> list[dict]:
         if not reply.get("more"):
             return items
         offset += int(reply.get("count") or len(chunk) or page)
+        if reply.get("big_pages"):
+            page = max(page, BIG_PAGE)
 
 
 # ---------------------------------------------------------------------------

@@ -585,6 +585,32 @@ maturity classification for every tool.
 
 ### Changed
 
+- **Reading a large board no longer walks it again for every page.**
+  Measured on a board with 2,474 pads, 57,962 copper objects, 463 nets
+  and 709 net classes, a full read (the cockpit, routing, the checks and
+  every other reader of `pcb.get_layout_model`) took about 14 minutes.
+  Script 2026.11.20.1.
+  - Copper took 566 s. Each 1500-object page restarted Altium's walk of
+    the board and stepped over everything before it: 5.2 s at the start,
+    23.9 s near the end. Pad and copper replies now carry `big_pages`,
+    and the reader then asks for the rest of a section in pages of
+    30,000. Earlier pages are stepped over with nothing else done per
+    object.
+  - Classes took 142 s: each of the 709 classes was asked about each of
+    the 463 nets. A class's own member list is read instead
+    (`MemberName[I]`, until a name is empty or the read raises). A class
+    whose list names no net on the board, All Nets among them, is still
+    asked net by net, and so is every class when the script is sent
+    `exact=true`. `pcb_get_net_classes` reads members the same way.
+  - Pads (77 s) and components (43 s) appended each entry to one growing
+    string, copying it every time: 2,474 pads took 239 s in one call.
+    Every section now joins its entries once.
+  - The net, footprint and layer names a read repeats are escaped once.
+- **No more false "the polling loop is likely stopped" during a long
+  call.** A session's keep-alive pinged while its own long call held
+  Altium. The ping queued behind that call and timed out, and three such
+  timeouts logged the warning while every read finished. The keep-alive
+  now skips its ping while one of its session's calls is waiting.
 - **Fewer pings take Altium's turn.** Pings were 70% of the 17,382
   commands in a month's bridge trace on a working PC; 752 queued behind
   real work and 809 timed out there. A session's keep-alive now skips its

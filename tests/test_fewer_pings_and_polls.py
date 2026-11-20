@@ -82,6 +82,37 @@ def test_a_ping_still_goes_out_to_read_the_version(bridge, monkeypatch):
     assert pings and len(pings) < 8
 
 
+def test_no_ping_while_a_call_of_ours_waits(bridge, monkeypatch):
+    """It could only queue behind that call and run out its 5 s there.
+    MEASURED 2026-11-20: three such timeouts during one long board read
+    logged "the polling loop is likely stopped" while every read finished."""
+    bridge._waiting = 1
+    assert _run(bridge, monkeypatch, 6) == []
+
+
+def test_a_call_counts_as_waiting_until_its_reply(bridge, monkeypatch):
+    from eda_agent.bridge import altium_bridge as ab
+    seen = []
+
+    def poll(request_id, timeout, max_extensions=None):
+        seen.append(bridge._waiting)
+        return ab.CommandResponse(id=request_id, success=True, data={})
+
+    monkeypatch.setattr(bridge, "_publish_request", lambda request: None)
+    monkeypatch.setattr(bridge, "_poll_response", poll)
+    monkeypatch.setattr(bridge, "_reshow_hidden_frame", lambda c, i: [])
+    bridge._execute_command("pcb.get_nets", {}, 5)
+    assert seen == [1] and bridge._waiting == 0
+
+    def fail(request_id, timeout, max_extensions=None):
+        raise RuntimeError("Altium went away")
+
+    monkeypatch.setattr(bridge, "_poll_response", fail)
+    with pytest.raises(RuntimeError):
+        bridge._execute_command("pcb.get_nets", {}, 5)
+    assert bridge._waiting == 0
+
+
 def test_known_version_needs_a_recent_answer(bridge, monkeypatch):
     t = {"now": 5000.0}
     monkeypatch.setattr(time, "monotonic", lambda: t["now"])
