@@ -21,7 +21,10 @@ landing on users and costing debugging sessions, so they are pinned here:
     count; it is a compile-time error. ``MemberName[I]`` IS declared:
     measured on AD 26.11 (2026-10-28), PCB_CreateXSignals read a new
     xSignal's name back from its class with it. With no count, the names
-    are read until one is empty or raises.
+    are read until one is empty or raises. LmClassMembers reads a net
+    class that way and still asks IsMember net by net whenever the list
+    gives no board net, so a list that does not read costs time, never
+    members.
 
 The linter walks ``scripts/altium/*.pas`` excluding the legacy monolithic
 ``Altium_MCP.pas`` (not in the active PrjScr) and fails any test whose rule
@@ -178,9 +181,9 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "SchDoc.SheetStyle := eSheetCustom  →  SchDoc.UseCustomSheet := True",
     ),
     (
-        re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberName\s*\["),
-        "IPCB_ObjectClass has no per-member enumeration surface",
-        "ObjClass.MemberCount / ObjClass.MemberName[I]  →  iterate nets and group",
+        re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberCount\b"),
+        "IPCB_ObjectClass has no MemberCount",
+        "ObjClass.MemberCount  →  read MemberName[I] until it is empty or raises",
     ),
     (
         re.compile(r"\beElectricBiDir\b"),

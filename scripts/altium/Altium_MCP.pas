@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.19.1';
+    SCRIPT_VERSION = '2026.11.20.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -44262,26 +44262,191 @@ Begin
         + ',"skipped_nets":[' + Skipped + ']}');
 End;
 
+{ EscapeJsonString for the names a section repeats on object after object: }
+{ net, designator, footprint, pour. Its safety scan steps through a name  }
+{ one character at a time, each step an interpreted statement, while a    }
+{ large board names the same few hundred nets on tens of thousands of      }
+{ objects. A name that needs no escaping goes into Safe the first time and }
+{ comes back as it is after that. Safe is sorted and its lookup compares   }
+{ by locale, so a hit is confirmed by length and position, which compare   }
+{ character for character. Safe: Sorted, Duplicates dupIgnore.            }
+Function LmEsc(Safe : TStringList; S : String) : String;
+Var
+    I : Integer;
+    Name : String;
+Begin
+    Result := '';
+    Try
+        Name := S;
+    Except
+        Exit;
+    End;
+    If Name = '' Then Exit;
+    I := Safe.IndexOf(Name);
+    If I >= 0 Then
+        If (Length(Safe[I]) = Length(Name)) And (Pos(Name, Safe[I]) = 1) Then
+        Begin
+            Result := Name;
+            Exit;
+        End;
+    Result := EscapeJsonString(Name);
+    { Every escape lengthens the name, so the same length means none. }
+    If Length(Result) = Length(Name) Then Safe.Add(Name);
+End;
+
+{ A new list for LmEsc. }
+Function LmEscList(Dummy : Integer) : TStringList;
+Begin
+    Result := TStringList.Create;
+    Result.Sorted := True;
+    Result.Duplicates := dupIgnore;
+End;
+
+{ The board's net names, sorted, for LmClassMembers. }
+Function LmBoardNetNames(Board : IPCB_Board) : TStringList;
+Var
+    Iter : IPCB_BoardIterator;
+    Net : IPCB_Net;
+Begin
+    Result := LmEscList(0);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eNetObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Net := Iter.FirstPCBObject;
+        While Net <> Nil Do
+        Begin
+            Try Result.Add(Net.Name); Except End;
+            Net := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ The nets a net class holds, as JSON strings joined by commas. Count is   }
+{ how many, Probes how many IsMember asks raised.                          }
+{                                                                           }
+{ MEASURED 2026-11-20 on a board with 463 nets and 709 net classes: asking }
+{ every class IsMember of every net took 142 s, 328,000 asks for about     }
+{ 1,700 members. So the class's own list is read first: MemberName[I]     }
+{ until a name is empty or the read raises, since a class has no count    }
+{ (MemberCount is undeclared). A name is kept when it is a net on the      }
+{ board, spelled as the board spells it.                                    }
+{                                                                           }
+{ The class is still asked net by net when Exact is set, when its list    }
+{ repeats a name, and when the list gives no board net while the class is  }
+{ All Nets (its members are implicit), names nets the board does not have, }
+{ or comes before any class of this read whose list gave nets (Works):     }
+{ an empty list is only taken as an empty class once the lists are known   }
+{ to read.                                                                  }
+Function LmClassMembers(Board : IPCB_Board; Cls : IPCB_ObjectClass;
+    BoardNets, Safe : TStringList; Exact : Boolean; Var Works : Boolean;
+    Var Count : Integer; Var Probes : Integer) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Net : IPCB_Net;
+    Parts, Seen : TStringList;
+    Got, Name : String;
+    I, J, Listed : Integer;
+    Ask, Repeated, Super : Boolean;
+Begin
+    Count := 0;
+    Probes := 0;
+    Listed := 0;
+    Repeated := False;
+    Parts := TStringList.Create;
+    Seen := LmEscList(0);
+    Try
+        If Not Exact Then
+            For I := 0 To BoardNets.Count + 63 Do
+            Begin
+                Got := '';
+                Try Got := Cls.MemberName[I]; Except Break; End;
+                If Got = '' Then Break;
+                Inc(Listed);
+                J := BoardNets.IndexOf(Got);
+                If J >= 0 Then
+                Begin
+                    Name := BoardNets[J];
+                    If Seen.IndexOf(Name) >= 0 Then
+                    Begin
+                        Repeated := True;
+                        Break;
+                    End;
+                    { The sorted lookup ignores case and compares by locale: }
+                    { the same name in another case has the same length.     }
+                    If Length(Name) = Length(Got) Then
+                    Begin
+                        Seen.Add(Name);
+                        If Parts.Count > 0 Then Parts.Add(',');
+                        Parts.Add('"' + LmEsc(Safe, Name) + '"');
+                        Inc(Count);
+                    End;
+                End;
+            End;
+        If (Count > 0) And Not Repeated Then Works := True;
+        Super := False;
+        Try Super := Cls.SuperClass; Except Super := False; End;
+        Ask := Exact Or Repeated
+            Or ((Count = 0) And (Super Or (Listed > 0) Or Not Works));
+        If Ask Then
+        Begin
+            { TStringList.Clear is undeclared in a script. }
+            While Parts.Count > 0 Do Parts.Delete(Parts.Count - 1);
+            Count := 0;
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eNetObject));
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iter.AddFilter_Method(eProcessAll);
+                Net := Iter.FirstPCBObject;
+                While Net <> Nil Do
+                Begin
+                    Try
+                        If Cls.IsMember(Net) Then
+                        Begin
+                            If Parts.Count > 0 Then Parts.Add(',');
+                            Parts.Add('"' + LmEsc(Safe, Net.Name) + '"');
+                            Inc(Count);
+                        End;
+                    Except
+                        Inc(Probes);
+                    End;
+                    Net := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+        End;
+        Result := Parts.Text;
+    Finally
+        Parts.Free;
+        Seen.Free;
+    End;
+End;
+
 {..............................................................................}
 { PCB_GetNetClasses - Get all net classes with their member nets              }
-{ Params: members (default true; false returns names only, which is faster). }
+{ Params: members (default true; false returns names only, which is faster), }
+{ exact ("true" asks every class IsMember of every net: the slow read, kept  }
+{ to check the fast one against).                                            }
 {                                                                             }
-{ MemberCount and MemberName[] are undeclared on IPCB_ObjectClass in a       }
-{ script, so membership is found by asking each class IsMember of every net, }
-{ the way PCB_AddTestpointsForNetClass and LmClassesSection already do. A    }
-{ probe that raises is counted in probe_errors rather than read as "not a    }
-{ member", so an empty list can be told apart from one that was not read.   }
+{ Members come from LmClassMembers. A probe that raises is counted in        }
+{ probe_errors rather than read as "not a member", so an empty list can be   }
+{ told apart from one that was not read.                                    }
 {..............................................................................}
 
 Function PCB_GetNetClasses(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iterator, NetIter : IPCB_BoardIterator;
+    Iterator : IPCB_BoardIterator;
     ObjClass : IPCB_ObjectClass;
-    Net : IPCB_Net;
-    JsonItems, Members, MembersStr : String;
-    First, WantMembers : Boolean;
+    Members, MembersStr, Item : String;
+    WantMembers, Exact, Works : Boolean;
     Count, MemberCount, ProbeErrors : Integer;
+    Parts, BoardNets, Safe : TStringList;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -44292,66 +44457,51 @@ Begin
 
     MembersStr := LowerCase(ExtractJsonValue(Params, 'members'));
     WantMembers := Not ((MembersStr = 'false') Or (MembersStr = '0'));
-    JsonItems := '';
-    First := True;
+    Exact := LowerCase(ExtractJsonValue(Params, 'exact')) = 'true';
     Count := 0;
-
+    Works := False;
+    { One string per class, joined once: 709 classes appended to one   }
+    { growing string copied it 709 times.                               }
+    Parts := TStringList.Create;
+    Safe := LmEscList(0);
+    BoardNets := Nil;
+    If WantMembers Then BoardNets := LmBoardNetNames(Board);
     Iterator := Board.BoardIterator_Create;
-    Iterator.SetState_FilterAll;
-    Iterator.AddFilter_ObjectSet(MkSet(eClassObject));
+    Try
+        Iterator.SetState_FilterAll;
+        Iterator.AddFilter_ObjectSet(MkSet(eClassObject));
 
-    ObjClass := Iterator.FirstPCBObject;
-    While ObjClass <> Nil Do
-    Begin
-        If ObjClass.MemberKind = eClassMemberKind_Net Then
+        ObjClass := Iterator.FirstPCBObject;
+        While ObjClass <> Nil Do
         Begin
-            If Not First Then JsonItems := JsonItems + ',';
-            First := False;
-            JsonItems := JsonItems + '{"name":"' + EscapeJsonString(ObjClass.Name) + '",'
-                + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass);
-
-            If WantMembers Then
+            If ObjClass.MemberKind = eClassMemberKind_Net Then
             Begin
-                Members := '';
-                MemberCount := 0;
-                ProbeErrors := 0;
-                NetIter := Board.BoardIterator_Create;
-                Try
-                    NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-                    NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                    NetIter.AddFilter_Method(eProcessAll);
-                    Net := NetIter.FirstPCBObject;
-                    While Net <> Nil Do
-                    Begin
-                        Try
-                            If ObjClass.IsMember(Net) Then
-                            Begin
-                                If Members <> '' Then Members := Members + ',';
-                                Members := Members + '"' + EscapeJsonString(Net.Name) + '"';
-                                Inc(MemberCount);
-                            End;
-                        Except
-                            Inc(ProbeErrors);
-                        End;
-                        Net := NetIter.NextPCBObject;
-                    End;
-                Finally
-                    Board.BoardIterator_Destroy(NetIter);
+                Item := '{"name":"' + EscapeJsonString(ObjClass.Name) + '",'
+                    + '"super_class":' + BoolToJsonStr(ObjClass.SuperClass);
+                If WantMembers Then
+                Begin
+                    Members := LmClassMembers(Board, ObjClass, BoardNets, Safe,
+                        Exact, Works, MemberCount, ProbeErrors);
+                    Item := Item + ',"nets":[' + Members + ']'
+                        + ',"member_count":' + IntToStr(MemberCount)
+                        + ',"probe_errors":' + IntToStr(ProbeErrors);
                 End;
-                JsonItems := JsonItems + ',"nets":[' + Members + ']'
-                    + ',"member_count":' + IntToStr(MemberCount)
-                    + ',"probe_errors":' + IntToStr(ProbeErrors);
+                If Parts.Count > 0 Then Parts.Add(',');
+                Parts.Add(Item + '}');
+                Inc(Count);
             End;
-            JsonItems := JsonItems + '}';
-            Inc(Count);
+            ObjClass := Iterator.NextPCBObject;
         End;
-        ObjClass := Iterator.NextPCBObject;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"net_classes":[' + JsonItems + '],"count":' + IntToStr(Count)
-        + ',"members_read":' + BoolToJsonStr(WantMembers) + '}');
+        Result := BuildSuccessResponse(RequestId,
+            '{"net_classes":[' + Parts.Text + '],"count":' + IntToStr(Count)
+            + ',"members_read":' + BoolToJsonStr(WantMembers) + '}');
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+        Parts.Free;
+        Safe.Free;
+        If BoardNets <> Nil Then BoardNets.Free;
+    End;
 End;
 
 {..............................................................................}
@@ -68023,10 +68173,9 @@ Begin
     End;
 End;
 
-{ Whether the class lists that object. MemberCount and MemberName[] are  }
-{ undeclared on IPCB_ObjectClass in a script (see PCB_GetObjectClasses),  }
-{ so membership is asked of the class directly, the way AddMember adds    }
-{ it. Reading the names instead returned False for every member.          }
+{ Whether the class lists that object, asked of the class directly, the  }
+{ way AddMember adds it: one IsMember call for one object. A class's      }
+{ whole list is read by LmClassMembers.                                   }
 Function ClassListsMember(Cls : IPCB_ObjectClass; Prim : IPCB_Primitive) : Boolean;
 Begin
     Result := False;
@@ -71364,8 +71513,13 @@ Var
     Items, Prims, Bodies, LayerName, Entry : String;
     Locked : Boolean;
     Overall, Standoff : Integer;
+    Parts, Safe : TStringList;
 Begin
     Items := '';
+    { One entry per component, joined once (see LmPadsSection). MEASURED }
+    { 2026-11-20: 43 s for a 918,000-character reply built by appending. }
+    Parts := TStringList.Create;
+    Safe := LmEscList(0);
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
@@ -71398,7 +71552,7 @@ Begin
                     Try Standoff := Body.StandoffHeight; Except Standoff := 0; End;
                     BR := Body.BoundingRectangle;
                     If Bodies <> '' Then Bodies := Bodies + ',';
-                    Bodies := Bodies + '{"layer":"' + EscapeJsonString(LayerName)
+                    Bodies := Bodies + '{"layer":"' + LmEsc(Safe, LayerName)
                         + '","bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1)
                         + ',' + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2)
                         + '],"height":' + IntToStr(Overall)
@@ -71444,7 +71598,7 @@ Begin
                         If Entry <> '' Then
                         Begin
                             If Prims <> '' Then Prims := Prims + ',';
-                            Prims := Prims + Entry + ',"layer":"' + EscapeJsonString(LayerName) + '"}';
+                            Prims := Prims + Entry + ',"layer":"' + LmEsc(Safe, LayerName) + '"}';
                         End;
                     End;
                     Child := GIter.NextPCBObject;
@@ -71454,22 +71608,25 @@ Begin
             End;
 
             BR := Comp.BoundingRectangle;
-            If Items <> '' Then Items := Items + ',';
-            Items := Items + '{"ref":"' + EscapeJsonString(Comp.Name.Text)
-                + '","footprint":"' + EscapeJsonString(Comp.Pattern)
-                + '","comment":"' + EscapeJsonString(Comp.Comment.Text)
+            If Parts.Count > 0 Then Parts.Add(',');
+            Parts.Add('{"ref":"' + EscapeJsonString(Comp.Name.Text)
+                + '","footprint":"' + LmEsc(Safe, Comp.Pattern)
+                + '","comment":"' + LmEsc(Safe, Comp.Comment.Text)
                 + '","x":' + IntToStr(Comp.X) + ',"y":' + IntToStr(Comp.Y)
                 + ',"rotation":' + FloatToJsonStr(Comp.Rotation)
-                + ',"layer":"' + EscapeJsonString(LayerDisplayName(Comp.Layer))
+                + ',"layer":"' + LmEsc(Safe, LayerDisplayName(Comp.Layer))
                 + '","locked":' + BoolToJsonStr(Locked)
                 + ',"height":' + IntToStr(Comp.Height)
                 + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
                 + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']'
-                + ',"mech":[' + Prims + '],"bodies":[' + Bodies + ']}';
+                + ',"mech":[' + Prims + '],"bodies":[' + Bodies + ']}');
             Comp := Iter.NextPCBObject;
         End;
+        Items := Parts.Text;
     Finally
         Board.BoardIterator_Destroy(Iter);
+        Parts.Free;
+        Safe.Free;
     End;
     Entry := '"components":[' + Items + ']';
     Result := Entry;
@@ -71513,6 +71670,7 @@ Var
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     SigLayers : TStringList;
+    Parts, Safe : TStringList;
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
     Items, Copper, HoleStr, Mode, Body : String;
@@ -71522,6 +71680,12 @@ Begin
     Idx := 0;
     Emitted := 0;
     More := False;
+    { Entries are collected and joined once: appending each to one growing  }
+    { String copies the whole page every time, quadratic in the page size.  }
+    { MEASURED 2026-11-20: 2,474 pads in one call took 239 s that way, and  }
+    { 77 s in two pages.                                                    }
+    Parts := TStringList.Create;
+    Safe := LmEscList(0);
     SigLayers := TStringList.Create;
     Try
         { The signal layers a through-hole pad has copper on. Planes are  }
@@ -71547,6 +71711,13 @@ Begin
             Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Pad := Iter.FirstPCBObject;
+            { The earlier pages are stepped over with nothing else per pad: }
+            { the full loop spends several interpreted statements on each.  }
+            While (Pad <> Nil) And (Idx < Offset) Do
+            Begin
+                Inc(Idx);
+                Pad := Iter.NextPCBObject;
+            End;
             While Pad <> Nil Do
             Begin
                 If Idx >= Offset Then
@@ -71597,13 +71768,13 @@ Begin
                     Simple := (Pad.Mode = ePadMode_Simple);
                     Mode := IntToStr(Pad.Mode);
 
-                    If Items <> '' Then Items := Items + ',';
-                    Items := Items + '{"comp":"' + EscapeJsonString(LmOwner(Pad))
-                        + '","name":"' + EscapeJsonString(Pad.Name)
+                    If Emitted > 0 Then Parts.Add(',');
+                    Parts.Add('{"comp":"' + LmEsc(Safe, LmOwner(Pad))
+                        + '","name":"' + LmEsc(Safe, Pad.Name)
                         + '","x":' + IntToStr(Pad.X) + ',"y":' + IntToStr(Pad.Y)
                         + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
                         + ',"layer":"' + LayerDisplayName(Pad.Layer)
-                        + '","net":"' + EscapeJsonString(LmNetName(Pad))
+                        + '","net":"' + LmEsc(Safe, LmNetName(Pad))
                         + '","mode":' + Mode + ',"simple":' + BoolToJsonStr(Simple)
                         + ',"top":["' + LmShapeName(Pad.TopShape) + '",'
                         + IntToStr(Pad.TopXSize) + ',' + IntToStr(Pad.TopYSize) + ']'
@@ -71616,7 +71787,7 @@ Begin
                         + ',"hole_type":"' + HoleStr
                         + '","hole_width":' + IntToStr(Pad.HoleWidth)
                         + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
-                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + LmMaskJson(Pad) + '}';
+                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + LmMaskJson(Pad) + '}');
                     Inc(Emitted);
                 End;
                 Inc(Idx);
@@ -71625,11 +71796,18 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
+        Items := Parts.Text;
     Finally
         SigLayers.Free;
+        Parts.Free;
+        Safe.Free;
     End;
+    { big_pages: a page is built in one pass, so a reader can ask for the }
+    { rest of the section in one call instead of paying the re-walk that  }
+    { each further page costs.                                            }
     Body := '"pads":[' + Items + '],"offset":' + IntToStr(Offset)
-        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
+        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More)
+        + ',"big_pages":true';
     Result := Body;
 End;
 
@@ -71704,6 +71882,7 @@ Var
     More, Keepout, InPoly, Wanted, Wide : Boolean;
     OneLayer : IPCB_LayerSet;
     Passes : TStringList;
+    Parts, Safe : TStringList;
     P : Integer;
     Rest, Kind : String;
 Begin
@@ -71711,6 +71890,9 @@ Begin
     Idx := 0;
     Emitted := 0;
     More := False;
+    { Entries are collected and joined once, as in LmPadsSection. }
+    Parts := TStringList.Create;
+    Safe := LmEscList(0);
     { Signal layers, for a via's size on each layer it spans. }
     SigLayers := TStringList.Create;
     LayerStack := Nil;
@@ -71772,6 +71954,16 @@ Begin
                 Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Obj := Iter.FirstPCBObject;
+            { Unless only the selection or one wide layer is read, every     }
+            { object counts toward Idx, so the earlier pages are stepped    }
+            { over with nothing else per object. MEASURED 2026-11-20: the  }
+            { full loop spent 0.34 ms on each object it skipped.            }
+            If Not SelectedOnly And Not Wide Then
+                While (Obj <> Nil) And (Idx < Offset) Do
+                Begin
+                    Inc(Idx);
+                    Obj := Iter.NextPCBObject;
+                End;
             While Obj <> Nil Do
             Begin
                 { Selected only: an object not selected is not counted either, }
@@ -71818,12 +72010,12 @@ Begin
                         End;
                         If Trace Then LmTrace(IntToStr(Idx) + ' common');
                         Common := ',"layer":"' + LayerDisplayName(Obj.Layer)
-                            + '","net":"' + EscapeJsonString(LmNetName(Obj))
-                            + '","comp":"' + EscapeJsonString(LmOwner(Obj))
+                            + '","net":"' + LmEsc(Safe, LmNetName(Obj))
+                            + '","comp":"' + LmEsc(Safe, LmOwner(Obj))
                             + '","keepout":' + BoolToJsonStr(Keepout)
                             + ',"in_polygon":' + BoolToJsonStr(InPoly)
-                            + ',"pour":"' + EscapeJsonString(OwnerName)
-                            + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
+                            + ',"pour":"' + LmEsc(Safe, OwnerName)
+                            + '","pour_net":"' + LmEsc(Safe, OwnerNet) + '"}';
                         Entry := '';
                         If Obj.ObjectId = eTrackObject Then
                         Begin
@@ -71910,8 +72102,8 @@ Begin
                         End;
                         If Entry <> '' Then
                         Begin
-                            If Items <> '' Then Items := Items + ',';
-                            Items := Items + Entry;
+                            If Parts.Count > 0 Then Parts.Add(',');
+                            Parts.Add(Entry);
                         End;
                         Inc(Emitted);
                     End;
@@ -71925,8 +72117,12 @@ Begin
     End;
     Passes.Free;
     SigLayers.Free;
+    Items := Parts.Text;
+    Parts.Free;
+    Safe.Free;
     Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
-        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
+        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More)
+        + ',"big_pages":true';
     Result := Body;
 End;
 
@@ -72064,86 +72260,79 @@ Begin
     Result := Body;
 End;
 
-Function LmClassesSection(Board : IPCB_Board) : String;
+Function LmClassesSection(Board : IPCB_Board; Exact : Boolean) : String;
 Var
-    Iter, NetIter : IPCB_BoardIterator;
+    Iter : IPCB_BoardIterator;
     NetClassObj : IPCB_ObjectClass;
-    Net : IPCB_Net;
     Pair : IPCB_DifferentialPair;
-    Classes, Members, Pairs, PosName, NegName, Body : String;
+    Members, PosName, NegName, Body : String;
+    Classes, Pairs, BoardNets, Safe : TStringList;
+    Works : Boolean;
+    MemberCount, Probes : Integer;
 Begin
-    { Members by IsMember per net: MemberName and MemberCount are not     }
-    { exposed on IPCB_ObjectClass to a script and fault as undeclared.   }
-    Classes := '';
-    Iter := Board.BoardIterator_Create;
+    { Members from LmClassMembers, which reads a class's own list before }
+    { it asks the class about every net.                                 }
+    Classes := TStringList.Create;
+    Pairs := TStringList.Create;
+    Safe := LmEscList(0);
+    BoardNets := LmBoardNetNames(Board);
+    Works := False;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(eClassObject));
-        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        NetClassObj := Iter.FirstPCBObject;
-        While NetClassObj <> Nil Do
-        Begin
-            If NetClassObj.MemberKind = eClassMemberKind_Net Then
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            NetClassObj := Iter.FirstPCBObject;
+            While NetClassObj <> Nil Do
             Begin
-                Members := '';
-                NetIter := Board.BoardIterator_Create;
-                Try
-                    NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-                    NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                    NetIter.AddFilter_Method(eProcessAll);
-                    Net := NetIter.FirstPCBObject;
-                    While Net <> Nil Do
-                    Begin
-                        Try
-                            If NetClassObj.IsMember(Net) Then
-                            Begin
-                                If Members <> '' Then Members := Members + ',';
-                                Members := Members + '"' + EscapeJsonString(Net.Name) + '"';
-                            End;
-                        Except End;
-                        Net := NetIter.NextPCBObject;
-                    End;
-                Finally
-                    Board.BoardIterator_Destroy(NetIter);
+                If NetClassObj.MemberKind = eClassMemberKind_Net Then
+                Begin
+                    Members := LmClassMembers(Board, NetClassObj, BoardNets, Safe,
+                        Exact, Works, MemberCount, Probes);
+                    If Classes.Count > 0 Then Classes.Add(',');
+                    Classes.Add('{"name":"' + EscapeJsonString(NetClassObj.Name)
+                        + '","nets":[' + Members + ']}');
                 End;
-                If Classes <> '' Then Classes := Classes + ',';
-                Classes := Classes + '{"name":"' + EscapeJsonString(NetClassObj.Name)
-                    + '","nets":[' + Members + ']}';
+                NetClassObj := Iter.NextPCBObject;
             End;
-            NetClassObj := Iter.NextPCBObject;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
         End;
-    Finally
-        Board.BoardIterator_Destroy(Iter);
-    End;
 
-    Pairs := '';
-    Iter := Board.BoardIterator_Create;
-    Try
-        Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
-        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Pair := Iter.FirstPCBObject;
-        While Pair <> Nil Do
-        Begin
-            PosName := '';
-            NegName := '';
-            Try
-                If Pair.PositiveNet <> Nil Then PosName := Pair.PositiveNet.Name;
-            Except End;
-            Try
-                If Pair.NegativeNet <> Nil Then NegName := Pair.NegativeNet.Name;
-            Except End;
-            If Pairs <> '' Then Pairs := Pairs + ',';
-            Pairs := Pairs + '{"name":"' + EscapeJsonString(Pair.Name)
-                + '","positive":"' + EscapeJsonString(PosName)
-                + '","negative":"' + EscapeJsonString(NegName) + '"}';
-            Pair := Iter.NextPCBObject;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Pair := Iter.FirstPCBObject;
+            While Pair <> Nil Do
+            Begin
+                PosName := '';
+                NegName := '';
+                Try
+                    If Pair.PositiveNet <> Nil Then PosName := Pair.PositiveNet.Name;
+                Except End;
+                Try
+                    If Pair.NegativeNet <> Nil Then NegName := Pair.NegativeNet.Name;
+                Except End;
+                If Pairs.Count > 0 Then Pairs.Add(',');
+                Pairs.Add('{"name":"' + EscapeJsonString(Pair.Name)
+                    + '","positive":"' + LmEsc(Safe, PosName)
+                    + '","negative":"' + LmEsc(Safe, NegName) + '"}');
+                Pair := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
         End;
-    Finally
-        Board.BoardIterator_Destroy(Iter);
-    End;
 
-    Body := '"net_classes":[' + Classes + '],"diff_pairs":[' + Pairs + ']';
+        Body := '"net_classes":[' + Classes.Text + '],"diff_pairs":[' + Pairs.Text + ']';
+    Finally
+        Classes.Free;
+        Pairs.Free;
+        Safe.Free;
+        BoardNets.Free;
+    End;
     Result := Body;
 End;
 
@@ -72214,7 +72403,8 @@ Begin
             LowerCase(ExtractJsonValue(Params, 'selected')) = 'true');
     End;
     If Section = 'rules' Then Body := LmRulesSection(Board);
-    If Section = 'classes' Then Body := LmClassesSection(Board);
+    If Section = 'classes' Then
+        Body := LmClassesSection(Board, LowerCase(ExtractJsonValue(Params, 'exact')) = 'true');
 
     If Body = '' Then
     Begin

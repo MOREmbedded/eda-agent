@@ -1395,8 +1395,10 @@ def register_pcb_tools(mcp):
     async def pcb_get_net_classes(members: bool = True) -> dict[str, Any]:
         """Get all net classes on the active PCB, with the nets in each.
 
-        Members are found by asking each class about every net, so on a
-        big board ``members=False`` is quicker when only names are needed.
+        Members are read from each class's own list. A class whose list
+        names no net on the board (All Nets among them) is asked about
+        every net instead, which is slow on a big board, so
+        ``members=False`` is still quicker when only names are needed.
 
         Args:
             members: Read each class's nets (default). False returns the
