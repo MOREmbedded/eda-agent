@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.20.1';
+    SCRIPT_VERSION = '2026.11.20.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -960,7 +960,21 @@ End;
 { a False as a floor, not a clean bill. App_SaveAll records that Modified does }
 { not always propagate from ProcessControl, which is why that handler measures }
 { file timestamps instead of trusting this.                                    }
+{                                                                              }
+{ ServerDocIsModified answers it for a document already looked up, so a       }
+{ caller holding the IServerDocument does not look its path up again.         }
 {..............................................................................}
+
+Function ServerDocIsModified(ServerDoc : IServerDocument) : Boolean;
+Begin
+    Result := False;
+    If ServerDoc = Nil Then Exit;
+    Try
+        If ServerDoc.Modified Then Result := True;
+    Except
+        Result := False;
+    End;
+End;
 
 Function DocIsModified(FilePath : String) : Boolean;
 Var
@@ -969,13 +983,8 @@ Begin
     Result := False;
     If FilePath = '' Then Exit;
     ServerDoc := Nil;
-    Try
-        ServerDoc := Client.GetDocumentByPath(FilePath);
-        If ServerDoc <> Nil Then
-            If ServerDoc.Modified Then Result := True;
-    Except
-        Result := False;
-    End;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except ServerDoc := Nil; End;
+    Result := ServerDocIsModified(ServerDoc);
 End;
 
 {..............................................................................}
@@ -7041,13 +7050,17 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Parts : TStringList;
     I, J : Integer;
-    Data, DocInfo, FileName, FullPath, Kind, LoadedStr, ModifiedStr : String;
-    FirstItem, IsLoaded : Boolean;
+    FileName, FullPath, Kind, LoadedStr, Sep : String;
 Begin
     Workspace := GetWorkspace;
-    Data := '[';
-    FirstItem := True;
+    // Entries are joined once at the end. Appended one by one to a single
+    // string, each entry copied every entry before it, so the cost grew
+    // with the square of a workspace's document count.
+    Parts := TStringList.Create;
+    Sep := '';
     If Workspace <> Nil Then
     Begin
         For I := 0 To Workspace.DM_ProjectCount - 1 Do
@@ -7060,8 +7073,6 @@ Begin
                     Doc := Project.DM_LogicalDocuments(J);
                     If Doc <> Nil Then
                     Begin
-                        If Not FirstItem Then Data := Data + ',';
-                        FirstItem := False;
                         FileName := Doc.DM_FileName;
                         Kind := Doc.DM_DocumentKind;
 
@@ -7076,34 +7087,33 @@ Begin
                         // Client.GetDocumentByPath resolves any resident doc
                         // (SCH/PCB/OutJob/etc.) to an IServerDocument. nil
                         // means the file is a project member on disk but
-                        // hasn't been loaded into the editor.
-                        IsLoaded := False;
-                        Try
-                            If Client.GetDocumentByPath(FullPath) <> Nil Then
-                                IsLoaded := True;
-                        Except IsLoaded := False; End;
-                        If IsLoaded Then LoadedStr := 'true' Else LoadedStr := 'false';
+                        // hasn't been loaded into the editor. The one lookup
+                        // answers "modified" too: the listing used to look
+                        // every document up twice, once here and again in
+                        // DocIsModified, and took about 2 s on a large
+                        // workspace.
+                        ServerDoc := Nil;
+                        Try ServerDoc := Client.GetDocumentByPath(FullPath); Except ServerDoc := Nil; End;
+                        LoadedStr := 'false';
+                        If ServerDoc <> Nil Then LoadedStr := 'true';
 
                         // Unsaved state. app_context filters this list on
                         // "modified" to warn about pending edits, so a missing
                         // key made that warning unreachable and every session
                         // read as clean.
-                        If DocIsModified(FullPath) Then ModifiedStr := 'true'
-                        Else ModifiedStr := 'false';
-
-                        DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
-                        DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FullPath) + '"';
-                        DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Kind) + '"';
-                        DocInfo := DocInfo + ',"loaded":' + LoadedStr;
-                        DocInfo := DocInfo + ',"modified":' + ModifiedStr + '}';
-                        Data := Data + DocInfo;
+                        Parts.Add(Sep + '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"'
+                            + ',"file_path":"' + EscapeJsonString(FullPath) + '"'
+                            + ',"document_kind":"' + EscapeJsonString(Kind) + '"'
+                            + ',"loaded":' + LoadedStr
+                            + ',"modified":' + BoolToJsonStr(ServerDocIsModified(ServerDoc)) + '}');
+                        Sep := ',';
                     End;
                 End;
             End;
         End;
     End;
-    Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, Data);
+    Result := BuildSuccessResponse(RequestId, '[' + Parts.Text + ']');
+    Parts.Free;
 End;
 
 Function App_GetActiveDocument(RequestId : String) : String;
