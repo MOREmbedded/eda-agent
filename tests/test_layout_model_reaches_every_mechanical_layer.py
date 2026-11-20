@@ -36,7 +36,9 @@ def test_a_layer_the_legacy_set_cannot_hold_is_matched_by_name():
     assert wide < narrow < section.index("Iter.FirstPCBObject")
     # the match sits with the selection test, before anything is counted
     match = section.index("Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);")
-    assert section.index("If Wanted And Wide Then") < match < section.index("Inc(Idx);")
+    # the walk's own counter, the last one: the lean skip over earlier
+    # pages is not taken for a wide layer (tests/test_big_board_reads.py)
+    assert section.index("If Wanted And Wide Then") < match < section.rindex("Inc(Idx);")
 
 
 def test_a_layer_past_mechanical16_is_walked_alone():

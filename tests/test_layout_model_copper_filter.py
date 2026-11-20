@@ -61,8 +61,11 @@ def test_a_layer_narrows_the_iterator_and_none_keeps_every_layer():
 def test_selected_only_skips_and_does_not_count_an_unselected_object():
     section = _pcb("LmCopperSection")
     gate = section.index("If Wanted Then")
-    count = section.index("Inc(Idx);")
-    step = section.index("Obj := Iter.NextPCBObject;")
+    # The walk's own counter and step, the last of each: the lean skip over
+    # earlier pages comes first and only runs when every object counts
+    # (tests/test_big_board_reads.py).
+    count = section.rindex("Inc(Idx);")
+    step = section.rindex("Obj := Iter.NextPCBObject;")
     # the offset counter is inside the gate, so paging walks the selection;
     # the iterator steps outside it, so an unselected object is passed over
     assert section.index("Try Wanted := Obj.Selected;") < gate < count < step
