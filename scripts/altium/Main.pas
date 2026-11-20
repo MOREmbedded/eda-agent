@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.20.2';
+    SCRIPT_VERSION = '2026.11.20.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -126,6 +126,11 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { FULL paths, upper case, of the same documents, each wrapped in '|'.
+      EditedDocs goes by file name so a save errs on the side of writing;
+      reporting "modified" must not, because two projects often both hold
+      a Sheet1.SchDoc. See DocEditedExactly. }
+    EditedPaths : String;
     { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
     { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
     { upper case with back slashes. See OwnerRefusal.                     }
@@ -641,6 +646,8 @@ Begin
     If FilePath = '' Then Exit;
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
+    Key := '|' + UpperCase(FilePath) + '|';
+    If Pos(Key, EditedPaths) = 0 Then EditedPaths := EditedPaths + Key;
 End;
 
 { ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
@@ -736,9 +743,24 @@ Begin
     Result := Pos('|' + UpperCase(ExtractFileName(FilePath)) + '|', EditedDocs) > 0;
 End;
 
+{ Whether a tool edited THIS document, by full path, and it has not been   }
+{ written since. MEASURED 2026-11-20 on AD 26.11: sch_place_note marked the }
+{ sheet with SetModified(True) and IServerDocument.Modified still read      }
+{ False, so every listing called the edited sheet clean. A bare file name   }
+{ (a document open outside any project) falls back to the name record.    }
+Function DocEditedExactly(FilePath : String) : Boolean;
+Begin
+    Result := False;
+    If FilePath = '' Then Exit;
+    If Pos('\', FilePath) = 0 Then
+        Result := DocWasEdited(FilePath)
+    Else
+        Result := Pos('|' + UpperCase(FilePath) + '|', EditedPaths) > 0;
+End;
+
 Procedure ForgetDocEdited(FilePath : String);
 Var
-    Key : String;
+    Key, Name, Rest, Entry, Kept : String;
     P : Integer;
 Begin
     If FilePath = '' Then Exit;
@@ -747,6 +769,36 @@ Begin
     If P > 0 Then
         EditedDocs := Copy(EditedDocs, 1, P - 1)
             + Copy(EditedDocs, P + Length(Key), Length(EditedDocs));
+    { Every full path with this file name goes too: the name record above }
+    { just went, and the two must not disagree.                           }
+    Name := UpperCase(ExtractFileName(FilePath));
+    Rest := EditedPaths;
+    Kept := '';
+    While Rest <> '' Do
+    Begin
+        P := Pos('|', Rest);
+        If P = 0 Then P := Length(Rest) + 1;
+        Entry := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        If (Entry <> '') And (UpperCase(ExtractFileName(Entry)) <> Name) Then
+            Kept := Kept + '|' + Entry + '|';
+    End;
+    EditedPaths := Kept;
+End;
+
+{ Drop only THIS path's exact record, for a discard: the name record stays, }
+{ so another project's same-named document a tool edited is still saved.   }
+Procedure ForgetDocEditedExactly(FilePath : String);
+Var
+    Key : String;
+    P : Integer;
+Begin
+    If FilePath = '' Then Exit;
+    Key := '|' + UpperCase(FilePath) + '|';
+    P := Pos(Key, EditedPaths);
+    If P > 0 Then
+        EditedPaths := Copy(EditedPaths, 1, P - 1)
+            + Copy(EditedPaths, P + Length(Key), Length(EditedPaths));
 End;
 
 Function IsLibraryDocPath(FilePath : String) : Boolean;
@@ -965,6 +1017,10 @@ Begin
     Except
         Result := False;
     End;
+    { An edit a tool made counts until it is written or discarded: Modified }
+    { reads False after API edits (see DocEditedExactly).                   }
+    If Not Result Then
+        Try Result := DocEditedExactly(ServerDoc.FileName); Except End;
 End;
 
 Function DocIsModified(FilePath : String) : Boolean;
@@ -1437,6 +1493,24 @@ Begin
         { sheet left marked would be rewritten by every later stop.          }
         AgeAfter := -1;
         Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+        { AN EDITED DOCUMENT THE SERVER SAVE DID NOT WRITE goes through the }
+        { editor's own Save. MEASURED 2026-11-20 on AD 26.11: after         }
+        { sch_place_note, proj_close's save pass left the sheet unchanged   }
+        { on disk and the close then raised "Unsaved Changes". The editor   }
+        { knew the sheet was edited; IServerDocument did not, and           }
+        { DoFileSave writes only what IServerDocument thinks is modified.   }
+        { WorkspaceManager:SaveObject is File > Save, which asks the editor. }
+        If ((AgeAfter < 0) Or (AgeAfter = AgeBefore)) And DocEditedExactly(Path) Then
+        Begin
+            Try
+                ServerDoc.Focus;
+                ResetParameters;
+                AddStringParameter('ObjectKind', 'Document');
+                AddStringParameter('FileName', Path);
+                RunProcess('WorkspaceManager:SaveObject');
+            Except { the file age below decides } End;
+            Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+        End;
         If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
 End;
 

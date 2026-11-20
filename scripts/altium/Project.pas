@@ -234,6 +234,9 @@ Begin
         NoteWriteFailed('clear the modified flag');
         Exit;
     End;
+    { The bridge's own record of the edit goes too, or the check after a }
+    { discard reads the document as still modified and refuses the close. }
+    ForgetDocEditedExactly(Path);
     Result := True;
 End;
 
@@ -263,6 +266,32 @@ Begin
     Begin
         If Result <> '' Then Result := Result + '|';
         Result := Result + Path;
+    End;
+End;
+
+{ Members a tool edited that the save pass could not show as written (their }
+{ file did not get newer). File ages tick every two seconds, so a save right }
+{ after the last write can be listed here although it reached disk: a hint,  }
+{ reported with the close, never a reason to refuse it.                      }
+Function UnwrittenProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If (Path <> '') And DocEditedExactly(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
     End;
 End;
 
@@ -440,6 +469,23 @@ Begin
     End;
 End;
 
+{ ForgetDocEditedExactly for each path of a '|' list. }
+Procedure ForgetPathsEditedExactly(PathList : String);
+Var
+    Rest, P : String;
+    K : Integer;
+Begin
+    Rest := PathList;
+    While Rest <> '' Do
+    Begin
+        K := Pos('|', Rest);
+        If K = 0 Then K := Length(Rest) + 1;
+        P := Copy(Rest, 1, K - 1);
+        Rest := Copy(Rest, K + 1, Length(Rest));
+        ForgetDocEditedExactly(P);
+    End;
+End;
+
 { Paths in BeforeList that are gone from AfterList, other than TargetPath.   }
 Function PathsGoneOtherThan(BeforeList, AfterList, TargetPath : String) : String;
 Var
@@ -524,7 +570,7 @@ End;
 { looking the project up again.                                               }
 Function Proj_Close(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, Discarded, StillDirty, More : String;
+    ProjectPath, Discarded, StillDirty, More, Unwritten, MemberPaths : String;
     ClosedInstead, BeforeClose, Why : String;
     SaveFirst, Closed, NoneLoaded : Boolean;
     Attempts : Integer;
@@ -565,8 +611,12 @@ Begin
                 Exit;
             End;
 
+            Unwritten := '';
             If SaveFirst Then
-                SaveProjectMembers(Project)
+            Begin
+                SaveProjectMembers(Project);
+                Unwritten := UnwrittenProjectMembers(Project);
+            End
             Else
             Begin
                 { DISCARD BEFORE CLOSING, then check the discard took. A close }
@@ -597,6 +647,7 @@ Begin
             { project, the first close was abandoned after its prompt was    }
             { answered and a second completed. Not retried when saving,      }
             { where the likely cause is a prompt cancelled on purpose.       }
+            MemberPaths := ProjectMemberPaths(Project);
             Attempts := 0;
             Closed := False;
             ClosedInstead := '';
@@ -632,11 +683,16 @@ Begin
                 End;
             End;
 
+            { A closed document holds no edits: reopened, it must not read }
+            { as modified from the bridge's record of the old session.      }
+            If Closed Then ForgetPathsEditedExactly(MemberPaths);
+
             If Closed And (ClosedInstead = '') Then
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":true,"closed":true,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"saved":' + BoolToJsonStr(SaveFirst)
+                    + ',"not_shown_written":' + PipePathsToJsonArray(Unwritten)
                     + ',"discarded":' + PipePathsToJsonArray(Discarded)
                     + ',"attempts":' + IntToStr(Attempts)
                     + ',"closed_instead":[]}')

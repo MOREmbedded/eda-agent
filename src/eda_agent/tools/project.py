@@ -649,6 +649,9 @@ def register_project_tools(mcp):
                                "Cancel could not be pressed and the prompt is "
                                "still open, blocking the bridge: answer it "
                                "with app_press_dialog_button(\"Cancel\")."))}
+            if prompt.get("wpf"):
+                return await _close_after_unsaved_prompt(
+                    bridge, project_path, members, prompt, save)
             if save:
                 raise
             left = {"success": False, "closed": False,
@@ -753,6 +756,19 @@ def register_project_tools(mcp):
     #: None" is pressed. MEASURED 2026-09-13 on AD 26.10.1.6.
     _CLOSE_PROMPT_TITLES = ("Confirm Save", "Confirm Not Saving")
 
+    #: Altium's WPF save prompt. MEASURED 2026-11-20 on AD 26.11: a
+    #: proj_close with save after sch_place_note stopped on it ("Save
+    #: changes?"), and since its buttons are not child windows the dialog
+    #: report listed none and proj_close re-raised, leaving it open.
+    _UNSAVED_PROMPT_TITLES = ("Unsaved Changes",)
+
+    #: Extensions of the documents a save prompt can name.
+    _DOC_EXTENSIONS = (".schdoc", ".pcbdoc", ".prjpcb", ".schlib", ".pcblib",
+                       ".outjob", ".prjpcbstructure", ".harness", ".pcbdwf",
+                       ".intlib", ".dblib", ".svndblib", ".dbxlib",
+                       ".prjscr", ".prjfpg", ".prjmbd", ".cmpdoc", ".bomdoc",
+                       ".draftsman", ".pcbdwf", ".mbadoc", ".wsdoc")
+
     def _is_absolute(path: str) -> bool:
         return len(path) > 2 and (path[1] == ":" or path.startswith("\\\\"))
 
@@ -789,7 +805,167 @@ def register_project_tools(mcp):
             title = str(dialog.get("title", ""))
             if title.startswith(_CLOSE_PROMPT_TITLES):
                 return {"title": title, "hwnd": dialog.get("hwnd")}
+            if title.startswith(_UNSAVED_PROMPT_TITLES):
+                return {"title": title, "hwnd": dialog.get("hwnd"),
+                        "wpf": True}
         return None
+
+    def _named_documents(names):
+        """The document names (paths or bare file names) among UIA texts.
+
+        A WPF prompt may name documents by path, by file name, or inside a
+        sentence ("Save changes to Sheet1.SchDoc?"), so each word ending in
+        a document extension counts.
+        """
+        import re as _re
+        found = set()
+        for text in names:
+            text = str(text or "").strip()
+            if not text:
+                continue
+            if _is_absolute(text) and text.lower().endswith(_DOC_EXTENSIONS):
+                found.add(text)
+                continue
+            for word in _re.findall(r"[^\s\"'\u2018\u2019\u201c\u201d<>|?*]+",
+                                    text):
+                word = word.rstrip(".,;:!)").lstrip("(")
+                if word.lower().endswith(_DOC_EXTENSIONS):
+                    found.add(word)
+        return sorted(found)
+
+    def _foreign_names(named, members):
+        """Named documents that are not this project's.
+
+        A path must be a member. A bare name must be the file name of a
+        member: which project's document a bare name means cannot be told
+        from the prompt, but the prompt comes from closing this project.
+        """
+        import ntpath
+        member_names = {ntpath.basename(m).upper() for m in members}
+        out = []
+        for name in named:
+            if _is_absolute(name):
+                if name.upper() not in members:
+                    out.append(name)
+            elif ntpath.basename(name).upper() not in member_names:
+                out.append(name)
+        return out
+
+    def _answer_unsaved_prompts(bridge, members, prompt, save, budget=30.0):
+        """Answer Altium's WPF "Unsaved Changes" prompt(s) for a close.
+
+        Runs in a thread. Returns (answered, named, refusal, cancelled).
+        Presses Save (save=True) or Don't Save (save=False) only when the
+        prompt names documents and every one belongs to the project being
+        closed. Otherwise it presses Cancel, which abandons the close and
+        changes nothing, rather than leaving the prompt to block the
+        bridge.
+        """
+        import time as _time
+        from ..ui import uia, windows
+
+        if not (windows.available() and uia.available()):
+            return 0, [], ("UI Automation is not available here, so the "
+                           "prompt was left open"), False
+        if not windows.automation_enabled():
+            return 0, [], (f"UI automation is disabled by "
+                           f"{windows.UI_AUTOMATION_ENV}, so the prompt was "
+                           f"left open"), False
+        status = bridge.get_altium_status()
+        pid = status.get("pid")
+
+        def cancel(hwnd):
+            if not uia.invoke(hwnd, "Cancel").get("ok"):
+                return False
+            return windows.wait_for_close(hwnd, timeout=10.0)
+
+        answered, named_all = 0, []
+        hwnd = prompt.get("hwnd")
+        if save:
+            from ..saving import saving_off
+            if saving_off():
+                return 0, [], ("saving is switched off on the dashboard, so "
+                               "Save was not pressed and the prompt was "
+                               "cancelled"), cancel(hwnd) if hwnd else False
+        button = "Save" if save else "Don't Save"
+        deadline = _time.monotonic() + budget
+        while hwnd and _time.monotonic() < deadline:
+            read = uia.describe_window(hwnd, depth=8, limit=400)
+            named = _named_documents(
+                [e.get("name", "") for e in read.get("elements", [])])
+            if members is None:
+                return answered, named_all, (
+                    "this does not know which documents belong to the "
+                    "project, so the prompt was cancelled"), cancel(hwnd)
+            if not named:
+                return answered, named_all, (
+                    "the prompt names no document that could be read, so "
+                    "it was cancelled rather than answered for documents "
+                    "nobody can see"), cancel(hwnd)
+            foreign = _foreign_names(named, members)
+            if foreign:
+                return answered, named_all, (
+                    "the prompt also names documents outside this project, "
+                    "so it was cancelled: " + "; ".join(foreign)), cancel(hwnd)
+            pressed = uia.invoke(hwnd, button)
+            if not pressed.get("ok"):
+                return answered, named_all, (
+                    f"{button!r} could not be pressed "
+                    f"({pressed.get('reason')}), so the prompt was "
+                    f"cancelled"), cancel(hwnd)
+            windows.wait_for_close(hwnd, timeout=15.0)
+            answered += 1
+            named_all.extend(named)
+
+            found = {"hwnd": None}
+
+            def another() -> bool:
+                if not pid:
+                    return False
+                for dialog in windows.dialogs(pid):
+                    if (dialog.hwnd != hwnd and (dialog.title or "")
+                            .startswith(_UNSAVED_PROMPT_TITLES)):
+                        found["hwnd"] = dialog.hwnd
+                        return True
+                return False
+
+            windows.wait_until(another, 3.0)
+            hwnd = found["hwnd"]
+        return answered, sorted(set(named_all)), None, False
+
+    async def _close_after_unsaved_prompt(bridge, project_path, members,
+                                          prompt, save):
+        """proj_close's answer when the close stopped on "Unsaved Changes"."""
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+        answered, named, refusal, cancelled = await loop.run_in_executor(
+            None, _answer_unsaved_prompts, bridge, members, prompt, save)
+        closed = False
+        try:
+            listing = await bridge.send_command_async(
+                "project.get_open_projects", {})
+            open_paths = {str(p.get("project_path", "")).upper()
+                          for p in (listing or {}).get("projects", [])}
+            closed = bool(project_path) and \
+                str(project_path).upper() not in open_paths
+        except Exception:                           # noqa: BLE001
+            closed = False
+        out = {"success": closed and refusal is None, "closed": closed,
+               "project_path": project_path, "prompt": prompt["title"],
+               "prompts_answered": answered,
+               "saved" if save else "discarded": named}
+        if refusal is not None:
+            out["reason"] = refusal
+            out["prompt_cancelled"] = cancelled
+            if not cancelled:
+                out["reason"] += (
+                    ". Cancel could not be pressed and the prompt is still "
+                    "open, blocking the bridge: answer it with "
+                    "app_press_dialog_button")
+        elif not closed:
+            out["reason"] = ("the prompt was answered and the project is "
+                             "still open")
+        return out
 
     def _prompt_paths(hwnd):
         """Absolute paths a save prompt lists, or None when it cannot be read."""

@@ -36,7 +36,7 @@ SESSION = {
     "ClosingMode", "UiAutomationMode", "KeepInViewMode", "DialogMode", "UsageStatsMode",
     "ChecksOff", "LengthUnits",
     # Save passes and the documents edited this session.
-    "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs",
+    "SaveAttempts", "LibsSkippedClean", "SkippedLibNames", "EditedDocs", "EditedPaths",
     "RunOutJobsOpened", "SavePassSeen", "SaveScope", "CleanLeftAlone",
     # Caches and counters kept across requests.
     "LastCompileTick", "LastCompiledProject", "WriteSerial", "CompiledAtSerial", "DocOwners", "CastErrorCount",

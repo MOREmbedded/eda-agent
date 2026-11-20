@@ -53,7 +53,8 @@ def _before_the_close(body: str) -> str:
 def test_without_saving_the_edits_are_discarded_before_the_close(close):
     pre = _before_the_close(close)
     arm = re.search(
-        r"If SaveFirst Then\s+SaveProjectMembers\(Project\)\s+Else\s+Begin"
+        r"If SaveFirst Then\s+(?:Begin\s+SaveProjectMembers\(Project\);.*?End\s+"
+        r"|SaveProjectMembers\(Project\)\s+)Else\s+Begin"
         r"(.*?)\bEnd;", pre, re.S)
     assert arm, "save=false has no arm of its own ahead of the close"
     assert "DiscardProjectMembers(Project)" in arm.group(1), (
