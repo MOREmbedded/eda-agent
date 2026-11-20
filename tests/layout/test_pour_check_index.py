@@ -207,3 +207,15 @@ def test_each_via_span_is_worked_out_once_per_board(monkeypatch):
     ra.repair_pour_nets(board)
     assert len(calls) == len(set(calls)) <= len({(v.low_layer, v.high_layer)
                                                  for v in board.vias})
+
+
+def test_a_hole_reaching_past_its_outline_is_filed_in_the_outline_bands_only():
+    """A thin outline cuts fine bands; a tall hole filed in all of its own
+    would make hundreds of millions of entries."""
+    n = 40000
+    outer = [(k * 0.01, 0.0) for k in range(n)] + [(n * 0.01, 0.001)]
+    shape = geom.polygon(outer, [[(1.0, -50.0), (2.0, -50.0), (2.0, 50.0), (1.0, 50.0)]])
+    body = ra._Body(shape)
+    assert sum(len(v) for v in body.holes.values()) <= len(body.edges) + 2
+    for x, y in [(1.5, 0.0002), (1.5, 0.0), (3.0, 0.0001), (1.5, 0.001)]:
+        assert body.contains(x, y) == geom.point_in_poly(x, y, shape)

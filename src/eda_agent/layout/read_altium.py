@@ -537,6 +537,9 @@ class _Body:
             for band in range(self._band(min(yi, yj)), self._band(max(yi, yj)) + 1):
                 self.edges.setdefault(band, []).append((xi, yi, xj, yj))
             j = i
+        # Only a point inside the outline is asked about holes, and its band
+        # lies within the outline's, so a hole is filed in those bands only.
+        first, last = self._band(self.y0), self._band(self.bbox[3])
         for hole in shape.holes:
             if not hole:
                 continue
@@ -545,7 +548,8 @@ class _Body:
             lo, hi = min(xs), max(xs)
             margin = _BOX_MARGIN * (1.0 + max(abs(lo), abs(hi)))
             entry = (lo - margin, hi + margin, min(ys), max(ys), hole)
-            for band in range(self._band(min(ys)), self._band(max(ys)) + 1):
+            for band in range(max(first, self._band(min(ys))),
+                              min(last, self._band(max(ys))) + 1):
                 self.holes.setdefault(band, []).append(entry)
 
     def _band(self, y: float) -> int:
