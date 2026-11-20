@@ -34,6 +34,7 @@ a step is caught, deleting one of a step's several rows is not.
 
 from __future__ import annotations
 
+import functools
 import pathlib
 import re
 
@@ -54,9 +55,14 @@ _IDENT = re.compile(r"`(\w+)`")
 _CITED = re.compile(r"`([\w.]+)`")
 
 
-def _modules() -> dict[str, list[str]]:
+@functools.lru_cache(maxsize=1)
+def _modules() -> dict[str, list[tuple[str, str]]]:
+    """Each module's lines with their lower-case copy, read once: the
+    checks below look up hundreds of identifiers, and reading and
+    regex-scanning ~100k lines for each took 100 s a test."""
     return {
-        p.name: p.read_text(encoding="utf-8", errors="replace").splitlines()
+        p.name: [(line, line.lower()) for line in
+                 p.read_text(encoding="utf-8", errors="replace").splitlines()]
         for p in sorted(_PAS_DIR.glob("*.pas"))
         if p.name != _BUILD_OUTPUT
     }
@@ -87,8 +93,12 @@ def _use_sites(ident: str) -> list[tuple[str, int, str]]:
     declares = re.compile(r"\s*(?:Function|Procedure)\s+" + re.escape(ident)
                           + r"\b", re.I)
     out: list[tuple[str, int, str]] = []
+    # Every pattern needs the identifier itself, in some case.
+    needle = ident.lower()
     for name, lines in _modules().items():
-        for lineno, line in enumerate(lines, 1):
+        for lineno, (line, low) in enumerate(lines, 1):
+            if needle not in low:
+                continue
             stripped = line.strip()
             if stripped.startswith("//") or stripped.startswith("{"):
                 continue
@@ -288,7 +298,8 @@ def _assert_module_uses(step, module, idents, claim):
 
 
 def _assert_function_writes(step, func, idents, claim):
-    for name, lines in _modules().items():
+    for name, pairs in _modules().items():
+        lines = [line for line, _ in pairs]
         start = None
         for lineno, line in enumerate(lines, 1):
             if re.match(r"\s*(?:Function|Procedure)\s+" + func + r"\b",

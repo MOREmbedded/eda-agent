@@ -784,6 +784,7 @@ class AltiumBridge:
 
     KEEPALIVE_INTERVAL = 30  # seconds
     KEEPALIVE_SLOW_INTERVAL = 120  # seconds, while Altium does not answer
+    KEEPALIVE_MAX_SKIP = 300  # seconds; longest run of skipped pings
     DETACH_HINT_AFTER = 600  # seconds
 
     def __init__(self):
@@ -820,6 +821,12 @@ class AltiumBridge:
         # and when a reply last said this server is out of date.
         self._loop_script_version = ""
         self._outdated_noted_at = 0.0
+        #: time.monotonic() of the last reply Altium wrote for this
+        #: server, any command. A reply proves the loop alive and resets
+        #: its idle deadline, so the keep-alive skips its ping after one.
+        self._last_answer_at = 0.0
+        #: When _loop_script_version was last read off a ping.
+        self._loop_version_at = 0.0
 
     def _note_fault(self, workspace_dir, guidance: dict) -> None:
         """Persist a fault for the dashboard recovery banner (best-effort)."""
@@ -1043,6 +1050,7 @@ class AltiumBridge:
         # interval on the first answer, so a restarted loop is kept alive
         # by every session that was attached before.
         consecutive_failures = 0
+        own_ping_answer = 0.0
         slow_after = 3
         slow_ticks = max(ticks_per_ping, int(self.KEEPALIVE_SLOW_INTERVAL
                                              / sentinel_interval))
@@ -1055,8 +1063,24 @@ class AltiumBridge:
                 else ticks_per_ping
             if tick >= due:
                 tick = 0
+                # MEASURED 2026-11-19 on a working PC: 70% of all bridge
+                # commands were pings, 752 of them queued behind real
+                # work and 809 timed out there. Any reply in the last
+                # interval already proves the loop alive and resets its
+                # idle deadline, so the ping would only take a turn.
+                # Our own last ping does not count, or idle pings would
+                # skip every other turn.
+                # A ping still goes out every KEEPALIVE_MAX_SKIP seconds:
+                # it is what reads the running script version, which a
+                # redeploy changes.
+                if (self._last_answer_at != own_ping_answer
+                        and self._answered_within(self.KEEPALIVE_INTERVAL)
+                        and self.loop_version_age() < self.KEEPALIVE_MAX_SKIP):
+                    consecutive_failures = 0
+                    continue
                 try:
                     self.send_command("application.ping", timeout=5.0)
+                    own_ping_answer = self._last_answer_at
                     if consecutive_failures >= slow_after:
                         logger.info("Keep-alive: Altium answers again")
                     consecutive_failures = 0
@@ -1071,6 +1095,27 @@ class AltiumBridge:
                     else:
                         logger.debug("Keep-alive ping failed (%d)",
                                      consecutive_failures)
+
+    def loop_version_age(self) -> float:
+        """Seconds since a ping last reported the running script version."""
+        at = self._loop_version_at
+        return time.monotonic() - at if at else float("inf")
+
+    def known_loop_version(self, max_age: float) -> str:
+        """The running script version if a recent reply vouches for it.
+
+        Read off the last ping no older than ``max_age``, while Altium
+        has answered something in the last minute; '' otherwise, and the
+        caller pings.
+        """
+        if self.loop_version_age() < max_age and self._answered_within(60.0):
+            return self._loop_script_version
+        return ""
+
+    def _answered_within(self, seconds: float) -> bool:
+        """Whether Altium answered any command in the last ``seconds``."""
+        last = self._last_answer_at
+        return bool(last) and time.monotonic() - last < seconds
 
     def _maybe_open_dashboard_sentinel(self) -> None:
         """If the Altium status form dropped open_dashboard.url, open it.
@@ -1363,6 +1408,7 @@ class AltiumBridge:
                         f"polls={poll_count} parse_errs={parse_errors} "
                         f"extensions={extensions}",
                     )
+                    self._last_answer_at = time.monotonic()
                     return CommandResponse.from_dict(data)
 
             if time.monotonic() >= deadline:
@@ -1877,6 +1923,7 @@ class AltiumBridge:
             data = _with_envelope_notes(response.data, response)
             if command == "application.ping" and isinstance(data, dict):
                 self._loop_script_version = str(data.get("script_version") or "")
+                self._loop_version_at = time.monotonic()
             data = self._with_outdated_note(command, data)
             if shown and isinstance(data, dict):
                 data = dict(data)
@@ -2006,6 +2053,7 @@ class AltiumBridge:
                         f"elapsed={elapsed:.0f}ms polls={poll_count} "
                         f"parse_errs={parse_errors} extensions={extensions}",
                     )
+                    self._last_answer_at = time.monotonic()
                     return CommandResponse.from_dict(data)
 
             if time.monotonic() >= deadline:

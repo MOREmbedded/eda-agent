@@ -225,7 +225,7 @@ jobs:
       # nobody anything.
       - name: Run test suite
         run: >
-          python -m pytest tests/ -q -rs
+          python -m pytest tests/ -q -rs -n auto
           --ignore=tests/test_cross_validate.py
           --ignore=tests/test_pascal_runner.py
           --durations=25

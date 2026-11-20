@@ -1058,16 +1058,32 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         and ALSO reads the on-disk Main.pas to show the deployed
         version. Mismatch = the user needs to Ctrl+F3 + restart.
 
-        Short TTL (3s) so the dashboard's periodic poll doesn't hammer
-        Altium but the readout still feels live.
+        The dashboard polls it every 15 s, and only while its tab is
+        visible; the ping is skipped while this process already knows the
+        running version (see below).
         """
         from ..tools.application import _bundled_script_version
         deployed = _bundled_script_version() or ""
-        # Live ping. Cached briefly (3s) so a 1-Hz dashboard poll
-        # doesn't round-trip Altium every second.
-        ping = _cached("altium.ping", 3.0,
-                       lambda: _bridge_call("application.ping", {},
-                                            timeout=4.0))
+        # MEASURED 2026-11-19: pings were 70% of the 17,382 commands in a
+        # month's bridge trace, each taking Altium's turn from real work,
+        # and this probe was the most frequent source (every 5 s while a
+        # dashboard tab was open, against 30 s for a session keep-alive).
+        # When this process's bridge read the version off a ping within
+        # its keep-alive window and Altium is still answering, that
+        # version is the answer; otherwise ping, cached.
+        known = ""
+        try:
+            from eda_agent.bridge import get_bridge
+            b = get_bridge()
+            known = b.known_loop_version(max_age=b.KEEPALIVE_MAX_SKIP + 30.0)
+        except Exception:  # no bridge yet: fall through to a real ping
+            known = ""
+        if known:
+            ping = {"pong": True, "script_version": known}
+        else:
+            ping = _cached("altium.ping", 15.0,
+                           lambda: _bridge_call("application.ping", {},
+                                                timeout=4.0))
         running = ""
         altium_up = False
         if isinstance(ping, dict):
@@ -1744,7 +1760,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         UI uses to badge edit-class tools.
         """
         try:
-            from eda_agent.server import mcp
+            from eda_agent.server import ensure_tools, mcp
+            ensure_tools()
         except Exception as e:
             return jsonify({"ok": False, "reason": f"mcp unavailable: {e}"})
         reg = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
@@ -1783,7 +1800,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         if not isinstance(args, dict):
             return jsonify({"ok": False, "reason": "args must be an object"}), 400
         try:
-            from eda_agent.server import mcp
+            from eda_agent.server import ensure_tools, mcp
+            ensure_tools()
         except Exception as e:
             return jsonify({"ok": False, "reason": f"mcp unavailable: {e}"}), 500
         reg = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)

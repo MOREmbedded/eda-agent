@@ -576,6 +576,27 @@ def si_value_text(value: str, kind: str, with_unit: bool) -> Optional[str]:
     return f"{mantissa}{letter}{unit}"
 
 
+def _filter_documents(docs: list, project: str, kind: str,
+                      loaded_only: bool) -> list:
+    """The documents that match every filter given."""
+    proj = (project or "").strip().lower().replace("/", "\\")
+    want_kind = (kind or "").strip().upper()
+    out = []
+    for d in docs:
+        if not isinstance(d, dict):
+            out.append(d)
+            continue
+        path = str(d.get("file_path") or d.get("file_name") or "")
+        if proj and proj not in path.lower().replace("/", "\\"):
+            continue
+        if want_kind and str(d.get("document_kind") or "").upper() != want_kind:
+            continue
+        if loaded_only and not d.get("loaded"):
+            continue
+        out.append(d)
+    return out
+
+
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
 
@@ -1581,8 +1602,13 @@ def register_application_tools(mcp):
             "application.claim_document", {"file_path": file_path})
 
     @mcp.tool()
-    async def app_list_documents() -> list[dict[str, Any]]:
+    async def app_list_documents(project: str = "", kind: str = "",
+                                 loaded_only: bool = False) -> list[dict[str, Any]]:
         """List all documents known to the current Altium workspace.
+
+        With many projects open this runs to tens of thousands of tokens
+        (40k on average, measured); narrow it with ``project``, ``kind``
+        or ``loaded_only``.
 
         Returns both project members and any free documents. Each entry
         carries a `loaded` flag that distinguishes "listed as project
@@ -1603,12 +1629,20 @@ def register_application_tools(mcp):
               is a floor rather than a clean bill, since the flag does
               not always propagate from ProcessControl. app_save_all
               measures file timestamps instead of trusting it.
+
+        Args:
+            project: keep documents whose path contains this text, case
+                ignored (a project folder or name); blank keeps all.
+            kind: keep one document kind (``PCB``, ``SCH``, ``PCBLIB``,
+                ``SCHLIB``...), case ignored; blank keeps all.
+            loaded_only: keep only documents resident in the editor.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_open_documents")
         if isinstance(result, list):
             from ..ui.title_state import mark_modified
             result = [mark_modified(d) for d in result]
+            result = _filter_documents(result, project, kind, loaded_only)
         return result
 
     @mcp.tool()

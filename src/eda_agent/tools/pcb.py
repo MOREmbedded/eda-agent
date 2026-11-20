@@ -1217,6 +1217,32 @@ async def _rule_edit(tool: str, args: dict[str, Any], command: str,
         bridge, tool, args, lambda: bridge.send_command_async(command, params))
 
 
+def _select_parts(result: Any, designators: str, fields: str) -> Any:
+    """``result`` with its components cut to the designators and fields
+    asked for; unchanged when neither is given or it is not a part list."""
+    import fnmatch
+    if not isinstance(result, dict) or not isinstance(result.get("components"), list):
+        return result
+    pats = [p.strip().upper() for p in (designators or "").split(",") if p.strip()]
+    keep = {f.strip() for f in (fields or "").split(",") if f.strip()}
+    if not pats and not keep:
+        return result
+    parts = result["components"]
+    if pats:
+        parts = [c for c in parts if isinstance(c, dict) and any(
+            fnmatch.fnmatchcase(str(c.get("designator", "")).upper(), p)
+            for p in pats)]
+    if keep:
+        keep.add("designator")
+        parts = [{k: v for k, v in c.items() if k in keep}
+                 if isinstance(c, dict) else c for c in parts]
+    out = dict(result)
+    out["total"] = len(result["components"])
+    out["components"] = parts
+    out["count"] = len(parts)
+    return out
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -3731,8 +3757,14 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_components(body_heights: str = "max") -> dict[str, Any]:
+    async def pcb_get_components(body_heights: str = "max",
+                                 designators: str = "",
+                                 fields: str = "") -> dict[str, Any]:
         """Get all components from the active PCB with position and properties.
+
+        A large board answers with tens of thousands of tokens (59k on
+        average, measured); ask for what you need with ``designators``
+        and ``fields``.
 
         DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`
         block. Before drawing any conclusion about a listed part's
@@ -3759,6 +3791,11 @@ def register_pcb_tools(mcp):
                 part; ``all`` adds ``bodies``: identifier, kind (step,
                 extruded, cylinder, sphere), layer, standoff_mils,
                 overall_mils.
+            designators: comma-separated designators or wildcards
+                (``U1,C1*``); blank lists every part. ``count`` is then
+                the number matched and ``total`` the board's.
+            fields: comma-separated keys to keep per part (``x,y,layer``);
+                the designator is always kept. Blank keeps them all.
         """
         mode = (body_heights or "max").strip().lower()
         if mode not in ("max", "all"):
@@ -3767,6 +3804,7 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.get_components", {"body_heights": mode})
+        result = _select_parts(result, designators, fields)
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()

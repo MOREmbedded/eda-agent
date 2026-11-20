@@ -635,6 +635,13 @@ def register_design_tools(mcp) -> None:
 
     #: Longest design_job_status holds a call: under the client's 120 s.
     _JOB_WAIT_CAP_S = 100.0
+    #: A no-wait status poll of the same job sooner than this after the
+    #: last one is held for _JOB_REPOLL_HOLD_S instead. MEASURED
+    #: 2026-11-18: one session polled a route job 102,868 times in
+    #: 12.4 minutes (138 calls a second), all with wait_seconds=0.
+    _JOB_REPOLL_GAP_S = 1.0
+    _JOB_REPOLL_HOLD_S = 2.0
+    _last_status_poll: dict[str, float] = {}
 
     @mcp.tool()
     async def design_job_start(kind: str, params: dict) -> dict[str, Any]:
@@ -667,7 +674,10 @@ def register_design_tools(mcp) -> None:
 
         Nothing tells you when a job finishes, so keep calling this until
         it is done rather than ending your turn: a session that stopped to
-        "check when it finishes" was never woken again.
+        "check when it finishes" was never woken again. Pass
+        ``wait_seconds`` (60 is a good value) so each call waits for the
+        job instead of returning at once; a no-wait call repeated within
+        a second is held for two.
 
         Args:
             job_id: the job; blank lists every job.
@@ -676,12 +686,18 @@ def register_design_tools(mcp) -> None:
                 two-minute limit). 0 answers at once.
         """
         import asyncio
+        import time
 
         from ..design.jobs import get_job_store
         store = get_job_store()
         if not job_id:
             return {"jobs": store.list()}
         wait = max(0.0, min(float(wait_seconds or 0), _JOB_WAIT_CAP_S))
+        now = time.monotonic()
+        last = _last_status_poll.get(job_id)
+        _last_status_poll[job_id] = now
+        if not wait and last is not None and now - last < _JOB_REPOLL_GAP_S:
+            wait = _JOB_REPOLL_HOLD_S
         if wait and store.get(job_id) is not None:
             await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
