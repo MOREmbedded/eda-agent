@@ -588,8 +588,10 @@ maturity classification for every tool.
 - **Reading a large board no longer walks it again for every page.**
   Measured on a board with 2,474 pads, 57,962 copper objects, 463 nets
   and 709 net classes, a full read (the cockpit, routing, the checks and
-  every other reader of `pcb.get_layout_model`) took about 14 minutes.
-  Script 2026.11.20.1.
+  every other reader of `pcb.get_layout_model`) took 831 s, about 14
+  minutes. Measured live after this change, it takes 153 s: copper 115 s,
+  classes 3.9 s, pads 9.2 s, components 7.2 s, with the same 2,474 pads
+  and 57,962 copper objects. Script 2026.11.20.1.
   - Copper took 566 s. Each 1500-object page restarted Altium's walk of
     the board and stepped over everything before it: 5.2 s at the start,
     23.9 s near the end. Pad and copper replies now carry `big_pages`,
@@ -601,7 +603,9 @@ maturity classification for every tool.
     (`MemberName[I]`, until a name is empty or the read raises). A class
     whose list names no net on the board, All Nets among them, is still
     asked net by net, and so is every class when the script is sent
-    `exact=true`. `pcb_get_net_classes` reads members the same way.
+    `exact=true`. On that board the two reads gave the same members for
+    all 709 classes (3.6 s against 94 s). `pcb_get_net_classes` reads
+    members the same way.
   - Pads (77 s) and components (43 s) appended each entry to one growing
     string, copying it every time: 2,474 pads took 239 s in one call.
     Every section now joins its entries once.
