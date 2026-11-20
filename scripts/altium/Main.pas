@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.20.1';
+    SCRIPT_VERSION = '2026.11.20.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -951,7 +951,21 @@ End;
 { a False as a floor, not a clean bill. App_SaveAll records that Modified does }
 { not always propagate from ProcessControl, which is why that handler measures }
 { file timestamps instead of trusting this.                                    }
+{                                                                              }
+{ ServerDocIsModified answers it for a document already looked up, so a       }
+{ caller holding the IServerDocument does not look its path up again.         }
 {..............................................................................}
+
+Function ServerDocIsModified(ServerDoc : IServerDocument) : Boolean;
+Begin
+    Result := False;
+    If ServerDoc = Nil Then Exit;
+    Try
+        If ServerDoc.Modified Then Result := True;
+    Except
+        Result := False;
+    End;
+End;
 
 Function DocIsModified(FilePath : String) : Boolean;
 Var
@@ -960,13 +974,8 @@ Begin
     Result := False;
     If FilePath = '' Then Exit;
     ServerDoc := Nil;
-    Try
-        ServerDoc := Client.GetDocumentByPath(FilePath);
-        If ServerDoc <> Nil Then
-            If ServerDoc.Modified Then Result := True;
-    Except
-        Result := False;
-    End;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except ServerDoc := Nil; End;
+    Result := ServerDocIsModified(ServerDoc);
 End;
 
 {..............................................................................}

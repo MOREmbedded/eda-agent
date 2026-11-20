@@ -127,19 +127,33 @@ def test_the_active_document_emits_what_its_docstring_promises():
 
 
 def test_dirtiness_is_read_through_one_helper():
-    """MarkDocDirtyByPath sets the flag, DocIsModified reads it. One
-    definition, so the two cannot drift into disagreeing about what
-    counts as unsaved."""
+    """MarkDocDirtyByPath sets the flag, ServerDocIsModified reads it, and
+    DocIsModified is that read for a path. One definition, so the two
+    cannot drift into disagreeing about what counts as unsaved."""
     main = load(_MAIN, minimum=50)
     assert "DocIsModified" in main, "DocIsModified is gone from Main.pas"
+    assert ".Modified" in main["ServerDocIsModified"]
     helper = main["DocIsModified"]
     assert "Client.GetDocumentByPath" in helper
-    assert "Modified" in helper
+    assert "ServerDocIsModified(ServerDoc)" in helper
 
     body = load(_APPLICATION, minimum=12)["App_GetOpenDocuments"]
-    assert "DocIsModified" in body, (
+    assert "ServerDocIsModified(" in body, (
         "App_GetOpenDocuments is reading the modified flag its own way "
         "instead of through the shared helper")
+
+
+def test_each_open_document_is_looked_up_once():
+    """MEASURED in the usage log up to 2026-11-18: the listing took 1.9 s
+    at p50 and 3.3 s at p95 on a workspace of 812 documents. Each one was
+    looked up twice, once for "loaded" and again inside DocIsModified, and
+    every entry copied the whole reply built before it."""
+    body = load(_APPLICATION, minimum=12)["App_GetOpenDocuments"]
+    assert body.count("Client.GetDocumentByPath") == 1
+    assert "ServerDocIsModified(ServerDoc)" in body
+    assert "DocIsModified(" not in body.replace("ServerDocIsModified(", "")
+    assert not re.search(r"\b(\w+)\s*:=\s*\1\s*\+", body), "a reply grown entry by entry"
+    assert "Parts.Text" in body
 
 
 def test_the_helper_is_defined_before_it_is_called():

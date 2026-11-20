@@ -14,6 +14,7 @@ reach the command.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from typing import Any, Callable
 
 from . import geom
@@ -388,8 +389,9 @@ def clean_cutouts(board: LayoutBoard) -> int:
         return 0
     area = abs(_area(board.outline)) if len(board.outline) >= 3 else 0.0
     rings = [r for r in board.cutouts if len(r) >= 3]
-    holds_pad = [any(geom.point_in_poly(p.x, p.y, geom.polygon(r)) for p in board.pads)
-                 for r in rings]
+    polys = [geom.polygon(r) for r in rings]
+    holds_pad = [any(geom.point_in_poly(p.x, p.y, poly) for p in board.pads)
+                 for poly in polys]
     total = sum(abs(_area(r)) for r in rings)
     if any(holds_pad) or (area and total >= 0.5 * area):
         # On this board the kind names regions: the ones without a pad
@@ -494,28 +496,130 @@ def _pour_nets(board: LayoutBoard) -> None:
             r.source = best.source
 
 
-def _foreign_copper(board: LayoutBoard, region: Region, net: str) -> bool:
+#: How far outside a ring's box a point is still walked against the ring.
+#: Outside the box a crossing test can only count crossings in pairs, so the
+#: point is out; the margin covers the rounding of the crossing's x, which
+#: is a few units in the last place of a coordinate.
+_BOX_MARGIN = 1e-6
+
+
+class _Body:
+    """A region's body, asked whether a point is inside it with exactly
+    ``geom.point_in_poly``'s answer, without walking every edge for it.
+
+    MEASURED 2026-11-20 on a board with 283 pours, the largest with 24,676
+    vertices and the most holed with 1,288 holes: checking the pours for
+    foreign copper took 12 s of the 12.3 s spent in Python on a read,
+    nearly all of it walking whole outlines and every hole, point by point.
+
+    An edge changes the crossing count only at a height within its own
+    span, so the outline's edges are kept in horizontal bands and a point
+    walks only its band's edges, in the order of points and with the
+    arithmetic of ``geom._inside_ring``. A hole is walked only when the
+    point is in the hole's box: outside it, the crossings come in pairs.
+    """
+
+    def __init__(self, shape: geom.Shape):
+        self.bbox = shape.bbox
+        ring = shape.pts
+        self.edges: dict[int, list[tuple[float, float, float, float]]] = {}
+        self.holes: dict[int, list[tuple]] = {}
+        if not ring:
+            self.y0, self.cell = 0.0, 1.0
+            return
+        self.y0 = self.bbox[1]
+        height = self.bbox[3] - self.y0
+        bands = max(1, min(4096, len(ring) // 4))
+        self.cell = height / bands if height > 0 else 1.0
+        j = len(ring) - 1
+        for i in range(len(ring)):
+            (xi, yi), (xj, yj) = ring[i], ring[j]
+            for band in range(self._band(min(yi, yj)), self._band(max(yi, yj)) + 1):
+                self.edges.setdefault(band, []).append((xi, yi, xj, yj))
+            j = i
+        # Only a point inside the outline is asked about holes, and its band
+        # lies within the outline's, so a hole is filed in those bands only.
+        first, last = self._band(self.y0), self._band(self.bbox[3])
+        for hole in shape.holes:
+            if not hole:
+                continue
+            xs = [p[0] for p in hole]
+            ys = [p[1] for p in hole]
+            lo, hi = min(xs), max(xs)
+            margin = _BOX_MARGIN * (1.0 + max(abs(lo), abs(hi)))
+            entry = (lo - margin, hi + margin, min(ys), max(ys), hole)
+            for band in range(max(first, self._band(min(ys))),
+                              min(last, self._band(max(ys))) + 1):
+                self.holes.setdefault(band, []).append(entry)
+
+    def _band(self, y: float) -> int:
+        return int(math.floor((y - self.y0) / self.cell))
+
+    def contains(self, px: float, py: float) -> bool:
+        band = self._band(py)
+        inside = False
+        for xi, yi, xj, yj in self.edges.get(band, ()):
+            if (yi > py) != (yj > py):
+                x_at = xi + (py - yi) * (xj - xi) / (yj - yi)
+                if px < x_at:
+                    inside = not inside
+        if not inside:
+            return False
+        for lo, hi, bottom, top, hole in self.holes.get(band, ()):
+            if lo <= px <= hi and bottom <= py < top and geom._inside_ring(px, py, hole):
+                return False
+        return True
+
+
+class _Standing:
+    """The copper that can stand in a region's body, per layer, as points
+    sorted by x: a via spanning the layer, a pad on it (a plated hole
+    counts on every layer) and a track on it, by its midpoint. A region
+    then looks only at the points under its own box."""
+
+    def __init__(self, board: LayoutBoard):
+        self.board = board
+        spans: dict[tuple[str, str], frozenset[str]] = {}
+        self.via_spans = []
+        for v in board.vias:
+            key = (v.low_layer, v.high_layer)
+            if key not in spans:
+                spans[key] = frozenset(board.layers_between(*key))
+            self.via_spans.append(spans[key])
+        self.pad_layers = [frozenset(p.layers()) for p in board.pads]
+        self.layers: dict[str, tuple[list[float], list[tuple[float, float, str]]]] = {}
+
+    def on(self, layer: str) -> tuple[list[float], list[tuple[float, float, str]]]:
+        found = self.layers.get(layer)
+        if found is None:
+            b = self.board
+            pts = [(v.x, v.y, v.net) for v, span in zip(b.vias, self.via_spans)
+                   if layer in span]
+            pts += [(p.x, p.y, p.net) for p, on in zip(b.pads, self.pad_layers)
+                    if layer in on or (p.hole > 0 and p.plated)]
+            pts += [((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2, t.net) for t in b.tracks
+                    if t.layer == layer and not t.keepout]
+            pts.sort(key=lambda q: q[0])
+            found = self.layers[layer] = ([q[0] for q in pts], pts)
+        return found
+
+
+def _foreign_copper(board: LayoutBoard, region: Region, net: str,
+                    standing: _Standing | None = None,
+                    body: _Body | None = None) -> bool:
     """Whether copper of a net other than ``net`` (or of none) sits in the
     body of ``region``: a via spanning its layer, a pad on it (a plated
-    hole counts on every layer) or a track on it, by its midpoint."""
-    body = region.shape()
+    hole counts on every layer) or a track on it, by its midpoint.
+
+    ``standing`` and ``body`` are indexes a caller asking about many
+    regions, or one region for several nets, builds once."""
+    standing = standing or _Standing(board)
+    body = body or _Body(region.shape())
     x0, y0, x1, y1 = body.bbox
-    layer = region.layer
-
-    def inside(x, y):
-        return x0 <= x <= x1 and y0 <= y <= y1 and geom.point_in_poly(x, y, body)
-
-    for v in board.vias:
-        if v.net != net and layer in board.layers_between(v.low_layer, v.high_layer) \
-                and inside(v.x, v.y):
-            return True
-    for p in board.pads:
-        if p.net != net and (layer in p.layers() or (p.hole > 0 and p.plated)) \
-                and inside(p.x, p.y):
-            return True
-    for t in board.tracks:
-        if t.net != net and t.layer == layer and not t.keepout \
-                and inside((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2):
+    xs, pts = standing.on(region.layer)
+    for k in range(bisect_left(xs, x0), bisect_right(xs, x1)):
+        x, y, n = pts[k]
+        if n != net and y0 <= y <= y1 and body.contains(x, y):
             return True
     return False
 
@@ -536,11 +640,14 @@ def repair_pour_nets(board: LayoutBoard) -> int:
     signal = set(board.signal_layers())
     bounds = [(b, b.shape(), abs(_area(b.outline))) for b in board.regions
               if b.kind == "pour_boundary" and b.net]
+    standing: _Standing | None = None
     changed = 0
     for r in board.regions:
         if r.kind != "pour" or not r.net or r.layer not in signal or len(r.outline) < 3:
             continue
-        if not _foreign_copper(board, r, r.net):
+        standing = standing or _Standing(board)
+        body = _Body(r.shape())
+        if not _foreign_copper(board, r, r.net, standing, body):
             continue
         fits: dict[str, tuple] = {}
         for b, shape, area in bounds:
@@ -549,7 +656,8 @@ def repair_pour_nets(board: LayoutBoard) -> int:
             if all(_on_or_in(x, y, shape) for x, y in r.outline) \
                     and (b.net not in fits or area < fits[b.net][1]):
                 fits[b.net] = (b, area)
-        good = [b for b, _ in fits.values() if not _foreign_copper(board, r, b.net)]
+        good = [b for b, _ in fits.values()
+                if not _foreign_copper(board, r, b.net, standing, body)]
         if len(good) == 1:
             r.net, r.source = good[0].net, good[0].source
             changed += 1

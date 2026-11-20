@@ -585,6 +585,23 @@ maturity classification for every tool.
 
 ### Changed
 
+- **A board read's own Python work is about five times faster.** Once
+  Altium's replies are in, a full read checks every pour for copper of
+  another net. On a board with 283 pours, 2,474 pads and 57,962 copper
+  objects, that check took 12 s of the 12.3 s spent in Python. Each pour
+  tested every via, pad and track on the board, and each point inside a
+  pour's box walked the pour's whole outline and all of its holes (up to
+  24,676 vertices and 1,288 holes in one pour). The copper is now
+  gathered once per layer and sorted, and a pour's edges are kept in
+  horizontal bands, so each test looks only near its point. Replaying
+  the same recorded read took 11.9 s before and 2.2 s after, with an
+  identical board model.
+- **`app_list_documents` looks each document up once.** It looked each
+  one up twice, once for `loaded` and again for `modified`, and copied
+  the whole reply for every entry. On a workspace of 812 documents this
+  made no measurable difference (about 1.4 s either way), and the list
+  came back identical, so it is a cleanup rather than a speed-up.
+  Script 2026.11.20.2.
 - **Reading a large board no longer walks it again for every page.**
   Measured on a board with 2,474 pads, 57,962 copper objects, 463 nets
   and 709 net classes, a full read (the cockpit, routing, the checks and
