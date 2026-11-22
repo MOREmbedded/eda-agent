@@ -28,14 +28,17 @@ def _body(name: str) -> str:
 
 
 def test_the_parser_is_defined_before_the_reader_that_calls_it():
-    assert PAS.index("Function SchHarnessName(") < PAS.index("Function GetSchProperty(")
+    assert PAS.index("Function SchHarnessName(") < PAS.index("Function GetSchPropertyGated(")
+    assert (PAS.index("Function HarnessNameFromDescription(")
+            < PAS.index("Function GetSchPropertyGated("))
 
 
 def test_name_falls_back_to_the_harness_description():
-    reader = _body("GetSchProperty")
+    # The chain is GetSchPropertyGated since upstream's split (2026-11).
+    reader = _body("GetSchPropertyGated")
     branch = reader[reader.index("Else If PropName = 'Name'"):]
-    branch = branch[:branch.index("Else If PropName = 'LibReference'")]
-    assert "SchHarnessName(Obj.GetState_DescriptionString)" in branch
+    branch = branch[:branch.index("PropName = 'LibReference'")]
+    assert "HarnessNameFromDescription(Obj.GetState_DescriptionString)" in branch
     # Unreadable only when the fallback found nothing either.
     assert "If Result = '' Then NotePropertyDiag('unreadable', PropName);" in branch
 

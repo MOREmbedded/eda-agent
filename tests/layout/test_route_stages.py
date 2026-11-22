@@ -235,9 +235,10 @@ def _blocked_corridor_board():
 def test_a_plan_that_leaves_a_connection_unmade_gives_way_to_one_that_makes_it():
     from eda_agent.layout.route import route_adaptive
 
-    planned = route_adaptive(_blocked_corridor_board(), stages={"fallback": False, "plane_fanout": True})
+    planned = route_adaptive(_blocked_corridor_board(),
+                             stages={"fallback": False, "plane_fanout": True, "negotiate": True})
     assert run_drc(planned.apply()).unrouted == {"S": 1}, "the dog-bone sits in S's corridor"
-    r = route_adaptive(_blocked_corridor_board(), stages={"plane_fanout": True})
+    r = route_adaptive(_blocked_corridor_board(), stages={"plane_fanout": True, "negotiate": True})
     drc = run_drc(r.apply())
     assert drc.completion == 1.0 and not drc.violations
     assert "1 more connection made" in r.stage_report.fallback
@@ -255,12 +256,14 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
         async def send_command_async(self, command, params=None, timeout=None):
             raise AssertionError(command)
 
-    install_bridge_fake(monkeypatch, tmp_path, _NoBridge())
+    workspace = install_bridge_fake(monkeypatch, tmp_path, _NoBridge())
+    # The switches, not the brief: the user's Routing discipline off.
+    (workspace / "preferences.json").write_text('{"routing": "off"}')
     monkeypatch.setattr(read_altium, "read_live_board", lambda path: _pair_board())
     sent = {}
 
     class _Store:
-        def submit(self, kind, fn, params):
+        def submit(self, kind, fn, params, time_limit_s=0.0):
             sent.update(kind=kind, params=params)
             return "job-x"
 
@@ -301,6 +304,10 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
     plain = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] is False
     assert plain.legacy()
+    # Necking at narrow pads is the router's default; only "off" is sent.
+    await tools["pcb_autoroute"](expect_file=r"C:.PcbDoc", neck_pads=False)
+    assert sent["params"]["stages"]["neck_pads"] is False
+    assert not StageOptions.coerce(sent["params"]["stages"]).neck_pads
 
 
 def test_the_job_reports_the_stages_and_takes_their_switches():

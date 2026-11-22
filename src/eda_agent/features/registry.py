@@ -53,7 +53,7 @@ def validate(plugin: Plugin, known_deps: set[str], known_features: set[str]) -> 
         if d.id in known_deps:
             problems.append(f"dependency id {d.id!r} is already taken")
         if not d.license:
-            problems.append(f"dependency {d.id!r} names no license")
+            problems.append(f"dependency {d.id!r} has an empty license field")
         own.add(d.id)
     for d in f.all_deps():
         if d not in own and d not in known_deps:

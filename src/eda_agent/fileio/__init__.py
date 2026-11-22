@@ -2,7 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Headless readers for Altium binary design files (roadmap V1).
 
-Parse ``.SchDoc`` / ``.PcbDoc`` directly, no running Altium, no license,
+Parse ``.SchDoc`` / ``.PcbDoc`` directly, without a running Altium,
 so a design review can run in CI on every commit. The readers emit the same
 snapshot shapes the live DelphiScript bridge returns, so the offline review
 engines consume either source unchanged.

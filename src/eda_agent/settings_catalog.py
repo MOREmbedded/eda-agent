@@ -55,6 +55,10 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "`python`, `rust` or `auto`: which implementation runs the "
            "CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as "
            "`--compute`."),
+    EnvVar("EDA_AGENT_ROUTE_KERNEL", "Server and tool surface", "compiled",
+           "`python` keeps the board router's path search in Python "
+           "(scipy) even when the compiled `eda-agent[route]` kernel is "
+           "installed."),
     EnvVar("EDA_AGENT_ROUTER", "Server and tool surface",
            "the profile's `router.json`, else `default`",
            "Which autorouter engine routing runs use: `default`, or `euan` "
@@ -107,9 +111,6 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "Alias of `EDA_AGENT_NO_DASHBOARD`."),
     EnvVar("EDA_AGENT_HEADLESS", "Web dashboard", "off",
            "Alias of `EDA_AGENT_NO_DASHBOARD`. Same as `--headless`."),
-    EnvVar("EDA_AGENT_DASHBOARD_ALLOWED_HOSTS", "Web dashboard", "loopback only",
-           "Comma-separated host names (no ports) the dashboard accepts in "
-           "`Host` and `Origin`, for a deliberate non-loopback `--host`."),
     # ---- Logs and token usage -------------------------------------------
     EnvVar("EDA_AGENT_LOG_DIR", "Logs and token usage",
            r"`%USERPROFILE%\EDA Agent\logs`",
@@ -256,7 +257,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "`reference/altium_sdk.json`",
            "The reflected Altium SDK that `sdk-coverage` reads."),
     EnvVar("EDA_AGENT_SDK_SYMBOLS", "3D models and Altium SDK",
-           "Altium's `ScriptingSystem.dll`",
+           "Altium's scripting engine library",
            "The scripting DLL `sdk-symbols` reads its symbol table from."),
     EnvVar("EDA_AGENT_PCB_TOOLKIT", "3D models and Altium SDK",
            "`pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built",
@@ -293,6 +294,10 @@ ENV_VARS: tuple[EnvVar, ...] = (
 #: it is, so the list cannot quietly absorb a real setting.
 NOT_SETTINGS: dict[str, str] = {
     "EDA_AGENT_HOLD": "a placeholder footprint name in the Pascal library code",
+    "EDA_AGENT_HOLD_": "the prefix of numbered placeholder footprint names in "
+                       "the Pascal library code",
+    "EDA_AGENT_SESSION": "internal: the session tag a server sets for the "
+                         "processes it starts, not a setting",
     "EDA_AGENT_BACKEND_REEXEC": "internal: `_EDA_AGENT_BACKEND_REEXEC` marks "
                                 "the re-exec that applies `--backend`",
 }
@@ -328,6 +333,17 @@ PREFERENCES: dict[str, str] = {
     "dialogs": "`manual` leaves dialogs such as the change order for you to "
                "answer, instead of the tool answering them.",
     "usage_stats": "`off` stops counting the tokens each tool call costs.",
+    "routing": "Routing discipline. `enforced` (default) routes only the "
+               "nets the AI has decided in the routing brief, and waits for "
+               "every finding to be answered; `advisory` routes and reports "
+               "them without waiting; `off` asks for no brief.",
+    "basic_3d_models": "`allowed` lets a footprint keep a basic 3D model "
+                       "(extruded boxes, cylinders or spheres, no STEP). "
+                       "Under `not_allowed` (default) such footprints are "
+                       "reported and the AI asks before replacing them.",
+    "altium_autorouter": "`allowed` lets the AI start Altium's own "
+                         "autorouter. Under `not_allowed` (default) it routes "
+                         "with eda-agent's router.",
     "length_units": "The unit a new AI session gives and reads lengths in: "
                     "`mil` (default) or `mm`. Each session may change its "
                     "own with the `length_units` tool.",

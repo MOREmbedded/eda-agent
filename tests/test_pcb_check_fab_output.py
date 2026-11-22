@@ -92,8 +92,10 @@ def test_a_package_matching_the_board_passes(package, monkeypatch):
 def test_every_board_read_goes_to_a_command_that_exists(package, monkeypatch):
     bridge = _Bridge()
     asyncio.run(_tool(monkeypatch, bridge)(str(package)))
+    # pcb.physical_stack: the stackup read carries no dielectric heights,
+    # so the dielectrics are filled from the physical stack.
     assert set(bridge.calls) == {
-        "pcb.get_layer_stackup", "pcb.get_board_outline",
+        "pcb.get_layer_stackup", "pcb.physical_stack", "pcb.get_board_outline",
         "pcb.get_vias", "pcb.get_pad_properties"}
 
 

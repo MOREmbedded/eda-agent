@@ -3,8 +3,9 @@
 """The DbLib helpers in Library.pas, compiled and run under Free Pascal.
 
 These are the parts of the DbLib support that decide what reaches the
-database and what reaches the caller: the .DbLib file parser (which table,
-which key column), the connection-string tokenizer behind Mode=Read and
+database and what reaches the caller: the reader of the definition lines
+that DbLibDefinition sets down from Altium's answers (which table, which
+key column), the connection-string tokenizer behind Mode=Read and
 password redaction, and DbLibQuoteIdent, the only way a name gets into a
 SELECT. Altium cannot run here; FPC can run the very same routines, copied
 out of Library.pas by name, so a change to any of them is tested as
@@ -100,7 +101,8 @@ _ROUTINES = [
     "DbLibDoubled", "DbLibIsSecretKey", "DbLibRedactConnStr", "DbLibConnHasSecret",
     "DbLibConnValue", "DbLibSetConnValue", "DbLibIsJetOrAce", "DbLibIsAbsolutePath",
     "DbLibConnectionForRead", "DbLibConnKind", "DbLibIsPlainIdentChar",
-    "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField", "DbLibKeyField",
+    "DbLibTableQuote", "DbLibColumnQuote", "DbLibQuoteIdent", "DbLibQualifiedTable", "DbLibResolveField",
+    "DbLibKeyField",
     "DbLibFootprintFields",
 ]
 
@@ -162,7 +164,7 @@ def _check(tmp_path, cases):
         assert got == want, f"{expr}\n  want {want!r}\n  got  {got!r}"
 
 
-def test_the_dblib_file_parser_finds_tables_settings_and_mappings(tmp_path):
+def test_the_definition_reader_finds_tables_settings_and_mappings(tmp_path):
     _check(tmp_path, [
         ("DbLibGlobalValue(L, 'ConnectionString')", _DBLIB_FILE[3].split("=", 1)[1]),
         ("DbLibGlobalValue(L, 'LeftQuote')", "["),
@@ -243,6 +245,45 @@ def test_only_a_name_that_cannot_close_its_quote_reaches_a_select(tmp_path):
         ("DbLibQualifiedTable('', 'ICs', '[', ']')", "[ICs]"),
         ("'<' + DbLibQualifiedTable('d]bo', 'ICs', '[', ']') + '>'", "<>"),
     ])
+
+
+def test_quote_table_names_off_sends_the_table_name_bare(tmp_path):
+    out = _run(tmp_path, [
+        "  WriteLn(DbLibQualifiedTable('', 'ICs', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')));",
+        "  L.Insert(3, 'QuoteTableNames=0');",
+        "  WriteLn(DbLibQualifiedTable('', 'ic', DbLibTableQuote(L, '}'), DbLibTableQuote(L, '{')));",
+        "  WriteLn('<' + DbLibQualifiedTable('', 'Part List', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')) + '>');",
+        "  L.Delete(3); L.Insert(3, 'QuoteTableNames=1');",
+        "  WriteLn(DbLibQualifiedTable('', 'ICs', DbLibTableQuote(L, '['), DbLibTableQuote(L, ']')));",
+    ])
+    # unset and 1 quote; 0 sends a plain name bare and refuses one that
+    # would need quoting
+    assert out == ["[ICs]", "ic", "<>", "[ICs]"]
+
+
+def test_a_key_column_takes_only_a_real_sql_quote_pair(tmp_path):
+    # YBI_DB.DbLib (MySQL over ODBC) carries LeftQuote=} RightQuote={; the
+    # keyed lookup sent "}PN{ = ?" and MySQL raised a syntax error dialog.
+    def key(name, lq, rq):
+        return (f"'<' + DbLibQuoteIdent({_pas(name)}, DbLibColumnQuote({_pas(lq)}, "
+                f"{_pas(rq)}, True), DbLibColumnQuote({_pas(lq)}, {_pas(rq)}, False)) + '>'")
+    _check(tmp_path, [
+        (key("PN", "}", "{"), "<PN>"),
+        (key("Part Number", "}", "{"), "<>"),       # no safe form: scan instead
+        (key("Part Number", "[", "]"), "<[Part Number]>"),
+        (key("Part Number", "`", "`"), "<`Part Number`>"),
+        (key("Part Number", '"', '"'), '<"Part Number">'),
+        (key("PN", "", ""), "<PN>"),
+        (key("PN", "[", "["), "<PN>"),
+    ])
+
+
+def test_the_keyed_lookup_scans_when_the_key_cannot_be_quoted():
+    code = (SCRIPTS / "Library.pas").read_text(encoding="utf-8", errors="replace")
+    body = _routine(code, "Lib_GetDbLibRecord")
+    assert "DbLibQuoteIdent(KeyField, DbLibColumnQuote(" in body
+    assert "If QKey <> '' Then" in body
+    assert "KEY_FIELD_REFUSED" not in body
 
 
 def test_access_is_opened_read_only_and_nothing_else_is_touched(tmp_path):

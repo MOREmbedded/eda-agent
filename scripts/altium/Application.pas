@@ -1559,6 +1559,185 @@ Begin
     Result := Response;
 End;
 
+{ application.save_document_copy: Altium saves the document at file_path    }
+{ under copy_path, as File > Save Copy As. An open document is saved as it  }
+{ is in Altium, unsaved edits included, and keeps its own path and modified }
+{ state; one that is not open is opened unfocused, saved and closed again. }
+{ A copy_path open in Altium is refused. written is read from the copy's    }
+{ file time, not assumed.                                                   }
+Function App_SaveDocumentCopy(Params : String; RequestId : String) : String;
+Var
+    Path, CopyPath, Kind : String;
+    Doc, Held : IServerDocument;
+    WasOpen, WasModified, Written : Boolean;
+    AgeBefore : Integer;
+Begin
+    Path := ExtractJsonValue(Params, 'file_path');
+    CopyPath := ExtractJsonValue(Params, 'copy_path');
+    Kind := ExtractJsonValue(Params, 'kind');
+    If (Path = '') Or (CopyPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path and copy_path are required');
+        Exit;
+    End;
+    If UpperCase(Path) = UpperCase(CopyPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAME_PATH', 'copy_path is the document itself');
+        Exit;
+    End;
+    Held := Nil;
+    Try Held := Client.GetDocumentByPath(CopyPath); Except Held := Nil; End;
+    If Held <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_OPEN',
+            CopyPath + ' is open in Altium. Close it first: writing under an '
+            + 'open document is how its edits get lost.');
+        Exit;
+    End;
+    If SaveHeldBack(CopyPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+            'Saving is switched off on the bridge dashboard');
+        Exit;
+    End;
+    Doc := Nil;
+    Try Doc := Client.GetDocumentByPath(Path); Except Doc := Nil; End;
+    WasOpen := Doc <> Nil;
+    If Not WasOpen Then
+    Begin
+        If Not FileExists(Path) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'FILE_NOT_FOUND', 'No file at ' + Path);
+            Exit;
+        End;
+        Try Doc := Client.OpenDocument(Kind, Path); Except Doc := Nil; End;
+        If Doc = Nil Then
+        Begin
+            { The kind read from the file, as File > Open does. }
+            ResetParameters;
+            AddStringParameter('ObjectKind', 'Document');
+            AddStringParameter('FileName', Path);
+            RunProcess('WorkspaceManager:OpenObject');
+            Try Doc := Client.GetDocumentByPath(Path); Except Doc := Nil; End;
+        End;
+    End;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPENED',
+            'Altium could not open ' + Path + ' to save a copy of it');
+        Exit;
+    End;
+    AgeBefore := -1;
+    If FileExists(CopyPath) Then
+    Begin
+        Try AgeBefore := FileAge(CopyPath); Except AgeBefore := -1; End;
+    End;
+    WasModified := False;
+    Try WasModified := Doc.Modified; Except End;
+    { The rename lasts for the one save, and is put back in Finally. }
+    Try
+        Doc.SetFileName(CopyPath);
+        Doc.SetModified(True);
+        Doc.DoFileSave('');
+    Finally
+        Try Doc.SetFileName(Path); Except NoteWriteFailed('point the document back at its own file'); End;
+        Try Doc.SetModified(WasModified); Except NoteWriteFailed('put the document''s modified flag back'); End;
+        If Not WasOpen Then
+        Begin
+            Try Client.CloseDocument(Doc); Except End;
+        End;
+    End;
+    Written := False;
+    If FileExists(CopyPath) Then
+    Begin
+        Try Written := FileAge(CopyPath) <> AgeBefore; Except Written := False; End;
+    End;
+    Result := BuildSuccessResponse(RequestId, '{"file_path":"' + EscapeJsonString(Path) + '"'
+        + ',"copy_path":"' + EscapeJsonString(CopyPath) + '"'
+        + ',"was_open":' + BoolToJsonStr(WasOpen)
+        + ',"written":' + BoolToJsonStr(Written) + '}');
+End;
+
+{ The key of the first owner record held by TAG, '' when it holds none. }
+Function OwnerKeyHeldBy(Tag : String) : String;
+Var
+    Rest, Key, Rec : String;
+    P, Q : Integer;
+Begin
+    Result := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Exit;
+        Key := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Key);
+        If (Rec <> '') And (OwnerField(Rec, 0) = Tag) Then
+        Begin
+            Result := Key;
+            Exit;
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+End;
+
+{ The calling session gives up a document it holds, so another session can }
+{ write to it at once instead of after OWNER_IDLE_MS. Without               }
+{ file_path every document it holds. A document another session holds is  }
+{ refused, naming the holder: taking it is app_claim_document, on the      }
+{ user's word.                                                             }
+Function App_ReleaseDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Tag, Owner, Items : String;
+    N : Integer;
+Begin
+    Tag := RequestTag(RequestId);
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Items := '';
+        N := 0;
+        Key := OwnerKeyHeldBy(Tag);
+        While (Key <> '') And (N < 10000) Do
+        Begin
+            OwnerDrop(Key);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '"' + EscapeJsonString(Key) + '"';
+            N := N + 1;
+            Key := OwnerKeyHeldBy(Tag);
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonRaw('released', '[' + Items + ']') + ','
+            + JsonStr('session', Tag)));
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    If Rec = '' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonRaw('released', '[]') + ','
+            + JsonStr('session', Tag) + ','
+            + JsonStr('note', Path + ' was held by no session.')));
+        Exit;
+    End;
+    Owner := OwnerField(Rec, 0);
+    If Owner <> Tag Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_YOURS',
+            Path + ' is held by another Claude session (' + Owner
+            + '), not this one, so it was left alone. Taking it over is '
+            + 'app_claim_document, when the user says so.');
+        Exit;
+    End;
+    OwnerDrop(Key);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('released', '["' + EscapeJsonString(Key) + '"]') + ','
+        + JsonStr('session', Tag)));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1572,6 +1751,8 @@ Begin
         'open_document':       Result := App_OpenDocument(Params, RequestId);
         'reload_document':     Result := App_ReloadDocument(Params, RequestId);
         'run_process':         Result := App_RunProcess(Params, RequestId);
+        'save_document_copy':  Result := App_SaveDocumentCopy(Params, RequestId);
+        'run_process':        Result := App_RunProcess(Params, RequestId);
         'get_preferences':     Result := App_GetPreferences(RequestId);
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);
         'get_clipboard_text':  Result := App_GetClipboardText(RequestId);
@@ -1584,6 +1765,7 @@ Begin
         'format_value':        Result := App_FormatValue(Params, RequestId);
         'document_owners':     Result := App_DocumentOwners(RequestId);
         'claim_document':      Result := App_ClaimDocument(Params, RequestId);
+        'release_document':    Result := App_ReleaseDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

@@ -21,7 +21,7 @@ def _assert_textcolor_access(code):
     assert set(re.findall(r"Obj\.ObjectId = (e\w+)", capability)) == {
         "ePort", "eSheetEntry", "eHarnessEntry", "eTextFrame", "eNote"}
     # A typed local must be declared and assigned AFTER the capability check.
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         body = _routine(code, routine)
         branch = body.split("Else If PropName = 'TextColor' Then", 1)[1]
         branch = re.split(r"\bElse If PropName\b", branch, maxsplit=1)[0]
@@ -33,7 +33,7 @@ def _assert_textcolor_access(code):
                                  ("FrameObj", "ISch_TextFrame")):
             assert f"{local} : {interface}" in body
             assert guard < branch.index(f"{local} := Obj") < branch.index(f"{local}.TextColor")
-        if routine == "GetSchProperty":
+        if routine == "GetSchPropertyGated":
             assert "NotePropertyDiag('unreadable', PropName)" in branch
         else:
             assert "Matched := False" in branch
@@ -52,7 +52,7 @@ def test_textcolor_guard_detects_the_original_defect(mutation):
     elif mutation == "raw_read":
         code = code.replace("IntToStr(PortObj.TextColor)", "IntToStr(Obj.TextColor)", 1)
     else:
-        routine = "GetSchProperty" if mutation == "read_guard" else "SetSchProperty"
+        routine = "GetSchPropertyGated" if mutation == "read_guard" else "SetSchProperty"
         start = code.index(f"Function {routine}(")
         code = code[:start] + code[start:].replace(
             "If SchObjectHasTextColor(Obj) Then", "If True Then", 1)
@@ -102,7 +102,8 @@ def test_production_textcolor_filters_do_not_read_missing_members(tmp_path):
         pytest.skip("Free Pascal Compiler (fpc) is not installed or not on PATH")
     names = ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
              "SchObjectHasFontId", "SchObjectHasTextFontId", "SchExtraOwner",
-             "SchExtraFits", "UnsupportedSchProperty")
+             "SchExtraFits", "SchShapeOwner", "SchMemberGate",
+             "UnsupportedSchProperty")
     source = _source()
     guards = "\n".join(_routine(source, name) for name in names)
     types = sorted(set(re.findall(r"\be[A-Z]\w*", guards)) | {"ePowerObject", "eNetLabel"})
@@ -144,12 +145,13 @@ begin
   Obj.Free;
 end.
 """.replace("@@CONSTANTS@@", constants).replace("@@GUARDS@@", guards).replace(
-        "@@FILTER@@", _routine(source, "MatchesFilter"))
+        "@@FILTER@@", "\n".join(_routine(source, name) for name in (
+            "IsSchNumberProperty", "FilterValueMatchesSch", "MatchesFilter")))
     # The filter's operator helpers live in Utils.pas.
     utils = (GENERIC.parent / "Utils.pas").read_text(encoding="utf-8", errors="replace")
     helpers = "\n".join(_routine(utils, name) for name in (
         "FilterOpPos", "FilterOpText", "IsFloatStr", "StrToFloatDef", "FilterWildMatch",
-        "FilterOpHolds"))
+        "FilterNumbersEqual", "FilterOpHolds"))
     program = program.replace("@@HELPERS@@", helpers)
     path = tmp_path / "textcolor_filters.pas"
     path.write_text(program, encoding="utf-8")

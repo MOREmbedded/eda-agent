@@ -22,26 +22,29 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
+from ... import job_control
 from .. import geom
 from ..drc import pad_barrels
 from ..model import LayoutBoard, Pad, Region, Track, Via
 from ..rules import RuleSet
 from .grid import (EDGE, KEEPOUT, NETLESS, RouteGrid, _seg_dist, fill_polygon, inner_depth,
                    shape_distance)
-from .params import RouteRules, ViaStyle
+from .params import PAD_OWNER, RouteRules, ViaStyle
 from . import pour as pour_mod
 from .fanout import FanoutPlan, find_bgas, find_exposed_pads, plan_fanout
 from .pour import find_pours
 from .global_route import GlobalRouter, prim_pairs
-from .search import MOVES, Window, build_graph, shortest_path
+from .search import ARRIVE, FRESH, MOVES, Turns, Window, find_path
 
 EPS = 1e-3
+#: How many times dearer a loop net's step is outside its loop's hull.
+LOOP_STEER = 4.0
 
 
 def _unique_cells(parts, nx: int) -> np.ndarray:
@@ -182,14 +185,14 @@ class RouteReport:
 
 class Router:
     def __init__(self, board: LayoutBoard, rules: RuleSet | None = None,
-                 pitch: float | None = None, max_iterations: int = 25,
-                 via_cost: float = 30.0, greed: float = 1.0,
+                 pitch: float | None = None, max_iterations: int = 40,
+                 via_cost: float | None = None, greed: float = 1.0,
                  planes: bool = True, released: frozenset = frozenset(),
                  global_routing: bool = True, nets: frozenset | None = None,
                  pres_growth: float = 1.8, history_step: float = 0.4,
                  repair_rounds: int = 2, fanout: bool = True, pours: bool = True,
                  stages=None, log: Callable[[str], None] | None = None,
-                 poured: list | None = None):
+                 poured: list | None = None, brief=None):
         from .stages import StageOptions, StageReport
 
         self.board = board
@@ -205,8 +208,12 @@ class Router:
         self.only = frozenset(nets) if nets else None
         self.rules = rules or RuleSet.from_board(board)
         self.log = log or (lambda s: None)
+        # Rounds of negotiation at most. 40: on the 160-board benchmark 22
+        # connections more than 25 and two boards more fully routed, for 30%
+        # more routing time; 50 added one connection more.
         self.max_iterations = max_iterations
-        self.via_base = via_cost
+        # What a via costs, mils of track (StageOptions.via_cost unless given).
+        self.via_base = self.options.via_cost if via_cost is None else via_cost
         # PathFinder: how fast sharing gets dearer each round, and how much
         # a fought-over cell keeps costing afterwards.
         self.pres_growth = pres_growth
@@ -218,16 +225,43 @@ class Router:
         self.greed = greed
         nets = board.nets()
         net_id = {n: i + 1 for i, n in enumerate(nets)}
+        # Netless pads a clearance rule names: each an owner of its own.
+        named = self.rules.named_pads("clearance")
+        self.pad_owner: dict[int, int] = {}
+        self.pad_owner_net: dict[int, str] = {}
+        for p in board.pads:
+            key = f"{p.comp}-{p.name}"
+            if not p.net and p.comp and key.lower() in named:
+                owned = PAD_OWNER + key
+                net_id.setdefault(owned, len(net_id) + 1)
+                self.pad_owner[id(p)] = net_id[owned]
+                self.pad_owner_net[id(p)] = owned
         self.rr = RouteRules(board, self.rules, net_id)
+        # The AI's routing brief (brief.py): obeyed, never bent.
+        from .brief import Brief
+        self.brief = brief if brief is not None else Brief()
+        self.rr.width_set = {n: e.width for n, e in self.brief.of.items() if e.width is not None}
+        self.rr.spacing = self.brief.spacing_pairs(board)
+        self.rr.barriers = self.brief.barrier_sides(board)
+        self.brief_masks: dict = {}
+        self.brief_walls: list = []
         pads_of = board.pads_by_net()
         widths = [self.rr.width(n, pads_of.get(n, [])) for n in nets] or [6.0]
+        # The nets neck_pads keeps at their rule's width (_supplies).
+        self.neck_nets = self._supplies(nets) if self.options.neck_pads else frozenset()
+        if self.options.neck_pads and not any(
+                self.rr.width(n, pads_of.get(n, []), cap=False) > w + 1e-9
+                for n, w in zip(nets, widths) if n in self.neck_nets):
+            # No supply here is wider than its narrowest pad: nothing to neck.
+            self.options = replace(self.options, neck_pads=False)
         self.w_def = float(np.median(widths))
         self.c = self.rr.default_clearance
         self.pitch = pitch or self._pitch_for(min(widths), self.c)
         if self.options.neck_pads:
             # The grid is cut for the narrow widths a net may fall back to;
             # the fields and their reach are kept for the full ones.
-            widths = [self.rr.width(n, pads_of.get(n, []), cap=False) for n in nets] or [6.0]
+            widths = [self.rr.width(n, pads_of.get(n, []), cap=n not in self.neck_nets)
+                      for n in nets] or [6.0]
         vmax = max((v.diameter for n in nets for v in self.rr.vias(n)), default=20.0)
         self._clearance_groups(nets, net_id)
         # The distance fields reach as far as the largest clearance any
@@ -237,6 +271,9 @@ class Router:
                  + max(widths) / 2 + vmax / 2 + 2 * self.pitch)
         # Inner layers a pour covers become planes, and are not routed on.
         self.released = frozenset(released)
+        # A plane route_adaptive would have given to routing and was not
+        # allowed to (route_adaptive's release).
+        self.declined: dict | None = None
         self.pour_planes = [p for p in self._pour_planes() if p.layer not in self.released] \
             if planes else []
         on_planes = {p.layer for p in self.pour_planes}
@@ -250,7 +287,17 @@ class Router:
                              f"these carry some: {sorted(excluded & padded)}")
         routing = [l for l in board.signal_layers() if l not in on_planes and l not in excluded]
         self.grid = RouteGrid(board, self.pitch, reach, layers=routing, grow=self.object_grow,
-                              field_of=self.field_of, n_fields=self.n_fields).build()
+                              field_of=self.field_of, n_fields=self.n_fields,
+                              pad_owner=(self.pad_owner, self.pad_owner_net)).build()
+        if self.brief:
+            from .brief import area_walls, masks
+            self.brief_masks = masks(self, self.brief)
+            self.brief_walls = area_walls(self, self.brief)
+        # The brief's loops: a loop net's copper outside the hull of its
+        # loop's pads costs more, so the router keeps the loop in. Steered,
+        # not walled: the review measures the area the AI allows.
+        from .brief import loop_hulls
+        self.loop_hulls = loop_hulls(self, self.brief) if self.brief.loops else {}
         self._fixed: dict | None = None       # fixed shapes per layer, for exact checks
         self._routed: dict | None = None      # routed copper per layer, likewise
         # Net id -> the necked stubs' segments and their widths (neck_pads).
@@ -272,6 +319,14 @@ class Router:
         # other net, as walls (_negotiate_locally).
         self._walls: tuple | None = None
         self.move_factor = self._move_factors()
+        # Turn costs in cells of this grid (the search scales them by the
+        # pitch); acute turns and turning straight back are never taken.
+        if self.options.turn_cost:
+            from .stages import TURN_45, TURN_90
+            self.turns = Turns((0.0, TURN_45 / self.pitch, TURN_90 / self.pitch,
+                                math.inf, math.inf), no_squeeze=True)
+        else:
+            self.turns = None
         # Nets a plane or a pour joins: the rails, routed after the high
         # current nets and before the rest when the order is by class.
         self._rails = set(self._plane_masks()) | {r.net for r in board.regions
@@ -284,6 +339,13 @@ class Router:
         if self.options.pad_vias == "none":
             # No via in any pad, a BGA's ball and an exposed pad included.
             self.via_pads = set()
+        # The brief's assembly rule: where no via may stand (near a surface
+        # pad, under a part's body), and those places on the grid per via
+        # radius, worked out once.
+        from .assembly import via_bars
+        self.assembly_bars = via_bars(board, getattr(self.brief, "assembly", None),
+                                      self.via_pads)
+        self._assembly_cells: dict[float, np.ndarray] = {}
         # Surface pads the board's own copper already takes to a via or a
         # plated hole of their net, and where: the plane fan-out and the
         # pour joining count those pads as on every layer already.
@@ -487,6 +549,12 @@ class Router:
                 terms.append(t)
             job.terminals = terms
             job._deep = None
+            # The room at each pad's centre was judged before this copper
+            # was laid: a ball's via went in 3.7 mil from a fanout via
+            # beside it, where 4 was required.
+            if not self.options.legacy():
+                job.pad_via, job.pv_arr = {}, None
+                self._pad_vias(job)
             # A pad given its via needs no second one at its centre.
             for t in terms:
                 if t.pad in self.laid_via:
@@ -542,8 +610,9 @@ class Router:
                     f[l, k] = 1.0 + strength
         return f
 
-    #: Share of the board a pour must cover for its layer to be a plane.
-    PLANE_COVER = 0.8
+    #: Share of the board a pour must cover for its inner layer to be a
+    #: plane, kept out of signal routing.
+    PLANE_COVER = 0.5
 
     def _pour_planes(self) -> list[PourPlane]:
         """Inner layers whose largest pour covers most of the board.
@@ -633,7 +702,7 @@ class Router:
                 continue
             plane = planes.get(net)
             nid = self.grid.net_id[net]
-            width = self.rr.width(net, pads, cap=not self.options.neck_pads)
+            width = self.rr.width(net, pads, cap=net not in self.neck_nets)
             vias = self.rr.vias(net)
             terms = [self._terminal(index[id(p)], p, nid, width) for p in pads]
             if any(t.neck is not None and not len(t.cells) for t in terms):
@@ -670,6 +739,22 @@ class Router:
         ci, cj = self.grid.spec.cell(pad.x, pad.y)
         return 0 <= ci < self.nx and 0 <= cj < self.ny and bool(plane[cj, ci])
 
+    def _supplies(self, nets) -> frozenset:
+        """The nets neck_pads routes at their rule's width: those whose
+        width rule asks more than 1.25 times the board's usual, and those
+        the brief sets a width for. Every other net is routed at what its
+        narrowest pad takes. On the 160-board benchmark necking every net
+        made 141 connections fewer and 8 boards fewer fully routed; these
+        alone, 3 fewer. A rail is not among them: its pour carries the
+        current, and necking the rails as well cost 50 connections."""
+        rule = {}
+        for n in nets:
+            w = self.rr.rules.width(self.rr.facts(n, "track"))
+            rule[n] = w.get("preferred") or w.get("min") or 6.0
+        usual = float(np.median(list(rule.values()))) if rule else 6.0
+        return frozenset(n for n in nets if rule[n] > 1.25 * usual + EPS
+                         or n in self.rr.width_set)
+
     def _rank(self, job: NetJob) -> int:
         """0 for a high-current net (a rule asks it wider than most), 1 for
         a rail (a plane or pour joins it), 2 for the rest."""
@@ -686,6 +771,22 @@ class Router:
     #: How far a via of a net keeps from that net's own pads that may not
     #: take one, edge to edge.
     VIA_PAD_MARGIN = 0.5
+
+    def assembly_cells(self, radius: float) -> np.ndarray:
+        """(k, 2) cells a via of ``radius`` may not stand on, by the brief's
+        assembly rule."""
+        key = round(radius, 4)
+        if key not in self._assembly_cells:
+            from .assembly import bar_cells
+            self._assembly_cells[key] = bar_cells(self.assembly_bars, self.grid.spec, radius)
+        return self._assembly_cells[key]
+
+    def via_barred(self, x: float, y: float, diameter: float) -> bool:
+        """Whether the brief's assembly rule keeps a via from (x, y)."""
+        if not self.assembly_bars:
+            return False
+        from .assembly import barred
+        return barred(self.assembly_bars, x, y, diameter) is not None
 
     def _no_via_cells(self, job: NetJob, pads: list[int]) -> list | None:
         """Per via style, the cells where a via of that style would overlap
@@ -715,6 +816,11 @@ class Router:
                 webs = self._mask_webs(v, job.name)
                 if len(webs):
                     out[k].append(webs)
+        if self.assembly_bars:
+            for k, v in enumerate(job.vias):
+                cells = self.assembly_cells(v.diameter / 2)
+                if len(cells):
+                    out[k].append(cells)
         for i in ([] if mode == "any" else pads):
             pad = self.board.pads[i]
             if not pad.is_smd or i in self.via_pads:
@@ -1152,8 +1258,9 @@ class Router:
 
     def _pad_vias(self, job: NetJob) -> None:
         """Where each surface pad of the net would take a via: its centre,
-        and the room there, judged from the nearest cell less the distance
-        to it (distance to copper changes no faster than position)."""
+        and the room there: exactly, from the shapes, and with
+        ``exact_pad_via`` off no more than the nearest cell's room less the
+        distance to it."""
         row = self.rr.clearance_row(job.id)
         spec = self.grid.spec
         rows = []
@@ -1172,8 +1279,12 @@ class Router:
             off = math.hypot(float(spec.x(ci)) - pad.x, float(spec.y(cj)) - pad.y)
             at = (slice(cj, cj + 1), slice(ci, ci + 1))
             room = min(float(self._slack(job.id, l, at, row)[0, 0]) for l in range(self.L)) - off
-            if self.options.exact_pad_via:
-                room = max(room, self._room_at(job.id, pad.x, pad.y, max(v.diameter for v in job.vias) / 2))
+            exact = self._room_at(job.id, pad.x, pad.y, max(v.diameter for v in job.vias) / 2)
+            # The grid's room is sampled at cell centres and can overstate
+            # it: in a 0.5 mm ball beside a fanout via it gave 8.95 mil
+            # where 7.69 was there, and a 16 mil via went in 3.7 mil from
+            # the other where 4 was required. The exact room caps it.
+            room = exact if self.options.exact_pad_via else min(room, exact)
             # Only the cell nearest the centre: from any other cell of a
             # big pad, the via would move away from the track that meets
             # it on the next layer.
@@ -1635,7 +1746,55 @@ class Router:
             c = t.inside[win.contains(t.inside[:, 1], t.inside[:, 2])]
             if len(c):
                 cell[c[:, 0], win.rank[c[:, 1] - win.j0, c[:, 2] - win.i0]] = np.inf
+        ruled = self.brief_masks.get(job.name)
+        walls = [w for w in self.brief_walls if job.name not in w[2]]
+        own = None
+        if (ruled is not None and ruled[1] is not None) or walls:
+            # The net's own pad cells stay open wherever an area is drawn.
+            own = np.zeros(win.M, dtype=bool)
+            for t in job.terminals:
+                c = t.cells[win.contains(t.cells[:, 1], t.cells[:, 2])]
+                own[win.rank[c[:, 1] - win.j0, c[:, 2] - win.i0]] = True
+        if ruled is not None:
+            # The brief's layers and area are walls.
+            ok, area = ruled
+            cell[~ok] = np.inf
+            if area is not None:
+                outside = ~area[win.j0 + win.cy, win.i0 + win.cx]
+                cell[:, outside & ~own] = np.inf
+                via[outside] = np.inf
+        for on, cells, _allow in walls:
+            # The brief's areas (an antenna's keep-out...) bar every net
+            # but those they allow.
+            inside = cells[win.j0 + win.cy, win.i0 + win.cx]
+            cell[np.ix_(on, inside & ~own)] = np.inf
+            via[inside] = np.inf
+        if job.name in self.brief.of and self.brief.of[job.name].max_vias == 0:
+            via[:] = np.inf
+        hull = self.loop_hulls.get(job.name)
+        if hull is not None:
+            outside = ~hull[win.j0 + win.cy, win.i0 + win.cx]
+            cell[:, outside] *= LOOP_STEER
+            via[outside] *= LOOP_STEER
         return cell, via
+
+    def _enters_walls(self, job: NetJob, l: int, pts) -> bool:
+        """Whether a line on routing layer ``l`` crosses a cell of an area
+        of the brief that bars the net there, its own pad cells apart."""
+        walls = [w for w in self.brief_walls if w[0][l] and job.name not in w[2]]
+        if not walls:
+            return False
+        spec = self.grid.spec
+        own = {(int(c[2]), int(c[1])) for t in job.terminals for c in t.cells}
+        for a, b in zip(pts, pts[1:]):
+            n = max(1, int(math.hypot(b[0] - a[0], b[1] - a[1]) / (spec.pitch / 2)))
+            for k in range(n + 1):
+                i, j = spec.cell(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                if not (0 <= i < spec.nx and 0 <= j < spec.ny) or (i, j) in own:
+                    continue
+                if any(w[1][j, i] for w in walls):
+                    return True
+        return False
 
     def _bow(self, job: NetJob) -> float:
         """How much closer to a convex corner a step between two cells can
@@ -1691,7 +1850,7 @@ class Router:
         # track or as a pour, share distance fields (see RouteGrid).
         cols: dict[tuple, int] = {}
         self._field: dict[int, int] = {}
-        for o in [NETLESS] + [net_id[n] for n in nets]:
+        for o in [NETLESS] + [net_id[n] for n in nets] + sorted(set(self.pad_owner.values())):
             key = tuple(round(rr.pair_clearance(r, o, poly), 4) for r in reps for poly in (False, True))
             self._field[o] = cols.setdefault(key, len(cols))
         self.n_fields = max(1, len(cols))
@@ -1805,7 +1964,12 @@ class Router:
         return fields[np.maximum(style, 0)]
 
     def _style_at(self, job: NetJob, y: int, x: int) -> int:
-        k = int(self._via_styles(job, (slice(y, y + 1), slice(x, x + 1)))[0, 0])
+        """The first via style that fits at cell (y, x); at a pad's
+        centre, in the room judged there (_pad_vias)."""
+        if (y, x) in job.pad_via:
+            k = int(self._styles_from(job, np.array([job.pad_via[(y, x)][2]]))[0])
+        else:
+            k = int(self._via_styles(job, (slice(y, y + 1), slice(x, x + 1)))[0, 0])
         return max(k, 0)
 
     # -- routing one net -----------------------------------------------------
@@ -1839,7 +2003,11 @@ class Router:
         # The global route's corridor first, when there is one; then a
         # band round the straight line, widening to the whole board only
         # when nothing narrower holds a route.
-        regions = [("corridor", corridor)] if corridor is not None and corridor.any() else []
+        # A loop net of the brief skips the corridor: the global route
+        # does not see its loop's hull, and its corridor once held only the
+        # way round outside it.
+        regions = [("corridor", corridor)] if corridor is not None and corridor.any() \
+            and job.name not in self.loop_hulls else []
         regions += [("band", h) for h in (max(30.0, 0.15 * span), max(90.0, 0.5 * span),
                                            max(250.0, 1.5 * span), None)]
         for kind, arg in regions:
@@ -1872,18 +2040,16 @@ class Router:
             if not len(sources):
                 continue
             targets = np.asarray(targets, dtype=np.int64)
+            heading = arrive = None
+            if self.turns is not None:
+                heading, arrive = self._stub_ends(job, win, sources, targets)
             h = self._potential(win, targets)
-            graph = build_graph(win, cell, via, self.move_factor, self.pitch, h)
-            # scipy's Dijkstra never stops at a target: it settles every
-            # node under its limit. On reduced costs the limit is the
-            # detour allowed beyond a straight line, so the search widens
-            # in steps and a direct route costs a narrow band. Each step
-            # is exact for any route whose detour fits it.
-            path = None
-            for a, b in self.DETOURS:
-                path = shortest_path(graph, sources, targets, a * span + b)
-                if path is not None:
-                    break
+            # On reduced costs a limit is the detour allowed beyond a
+            # straight line: scipy, which settles every node under its
+            # limit, widens in steps, so a direct route costs a narrow band.
+            path = find_path(win, cell, via, self.move_factor, self.pitch, h,
+                             sources, targets, tuple(a * span + b for a, b in self.DETOURS),
+                             self.turns, heading, arrive)
             if path is not None:
                 decoded = [win.decode(n) for n in path]
                 chosen = {}
@@ -1893,6 +2059,48 @@ class Router:
                 self._chosen_styles = chosen
                 return decoded
         return None
+
+    def _stub_heading(self, job: NetJob) -> dict:
+        """The net's stub cells (a pad's axis entry or escape) -> the move
+        pointing out of the pad along the stub."""
+        cached = getattr(job, "_stub_heads", None)
+        if cached is not None:
+            return cached
+        out = {}
+        for t in job.terminals:
+            for cell, pts in (t.stubs or {}).items():
+                if len(pts) < 2:
+                    continue
+                ux, uy = pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]
+                if abs(ux) + abs(uy) < EPS:
+                    continue
+                out[tuple(cell)] = max(range(8), key=lambda k: (
+                    (MOVES[k][0] * ux + MOVES[k][1] * uy) / MOVES[k][2]))
+        job._stub_heads = out
+        return out
+
+    def _stub_ends(self, job: NetJob, win: Window, sources, targets):
+        """Per source node, the move a route leaving it is already heading
+        along (out along its stub, FRESH elsewhere); per target node, the
+        moves that may reach it (heading in along its stub, or 45 degrees
+        off it; any elsewhere). A route then meets a pad's stub turning 45
+        degrees at most, never 90."""
+        heads = self._stub_heading(job)
+        if not heads:
+            return None, None
+
+        def cells(nodes):
+            nodes = np.asarray(nodes, dtype=np.int64)
+            layer = nodes < win.n_layer
+            r = np.where(layer, nodes % max(win.M, 1), 0)
+            return zip(np.where(layer, nodes // max(win.M, 1), -1).tolist(),
+                       (win.j0 + win.cy[r]).tolist(), (win.i0 + win.cx[r]).tolist())
+
+        heading = np.array([heads.get(c, FRESH) if c[0] >= 0 else FRESH
+                            for c in cells(sources)], dtype=np.int64)
+        arrive = np.array([ARRIVE[heads[c]] if c[0] >= 0 and c in heads else 255
+                           for c in cells(targets)], dtype=np.int64)
+        return heading, arrive
 
     #: Detour limits, in mils of cost beyond the straight line: a
     #: modest one, then none. The region is already a band round the
@@ -1939,6 +2147,7 @@ class Router:
                 job.via_at[(y, x)] = chosen.get((y, x), self._style_at(job, y, x))
 
     def route_net(self, job: NetJob, pres: float, hard: bool = False) -> None:
+        job_control.checkpoint()
         if job.groups is not None:
             pour_mod.stitch(self, job, pres, hard)
             return
@@ -2420,8 +2629,12 @@ class Router:
             # most of an hour on a dense six-layer public board.
             rep.unsettled = True
         else:
-            if self.repair_rounds:
+            if self.repair_rounds and self.options.negotiate:
+                # Repair rips up what blocks a connection: only when the
+                # routing negotiates. Necking a failing net down to its
+                # rule's minimum moves no other net's copper.
                 self._repair(self.repair_rounds)
+            if self.repair_rounds:
                 self._neck_down()
             if self.pours:
                 self._pour_stage()
@@ -2435,10 +2648,29 @@ class Router:
                    stall_abort: bool = False, settle: bool = True) -> None:
         """Route ``todo``, then reroute whatever is in conflict at a rising
         price, until nothing is or the rounds run out; then settle (unless
-        ``settle`` is false and the negotiation stalled)."""
+        ``settle`` is false and the negotiation stalled).
+
+        Unless the stages ask to negotiate, every net is routed once in
+        order against all routed before it as walls, and what is laid
+        stays: a connection with no room is left unmade."""
+        if not self.options.negotiate:
+            self._commit_in_order(todo)
+            rep.conflicts.append(0)
+            rep.iterations = 1
+            self.log(f"{len(todo)} nets routed in order, "
+                     f"{sum(j.failed for j in todo)} connections unmade, "
+                     f"{time.perf_counter() - t0:.1f}s")
+            return
         pres = 0.5
         mine: list[int] = []
         for it in range(self.max_iterations):
+            # Past the job's time limit the negotiation stops where it is
+            # and settles: what it has made is kept, the rest reported.
+            if it and job_control.over_time():
+                rep.stalled = True
+                self.log(f"stopped at the time limit after {it} rounds")
+                self._settle()
+                break
             for job in todo:
                 self.route_net(job, pres)
             conflicted = []
@@ -2486,6 +2718,76 @@ class Router:
         else:
             self._settle()
 
+    def _commit_in_order(self, todo: list) -> None:
+        """Route ``todo`` one connection at a time, all nets together,
+        shortest first, each against everything routed before it as a
+        wall, and keep what is laid.
+
+        A net's connections are the edges of the spanning tree over its
+        pads (prim_pairs); they are ordered by their straight length across
+        every net. A connection runs from its pad to the copper its other
+        pad is joined to so far. A net a plane joins goes first, pad by
+        pad to its plane; a net a pour joins goes last, its connections
+        after every other net's, since the pour joins it round the routes
+        laid before it."""
+        rest = []
+        for job in todo:
+            if job.plane_mask is not None or job.groups is not None:
+                self.route_net(job, 1.0, hard=True)
+            else:
+                rest.append(job)
+        conns = []
+        state = {}
+        for job in rest:
+            self._unstamp(job)
+            job.paths, job.via_at, job.failed = [], {}, 0
+            terms = job.terminals
+            cx = np.array([t.center[0] for t in terms])
+            cy = np.array([t.center[1] for t in terms])
+            cells = {i: {tuple(c) for c in t.cells.tolist()} for i, t in enumerate(terms)}
+            state[id(job)] = (list(range(len(terms))), cells, {i: set() for i in cells})
+            for i, (k, q) in enumerate(prim_pairs(cx, cy)):
+                length = math.hypot(cx[k] - cx[q], cy[k] - cy[q])
+                conns.append((job.name in self.pour_nets, length, job.id, i, job, int(k), int(q)))
+        conns.sort(key=lambda c: c[:4])
+        for _poured, _length, _nid, i, job, k, q in conns:
+            job_control.checkpoint()
+            parent, cells, hubs = state[id(job)]
+
+            def root(a):
+                while parent[a] != a:
+                    parent[a] = parent[parent[a]]
+                    a = parent[a]
+                return a
+
+            rk, rq = root(k), root(q)
+            if rk == rq:
+                continue
+            terms = job.terminals
+            corridor = self.gr.corridor(job, i) if self.gr is not None and job.corridors else None
+            path = self._connect(job, terms[k].cells, cells[rq], hubs[rq],
+                                 [terms[k].center, terms[q].center], 1.0, hard=True,
+                                 corridor=corridor)
+            if path is None:
+                job.failed += 1
+                continue
+            self._unstamp(job)
+            self._add_path(job, path)
+            self._stamp(job)
+            parent[rk] = rq
+            cells[rq] |= cells.pop(rk)
+            hubs[rq] |= hubs.pop(rk)
+            for l, y, x in path:
+                if l < 0:
+                    hubs[rq].add((y, x))
+                else:
+                    cells[rq].add((l, y, x))
+        # Every route laid here met the ones before it as walls; routes
+        # carried over from another attempt (warm_from) are checked only
+        # against the fixed copper. What conflicts is taken up and routed
+        # once more against the rest, or left unmade.
+        self._settle()
+
     def _plateau(self, conflicts: list[int]) -> bool:
         """The last STALL_WINDOW rounds did no better than STALL_PROGRESS
         of the best round before them."""
@@ -2510,7 +2812,7 @@ class Router:
         before = {id(j): (j.failed, list(j.paths), dict(j.via_at)) for j in jobs}
         pour_mod.pour(self)
         taken = sum(pour_mod.prune(self, j) for j in jobs)
-        if taken and self.repair_rounds and any(
+        if taken and self.repair_rounds and self.options.negotiate and any(
                 j.failed for j in self.jobs if j.name not in self.pour_nets):
             self._repair(self.repair_rounds)
         pour_mod.pour(self)
@@ -2792,14 +3094,24 @@ class Router:
                 continue
             meets = self._junction_cells(job)
             tracks = []
+            ruled = self.brief_masks.get(job.name)
+            fenced = ruled is not None and ruled[1] is not None
             for l, pre, cells, post, k, first in lines:
+                if fenced:
+                    # The brief's area: a straighter run could cross its edge.
+                    tracks += [Track(layers[l], a[0], a[1], b[0], b[1],
+                                     self._width_of(job, a, b), job.name)
+                               for a, b in zip(first, first[1:])]
+                    continue
                 pts = self._straighten(job, l, cells, meets.get(l, {}), pre, post, k)
                 pts = [p for i, p in enumerate(pts)
                        if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > EPS]
+                pts = self._square_jogs(job, l, pts, self._entry_turns(pre, post))
                 if len(pts) >= 2 and self.options.bends:
                     pts = self._legalise(job, l, pts, list((junctions or {}).get(l, ()))
                                          + self._entry_turns(pre, post))
-                if len(pts) < 2 or not self._line_holds(job, l, pts, first):
+                if (len(pts) < 2 or not self._line_holds(job, l, pts, first)
+                        or self._enters_walls(job, l, pts)):
                     pts = first
                 for a, b in zip(pts, pts[1:]):
                     tracks.append(Track(layers[l], a[0], a[1], b[0], b[1],
@@ -2904,6 +3216,7 @@ class Router:
             if len(pts) >= 2:
                 lines.append((l, pts, pre, cells, post))
         for l, pts, pre, cells, post in lines:
+            pts = self._square_jogs(job, l, pts, self._entry_turns(pre, post))
             if self.options.bends:
                 pts = self._legalise(job, l, pts, list((junctions or {}).get(l, ()))
                                      + self._entry_turns(pre, post))
@@ -3014,6 +3327,164 @@ class Router:
             pts[i:i + 1] = cut
             i += len(cut)
         return pts
+
+    #: A segment more than this many degrees off a multiple of 45 is a jog.
+    JOG_TOL = 0.5
+
+    @classmethod
+    def _off_angle(cls, a, b) -> bool:
+        r = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 45.0
+        return min(r, 45.0 - r) > cls.JOG_TOL
+
+    def _square_jogs(self, job: NetJob, li: int, pts, ends=()) -> list:
+        """The polyline with each off-angle jog beside a pad stub's end
+        (``ends``) laid again as the stub carried on along its axis and one
+        straight or 45 degree piece to the next corner, where both clear
+        every other net's copper and neither turn passes 45 degrees.
+
+        The stub runs on the pad's own axis and the grid route a fraction
+        of a cell beside it, so the join between them came out as a short
+        piece at 18 or 64 degrees: legal copper, and no 45 degree layout."""
+        ends = [tuple(e) for e in ends]
+        if not ends or len(pts) < 3:
+            return list(pts)
+        pts = [tuple(p) for p in pts]
+
+        def is_end(p):
+            return any(math.hypot(p[0] - e[0], p[1] - e[1]) <= EPS for e in ends)
+
+        i = 0
+        while i < len(pts) - 1:
+            if not self._off_angle(pts[i], pts[i + 1]):
+                i += 1
+                continue
+            # F the stub's end, R the free corner, P the corner past it.
+            for f, r, p, back, beyond in ((i, i + 1, i + 2, i - 1, i + 3),
+                                          (i + 1, i, i - 1, i + 2, i - 2)):
+                if not (0 <= back < len(pts) and 0 <= p < len(pts)) or not is_end(pts[f]):
+                    continue
+                F = pts[f]
+                lu = math.hypot(F[0] - pts[back][0], F[1] - pts[back][1])
+                if lu <= EPS:
+                    continue
+                u = ((F[0] - pts[back][0]) / lu, (F[1] - pts[back][1]) / lu)
+                if self._off_angle((0.0, 0.0), u):
+                    continue
+                if self._jog_on_axis(job, li, pts, f, r, p, beyond, u):
+                    break
+                if self._jog_slid_corner(job, li, pts, f, r, p, beyond):
+                    break
+            i += 1
+        return [p for k, p in enumerate(pts)
+                if k == 0 or math.hypot(p[0] - pts[k - 1][0], p[1] - pts[k - 1][1]) > EPS]
+
+    def _jog_on_axis(self, job, li, pts, f, r, p, beyond, u) -> bool:
+        """Lay the jog as the stub carried on along its axis to X, then one
+        piece at a multiple of 45 degrees to the next corner P. In place:
+        whether it was."""
+        from .exact import BEND_TOL, turn
+
+        F, P = pts[f], pts[p]
+        x = self._axis_then_45(F, u, P, back=self.grid.spec.pitch / 2)
+        if x is None:
+            return False
+        if 0 <= beyond < len(pts) and turn(x, P, pts[beyond]) > 90.0 + BEND_TOL:
+            return False
+        # Short of the stub's end, the turn must still keep its track off
+        # the pad's copper; past it, the longer stub must clear.
+        short = (x[0] - F[0]) * u[0] + (x[1] - F[1]) * u[1] < -EPS
+        if short and not self._turn_clears_own_pads(job, li, x):
+            return False
+        if not short and not self._piece_clears(job, li, F, x):
+            return False
+        if not self._piece_clears(job, li, x, P):
+            return False
+        if short:
+            pts[f] = x
+        pts[r] = x
+        return True
+
+    def _jog_slid_corner(self, job, li, pts, f, r, p, beyond) -> bool:
+        """Lay the jog as one piece at a multiple of 45 degrees from the
+        stub's end straight to the corner before it, that corner slid along
+        its own line to meet it. Never moves the line's ends (a via, a
+        junction). In place: whether it was."""
+        from .exact import BEND_TOL, turn
+
+        if not (0 < p < len(pts) - 1) or not (0 <= beyond < len(pts)):
+            return False
+        F, P, B = pts[f], pts[p], pts[beyond]
+        lw = math.hypot(P[0] - B[0], P[1] - B[1])
+        if lw <= EPS:
+            return False
+        w = ((P[0] - B[0]) / lw, (P[1] - B[1]) / lw)
+        best = None
+        for k in range(8):
+            a = k * math.pi / 4
+            v = (math.cos(a), math.sin(a))
+            # F + s v = P + q w
+            det = v[0] * (-w[1]) - v[1] * (-w[0])
+            if abs(det) < 1e-9:
+                continue
+            dx, dy = P[0] - F[0], P[1] - F[1]
+            s = (dx * (-w[1]) - dy * (-w[0])) / det
+            q = (v[0] * dy - v[1] * dx) / det
+            if s <= EPS or abs(q) > self.grid.spec.pitch:
+                continue
+            q_pt = (P[0] + q * w[0], P[1] + q * w[1])
+            if lw + q <= EPS:
+                continue       # slid back past the corner before it
+            if turn(B, q_pt, F) > 90.0 + BEND_TOL or (
+                    0 <= 2 * f - r < len(pts) and turn(q_pt, F, pts[2 * f - r]) > 45.0 + BEND_TOL):
+                continue
+            if best is None or abs(q) < best[0]:
+                best = (abs(q), q_pt)
+        if best is None:
+            return False
+        q_pt = best[1]
+        if not (self._piece_clears(job, li, B, q_pt) and self._piece_clears(job, li, q_pt, F)):
+            return False
+        pts[p] = q_pt
+        pts[r] = q_pt
+        return True
+
+    @staticmethod
+    def _axis_then_45(F, u, P, back: float = 0.0):
+        """The point X on the line from F along ``u``, at most ``back``
+        short of F, from which P lies on a multiple of 45 degrees turning
+        90 degrees or less from ``u`` (the least turn first, then the
+        shortest), or None. P on the axis itself is P."""
+        dx, dy = P[0] - F[0], P[1] - F[1]
+        if abs(dx * u[1] - dy * u[0]) <= EPS and dx * u[0] + dy * u[1] > EPS:
+            return P
+        best = None
+        for k in (-2, -1, 1, 2):
+            a = math.atan2(u[1], u[0]) + k * math.pi / 4
+            v = (math.cos(a), math.sin(a))
+            det = u[0] * v[1] - u[1] * v[0]
+            if abs(det) < 1e-9:
+                continue
+            t = (dx * v[1] - dy * v[0]) / det
+            s = (u[0] * dy - u[1] * dx) / det
+            if t < -back - EPS or s <= EPS:
+                continue
+            key = (abs(k), t + s)
+            if best is None or key < best[0]:
+                best = (key, (F[0] + t * u[0], F[1] + t * u[1]))
+        return None if best is None else best[1]
+
+    def _turn_clears_own_pads(self, job: NetJob, li: int, x) -> bool:
+        """Whether a track of the net turning at ``x`` keeps off the copper
+        of the net's axis-entry pads on routing layer ``li``."""
+        layer = self.grid.layers[li]
+        disc = geom.circle(x[0], x[1], job.width)
+        for t in job.terminals:
+            if t.inside is None:
+                continue
+            s = self.board.pads[t.pad].shape_on(layer)
+            if s is not None and geom.clearance(disc, s) < -EPS:
+                return False
+        return True
 
     def _cut_corner(self, job: NetJob, li: int, pts, i: int, deg: float, fixed):
         """The points that replace corner ``i``: a run of k - 1 short
@@ -3339,7 +3810,8 @@ class Router:
 
     def _stub(self, job: NetJob, t: Terminal, layer: str, q, loose=None) -> list | None:
         """The points of a stub from a pad's centre to the cell at ``q``,
-        the first that clears every fixed shape of: straight, where the
+        the first that clears every fixed shape of: a dogleg, straight out
+        of the centre and 45 degrees to ``q`` or the other way round; straight, where the
         track fits wholly in the pad at ``q`` (the pad is convex, so the
         whole stub is pad copper); out along the pad to the point nearest
         ``q`` where the track still fits, then to ``q``; along the pad's
@@ -3378,7 +3850,16 @@ class Router:
         fits = sh is not None and float(inner_depth(sh, np.array([[q[0]]]),
                                                     np.array([[q[1]]]))[0, 0]) >= half - EPS
         e = self._exit_point(pad, layer, half, q)
-        options = []
+        # A dogleg onto the centre first: straight out of it and then 45
+        # degrees to the cell, or 45 degrees out and then straight, so the
+        # piece on the pad runs along its axes or at 45 degrees to them.
+        # The router before the stages (``legacy``) has none, nor does
+        # ``axis_entry``, which leaves a pad only along an axis.
+        dx, dy = q[0] - c[0], q[1] - c[1]
+        m = min(abs(dx), abs(dy))
+        sx, sy = math.copysign(m, dx), math.copysign(m, dy)
+        options = ([] if self.options.legacy() or self.options.axis_entry else
+                   [[c, (q[0] - sx, q[1] - sy), q], [c, (c[0] + sx, c[1] + sy), q]])
         if fits:
             options.append([c, q])
         if e is not None:
@@ -3588,58 +4069,83 @@ def _straight_runs(cells):
     return out
 
 
-def releasable(router: Router) -> str | None:
-    """The plane layer to give back to routing, if any may go.
+def releasable(router: Router, allowed=None) -> str | None:
+    """The plane layer to give back to routing, if any may go, of the
+    ``allowed`` layers when given.
 
-    First a net's second plane or more. Of those, a plane lying between
-    two other planes first, since a plane next to an outer layer is that
-    layer's reference; then the one furthest down the stack. On the
+    A plane next to an outer layer is that layer's reference, so it goes
+    last: first the planes that face no outer layer, then those that do.
+    Within each, first a net's second plane or more: a plane lying between
+    two other planes first, then the one furthest down the stack. On the
     public boards the person routed on exactly such a middle ground layer
     and kept the outer ones whole.
 
-    Then, when no net has a plane to spare, a net's only plane, as a
+    Then, when no net has a plane to spare there, a net's only plane, as a
     layer shared by that pour and the routing (its net is then routed in
     tracks, and the pour fills round everything afterwards). The layer
     whose nets have the fewest pads goes first, and the board keeps at
     least one plane. A dense BGA can need exactly that: the only way out
-    from under its balls is through a supply pour's layer.
+    from under its balls is through a supply pour's layer. On a six-layer
+    public board the person routed on a supply layer and kept the ground
+    planes under both outer layers whole.
     """
     per_net: dict[str, list[str]] = {}
     for p in router.pour_planes:
         per_net.setdefault(p.net, []).append(p.layer)
     order = router.board.copper_layers()
     planes = {p.layer for p in router.pour_planes}
-    candidates = []
+    outer = {order[0], order[-1]}
+
+    def faces_outer(layer: str) -> bool:
+        i = order.index(layer)
+        return order[i - 1] in outer or (i + 1 < len(order) and order[i + 1] in outer)
+
+    spare = []
     for net, layers in per_net.items():
         if len(set(layers)) < 2:
             continue
         for layer in set(layers):
             i = order.index(layer)
             sandwiched = order[i - 1] in planes and order[i + 1] in planes
-            candidates.append((not sandwiched, -i, layer))
-    if candidates:
-        return min(candidates)[2]
-    if len(planes) < 2:
-        return None
-    pads = router.board.pads_by_net()
-    load = {}
-    for p in router.pour_planes:
-        load[p.layer] = load.get(p.layer, 0) + len(pads.get(p.net, []))
-    return min(load, key=lambda layer: (load[layer], -order.index(layer)))
+            spare.append((not sandwiched, -i, layer))
+    spare = [c for c in spare if allowed is None or c[2] in allowed]
+    load: dict[str, int] = {}
+    if len(planes) >= 2:
+        pads = router.board.pads_by_net()
+        for p in router.pour_planes:
+            if allowed is None or p.layer in allowed:
+                load[p.layer] = load.get(p.layer, 0) + len(pads.get(p.net, []))
+    for facing in (False, True):
+        c = [x for x in spare if faces_outer(x[2]) == facing]
+        if c:
+            return min(c)[2]
+        here = [l for l in load if faces_outer(l) == facing]
+        if here:
+            return min(here, key=lambda layer: (load[layer], -order.index(layer)))
+    return None
 
 
 def route_adaptive(board: LayoutBoard, log: Callable[[str], None] | None = None,
-                   **kwargs) -> Router:
+                   release=None, **kwargs) -> Router:
     """Route with every covered inner layer as a plane; while that leaves
     connections unmade, give a redundant plane back to routing and route
-    again. The best attempt is kept."""
+    again. The best attempt is kept.
+
+    ``release``: the layers that may be given back (None: any). Which
+    layers stay planes is the AI's decision: when the plane the router
+    would give next is not among them, it stops there and the router it
+    returns names that plane in ``declined`` (layer, net, connections
+    unmade), for the AI to decide."""
     log = log or (lambda s: None)
+    allowed = None if release is None else frozenset(release)
     released: set = set()
     best = None
     prev = None
+    declined = None
     while True:
         r = Router(board, released=frozenset(released), log=log, **kwargs)
-        r.report = r.run(stall_abort=releasable(r) is not None, warm=prev)
+        # A stalled run stops early only when a plane may be given next.
+        r.report = r.run(stall_abort=releasable(r, allowed) is not None, warm=prev)
         prev = r
         # After the clean-up nothing conflicts: what could not be made
         # legal is counted as failed. The count before it is no score.
@@ -3647,13 +4153,20 @@ def route_adaptive(board: LayoutBoard, log: Callable[[str], None] | None = None,
         log(f"planes {[p.layer for p in r.pour_planes]}: {r.report.failed} failed")
         if best is None or score < best[0]:
             best = (score, r)
-        if score == 0:
+        if score == 0 or job_control.over_time():
             break
-        layer = releasable(r)
+        layer = releasable(r, allowed)
         if layer is None:
+            wanted = releasable(r) if allowed is not None else None
+            if wanted is not None:
+                declined = {"layer": wanted,
+                            "net": next(p.net for p in r.pour_planes if p.layer == wanted),
+                            "unrouted": r.report.failed}
             break
         released.add(layer)
-    return _fallback(board, best[1], log, kwargs)
+    out = _fallback(board, best[1], log, kwargs)
+    out.declined = declined
+    return out
 
 
 def _fallback(board: LayoutBoard, best: Router, log, kwargs) -> Router:
@@ -3671,21 +4184,26 @@ def _fallback(board: LayoutBoard, best: Router, log, kwargs) -> Router:
     from dataclasses import replace
 
     opts = best.options
-    loose = replace(opts, plane_fanout=False, class_order=False,
+    loose = replace(opts, plane_fanout=False, class_order=False, axis_entry=False,
                     pad_vias="ic" if opts.pad_vias == "bga" else opts.pad_vias, fallback=False)
-    if not opts.fallback or not best.report.failed or loose == replace(opts, fallback=False):
+    if (not opts.fallback or not best.report.failed or loose == replace(opts, fallback=False)
+            or job_control.over_time()):
         return best
     kw = dict(kwargs)
     kw["stages"] = loose
     r = Router(board, released=best.released, log=log, **kw)
     r.report = r.run(stall_abort=False, warm=best)
-    log(f"without the constraining stages: {r.report.failed} failed "
-        f"(with them {best.report.failed})")
+    log(f"routed again without the dog-bones first, the class order and the axis-only "
+        f"pad entries: {r.report.failed} net(s) still fail, against {best.report.failed} "
+        f"with them" + ("; the first result is kept" if r.report.failed >= best.report.failed
+                        else ""))
     if r.report.failed < best.report.failed:
         gained = best.report.failed - r.report.failed
         r.stage_report.fallback = (f"routed again without the dog-bones laid first, the class "
-                                   f"order and the IC pins kept free of vias: {gained} more "
-                                   f"connection{'s' if gained > 1 else ''} made")
+                                   f"order, the IC pins kept free of vias"
+                                   + (" and pads reached only along their axes"
+                                      if opts.axis_entry else "")
+                                   + f": {gained} more connection{'s' if gained > 1 else ''} made")
         return r
     best.stage_report.fallback = ""
     return best

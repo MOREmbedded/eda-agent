@@ -186,7 +186,7 @@ NOT_LENGTH_NAMES = re.compile(
     r"current|_w$|power|_c$|^t_|temp|ambient|tj_|theta|_pf$|_nf$|_f$|_h$|"
     r"farads|capacitance|inductance|_ns$|_ps$|_um$|oz|awg|^er|^k_|dk|df|loss|"
     r"constant|tangent|dpi|zoom|opacity|transparency|azimuth|elevation|"
-    r"depth_of_field|offset$|page|seed|level|quality|precision|decimals|"
+    r"depth_of_field|offset$|page|seed|level|quality|precision|decimals|sector|"
     r"budget|cost|penalty|^delta$|gain|^dc$|^ac$|^c_|^r_|tol|^font_id|"
     r"part_id|owner|unit$|^set$|^vcc$|^supply|^value$|_value$|span|share|"
     r"threshold|below$|zones|correction|repeat|start$|end$|first|last|"
@@ -312,9 +312,8 @@ def _server_with_family():
     mcp = FoldingServer(server)
 
     @mcp.tool()
-    async def pcb_place_radial_dimension(center_x: float, center_y: float,
-                                         radius: float) -> dict:
-        seen["radial"] = (center_x, center_y, radius)
+    async def pcb_place_simple_body(x: float, y: float, radius: float) -> dict:
+        seen["body"] = (x, y, radius)
         return {"radius": radius, "angle": 45}
 
     @mcp.tool()
@@ -333,9 +332,9 @@ def _server_with_family():
 def test_a_family_tool_converts_its_member_as_itself(workspace, families):
     server, seen = _server_with_family()
     _call(server, "length_units", {"to": "mm"})
-    out = _call(server, "pcb_dimension",
-                {"kind": "radial", "args": {"center_x": 2.54, "center_y": 0, "radius": 1.27}})
-    assert seen["radial"] == (100, 0, 50)
+    out = _call(server, "pcb_body",
+                {"kind": "simple", "args": {"x": 2.54, "y": 0, "radius": 1.27}})
+    assert seen["body"] == (100, 0, 50)
     assert out["radius"] == 1.27 and out["angle"] == 45
     assert out["length_units"] == "mm"
 
@@ -343,14 +342,14 @@ def test_a_family_tool_converts_its_member_as_itself(workspace, families):
 def test_tool_invoke_converts_the_tool_it_runs_once(workspace, families):
     server, seen = _server_with_family()
     _call(server, "length_units", {"to": "mm"})
-    out = _call(server, "tool_invoke", {"name": "pcb_place_radial_dimension",
-                                        "arguments": {"center_x": 25.4, "center_y": 0,
+    out = _call(server, "tool_invoke", {"name": "pcb_place_simple_body",
+                                        "arguments": {"x": 25.4, "y": 0,
                                                       "radius": 2.54}})
-    assert seen["radial"] == (1000, 0, 100)
+    assert seen["body"] == (1000, 0, 100)
     assert out["result"]["radius"] == 2.54
-    out = _call(server, "tool_invoke", {"name": "pcb_dimension", "arguments": {
-        "kind": "radial", "args": {"center_x": 0, "center_y": 0, "radius": 0.254}}})
-    assert seen["radial"][2] == 10
+    out = _call(server, "tool_invoke", {"name": "pcb_body", "arguments": {
+        "kind": "simple", "args": {"x": 0, "y": 0, "radius": 0.254}}})
+    assert seen["body"][2] == 10
     assert out["result"]["radius"] == 0.254
 
 
@@ -402,3 +401,63 @@ def test_a_tool_that_converts_itself_is_handed_the_sessions_unit(workspace, fami
     assert out["x"] == 2.54
     _call(server, "easyeda_make_part", {"x": 100, "units": "mil"})
     assert seen["part"]["units"] == "mil"
+
+
+def test_a_list_given_as_a_file_is_converted_like_the_same_list_inline(workspace, tmp_path):
+    from eda_agent.server import _CompactFastMCP
+    from eda_agent.tools.length_units import register_length_units_tools
+    server = _CompactFastMCP("lengths-file")
+    seen: dict = {}
+
+    @server.tool()
+    async def pcb_place_tracks(tracks: typing.Optional[list] = None, file: str = "") -> dict:
+        seen["tracks"], seen["file"] = tracks, file
+        return {"placed": len(tracks or [])}
+
+    register_length_units_tools(server)
+    listed = tmp_path / "tracks.json"
+    listed.write_text(json.dumps({"tracks": [
+        {"x1": 25.4, "y1": 0, "x2": 50.8, "y2": 0, "width": 0.254}]}), encoding="utf-8")
+    _call(server, "length_units", {"to": "mm"})
+    out = _call(server, "pcb_place_tracks", {"file": str(listed)})
+    assert out["placed"] == 1 and seen["file"] == ""
+    track = seen["tracks"][0]
+    assert (track["x1"], track["x2"], track["width"]) == (1000, 2000, 10)
+
+
+@pytest.mark.parametrize("unit", ["mil", "mm"])
+def test_a_via_in_a_list_keeps_the_size_it_was_given(unit):
+    out = lengths.args_in("pcb_place_vias", {"vias": [
+        {"x": 0, "y": 0, "size": 20, "hole_size": 10},
+        {"x": 0, "y": 0, "size_mm": 0.5, "hole_size_mm": 0.25}]},
+        unit, {"vias", "board_path", "file"})
+    plain, named = out["vias"]
+    k = 1 if unit == "mil" else lengths.MILS_PER_MM
+    assert plain["size"] == pytest.approx(20 * k)
+    assert plain["hole_size"] == pytest.approx(10 * k)
+    # The names the tool reads, in the unit they say.
+    assert named == {"x": 0, "y": 0, "size_mm": 0.5, "hole_size_mm": 0.25}
+
+
+def test_an_argument_the_tool_takes_in_no_spelling_is_refused(workspace):
+    server, seen = _server()
+    with pytest.raises(Exception, match="takes no argument zzz_show_args"):
+        asyncio.run(server.call_tool("easyeda_put_track",
+                                     {"x1": 1, "y1": 1, "zzz_show_args": True}))
+    assert "track" not in seen
+    # Its names in the other unit are still its own.
+    _call(server, "easyeda_put_track", {"x1": 1, "y1": 1, "clearance_mm": 0.254})
+
+
+def test_an_item_naming_an_argument_the_tool_does_not_take_fails_alone():
+    from eda_agent.tools.folds import _call_validated
+
+    async def brief(expect_file: str, add: typing.Optional[list] = None) -> dict:
+        return {"saved": bool(add)}
+
+    got = asyncio.run(_call_validated(brief, {"expect_file": "b", "nets": ["A"],
+                                              "layers": ["L3"]}))
+    assert got["ok"] is False and "layers, nets" in got["reason"]
+    assert got["takes"] == ["add", "expect_file"]
+    assert asyncio.run(_call_validated(brief, {"expect_file": "b", "add": [1]})) \
+        == {"saved": True}

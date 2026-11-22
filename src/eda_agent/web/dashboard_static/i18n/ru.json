@@ -1050,5 +1050,10 @@
  "{0} of {1} installed": "Установлено {0} из {1}",
  "{0} saved. Checking again.": "{0} сохранено. Проверяю снова.",
  "All workspaces": "Все рабочие области",
- "Other workspaces hidden: {0}": "Скрыто других рабочих областей: {0}"
+ "Other workspaces hidden: {0}": "Скрыто других рабочих областей: {0}",
+ "Each": "На вызов",
+ "Last {0} days: {1} calls, about {2} tokens. Estimated from the size of what each call sends and returns.": "Последние {0} дн.: {1} вызовов, около {2} токенов. Оценка по объёму того, что каждый вызов отправляет и возвращает.",
+ "No tool calls recorded in the last {0} days.": "За последние {0} дн. вызовов инструментов не записано.",
+ "Counting is off. Turn Token count on, on the Config tab of the Altium panel.": "Подсчёт выключен. Включите Token count на вкладке Config панели Altium.",
+ "Token use": "Расход токенов"
 }

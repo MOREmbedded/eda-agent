@@ -96,15 +96,6 @@ FOLDS: dict[str, Fold] = {
             "drive": "app_run_ui_command",
         },
     ),
-    "pcb_dimension": Fold(
-        summary="Place a dimension on the open board.",
-        members={
-            "linear": "pcb_place_dimension",
-            "angular": "pcb_place_angular_dimension",
-            "radial": "pcb_place_radial_dimension",
-            "baseline": "pcb_place_baseline_dimension",
-        },
-    ),
     "pcb_body": Fold(
         summary=("Place a free 3D body on the open board: a STEP model, an "
                  "extruded outline, or a cylinder or sphere."),
@@ -245,6 +236,13 @@ async def _call_validated(fn: Callable, args: dict) -> Any:
         result = fn(**args)
         return await result if inspect.isawaitable(result) else result
     from pydantic import ValidationError
+    params = inspect.signature(fn).parameters
+    if not any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        unknown = sorted(k for k in args if k not in params)
+        if unknown:
+            # The model drops them without a word.
+            return {"ok": False, "reason": f"takes no argument {', '.join(unknown)}",
+                    "takes": sorted(p for p in params if p != "items")}
     try:
         model = meta.arg_model.model_validate(args)
     except ValidationError as e:

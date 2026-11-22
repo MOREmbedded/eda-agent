@@ -73,7 +73,7 @@ def test_a_plugin_adds_a_feature(plugins):
 @pytest.mark.parametrize("make, why", [
     (lambda: _plugin(fid="render"), "already taken"),
     (lambda: _plugin(dep_id="flask"), "already taken"),
-    (lambda: _plugin(license_=""), "no license"),
+    (lambda: _plugin(license_=""), "empty license field"),
     (lambda: _plugin(needs=["ghost"]), "nothing declares"),
     (lambda: _plugin(fid="Bad Id"), "lower case"),
     (lambda: _plugin(core=True), "cannot be core"),

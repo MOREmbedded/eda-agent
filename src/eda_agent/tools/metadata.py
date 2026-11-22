@@ -132,7 +132,7 @@ _SIMULATOR_TOOLS = frozenset({
     "obj_batch_modify", "obj_create", "obj_delete", "obj_deselect_all",
     "obj_get_font_id", "obj_get_font_spec", "obj_modify", "obj_query",
     "obj_run_process", "obj_select", "obj_zoom", "obj_zoom_to_xy",
-    "pcb_bind_pad_nets",
+    "pcb_bind_pad_nets", "pcb_check_fab_output",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
@@ -145,8 +145,8 @@ _SIMULATOR_TOOLS = frozenset({
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
-    "proj_list_documents", "proj_list_open", "proj_list_variants",
-    "proj_open", "proj_remove_document", "proj_run_output", "proj_save",
+    "proj_import_from_kicad", "proj_list_documents", "proj_list_open", "proj_list_variants", "proj_open",
+    "proj_remove_document", "proj_run_output", "proj_save",
     "proj_set_parameter", "proj_update_from_libraries",
     "proj_visual_cross_probe",
     "sch_place_comment", "sch_tidy_port_references",
@@ -246,6 +246,7 @@ INTERACTION_OVERRIDES = {
     # nothing to a design.
     "app_document_owners": READONLY,
     "app_claim_document": READONLY,
+    "app_release_document": READONLY,
     # Reads the rules, or keeps an approved copy beside the board: nothing
     # in the design changes.
     "pcb_drc_rules": READONLY,

@@ -39,6 +39,15 @@ def _tracked() -> list[str]:
             and not p.startswith("reference/")]
 
 
+#: Written in this fork first; upstream later added a file of its own at
+#: the same path. Nothing of upstream's was inherited, so there is no
+#: notice to retain.
+_SAME_PATH_OWN_WORK = {
+    "src/eda_agent/diag/usage.py",
+    "tests/test_lint_undeclared_read.py",
+}
+
+
 def _upstream_files() -> set[str]:
     """Paths upstream also has, or an empty set when it is not fetched.
 
@@ -63,7 +72,7 @@ def test_every_tracked_source_file_states_its_licence():
     missing = [rel for rel in files
                if (_ROOT / rel).exists() and _LICENCE not in _head(rel)]
     assert not missing, (
-        f"{len(missing)} source files carry no licence line "
+        f"{len(missing)} source files lack the SPDX line "
         f"({_LICENCE!r}); every file in an Apache-2.0 project needs one: "
         f"{missing[:20]}")
 
@@ -76,7 +85,8 @@ def test_a_file_shared_with_upstream_keeps_its_copyright_notice():
         pytest.skip("upstream/main is not fetched in this checkout")
 
     shared = [rel for rel in _tracked()
-              if rel in upstream and (_ROOT / rel).exists()]
+              if rel in upstream and rel not in _SAME_PATH_OWN_WORK
+              and (_ROOT / rel).exists()]
     assert shared, "no files in common with upstream; the comparison broke"
     stripped = [rel for rel in shared if _OWNER not in _head(rel)]
     assert not stripped, (

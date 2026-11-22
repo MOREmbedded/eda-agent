@@ -8,6 +8,7 @@ from eda_agent.layout.drc import run_drc
 from eda_agent.layout.model import Layer, LayoutBoard, Pad, PadCopper, Region, Rule
 from eda_agent.layout.route import Router
 from eda_agent.layout.route.fanout import find_bgas
+from eda_agent.layout.route.stages import StageOptions
 
 
 def _rules(gap=4.0, width=4.0):
@@ -102,7 +103,8 @@ def test_a_fanned_out_board_routes_clean_and_the_callers_board_is_untouched():
     balls = _bga(19.685, 12.0, n=4)
     b = _board(_with_partners(balls))
     before = (len(b.vias), len(b.tracks))
-    r = Router(b)
+    # Routed with rip-up and repair: one connection at a time leaves N1_3 unmade.
+    r = Router(b, stages=StageOptions(negotiate=True))
     assert len(r.fanout.by_pad) == 4
     r.run()
     out = r.apply()
@@ -110,6 +112,24 @@ def test_a_fanned_out_board_routes_clean_and_the_callers_board_is_untouched():
     drc = run_drc(out)
     assert not drc.violations
     assert drc.completion == 1.0, drc.unrouted
+
+
+def test_a_ball_beside_a_fanout_via_takes_only_the_via_that_fits_there():
+    # The room at each ball's centre is judged against the fanout's vias:
+    # a 16 mil via in a ball 19.685 mil from one stands 3.685 mil from it,
+    # where 4 is required.
+    r = Router(_board(_with_partners(_bga(19.685, 12.0, n=4))))
+    assert r.fanout.by_pad
+    checked = 0
+    for job in r.jobs:
+        for (y, x), (px, py, room) in job.pad_via.items():
+            exact = r._room_at(job.id, px, py, max(v.diameter for v in job.vias) / 2)
+            assert room <= exact + 1e-9, (job.name, room, exact)
+            checked += 1
+            fits = [k for k, v in enumerate(job.vias) if room >= v.diameter / 2 - 1e-9]
+            if fits:
+                assert r._style_at(job, y, x) == fits[0]
+    assert checked
 
 
 def test_a_ball_of_a_plane_net_is_done_once_its_via_is_in_the_plane():

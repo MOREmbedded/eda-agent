@@ -14,6 +14,30 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Merged from upstream (2026-11-22, script 2026.11.22.1)
+
+- **Upstream salitronic/eda-agent merged up to 7a23938b** (126 commits).
+  New: the routing brief and routing discipline (Config tab: Routing
+  `enforced` / `advisory` / `off`, default `enforced`), the Altium
+  autorouter and basic 3D model switches (both `not_allowed` by
+  default), `design_job_cancel` and job time limits, dimension tools,
+  sheet and project option tools (single-pin nets, sheet numbering,
+  class generation), `lib_set_current_footprint`, KiCad import, and
+  upstream's fixes. Component height is now reported both ways:
+  `Height` is the footprint's field and `ModelHeight` its tallest 3D
+  body (`ComponentHeight` is gone).
+- **Kept from this fork:** the offline grid router and Rust compute,
+  the euan engine, the `fileio` readers (olefile), token usage stats and
+  the Stats tab, the dark dashboard theme, the status window layout,
+  the board-read speed work, `pad_vias`, strict nets and the
+  `proj_close` modified flag. Upstream deleted the grid router and the
+  readers; both stay here.
+- **Left out:** upstream's `usage` counter (this fork has its own),
+  the `/api/usage` route, and the Config tab help page, whose pictures
+  show upstream's window and its Sponsor button.
+- `proj_run_outjob` still refuses to generate when the focused document
+  is not the OutJob (`FOCUS_MISMATCH`), now on upstream's OutJob API.
+
 ### Fixed
 
 - **`lib_link_footprint` links vendor footprints whose SMD pads are
@@ -54,7 +78,7 @@ maturity classification for every tool.
   any routine that takes parameters named without them.
 - **`proj_close` of a project with no loaded document no longer crashes
   Altium.** The close loaded a member inside its walk of the project's
-  documents (an access violation in ScriptingSystem.DLL); it now refuses
+  documents (an access violation in Altium's script engine); it now refuses
   with `no_loaded_documents`, and the tool loads the sheets in a call of
   their own and closes again.
 - **`pcb_autoroute` with `nets=` routes those nets and nothing more.**
@@ -1270,7 +1294,7 @@ maturity classification for every tool.
   and every later tool refused to act on the document now in focus. The
   path is checked while it is still a string, and nothing is sent.
 
-- **`src/eda_agent/ui/panel_wheel.py` had no licence line.** It arrived
+- **`src/eda_agent/ui/panel_wheel.py` lacked its SPDX line.** It arrived
   from upstream without the SPDX identifier or the copyright notice
   every other file in the tree carries. Both restored; Apache-2.0
   section 4(c) asks for the second.

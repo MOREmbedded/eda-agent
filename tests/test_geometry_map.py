@@ -212,7 +212,7 @@ def test_a_delete_is_matched_like_a_move_and_marked():
     assert lines[0] == f"T\t4\t0\t0\t{50 * C}\t0\t57\t{10 * C}\tDEL"
     assert lines[1].startswith("A\t2\t") and lines[1].endswith("\tDEL")
     assert rep["delete"] == {"entries": 3, "matched": 2, "tracks": 1, "arcs": 1,
-                             "regions": 0}
+                             "regions": 0, "vias": 0, "polygons": 0}
     assert rep["tracks"]["unmatched"] == 1
 
 
@@ -373,7 +373,7 @@ def test_every_polygon_writer_rewrites_the_closing_vertex():
             assert writes and writes[-1] < close, (
                 f"{name}: {obj} writes a segment after it is closed")
             writers += 1
-    assert writers == 9
+    assert writers == 10
     helper = (scripts / "PCBGeneric.pas").read_text(encoding="ascii")
     helper = helper[helper.index("Procedure ClosePolySegments("):]
     helper = helper[:helper.index("End;") + 4]
@@ -388,7 +388,8 @@ def test_the_apply_pass_deletes_and_creates_with_proven_calls():
     dele = body[body.index("If A1 = 'DEL' Then"):]
     assert dele.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < dele.index(
         "Board.RemovePCBObject(Prim);")
-    assert body.count("Board.RemovePCBObject(Prim);") == 3
+    # Track, arc, region, via, and pour.
+    assert body.count("Board.RemovePCBObject(Prim);") == 5
     region = body[body.index("Else If (KindNo = 6) And (Pos(#9 + 'DEL', Lines[J]) > 0) Then"):]
     region = region[:region.index("Else If KindNo = 6 Then")]
     assert region.index("PCBM_BoardRegisteration, Prim.I_ObjectAddress);") < region.index(
@@ -411,7 +412,10 @@ def test_a_moved_track_or_arc_is_read_back_width_included():
     write that did not take is counted."""
     body = _routine("PCB_ApplyFreePrimitives")
     track = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Track.Width);"):]
-    assert track.index("Track.EndModify;") < track.index("(Track.Width <> WW) Then Inc(WireOff);")
+    assert track.index("Track.EndModify;") < track.index("If (Track.Width <> WW)")
+    # The two ends may read back in the other order; anything else counts.
+    check = track[track.index("If (Track.Width <> WW)"):track.index("Then Inc(WireOff);")]
+    assert "(Track.X1 <> WX1)" in check and "(Track.X1 <> WX2)" in check
     arc = body[body.index("WW := StrToIntDef(SplitNextTab(Rest), Arc.LineWidth);"):]
     assert arc.index("Arc.EndModify;") < arc.index("(Arc.LineWidth <> WW) Then Inc(WireOff);")
     raw = PCB.read_text(encoding="ascii")
@@ -602,8 +606,14 @@ class _Bridge:
         if command == "pcb.save_copy_as":
             if params.get("check_only"):
                 return {"target_exists": self.target_exists, "written": False}
-            Path(params["target_path"]).write_text("copy", encoding="ascii")
-            return {"written": True}
+            target = Path(params["target_path"])
+            backup = params.get("backup_path", "")
+            # Altium saves the old target under the backup name, then writes.
+            if backup:
+                Path(backup).write_text(target.read_text(encoding="ascii"),
+                                        encoding="ascii")
+            target.write_text("copy", encoding="ascii")
+            return {"written": True, "backup": backup}
         raise AssertionError(command)
 
 
@@ -752,6 +762,7 @@ async def test_save_copy_keeps_the_overwritten_target(tmp_path, monkeypatch):
     bridge = _Bridge(tmp_path, target_exists=True)
     tools = _tools(monkeypatch, bridge)
     out = await tools["pcb_save_copy_as"](str(target), source_path="C:/M.PcbDoc")
+    assert bridge.sent[-1][1]["backup_path"] == str(target) + ".bak"
     assert out["written"] and Path(out["backup"]).read_text() == "old size"
     assert target.read_text() == "copy"
     assert all(p.get("board_path") == "C:/M.PcbDoc" for _, p in bridge.sent)

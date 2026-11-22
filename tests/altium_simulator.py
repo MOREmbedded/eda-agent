@@ -272,6 +272,9 @@ def _next_batch_op(remaining: str) -> tuple[str, str]:
         sep = remaining.find("~~")
         if sep < 0:
             return remaining, ""
+        # Exactly three tildes: a value ending in "~", then the separator.
+        if remaining[sep + 2:sep + 3] == "~" and remaining[sep + 3:sep + 4] != "~":
+            sep += 1
         op, remaining = remaining[:sep], remaining[sep + 2:]
         if op:
             return op, remaining
@@ -1814,6 +1817,53 @@ class AltiumSimulator:
             return _build_success_response(
                 rid, '{"success":true,"x":' + str(x) + ',"y":' + str(y)
                 + ',"context":"pcb"}')
+        elif action == "zoom_to_object":
+            # Gen_ZoomToObject: the named object on the sheet, matched without
+            # case. The mock sheet holds net labels (Text) and parts
+            # (Designator.Text) with a location but no extent, so a match's
+            # box is its location.
+            name = str(params.get("name", "")).strip()
+            if not name:
+                return _build_error_response(
+                    rid, "MISSING_PARAMS", "name is required")
+            scale_text = str(params.get("scale", "")).strip()
+            try:
+                scale = float(scale_text) if scale_text else 50.0
+            except ValueError:
+                scale = -1.0
+            if not 0 < scale <= 100:
+                return _build_error_response(
+                    rid, "BAD_PARAMS", "scale is above 0 and up to 100")
+            index_text = str(params.get("index", "")).strip()
+            want = int(index_text) if index_text.isdigit() else (1 if not index_text else 0)
+            if want < 1:
+                return _build_error_response(
+                    rid, "BAD_PARAMS", "index counts the matches from 1")
+            kinds = {25: ("net_label", "Text"), 1: ("part", "Designator.Text")}
+            found = []
+            for obj in self.sch_objects:
+                kind = kinds.get(obj.object_id)
+                if kind is None:
+                    continue
+                text = obj.get_property(kind[1])
+                if text and text.upper() == name.upper():
+                    x, y = obj.get_property("Location.X"), obj.get_property("Location.Y")
+                    found.append('{"kind":"' + kind[0] + '","name":"'
+                                 + _escape_json_string(text) + '","box":['
+                                 + ",".join((x, y, x, y)) + ']}')
+            if not found:
+                return _build_error_response(
+                    rid, "NOT_FOUND", 'no object on this sheet is named "' + name + '"')
+            if want > len(found):
+                return _build_error_response(
+                    rid, "BAD_PARAMS", "index " + str(want) + ", but "
+                    + str(len(found)) + " object(s) are named that")
+            return _build_success_response(
+                rid, '{"success":true,"context":"schematic","name":"'
+                + _escape_json_string(name) + '","scale":' + repr(scale)
+                + ',"index":' + str(want) + ',"count":' + str(len(found))
+                + ',"zoomed_to":' + found[want - 1] + ',"matches":['
+                + ",".join(found) + '],"listed":' + str(len(found)) + '}')
         else:
             return _build_error_response(
                 rid, "UNKNOWN_ACTION",
@@ -2240,11 +2290,8 @@ class AltiumSimulator:
                     '"footprint":"' + _escape_json_string(c.footprint) + '",'
                     '"source_designator":"' + _escape_json_string(c.designator) + '",'
                     '"height_mils":' + str(c.height_mils) + ','
-                    # The simulated board carries no 3D bodies, so the
-                    # height is the component's own parameter.
-                    '"height_source":"component","max_body_height_mils":null,'
-                    '"height_mismatch":false,'
-                    '"component_height_mils":' + str(c.height_mils) + ','
+                    # The simulated board carries no 3D bodies.
+                    '"model_height_mils":null,"height_mismatch":false,'
                     '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
                     '"bbox":{"x1":' + str(x1) + ',"y1":' + str(y1) +
                     ',"x2":' + str(x2) + ',"y2":' + str(y2) +
@@ -2395,6 +2442,7 @@ class AltiumSimulator:
                                 {"designator": comp.designator, "pin": pad, "net": net})
                 placed += 1
             data = ('{"placed":' + str(placed) + ',"failed":' + str(failed) +
+                    ',"label_layers_unknown":0' +
                     ',"total":' + str(placed + failed) + '}')
             return _build_success_response(rid, data)
 

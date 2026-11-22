@@ -549,6 +549,9 @@ def register_design_tools(mcp) -> None:
         - ``connectivity_summary``: routed / partial / unstarted nets.
         - ``drc``: the exact clearance check.
         - ``corner_audit``: bends sharper than 45 degrees.
+        - ``track_shape_audit``: staircases (a run drawn as a chain of
+          tiny steps) and tracks shorter than their own width that are
+          no stub into a pad or via.
         - ``return_via_audit``: signal vias with no ground via within
           ``max_distance_mils``.
         - ``plane_region_audit``: pour copper broken into islands.
@@ -679,6 +682,9 @@ def register_design_tools(mcp) -> None:
         job instead of returning at once; a no-wait call repeated within
         a second is held for two.
 
+        A running job shows ``elapsed_s`` and ``progress``, the engine's
+        latest line (a router's: the round, nets routed, conflicts).
+
         Args:
             job_id: the job; blank lists every job.
             wait_seconds: hold the call until the job finishes or this
@@ -701,6 +707,24 @@ def register_design_tools(mcp) -> None:
         if wait and store.get(job_id) is not None:
             await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
+        return rec if rec else {"error": f"no such job: {job_id}"}
+
+    @mcp.tool()
+    async def design_job_cancel(job_id: str) -> dict[str, Any]:
+        """Cancel a background job.
+
+        One still waiting never starts. A running one stops at the
+        engine's next step (a net routed, a progress line), usually within
+        seconds: design_job_status shows ``cancel_requested`` until then,
+        and ``cancelled`` after. Nothing a cancelled job made is kept.
+        To keep what a long route has made, give it a time limit instead
+        (pcb_route_round time_limit_s).
+
+        Args:
+            job_id: the job.
+        """
+        from ..design.jobs import get_job_store
+        rec = get_job_store().cancel(job_id)
         return rec if rec else {"error": f"no such job: {job_id}"}
 
     @mcp.tool()
@@ -1816,7 +1840,7 @@ def register_design_tools(mcp) -> None:
         """Reconstruct a .SchDoc's netlist geometrically: OFF by default.
 
         Offline FALLBACK, same opt-in as ``design_review_file``. Parses the
-        file (no Altium, no license) and rebuilds the compiled netlist from
+        file (without a running Altium) and rebuilds the compiled netlist from
         geometry (pins, wires, power ports, junctions, and by-name net
         labels), then runs connectivity ERC (``single_pin_net`` floating
         pins, ``net_short`` rail shorts).
@@ -1861,7 +1885,7 @@ def register_design_tools(mcp) -> None:
         """Consolidated BOM from a .SchDoc/.PrjPcb on disk: OFF by default.
 
         Offline FALLBACK, same opt-in as ``design_review_file``. Parses the
-        Altium file directly (no Altium, no license) and groups components
+        Altium file directly (without a running Altium) and groups components
         into purchasable BOM lines, one per distinct ``(mpn, value,
         lib_reference)``, designators grouped and naturally sorted, quantity
         summed. A ``.PrjPcb`` aggregates all its sheets.

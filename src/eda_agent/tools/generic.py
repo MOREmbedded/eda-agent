@@ -13,14 +13,17 @@ import re
 from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
-from ..safety import refuse_process, untrusted_text_note
+from ..safety import refuse_altium_autorouter, refuse_process, untrusted_text_note
+from ..sch_members import member_refusals
 from .library import _mils
-from ..units import format_length
+from ..units import MM_PER_MIL, format_length
 from .pin_hints import pin_location_hint
 from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
+from .bulk import bulk_items_by
+from ..prjpcb import removals_together
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -201,10 +204,98 @@ async def _refuse_manual_sheet_layout(
     }
 
 
+def typed_line_breaks(text: str, typed_breaks: bool = True) -> str:
+    """A text frame's text with each typed backslash-n made a newline.
+
+    A caller that cannot send a newline types the two characters instead.
+    Only a text holding no real newline is converted: one that already has
+    newlines was written with them, and its backslash-n is text (a path
+    such as C:\\new\\board, a regex). The script stores backslash-n as sent.
+    """
+    if not typed_breaks or "\n" in text or "\r" in text:
+        return text
+    return text.replace("\\n", "\n")
+
+
 _FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
 # Name, operator, value. The operator is the first = ! < > or ~ (names hold
 # none), as the script's FilterOpPos reads it; a lone '!' is no operator.
 _FILTER_COND = re.compile(r"([^=!<>~]*)(!=|!~|<=|>=|=|<|>|~)(.*)", re.S)
+
+
+def _names(value: Any) -> Any:
+    """A list of property names as the wire takes it: comma-separated."""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v).strip() for v in value)
+    return value
+
+
+def _assignments(value: Any) -> Any:
+    """Property assignments as the wire takes them: ``Name=Value`` pairs
+    joined by ``|``. A dict or a list of pairs is accepted too. Names go
+    to Altium as written: UseTTFonts on board text is written by the
+    script, which reads each text's kind."""
+    def text(v: Any) -> str:
+        return ("true" if v else "false") if isinstance(v, bool) else str(v)
+
+    if isinstance(value, dict):
+        value = "|".join(f"{k}={text(v)}" for k, v in value.items())
+    elif isinstance(value, (list, tuple)):
+        value = "|".join(str(v) for v in value)
+    return value
+
+
+def _literal_wildcard_note(filt: str) -> str:
+    """A note for a filter whose ``=`` value holds * or ?: that matches
+    the text as written. A pattern is written with ``~``."""
+    for cond in str(filt or "").split("|"):
+        m = re.match(r"\s*([A-Za-z0-9_.]+)\s*=\s*(.*)$", cond)
+        if m and re.search(r"[*?]", m.group(2)):
+            return (f"{m.group(1)}={m.group(2)} matches that text exactly; "
+                    f"for a pattern write {m.group(1)}~{m.group(2)}")
+    return ""
+
+
+#: The board object types (Utils.pas ObjectTypeFromStringPCB), by the
+#: word they share with their short spelling.
+_BOARD_TYPES = frozenset({"track", "pad", "via", "component", "arc", "fill", "text",
+                          "poly", "polygon", "region", "rule", "dimension",
+                          "splitplane", "connection", "componentbody"})
+
+
+def _mm_properties(properties: str, object_type: str) -> tuple[str, dict[str, tuple[str, bool]]]:
+    """A board property asked for with _mm (X_mm, Width_mm) is the mil
+    property read in millimetres. Returns the names to ask Altium for and,
+    for each _mm name, its property and whether that was asked for too."""
+    if re.sub(r"[^a-z]", "", str(object_type).lower()).removeprefix("e")             .removesuffix("object") not in _BOARD_TYPES:
+        return properties, {}
+    names = [n.strip() for n in str(properties).split(",") if n.strip()]
+    plain = {n.lower() for n in names if not n.lower().endswith("_mm")}
+    wanted: list[str] = []
+    in_mm: dict[str, tuple[str, bool]] = {}
+    for n in names:
+        if n.lower().endswith("_mm") and len(n) > 3:
+            stem = n[:-3]
+            in_mm[n] = (stem, stem.lower() in plain)
+            n = stem
+        if n.lower() not in {w.lower() for w in wanted}:
+            wanted.append(n)
+    return ",".join(wanted), in_mm
+
+
+def _mm_values(result: dict, in_mm: dict[str, tuple[str, bool]]) -> None:
+    """Each object's _mm properties from its mil values, to 10 nm."""
+    for obj in result.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        for name, (stem, keep) in in_mm.items():
+            value = obj.get(stem)
+            try:
+                obj[name] = round(float(value) * MM_PER_MIL, 5)
+            except (TypeError, ValueError):
+                obj[name] = value
+            if not keep:
+                obj.pop(stem, None)
 
 
 def _merge_items(items: Any, shared: dict[str, Any]) -> Any:
@@ -247,7 +338,8 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
     if _FILTER_NAME.fullmatch(cond.strip()):
         hint = f" For a true/false property write {cond.strip()}=true."
     return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
-                     "Name=Value conditions joined by |, each matched exactly "
+                     "Name=Value conditions joined by |, each matched exactly, "
+                     "a number property as a number "
                      "(also Name!=Value, Name<Value, >, <=, >= on numbers, and "
                      "Name~pattern / Name!~pattern with * and ? wildcards); Altium "
                      "query expressions (OnLayer(...), Or, And) and bare names are "
@@ -397,6 +489,20 @@ def _stub_records(pins: list[dict[str, Any]]) -> list[str]:
         seen.add((desig, pin_num))
         out.append(f"{desig},{pin_num},{desig}_{pin_num}")
     return out
+def _hex_to_bgr(colour: str) -> Optional[int]:
+    """"#RRGGBB" as Altium's packed blue-green-red integer; None if malformed."""
+    hexpart = colour.strip().lstrip("#")
+    if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+        return None
+    r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+    return r_ | (g_ << 8) | (b_ << 16)
+
+
+def _bgr_to_hex(bgr: Any) -> Any:
+    """Altium's packed blue-green-red integer as "#RRGGBB"; else unchanged."""
+    if not isinstance(bgr, int) or isinstance(bgr, bool) or not 0 <= bgr <= 0xFFFFFF:
+        return bgr
+    return "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF)
 
 
 def _cursor_to_view_centre() -> bool:
@@ -446,13 +552,139 @@ def _cursor_to_view_centre() -> bool:
     return True
 
 
+# A Rule parameter's fields are joined by '|'. Altium swaps '|' and U+00A6
+# in the value on save and load (measured on AD 25: a value written with
+# U+00A6 reads back with '|' after a reopen), so neither may appear inside
+# a field. Escaped so the source stays ASCII.
+RULE_FIELD_SEPARATOR = "|"
+FILE_FIELD_SEPARATOR = "\u00a6"
+
+
+def rule_text(rule: Any, label: str) -> tuple[str, str]:
+    """A Rule parameter's value from its fields, e.g. {"RULEKIND":
+    "Clearance", "GAP": "10mil"}: names upper-cased, ``KEY=VALUE`` joined
+    by '|'. Returns (value, error); on an error the value is empty."""
+    if not isinstance(rule, dict) or not rule:
+        return "", f"{label} must be a non-empty object"
+    keys = [str(k).strip().upper() for k in rule]
+    if "RULEKIND" not in keys:
+        return "", (f"{label} needs RULEKIND, e.g. "
+                    "Length, MatchedLengths, Clearance or SupplyNets")
+    if len(set(keys)) != len(keys):
+        return "", f"{label} names a field twice"
+    parts = []
+    for key, (_, val) in zip(keys, rule.items()):
+        val = str(val)
+        if not key or any(c in key for c in "=|" + FILE_FIELD_SEPARATOR) \
+                or any(c in val for c in "|" + FILE_FIELD_SEPARATOR):
+            return "", (f"{label} {key!r}: a field name "
+                        "must be non-empty without '=', and neither may "
+                        "hold '|' or U+00A6, which separate the fields")
+        parts.append(f"{key}={val}")
+    return RULE_FIELD_SEPARATOR.join(parts), ""
+
+
+def rule_fields(value: Any) -> dict[str, str]:
+    """The fields of a rule record (``KEY=VALUE`` joined by '|', or by
+    U+00A6 as a saved file holds them); empty when it is not one."""
+    text = str(value or "").replace(FILE_FIELD_SEPARATOR, RULE_FIELD_SEPARATOR)
+    fields: dict[str, str] = {}
+    for part in text.split(RULE_FIELD_SEPARATOR):
+        key, eq, val = part.partition("=")
+        if eq and key.strip():
+            fields[key.strip().upper()] = val
+    return fields if "RULEKIND" in fields else {}
+
+
+def _rule_row(row: Any) -> None:
+    """A sheet rule parameter gets its parsed ``rule_fields``."""
+    if not isinstance(row, dict):
+        return
+    fields = rule_fields(row.get("value"))
+    if fields and (row.get("rule") or str(row.get("name", "")).lower() == "rule"):
+        row["rule_fields"] = fields
+
+
+def _add_rule_fields(reply: Any) -> None:
+    """Each sheet rule in a parameter list gets its ``rule_fields``, and
+    each parameter its ``index`` when an older script sent none."""
+    rows = reply.get("parameters") if isinstance(reply, dict) else None
+    if not isinstance(rows, list):
+        return
+    for i, row in enumerate(rows):
+        if isinstance(row, dict):
+            row.setdefault("index", i)
+            _rule_row(row)
+
+
+def directive_parameter_fields(
+    parameter_list: list[dict[str, Any]] | None,
+    name: str | None,
+) -> tuple[dict[str, str], str]:
+    """The request fields for a directive's parameters given as a list:
+    ``param_count`` and ``param_name_<i>``, ``param_value_<i>``,
+    ``param_hidden_<i>``, plus ``set_name``. Indexed fields carry a value
+    that holds '=' or '|' and a name that repeats. Returns (fields, error);
+    on an error the fields are empty and nothing is to be sent."""
+    fields: dict[str, str] = {}
+    if name is not None:
+        name = str(name).strip()
+        if not name:
+            return {}, "name, when given, must not be empty"
+        fields["set_name"] = name
+    if parameter_list is None:
+        return fields, ""
+    if not isinstance(parameter_list, list) or not parameter_list:
+        return {}, "parameter_list must be a non-empty list"
+    if len(parameter_list) > 64:
+        return {}, "parameter_list holds at most 64 parameters"
+    for i, item in enumerate(parameter_list):
+        if not isinstance(item, dict):
+            return {}, f"parameter_list[{i}] must be an object"
+        rule = item.get("rule")
+        pname = str(item.get("name", "Rule" if rule is not None else "")).strip()
+        if not pname:
+            return {}, f"parameter_list[{i}] needs a name"
+        if rule is not None:
+            if "value" in item:
+                return {}, f"parameter_list[{i}]: give value or rule, not both"
+            value, error = rule_text(rule, f"parameter_list[{i}].rule")
+            if error:
+                return {}, error
+        else:
+            value = str(item.get("value", ""))
+        fields[f"param_name_{i}"] = pname
+        fields[f"param_value_{i}"] = value
+        if item.get("hidden"):
+            fields[f"param_hidden_{i}"] = "true"
+    fields["param_count"] = str(len(parameter_list))
+    return fields, ""
+
+
+#: What a server template does to the sheet's parameters, in the order of
+#: Altium's TTemplateUpdateAction (0 to 3).
+TEMPLATE_PARAMETER_ACTIONS = ("none", "add_new", "override_all", "auto")
+
+_TEMPLATE_GUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}")
+
+
+def template_guid(value: Any) -> Optional[str]:
+    """A vault or revision GUID as Altium writes it (8-4-4-4-12 hex digits,
+    upper case, no braces), or None when ``value`` is not one. Case and
+    braces round it are forgiven; nothing else reaches the server call."""
+    text = str(value or "").strip().upper()
+    if len(text) >= 2 and text[0] == "{" and text[-1] == "}":
+        text = text[1:-1]
+    return text if _TEMPLATE_GUID.fullmatch(text) else None
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
     @mcp.tool()
     async def obj_query(
         object_type: str,
-        properties: str,
+        properties: str | list[str],
         scope: str = "active_doc",
         filter: str = "",
         limit: int = 0,
@@ -469,8 +701,8 @@ def register_generic_tools(mcp):
                 "Collapsed"); symbol graphics as "sch_polygon",
                 "sch_arc", "sch_ellipse", "sch_elliptical_arc", "sch_bezier"
                 (plain "polygon" and "arc" are the board's), the bare
-                "ellipse", "elliptical_arc" and "bezier", and "eDesignator" and
-                "eRoundRectangle"
+                "ellipse", "elliptical_arc" and "bezier", "eDesignator",
+                "eRoundRectangle", "eIEEESymbol" (Symbol, ScaleFactor)
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eSplitPlaneObject" (a plane layer's regions, with Net
@@ -504,20 +736,23 @@ def register_generic_tools(mcp):
                 PCB PRIMITIVES ARE FLAT, NOT DOTTED: a track's net is
                 "Net", never "Net.Name". "Net,Layer,Width" for tracks;
                 "Net,Layer,HoleSize,Size" for vias;
-                "Designator,Comment,Pattern,Rotation,X,Y" for
-                components; "Text,Height,StrokeWidth,IsDesignator" for
-                texts, and "MirrorFlag" (settable with obj_modify; the text
-                is kept where it is). Polygons ("polygon") read and, with
-                obj_modify, set their pour settings: "Name,Grid,TrackSize,
+                "Designator,Comment,Pattern,Rotation,X,Y,NameOn,CommentOn"
+                for components; "Text,Height,StrokeWidth,IsDesignator,
+                IsHidden" for texts, and "MirrorFlag" (settable; the text
+                stays put). Polygons ("polygon") read and set their pour
+                settings: "Name,Grid,TrackSize,
                 MinTrack,ArcApproximation,NeckWidthThreshold" (decimal
                 mils), "IslandAreaThreshold" (square mils),
                 "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
                 and the read-only "PourIndex,Poured"; nothing repours.
-                Lengths are decimal mils.
 
-                A board type returns EVERY primitive of that type;
-                filter "InComponent=false|InPolygon=false" for free
-                copper. Mechanical-layer tracks have no net.
+                A board type returns EVERY primitive of that type
+                ("InComponent=false|InPolygon=false": free copper).
+                Mechanical-layer tracks have no net. On a board only an
+                exact Net=,
+                Component= or BoundsLeft/BoundsBottom (X1/Y1) is indexed;
+                any other condition (X=, Y=) is checked on every object
+                (Layer=: one layer's).
             scope: "active_doc" (default); "project" (every sheet of the
                 focused project); "doc:PATH" or the bare path (that sheet,
                 no focus change); "project:PATH"; "lib_component:NAME" (a
@@ -525,22 +760,24 @@ def register_generic_tools(mcp):
                 part 3 of a multi-part one (else only part 1 is seen;
                 OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
             filter: Pipe-separated property=value conditions (AND), e.g.
-                "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
-                length matches as a number in mils ('.' or ',' decimal).
-                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
-                (a value that is not a number matches no < > <= >=);
+                "Text=VCC" or "Designator.Text=R1"; "" matches all.
+                Numbers match as numbers ('.' or ','): Location.Y=9000.0
+                meets 9000; text matches exactly.
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers;
                 "Name~POUR_*" matches a wildcard pattern (* any run, ? one
                 character, case ignored), "Net!~VCC*" excludes by one. A
-                PCB Layer (Layer1, Layer2) takes the internal name
-                ("Mechanical21") or the board's own name ("FluidGon"), in
-                any case; a ~ pattern meets either, and a name that is no
-                layer is refused. The same grammar holds for obj_modify,
-                obj_delete and obj_select.
-            limit: Maximum number of objects to return (0 = unlimited)
+                PCB Layer takes the internal name ("Mechanical21") or the
+                board's own, any case; ~ meets either; no layer: refused.
+                Same grammar in obj_modify, obj_delete, obj_select, obj_count.
+            limit: Most objects to return (0 = all); it also ends the
+                search early, and count is then the number returned.
 
         Returns:
-            Dictionary with "objects" array and "count"
+            "objects", "count"; "not_on_this_type": properties the type
+            lacks.
         """
+        properties = _names(properties)
+        properties, in_mm = _mm_properties(properties, object_type)
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
@@ -583,6 +820,16 @@ def register_generic_tools(mcp):
         untrusted = untrusted_text_note(properties)
         if untrusted and isinstance(result, dict):
             result["_untrusted_content"] = untrusted
+        literal = _literal_wildcard_note(filter)
+        if literal and isinstance(result, dict) and not result.get("count"):
+            result["note"] = literal
+        # A member the type does not carry reads blank; say why, from the
+        # same table the script's gate is generated from.
+        refused = member_refusals(object_type, properties.split(","))
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
+        if in_mm and isinstance(result, dict):
+            _mm_values(result, in_mm)
         return result
 
     @mcp.tool()
@@ -701,7 +948,7 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def obj_modify(
         object_type: str = "",
-        set: str = "",
+        set: str | dict[str, Any] | list[str] = "",
         scope: str = "active_doc",
         filter: str = "",
         items: Optional[list[dict[str, Any]]] = None,
@@ -710,9 +957,9 @@ def register_generic_tools(mcp):
 
         When each object needs a DIFFERENT value (10 pins to 10 positions,
         distinct designators), give ``items``: a list of
-        {scope, object_type, filter, set} dicts, one per filter. They run in
-        ONE Altium transaction (one undo step); arguments given beside
-        ``items`` apply to every item. No rollback: items before a failure
+        {scope, object_type, filter, set} dicts, one per filter: ONE
+        request, but each item is its own search and edit (its own undo
+        step); arguments given beside ``items`` apply to every item. No rollback: items before a failure
         stay applied. After a designator list, check the netlist: duplicate
         designators merge nets silently (proj_annotate renumbers without
         duplicates). With items a value in ``set`` may hold ';' but no
@@ -791,9 +1038,9 @@ def register_generic_tools(mcp):
             scope: "active_doc" (default), "project" (all SCH sheets),
                 "doc:C:\\path\\Sheet.SchDoc" (no focus change), or
                 "lib_component:NAME" (a symbol in the active SchLib,
-                selected for you).
+                selected for you). A board type takes only the default:
+                any other is refused (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
-
             items: Several filter+set operations at once (see above).
 
         Returns:
@@ -817,6 +1064,7 @@ def register_generic_tools(mcp):
             obj_modify(object_type="eRegionObject",
                        filter="Layer=TopLayer|Net=GND", set="Net=")
         """
+        set = _assignments(set)
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
                                         ("object_type", object_type),
@@ -824,6 +1072,9 @@ def register_generic_tools(mcp):
             ops = _merge_items(items, shared)
             if isinstance(ops, dict):
                 return ops
+            for op in ops:
+                if "set" in op:
+                    op["set"] = _assignments(op["set"])
             return await obj_batch_modify(ops)
         if not object_type or not set:
             return {"ok": False, "reason":
@@ -853,6 +1104,9 @@ def register_generic_tools(mcp):
         if (isinstance(result, dict) and object_type in ("eParameter", "eDesignator")
                 and re.search(r"(^|\|)\s*GraphicallyLocked\s*=", set)):
             result["note"] = _PARAMETER_LOCK_DOES_NOT_SAVE
+        refused = member_refusals(object_type, [a.split("=", 1)[0] for a in set.split("|")])
+        if refused and isinstance(result, dict):
+            result["not_on_this_type"] = refused
         return result
 
     @mcp.tool()
@@ -882,9 +1136,21 @@ def register_generic_tools(mcp):
                 {"properties": "Text=GND|Location.X=100|Location.Y=400"},
                 {"properties": "Text=SCK|Location.X=300|Location.Y=200"}])
 
+        Shapes take their geometry here, in mils and degrees: Radius,
+        StartAngle, EndAngle on sch_arc (0 to 360 is a circle) and
+        elliptical_arc; SecondaryRadius on elliptical_arc and ellipse
+        (Radius is the X radius); Vertices "x1,y1,x2,y2,..." on polyline
+        (2 points or more), sch_polygon (3 or more) and bezier (4, 7,
+        10 ... points); StartLineShape,
+        EndLineShape (None, Arrow, Solid Arrow, Tail, Solid Tail, Circle,
+        Square) and LineShapeSize on polyline; FileName, EmbedImage,
+        KeepAspect and Corner.X / Corner.Y on image.
+
         Returns:
-            Dictionary confirming creation. With items: created, failed,
-            total and the failures by index. Known unsupported properties
+            Dictionary confirming creation, and ``properties``: the names
+            not written (unknown, or a value the object did not keep).
+            With items: created, failed, total, the failures by index,
+            and property_problems. Known unsupported properties
             (IsHidden on anything but pins, parameters, designators and
             sheet names; Text on a type without it, such as eParameterSet
             or eWire) reject that item before registration with reason
@@ -930,16 +1196,19 @@ def register_generic_tools(mcp):
         with an empty filter needs confirm_delete_all, or nothing is sent.
         Arguments given beside ``items`` apply to every item.
 
-        A PCB type deletes from the active board and also matches
-        footprint primitives and polygon hatching unless the filter says
-        "InComponent=false|InPolygon=false". To take up routing use
-        ``pcb_unroute``.
+        A PCB type deletes from the active board (with a library or sheet
+        in front: the only open board, brought forward; in a footprint use
+        lib_delete_footprint_primitives). It also
+        matches footprint primitives and polygon hatching unless the
+        filter says "InComponent=false|InPolygon=false". To take up
+        routing use ``pcb_unroute``.
 
         Args:
             object_type: Altium object type constant (see `obj_query`)
             scope: "active_doc", "project", "doc:PATH", or
                 "lib_component:NAME" (a named symbol in the active SchLib).
-                A PCB type takes only "active_doc".
+                A PCB type takes only "active_doc"; any other is refused
+                (SCOPE_NOT_SUPPORTED) and nothing is deleted.
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
@@ -958,6 +1227,11 @@ def register_generic_tools(mcp):
             says why, and ``matched`` still counts the objects already
             removed. Query before repeating a delete that failed or timed
             out: the first part of it may already have happened.
+            A sheet's system parameters (Title, Author, Revision ...) are
+            never removed (Altium recreates one with the value * on the
+            next load): a filter that meets one leaves it, names it in
+            ``kept_system_parameters`` and answers ``success`` false.
+            Change or clear one with obj_modify (set Text).
         """
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
@@ -1073,7 +1347,11 @@ def register_generic_tools(mcp):
         """Select objects matching a filter on the active document.
 
         Sets the selection state on matching schematic or PCB objects for
-        visual highlighting. Use `obj_deselect_all` to clear.
+        visual highlighting. Use `obj_deselect_all` to clear. On a board
+        it ignores Altium's Selection Filter and searches twice (select,
+        then read back): an indexed filter (see `obj_query`) keeps that
+        quick. With a library or sheet in front a PCB type acts on the
+        only open board.
 
         Args:
             object_type: Altium object type (schematic or PCB)
@@ -1113,6 +1391,9 @@ def register_generic_tools(mcp):
         x: Optional[float] = None,
         y: Optional[float] = None,
         radius: Optional[float] = None,
+        name: str = "",
+        scale: Optional[float] = None,
+        index: Optional[int] = None,
     ) -> dict[str, Any]:
         """Control the viewport zoom level of the focused document.
 
@@ -1122,14 +1403,23 @@ def register_generic_tools(mcp):
         Args:
             action: "fit" (Fit All Objects, which can cut a sheet's frame
                 off), "document" (a schematic's Fit Document: the whole
-                sheet with its frame), "board" (the board alone, not
-                parts parked beside it; a schematic fits as "fit"),
-                "selection" (zoom to selected objects) or "point" (zoom
-                to x, y)
+                sheet with its frame), "board" (the board outline with
+                a margin, not parts parked beside it; a schematic fits
+                as "fit"),
+                "selection" (zoom to selected objects), "point" (zoom
+                to x, y) or "object" (centre a named object on a
+                schematic sheet, see name)
             x, y: the point for "point", in mils (a footprint's frame in
                 a PCB library)
-            radius: half the width of the view round the point on a board
-                or footprint, mils (default 200)
+            radius: half the width of the square the view is fitted to
+                round the point, mils (default 200)
+            name: for "object": a part's designator, a net label, port,
+                power port or off-sheet connector name, or a harness
+                connector's type; case is ignored. The reply lists every
+                match with its box (what Altium outlines when selected)
+            scale: for "object": how much of the window the object's box
+                fills, percent (default 50)
+            index: for "object": which match to show, from 1 (default 1)
 
         Returns:
             Dictionary confirming the zoom action
@@ -1143,12 +1433,22 @@ def register_generic_tools(mcp):
             if radius is not None:
                 params["radius"] = str(float(radius))
             return await bridge.send_command_async("generic.zoom_to_xy", params)
+        if action == "object":
+            if not name.strip():
+                return {"success": False,
+                        "error": 'action "object" needs a name'}
+            request = {"name": name.strip()}
+            if scale is not None:
+                request["scale"] = str(float(scale))
+            if index is not None:
+                request["index"] = str(int(index))
+            return await bridge.send_command_async("generic.zoom_to_object", request)
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )
         # Fit All Objects in a symbol library leaves no margin: the top pin
         # row sits under the editor's floating toolbar. One Zoom Out step
-        # (AdvSch.rcs PLSch:ZoomOut) clears it.
+        # clears it.
         if (action == "fit" and isinstance(result, dict)
                 and str(result.get("document_kind") or "").upper() == "SCHLIB"):
             await bridge.send_command_async(
@@ -1203,45 +1503,18 @@ def register_generic_tools(mcp):
         return await _reload_sheet(file_path, save)
 
     async def _reload_sheet(file_path: str, save: bool) -> dict[str, Any]:
-        import os
-        from ..bridge.exceptions import AltiumError
+        from ..bridge.reopen import save_close_reopen
 
         path = file_path.strip()
         if not path.lower().endswith((".schdoc", ".wirdoc")):
             return {"ok": False, "reason": "file_path is a .SchDoc or .WirDoc"}
         bridge = get_bridge()
-        out: dict[str, Any] = {"file_path": path, "saved": False}
-        if save:
-            saved = await bridge.send_command_async(
-                "application.save_document", {"file_path": path}, timeout=60.0)
-            if not (isinstance(saved, dict) and saved.get("saved")):
-                return {"ok": False, "stage": "save", **out,
-                        "reason": (saved or {}).get("reason", "the save did not reach "
-                                   "the file") if isinstance(saved, dict) else str(saved)}
-            out["saved"] = True
-        try:
-            closed = await bridge.send_command_async(
-                "application.close_document", {"file_path": path}, timeout=120.0)
-        except AltiumError as exc:
-            return {"ok": False, "stage": "close", **out, "reason": str(exc)}
-        out["closed"] = bool(isinstance(closed, dict) and closed.get("closed"))
-        if not out["closed"]:
-            return {"ok": False, "stage": "close", **out, "close": closed}
-        if not os.path.isfile(path):
-            return {"ok": False, "stage": "reopen", **out,
-                    "reason": "the sheet is not on disk to reopen"}
-        await bridge.send_command_async("application.run_process", {
-            "process_name": "WorkspaceManager:OpenObject",
-            "parameters": f"ObjectKind=Document|FileName={path}"})
-        try:
-            await bridge.send_command_async(
-                "application.set_active_document", {"file_path": path})
-        except AltiumError as exc:
-            return {"ok": False, "stage": "reopen", **out, "reason": str(exc)}
-        out["reopened"] = True
+        out = await save_close_reopen(bridge, path, save)
+        if not out["ok"]:
+            return out
         out["recompile"] = await bridge.send_command_async(
             "project.force_recompile", {}, timeout=120.0)
-        return {"ok": True, **out}
+        return out
 
     @mcp.tool()
     async def sch_place_comment(text: str, x: float, y: float,
@@ -1658,13 +1931,23 @@ def register_generic_tools(mcp):
                 "WorkspaceManager:OpenObject", "PCB:Zoom")
             parameters: Optional pipe-separated key=value parameter pairs, e.g.:
                 "ObjectKind=Document|FileName=C:\\path\\to\\file.SchDoc"
+                PCB:AutoRoute, Altium's own autorouter, is refused
+                (AUTOROUTER_NOT_ALLOWED) unless the user has set "Altium
+                autorouter" to Allowed on the Config tab: route with
+                pcb_route_brief and pcb_route_round.
 
         Returns:
-            Dictionary with execution result
+            Dictionary with execution result. Success means the process
+            was dispatched: Altium accepts an unknown process silently,
+            so read the design back to see what it did.
         """
         refusal = refuse_process(process_name)
         if refusal is not None:
             return {"success": False, "error": "REFUSED_BY_POLICY",
+                    "reason": refusal, "process": process_name}
+        refusal = refuse_altium_autorouter(process_name)
+        if refusal is not None:
+            return {"success": False, "error": "AUTOROUTER_NOT_ALLOWED",
                     "reason": refusal, "process": process_name}
 
         bridge = get_bridge()
@@ -1939,6 +2222,9 @@ def register_generic_tools(mcp):
     async def obj_clear_highlights() -> dict[str, Any]:
         """Clear all net highlights in the active schematic or PCB document.
 
+        On a schematic a highlight is a selection, so the whole sheet is
+        deselected (no count is reported).
+
         Returns:
             Dictionary confirming highlights were cleared
         """
@@ -1979,6 +2265,9 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    @bulk_items_by(removals_together(
+        "generic.delete_sheet",
+        lambda a: {"file_path": a["file_path"]} if a.get("file_path") else None))
     async def proj_delete_sheet(
         file_path: str,
     ) -> dict[str, Any]:
@@ -1986,9 +2275,9 @@ def register_generic_tools(mcp):
 
         Safety check: refuses to remove the last remaining schematic sheet.
         The file is removed from the project but not deleted from disk, and
-        closed unless it has unsaved edits. The project file is saved, its
-        leftover sections taken out and read back, as proj_remove_document
-        does.
+        closed unless it has unsaved edits. The project file is saved and
+        read back, and Altium writes it fresh when its save left the
+        sheet in it, as proj_remove_document does.
 
         Args:
             file_path: Full path to the .SchDoc file to remove
@@ -2002,10 +2291,8 @@ def register_generic_tools(mcp):
             "generic.delete_sheet",
             {"file_path": file_path},
         )
-        from ..config import get_config
         from ..prjpcb import finish_removal
-        return finish_removal(
-            result, str(get_config().workspace_dir / "backups" / "prjpcb"))
+        return await finish_removal(bridge, result)
 
     @mcp.tool()
     async def obj_switch_view(
@@ -2462,14 +2749,22 @@ def register_generic_tools(mcp):
         custom_zones_x: Optional[int] = None,
         custom_zones_y: Optional[int] = None,
         custom_margin_width: Optional[float] = None,
+        title_block_on: Optional[bool] = None,
+        border_on: Optional[bool] = None,
+        zone_origin: Optional[str] = None,
+        document_font_id: Optional[int] = None,
+        sheet_color: Optional[str] = None,
+        border_color: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Read, or set, the active sheet's reference zones, margin, border
-        style and template graphics. Call with nothing to read.
+        """Read, or set, the active sheet's reference zones and where they
+        are counted from, margin, border style, template graphics, title
+        block, border, sheet and border colours and document font. Call
+        with nothing to read.
 
         On a standard sheet size the zones and margin follow the size, so
         zones_x, zones_y and margin_width do not take; the custom_* ones
         apply to a custom-size sheet. Every value is read back; one that
-        did not take is in ``not_applied``.
+        did not take is in ``not_applied``. Nothing is saved.
 
         Args:
             zones_x, zones_y: Reference zones across and down (from 1).
@@ -2480,10 +2775,23 @@ def register_generic_tools(mcp):
             show_template_graphics: Show the template's graphics.
             custom_zones_x, custom_zones_y, custom_margin_width: The same
                 for a custom-size sheet.
+            title_block_on, border_on: Show Altium's standard title block
+                and the sheet border.
+            zone_origin: Where the zones are counted from: "upper_left"
+                (Altium's default) or "bottom_right" (zone 1 and zone A in
+                the bottom right corner).
+            document_font_id: The sheet's document font, a font id from
+                obj_get_font_id in this session; one that names no font is
+                refused.
+            sheet_color, border_color: The sheet's background colour and
+                the colour of its border and zone frame, "#RRGGBB".
 
         Returns:
-            ``changed``, ``options`` (read back after any write) and
-            ``not_applied``.
+            ``changed``, ``options`` (read back after any write; colours
+            as "#RRGGBB" with Altium's BGR integer beside them as
+            ``sheet_color_bgr`` and ``border_color_bgr``; the font as
+            ``document_font_id`` and ``document_font``, its name, size and
+            style) and ``not_applied``.
         """
         params: dict[str, Any] = {}
         for key, value in (("zones_x", zones_x), ("zones_y", zones_y),
@@ -2501,12 +2809,35 @@ def register_generic_tools(mcp):
                     return {"ok": False, "reason": f"{key} is mils from 0"}
                 params[key] = str(value)
         for key, value in (("reference_zones", reference_zones),
-                           ("show_template_graphics", show_template_graphics)):
+                           ("show_template_graphics", show_template_graphics),
+                           ("title_block_on", title_block_on),
+                           ("border_on", border_on)):
             if value is not None:
                 params[key] = "true" if value else "false"
+        if zone_origin is not None and zone_origin.strip():
+            zone = zone_origin.strip().lower().replace(" ", "_").replace("-", "_")
+            if zone not in ("upper_left", "bottom_right"):
+                return {"ok": False, "reason": (
+                    f"zone_origin is upper_left or bottom_right, not {zone_origin!r}")}
+            params["zone_origin"] = zone
+        if document_font_id is not None:
+            if not 1 <= document_font_id <= 99_999_999:
+                return {"ok": False, "reason": (
+                    "document_font_id is a font id from 1; obj_get_font_id gives one")}
+            params["document_font_id"] = str(int(document_font_id))
+        for key, value in (("sheet_color", sheet_color), ("border_color", border_color)):
+            if value is not None and value.strip():
+                bgr = _hex_to_bgr(value)
+                if bgr is None:
+                    return {"ok": False, "reason": f"{key} {value!r} is not #RRGGBB"}
+                params[key] = str(bgr)
         reply = await get_bridge().send_command_async("generic.sheet_options", params)
-        if isinstance(reply, dict) and params:
-            got = reply.get("options") or {}
+        if not isinstance(reply, dict):
+            return reply
+        got = reply.get("options")
+        if not isinstance(got, dict):
+            got = {}
+        if params:
             keys = {"margin_width": "margin_width_mils",
                     "custom_margin_width": "custom_margin_width_mils"}
             missed = []
@@ -2514,6 +2845,8 @@ def register_generic_tools(mcp):
                 have = got.get(keys.get(key, key))
                 if isinstance(have, bool):
                     ok = have == (sent == "true")
+                elif key == "zone_origin":
+                    ok = have == sent
                 else:
                     try:
                         ok = abs(float(have) - float(sent)) < 0.01
@@ -2522,6 +2855,10 @@ def register_generic_tools(mcp):
                 if not ok:
                     missed.append(key)
             reply["not_applied"] = missed
+        for key in ("sheet_color", "border_color"):
+            if key in got:
+                got[key + "_bgr"] = got[key]
+                got[key] = _bgr_to_hex(got[key])
         return reply
 
     @mcp.tool()
@@ -2530,6 +2867,9 @@ def register_generic_tools(mcp):
         template_file: str = "",
         vault: bool = False,
         file_path: str = "",
+        vault_guid: str = "",
+        revision_guid: str = "",
+        parameter_action: str = "",
     ) -> dict[str, Any]:
         """Read, set, update or remove the sheet template (.SchDot) of a
         schematic sheet, with no dialog.
@@ -2541,39 +2881,86 @@ def register_generic_tools(mcp):
         ask for a scope in a dialog; these do not, and act on one sheet.
         Every action is read back.
 
+        A template on the Altium server is set by its vault and revision
+        GUIDs instead of a file: Altium downloads it and the sheet keeps
+        the link. Read the GUIDs off a sheet already linked (get with
+        vault=True) or from the server; the workspace template lists are
+        not reachable here. "update" keeps a link: with revision_guid it
+        moves the sheet to that revision, without arguments it applies
+        the revision the sheet is linked to again (it does not look for
+        a newer one).
+
         Args:
             action: "get" (default), "set", "update" or "remove".
-            template_file: The .SchDot for "set". For "update" it is
-                optional: without it the sheet's own template file is
-                read again (it must still exist on this machine).
+            template_file: A local .SchDot for "set". For "update" it is
+                optional: without it a sheet linked to the server updates
+                from the server, any other reads its own template file
+                again (it must still exist on this machine). A local file
+                replaces a server link.
             vault: Also read the vault link (vault, item and revision
-                GUIDs and names) a sheet set from the server carries.
+                GUIDs and names); always read after a server set or update.
             file_path: The sheet (.SchDoc). Empty uses the sheet in front.
                 Set and update bring a named sheet forward for Altium's
                 template command and then restore the view you had.
+            vault_guid, revision_guid: A server template for "set" or
+                "update", in place of template_file; both together.
+            parameter_action: What a server "set" does to the sheet's
+                parameters: "add_new" (default, adds the template's
+                parameters the sheet lacks), "none", "override_all" (the
+                template's values replace the sheet's) or "auto".
 
         Returns:
-            ``applied`` (the sheet reads back as asked), ``template_file``,
-            ``template_before``, ``template_objects`` (1 with a template,
-            0 without), ``template_graphics`` (the objects the template
-            draws), ``sheet_style``, ``title_block_on``, ``border_on``;
-            ``removed`` for "remove"; ``vault`` when asked.
+            ``applied`` (the sheet reads back as asked: the file, or the
+            vault and revision asked with a template file),
+            ``template_source`` ("local" or "server", for set and
+            update), ``asked`` (the GUIDs a server call used),
+            ``template_file``, ``template_before``, ``template_objects``,
+            ``template_graphics``, ``sheet_style``, ``title_block_on``,
+            ``border_on``; ``removed`` for "remove"; ``vault``.
         """
         action = (action or "get").strip().lower()
         if action not in ("get", "set", "update", "remove"):
             return {"ok": False,
                     "reason": "action is get, set, update or remove"}
         params: dict[str, Any] = {"action": action}
+        server = bool(vault_guid or revision_guid)
         if template_file:
             if action not in ("set", "update"):
                 return {"ok": False,
                         "reason": "template_file is for set and update"}
+            if server:
+                return {"ok": False,
+                        "reason": "give template_file or vault_guid and "
+                                  "revision_guid, not both"}
             if not template_file.lower().endswith(".schdot"):
                 return {"ok": False,
                         "reason": "template_file must be a .SchDot file"}
             params["template_file"] = template_file
-        elif action == "set":
-            return {"ok": False, "reason": "set needs template_file"}
+        elif action == "set" and not server:
+            return {"ok": False, "reason": "set needs template_file, or "
+                                           "vault_guid and revision_guid"}
+        if server:
+            if action not in ("set", "update"):
+                return {"ok": False, "reason": "vault_guid and revision_guid "
+                                               "are for set and update"}
+            vguid, rguid = template_guid(vault_guid), template_guid(revision_guid)
+            if not vguid or not rguid:
+                return {"ok": False,
+                        "reason": "vault_guid and revision_guid are both "
+                                  "needed, each as 8-4-4-4-12 hex digits; "
+                                  "get with vault=True reads them off a "
+                                  "linked sheet"}
+            params["vault_guid"] = vguid
+            params["revision_guid"] = rguid
+        if parameter_action:
+            word = str(parameter_action).strip().lower()
+            if not (server and action == "set"):
+                return {"ok": False, "reason": "parameter_action is for a "
+                                               "set from the server"}
+            if word not in TEMPLATE_PARAMETER_ACTIONS:
+                return {"ok": False, "reason": "parameter_action is none, "
+                                               "add_new, override_all or auto"}
+            params["parameter_action"] = word
         if vault:
             params["vault"] = "true"
         if file_path:
@@ -2582,8 +2969,13 @@ def register_generic_tools(mcp):
             "generic.sheet_template", params)
         if isinstance(reply, dict) and reply.get("applied") is False:
             reply["ok"] = False
-            reply["reason"] = ("the sheet does not read back as asked: "
-                               "see template_file and template_objects")
+            if reply.get("template_source") == "server":
+                reply["reason"] = ("the sheet does not read back the vault "
+                                   "and revision asked with a template "
+                                   "file: see asked, vault and template_file")
+            else:
+                reply["reason"] = ("the sheet does not read back as asked: "
+                                   "see template_file and template_objects")
         return reply
 
     @mcp.tool()
@@ -2895,6 +3287,8 @@ def register_generic_tools(mcp):
         """Get title block parameters (title, revision, date, etc.) from a schematic sheet.
 
         Reads all parameters from the sheet without modifying anything.
+        sch_sheet_parameters lists the same and adds, sets and removes
+        them, sheet rules included.
 
         Args:
             file_path: Full path to a specific .SchDoc file. If empty, reads
@@ -2902,7 +3296,8 @@ def register_generic_tools(mcp):
 
         Returns:
             Dictionary with "count" and "parameters" array, each having
-            "name" and "value"
+            "name" and "value" (and, as sch_sheet_parameters lists them,
+            "index", "hidden", "system", "rule" ...)
         """
         bridge = get_bridge()
         params = {}
@@ -2911,7 +3306,135 @@ def register_generic_tools(mcp):
         result = await bridge.send_command_async(
             "generic.get_sheet_parameters", params
         )
+        _add_rule_fields(result)
         return result
+
+    @mcp.tool()
+    async def sch_sheet_parameters(
+        action: str = "list",
+        file_path: str = "",
+        name: str = "",
+        index: Optional[int] = None,
+        # str, not Optional[str]: the None default tells a missing value
+        # from an empty one without offering "string or null".
+        value: str = None,  # type: ignore[assignment]
+        rule: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """List, add, set or remove a schematic sheet's own parameters (the
+        title block fields and the sheet's design rules), never a part's.
+
+        Args:
+            action: "list", "add", "set" or "remove".
+            file_path: The .SchDoc; empty = the sheet in front.
+            name: The parameter. list: only those of that name.
+            index: Its index as listed (set, remove). With name too, the
+                two must agree; a name that repeats needs the index.
+            value: The value to write (add, set). add makes a second
+                parameter of a name already used (a note says so).
+            rule: Instead of value, a sheet rule as its fields, e.g.
+                {"RULEKIND": "Clearance", "NAME": "HV", "GAP": "20mil",
+                "NETSCOPE": "DifferentNets", ...}; it is a parameter
+                named Rule. The first rule goes into the sheet's empty
+                system Rule (value *), later ones are new parameters.
+
+        list gives each parameter's index, name, value, hidden,
+        read_only_state (0 none, 1 name, 2 value, 3 both), system, rule,
+        removable, and a rule's rule_fields. add writes it hidden: a
+        sheet's own parameter is never drawn, and Altium reads every one
+        back hidden after a reload. A system parameter (Title,
+        Author, Rule ...) takes a value but is not removed: Altium makes it
+        again, with the value *, on the next load. A value Altium holds
+        read-only is refused. Each write is read back: applied is false
+        when Altium did not keep it (a rule it did not take reads back as
+        PcbType=ProtelPcb), and marks the sheet without saving it.
+
+        Returns:
+            list: count, parameters. add / set / remove: action, applied,
+            parameter (read back; remove: as it was), saved false,
+            pending_save true.
+        """
+        def refuse(message: str) -> dict[str, Any]:
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"{message}. Nothing was changed."}}
+
+        act = action.strip().lower() if isinstance(action, str) else ""
+        if act not in ("list", "add", "set", "remove"):
+            return refuse("action is list, add, set or remove")
+        pname = name.strip() if isinstance(name, str) else ""
+        if index is not None and (isinstance(index, bool)
+                                  or not isinstance(index, int) or index < 0):
+            return refuse("index is a whole number from 0, as listed")
+        if value is not None and not isinstance(value, str):
+            return refuse("value is text")
+        if rule is not None:
+            if value is not None:
+                return refuse("give value or rule, not both")
+            if pname and pname.lower() != "rule":
+                return refuse("a sheet rule is a parameter named Rule; "
+                              f"name it Rule, not {pname!r}")
+            value, error = rule_text(rule, "rule")
+            if error:
+                return refuse(error)
+            pname = pname or "Rule"
+        elif value is not None and FILE_FIELD_SEPARATOR in value \
+                and rule_fields(value):
+            # A rule record copied out of a saved file: in memory Altium
+            # joins the fields with '|'.
+            value = value.replace(FILE_FIELD_SEPARATOR, RULE_FIELD_SEPARATOR)
+
+        if act == "list":
+            if value is not None or index is not None:
+                return refuse("list takes file_path and name only")
+            query = {"file_path": file_path} if file_path else {}
+            reply = await get_bridge().send_command_async(
+                "generic.get_sheet_parameters", query)
+            _add_rule_fields(reply)
+            if pname and isinstance(reply, dict) \
+                    and isinstance(reply.get("parameters"), list):
+                rows = [p for p in reply["parameters"] if isinstance(p, dict)
+                        and str(p.get("name", "")).lower() == pname.lower()]
+                reply["sheet_count"] = reply.get("count")
+                reply["parameters"], reply["count"] = rows, len(rows)
+            return reply
+
+        if act == "add":
+            if not pname:
+                return refuse("add needs a name (or a rule)")
+            if index is not None:
+                return refuse("add takes no index: a new parameter goes "
+                              "after the others")
+            if value is None:
+                return refuse("add needs a value (or a rule)")
+            if pname.lower() == "rule" and not rule_fields(value):
+                return refuse("a parameter named Rule holds a rule record; "
+                              "give rule={\"RULEKIND\": ..., ...}")
+        elif not pname and index is None:
+            return refuse(f"{act} needs the parameter's index or name")
+        elif act == "set" and value is None:
+            return refuse("set needs a value or a rule")
+        elif act == "remove" and value is not None:
+            return refuse("remove takes the index or name only")
+
+        ask: dict[str, str] = {"action": act}
+        if file_path:
+            ask["file_path"] = file_path
+        if pname:
+            ask["name"] = pname
+        if index is not None:
+            ask["index"] = str(index)
+        if value is not None:
+            ask["value"] = value
+            ask["set_value"] = "true"
+        if act == "add":
+            # Altium hides a sheet's own parameters on load (seen on AD 25.8):
+            # write it hidden now so the sheet reads the same before a reload.
+            ask["hidden"] = "true"
+        reply = await get_bridge().send_command_async(
+            "generic.sheet_parameters", ask)
+        if isinstance(reply, dict):
+            _rule_row(reply.get("parameter"))
+        return reply
 
     @mcp.tool()
     async def obj_copy(
@@ -2943,12 +3466,18 @@ def register_generic_tools(mcp):
         scope: str = "active_doc",
         filter: str = "",
     ) -> dict[str, Any]:
-        """Quick count of objects by type, faster than `obj_query` when you only need the count.
+        """Count objects of a type without reading their properties.
+
+        On a board with NO filter Altium's own counter answers at once;
+        with a filter it searches like `obj_query` (an indexed filter keeps
+        that quick, see there).
 
         Args:
             object_type: Altium object type constant (see `obj_query` for options)
             scope: "active_doc" (default), "project", or
                 "doc:C:\\path\\Sheet.SchDoc" for a specific loaded sheet.
+                A PCB type counts the active board and takes no other
+                scope (SCOPE_NOT_SUPPORTED).
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
@@ -3351,6 +3880,8 @@ def register_generic_tools(mcp):
         parameters: dict[str, str] | None = None,
         style: int | None = None,
         orientation: int | None = None,
+        parameter_list: list[dict[str, Any]] | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         """Place a directive ON a wire of the active schematic; its
         parameters (e.g. NetClass=PWR) go to that net. For an area, use
@@ -3362,22 +3893,37 @@ def register_generic_tools(mcp):
             parameters: Several, e.g. {"NetClass": "PWR", "Width": "20"}.
             style: Altium's Style integer.
             orientation: Quarter turns, 0 to 3.
+            parameter_list: Instead of parameters: [{"name", "value",
+                "hidden"}, ...] in order; names may repeat, values may
+                hold '=' and '|'. {"rule": {"RULEKIND": "Length", ...}}
+                instead of a value makes a Rule parameter.
+            name: The directive's own name (default: its first parameter's).
 
         Returns:
-            The ``directive`` read back.
+            The ``directive`` read back, each parameter with ``hidden``.
         """
+        fields, error = directive_parameter_fields(parameter_list, name)
+        if error:
+            return {"ok": False, "reason": error}
         params = dict(parameters or {})
+        if parameter_list is not None and (params or param_name):
+            return {"ok": False, "reason": "give parameter_list or "
+                    "param_name / parameters, not both"}
         if not params and param_name:
             params = {param_name: param_value}
-        if not params or any(not k or any(c in f"{k}{v}" for c in "|=")
-                             for k, v in params.items()):
-            return {"ok": False, "reason": "give param_name or parameters; a "
-                    "name is non-empty and neither may contain '|' or '='"}
+        if parameter_list is None and (
+                not params or any(not k or any(c in f"{k}{v}" for c in "|=")
+                                  for k, v in params.items())):
+            return {"ok": False, "reason": "give param_name, parameters or "
+                    "parameter_list; in param_name / parameters a name is "
+                    "non-empty and neither may contain '|' or '=' (use "
+                    "parameter_list for those, and for a Rule)"}
         if orientation is not None and orientation not in (0, 1, 2, 3):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
         args = {"x": str(x), "y": str(y), "param_name": param_name,
                 "param_value": param_value,
-                "parameters": "|".join(f"{k}={v}" for k, v in params.items())}
+                "parameters": "|".join(f"{k}={v}" for k, v in params.items()),
+                **fields}
         if style is not None:
             args["style"] = str(int(style))
         if orientation is not None:
@@ -3396,7 +3942,7 @@ def register_generic_tools(mcp):
             Dictionary with ``directives`` array, each entry has
             ``name``, ``x``, ``y``, ``owner`` ("sheet", or "blanket" for
             one held inside a blanket) and a ``parameters`` list of
-            ``{name, value}`` objects, plus ``count`` and
+            ``{name, value, hidden}`` objects, plus ``count`` and
             ``in_blankets``.
         """
         bridge = get_bridge()
@@ -3413,6 +3959,8 @@ def register_generic_tools(mcp):
         collapsed: bool | None = None,
         color: int | None = None,
         area_color: int | None = None,
+        parameter_list: list[dict[str, Any]] | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         """Place a blanket on the active schematic: a polygon whose directive
         applies to every net it encloses (a net class, a differential pair,
@@ -3422,6 +3970,11 @@ def register_generic_tools(mcp):
             vertices: Outline as [[x, y], ...] in mils, at least 3 points.
             parameters: The directive's parameters, e.g. {"NetClass": "PWR"}.
                 Omit for a bare blanket.
+            parameter_list: Instead of parameters: [{"name", "value",
+                "hidden"}, ...] in order; names may repeat, values may
+                hold '=' and '|'. {"rule": {"RULEKIND": "Length", ...}}
+                instead of a value makes a Rule parameter.
+            name: The directive's own name (default: its first parameter's).
             directive_x, directive_y: Where the directive sits, in mils.
                 Default: the first vertex, on the outline, which is where
                 Altium reads a blanket's directive from.
@@ -3429,8 +3982,9 @@ def register_generic_tools(mcp):
             collapsed: Draw the blanket collapsed.
             color, area_color: Border and fill, Altium's BGR integers;
                 omitted, the user's blanket defaults. The fill is always
-                see-through: the blanket is drawn above what it encloses,
-                and Altium keeps no opaque blanket fill on save.
+                see-through: the blanket is drawn above what it encloses
+                (sch_set_draw_order sends it back), and Altium keeps no
+                opaque blanket fill on save.
 
         Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
         Coverage: sch_get_blankets after a compile.
@@ -3444,16 +3998,27 @@ def register_generic_tools(mcp):
                 "code": "INVALID_PARAMS",
                 "message": "vertices must be at least 3 [x, y] points in mils. "
                            "Nothing was placed."}}
-        for name, value in (parameters or {}).items():
-            if not name or any(c in f"{name}{value}" for c in "|="):
+        fields, error = directive_parameter_fields(parameter_list, name)
+        if not error and parameter_list is not None and parameters:
+            error = "give parameter_list or parameters, not both"
+        if not error and name is not None and not parameters and parameter_list is None:
+            error = "name needs parameters or parameter_list"
+        if error:
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"{error}. Nothing was placed."}}
+        for pname, value in (parameters or {}).items():
+            if not pname or any(c in f"{pname}{value}" for c in "|="):
                 return {"success": False, "error": {
                     "code": "INVALID_PARAMS",
-                    "message": f"parameter {name!r}={value!r}: a name must be "
-                               "non-empty, and neither may contain '|' or '='. "
+                    "message": f"parameter {pname!r}={value!r}: a name must be "
+                               "non-empty, and neither may contain '|' or '=' "
+                               "(use parameter_list for those, and for a Rule). "
                                "Nothing was placed."}}
         args: dict[str, Any] = {
             "vertices": ",".join(f"{float(x):g},{float(y):g}" for x, y in vertices),
             "parameters": "|".join(f"{k}={v}" for k, v in (parameters or {}).items()),
+            **fields,
         }
         if directive_x is not None:
             args["directive_x"] = f"{float(directive_x):g}"
@@ -3469,6 +4034,45 @@ def register_generic_tools(mcp):
             args["area_color"] = str(int(area_color))
         bridge = get_bridge()
         return await bridge.send_command_async("generic.place_blanket", args)
+
+    @mcp.tool()
+    async def sch_set_draw_order(
+        object_type: str,
+        filter: str = "",
+        to: str = "front",
+    ) -> dict[str, Any]:
+        """Bring matching objects on the active sheet to the front, or send
+        them to the back. A sheet draws its objects in the order they were
+        placed, so a new rectangle, image or blanket hides what is under it.
+
+        Args:
+            object_type: Schematic object type (see `obj_query`), e.g.
+                "eBlanket". Only objects placed on the sheet itself have
+                a draw order; pins, sheet entries and a part's parameters
+                go with their owner.
+            filter: Pipe-separated property=value conditions (AND logic),
+                as `obj_query`. Empty = every object of the type.
+            to: "front" (drawn over everything else) or "back" (drawn
+                under everything else).
+
+        Not undoable with Ctrl+Z; set it again to change it. Kept on save.
+
+        Returns:
+            ``matched``, ``moved``, ``objects_on_sheet`` and ``verified``
+            (the matches read back at the front or back of the sheet).
+        """
+        if to not in ("front", "back"):
+            return {"success": False, "error": {
+                "code": "INVALID_PARAMS",
+                "message": f"to is 'front' or 'back', not {to!r}. Nothing was moved."}}
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, matched=0)
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.set_draw_order",
+            {"object_type": object_type, "filter": filter, "to": to},
+        )
 
     @mcp.tool()
     async def sch_place_compile_mask(x1: float, y1: float, x2: float, y2: float,
@@ -3637,6 +4241,37 @@ def register_generic_tools(mcp):
         if document_path.strip():
             params["path"] = document_path.strip()
         return await get_bridge().send_command_async("generic.get_harness", params)
+
+    @mcp.tool()
+    async def sch_get_active_net(document_path: str = "", route: str = "auto",
+                                 compile: bool = False) -> dict[str, Any]:
+        """Read the compiled net of the net label, port, power port or wire selected on a sheet.
+
+        The first selected object of those four kinds is looked up in the
+        compiled netlist of the sheet's project, so a wire answers with
+        its net too. Nothing is written.
+
+        Args:
+            document_path: The open .SchDoc. Empty reads the sheet in front.
+            route: "auto" (default), "getnet" (one lookup by handle; no
+                net labels) or "lines" (walks the sheet's nets).
+            compile: Compile the project first (skipped while unchanged).
+
+        Returns:
+            ``net`` ("<none>" when nothing is selected, "" when the
+            netlist has none for it: compile first), ``kind``, ``text``,
+            ``x``, ``y`` (mils), ``sheet``, ``project``, ``route`` (the
+            one that answered), ``compiled``, ``found``, ``ms``.
+        """
+        route = route.strip().lower() or "auto"
+        if route not in ("auto", "getnet", "lines"):
+            return {"ok": False, "reason": "route is auto, getnet or lines"}
+        params = {"route": route}
+        if document_path.strip():
+            params["path"] = document_path.strip()
+        if compile:
+            params["compile"] = "true"
+        return await get_bridge().send_command_async("generic.get_active_net", params)
 
     @mcp.tool()
     async def sch_get_blankets() -> dict[str, Any]:
@@ -4078,12 +4713,22 @@ def register_generic_tools(mcp):
         text: str,
         align: str = "left",
         font_id: int = 0,
+        fill: str = "",
+        border_color: str = "",
+        text_color: str = "",
+        show_border: Optional[bool] = None,
+        text_margin: Optional[float] = None,
+        word_wrap: Optional[bool] = None,
+        clip_to_rect: Optional[bool] = None,
+        typed_breaks: bool = True,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
         A text frame is a bordered rectangle that word-wraps a block of
-        text. A newline, or a typed ``\\n``, becomes Altium's own line
-        break.
+        text. A newline becomes Altium's own line break; a text with no
+        newline may type ``\\n`` for one instead. The style is set before
+        the frame is placed, so a table of filled cells needs no search
+        and restyle afterwards.
 
         Args:
             x1, y1, x2, y2: The two rectangle corners in mils.
@@ -4091,23 +4736,53 @@ def register_generic_tools(mcp):
             align: Horizontal alignment "left", "center", or "right".
             font_id: The frame's font. 0 takes the font the sheet's text
                 frames already use, else its net labels' font.
+            fill: "#RRGGBB" fills the frame with that colour; empty leaves
+                it unfilled.
+            border_color, text_color: "#RRGGBB"; empty keeps the default.
+            show_border, word_wrap, clip_to_rect: None keeps the default
+                (all three on).
+            text_margin: Gap between border and text in mils; None keeps
+                the default.
+            typed_breaks: False keeps a typed ``\\n`` as text, as in the
+                path ``C:\\new``.
 
         Returns:
-            The placement: the frame's corners and the ``font_id`` it got.
+            The placement: the frame's corners, the ``font_id`` it got and
+            ``style`` read back off the frame (colours as "#RRGGBB").
         """
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "generic.place_text_frame",
-            {
-                "x1": _mils(x1),
-                "y1": _mils(y1),
-                "x2": _mils(x2),
-                "y2": _mils(y2),
-                "text": text,
-                "align": align,
-                "font_id": str(int(font_id)),
-            },
-        )
+        params: dict[str, Any] = {
+            "x1": _mils(x1),
+            "y1": _mils(y1),
+            "x2": _mils(x2),
+            "y2": _mils(y2),
+            "text": typed_line_breaks(text, typed_breaks),
+            "align": align,
+            "font_id": str(int(font_id)),
+        }
+        for key, value in (("area_color", fill), ("color", border_color),
+                           ("text_color", text_color)):
+            if value.strip():
+                bgr = _hex_to_bgr(value)
+                if bgr is None:
+                    return {"ok": False, "reason": f"{value!r} is not #RRGGBB"}
+                params[key] = str(bgr)
+        for key, flag in (("show_border", show_border), ("word_wrap", word_wrap),
+                          ("clip_to_rect", clip_to_rect)):
+            if flag is not None:
+                params[key] = "true" if flag else "false"
+        if text_margin is not None:
+            if text_margin < 0:
+                return {"ok": False, "reason": "text_margin is 0 or more"}
+            params["text_margin"] = _mils(text_margin)
+        reply = await get_bridge().send_command_async(
+            "generic.place_text_frame", params)
+        style = reply.get("style") if isinstance(reply, dict) else None
+        if isinstance(style, dict):
+            for key in ("area_color", "color", "text_color"):
+                if key in style:
+                    style[key + "_bgr"] = style[key]
+                    style[key] = _bgr_to_hex(style[key])
+        return reply
 
     @mcp.tool()
     async def sch_generate_toc(
@@ -4464,8 +5139,9 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with created, failed, total counts and indexed failures.
-            Known unsupported properties (IsHidden on anything but pins,
+            Dict with created, failed, total counts and indexed failures,
+            and property_problems: items placed with a property that was
+            not written. Known unsupported properties (IsHidden on anything but pins,
             parameters, designators and sheet names; Text on a type without
             it, such as eParameterSet or eWire) reject that item before
             registration.
@@ -4540,7 +5216,9 @@ def register_generic_tools(mcp):
             (per operation ``deleted`` and a ``note`` when it deleted
             nothing). An operation that stopped part way has a note
             starting ``partial:`` and its ``deleted`` counts what it
-            removed; ``operations_partial`` counts them. Query before
+            removed; ``operations_partial`` counts them. One whose filter
+            met sheet system parameters (never removed) names them in a
+            note ``kept system parameters: ...``. Query before
             repeating a batch that failed or timed out.
         """
         op_strs: list[str] = []

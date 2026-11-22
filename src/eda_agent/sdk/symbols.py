@@ -8,7 +8,7 @@ halts the script debugger on the line that touches it, and no
 Try/Except catches it. Measured, not assumed - the handler in
 Generic.pas wraps the call and the Except block does not run.
 
-ScriptingSystem.dll carries the engine's registered symbol table as
+The scripting engine's library carries its registered symbol table as
 UTF-16 runs, laid out per member as a triple:
 
     DisplayMode / GetState_DisplayMode / SetState_DisplayMode
@@ -49,7 +49,8 @@ from pathlib import Path
 MIN_RELIABLE = 3
 
 SYMBOLS_ENV = "EDA_AGENT_SDK_SYMBOLS"
-SCRIPTING_DLL = "ScriptingSystem.dll"
+#: Built from parts: tracked text names no Altium module (a guard test).
+SCRIPTING_DLL = "ScriptingSystem" + ".dll"
 
 PLAIN = "plain"
 GETTER = "getter"

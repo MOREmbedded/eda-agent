@@ -18,6 +18,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_BACKEND` | altium | Which EDA tool to drive: `altium`, `kicad`, `easyeda`, or `both` (Altium and KiCad together). Same as `--backend`. |
 | `EDA_AGENT_TOOLSET` | full | `minimal` advertises only `tool_catalog` and `tool_invoke`, for MCP clients that cap the tool count. Every tool stays reachable. Same as `--toolset`. |
 | `EDA_AGENT_COMPUTE` | python | `python`, `rust` or `auto`: which implementation runs the CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as `--compute`. |
+| `EDA_AGENT_ROUTE_KERNEL` | compiled | `python` keeps the board router's path search in Python (scipy) even when the compiled `eda-agent[route]` kernel is installed. |
 | `EDA_AGENT_ROUTER` | the profile's `router.json`, else `default` | Which autorouter engine routing runs use: `default`, or `euan` for the alternative router from Euan's fork (off unless set). Overrules `eda-agent router-use`. |
 | `EDA_AGENT_REMINDER_EVERY` | 10 | How often `app_ping` / `app_attach` repeat the datasheet-first reminder: on the first call, then every Nth. `1` sends it every time. |
 | `EDA_AGENT_HEADLESS_REVIEW` | off | `1` enables the offline review, BOM and netlist commands and tools that read `.SchDoc`/`.PrjPcb` files with no Altium running. Same as `--offline` on those commands. |
@@ -46,7 +47,6 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_NO_DASHBOARD` | off | `1` starts the MCP server without the web dashboard. Same as `--no-dashboard`. |
 | `EDA_AGENT_DISABLE_DASHBOARD` | off | Alias of `EDA_AGENT_NO_DASHBOARD`. |
 | `EDA_AGENT_HEADLESS` | off | Alias of `EDA_AGENT_NO_DASHBOARD`. Same as `--headless`. |
-| `EDA_AGENT_DASHBOARD_ALLOWED_HOSTS` | loopback only | Comma-separated host names (no ports) the dashboard accepts in `Host` and `Origin`, for a deliberate non-loopback `--host`. |
 
 ### Logs and token usage
 
@@ -122,7 +122,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 |---|---|---|
 | `EDA_AGENT_STEP_WRITER` | cadquery | `freecad` tries FreeCAD before CadQuery when building a STEP model. With neither, the body is extruded and the reply says so. |
 | `EDA_AGENT_SDK_JSON` | `reference/altium_sdk.json` | The reflected Altium SDK that `sdk-coverage` reads. |
-| `EDA_AGENT_SDK_SYMBOLS` | Altium's `ScriptingSystem.dll` | The scripting DLL `sdk-symbols` reads its symbol table from. |
+| `EDA_AGENT_SDK_SYMBOLS` | Altium's scripting engine library | The scripting DLL `sdk-symbols` reads its symbol table from. |
 | `EDA_AGENT_PCB_TOOLKIT` | `pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built | Path to a pcb-toolkit binary for `calc-cross-check` and `pcb_calc_cross_check`. |
 | `EDA_AGENT_FREECADCMD` | `freecadcmd` on `PATH`, then FreeCAD's install folders | FreeCAD's headless `freecadcmd`, used for STEP models when CadQuery is not installed. |
 
@@ -172,6 +172,9 @@ The Config tab on the Altium status window writes these to `preferences.json` in
 | `usage_stats` | `on`, `off` |  | `off` stops counting the tokens each tool call costs. |
 | `theme` | `system`, `light`, `dark` |  | The web dashboard's look: `system`, `light` or `dark`. Set in the profile only; the Altium panel has no switch for it. |
 | `length_units` | `mil`, `mm` |  | The unit a new AI session gives and reads lengths in: `mil` (default) or `mm`. Each session may change its own with the `length_units` tool. |
+| `routing` | `enforced`, `advisory`, `off` |  | Routing discipline. `enforced` (default) routes only the nets the AI has decided in the routing brief, and waits for every finding to be answered; `advisory` routes and reports them without waiting; `off` asks for no brief. |
+| `basic_3d_models` | `not_allowed`, `allowed` |  | `allowed` lets a footprint keep a basic 3D model (extruded boxes, cylinders or spheres, no STEP). Under `not_allowed` (default) such footprints are reported and the AI asks before replacing them. |
+| `altium_autorouter` | `not_allowed`, `allowed` |  | `allowed` lets the AI start Altium's own autorouter. Under `not_allowed` (default) it routes with eda-agent's router. |
 | `default_mode` | a design mode name | | Profile only: the design mode a run uses when it names none. |
 
 ## `workspace.json`
@@ -370,7 +373,7 @@ Launch the local web dashboard (http://127.0.0.1:8766).
 
 | Argument | Takes | What it does |
 |---|---|---|
-| `--host` | `HOST` |  |
+| `--host` | `127.0.0.1`, `localhost`, `::1` | A loopback address; the dashboard is never served to another machine. |
 | `--port` | `PORT` |  |
 | `--debug` | switch |  |
 

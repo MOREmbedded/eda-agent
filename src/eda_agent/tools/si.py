@@ -15,6 +15,7 @@ snapshot end to end (every trace section, via and stub) and works out the
 design rules that hold it to its targets.
 """
 from __future__ import annotations
+from ..bridge.stackup import layer_stackup
 
 import asyncio
 import hashlib
@@ -627,7 +628,7 @@ async def read_live_stackup(bridge) -> Any:
     """The focused board's stackup, with the dielectric taken from its
     physical stack where the stackup reply carries none."""
     from ..emc.stack import fill_dielectrics, stack_from_stackup
-    st = await bridge.send_command_async("pcb.get_layer_stackup", {})
+    st = await layer_stackup(bridge)
     if not isinstance(st, dict) or not st.get("layers"):
         return st
     try:

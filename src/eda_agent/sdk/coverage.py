@@ -96,6 +96,20 @@ PCB_INTERFACE_OVERRIDES: dict[str, str] = {
 }
 
 
+#: A chain whose If-chain moved into another routine: GetSchProperty is a
+#: one-line wrapper round GetSchPropertyGated (upstream, 2026-11), which
+#: carries the names.
+CHAIN_ROUTINE: dict[str, str] = {"GetSchProperty": "GetSchPropertyGated"}
+
+
+def _routine(function_name: str, source: str) -> str:
+    """The routine that carries a chain's names in ``source``."""
+    alias = CHAIN_ROUTINE.get(function_name)
+    if alias and f"Function {alias}(" in source:
+        return alias
+    return function_name
+
+
 def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8", errors="replace")
 
@@ -202,7 +216,8 @@ def handled_names(function_name: str) -> set[str]:
     guarded on.
     """
     path, _ = CHAINS[function_name]
-    body = chain_body(_read(path), function_name)
+    source = _read(path)
+    body = chain_body(source, _routine(function_name, source))
     return set(re.findall(r"PropName = '([^']+)'", body))
 
 
@@ -228,8 +243,15 @@ def delegated_names(function_name: str) -> dict:
     properties only a component can answer.
     """
     path, _ = CHAINS[function_name]
-    code = routines(_read(path))
-    body = code.get(function_name, "")
+    source = _read(path)
+    routine = _routine(function_name, source)
+    code = routines(source)
+    body = code.get(routine, "")
+    if routine != function_name:
+        # The wrapper hands its owner code in as Extra: read it back as
+        # the call it stands for, so the owner's types are credited.
+        body = re.sub(r"\bExtra > 0\b", "SchExtraOwner(PropName) > 0", body)
+    function_name = routine
     out: dict = {}
     for match in _CALL.finditer(body):
         callee = match.group(1)

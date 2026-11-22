@@ -8,6 +8,8 @@ board's layer stack as ready-made inputs.
 """
 from __future__ import annotations
 
+from ..bridge.stackup import layer_stackup
+
 import asyncio
 from typing import Any, Optional
 
@@ -90,7 +92,7 @@ def register_toolkit_tools(mcp, *, altium: bool = False) -> None:
         from ..bridge import get_bridge
         from ..engineering.toolkit.prefill import from_stackup
         try:
-            live = await get_bridge().send_command_async("pcb.get_layer_stackup", {})
+            live = await layer_stackup(get_bridge())
         except Exception as exc:  # noqa: BLE001 - tools refuse, never raise
             return {"ok": False, "reason": f"could not read the board's stackup: {exc}"}
         return from_stackup(live)

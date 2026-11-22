@@ -321,6 +321,11 @@ def _client_form(config: Altium365Config) -> dict:
     return form
 
 
+def _token_form(config: Altium365Config, form: dict) -> dict:
+    """``form`` with the client's own fields added (upstream's name)."""
+    return {**form, **_client_form(config)}
+
+
 _TOKEN_HINTS = {
     "invalid_client": ("Nexar did not accept the app's credentials. An app made in the "
                        "Nexar portal needs its secret in EDA_AGENT_NEXAR_CLIENT_SECRET; "
@@ -330,6 +335,8 @@ _TOKEN_HINTS = {
                       "eda-agent altium365-login again."),
     "unauthorized_client": ("the Nexar app is not allowed this kind of sign-in; enable the "
                             "authorization code flow for it in the Nexar portal."),
+    "invalid_scope": ("the Nexar app lacks a scope this asks for; add the Design scopes "
+                      "to the app in the Nexar portal."),
 }
 
 

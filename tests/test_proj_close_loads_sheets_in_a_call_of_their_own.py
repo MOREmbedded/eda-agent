@@ -3,7 +3,7 @@
 """Closing a project none of whose documents is loaded.
 
 MEASURED 2026-11-18 on AD 26.11.1: proj_close of such a project stopped
-Altium's script engine with an access violation in ScriptingSystem.DLL,
+Altium's script engine with an access violation in its script engine,
 and the loop did not come back. The close handler loaded a member itself,
 inside its walk of the project's documents. It no longer loads anything:
 it refuses with ``no_loaded_documents``, and the tool loads the sheets in

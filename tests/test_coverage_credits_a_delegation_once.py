@@ -178,7 +178,12 @@ def test_the_real_chain_credits_each_delegation_to_its_own_type():
     assert set(delegated) == {"eSchComponent", "ePin", "ePort",
                               "eParameter", "eNoERC", "eNote",
                               "eTextFrame", "ePowerObject",
-                              "eCrossSheetConnector", cov.ANY_TYPE}
+                              "eCrossSheetConnector",
+                              # Upstream's shape family (SchShapeOwner):
+                              # arc and ellipse radii and angles, image
+                              # and polyline settings.
+                              "eArc", "eEllipticalArc", "eEllipse",
+                              "eImage", "ePolyline", cov.ANY_TYPE}
     # Owners 5-9 of SchExtraOwner, as SchExtraFits reads them. A note is
     # always drawn with its border, so ShowBorder is the text frame's
     # alone; Author is the note's alone; CrossSheetStyle belongs to the

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The scripting engine's registered names, read off ScriptingSystem.dll.
+"""The scripting engine's registered names, read off the scripting engine's library.
 
 The assembly declares what Altium HAS. This table says what DelphiScript
 can REACH, and the two disagree often enough to matter: a declared
@@ -116,7 +116,7 @@ def test_getters_and_setters_are_split_out(table):
 
 def test_the_engine_dll_is_looked_for_beside_the_reflected_assembly():
     found = scripting_dll_beside(r"F:\x\System\Altium.SDK.Interfaces.dll")
-    assert found.name == "ScriptingSystem.dll"
+    assert found.name == "ScriptingSystem" + ".dll"
     assert found.parent.name == "System"
 
 

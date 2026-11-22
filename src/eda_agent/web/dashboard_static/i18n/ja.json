@@ -1050,5 +1050,10 @@
  "{0} of {1} installed": "{1} 個中 {0} 個インストール済み",
  "{0} saved. Checking again.": "{0} を保存しました。再確認しています。",
  "All workspaces": "すべてのワークスペース",
- "Other workspaces hidden: {0}": "非表示のその他のワークスペース: {0}"
+ "Other workspaces hidden: {0}": "非表示のその他のワークスペース: {0}",
+ "Each": "1回あたり",
+ "Last {0} days: {1} calls, about {2} tokens. Estimated from the size of what each call sends and returns.": "過去{0}日間: {1}回の呼び出し、約{2}トークン。各呼び出しの送受信サイズからの推定です。",
+ "No tool calls recorded in the last {0} days.": "過去{0}日間に記録されたツール呼び出しはありません。",
+ "Counting is off. Turn Token count on, on the Config tab of the Altium panel.": "カウントはオフです。Altium パネルの Config タブで Token count をオンにしてください。",
+ "Token use": "トークン使用量"
 }

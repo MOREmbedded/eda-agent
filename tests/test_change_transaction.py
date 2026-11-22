@@ -78,6 +78,17 @@ def _registered(monkeypatch, bridge):
     from eda_agent import checkpoint
     from eda_agent.tools import application
     monkeypatch.setattr(checkpoint, "CheckpointStore", _Store)
+
+    # Checkpoints are taken and put back through Altium (upstream,
+    # 2026-11): the store stands in for both here.
+    async def take(bridge, store, project_dir, **kw):
+        return store.create(project_dir, **kw)
+
+    async def put_back(bridge, store, checkpoint_id, project_dir, *,
+                       project_path="", prune_added=False):
+        return store.restore(checkpoint_id, project_dir, prune_added=prune_added)
+    monkeypatch.setattr(checkpoint, "take", take)
+    monkeypatch.setattr(checkpoint, "put_back", put_back)
     monkeypatch.setattr(application, "get_bridge", lambda: bridge)
     mcp = _Mcp()
     application.register_application_tools(mcp)
