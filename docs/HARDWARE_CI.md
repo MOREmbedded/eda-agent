@@ -1,7 +1,7 @@
 # Hardware CI: offline design review (opt-in fallback)
 
 `eda-agent review --offline` reads an Altium `.SchDoc` **directly**, no
-running Altium, no license, and reports component-level issues (missing MPN
+running Altium, and reports component-level issues (missing MPN
 / datasheet, placeholder values, designator collisions). It exists for one
 job: a CI runner or a bare file on disk where Altium can't be opened.
 

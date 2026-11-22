@@ -240,7 +240,7 @@ property as before.
 
 ### The engine's own symbol table
 
-`ScriptingSystem.dll` carries the names the engine registers, as
+The scripting engine's library carries the names the engine registers, as
 UTF-16 runs, one triple per member:
 
 ```

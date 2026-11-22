@@ -1592,7 +1592,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Read a reflected SDK from PATH instead of "
                               "reference/altium_sdk.json.")
 
-    # sdk-symbols -- the offline half of sdk-probe. ScriptingSystem.dll
+    # sdk-symbols -- the offline half of sdk-probe. The scripting engine's library
     # carries the engine's registered names, and a name it does not carry
     # halts the debugger when a script touches it, so this is what the
     # generator checks before emitting a line.
@@ -2048,7 +2048,7 @@ def build_parser() -> argparse.ArgumentParser:
         "review",
         help="Offline fallback design review of a .SchDoc/.PrjPcb (needs --offline).",
         epilog=(
-            "Parses the file directly (no running Altium, no license) for "
+            "Parses the file directly (without a running Altium) for "
             "the component-level subset only: missing MPN / datasheet, "
             "placeholder values, designator collisions. NOT the preferred "
             "path -- prefer the live tools when Altium is available. Opt-in: "

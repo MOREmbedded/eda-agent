@@ -3,8 +3,8 @@
 """Headless schematic review (roadmap V1: hardware CI).
 
 Runs the component-level review checks that need no netlist: the ones a
-reviewer flags first: directly on a parsed ``.SchDoc``, with no Altium and
-no license.
+reviewer flags first: directly on a parsed ``.SchDoc``, without a running
+Altium.
 
 **This is an opt-in fallback, not the preferred review path.** It parses
 Altium's on-disk binaries without the application, so it only sees the
@@ -73,7 +73,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 HEADLESS_DISABLED_MESSAGE = (
     "Headless file-reader review is disabled by default and is NOT the "
     "preferred way to review a design. It parses Altium's binaries with no "
-    "running Altium and no license, so it only covers component-level checks: "
+    "running Altium, so it only covers component-level checks: "
     "it cannot compile a netlist or run ERC, and an offline parser can "
     "misread a file. Prefer the live-Altium tools (design_lint_report, "
     "proj_run_erc, design_review_snapshot, the audit_* family). To use the "

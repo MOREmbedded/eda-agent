@@ -78,7 +78,7 @@ maturity classification for every tool.
   any routine that takes parameters named without them.
 - **`proj_close` of a project with no loaded document no longer crashes
   Altium.** The close loaded a member inside its walk of the project's
-  documents (an access violation in ScriptingSystem.DLL); it now refuses
+  documents (an access violation in Altium's script engine); it now refuses
   with `no_loaded_documents`, and the tool loads the sheets in a call of
   their own and closes again.
 - **`pcb_autoroute` with `nets=` routes those nets and nothing more.**
@@ -1294,7 +1294,7 @@ maturity classification for every tool.
   and every later tool refused to act on the document now in focus. The
   path is checked while it is still a string, and nothing is sent.
 
-- **`src/eda_agent/ui/panel_wheel.py` had no licence line.** It arrived
+- **`src/eda_agent/ui/panel_wheel.py` lacked its SPDX line.** It arrived
   from upstream without the SPDX identifier or the copyright notice
   every other file in the tree carries. Both restored; Apache-2.0
   section 4(c) asks for the second.

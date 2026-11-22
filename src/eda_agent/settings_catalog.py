@@ -257,7 +257,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "`reference/altium_sdk.json`",
            "The reflected Altium SDK that `sdk-coverage` reads."),
     EnvVar("EDA_AGENT_SDK_SYMBOLS", "3D models and Altium SDK",
-           "Altium's `ScriptingSystem.dll`",
+           "Altium's scripting engine library",
            "The scripting DLL `sdk-symbols` reads its symbol table from."),
     EnvVar("EDA_AGENT_PCB_TOOLKIT", "3D models and Altium SDK",
            "`pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built",

@@ -1840,7 +1840,7 @@ def register_design_tools(mcp) -> None:
         """Reconstruct a .SchDoc's netlist geometrically: OFF by default.
 
         Offline FALLBACK, same opt-in as ``design_review_file``. Parses the
-        file (no Altium, no license) and rebuilds the compiled netlist from
+        file (without a running Altium) and rebuilds the compiled netlist from
         geometry (pins, wires, power ports, junctions, and by-name net
         labels), then runs connectivity ERC (``single_pin_net`` floating
         pins, ``net_short`` rail shorts).
@@ -1885,7 +1885,7 @@ def register_design_tools(mcp) -> None:
         """Consolidated BOM from a .SchDoc/.PrjPcb on disk: OFF by default.
 
         Offline FALLBACK, same opt-in as ``design_review_file``. Parses the
-        Altium file directly (no Altium, no license) and groups components
+        Altium file directly (without a running Altium) and groups components
         into purchasable BOM lines, one per distinct ``(mpn, value,
         lib_reference)``, designators grouped and naturally sorted, quantity
         summed. A ``.PrjPcb`` aggregates all its sheets.

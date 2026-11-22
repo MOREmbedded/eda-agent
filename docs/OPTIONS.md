@@ -122,7 +122,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 |---|---|---|
 | `EDA_AGENT_STEP_WRITER` | cadquery | `freecad` tries FreeCAD before CadQuery when building a STEP model. With neither, the body is extruded and the reply says so. |
 | `EDA_AGENT_SDK_JSON` | `reference/altium_sdk.json` | The reflected Altium SDK that `sdk-coverage` reads. |
-| `EDA_AGENT_SDK_SYMBOLS` | Altium's `ScriptingSystem.dll` | The scripting DLL `sdk-symbols` reads its symbol table from. |
+| `EDA_AGENT_SDK_SYMBOLS` | Altium's scripting engine library | The scripting DLL `sdk-symbols` reads its symbol table from. |
 | `EDA_AGENT_PCB_TOOLKIT` | `pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built | Path to a pcb-toolkit binary for `calc-cross-check` and `pcb_calc_cross_check`. |
 | `EDA_AGENT_FREECADCMD` | `freecadcmd` on `PATH`, then FreeCAD's install folders | FreeCAD's headless `freecadcmd`, used for STEP models when CadQuery is not installed. |
 

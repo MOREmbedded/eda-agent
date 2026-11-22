@@ -1636,7 +1636,7 @@ def cmd_sdk_symbols(*, refresh: bool = False, as_json: bool = False,
 
     `sdk-coverage` counts what the chains reach and `sdk-probe` asks the
     running Altium. This answers the same question offline, by reading
-    the engine's own registered symbol table out of ScriptingSystem.dll,
+    the engine's own registered symbol table out of the scripting engine's library,
     which matters because the live answer costs a halted debugger every
     time it is "no".
     """

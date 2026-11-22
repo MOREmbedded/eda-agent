@@ -556,7 +556,7 @@ source, which is not the same as having watched it work.
 
 `pcb_set_via_soldermask_relief` refuses on this build rather than being
 fixed. The write raises an access violation inside
-`ScriptingSystem.DLL` on AD 26.10.1.6, measured twice on a scratch
+Altium's script engine on AD 26.10.1.6, measured twice on a scratch
 board with three vias and nothing else, once through `BeginModify` and
 once through `SendMessageToRobots`. Because the fault lands between
 `PreProcess` and `PostProcess` it also leaves an open transaction
@@ -1272,7 +1272,7 @@ long to diagnose.
 **THIS TOOL HAS ALREADY CRASHED ALTIUM ONCE.** The first build set
 Layer, x, y and StandoffHeight on the body before adding it to the
 board, and the PCB engine went down with "Access violation ... Read of
-address 0x20" inside ADVPCB.DLL. A null dereference at a small field
+address 0x20" inside Altium's PCB editor. A null dereference at a small field
 offset is a property setter reaching for state that an owning board
 provides. It also assigned x and y directly, where the reference and
 `Lib_Link3DModel` both use `MoveByXY` after the add.

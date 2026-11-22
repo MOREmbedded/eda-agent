@@ -399,7 +399,7 @@ End;
 { walk went on, and the close after it ran, on interfaces Altium had replaced.}
 { MEASURED 2026-11-18 on AD 26.11.1: proj_close of a project with no loaded   }
 { document stopped Altium's script engine with an access violation in        }
-{ ScriptingSystem.DLL, and the loop did not come back. The member paths are   }
+{ the script engine, and the loop did not come back. The member paths are     }
 { now read first, as text, and no document interface is held while a         }
 { document is shown. A project with nothing loaded is refused with           }
 { NoneLoaded set; proj_close loads its sheets in a call of their own and      }

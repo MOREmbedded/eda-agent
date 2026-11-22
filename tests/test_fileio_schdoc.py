@@ -3,8 +3,8 @@
 """Tests for the headless .SchDoc reader (roadmap V1).
 
 Runs against the real buck-converter fixture (tests/integration/fixtures/
-main.SchDoc), no Altium, no license, so this parser is a CI-gated,
-license-free way to read an Altium schematic.
+main.SchDoc), without a running Altium, so this parser is a CI-gated
+way to read an Altium schematic.
 """
 
 from __future__ import annotations

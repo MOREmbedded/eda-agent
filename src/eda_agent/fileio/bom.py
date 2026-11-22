@@ -6,7 +6,7 @@ The ``.SchDoc`` reader already extracts every placed component with its
 normalized ``mpn`` / ``manufacturer`` / ``value`` / ``datasheet``. This turns
 that flat list into a purchasable Bill of Materials, one line per distinct
 part, designators grouped and naturally sorted, quantity summed, with no
-running Altium and no license. It is the read-only complement to the live
+running Altium. It is the read-only complement to the live
 ``proj_get_bom`` / ``proj_export_bom_html`` tools, for a file on disk or a CI
 artifact.
 
