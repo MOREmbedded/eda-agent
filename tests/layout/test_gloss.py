@@ -2,7 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The gloss pass on boards small enough to check by hand: a run is laid
 again shorter and cleaner, or left alone when that would cost a join, a
-clearance or a pad entry."""
+clearance or a pad entry on the centre and the 45 degree grid of the pad."""
 from __future__ import annotations
 
 import math
@@ -63,7 +63,7 @@ def _octilinear(t):
     return min(ang, 45.0 - ang) < 0.05
 
 
-def test_a_square_detour_becomes_a_45_run_entering_both_pads_along_an_axis():
+def test_a_square_detour_becomes_a_45_run_onto_both_pad_centres():
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N")]
     _path(b, "N", [(0, 0), (0, 200), (300, 200)])
@@ -72,17 +72,17 @@ def test_a_square_detour_becomes_a_45_run_entering_both_pads_along_an_axis():
     assert abs(_length(b, "N") - (100 + 200 * math.sqrt(2))) < 0.01
     assert all(_octilinear(t) for t in _tracks(b, "N"))
     assert _max_turn(b, "N") <= 45.5
-    first = [t for t in _tracks(b, "N") if (t.x1, t.y1) == (0, 0) or (t.x2, t.y2) == (0, 0)]
-    last = [t for t in _tracks(b, "N") if (t.x1, t.y1) == (300, 200) or (t.x2, t.y2) == (300, 200)]
-    assert len(first) == 1 and first[0].y1 == first[0].y2       # leaves U1 along its axis
-    assert len(last) == 1 and last[0].y1 == last[0].y2          # enters U2 along its axis
+    for x, y in ((0, 0), (300, 200)):
+        assert sum(1 for t in _tracks(b, "N") if (x, y) in ((t.x1, t.y1), (t.x2, t.y2))) == 1
     assert not run_drc(b).violations and not run_drc(b).unrouted
 
 
 def test_a_shortcut_through_another_nets_copper_is_not_taken():
+    # M's pad fills the inside of the L: every shorter way from U1 to U2
+    # runs through it.
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N"),
-               _pad("U3", 150, 100, "M", 30, 30)]
+               _pad("U3", 150, 95, "M", 200, 160)]
     _path(b, "N", [(0, 0), (0, 200), (300, 200)])
     before = [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "N")]
     r = gloss(b)
@@ -151,18 +151,6 @@ def test_a_run_from_a_junction_never_folds_onto_another_track_there():
     assert not run_drc(b).unrouted
 
 
-def test_a_run_turns_only_once_it_is_clear_of_the_pad():
-    b = _board()
-    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 290, "N")]
-    # The shortest 45 run would leave U1 straight for 5 mil and turn inside it.
-    _path(b, "N", [(0, 0), (0, 290), (300, 290)])
-    gloss(b)
-    u1 = b.pads[0].shape_on("TopLayer")
-    for t in _tracks(b, "N"):
-        if not (t.x1 == t.x2 or t.y1 == t.y2):
-            assert geom.clearance(t.shape(), u1) > 0
-
-
 def test_a_run_never_crosses_a_pad_of_its_net_on_the_way():
     b = _board()
     b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 0, 400, "N"), _pad("U3", 0, 200, "N")]
@@ -197,3 +185,143 @@ def test_only_the_tracks_named_are_laid_again():
     r = gloss(b, tracks=b.tracks[first:])
     assert r.relaid == 1 and r.nets == ["N"]
     assert [(t.x1, t.y1, t.x2, t.y2) for t in _tracks(b, "M")] == own
+
+
+def _jogged(b):
+    """A run as a grid router leaves it: two tracks in line, a 1 mil jog,
+    a long 45, a half-mil step and two more tracks in line. A pad of
+    another net over the far end keeps any shorter way in from being laid."""
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 150, -454.6, "N"),
+               _pad("U3", 150, -400, "X")]
+    pts = [(0, 0), (0, -46), (0, -380), (-0.8, -380.8), (-0.8, -382.4),
+           (71, -454.2), (71.4, -454.6), (100, -454.6), (150, -454.6)]
+    _path(b, "N", pts)
+    return pts
+
+
+def test_a_run_of_short_pieces_is_laid_in_the_fewest_segments():
+    b = _board()
+    pts = _jogged(b)
+    before = _length(b, "N")
+    r = gloss(b)
+    ts = _tracks(b, "N")
+    # Laid again shorter (it may now leave a pad at 45 degrees), or the
+    # same way in fewer pieces.
+    assert r.simplified + r.relaid == 1
+    assert len(ts) <= 3 and all(_octilinear(t) for t in ts)
+    assert min(math.hypot(t.x2 - t.x1, t.y2 - t.y1) for t in ts) > 40
+    assert _length(b, "N") <= before + 0.01
+    assert _max_turn(b, "N") <= 45.5
+    ends = {(round(t.x1, 3), round(t.y1, 3)) for t in ts} | \
+           {(round(t.x2, 3), round(t.y2, 3)) for t in ts}
+    assert {pts[0], pts[-1]} <= ends
+    assert not run_drc(b).violations and not run_drc(b).unrouted
+
+
+def test_tracks_in_line_become_one_and_a_join_between_them_stays():
+    b = _board()
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 0, "N"), _pad("U3", 150, 200, "N")]
+    _path(b, "N", [(0, 0), (60, 0), (150, 0), (220, 0), (300, 0)])
+    _path(b, "N", [(150, 0), (150, 200)])
+    r = gloss(b)
+    ts = _tracks(b, "N")
+    assert r.simplified == 2 and len(ts) == 3
+    assert sum(1 for t in ts if (150, 0) in ((t.x1, t.y1), (t.x2, t.y2))) == 3
+    assert not run_drc(b).unrouted
+
+
+def test_a_jog_another_net_needs_is_kept_clear_of_it():
+    b = _board()
+    b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 400, 0, "N"), _pad("U3", 200, 0, "X")]
+    _path(b, "N", [(0, 0), (120, 0), (160, 40), (240, 40), (280, 0), (400, 0)])
+    gloss(b)
+    x = b.pads[2].shape_on("TopLayer")
+    assert len(_tracks(b, "N")) <= 5 and all(_octilinear(t) for t in _tracks(b, "N"))
+    assert all(geom.clearance(t.shape(), x) >= GAP for t in _tracks(b, "N"))
+    assert not run_drc(b).violations and not run_drc(b).unrouted
+
+
+def test_a_fenced_net_is_laid_again_only_inside_its_region_and_out_of_its_keep_outs():
+    def detour():
+        b = _board()
+        b.pads += [_pad("U1", 0, 0, "N"), _pad("U2", 300, 200, "N")]
+        _path(b, "N", [(0, 0), (0, 200), (300, 200)])
+        return b
+    # The region hugs the L the net was laid in: the 45 cut leaves it.
+    ell = [(-30, -30), (30, -30), (30, 170), (330, 170), (330, 230), (-30, 230)]
+    b = detour()
+    assert gloss(b, fences={"N": ([ell], [])}).relaid == 0
+    assert _tracks(b, "N")[0].x2 == 0 and _length(b, "N") == 500
+    # A keep-out on the diagonal holds it the same way.
+    b = detour()
+    assert gloss(b, fences={"N": (None, [[(100, 40), (200, 40), (200, 120), (100, 120)]])}).relaid == 0
+    # A region round both: laid again as without one.
+    b = detour()
+    assert gloss(b, fences={"N": ([[(-50, -50), (350, -50), (350, 250), (-50, 250)]], [])}).relaid == 1
+    assert abs(_length(b, "N") - (100 + 200 * math.sqrt(2))) < 0.01
+    # Another net's fence does not hold this one.
+    b = detour()
+    assert gloss(b, fences={"M": ([ell], [])}).relaid == 1
+
+
+# -- runs that break the house rules -----------------------------------------
+
+def _octilinear_all(b, net):
+    from eda_agent.layout.route.gloss import _octilinear
+    return all(_octilinear((t.x1, t.y1), (t.x2, t.y2)) for t in _tracks(b, net))
+
+
+def test_a_shortest_run_off_the_45_degree_grid_is_laid_again_on_it():
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 100, 60, "N")]
+    _path(b, "N", [(0, 0), (100, 60)])
+    r = gloss(b)
+    assert r.relaid_clean == 1 and _octilinear_all(b, "N")
+    assert _length(b, "N") <= math.hypot(100, 60) * 1.3 + 20
+    assert run_drc(b).missing_connections == 0
+
+
+def _as_round(b):
+    return [{"net_name": t.net, "layer": t.layer, "width": t.width, "x1": t.x1, "y1": t.y1,
+             "x2": t.x2, "y2": t.y2} for t in b.tracks]
+
+
+def test_a_diagonal_out_of_a_pads_centre_is_a_clean_entry_and_is_kept():
+    from eda_agent.layout.route import review
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 100, 100, "N")]
+    _path(b, "N", [(0, 0), (100, 100)])
+    before = _as_round(b)
+    assert review.pad_entries(before, b.pads_by_net()) == {}
+    r = gloss(b)
+    assert r.relaid == 0 and r.relaid_clean == 0 and _as_round(b) == before
+    assert run_drc(b).missing_connections == 0
+
+
+def test_the_faults_a_run_can_have_are_named():
+    from eda_agent.layout.route.gloss import house_faults
+    pad = _pad("A", 0, 0, "N")
+    assert house_faults([(0, 0), (100, 60)], None, None, "TopLayer", 10, 180, 180) == ["off_grid"]
+    assert house_faults([(0, 0), (100, 0), (105, 0), (205, 100)], None, None, "TopLayer",
+                        10, 180, 180) == ["short_piece"]
+    assert house_faults([(0, 0), (100, 0), (50, 50)], None, None, "TopLayer",
+                        10, 180, 180) == ["acute_corner"]
+    # 45 degrees out of the centre is a dogleg's; 30 degrees to a pad turned
+    # 15 degrees is on the board's 45 grid but off the pad's.
+    assert house_faults([(0, 0), (100, 100)], pad, None, "TopLayer", 10, 180, 180) == []
+    turned = Pad(comp="A", name="1", x=0, y=0, net="N", rotation=15.0,
+                 copper=[PadCopper("TopLayer", "rect", 20.0, 20.0)])
+    assert house_faults([(0, 0), (100, 0)], turned, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
+    assert house_faults([(3, 0), (100, 0)], pad, None, "TopLayer", 10, 180, 180) == ["pad_entry"]
+    assert house_faults([(0, 0), (100, 0)], None, None, "TopLayer", 10, 45, 180) == ["acute_join"]
+    assert house_faults([(0, 0), (100, 0), (150, 50)], pad, None, "TopLayer", 10, 180, 180) == []
+
+
+def test_a_clean_run_is_left_by_the_last_pass():
+    b = _board()
+    b.pads = [_pad("A", 0, 0, "N"), _pad("B", 200, 0, "N")]
+    _path(b, "N", [(0, 0), (200, 0)])
+    before = _as_round(b)
+    r = gloss(b)
+    assert r.relaid == 0 and r.relaid_clean == 0 and not r.faults_kept
+    assert _as_round(b) == before

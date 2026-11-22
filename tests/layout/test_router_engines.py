@@ -343,10 +343,17 @@ def _small_pad(hazard=None, engine="default"):
     return b
 
 
+#: The search as these via tests were laid out for: no turn cost, a via at
+#: 30 mils of track, and negotiation. Upstream's defaults of 2026-11-20
+#: (turn cost on, a via at 98.4, no negotiation) lay the via elsewhere,
+#: and the premise below is about where the search puts it.
+OLD_SEARCH = {"turn_cost": False, "via_cost": 30.0, "negotiate": True}
+
+
 @pytest.mark.parametrize("hazard", ("hole", "mask"))
 @pytest.mark.parametrize("engine", ENGINES)
 def test_a_via_in_a_pad_is_judged_where_it_is_laid(engine, hazard, monkeypatch):
-    stages = {"pad_vias": "any"}
+    stages = {"pad_vias": "any", **OLD_SEARCH}
     plain = _run(engine, monkeypatch, _small_pad(), stages=stages)
     assert [(v["x"], v["y"]) for v in plain["vias"]] == [PAD_AT]
     assert not verdict(_small_pad(hazard, engine))["violations"]
@@ -524,10 +531,10 @@ def test_a_search_via_keeps_its_opening_off_another_nets_pad(engine, monkeypatch
     would merge into openings of that net alone. Freed for any net's via,
     as the fan-out tests could never show, A's vias stood 9 mil from B's
     pads, no mask between the two nets, and the job passed."""
-    plain = _run(engine, monkeypatch, _beside_b(b_pads=False))
+    plain = _run(engine, monkeypatch, _beside_b(b_pads=False), stages=OLD_SEARCH)
     assert sorted((round(v["x"], 1), round(v["y"], 1)) for v in plain["vias"]) \
         == [(258.2, 224.9), (258.2, 274.9)]
-    res = _run(engine, monkeypatch, _beside_b())
+    res = _run(engine, monkeypatch, _beside_b(), stages=OLD_SEARCH)
     assert res["summary"]["completion"] == 1.0
     assert res["summary"]["drc_status"] == "pass" and res["summary"]["mask_slivers"] == 0
     assert len(res["vias"]) == 2, "A needs its vias, or this proves nothing"

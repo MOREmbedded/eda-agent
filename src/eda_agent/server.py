@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from .tools import (
@@ -284,14 +284,28 @@ def build_server_instructions(
         "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
         "arguments, one dict per item, with arguments given beside it\n"
         "applying to all. Twenty arcs, ten pin renames or a column of net\n"
-        + ("labels are one call and one undo step in Altium, not twenty.\n"
-           "The reply gives each item's result in order and says which\n"
-           "failed; items run before a failure stay applied.\n"
+        + ("labels are one call and one undo step in Altium, not twenty\n"
+           "(up to 200 items a request). The reply gives each item's result\n"
+           "in order and says which failed; items run before a failure stay\n"
+           "applied. A tool named in the plural (pcb_place_arcs) takes its\n"
+           "list directly.\n"
            if altium else
            "labels are one call, not twenty. The reply lists each item's\n"
            "result in order.\n")
         + "A single call works as it always has.\n"
-        "\n")
+        "\n"
+        "NO SERVER OF YOUR OWN. Call these tools through this connection.\n"
+        "Never write a script that starts eda-agent as its own MCP server\n"
+        "to call tools in a loop: that server is refused. Many objects go\n"
+        "in one call's items.\n"
+        "\n"
+        + ("ON A BOARD, FILTER WHERE ALTIUM CAN LOOK IT UP. An obj_ filter\n"
+           "with an exact Net=, Component=, Layer= or BoundsLeft/BoundsBottom\n"
+           "goes straight to its objects; any other condition (X=, Y=, Name)\n"
+           "is checked on every object of the type, seconds on a busy board.\n"
+           "pcb_get_copper reads one layer's copper in bulk. tool_guide names\n"
+           "the quick route for a task.\n"
+           "\n" if altium else ""))
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -299,10 +313,18 @@ def build_server_instructions(
         "either, by the object type it is given (eTrackObject acts on the\n"
         "active board). A board tool aimed at a library does not always\n"
         "fail. It can resolve some other open board and report success for\n"
-        "work you never asked for.\n"
+        "work you never asked for."
+        + (" (pcb_layer_view, pcb_pad_relief and\n"
+           "pcb_renumber_pads also act on a .PcbLib in front.)"
+           if altium else "")
+        + "\n"
         "\n"
         f"Before concluding that this server cannot do something, {reach}\n"
-        "with what you are trying to do. It answers three separate things:\n"
+        "with what you are trying to do"
+        + (',\nand backend="altium" (without it the dead ends of the other EDA\n'
+           "backends come back too)"
+           if (backend or DEFAULT_BACKEND).strip().lower() == "altium" else "")
+        + ". It answers three separate things:\n"
         "the tool and what it needs first, the tool you were probably\n"
         "reaching for and why it acts on a different document, and the\n"
         "short list of things that are genuinely impossible with the\n"
@@ -376,10 +398,8 @@ def add_update_notice(result, news):
     return (out, structured) if isinstance(result, tuple) else out
 
 
-def _tool_params(server, name: str) -> Optional[set]:
-    """The argument names ``name`` takes, or None for an unknown tool."""
-    import inspect
-    fn = None
+def _tool_fn(server, name: str):
+    """The function behind tool ``name``, or None for an unknown tool."""
     try:
         tool = server._tool_manager.get_tool(name)
         fn = tool.fn if tool is not None else None
@@ -388,12 +408,71 @@ def _tool_params(server, name: str) -> Optional[set]:
     if fn is None:
         spec = (getattr(server, "hidden", {}) or {}).get(name)
         fn = getattr(spec, "fn", None)
+    return fn
+
+
+def _tool_params(server, name: str) -> Optional[set]:
+    """The argument names ``name`` takes, or None for an unknown tool."""
+    import inspect
+    fn = _tool_fn(server, name)
     if fn is None:
         return None
     try:
         return set(inspect.signature(fn).parameters)
     except (TypeError, ValueError):
         return None
+
+
+def _takes_any(server, name: str) -> bool:
+    """Whether ``name`` takes keyword arguments of any name."""
+    import inspect
+    fn = _tool_fn(server, name)
+    try:
+        return fn is None or any(p.kind is p.VAR_KEYWORD
+                                 for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return True
+
+
+def _unknown_names(args: dict, params: set) -> list[str]:
+    """Arguments the tool takes in no spelling. The server's own check
+    drops them without a word, so a misspelt name, or a list given under
+    the wrong key, ran as if it had not been given."""
+    from . import lengths
+    bad = []
+    for key in args:
+        if key in params or not isinstance(key, str):
+            continue
+        m = lengths._SUFFIX.match(key)
+        if m and any(f"{m.group('stem')}_{s}" in params or m.group("stem") in params
+                     for s in ("mils", "mil", "mm")):
+            continue
+        bad.append(key)
+    return bad
+
+
+def _takes_line(params: set) -> str:
+    names = sorted(p for p in params if p != "items")
+    return ", ".join(names[:40]) + (", ..." if len(names) > 40 else "")
+
+
+def _whole_params(server, name: str) -> set:
+    """The arguments ``name`` takes as whole numbers (``int``, optional or
+    not), which a converted length reaches rounded."""
+    import inspect
+    import re
+    fn = _tool_fn(server, name)
+    try:
+        params = inspect.signature(fn).parameters.values() if fn else ()
+    except (TypeError, ValueError):
+        return set()
+    whole = set()
+    for p in params:
+        text = p.annotation if isinstance(p.annotation, str) else repr(p.annotation)
+        if re.search(r"\bint\b", text) \
+                and not re.search(r"float|bool|list|dict|tuple|Any|str", text):
+            whole.add(p.name)
+    return whole
 
 
 def _lengths_in(server, name: str, arguments: dict):
@@ -411,7 +490,27 @@ def _lengths_in(server, name: str, arguments: dict):
         bad = lengths.unknown_unit_names(args, params)
         if bad:
             raise ValueError(f"{tool} takes no {', '.join(bad)}")
-        return lengths.args_in(tool, args, unit, params)
+        bad = [] if _takes_any(server, tool) else _unknown_names(args, params)
+        if bad:
+            raise ValueError(f"{tool} takes no argument {', '.join(bad)}; "
+                             f"it takes {_takes_line(params)}")
+        # A list given as a file is read here, so its lengths are
+        # converted like the same list given inline.
+        key = lengths.FILE_LISTS.get(tool)
+        if key and args.get("file"):
+            from .tools.pcb import items_from_file
+            listed, refusal = items_from_file(args.get(key), args["file"], key)
+            if refusal:
+                raise ValueError(refusal["error"])
+            args = {**{k: v for k, v in args.items() if k != "file"}, key: listed}
+        converted = lengths.args_in(tool, args, unit, params,
+                                    whole=_whole_params(server, tool))
+        # A place Altium cannot hold wraps to the other side of the origin,
+        # and one off a board's area cannot be reached again.
+        far = lengths.out_of_reach(tool, converted, unit)
+        if far:
+            raise ValueError(far)
+        return converted
 
     if name == "tool_invoke" and isinstance(arguments.get("arguments"), dict):
         inner = str(arguments.get("name") or "")
@@ -789,6 +888,12 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     _install_stdio_guard()
     sys.stdout.flush()
     ensure_tools()
+
+    from . import launch_guard
+    launcher = launch_guard.script_launcher()
+    if launcher:
+        print(launch_guard.refusal(launcher), file=sys.stderr, flush=True)
+        return 2
 
     setup_logging()
     logger.info("Starting EDA Agent MCP Server")
@@ -1847,7 +1952,10 @@ def build_parser() -> argparse.ArgumentParser:
             "auto-launches this server's URL via a workspace sentinel."
         ),
     )
-    dash_p.add_argument("--host", default="127.0.0.1")
+    dash_p.add_argument("--host", default="127.0.0.1",
+                        choices=("127.0.0.1", "localhost", "::1"),
+                        help="A loopback address; the dashboard is never "
+                             "served to another machine.")
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
@@ -2233,12 +2341,6 @@ def main() -> int:
         import json as _json
         print(_json.dumps(done, indent=1, ensure_ascii=False))
         return 0
-    if args.command == "review":
-        return _run_review(args)
-    if args.command == "bom":
-        return _run_bom(args)
-    if args.command == "netlist":
-        return _run_netlist(args)
     if args.command == "calc":
         return cli.cmd_calc_by_name(args.name, args.inputs,
                                     as_json=args.json)

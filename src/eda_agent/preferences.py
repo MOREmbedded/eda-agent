@@ -29,10 +29,18 @@ system's light or dark mode, ``light`` and ``dark`` fix it. The Altium panel
 has no switch for the theme; it is set in the profile (the dashboard's
 Settings menu or Workspace view write it there). ``length_units`` is the
 unit a new AI session gives and reads lengths in, ``mil`` (the default) or
-``mm``; each session may change its own (lengths.py). ``checks_off`` names
-the checks switched off, comma separated (see :data:`CHECKS`; default none:
-every check runs). Each of the others also has an environment variable in
-the AI client's config; for the first two
+``mm``; each session may change its own (lengths.py). ``routing`` is how
+strictly the router holds the AI to its routing discipline (see
+:data:`ROUTING`; default ``enforced``). ``basic_3d_models`` is ``allowed``
+to let a footprint keep a basic 3D model, extruded boxes, cylinders or
+spheres with no STEP model among them (default ``not_allowed``: such
+footprints are reported, and the AI asks the user before replacing them;
+see :func:`basic_3d_models_report`). ``altium_autorouter`` is ``allowed``
+to let the AI start Altium's own autorouter (default ``not_allowed``: the
+AI routes with the router here). ``checks_off`` names the checks switched
+off, comma separated (see :data:`CHECKS`; default none: every check runs).
+Each of the others also has an environment variable in the AI client's
+config; for the first two
 the stricter of the two wins, for the third either one turns it on.
 
 The owner profile in effect (see eda_agent.profile) may carry its own
@@ -82,6 +90,9 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "usage_stats": ("on", "off"),
     "theme": ("system", "light", "dark"),
     "length_units": ("mil", "mm"),
+    "routing": ("enforced", "advisory", "off"),
+    "basic_3d_models": ("not_allowed", "allowed"),
+    "altium_autorouter": ("not_allowed", "allowed"),
 }
 
 DEFAULTS: dict[str, str] = {key: allowed[0] for key, allowed in CHOICES.items()}
@@ -366,6 +377,79 @@ def where_set(key: str, workspace: Optional[Path] = None) -> tuple[str, str]:
                 "The user can change it in that file or in the dashboard's "
                 "Workspace view (Settings).")
     return (_PANEL_WHERE, "The user can change it there.")
+#: What each routing discipline level asks of the AI. At every level the
+#: brief the AI gave is obeyed; the levels differ in what is asked for first.
+ROUTING: dict[str, str] = {
+    "enforced": ("the router lays only nets the AI has decided in the brief (their layers "
+                 "and why), a critical net also needs the entry's source, and a round is "
+                 "applied only once every finding is answered"),
+    "advisory": ("a net the AI has not decided, or a critical net without a sourced entry, "
+                 "is routed and named, and the findings are reported but nothing waits "
+                 "for an answer"),
+    "off": ("no brief entry is asked for and nothing waits on findings; the brief "
+            "the AI gives is still obeyed"),
+}
+
+
+def routing_discipline(workspace: Optional[Path] = None) -> str:
+    """'enforced', 'advisory' or 'off', as chosen on the Config tab."""
+    return preferences(workspace)["routing"]
+
+
+def altium_autorouter_allowed(workspace: Optional[Path] = None) -> bool:
+    """True when the AI may start Altium's own autorouter (the Config tab's
+    "Altium autorouter" set to Allowed)."""
+    return preferences(workspace)["altium_autorouter"] == "allowed"
+
+
+def basic_3d_models_allowed(workspace: Optional[Path] = None) -> bool:
+    """True when a footprint may keep a basic 3D model (the Config tab's
+    "Basic 3D models" set to Allowed)."""
+    return preferences(workspace)["basic_3d_models"] == "allowed"
+
+
+#: Altium's T3DModelType of a body's model, as the scripts report it.
+STEP_MODEL_TYPE = 1
+
+
+def is_basic_3d_model(bodies: int, step_bodies: int) -> bool:
+    """A footprint's 3D model is basic when it has bodies and none of them
+    is a STEP model: extruded boxes, cylinders and spheres only."""
+    return bodies > 0 and step_bodies <= 0
+
+
+def basic_3d_models_report(names: list[str],
+                           workspace: Optional[Path] = None) -> dict[str, Any]:
+    """What a reply carries about footprints whose 3D model is basic.
+
+    Empty when there are none or the Config tab allows them. Otherwise the
+    footprints and what the AI is to do: tell the user, ask, and replace
+    only the ones the user agrees to.
+    """
+    names = sorted({n for n in names if n})
+    if not names or basic_3d_models_allowed(workspace):
+        return {}
+    return {"basic_3d_models": {
+        "footprints": names,
+        "why": ("each has only basic 3D bodies (extruded boxes, cylinders or "
+                "spheres) and no STEP model, and the Config tab of the Altium "
+                "panel does not allow basic 3D models"),
+        "ask_the_user": (
+            "Tell the user which footprints have a basic 3D model and ask "
+            "whether to replace them. Replace only the ones they agree to, "
+            "each with a STEP model built from the part's datasheet "
+            "mechanical drawing: lib_create_3d_model (replace_existing "
+            "removes the old bodies), or lib_create_footprint_from_package "
+            "for a standard package family. For parts on a board, replace "
+            "the model in the footprint's library, then bring it onto the "
+            "board with pcb_update_footprints_from_library. Never replace "
+            "a model without "
+            "asking, and never build one from guessed dimensions. A user "
+            "who wants to keep basic models sets \"Basic 3D models\" to "
+            "Allowed on the Config tab."),
+    }}
+
+
 #: The checks the Config tab can switch off, and what each one checks. Every
 #: check is on unless the user turns it off there.
 CHECKS: dict[str, str] = {

@@ -121,3 +121,6 @@ render-core/target/
 
 # Built product website (python -m mkdocs build)
 /site/
+
+# The Rust route core's build output
+route-core/target/

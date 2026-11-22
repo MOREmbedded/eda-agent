@@ -146,22 +146,9 @@ class _Bridge:
         return self.reply
 
 
-def test_the_tool_extracts_what_altium_says_the_footprint_uses(monkeypatch, tmp_path):
-    _library(monkeypatch, [("other.step", _STEP), ("part.step", _STEP + b"x")])
-    libfile = tmp_path / "Lib.PcbLib"
-    libfile.write_bytes(b"stand-in")
-    bridge = _Bridge({"body_models": [
-        {"has_model": True, "model_file": "C:\\models\\part.step"},
-        {"has_model": False, "model_file": ""}]}, tmp_path)
-    monkeypatch.setattr(lib_tools, "get_bridge", lambda: bridge)
-    mcp = _Mcp()
-    lib_tools.register_library_tools(mcp)
-    got = asyncio.run(mcp.tools["lib_extract_embedded_models"](
-        library_path=str(libfile), footprint_name="SOIC8"))
-    assert [w["name"] for w in got["written"]] == ["part.step"]
-    assert Path(got["written"][0]["path"]).parent == tmp_path / "models" / "Lib"
-    assert bridge.sent[0][0] == "library.get_footprint_primitives"
-
+# lib_extract_embedded_models now has Altium export each footprint
+# (upstream, footprint_export); its wiring is tested in
+# test_footprint_export.py. This file keeps the offline reader's tests.
 
 class _Storages(_Ole):
     def listdir(self):

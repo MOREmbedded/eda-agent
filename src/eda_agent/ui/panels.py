@@ -146,6 +146,12 @@ def _frame_controls(pid: int) -> list:
     return every
 
 
+def _is_panel_title(control, views: set) -> bool:
+    kind = control.class_name.lower()
+    return _PANEL_BUTTON in kind or (kind == _PANEL_CAPTION
+                                     and control.text in views)
+
+
 def list_open(pid: int) -> list:
     """Panels currently on screen, by title.
 
@@ -159,12 +165,7 @@ def list_open(pid: int) -> list:
              if c.text and c.class_name.lower() == _PANEL_VIEW}
     seen = {}
     for control in every:
-        kind = control.class_name.lower()
-        if _PANEL_BUTTON in kind:
-            pass
-        elif kind == _PANEL_CAPTION and control.text in views:
-            pass
-        else:
+        if not _is_panel_title(control, views):
             continue
         if not control.text or control.text in seen:
             continue

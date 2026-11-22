@@ -398,9 +398,10 @@ def test_a_port_width_holds_because_auto_size_is_turned_off_first():
         "SchPort.Width := MilsToCoordF(WantWidth)")
 
 
-def test_typed_line_breaks_become_altiums_own_in_a_text_frame():
+def test_newlines_become_altiums_own_in_a_text_frame():
+    # A typed backslash-n is made a newline by sch_place_text_frame, not
+    # here, where it may be a path: tests/test_text_frame_backslash_n.py.
     body = _routine("Generic.pas", "Gen_PlaceTextFrame")
-    assert "StringReplace(TextStr, '\\' + 'n', #10" in body
     assert "StringReplace(TextStr, #10, #13 + #10" in body
 
 
@@ -414,7 +415,7 @@ def test_a_line_answers_its_two_ends_as_vertices():
     body = _routine("Generic.pas", "SchLineEndProperty")
     assert "Segment.Location" in body and "Segment.Corner" in body
     assert "Result := '2'" in body
-    getter = _routine("Generic.pas", "GetSchProperty")
+    getter = _routine("Generic.pas", "GetSchPropertyGated")
     assert "SchLineEndProperty(Obj, PropName)" in getter
     # Every name a line answers has to reach it: a prefix of 'VERTE' let
     # VerticesCount fall through to the polyline call, which faulted live.

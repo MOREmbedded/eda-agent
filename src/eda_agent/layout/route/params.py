@@ -14,6 +14,7 @@ have a handful of rule classes and hundreds of nets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -28,6 +29,12 @@ NET_PREDICATES = {"all", "innet", "innetclass", "indifferentialpair",
 from .grid import EDGE, KEEPOUT, NETLESS, NONE
 
 OBSTACLE_KINDS = ("pad", "track", "via", "region")
+
+#: A pad on no net that a clearance rule names (Name = 'U5-12') is an
+#: owner of its own, under this prefix and its name, so the rule is judged
+#: with that name. Sharing the one netless owner, the pad would be judged
+#: nameless and keep the rule's far-side gap from pins on its own side.
+PAD_OWNER = "\x00pad:"
 
 #: Row offset: owner id -> row index. Ids run from KEEPOUT (-2) upwards;
 #: NONE (-9) is folded onto its own slot.
@@ -51,6 +58,14 @@ class RouteRules:
         self.net_id = net_id
         self.names = {i: n for n, i in net_id.items()}
         self.default_clearance = rules.default_clearance() or 6.0
+        # Widths the routing brief sets (brief.py): the AI's, and kept as given.
+        self.width_set: dict[str, float] = {}
+        # Spacing the brief asks between two nets (Brief.spacing_pairs): a
+        # clearance between those two alone, never under the rules'.
+        self.spacing: dict[tuple[str, str], float] = {}
+        # The brief's isolation barriers (Brief.barrier_sides): (one side,
+        # the other or None for every other net, the distance between).
+        self.barriers: list[tuple[frozenset, Optional[frozenset], float]] = []
         edge = rules.of_type("board_outline")
         self.edge_clearance = edge[0].values.get("gap", 0.0) if edge else 0.0
         self._sig: dict[int, tuple] = {}
@@ -66,6 +81,10 @@ class RouteRules:
     def facts(self, net: str, kind: str, polygon: bool = False, layer: str = "",
               comp: str = "", smd: bool = False) -> ObjectFacts:
         rs = self.rules
+        if net.startswith(PAD_OWNER):
+            name = net[len(PAD_OWNER):]
+            return ObjectFacts(kind, "", frozenset(), layer, comp or name.rsplit("-", 1)[0],
+                               polygon, smd, "", name)
         return ObjectFacts(kind, net, rs.net_classes.get(net, frozenset()), layer,
                            comp, polygon, smd, rs.diff_pair_of.get(net, ""))
 
@@ -78,6 +97,13 @@ class RouteRules:
             for kind in ("track",) + OBSTACLE_KINDS:
                 f = self.facts(net, kind)
                 sig.append((self.rules._matches(rr.scope1, f), self.rules._matches(rr.scope2, f)))
+        if any(net in pair for pair in self.spacing):
+            # Its clearance to some nets is its own: no other net is alike.
+            sig.append(("spacing", net))
+        if self.barriers:
+            # Which side of each barrier it is on: nets on the same sides
+            # of every barrier need the same clearance from anything.
+            sig.append(("barriers",) + tuple(self._side(net, b) for b in self.barriers))
         self._sig[owner] = tuple(sig)
         return self._sig[owner]
 
@@ -103,8 +129,26 @@ class RouteRules:
             rr = self.rules.binary("clearance", ft, self.facts(other, kind))
             gap = rr.values.get("gap", 0.0) if rr else self.default_clearance
             best = max(best, gap)
+        mine = self.names.get(routed, "")
+        best = max(best, self.spacing.get((mine, other), 0.0))
+        for b in self.barriers:
+            sides = {self._side(mine, b), self._side(other, b)}
+            if sides == {"a", "b"}:
+                best = max(best, b[2])
         self._pair[key] = best
         return best
+
+    @staticmethod
+    def _side(net: str, barrier) -> str:
+        """'a' on the barrier's named side, 'b' on the other, '' on neither
+        (a barrier between two named groups leaves the rest out). Copper
+        on no net is on the other side of a barrier from every other net."""
+        a, b, _d = barrier
+        if net and net in a:
+            return "a"
+        if b is None or net in b:
+            return "b"
+        return ""
 
     def clearance_row(self, routed: int, polygon: bool = False) -> np.ndarray:
         """Clearance to every owner id, indexed through ``lookup``."""
@@ -156,20 +200,27 @@ class RouteRules:
 
     def width(self, net: str, pads=(), cap: bool = True) -> float:
         """The rule's preferred width, but never wider than the narrowest
-        pad the net lands on (unless ``cap`` is False: the router then
-        necks down at that pad alone), nor narrower than the rule's minimum.
+        pad the net lands on, nor narrower than the rule's minimum. With
+        ``cap`` False the router necks down at the narrow pads alone, and
+        the net is held to its widest pad instead: one fine-pitch pin does
+        not make a supply net thin, and a rule that prefers its maximum
+        does not lay a track wider than anything it joins.
 
         A rule's preferred width is not always a width anyone routes: a
         rule can prefer its maximum, far wider than the board is routed
         at, and a track that wide leaving a small pad runs straight into
         the next one. A person necks down; this keeps a net to what its
         smallest pad takes.
+
+        A width the routing brief sets is taken as it is.
         """
+        if net in self.width_set:
+            return self.width_set[net]
         w = self.rules.width(self.facts(net, "track"))
         width = w.get("preferred") or w.get("min") or 6.0
         sizes = [min(c.w, c.h) for p in pads for c in p.copper if min(c.w, c.h) > 0]
-        if sizes and cap:
-            width = min(width, min(sizes))
+        if sizes:
+            width = min(width, min(sizes) if cap else max(sizes))
         if w.get("min"):
             width = max(width, w["min"])
         return width

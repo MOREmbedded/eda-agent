@@ -2011,6 +2011,249 @@ object StatusForm: TStatusForm
           Font.Style = []
           ParentFont = False
         end
+        object sep_Cfg9: TPanel
+          Left = 4
+          Top = 1056
+          Width = 340
+          Height = 1
+          BevelOuter = bvNone
+          Color = $003D332A
+          TabOrder = 60
+        end
+        object lbl_CfgGrpRoute: TLabel
+          Left = 4
+          Top = 1068
+          Width = 340
+          Height = 16
+          AutoSize = False
+          Caption = 'ROUTING AND 3D MODELS'
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00FFA67E
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = [fsBold]
+          ParentFont = False
+        end
+        object lbl_CfgRouting: TLabel
+          Left = 4
+          Top = 1094
+          Width = 150
+          Height = 16
+          AutoSize = False
+          Caption = 'Routing discipline'
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -12
+          Font.Name = 'Segoe UI'
+          Font.Style = [fsBold]
+          ParentFont = False
+        end
+        object opt_RouteEnforced: TPanel
+          Left = 158
+          Top = 1090
+          Width = 60
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Enforced'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 61
+          OnClick = opt_RouteEnforcedClick
+        end
+        object opt_RouteAdvisory: TPanel
+          Left = 220
+          Top = 1090
+          Width = 62
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Advisory'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 62
+          OnClick = opt_RouteAdvisoryClick
+        end
+        object opt_RouteOff: TPanel
+          Left = 284
+          Top = 1090
+          Width = 60
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Off'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 63
+          OnClick = opt_RouteOffClick
+        end
+        object lbl_CfgRoutingHint: TLabel
+          Left = 4
+          Top = 1118
+          Width = 340
+          Height = 28
+          AutoSize = False
+          WordWrap = True
+          Caption = ''
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00C0B8AE
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+        end
+        object lbl_CfgAutorouter: TLabel
+          Left = 4
+          Top = 1156
+          Width = 150
+          Height = 16
+          AutoSize = False
+          Caption = 'Altium autorouter'
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -12
+          Font.Name = 'Segoe UI'
+          Font.Style = [fsBold]
+          ParentFont = False
+        end
+        object opt_AutorouterNotAllowed: TPanel
+          Left = 158
+          Top = 1152
+          Width = 90
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Not allowed'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 64
+          OnClick = opt_AutorouterNotAllowedClick
+        end
+        object opt_AutorouterAllowed: TPanel
+          Left = 254
+          Top = 1152
+          Width = 90
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Allowed'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 65
+          OnClick = opt_AutorouterAllowedClick
+        end
+        object lbl_CfgAutorouterHint: TLabel
+          Left = 4
+          Top = 1180
+          Width = 340
+          Height = 28
+          AutoSize = False
+          WordWrap = True
+          Caption = ''
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00C0B8AE
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+        end
+        object lbl_CfgBasic3d: TLabel
+          Left = 4
+          Top = 1218
+          Width = 150
+          Height = 16
+          AutoSize = False
+          Caption = 'Basic 3D models'
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -12
+          Font.Name = 'Segoe UI'
+          Font.Style = [fsBold]
+          ParentFont = False
+        end
+        object opt_Basic3dNotAllowed: TPanel
+          Left = 158
+          Top = 1214
+          Width = 90
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Not allowed'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 66
+          OnClick = opt_Basic3dNotAllowedClick
+        end
+        object opt_Basic3dAllowed: TPanel
+          Left = 254
+          Top = 1214
+          Width = 90
+          Height = 24
+          BevelOuter = bvNone
+          Alignment = taCenter
+          Caption = 'Allowed'
+          Color = $003D332A
+          Cursor = crHandPoint
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00EAE6E1
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+          TabOrder = 67
+          OnClick = opt_Basic3dAllowedClick
+        end
+        object lbl_CfgBasic3dHint: TLabel
+          Left = 4
+          Top = 1242
+          Width = 340
+          Height = 42
+          AutoSize = False
+          WordWrap = True
+          Caption = ''
+          Font.Charset = DEFAULT_CHARSET
+          Font.Color = $00C0B8AE
+          Font.Height = -11
+          Font.Name = 'Segoe UI'
+          Font.Style = []
+          ParentFont = False
+        end
       end
     end
   end

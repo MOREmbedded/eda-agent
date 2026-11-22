@@ -1050,5 +1050,10 @@
  "{0} of {1} installed": "{1}개 중 {0}개 설치됨",
  "{0} saved. Checking again.": "{0} 저장됨. 다시 확인하는 중입니다.",
  "All workspaces": "모든 작업 공간",
- "Other workspaces hidden: {0}": "숨겨진 다른 작업 공간: {0}"
+ "Other workspaces hidden: {0}": "숨겨진 다른 작업 공간: {0}",
+ "Each": "호출당",
+ "Last {0} days: {1} calls, about {2} tokens. Estimated from the size of what each call sends and returns.": "지난 {0}일: 호출 {1}회, 약 {2} 토큰. 각 호출이 보내고 받는 크기로 추정한 값입니다.",
+ "No tool calls recorded in the last {0} days.": "지난 {0}일 동안 기록된 도구 호출이 없습니다.",
+ "Counting is off. Turn Token count on, on the Config tab of the Altium panel.": "집계가 꺼져 있습니다. Altium 패널의 Config 탭에서 Token count를 켜세요.",
+ "Token use": "토큰 사용량"
 }

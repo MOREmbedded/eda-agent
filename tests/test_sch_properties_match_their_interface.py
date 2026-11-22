@@ -56,13 +56,66 @@ def test_the_access_is_gated_by_type(prop):
                 for m in re.finditer(r"\bObj\." + prop + r"\b", code)]
     assert accesses, f"no Obj.{prop} access found; has the getter moved?"
 
+    # SchQuickRead reads by a code, and its type check is where the code is
+    # given out: test_a_quick_code_is_given_only_behind_its_type_check.
+    quick = code.index("Function SchQuickRead(")
+    quick_end = code.index("\nEnd;", quick)
+
     for at in accesses:
+        if quick < at < quick_end:
+            continue
         window = code[max(0, at - 400):at]
         assert guard in window or "ObjectId" in window, (
             f"Obj.{prop} at offset {at} is reached without a type check. "
             f"On a type that lacks it this raises an undeclared identifier, "
             f"which is a modal that stalls the polling loop and which "
             f"Try/Except cannot contain")
+
+
+_QUICK_GUARDS = {"110": ("Text", "If SchObjectHasText(Obj) Then"),
+                 "111": ("Name", "If SchObjectHasName(Obj) Then"),
+                 "112": ("Designator", "If Obj.ObjectId = ePin Then"),
+                 "120": ("IsHidden", "If SchObjectHasIsHidden(Obj) Then"),
+                 "121": ("Orientation", "If SchObjectHasOrientation(Obj) Then")}
+
+
+def _quick(name: str) -> str:
+    code = _decommented(_source())
+    start = code.index(f"Function {name}(")
+    return code[start:code.index("\nEnd;", start)]
+
+
+@pytest.mark.parametrize("number", sorted(_QUICK_GUARDS))
+def test_a_quick_code_is_given_only_behind_its_type_check(number):
+    """SchQuickRead reads Obj.<member> for a code with no check of its own,
+    so the code must be given only to a type that has the member."""
+    member, guard = _QUICK_GUARDS[number]
+    giver = _quick("SchQuickCode")
+    given = [m.start() for m in re.finditer(rf"Result := {number}\b", giver)]
+    assert len(given) == 1, number
+    assert re.search(re.escape(guard) + rf"\s+Result := {number};", giver), number
+    reader = _quick("SchQuickRead")
+    assert re.search(rf"Code = {number} Then(?:\s+Begin\s+If|\s+Result :=)[^;]*\bObj\.{member}\b",
+                     reader), number
+    # Each member is read under one code only.
+    assert len(re.findall(rf"\bObj\.{member}\b", reader)) == 1, member
+
+
+def test_the_quick_reader_is_handed_only_codes_the_giver_gave():
+    """A code reaches SchQuickRead from the list SchQuickCode filled for the
+    object's own type, and that list is filled again when the type differs."""
+    code = _decommented(_source())
+    calls = re.findall(r"SchQuickRead\(([^)]*)\)", code)
+    assert sorted(calls) == ["Obj : ISch_GraphicalObject; Code : Integer",
+                             "Obj, Extra", "Obj, Extra"]
+    for walk, kept in (("QueryObjectBody", "GateId"), ("MatchesSplitFilter", "FilterId")):
+        body = _quick(walk)
+        assert f"If (Id <> {kept}) Or (Gates.Count <> Names.Count) Then" in body, walk
+        fill = body.index("SchQuickCode(Obj, Names[I], Gate,")
+        assert fill < body.index(f"{kept} := Id;") < body.index("Extra := StrToInt(Extras[I]);")
+        assert "If Extra > 100 Then" in body, walk
+    giver = _quick("SchQuickCode")
+    assert "If (Gate = 0) Or (Extra <> 0) Then Exit;" in giver
 
 
 def test_a_port_is_excluded():
@@ -84,6 +137,7 @@ _ORIENTATION_TYPES = {
     "eLabel": "ISch_Label", "eNoERC": "ISch_NoERC",
     "eParameterSet": "ISch_ParameterSet", "eProbe": "ISch_Probe",
     "eSheetName": "ISch_SheetName", "eSheetFileName": "ISch_SheetFileName",
+    "eSymbol": "ISch_Symbol",
 }
 
 
@@ -104,7 +158,7 @@ def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
 
 def test_generic_name_property_rejects_unnamed_objects():
     code = _decommented(_source())
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         start = code.index(f"Function {routine}(")
         end = code.index("\nEnd;", start)
         body = code[start:end]
@@ -198,7 +252,7 @@ def _assert_property_contract(code: str, prop: str, guard: str, rejected: str,
     else:
         assert re.search(rf"Obj\.ObjectId\s*(?:=|<>)\s*{rejected}\b", capability)
     assert "Result := False" in capability
-    for routine, diagnostic in (("GetSchProperty", "unreadable"),
+    for routine, diagnostic in (("GetSchPropertyGated", "unreadable"),
                                 ("SetSchProperty", "unknown")):
         body = _routine(code, routine)
         start = re.search(rf"Else If PropName = '{prop}'\s+Then", body)
@@ -207,7 +261,7 @@ def _assert_property_contract(code: str, prop: str, guard: str, rejected: str,
         branch = re.split(r"\bElse If PropName\b", tail, maxsplit=1)[0]
         assert f"If {guard}(Obj) Then" in branch
         assert branch.index(guard) < branch.index(f"Obj.{prop}")
-        if routine == "GetSchProperty":
+        if routine == "GetSchPropertyGated":
             assert f"NotePropertyDiag('{diagnostic}', PropName)" in branch
             assert "Result := ''" in body[:start.start()]
         else:
@@ -234,7 +288,7 @@ def test_property_regression_detects_removed_guards(prop, guard, rejected, allow
     """Mutate only an in-memory copy; each original crash must be detected."""
     source = _source()
     _assert_property_contract(source, prop, guard, rejected, allowed)
-    for routine in ("GetSchProperty", "SetSchProperty"):
+    for routine in ("GetSchPropertyGated", "SetSchProperty"):
         original = _routine(source, routine)
         broken = original.replace(f"If {guard}(Obj) Then", "If True Then")
         assert broken != original
@@ -269,7 +323,7 @@ def test_create_preflights_before_writing_or_registering(name):
     assert "SchServer.DestroySchObject(NewObj)" in rejection
     assert "UNSUPPORTED_PROPERTY" in rejection
     assert "ResetPropertyDiag(0)" in body[:preflight]
-    for registration in ("Component.AddSchObject(NewObj)",
+    for registration in ("AddLibSymbolPrim(SchLib, Component, NewObj)",
                          "RegisterSchObjectInContainer(NewObj)"):
         assert apply < body.index(registration)
     if name == "Gen_CreateObject":
@@ -297,12 +351,13 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     routines = "\n".join(_routine(source, name) for name in
                          ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                           "SchObjectHasFontId", "SchObjectHasTextFontId",
-                          "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
+                          "SchExtraOwner", "SchExtraFits", "SchShapeOwner",
+                          "SchMemberGate", "UnsupportedSchProperty"))
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
                    {"eNetLabel", "eParameterSet", "eParameter", "ePowerObject", "ePort", "eSheetEntry",
-                    "eWire", "ePin", "eLabel"})
+                    "eWire", "ePin", "eLabel", "eRectangle"})
     constants = "\n".join(f"  {name} = {i};" for i, name in enumerate(types))
     checks = [
         ("ePowerObject", "TextColor=128", "TextColor"),
@@ -331,6 +386,12 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         ("eWire", "Symbol_Outer=1", "Symbol_Outer"),
         ("ePin", "PinsMoveable=true", "PinsMoveable"),
         ("eSchComponent", "ShowHiddenPins=true", ""),
+        ("eArc", "Radius=50|StartAngle=10|EndAngle=90", ""),
+        ("eEllipse", "Radius=50|SecondaryRadius=20", ""),
+        ("eEllipse", "Radius=50|StartAngle=10", "StartAngle"),
+        ("eRectangle", "Location.X=10|Radius=5", "Radius"),
+        ("ePolyline", "EndLineShape=Arrow|LineShapeSize=1", ""),
+        ("eArc", "EmbedImage=true", "EmbedImage"),
     ]
     calls = "\n".join(
         f"  Obj.ObjectId := {kind}; if UnsupportedSchProperty(Obj, '{props}') <> '{expected}' then Halt({i});"
@@ -367,7 +428,8 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     guards = "\n".join(_routine(source, name) for name in
                        ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
                         "SchObjectHasFontId", "SchObjectHasTextFontId",
-                        "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
+                        "SchExtraOwner", "SchExtraFits", "SchShapeOwner",
+                        "SchMemberGate", "UnsupportedSchProperty"))
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))
@@ -447,15 +509,22 @@ procedure ApplyNoErcDefaults(Obj: TSchObject);
 begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
-// The library branch and the PCB-type refusal the creators gained
-// upstream. Neither is exercised here (no run opens a SchLib or names a
-// PCB type), but the program has to compile around them.
-procedure SetOwnerPart(Obj: TSchObject; Component: TSchObject);
-begin end;
+var LibAdds, OwnerSets: Integer;
+procedure SetOwnerPart(Obj, Component: TSchObject);
+begin Inc(OwnerSets); end;
+function AddLibSymbolPrim(SchLib, Component, Obj: TSchObject): Boolean;
+begin Inc(LibAdds); SchLib.RegisterSchObjectInContainer(Obj); Result := True; end;
 procedure MarkLibDirty(SchLib: TSchObject);
 begin end;
+// The PCB-type refusal of the creators: not exercised here (no run
+// names a PCB type), but the program has to compile around it.
 function ObjectTypeFromStringPCB(S: String): Integer;
 begin Result := -1; end;
+function RenderPropertyDiagJson(Dummy: Integer): String;
+begin
+  Result := '{"unknown_count":0,"unknown":[],"failed_count":0,"failed":[],'
+          + '"unreadable_count":0,"unreadable":[]}';
+end;
 function ObjectTypeFromString(S: String): Integer;
 begin
   Result := -1;
@@ -531,6 +600,19 @@ begin
     'object_type=ePowerObject;properties=Location.X=10|TextColor=128~~' +
     'object_type=eNetLabel;properties=Text=GOOD', '7'));
   PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  WriteLn(Gen_BatchCreate(
+    'scope=doc:C:\other.SchDoc;object_type=eNetLabel;properties=Text=GOOD~~' +
+    'object_type=eNetLabel;properties=Text=GOOD', '8'));
+  PrintCounts;
+  RegisteredCount:=0; DestroyedCount:=0; AppliedCount:=0; ResetCount:=0;
+  SchServer.Doc.ObjectId := eSchLib;
+  SchServer.Doc.CurrentSchComponent := TSchObject.Create;
+  WriteLn(Gen_CreateObject('object_type=eNetLabel;container=component;properties=Text=GOOD', '9'));
+  PrintCounts;
+  WriteLn(LibAdds, ',', OwnerSets);
+  WriteLn(Gen_CreateObject('object_type=eNetLabel;container=component;properties=Text=GOOD|OwnerPartId=2', '10'));
+  WriteLn(LibAdds, ',', OwnerSets);
 end.
 '''
     path = tmp_path / "creation_regression.pas"
@@ -546,7 +628,10 @@ end.
     assert lines[1] == "0,1,0,1"
     assert json.loads(lines[2]) == {"code": "UNSUPPORTED_PROPERTY", "message": "Property Text is not supported on eParameterSet"}
     assert lines[3] == "0,2,0,2"
-    assert json.loads(lines[4]) == {"created": True, "object_type": "eNetLabel"}
+    zero = {"unknown_count": 0, "unknown": [], "failed_count": 0, "failed": [],
+            "unreadable_count": 0, "unreadable": []}
+    assert json.loads(lines[4]) == {"created": True, "object_type": "eNetLabel",
+                                    "properties": zero}
     assert lines[5] == "1,2,1,3"
     assert json.loads(lines[6]) == {
         "created": 2, "failed": 2, "total": 4,
@@ -554,9 +639,11 @@ end.
             {"index": 0, "object_type": "eNetLabel", "reason": "UNSUPPORTED_PROPERTY", "property": "IsHidden"},
             {"index": 2, "object_type": "eParameterSet", "reason": "UNSUPPORTED_PROPERTY", "property": "Text"},
         ],
+        "property_problems": [],
     }
     assert lines[7] == "2,2,2,5"
-    assert json.loads(lines[8]) == {"created": True, "object_type": "eParameter"}
+    assert json.loads(lines[8]) == {"created": True, "object_type": "eParameter",
+                                    "properties": zero}
     assert lines[9] == "3,2,3,6"
     assert json.loads(lines[10]) == {"code": "UNSUPPORTED_PROPERTY", "message": "Property TextColor is not supported on ePowerObject"}
     assert lines[11] == "0,1,0,1"
@@ -566,5 +653,21 @@ end.
             {"index": 0, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
             {"index": 2, "object_type": "ePowerObject", "reason": "UNSUPPORTED_PROPERTY", "property": "TextColor"},
         ],
+        "property_problems": [],
     }
     assert lines[13] == "2,2,2,5"
+    # A scope naming another document is refused before anything is made.
+    assert json.loads(lines[14]) == {
+        "created": 1, "failed": 1, "total": 2,
+        "failures": [{"index": 0, "object_type": "eNetLabel", "reason": "SCOPE_NOT_SUPPORTED"}],
+        "property_problems": [],
+    }
+    assert lines[15] == "1,0,1,3"
+    # container=component goes through the library, with the part set
+    # unless OwnerPartId was given.
+    assert json.loads(lines[16]) == {"created": True, "object_type": "eNetLabel",
+                                     "properties": zero}
+    assert lines[17] == "1,0,1,1"
+    assert lines[18] == "1,1"
+    assert json.loads(lines[19])["created"] is True
+    assert lines[20] == "2,1"

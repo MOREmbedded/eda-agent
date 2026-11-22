@@ -56,7 +56,9 @@ def test_schlib_queries_walk_component_owned_primitives():
 def test_component_create_sets_owner_before_explicit_properties():
     owner = GENERIC.index("SetOwnerPart(NewObj, Component);")
     apply_props = GENERIC.index("ApplySetProperties(NewObj, PropsStr);", owner)
-    add = GENERIC.index("Component.AddSchObject(NewObj);", apply_props)
+    # Added through the library since upstream's fix (an object added to
+    # the symbol with AddSchObject is not drawn until the view is rebuilt).
+    add = GENERIC.index("AddLibSymbolPrim(SchLib, Component, NewObj);", apply_props)
     assert owner < apply_props < add
     assert "Else If PropName = 'OwnerPartId' Then" in GENERIC
     assert "MarkLibDirty(SchLib);" in GENERIC[add : add + 500]

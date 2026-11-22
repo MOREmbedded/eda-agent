@@ -1050,5 +1050,10 @@
  "{0} of {1} installed": "{0} sur {1} installés",
  "{0} saved. Checking again.": "{0} enregistré. Nouvelle vérification.",
  "All workspaces": "Tous les espaces de travail",
- "Other workspaces hidden: {0}": "Autres espaces de travail masqués : {0}"
+ "Other workspaces hidden: {0}": "Autres espaces de travail masqués : {0}",
+ "Each": "Par appel",
+ "Last {0} days: {1} calls, about {2} tokens. Estimated from the size of what each call sends and returns.": "{0} derniers jours : {1} appels, environ {2} jetons. Estimé d'après la taille de ce que chaque appel envoie et renvoie.",
+ "No tool calls recorded in the last {0} days.": "Aucun appel d'outil enregistré ces {0} derniers jours.",
+ "Counting is off. Turn Token count on, on the Config tab of the Altium panel.": "Le comptage est désactivé. Activez Token count dans l'onglet Config du panneau Altium.",
+ "Token use": "Consommation de jetons"
 }

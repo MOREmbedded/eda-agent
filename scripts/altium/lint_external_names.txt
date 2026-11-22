@@ -52,7 +52,6 @@ DeleteFile
 DirectoryExists
 dupIgnore
 eAlwaysRepour
-eAngularDimension
 eArc
 eArcObject
 eAutoImperial
@@ -66,7 +65,6 @@ eAutoPos_CenterRight
 eAutoPos_TopCenter
 eAutoPos_TopLeft
 eAutoPos_TopRight
-eBaselineDimension
 eBezier
 eBlanket
 eBoardSide_Bottom
@@ -177,7 +175,6 @@ eLayerClass_SolderMask
 eLeftAlign
 eLeftSide
 eLine
-eLinearDimension
 eM
 eMechanical1
 eMechanical10
@@ -279,7 +276,6 @@ ePrePreg
 eProbe
 eProcessAll
 eProcessFree
-eRadialDimension
 eRectangle
 eRectangular
 eRegionKind_BoardCutout
@@ -483,7 +479,6 @@ ShowMessage
 SignalLayers
 Sin
 Sleep
-Sqr
 StatusForm
 StringOfChar
 StringReplace
@@ -495,7 +490,6 @@ TADOConnection
 TADOQuery
 Tan
 THandleStream
-TIniFile
 TInterfaceList
 tmr_Poll
 tmr_Spinner
@@ -541,3 +535,31 @@ opt_UnitsMm
 # TObjectCreationMode: a schematic object made with the user's Place
 # defaults (Vincent Himpe's blanket fix, upstream PR #318).
 eCreate_GlobalCopy
+
+# Names from upstream (salitronic) merged 2026-11-22.
+eAutoPos_Manual
+eLineShapeArrow
+eLineShapeCircle
+eLineShapeNone
+eLineShapeSolidArrow
+eLineShapeSolidTail
+eLineShapeSquare
+eLineShapeTail
+eSymbol
+TCoordPoint
+TDimensionReference
+# Routing and 3D model settings controls in StatusForm.dfm (upstream, 2026-11-22).
+sep_Cfg9
+lbl_CfgRouting
+lbl_CfgRoutingHint
+lbl_CfgAutorouter
+lbl_CfgAutorouterHint
+lbl_CfgBasic3d
+lbl_CfgBasic3dHint
+opt_RouteEnforced
+opt_RouteAdvisory
+opt_RouteOff
+opt_AutorouterNotAllowed
+opt_AutorouterAllowed
+opt_Basic3dNotAllowed
+opt_Basic3dAllowed

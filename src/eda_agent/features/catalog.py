@@ -198,6 +198,9 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("eda-agent-render", "eda-agent path tracer", LOCAL, "Apache-2.0",
                dist="eda-agent-render", source="render-core", size_mb=5,
                note="compiled from render-core/ with Rust"),
+    Dependency("eda-agent-route", "eda-agent route kernel", LOCAL, "Apache-2.0",
+               dist="eda-agent-route", source="route-core", size_mb=2,
+               note="compiled from route-core/ with Rust"),
     Dependency("gerbonara", "gerbonara", PYTHON, "Apache-2.0",
                "https://gitlab.com/gerbolyze/gerbonara", dist="gerbonara",
                python_min=(3, 12), size_mb=10),
@@ -206,6 +209,9 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("cadquery", "CadQuery", PYTHON, "Apache-2.0",
                "https://cadquery.readthedocs.io", dist="cadquery", size_mb=400,
                note="large: it brings the OpenCascade kernel"),
+    Dependency("vtk", "VTK", PYTHON, "BSD-3-Clause", "https://vtk.org",
+               dist="vtk", size_mb=100,
+               note="draws the review picture of a built model; CadQuery brings it"),
     Dependency("freecad", "FreeCAD", PROGRAM, "LGPL-2.1+",
                "https://www.freecad.org/downloads.php",
                env=("EDA_AGENT_FREECADCMD",),
@@ -376,7 +382,12 @@ FEATURES: tuple[Feature, ...] = (
             "Builds a STEP body from the package drawing. Without either "
             "kernel the body is a plain extrusion and the reply says so.",
             offers=("real STEP solids for generated footprints",),
-            any_of=(("cadquery", "freecad"),), extra="models3d"),
+            any_of=(("cadquery", "freecad"),), adds=("vtk",), extra="models3d"),
+    Feature("route-kernel", "Compiled board-router search", "Speed",
+            "The board router's path search in compiled code instead of "
+            "scipy. EDA_AGENT_ROUTE_KERNEL=python keeps the Python search.",
+            offers=("a faster path search for pcb_autoroute",),
+            needs=("eda-agent-route",), extra="route"),
     Feature("compute", "Rust compute", "Speed",
             "Compiled kernels: the routing search runs about 15 times faster. "
             "Python stays the default and the reference; switch it on here or "

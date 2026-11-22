@@ -14,6 +14,30 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Merged from upstream (2026-11-22, script 2026.11.22.1)
+
+- **Upstream salitronic/eda-agent merged up to 7a23938b** (126 commits).
+  New: the routing brief and routing discipline (Config tab: Routing
+  `enforced` / `advisory` / `off`, default `enforced`), the Altium
+  autorouter and basic 3D model switches (both `not_allowed` by
+  default), `design_job_cancel` and job time limits, dimension tools,
+  sheet and project option tools (single-pin nets, sheet numbering,
+  class generation), `lib_set_current_footprint`, KiCad import, and
+  upstream's fixes. Component height is now reported both ways:
+  `Height` is the footprint's field and `ModelHeight` its tallest 3D
+  body (`ComponentHeight` is gone).
+- **Kept from this fork:** the offline grid router and Rust compute,
+  the euan engine, the `fileio` readers (olefile), token usage stats and
+  the Stats tab, the dark dashboard theme, the status window layout,
+  the board-read speed work, `pad_vias`, strict nets and the
+  `proj_close` modified flag. Upstream deleted the grid router and the
+  readers; both stay here.
+- **Left out:** upstream's `usage` counter (this fork has its own),
+  the `/api/usage` route, and the Config tab help page, whose pictures
+  show upstream's window and its Sponsor button.
+- `proj_run_outjob` still refuses to generate when the focused document
+  is not the OutJob (`FOCUS_MISMATCH`), now on upstream's OutJob API.
+
 ### Fixed
 
 - **`lib_link_footprint` links vendor footprints whose SMD pads are

@@ -71,7 +71,10 @@ def test_ids_are_monotonic_and_list_is_newest_first():
     store.wait(b, timeout=5)
     ids = [j["id"] for j in store.list()]
     assert ids == sorted(ids, reverse=True)
-    assert a == "job-0001" and b == "job-0002"
+    assert a.startswith("job-0001-") and b.startswith("job-0002-")
+    # One token per store: two servers writing to the same workspace
+    # never give two jobs one id.
+    assert a.split("-")[2] == b.split("-")[2] != JobStore().submit("test", lambda: 3).split("-")[2]
 
 
 def test_unknown_job_id():
@@ -90,21 +93,20 @@ def test_bounded_workers_still_complete_all():
 
 
 def test_route_job_kind_runs_on_geometry():
-    # The registered 'route' job kind runs the real offline router on a
-    # minimal geometry dict and returns a tool-shaped result.
+    # The registered 'route' job kind runs the board router on a minimal
+    # geometry dict and returns route_plan's result.
     store = JobStore()
+    pad = {"x_size": 40, "y_size": 40, "layer": "TopLayer", "net": "A"}
     geometry = {
-        "board": {"outline": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]],
-                  "layers": ["Top", "Bottom"]},
-        "pads": [],
-        "nets": [],
+        "outline": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]],
+        "pads": [dict(pad, x=200, y=200), dict(pad, x=1600, y=900)],
     }
     jid = store.submit("route", JOB_KINDS["route"], {"geometry": geometry})
-    assert store.wait(jid, timeout=10)
+    assert store.wait(jid, timeout=60)
     res = store.result(jid)
     assert res["status"] == DONE
-    assert isinstance(res["result"], dict)
-    assert "ok" in res["result"]
+    assert res["result"]["ok"] is True
+    assert res["result"]["summary"]["completion"] == 1.0
 
 
 def test_route_job_kind_requires_geometry():

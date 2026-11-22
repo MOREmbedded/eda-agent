@@ -30,6 +30,11 @@ alone: ``width`` is mils on a track and pixels on a rendered picture,
 ``offset`` is a page offset on a listing. ``LENGTH_KEYS`` is the
 vocabulary; ``NOT_LENGTHS`` and ``ADDED`` correct it tool by tool, and a
 test fails any numeric argument no list accounts for.
+
+A tool that takes a length as a whole number of mils (an ``int``
+argument) is handed the converted value rounded to the nearest mil:
+1 mm reaches it as 39 mils, where 39.37 would be refused as not a whole
+number.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from .units import MILS_PER_MM, MM_PER_MIL, normalise_units
+from .units import MILS_PER_MM, MM_PER_MIL, format_length, normalise_units
 
 #: The argument a call gives to use another unit for itself alone.
 OVERRIDE = "length_units"
@@ -137,8 +142,9 @@ NO_LENGTHS = frozenset({
 NOT_LENGTHS: dict[str, frozenset[str]] = {
     # Degrees covered.
     "pcb_place_ring": frozenset({"span"}),
-    # Border width as a size code, 0 to 3.
+    # Line width as a size code, 0 to 3 (a line's own, in ``lines``).
     "lib_add_symbol_arc": frozenset({"width"}),
+    "lib_add_symbol_lines": frozenset({"width"}),
     # Font size in points.
     "obj_get_font_id": frozenset({"size"}),
     # Percent.
@@ -156,6 +162,7 @@ ADDED: dict[str, frozenset[str]] = {
     # A via's diameter, in each entry of the list.
     "pcb_place_vias": frozenset({"size"}),
     "pcb_place_text": frozenset({"margin"}),
+    "sch_place_text_frame": frozenset({"text_margin"}),
     "pcb_set_grids": frozenset({"track", "via", "visible", "visible_big",
                                 "component_x", "component_y"}),
     "easyeda_add_text": frozenset({"font_size"}),
@@ -165,6 +172,14 @@ ADDED: dict[str, frozenset[str]] = {
     "easyeda_create_standard_footprint": frozenset({"corner_radius"}),
     "easyeda_add_pad": frozenset({"corner_radius"}),
     "pcb_view": frozenset({"left", "bottom", "right", "top"}),
+    # An arc's centre and radius, a text's height.
+    "lib_get_footprint_primitives": frozenset({"xc", "yc", "r", "size"}),
+    # Dimensions: the line / callout distance, a center's size, the
+    # callout place and a baseline's line positions.
+    "pcb_create_dimension": frozenset({"offset", "size", "line_width"}),
+    "pcb_edit_dimension": frozenset({"offset", "size", "line_width"}),
+    "pcb_get_dimensions": frozenset({"text_x", "text_y", "size", "line_width",
+                                     "text_locations"}),
     # Containers of lengths keyed by name: pin, net, constraint.
     "easyeda_emit_template_connections": frozenset({"pin_positions"}),
     "pcb_calc_length_match": frozenset({"lengths"}),
@@ -173,10 +188,38 @@ ADDED: dict[str, frozenset[str]] = {
     "pcb_audit_placement_plan": frozenset({"board"}),
     # Reply distances from the near point, and the board-edge gap.
     "pcb_find_free_spot": frozenset({"distance", "edge_clearance"}),
-    # An arc read back from a footprint: its centre and radius, in mm like
-    # the tracks beside it (a mil session read them as mils, 2026-11-18).
-    "lib_get_footprint_primitives": frozenset({"xc", "yc", "r"}),
     "pcb_route_diff_pair": frozenset({"centerline"}),
+}
+
+#: Lists of vertices ``[x, y]`` or ``[x, y, sweep]``, by tool and name (a
+#: name with a unit by its stem): x and y are lengths, the sweep is
+#: degrees. A vertex given as a dict says which is which by its keys.
+ARC_VERTICES: dict[str, frozenset[str]] = {
+    "pcb_place_region": frozenset({"points", "shape"}),
+    "lib_get_footprint_primitives": frozenset({"shape"}),
+}
+
+#: Tools that take their list inline or as a JSON ``file``, by the name of
+#: the list. The file is read before the lengths are converted.
+FILE_LISTS: dict[str, str] = {
+    "pcb_place_tracks": "tracks",
+    "pcb_place_vias": "vias",
+}
+
+#: Arguments that are lengths written as text, numbers joined by commas
+#: (``"x1,y1,x2,y2"``), by tool.
+LENGTH_STRINGS: dict[str, frozenset[str]] = {
+    "lib_add_symbol_polygon": frozenset({"vertices"}),
+    "pcb_apply_geometry_map": frozenset({"bounds"}),
+}
+
+#: Names with a unit that a tool takes inside its lists, in the one
+#: spelling it takes them: the same length given in the other unit is
+#: renamed and converted to it.
+NESTED_NAMES: dict[str, frozenset[str]] = {
+    # The guard a lib_get_pad_geometry read gives (x_mils in a mil session).
+    "lib_set_pad_geometry": frozenset({"x_mm", "y_mm"}),
+    "pcb_place_vias": frozenset({"size_mm", "hole_size_mm"}),
 }
 
 #: Tools whose ``value`` arguments are a length for some kinds only.
@@ -216,7 +259,7 @@ MM_NATIVE = frozenset({
     "lib_create_footprint_from_package", "lib_audit_footprint_vs_datasheet",
     "lib_audit_footprint_vs_package", "lib_create_3d_model",
     "lib_export_kicad_symbol", "lib_export_kicad_footprint",
-    "lib_get_footprint_primitives",
+    "lib_get_footprint_primitives", "lib_select_footprint_primitives",
     "easyeda_create_footprint_from_package", "easyeda_audit_footprint_vs_datasheet",
     "easyeda_audit_footprint_vs_package",
 })
@@ -301,46 +344,98 @@ def _suffix_for(unit: str, spelled: str = "mils") -> str:
 _EDGES = frozenset({"left", "right", "top", "bottom", "l", "r", "t", "b"})
 
 
+def _vertices(value: Any, k: float, walk: Callable[[dict], Any]) -> Any:
+    """A list of vertices, ``[x, y]`` or ``[x, y, sweep]``, scaled by
+    ``k``: the sweep is degrees and stays as it is. A list of such lists
+    (holes) is taken the same way; a vertex given as a dict goes to
+    ``walk``, which knows its sweep by name."""
+    if not isinstance(value, list):
+        return value
+    out = []
+    for v in value:
+        if isinstance(v, list) and v and all(
+                isinstance(n, (int, float)) and not isinstance(n, bool) for n in v):
+            out.append(_scale(v[:2], k) + v[2:])
+        elif isinstance(v, list):
+            out.append(_vertices(v, k, walk))
+        elif isinstance(v, dict):
+            out.append(walk(v))
+        else:
+            out.append(v)
+    return out
+
+
 def _walk(obj: Any, keys: frozenset[str], k: float, name_for: Callable[[str, "re.Match"], str],
-          in_points: bool = False) -> Any:
+          in_points: bool = False, arcs: frozenset[str] = frozenset()) -> Any:
     """``obj`` with its lengths scaled by ``k`` and its names with a unit
-    renamed by ``name_for`` (converted to the unit the new name says)."""
+    renamed by ``name_for`` (converted to the unit the new name says).
+    ``arcs`` names the lists of vertices that may carry a sweep."""
     if isinstance(obj, list):
         if in_points and _numbers(obj):
             return _scale(obj, k)
-        return [_walk(v, keys, k, name_for, in_points) for v in obj]
+        return [_walk(v, keys, k, name_for, in_points, arcs) for v in obj]
     if not isinstance(obj, dict):
         return obj
     here = keys | _EDGES if in_points else keys
     out: dict[str, Any] = {}
     renamed: dict[str, Any] = {}
+
+    def vertex(v: dict) -> Any:
+        return _walk(v, keys, k, name_for, True, arcs)
+
     for key, value in obj.items():
         m = _SUFFIX.match(key) if isinstance(key, str) else None
         if m and not _NOT_LINEAR.search(m.group("stem")):
             new = name_for(key, m)
             if new != key and new not in obj and _all_numbers(value):
-                renamed[new] = _scale(value, _factor(_unit_of(m.group("unit")),
-                                                     _unit_of(new.rsplit("_", 1)[1])))
+                f = _factor(_unit_of(m.group("unit")), _unit_of(new.rsplit("_", 1)[1]))
+                renamed[new] = _vertices(value, f, vertex) \
+                    if m.group("stem") in arcs else _scale(value, f)
                 continue
             # The name says the unit of all it holds.
             out[key] = value
+        elif key in arcs and isinstance(value, list):
+            out[key] = _vertices(value, k, vertex)
         elif key in POINT_KEYS and isinstance(value, (list, dict)):
             # A list or a box; a bare number under such a name is not a
             # point (``points`` is a sample count on a simulation).
             out[key] = _scale(value, k) if _numbers(value) \
-                else _walk(value, keys, k, name_for, in_points=True)
+                else _walk(value, keys, k, name_for, True, arcs)
         elif key in here and _numbers(value):
             out[key] = _scale(value, k)
         elif key in here and isinstance(value, (list, dict)):
             # A range ({min, nom, max}), a pair, or lengths keyed by name.
-            out[key] = _walk(value, keys, k, name_for, in_points=True)
+            out[key] = _walk(value, keys, k, name_for, True, arcs)
         elif in_points and not (isinstance(key, str) and _NOT_IN_LENGTHS.search(key)):
             out[key] = _scale(value, k) if _numbers(value) \
-                else _walk(value, keys, k, name_for, in_points=True)
+                else _walk(value, keys, k, name_for, True, arcs)
         else:
-            out[key] = _walk(value, keys, k, name_for)
+            out[key] = _walk(value, keys, k, name_for, False, arcs)
     out.update(renamed)
     return out
+
+
+def _length_text(text: str, k: float) -> str:
+    """Lengths written as numbers joined by commas, scaled by ``k``; text
+    that is not that is left as it is, for the tool to refuse."""
+    if k == 1.0:
+        return text
+    try:
+        return ",".join(format_length(_tidy(float(part) * k))
+                        for part in text.split(","))
+    except ValueError:
+        return text
+
+
+def _whole_mils(converted: dict, given: dict, whole: frozenset[str]) -> dict:
+    """``converted`` with each whole-number length that the conversion
+    made fractional rounded to the nearest whole unit; a fraction the
+    call gave itself is left for the tool to refuse."""
+    for key in whole:
+        value = converted.get(key)
+        if isinstance(value, float) and given.get(key) != value:
+            converted[key] = int(round(value))
+    return converted
 
 
 def _named(target: str) -> Callable[[str, "re.Match"], str]:
@@ -368,17 +463,20 @@ def _taken(params: set, native: str) -> Callable[[str, "re.Match"], str]:
 
 
 def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
-            _item: bool = False) -> dict:
+            _item: bool = False, whole: Iterable[str] = ()) -> dict:
     """A call's arguments, given in ``unit``, as ``tool`` takes them.
-    ``items`` are each converted as a call of their own."""
+    ``items`` are each converted as a call of their own. ``whole`` names
+    the arguments the tool takes as whole numbers."""
     if not converts(tool) or not isinstance(args, dict):
         return args
     names = set(params)
+    whole = frozenset(whole)
     native = native_unit(tool)
+    taken = _taken(names | NESTED_NAMES.get(tool, frozenset()), native)
     out = {}
     for key, value in args.items():
         if key == "items" and isinstance(value, list) and not _item:
-            out[key] = [args_in(tool, v, unit, names, _item=True)
+            out[key] = [args_in(tool, v, unit, names, _item=True, whole=whole)
                         if isinstance(v, dict) else v for v in value]
         else:
             out[key] = value
@@ -386,12 +484,17 @@ def args_in(tool: str, args: dict, unit: str, params: Iterable[str],
         # Given beside the items, the unit applies to every one of them.
         if "units" in names and "units" not in out and not _item:
             out["units"] = unit
-        return _walk(out, frozenset(), 1.0, _taken(names, native))
+        return _whole_mils(_walk(out, frozenset(), 1.0, taken), out, whole)
     items = out.pop("items", None)
     documents = {key: _document(out.pop(key), LENGTH_DOCUMENTS[key])
                  for key in list(out) if key in LENGTH_DOCUMENTS}
-    converted = _walk(out, plain_lengths(tool, out), _factor(unit, native),
-                      _taken(names, native))
+    k = _factor(unit, native)
+    converted = _walk(out, plain_lengths(tool, out), k, taken,
+                      arcs=ARC_VERTICES.get(tool, frozenset()))
+    for key in LENGTH_STRINGS.get(tool, frozenset()):
+        if isinstance(out.get(key), str):
+            converted[key] = _length_text(out[key], k)
+    converted = _whole_mils(converted, out, whole)
     converted.update(documents)
     if items is not None:
         converted["items"] = items
@@ -459,7 +562,8 @@ def reply_in(tool: str, reply: Any, unit: str, args: Optional[dict] = None,
     if tool in SELF_CONVERTING:
         # They work in the unit they were given, replies included.
         source = normalise_units((args or {}).get("units", "")) or source
-    out = _walk(reply, plain_lengths(tool, args), _factor(source, unit), _named(unit))
+    out = _walk(reply, plain_lengths(tool, args), _factor(source, unit), _named(unit),
+                arcs=ARC_VERTICES.get(tool, frozenset()))
     if isinstance(out, dict):
         out = {**out, **(documents or {}), OVERRIDE: unit}
     return out
@@ -476,6 +580,133 @@ def unknown_unit_names(args: dict, params: Iterable[str]) -> list[str]:
                 f"{m.group('stem')}_{s}" in names for s in ("mils", "mil", "mm")):
             bad.append(key)
     return bad
+
+
+# ------------------------------------------------------------- Altium's reach
+
+#: Altium holds a coordinate as a signed 32-bit number, 10,000 to the mil,
+#: so a place past this many mils wraps round to the other side of the
+#: origin. MEASURED on AD 25.8.1: a track at 214,000 mil was kept as given,
+#: one at 220,000 came back at -209,497 (a No ERC marker given as
+#: 5,600 mm landed at -209,024 mil).
+WRAP_MILS = (2 ** 31 - 1) / 10000
+
+#: A board's editor shows 0 to 99,999 mil on each axis, absolute (the
+#: script engine's kMinCoord and kMaxCoord). MEASURED on AD 25.8.1: a track
+#: outside that box is kept as given, but the view cannot be moved to it
+#: (Zoom All shows exactly 0 to 99,999), so it can be neither seen nor
+#: picked. A board tool takes a place either absolute or from the board
+#: origin, which lies inside the box, so a place further than this from
+#: zero is outside it either way. A sheet has no such edge short of the
+#: wrap: markers at -500 and at 133,858 mil were both zoomed to.
+BOARD_REACH_MILS = 99999
+
+#: Plain names whose numbers are places, or moves from one place to
+#: another. A size puts nothing anywhere and is not checked.
+POSITION_KEYS = frozenset({
+    "x", "y", "x1", "y1", "x2", "y2", "x3", "y3", "cx", "cy", "dx", "dy",
+    "x_center", "y_center", "center_x", "center_y", "centre_x", "centre_y",
+    "start_x", "start_y", "end_x", "end_y", "mid_x", "mid_y",
+    "from_x", "from_y", "to_x", "to_y", "source_x", "source_y",
+    "reference_x", "reference_y", "location_x", "location_y",
+    "directive_x", "directive_y", "origin_x", "origin_y",
+    "offset_x", "offset_y",
+})
+
+#: Names under which every number, or every vertex of a list, is a place.
+#: A box (bounds, bbox, box, rect, extent) is left out: it is mostly an
+#: area to search, and one larger than the board is a fair way to say all.
+PLACE_KEYS = frozenset({
+    "points", "vertices", "outline", "polygon", "corners",
+    "location", "position", "center", "centre", "origin", "at", "pos", "xy",
+})
+
+#: The tools that put or find something in an Altium document.
+_ALTIUM_PREFIXES = ("pcb_", "sch_", "lib_", "route_", "obj_")
+
+
+def _on_board(tool: str) -> bool:
+    """Whether ``tool`` acts on a board or a footprint (a symbol is drawn
+    on a sheet's plane, which has no edge short of the wrap)."""
+    return tool.startswith(("pcb_", "route_")) or (
+        tool.startswith("lib_") and re.search(r"footprint|pad|via", tool) is not None)
+
+
+def _places(obj: Any, path: str, unit: str, own_units: bool, in_place: bool,
+            found: list) -> None:
+    """Every place in ``obj`` as ``(path, number, unit)`` onto ``found``.
+    ``own_units``: a dict's ``units`` says the unit of its plain lengths
+    (the tools that convert their lengths themselves). A name that carries
+    its unit (``x_mils``) is in that unit whatever it sits in."""
+    if isinstance(obj, list):
+        for i, v in enumerate(obj):
+            at = f"{path}[{i}]"
+            if in_place and _numbers(v) and not isinstance(v, list):
+                found.append((at, v, unit))
+            else:
+                _places(v, at, unit, own_units, in_place, found)
+        return
+    if not isinstance(obj, dict):
+        return
+    if own_units and isinstance(obj.get("units"), str):
+        unit = normalise_units(obj["units"]) or unit
+    for key, value in obj.items():
+        if not isinstance(key, str):
+            continue
+        at = f"{path}.{key}" if path else key
+        name, here = key, unit
+        m = _SUFFIX.match(key)
+        if m:
+            name, here = m.group("stem"), _unit_of(m.group("unit"))
+        if name in POSITION_KEYS and _numbers(value):
+            for i, v in enumerate(value if isinstance(value, list) else [value]):
+                found.append((f"{at}[{i}]" if isinstance(value, list) else at, v, here))
+        elif name in PLACE_KEYS and isinstance(value, (list, dict)):
+            _places(value, at, here, own_units, True, found)
+        elif in_place and _numbers(value) and not _NOT_IN_LENGTHS.search(key):
+            for v in (value if isinstance(value, list) else [value]):
+                found.append((at, v, here))
+        elif isinstance(value, (list, dict)):
+            _places(value, at, here, own_units, in_place and isinstance(value, list), found)
+
+
+def out_of_reach(tool: str, args: dict, unit: str) -> str:
+    """Why ``tool`` must not be sent ``args`` (as the tool takes them),
+    or ''. A place past Altium's 32-bit coordinate wraps to the other side
+    of the origin, and on a board a place outside the editor's box can be
+    neither seen nor picked; both are refused before anything is sent.
+    ``unit`` is the call's, to give the value back as the caller wrote it."""
+    if not tool.startswith(_ALTIUM_PREFIXES) or not converts(tool) \
+            or not isinstance(args, dict):
+        return ""
+    own = tool in SELF_CONVERTING
+    found: list = []
+    _places(args, "", native_unit(tool), own, False, found)
+    board = _on_board(tool)
+    limit = BOARD_REACH_MILS if board else WRAP_MILS
+    far = []
+    for at, value, here in found:
+        mils = value * (MILS_PER_MM if here == "mm" else 1.0)
+        if abs(mils) > limit + 1e-6:
+            # As the caller wrote it: a plain length the server converted
+            # was given in the call's unit; any other is in its own.
+            named = _SUFFIX.match(at.rsplit(".", 1)[-1].split("[", 1)[0])
+            shown = unit if not own and not named else here
+            given = mils * (MM_PER_MIL if shown == "mm" else 1.0)
+            far.append(f"{at} = {_tidy(given):g} {shown}")
+    if not far:
+        return ""
+    more = f" and {len(far) - 3} more" if len(far) > 3 else ""
+    if board:
+        why = (f"outside the board area Altium can show, 0 to {BOARD_REACH_MILS:,} mil "
+               f"({BOARD_REACH_MILS * MM_PER_MIL:,.2f} mm) on each axis; there it "
+               "can be neither seen nor picked")
+    else:
+        why = (f"past Altium's coordinate range, +/-{WRAP_MILS:,.0f} mil "
+               f"({WRAP_MILS * MM_PER_MIL:,.1f} mm), where it wraps round to "
+               "the other side of the origin")
+    return (f"{tool}: {', '.join(far[:3])}{more} is {why}. Nothing was sent; "
+            f"check the unit (this call is in {unit}).")
 
 
 # ---------------------------------------------------------------- the setting

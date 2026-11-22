@@ -51,7 +51,7 @@ def test_present_dependencies_are_not_installed_again(nothing_installed, monkeyp
 
 def test_alternatives_install_the_one_pip_can(nothing_installed):
     p = install.plan(install.select(["models3d"]))
-    assert any(s.kind == "pip" and s.deps == ["cadquery"] for s in p.steps)
+    assert any(s.kind == "pip" and "cadquery" in s.deps for s in p.steps)
     assert not any("freecad" in s.deps for s in p.steps)
 
 

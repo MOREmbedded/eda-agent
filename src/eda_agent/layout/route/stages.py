@@ -37,6 +37,15 @@ from .exact import CopperIndex, sharp_bends
 from .fanout import _extent, outward
 
 EPS = 1e-6
+#: Mils round an area of the brief within which a stage leaves a net to the
+#: negotiation: a lane or fanout laid there could cross into it.
+AREA_MARGIN = 200.0
+#: What the router before the stages charged for a via, mils.
+LEGACY_VIA_COST = 30.0
+#: What a 45 and a 90 degree turn cost the search, mils on top of the step
+#: (StageOptions.turn_cost).
+TURN_45 = 2.4
+TURN_90 = 11.8
 
 
 @dataclass
@@ -128,10 +137,12 @@ class StageOptions:
     # out of the centre, never slantwise across the pad's copper or its
     # corner. An IC's elongated pin is left only through its short ends.
     axis_entry: bool = False
-    # Route a net at its rule's width even where one of its pads is
-    # narrower, necking down to that pad's width only on the stub into it.
-    # Off: a net is routed at what its narrowest pad takes, all the way.
-    neck_pads: bool = False
+    # Route a net whose width rule is wider than most (Router._supplies) at
+    # that width even where one of its pads is narrower, necking down to the
+    # pad's width only on the stub into it; every other net at what its
+    # narrowest pad takes. Off: those too, so one fine-pitch pin makes a
+    # whole supply net thin.
+    neck_pads: bool = True
     # Route only what the board's own copper leaves apart: a net its
     # tracks already join whole is not routed, and one partly joined is
     # routed by joining its pieces, each reachable anywhere along its
@@ -144,6 +155,26 @@ class StageOptions:
     # A through via of a net already on the board is a free layer change
     # for the net's routes, where no second via is laid.
     reuse_vias: bool = False
+    # Off: each connection is routed once, in order, against everything
+    # routed before it as a wall; what is laid stays, and a connection that
+    # finds no room is left unmade, for the AI to decide (route its
+    # critical nets first, then the rest). On: rounds of rip-up and reroute
+    # at a rising price for sharing (PathFinder), then repair. MEASURED on
+    # 16 boards with no net routed first (2026-11-20): off, completion
+    # 0.9742 against 0.9930 on, fully routed 9 against 13, vias 1244
+    # against 688.
+    negotiate: bool = False
+    # The search knows which way each step went: a 45 degree turn costs
+    # TURN_45 mils on top of the step, a 90 degree turn TURN_90, a sharper
+    # one is never taken, and no diagonal step cuts between two walls. Off:
+    # every step costs its length alone, and a staircase costs what a
+    # single 45 degree bend does. MEASURED on 19 boards (2026-11-20), with
+    # via_cost 98.4: track pieces 10368 to 9388, vias 1548 to 1296, length
+    # +1.3%, completion 0.9951 to 0.9931, routing time 1.7x; with via_cost
+    # 30 the pieces fall alike and the vias by 2%.
+    turn_cost: bool = True
+    # What a via costs the search, mils of track.
+    via_cost: float = 98.4
 
     def any(self) -> bool:
         return self.diff_pairs or self.plane_fanout or self.pin_lanes or self.bus_lanes
@@ -156,7 +187,8 @@ class StageOptions:
                     or self.repair_negotiate or self.quick_release or self.exact_pad_via
                     or self.axis_entry or self.neck_pads or self.join_existing
                     or bool(self.exclude_layers) or self.reuse_vias
-                    or self.pad_vias != "any")
+                    or self.pad_vias != "any" or not self.negotiate or self.turn_cost
+                    or self.via_cost != LEGACY_VIA_COST)
 
     @classmethod
     def coerce(cls, value) -> "StageOptions":
@@ -170,7 +202,8 @@ class StageOptions:
             return cls(diff_pairs=False, plane_fanout=False, pin_lanes=False, bus_lanes=False,
                        class_order=False, pad_vias="any", fallback=False, bends=False,
                        straight=False, global_stall=False, exact_pad_via=False,
-                       quick_release=False)
+                       quick_release=False, neck_pads=False, negotiate=True, turn_cost=False,
+                       via_cost=LEGACY_VIA_COST)
         known = {f.name for f in fields(cls)}
         bad = set(value) - known
         if bad:
@@ -240,9 +273,36 @@ class StageContext:
 
     # -- facts ---------------------------------------------------------------
 
-    def routed(self, net: str) -> bool:
+    def routed(self, net: str, pair: bool = False) -> bool:
+        """Whether a stage lays ``net``. A net the brief rules by layer or
+        area is left to the negotiation, which obeys it, except for the
+        pair stage, which checks the brief itself."""
         r = self.r
+        if net in r.brief_masks and not pair:
+            return False
+        if not pair and net in self._near_areas():
+            # Near an area of the brief (an antenna's keep-out): the
+            # negotiation, which walls the area, routes it.
+            return False
         return bool(net) and (r.only is None or net in r.only) and net not in r.laid_nets
+
+    def _near_areas(self) -> set[str]:
+        """Nets with a pad within AREA_MARGIN of an area of the brief that
+        bars them."""
+        got = getattr(self, "_near", None)
+        if got is not None:
+            return got
+        got = set()
+        for a in self.r.brief.areas:
+            pts = [p for ring in a.polygons for p in ring]
+            if not pts:
+                continue
+            x0, x1 = min(p[0] for p in pts) - AREA_MARGIN, max(p[0] for p in pts) + AREA_MARGIN
+            y0, y1 = min(p[1] for p in pts) - AREA_MARGIN, max(p[1] for p in pts) + AREA_MARGIN
+            got |= {p.net for p in self.r.board.pads
+                    if p.net and p.net not in a.allow and x0 <= p.x <= x1 and y0 <= p.y <= y1}
+        self._near = got
+        return got
 
     def joined_elsewhere(self, net: str) -> bool:
         return net in self.planes or net in self.pours
@@ -350,6 +410,8 @@ class StageContext:
         r = self.r
         rv = via.diameter / 2
         if not self.inside_board(via.x, via.y):
+            return False
+        if r.via_barred(via.x, via.y, via.diameter):
             return False
         span = set(r.board.layers_between(via.low_layer, via.high_layer))
         for li, layer in enumerate(r.grid.layers):

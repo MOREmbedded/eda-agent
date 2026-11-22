@@ -930,6 +930,76 @@ def register_application_tools(mcp):
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
+    @mcp.tool()
+    async def app_close_opened_documents(dry_run: bool = True,
+                                         keep: Optional[list[str]] = None) -> dict[str, Any]:
+        """Close the documents this session's commands opened, and no other.
+
+        Each reply names the documents its command loaded that were not
+        open before it, and the session keeps that list. This closes the
+        ones still open. A document open before (yours, or one another
+        session opened) is never on the list, nor is a project. One that
+        reads modified is kept and named: save it or close it yourself.
+
+        Args:
+            dry_run: Only say what would close (default True).
+            keep: Full paths to leave open although this session opened
+                them, such as the board still being worked on.
+
+        Returns:
+            ``would_close`` (dry run) or ``closed``; ``kept_modified``,
+            ``kept``, ``already_closed`` (closed since, dropped from the
+            list), ``failed`` (path and reply) and ``remaining`` (what
+            stays on the list).
+        """
+        import os
+
+        from ..bridge.altium_bridge import keep_opened_documents, read_opened_documents
+        from ..config import get_config
+
+        workspace = get_config().workspace_dir
+        docs = read_opened_documents(workspace)
+        out: dict[str, Any] = {"dry_run": dry_run, "would_close" if dry_run else "closed": [],
+                               "kept_modified": [], "kept": [], "already_closed": [],
+                               "failed": [], "remaining": []}
+        if not docs:
+            return out
+        listed = await get_bridge().send_command_async("application.get_open_documents", {})
+        state = {os.path.normcase(str(d.get("file_path") or "")): d
+                 for d in listed or [] if isinstance(d, dict)}
+        keep_set = {os.path.normcase(k) for k in keep or []}
+        for path in docs:
+            key = os.path.normcase(path)
+            doc = state.get(key)
+            if doc is None or not doc.get("loaded", True):
+                out["already_closed"].append(path)
+            elif key in keep_set:
+                out["kept"].append(path)
+                out["remaining"].append(path)
+            elif doc.get("modified"):
+                out["kept_modified"].append(path)
+                out["remaining"].append(path)
+            elif dry_run:
+                out["would_close"].append(path)
+                out["remaining"].append(path)
+            else:
+                try:
+                    reply = await get_bridge().send_command_async(
+                        "application.close_document", {"file_path": path}, timeout=120.0)
+                except Exception as e:  # reported, and the path stays on the list
+                    reply = {"closed": False, "error": str(e)}
+                if isinstance(reply, dict) and reply.get("closed"):
+                    out["closed"].append(path)
+                elif "unsaved changes" in str((reply or {}).get("error") or ""):
+                    # Modified after all: the list's flag misses some edits.
+                    out["kept_modified"].append(path)
+                    out["remaining"].append(path)
+                else:
+                    out["failed"].append({"path": path, "reply": reply})
+                    out["remaining"].append(path)
+        keep_opened_documents(workspace, out["remaining"])
+        return out
+
     async def _other_open_projects(besides: str) -> list[str]:
         """Projects open in Altium other than ``besides``; empty when the
         list cannot be read, since it only informs the reply."""
@@ -949,28 +1019,30 @@ def register_application_tools(mcp):
                              project_path: str = "") -> dict[str, Any]:
         """Snapshot a project so the session can be rolled back.
 
-        Copies the project's design files into a content-addressed store under
-        the workspace (unchanged files are deduplicated, so repeat checkpoints
-        are cheap). Take one before any risky autonomous edit; restore with
+        Altium saves a copy of each design document in the project folder
+        into a content-addressed store under the workspace, an open one as
+        it is in the editor; the project file and other files are stored
+        as they are on disk. Unchanged files are stored once, and a closed
+        document unchanged since the last checkpoint is not opened again.
+        Take one before any risky autonomous edit; restore with
         `app_restore_checkpoint`. This is the undo the live bridge otherwise
         lacks.
 
         Args:
             label: optional human note ("before routing pass").
-            save_first: flush dirty Altium docs to disk before snapshotting
-                so the checkpoint reflects in-editor changes (default True).
+            save_first: save the project first, so the project file holds
+                what Altium holds (default True).
             project_path: the .PrjPcb to snapshot. Left empty, the focused
                 project is taken; with several open that may not be the one
                 you are editing, so the reply names it and lists the rest.
 
         Returns:
-            The checkpoint manifest summary (id, created, file_count, ...),
+            The checkpoint manifest summary (id, created, file_count,
+            ``not_written``: documents Altium did not copy, with why),
             ``project`` (the one snapshotted) and ``other_open_projects``.
-            With ``save_first``, also ``saved``: True when the flush
+            With ``save_first``, also ``saved``: True when the save
             worked, False with ``save_error`` and a ``note`` when it did
-            not. A checkpoint is still taken either way, but one taken
-            after a failed save holds the on-disk state only, which is
-            missing precisely the in-editor work you were protecting.
+            not.
         """
         import os
         saved: Optional[bool] = None
@@ -1006,8 +1078,11 @@ def register_application_tools(mcp):
                 saved = False
                 save_error = str(exc)
         from pathlib import Path
+
+        from ..checkpoint import take
         store = _checkpoint_store()
-        info = store.create(Path(project_dir), project_file=project_file or "", label=label)
+        info = await take(get_bridge(), store, Path(project_dir),
+                          project_file=project_file or "", label=label)
         result: dict[str, Any] = {"checkpoint": info.summary(), "project": snapshot_of,
                                   "other_open_projects": others}
         if save_first:
@@ -1015,9 +1090,9 @@ def register_application_tools(mcp):
             if not saved:
                 result["save_error"] = save_error
                 result["note"] = (
-                    "save_all failed, so this checkpoint holds the "
-                    "on-disk state only. Unsaved editor changes are NOT "
-                    "in it."
+                    "the project save failed, so the project file in this "
+                    "checkpoint is the one on disk; the documents are as "
+                    "Altium holds them."
                 )
         return result
 
@@ -1033,9 +1108,12 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Restore the focused project's files from a checkpoint.
 
-        Overwrites design files with the snapshot contents. Close the project
-        in Altium (or expect a reload prompt) before restoring, since Altium
-        holds documents open. With `prune_added=True` this is a true revert:
+        Only files that differ from the checkpoint are restored. The
+        project is closed WITHOUT SAVING, so edits since the checkpoint
+        are dropped, and opened again afterwards. Altium opens each
+        changed design document's snapshot and saves it under its own
+        name; the project file and other files are put back while the
+        project is closed. With `prune_added=True` this is a true revert:
         files created after the checkpoint are deleted; the default leaves
         newer files untouched.
 
@@ -1044,20 +1122,28 @@ def register_application_tools(mcp):
             prune_added: delete files absent at checkpoint time (default False).
 
         Returns:
-            {restored, removed, missing_blobs}.
+            {restored, unchanged, removed, missing_blobs, not_restored
+            (file: why), not_in_checkpoint, reopened, were_open (the
+            project's documents open before; the project reopens with
+            none of them open)}.
         """
+        import os
+
         from ..saving import refused, saving_off
         if saving_off():
             return refused("A restore overwrites the project's files.")
-        project_dir, _project_file, err = await _resolve_project_dir()
+        project_dir, project_file, err = await _resolve_project_dir()
         if err:
             return err
         from pathlib import Path
+
+        from ..checkpoint import put_back
         store = _checkpoint_store()
         try:
-            return store.restore(
-                checkpoint_id, Path(project_dir), prune_added=prune_added
-            )
+            return await put_back(
+                get_bridge(), store, checkpoint_id, Path(project_dir),
+                project_path=os.path.join(project_dir, project_file) if project_file else "",
+                prune_added=prune_added)
         except FileNotFoundError as e:
             return {"error": str(e)}
 
@@ -1600,6 +1686,26 @@ def register_application_tools(mcp):
         """
         return await get_bridge().send_command_async(
             "application.claim_document", {"file_path": file_path})
+
+    @mcp.tool()
+    async def app_release_document(file_path: str = "") -> dict[str, Any]:
+        """Give up a document this session is editing.
+
+        Another session can then write to it at once, instead of after
+        ``idle_release_seconds``. Call it when done with a document that
+        another session may want. A document another session holds is
+        refused (NOT_YOURS); taking one over is app_claim_document.
+
+        Args:
+            file_path: The document's full path. Empty releases every
+                document this session holds.
+
+        Returns:
+            ``released`` (the documents given up) and ``session``.
+        """
+        params = {"file_path": file_path} if file_path else {}
+        return await get_bridge().send_command_async(
+            "application.release_document", params)
 
     @mcp.tool()
     async def app_list_documents(project: str = "", kind: str = "",
