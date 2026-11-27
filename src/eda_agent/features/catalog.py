@@ -248,6 +248,16 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
                       "can `import openEMS`. Save both once on the Features "
                       "page or with `eda-agent features --set-path`. Linux: "
                       "build openEMS-Project with its Python bindings."),
+    Dependency("hertzon", "Hertzon", PROGRAM, "GPL-2.0-or-later (runs as its own program)",
+               "https://github.com/c8501024/Hertzon/releases/latest",
+               env=("EDA_AGENT_HERTZON_CLI",), size_mb=1000,
+               manual="Install Hertzon 0.4 or later from its releases page "
+                      "(Windows: Hertzon-Setup-<version>.exe; Linux: the "
+                      "linux.tar.gz and ./install.sh). eda-agent finds hertzon-cli "
+                      "in the installer's folder and on PATH; for a portable copy "
+                      "set EDA_AGENT_HERTZON_CLI to its folder or to "
+                      "hertzon-cli itself (Features page or `eda-agent features "
+                      "--set-path`)."),
     Dependency("scikit-rf", "scikit-rf", PYTHON, "BSD-3-Clause",
                "https://scikit-rf.readthedocs.io", dist="scikit-rf",
                requirement="scikit-rf>=1.0,<3", size_mb=5,
@@ -413,6 +423,14 @@ FEATURES: tuple[Feature, ...] = (
             offers=("sim_em_build_model / sim_em_run / sim_em_results",
                     "simulation engine `openems`"),
             needs=("openems",), tools=("sim_em_run",), docs="docs/EMC_RF.md",
+            switchable=True),
+    Feature("hertzon", "3D FEM solver (Hertzon)", "Field solvers and signal integrity",
+            "Full-wave finite elements with adaptive meshing: S-parameters of "
+            "antennas, filters, waveguides and PCB structures modelled in Hertzon, "
+            "with design variables set per run. Runs as its own program.",
+            offers=("sim_hertzon_describe / sim_hertzon_solve",
+                    "simulation engine `hertzon` (job kind hertzon-solve)"),
+            needs=("hertzon",), tools=("sim_hertzon_solve",), docs="docs/HERTZON.md",
             switchable=True),
     Feature("scikit-rf", "RF network toolbox (scikit-rf)", "Field solvers and signal integrity",
             "Touchstone and network algebra from the scikit-rf project; a "

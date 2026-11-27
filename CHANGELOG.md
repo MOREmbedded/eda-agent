@@ -14,6 +14,21 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Added
+
+- **Hertzon 3D FEM as a simulation engine.** New engine `hertzon`, job
+  kind `hertzon-solve`, feature `hertzon` and tools
+  `sim_hertzon_describe` / `sim_hertzon_solve`: a project made in Hertzon
+  (antennas, filters, waveguides, PCB structures) is solved full-wave
+  with adaptive meshing through Hertzon's command line, with its design
+  variables, band, sweep type and cores set per run; the Touchstone
+  result gets the usual S-parameter checks plus a mesh convergence
+  verdict. Hertzon (GPL-2.0-or-later) runs only as its own program and
+  is found through `EDA_AGENT_HERTZON_CLI`, `PATH` or its installer's
+  folder. See [Hertzon](docs/HERTZON.md). UNVERIFIED against a real
+  Hertzon install: tested against a stand-in that follows Hertzon's
+  documented `cli_schema` 1 contract.
+
 ### Merged from upstream (2026-11-22, script 2026.11.22.1)
 
 - **Upstream salitronic/eda-agent merged up to 7a23938b** (126 commits).

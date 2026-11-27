@@ -1,7 +1,7 @@
 # Simulation engines
 
 Every simulator eda-agent drives is an **engine**: this project's own
-solvers, scikit-rf, openEMS, and any engine another package adds. Every
+solvers, scikit-rf, openEMS, Hertzon, and any engine another package adds. Every
 problem is a **job**. A job is solved by one engine or several, and each
 engine's answer is kept beside the others so they can be compared. Two
 independent engines that agree are a second opinion; two that disagree
@@ -20,11 +20,12 @@ and eye diagrams follow as new job kinds and engines on the same model.
 | `scikit-rf` | BSD-3-Clause | in this process | `touchstone-check`, `line-model` (a single microstrip without mask) | `scikit-rf` (`si` extra) |
 | `spice` | ngspice: BSD-3-Clause; LTspice: freeware | as its own program | `channel-eye` (the channel as a SPICE subcircuit) | `spice` |
 | `openems` | GPL-3.0 | as its own program | `em-3d` | `openems` |
+| `hertzon` | GPL-2.0-or-later | as its own program (`hertzon-cli`) | `hertzon-solve` | `hertzon` |
 
 An engine is offered only when its feature is installed and switched on
 ([Features and dependencies](FEATURES_AND_DEPENDENCIES.md)). Copyleft
 engines never load into the eda-agent process: they run as their own
-program, files in and files out, as openEMS does.
+program, files in and files out, as openEMS and Hertzon do.
 
 ## Job kinds
 
@@ -38,6 +39,7 @@ program, files in and files out, as openEMS does.
 | `channel-eye` | `touchstone`: a 2-port or 4-port channel | `data_rate_gbps`, `rise_ps`, `amplitude_mv`, `prbs`, driver and receiver (`tx_ibis`, `rx_ibis`, resistances, capacitances), `simulator`, `fit_tol` | The eye by convolution with the worst-case eye, or in SPICE through a passive macromodel kept as a subcircuit: see [Eyes and SPICE models](SI_TIME.md). |
 | `board-si` | `board`, `stackup` (as `net-channel`) | `targets` (nets and pairs by name glob or Altium net class, each with its limits and optionally the eye), `data_rate_gbps`, `max_items`, `workers`, `temperature_c` or `thermal_npz` | Every target net and pair checked, each failure placed on the board; `report.html`, `findings.json`, `summary.csv`: see [Board signal integrity](SI_BOARD.md). |
 | `em-3d` | `board`: a saved LayoutBoard; `stackup` (optional): a saved stackup reply | `nets`, `ports`, `f_max_mhz`, `f_min_mhz`, `margin_mils`, `port_ohms`, `max_cells_m`, `threads` | The Touchstone file, plots, and the `touchstone-check` figures of the result. |
+| `hertzon-solve` | `project`: a Hertzon `.hzn` project, or a `.zip` of its folder | `design`, `setup`, `sweep`, `variables`, a band (`f_start_hz`, `f_stop_hz`, `f_points`) or `frequencies_hz`, `sweep_type`, `cores`, `validate`, `require_convergence`, `fields`, `project_file`, `tolerance` | The Touchstone file, the `touchstone-check` figures, adaptive passes, mesh size, solve time and a convergence verdict: see [Hertzon](HERTZON.md). |
 
 Unknown spec keys and inputs are errors, so a misspelt option is never
 silently ignored.
@@ -70,7 +72,7 @@ relative spread and whether it is within the tolerance (2 % by default);
 a check the engines disagree on is reported on its own.
 
 Engines that run in this process finish before the call returns. An
-external engine (openEMS) is started and keeps running on its own;
+external engine (openEMS, Hertzon) is started and keeps running on its own;
 asking for the job's status polls it. A run whose eda-agent process
 stopped is marked failed rather than left running.
 
@@ -83,6 +85,8 @@ stopped is marked failed rather than left running.
 | `sim_job_status` | A job and each engine's state and results; polls external engines |
 | `sim_job_compare` | The engines' answers side by side |
 | `sim_jobs` | Recent jobs |
+| `sim_hertzon_describe` | A Hertzon project's designs, ports, variables and setups |
+| `sim_hertzon_solve` | A `hertzon-solve` job with its options as arguments |
 
 Example:
 

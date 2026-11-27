@@ -14,6 +14,7 @@ from ..si.board_jobs import BOARD_SPEC
 from ..si.eye_jobs import EYE_SPEC
 from ..si.net_jobs import NET_SPEC
 from .engine import JobKind
+from .hertzon import SOLVE_SPEC as HERTZON_SPEC
 
 KINDS: dict[str, JobKind] = {k.id: k for k in (
     JobKind(
@@ -85,6 +86,15 @@ KINDS: dict[str, JobKind] = {k.id: k for k in (
         inputs={"board": "a saved LayoutBoard (.json), e.g. from si_board_snapshot",
                 "stackup": "the board's pcb_get_layer_stackup reply (.json)"},
         spec=BOARD_SPEC),
+    JobKind(
+        "hertzon-solve", "Hertzon project, 3D FEM",
+        "S-parameters of a design in a Hertzon project (antenna, filter, waveguide, "
+        "PCB structure), solved full-wave with adaptive meshing; variables and the band "
+        "can be set per run. The Touchstone result feeds the S-parameter, eye and "
+        "SPICE-model tools.",
+        inputs={"project": "the Hertzon project: a .hzn file, or a .zip of its folder when "
+                           "it uses other files (STEP, STL, Touchstone models)"},
+        spec=HERTZON_SPEC),
 )}
 
 

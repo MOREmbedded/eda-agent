@@ -4,7 +4,9 @@
 ``app_features`` says what this installation can do and what is missing;
 ``app_install_features`` installs it when the user agrees. The ``sim_job_*``
 tools run a problem on one or more simulation engines (this project's own
-solvers, scikit-rf, openEMS, plugins) and compare their answers.
+solvers, scikit-rf, openEMS, Hertzon, plugins) and compare their answers.
+``sim_hertzon_describe`` and ``sim_hertzon_solve`` drive Hertzon's command
+line (GPL, run as its own program) for a project made in Hertzon.
 """
 from __future__ import annotations
 
@@ -199,3 +201,96 @@ def register_simulation_tools(mcp) -> None:
         from ..simulation import jobs
         rows = await asyncio.to_thread(jobs.list_jobs, None, max(1, int(limit)))
         return {"ok": True, "folder": str(jobs.jobs_dir()), "jobs": rows}
+
+    @mcp.tool()
+    async def sim_hertzon_describe(project: str, design: str = "") -> dict[str, Any]:
+        """The designs of a Hertzon project: ports, variables, setups, sweeps.
+
+        Read this before sim_hertzon_solve to know what can be set: the
+        design and setup names, each variable with its value, the ports
+        and their reference impedance. Runs ``hertzon-cli describe``; the
+        project is not changed.
+
+        Args:
+            project: path of the .hzn file.
+            design: one design; empty lists all.
+        """
+        from ..simulation import hertzon
+        try:
+            return await asyncio.to_thread(hertzon.describe, project, str(design or ""))
+        except hertzon.HertzonError as exc:
+            return {"ok": False, "error": str(exc),
+                    "feature": "hertzon", "next_step": "app_features feature=hertzon "
+                    "says where eda-agent looks for hertzon-cli"}
+
+    @mcp.tool()
+    async def sim_hertzon_solve(project: str, design: str = "", setup: str = "",
+                                sweep: str = "", variables: Optional[dict] = None,
+                                f_start_hz: float = 0.0, f_stop_hz: float = 0.0,
+                                f_points: int = 0,
+                                frequencies_hz: Optional[list[float]] = None,
+                                sweep_type: str = "", cores: int = 0,
+                                validate: bool = False, require_convergence: bool = False,
+                                title: str = "", force: bool = False) -> dict[str, Any]:
+        """Solve a Hertzon project full-wave (3D FEM, adaptive mesh) and get
+        its S-parameters as Touchstone.
+
+        A simulation job (kind hertzon-solve, engine hertzon): Hertzon runs
+        as its own program on a copy of the project in the job's folder,
+        so the user's project and its results are not touched. This
+        returns once Hertzon has started; poll sim_job_status with the job
+        id (minutes to hours). The results carry the S-parameter checks
+        (passivity, reciprocity, return loss), the adaptive passes, the
+        mesh size and a convergence verdict; the Touchstone file feeds
+        si_channel_eye, si_spice_model and sim_read_touchstone. The same
+        problem asked again returns the finished results without solving.
+
+        Args:
+            project: the .hzn file, or a .zip of the project folder when it
+                uses other files (STEP, STL, Touchstone models).
+            design: the design; empty for the only one (sim_hertzon_describe).
+            setup: the analysis setup; empty for the first enabled one.
+            sweep: the sweep; empty for the setup's first, "LastAdaptive" for
+                the adaptive frequency only.
+            variables: values for this run, e.g. {"w": "1.2mm", "$eps": 4.4}.
+            f_start_hz: with f_stop_hz and f_points, a linear band in place
+                of the sweep's frequencies.
+            f_stop_hz: top of the band.
+            f_points: points of the band.
+            frequencies_hz: single frequencies in place of a band.
+            sweep_type: discrete, interpolating or fast; empty keeps the setup's.
+            cores: solver cores; 0 lets Hertzon choose.
+            validate: run Hertzon's model check first.
+            require_convergence: an unconverged adaptive mesh fails the run.
+            title: a name for the job list.
+            force: solve again even when results exist.
+        """
+        from .. import simulation as sim
+        spec: dict[str, Any] = {}
+        for key, value in (("design", design), ("setup", setup), ("sweep", sweep),
+                           ("sweep_type", sweep_type)):
+            if value:
+                spec[key] = str(value)
+        if variables:
+            spec["variables"] = dict(variables)
+        if f_start_hz or f_stop_hz or f_points:
+            spec.update({"f_start_hz": float(f_start_hz), "f_stop_hz": float(f_stop_hz),
+                         "f_points": int(f_points)})
+        if frequencies_hz:
+            spec["frequencies_hz"] = [float(f) for f in frequencies_hz]
+        if cores:
+            spec["cores"] = int(cores)
+        if validate:
+            spec["validate"] = True
+        if require_convergence:
+            spec["require_convergence"] = True
+        try:
+            r = await asyncio.to_thread(sim.submit, "hertzon-solve", "hertzon", spec,
+                                        {"project": str(project)}, str(title or ""),
+                                        True, bool(force))
+        except Exception as exc:  # noqa: BLE001
+            return _failed(exc)
+        if r.get("state") == "running":
+            r["next_step"] = f"poll sim_job_status job={r.get('job')} engine=hertzon"
+        return r
+

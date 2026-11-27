@@ -260,6 +260,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "the solver run, so the bindings find their DLLs."),
     EnvVar("EDA_AGENT_OPENEMS_PYTHON", "Simulation", "this Python, then `python` on PATH",
            "A Python that can `import openEMS`, used to run the solver."),
+    EnvVar("EDA_AGENT_HERTZON_CLI", "Simulation",
+           r"`hertzon-cli` on `PATH`, then `%LOCALAPPDATA%\Programs\Hertzon`, "
+           "then `~/.local/share/hertzon`",
+           "Hertzon's command line (`hertzon-cli`), or a Hertzon folder that "
+           "holds it (directly or in `.venv`), for the `hertzon` simulation "
+           "engine and `sim_hertzon_solve`."),
     # ---- 3D and SDK -----------------------------------------------------
     EnvVar("EDA_AGENT_STEP_WRITER", "3D models and Altium SDK", "cadquery",
            "`freecad` tries FreeCAD before CadQuery when building a STEP "
