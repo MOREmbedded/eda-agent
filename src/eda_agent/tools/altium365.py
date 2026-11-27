@@ -393,6 +393,77 @@ def register_altium365_tools(mcp) -> None:
         return await _answer(publish)
 
     @mcp.tool()
+    async def altium365_create_draft_from_file(kind: str, workspace_url: str, folder: str,
+                                               file_path: str, name: str = "",
+                                               confirm: bool = False) -> dict[str, Any]:
+        """Create a new symbol or footprint item in a __Draft folder straight
+        through the Altium 365 API, from a finished .SchLib / .PcbLib. No
+        Explorer, no clicking, no dialog: one upload and one call per item,
+        a few seconds each.
+
+        ONLY in a __Draft folder: a path with no part starting "__Draft" is
+        refused. The API has no "local edits" mode, so the item is created
+        with a first revision holding the file, in the lifecycle's initial
+        state (Planned in the Generic Lifecycle). It is never released.
+
+        Without ``confirm`` this resolves the folder and shows what would be
+        sent; nothing is uploaded or created.
+
+        Args:
+            kind: "symbol" or "footprint".
+            workspace_url: The workspace, e.g. "https://example.365.altium.com/".
+            folder: The folder's path in the library, e.g.
+                "Models/Symbols/__Draft" (case ignored).
+            file_path: The .SchLib (symbol) or .PcbLib (footprint) to put in it.
+            name: The item's name; empty takes the file's name.
+
+        Returns:
+            ``{ok, sent, folder, folder_id, name}`` and, once sent, ``id``.
+        """
+        from ..altium365 import (PUBLISHED_ID, Altium365Error, publish_operation,
+                                 reported_errors)
+        from ..ui.explorer import is_draft_path, path_parts
+
+        want = {"symbol": ".schlib", "footprint": ".pcblib"}.get(kind)
+        if want is None:
+            return {"ok": False, "reason": "kind is symbol or footprint"}
+        if not is_draft_path(folder):
+            return {"ok": False, "reason": (
+                f"{folder!r} is not a __Draft folder: new items are made only in "
+                "a workspace's __Draft folders")}
+        source = Path(file_path)
+        if not source.is_file() or source.suffix.lower() != want:
+            return {"ok": False, "reason": f"file_path names an existing {want} file"}
+        item_name = name.strip() or source.stem
+        field_name, operation = publish_operation(kind)
+
+        def create() -> dict:
+            session = _session()
+            ws = session.permitted(workspace_url)
+            wanted = [p.lower() for p in path_parts(folder)]
+            found = [f for f in session.list_library_folders(ws)
+                     if [p.lower() for p in path_parts(f.get("path"))] == wanted]
+            if len(found) != 1:
+                raise Altium365Error(f"the library has {len(found)} folders at {folder!r}")
+            values = {"fileId": "<the uploaded file>",
+                      "relativePath": f"Released/{source.name}",
+                      "folderId": found[0]["id"], "ws": ws, "name": item_name}
+            shown = {"folder": found[0]["path"], "folder_id": found[0]["id"], "name": item_name}
+            if not confirm:
+                return {**_preview(operation, "uploaded or created", variables=values),
+                        **shown}
+            session.require_change(f"publish_{kind}")
+            values["fileId"] = session.upload_file(source)
+            data = session.run_change(operation, values)
+            made = (data.get(field_name) or {}).get(PUBLISHED_ID[field_name])
+            problems = reported_errors(data, field_name)
+            if problems or not made:
+                raise Altium365Error(f"{field_name} created nothing: "
+                                     + "; ".join(problems or ["no id came back"]))
+            return {"sent": True, "id": made, "file_id": values["fileId"], **shown}
+        return await _answer(create)
+
+    @mcp.tool()
     async def altium365_release_component(release: dict,
                                           confirm: bool = False) -> dict[str, Any]:
         """Release a managed component (desReleaseComponent). ``release`` is

@@ -1297,7 +1297,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "use": ["altium365_check_setup", "altium365_list_workspaces",
                 "altium365_list_projects", "altium365_list_components",
                 "altium365_run_query", "altium365_describe_type",
-                "altium365_publish_library_file", "altium365_release_component",
+                "altium365_publish_library_file", "altium365_create_draft_from_file",
+                "altium365_release_component",
                 "altium365_set_component_parameters"],
         "avoid": [],
         "note": ("Set up with EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN, "
