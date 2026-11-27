@@ -96,7 +96,7 @@ def test_new_properties_are_advertised():
 # ---------------------------------------------------------------- create
 
 def test_justification_names_map_to_altiums_order():
-    body = load(_PCB)["TextJustifyCode"]
+    body = load(_ALTIUM / "Utils.pas")["TextJustifyCode"]
     order = ["top_left", "center_left", "bottom_left", "top_center", "center",
              "bottom_center", "top_right", "center_right", "bottom_right"]
     for code, name in enumerate(order, start=1):
@@ -118,9 +118,9 @@ def test_the_longest_line_is_measured_line_by_line():
 
 
 def test_justification_fractions():
-    fx = load(_PCB)["TextJustifyFracX"]
+    fx = load(_ALTIUM / "Utils.pas")["TextJustifyFracX"]
     assert "If Code >= 7 Then Result := 1" in fx and "Else If Code >= 4 Then Result := 0.5" in fx
-    fy = load(_PCB)["TextJustifyFracY"]
+    fy = load(_ALTIUM / "Utils.pas")["TextJustifyFracY"]
     assert "Row := (Code - 1) Mod 3;" in fy
     assert "If Row = 0 Then Result := 1" in fy and "Else If Row = 1 Then Result := 0.5" in fy
 

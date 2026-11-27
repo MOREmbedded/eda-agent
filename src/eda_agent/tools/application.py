@@ -218,10 +218,15 @@ def _unit_stamp_check(bridge: Any, loaded: Any) -> tuple[dict, list[str]]:
         return {"unit_stamps": None}, []
     folders = [Path(str(p)).parent for p in (loaded or []) if p]
     folders.append(get_default_scripts_dest())
-    folder = next((f for f in folders if (f / "Main.pas").is_file()), None)
-    if folder is None:
+    folders = [f for f in folders if (f / "Main.pas").is_file()]
+    if not folders:
         return {"unit_stamps": reported, "stale_units": None}, []
-    stale, unstamped = stale_units(reported, folder)
+    # With two Altium_API.PrjScr open, the first listed was compared, and an
+    # old copy nobody runs read as a stale compile (2026-11-27: the profile
+    # copy, while .eda-local ran current). The running compile is the one
+    # that matches a folder, so the folder it matches best is compared.
+    checked = [(f, *stale_units(reported, f)) for f in folders]
+    folder, stale, unstamped = min(checked, key=lambda c: (len(c[1]), len(c[2])))
     warnings = []
     if stale:
         warnings.append(

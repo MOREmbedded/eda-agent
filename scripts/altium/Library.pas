@@ -4530,6 +4530,11 @@ End;
 {   rotation               - degrees, default 0                                }
 {   layer                  - GetLayerFromString name, default 'TopOverlay'   }
 {   use_ttfont=true|false  - default false (stroke font)                      }
+{   font_name              - a TrueType font (Consolas); implies use_ttfont   }
+{   justification          - top_left .. bottom_right or center: x, y is that }
+{                            point of the text's frame, as pcb_place_text     }
+{   frame_width            - the frame's width (units); empty grows it to the }
+{                            longest word, so a one-word text centres on x, y }
 {   library_path           - optional .PcbLib to focus first                  }
 {   component_name         - optional footprint name; switches active fp     }
 Function Lib_AddFootprintText(Params : String; RequestId : String) : String;
@@ -4549,6 +4554,10 @@ Var
     X, Y, Size, Width : Double;
     UnitsStr : String;
     UseTTFont : Boolean;
+    FontNameStr, JustStr : String;
+    Just : Integer;
+    AnchorX, AnchorY, FrameW, FrameH, FX, FY : Integer;
+    Ang : Double;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -4571,6 +4580,21 @@ Begin
     If LayerStr = '' Then LayerStr := 'TopOverlay';
     FlagStr := ExtractJsonValue(Params, 'use_ttfont');
     UseTTFont := (FlagStr = 'true') Or (FlagStr = 'True') Or (FlagStr = '1');
+    FontNameStr := ExtractJsonValue(Params, 'font_name');
+    If FontNameStr <> '' Then UseTTFont := True;
+    JustStr := ExtractJsonValue(Params, 'justification');
+    Just := 0;
+    If JustStr <> '' Then
+    Begin
+        Just := TextJustifyCode(JustStr);
+        If Just < 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_JUSTIFICATION',
+                'justification is top_left, top_center, top_right, center_left, '
+                + 'center, center_right, bottom_left, bottom_center or bottom_right');
+            Exit;
+        End;
+    End;
     { Bottom-side text must be mirrored or it reads backwards on the      }
     { board. audit_find_mirrored_pcb_text reports exactly this pairing:    }
     { eBottomOverlay without MirrorFlag, and eTopOverlay with it.          }
@@ -4661,15 +4685,46 @@ Begin
         End;
         { Relative to the footprint's own origin. Board.XOrigin is a board-wide
           reference and would drop the text far from the footprint. }
-        Text.XLocation := Footprint.X + CoordFromUnits(X, UnitsStr);
-        Text.YLocation := Footprint.Y + CoordFromUnits(Y, UnitsStr);
+        AnchorX := Footprint.X + CoordFromUnits(X, UnitsStr);
+        AnchorY := Footprint.Y + CoordFromUnits(Y, UnitsStr);
+        Text.XLocation := AnchorX;
+        Text.YLocation := AnchorY;
         Text.Layer := Layer;
+        If FontNameStr <> '' Then
+        Begin
+            { As pcb_place_text writes a TrueType text: kind 1, then the font. }
+            Try Text.TextKind := 1; Except NoteWriteFailed('Text.TextKind'); End;
+        End;
         Text.UseTTFonts := UseTTFont;
+        If FontNameStr <> '' Then
+            Try Text.FontName := FontNameStr; Except NoteWriteFailed('Text.FontName'); End;
         Text.UnderlyingString := TextStr;
         Text.Size := CoordFromUnits(Size, UnitsStr);
         Text.Width := CoordFromUnits(Width, UnitsStr);
         Try Text.MirrorFlag := Mirror; Except NoteWriteFailed('Text.MirrorFlag'); End;
         Try Text.Rotation := Rotation; Except NoteWriteFailed('Text.Rotation'); End;
+
+        { A justified text is a one-frame multiline text whose anchor is    }
+        { the asked point of its frame, the way pcb_place_text places one.  }
+        { The frame is read again after EndModify, where Altium grows it to }
+        { the text, and the text moved once more by the growth. No frame    }
+        { width: 1, grown to the longest WORD, so ".Designator" centres on  }
+        { x, y; text with spaces wraps unless frame_width is given.         }
+        If Just > 0 Then
+        Begin
+            FrameW := CoordFromUnits(StrToFloatDef(ExtractJsonValue(Params, 'frame_width'), 0), UnitsStr);
+            If FrameW <= 0 Then FrameW := MilsToCoordF(1);
+            FrameH := MilsToCoordF(1);
+            Ang := Rotation * 3.14159265358979 / 180.0;
+            Text.Multiline := True;
+            Text.MultilineTextWidth := FrameW;
+            Text.MultilineTextHeight := FrameH;
+            Text.MultilineTextAutoPosition := Just;
+            FX := Round(TextJustifyFracX(Just) * FrameW);
+            FY := Round(TextJustifyFracY(Just) * FrameH);
+            Text.XLocation := AnchorX - Round(FX * Cos(Ang) - FY * Sin(Ang));
+            Text.YLocation := AnchorY - Round(FX * Sin(Ang) + FY * Cos(Ang));
+        End;
 
         { The working pattern: add to footprint AND to its                  }
         { underlying Board, then broadcast registration to both. Footprint  }
@@ -4681,6 +4736,23 @@ Begin
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
+        If Just > 0 Then
+        Begin
+            Text.BeginModify;
+            Text.EndModify;
+            If (Text.MultilineTextWidth <> FrameW) Or (Text.MultilineTextHeight <> FrameH) Then
+            Begin
+                FrameW := Text.MultilineTextWidth;
+                FrameH := Text.MultilineTextHeight;
+                FX := Round(TextJustifyFracX(Just) * FrameW);
+                FY := Round(TextJustifyFracY(Just) * FrameH);
+                Text.BeginModify;
+                Text.XLocation := AnchorX - Round(FX * Cos(Ang) - FY * Sin(Ang));
+                Text.YLocation := AnchorY - Round(FX * Sin(Ang) + FY * Cos(Ang));
+                Text.EndModify;
+            End;
+            Try Text.GraphicallyInvalidate; Except End;
+        End;
     Finally
         PcbEndEdit(0);
     End;
@@ -4690,6 +4762,8 @@ Begin
         '{"success":true' +
         ',"footprint":"' + EscapeJsonString(Footprint.Name) + '"' +
         ',"text":"' + EscapeJsonString(TextStr) + '"' +
+        ',"font_name":"' + EscapeJsonString(FontNameStr) + '"' +
+        ',"justification":' + IntToStr(Just) +
         ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
         ',"x":' + FloatToJsonStr(X) +
         ',"y":' + FloatToJsonStr(Y) + '}';

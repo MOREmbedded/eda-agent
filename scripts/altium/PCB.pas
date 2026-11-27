@@ -11764,44 +11764,6 @@ End;
 {         mirror (true / false; empty = mirrored on a bottom-side layer)    }
 {..............................................................................}
 
-{ A text justification by name -> Altium's TTextAutoposition ordinal, the    }
-{ anchor of a multiline text inside its frame: 1 top left, 2 centre left,    }
-{ 3 bottom left, 4 top centre, 5 centre, 6 bottom centre, 7 top right,       }
-{ 8 centre right, 9 bottom right. -1 for a name that is not one of them.     }
-Function TextJustifyCode(Name : String) : Integer;
-Begin
-    Name := LowerCase(Name);
-    If Name = 'top_left' Then Result := 1
-    Else If Name = 'center_left' Then Result := 2
-    Else If Name = 'bottom_left' Then Result := 3
-    Else If Name = 'top_center' Then Result := 4
-    Else If Name = 'center' Then Result := 5
-    Else If Name = 'bottom_center' Then Result := 6
-    Else If Name = 'top_right' Then Result := 7
-    Else If Name = 'center_right' Then Result := 8
-    Else If Name = 'bottom_right' Then Result := 9
-    Else Result := -1;
-End;
-
-{ Where on its frame a justification sits, as a fraction of the frame:     }
-{ 0 left / bottom, 0.5 centre, 1 right / top.                              }
-Function TextJustifyFracX(Code : Integer) : Double;
-Begin
-    If Code >= 7 Then Result := 1
-    Else If Code >= 4 Then Result := 0.5
-    Else Result := 0;
-End;
-
-Function TextJustifyFracY(Code : Integer) : Double;
-Var
-    Row : Integer;
-Begin
-    Row := (Code - 1) Mod 3;
-    If Row = 0 Then Result := 1
-    Else If Row = 1 Then Result := 0.5
-    Else Result := 0;
-End;
-
 { The width of the text's longest line, in mils, measured on the placed }
 { text itself: each line set as its text in turn (a single-line text      }
 { draws CR LF on one row, so the whole text cannot be measured at once),   }

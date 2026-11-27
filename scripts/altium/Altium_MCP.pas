@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.27.4';
+    SCRIPT_VERSION = '2026.11.27.5';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -4738,6 +4738,45 @@ Begin
         Try Result := Result + '|' + FloatToStr(Region.Area); Except End;
         Try Result := Result + '|' + IntToStr(Region.ShapeSegmentCount); Except End;
     End;
+End;
+
+{ Shared by pcb_place_text and lib_add_footprint_text.                       }
+{ A text justification by name -> Altium's TTextAutoposition ordinal, the    }
+{ anchor of a multiline text inside its frame: 1 top left, 2 centre left,    }
+{ 3 bottom left, 4 top centre, 5 centre, 6 bottom centre, 7 top right,       }
+{ 8 centre right, 9 bottom right. -1 for a name that is not one of them.     }
+Function TextJustifyCode(Name : String) : Integer;
+Begin
+    Name := LowerCase(Name);
+    If Name = 'top_left' Then Result := 1
+    Else If Name = 'center_left' Then Result := 2
+    Else If Name = 'bottom_left' Then Result := 3
+    Else If Name = 'top_center' Then Result := 4
+    Else If Name = 'center' Then Result := 5
+    Else If Name = 'bottom_center' Then Result := 6
+    Else If Name = 'top_right' Then Result := 7
+    Else If Name = 'center_right' Then Result := 8
+    Else If Name = 'bottom_right' Then Result := 9
+    Else Result := -1;
+End;
+
+{ Where on its frame a justification sits, as a fraction of the frame:     }
+{ 0 left / bottom, 0.5 centre, 1 right / top.                              }
+Function TextJustifyFracX(Code : Integer) : Double;
+Begin
+    If Code >= 7 Then Result := 1
+    Else If Code >= 4 Then Result := 0.5
+    Else Result := 0;
+End;
+
+Function TextJustifyFracY(Code : Integer) : Double;
+Var
+    Row : Integer;
+Begin
+    Row := (Code - 1) Mod 3;
+    If Row = 0 Then Result := 1
+    Else If Row = 1 Then Result := 0.5
+    Else Result := 0;
 End;
 
 Function IsIntStr(S : String) : Boolean;
@@ -23129,6 +23168,11 @@ End;
 {   rotation               - degrees, default 0                                }
 {   layer                  - GetLayerFromString name, default 'TopOverlay'   }
 {   use_ttfont=true|false  - default false (stroke font)                      }
+{   font_name              - a TrueType font (Consolas); implies use_ttfont   }
+{   justification          - top_left .. bottom_right or center: x, y is that }
+{                            point of the text's frame, as pcb_place_text     }
+{   frame_width            - the frame's width (units); empty grows it to the }
+{                            longest word, so a one-word text centres on x, y }
 {   library_path           - optional .PcbLib to focus first                  }
 {   component_name         - optional footprint name; switches active fp     }
 Function Lib_AddFootprintText(Params : String; RequestId : String) : String;
@@ -23148,6 +23192,10 @@ Var
     X, Y, Size, Width : Double;
     UnitsStr : String;
     UseTTFont : Boolean;
+    FontNameStr, JustStr : String;
+    Just : Integer;
+    AnchorX, AnchorY, FrameW, FrameH, FX, FY : Integer;
+    Ang : Double;
 Begin
     UnitsStr := ExtractJsonValue(Params, 'units');
     If UnitsProblem(UnitsStr) <> '' Then
@@ -23170,6 +23218,21 @@ Begin
     If LayerStr = '' Then LayerStr := 'TopOverlay';
     FlagStr := ExtractJsonValue(Params, 'use_ttfont');
     UseTTFont := (FlagStr = 'true') Or (FlagStr = 'True') Or (FlagStr = '1');
+    FontNameStr := ExtractJsonValue(Params, 'font_name');
+    If FontNameStr <> '' Then UseTTFont := True;
+    JustStr := ExtractJsonValue(Params, 'justification');
+    Just := 0;
+    If JustStr <> '' Then
+    Begin
+        Just := TextJustifyCode(JustStr);
+        If Just < 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_JUSTIFICATION',
+                'justification is top_left, top_center, top_right, center_left, '
+                + 'center, center_right, bottom_left, bottom_center or bottom_right');
+            Exit;
+        End;
+    End;
     { Bottom-side text must be mirrored or it reads backwards on the      }
     { board. audit_find_mirrored_pcb_text reports exactly this pairing:    }
     { eBottomOverlay without MirrorFlag, and eTopOverlay with it.          }
@@ -23260,15 +23323,46 @@ Begin
         End;
         { Relative to the footprint's own origin. Board.XOrigin is a board-wide
           reference and would drop the text far from the footprint. }
-        Text.XLocation := Footprint.X + CoordFromUnits(X, UnitsStr);
-        Text.YLocation := Footprint.Y + CoordFromUnits(Y, UnitsStr);
+        AnchorX := Footprint.X + CoordFromUnits(X, UnitsStr);
+        AnchorY := Footprint.Y + CoordFromUnits(Y, UnitsStr);
+        Text.XLocation := AnchorX;
+        Text.YLocation := AnchorY;
         Text.Layer := Layer;
+        If FontNameStr <> '' Then
+        Begin
+            { As pcb_place_text writes a TrueType text: kind 1, then the font. }
+            Try Text.TextKind := 1; Except NoteWriteFailed('Text.TextKind'); End;
+        End;
         Text.UseTTFonts := UseTTFont;
+        If FontNameStr <> '' Then
+            Try Text.FontName := FontNameStr; Except NoteWriteFailed('Text.FontName'); End;
         Text.UnderlyingString := TextStr;
         Text.Size := CoordFromUnits(Size, UnitsStr);
         Text.Width := CoordFromUnits(Width, UnitsStr);
         Try Text.MirrorFlag := Mirror; Except NoteWriteFailed('Text.MirrorFlag'); End;
         Try Text.Rotation := Rotation; Except NoteWriteFailed('Text.Rotation'); End;
+
+        { A justified text is a one-frame multiline text whose anchor is    }
+        { the asked point of its frame, the way pcb_place_text places one.  }
+        { The frame is read again after EndModify, where Altium grows it to }
+        { the text, and the text moved once more by the growth. No frame    }
+        { width: 1, grown to the longest WORD, so ".Designator" centres on  }
+        { x, y; text with spaces wraps unless frame_width is given.         }
+        If Just > 0 Then
+        Begin
+            FrameW := CoordFromUnits(StrToFloatDef(ExtractJsonValue(Params, 'frame_width'), 0), UnitsStr);
+            If FrameW <= 0 Then FrameW := MilsToCoordF(1);
+            FrameH := MilsToCoordF(1);
+            Ang := Rotation * 3.14159265358979 / 180.0;
+            Text.Multiline := True;
+            Text.MultilineTextWidth := FrameW;
+            Text.MultilineTextHeight := FrameH;
+            Text.MultilineTextAutoPosition := Just;
+            FX := Round(TextJustifyFracX(Just) * FrameW);
+            FY := Round(TextJustifyFracY(Just) * FrameH);
+            Text.XLocation := AnchorX - Round(FX * Cos(Ang) - FY * Sin(Ang));
+            Text.YLocation := AnchorY - Round(FX * Sin(Ang) + FY * Cos(Ang));
+        End;
 
         { The working pattern: add to footprint AND to its                  }
         { underlying Board, then broadcast registration to both. Footprint  }
@@ -23280,6 +23374,23 @@ Begin
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
             c_Broadcast, PCBM_BoardRegisteration, Text.I_ObjectAddress);
+        If Just > 0 Then
+        Begin
+            Text.BeginModify;
+            Text.EndModify;
+            If (Text.MultilineTextWidth <> FrameW) Or (Text.MultilineTextHeight <> FrameH) Then
+            Begin
+                FrameW := Text.MultilineTextWidth;
+                FrameH := Text.MultilineTextHeight;
+                FX := Round(TextJustifyFracX(Just) * FrameW);
+                FY := Round(TextJustifyFracY(Just) * FrameH);
+                Text.BeginModify;
+                Text.XLocation := AnchorX - Round(FX * Cos(Ang) - FY * Sin(Ang));
+                Text.YLocation := AnchorY - Round(FX * Sin(Ang) + FY * Cos(Ang));
+                Text.EndModify;
+            End;
+            Try Text.GraphicallyInvalidate; Except End;
+        End;
     Finally
         PcbEndEdit(0);
     End;
@@ -23289,6 +23400,8 @@ Begin
         '{"success":true' +
         ',"footprint":"' + EscapeJsonString(Footprint.Name) + '"' +
         ',"text":"' + EscapeJsonString(TextStr) + '"' +
+        ',"font_name":"' + EscapeJsonString(FontNameStr) + '"' +
+        ',"justification":' + IntToStr(Just) +
         ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
         ',"x":' + FloatToJsonStr(X) +
         ',"y":' + FloatToJsonStr(Y) + '}';
@@ -57909,44 +58022,6 @@ End;
 {         stroke (mils, optional; Altium's default when empty),             }
 {         mirror (true / false; empty = mirrored on a bottom-side layer)    }
 {..............................................................................}
-
-{ A text justification by name -> Altium's TTextAutoposition ordinal, the    }
-{ anchor of a multiline text inside its frame: 1 top left, 2 centre left,    }
-{ 3 bottom left, 4 top centre, 5 centre, 6 bottom centre, 7 top right,       }
-{ 8 centre right, 9 bottom right. -1 for a name that is not one of them.     }
-Function TextJustifyCode(Name : String) : Integer;
-Begin
-    Name := LowerCase(Name);
-    If Name = 'top_left' Then Result := 1
-    Else If Name = 'center_left' Then Result := 2
-    Else If Name = 'bottom_left' Then Result := 3
-    Else If Name = 'top_center' Then Result := 4
-    Else If Name = 'center' Then Result := 5
-    Else If Name = 'bottom_center' Then Result := 6
-    Else If Name = 'top_right' Then Result := 7
-    Else If Name = 'center_right' Then Result := 8
-    Else If Name = 'bottom_right' Then Result := 9
-    Else Result := -1;
-End;
-
-{ Where on its frame a justification sits, as a fraction of the frame:     }
-{ 0 left / bottom, 0.5 centre, 1 right / top.                              }
-Function TextJustifyFracX(Code : Integer) : Double;
-Begin
-    If Code >= 7 Then Result := 1
-    Else If Code >= 4 Then Result := 0.5
-    Else Result := 0;
-End;
-
-Function TextJustifyFracY(Code : Integer) : Double;
-Var
-    Row : Integer;
-Begin
-    Row := (Code - 1) Mod 3;
-    If Row = 0 Then Result := 1
-    Else If Row = 1 Then Result := 0.5
-    Else Result := 0;
-End;
 
 { The width of the text's longest line, in mils, measured on the placed }
 { text itself: each line set as its text in turn (a single-line text      }

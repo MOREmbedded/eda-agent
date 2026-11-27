@@ -2330,6 +2330,33 @@ async def _courtyard_layer(bridge) -> tuple[str, str]:
                     f"({e}); the courtyard went on Mechanical1")
 
 
+#: The mechanical-layer kind a library's 3D bodies belong on.
+BODY_LAYER_KIND = "3d body top"
+
+
+async def _move_body_to_kind_layer(bridge, footprint_name: str) -> Optional[dict]:
+    """Put a footprint's new 3D body on the library's "3D Body Top" kind
+    layer. The body is created on Mechanical1, which in a library that
+    keeps its bodies on, say, Mechanical13 is a layer nobody looks at
+    (QPA9903, 2026-11-27). ``None`` when the library names no such layer
+    (the body stays where Altium put it), else what was done."""
+    try:
+        mech = await bridge.send_command_async("library.get_mech_layers", {}) or {}
+        layers = mech.get("layers") or [] if isinstance(mech, dict) else []
+        target = next((str(m.get("layer")) for m in layers
+                       if str(m.get("kind") or "").strip().lower() == BODY_LAYER_KIND
+                       and m.get("layer")), "")
+        if not target:
+            return None
+        moved = await bridge.send_command_async(
+            "library.move_bodies_to_layer",
+            {"layer": target, "footprint_names": footprint_name}, timeout=60.0)
+        return {"layer": target, "rule": "mechanical layer kind '3D Body Top'",
+                "moved": (moved or {}).get("moved") if isinstance(moved, dict) else None}
+    except Exception as e:  # noqa: BLE001 - the model is linked either way
+        return {"layer": None, "note": f"the body was left where Altium put it: {e}"}
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -4008,7 +4035,10 @@ def register_library_tools(mcp):
              "offset_x": 0, "offset_y": 0, "offset_z": 0,
              "rotation_x": 0, "rotation_y": 0, "rotation_z": 0})
         ok = isinstance(linked, dict) and linked.get("success") is not False
+        body_layer = (await _move_body_to_kind_layer(bridge, footprint_name)
+                      if ok and footprint_name.strip() else None)
         return {"ok": ok, "path": wrote["path"], "writer": wrote["writer"],
+                **({"body_layer": body_layer} if body_layer else {}),
                 "height_mm": plan.height, "solids": len(plan.solids),
                 "source": source, "linked": linked,
                 "replaced_bodies": replaced, "terminals": placed,
@@ -4615,6 +4645,9 @@ def register_library_tools(mcp):
         library_path: Optional[str] = None,
         component_name: Optional[str] = None,
         units: str = "mil",
+        font_name: str = "",
+        justification: str = "",
+        frame_width: Optional[float] = None,
     ) -> dict[str, Any]:
         """Add a text primitive to a PcbLib footprint.
 
@@ -4627,6 +4660,12 @@ def register_library_tools(mcp):
             layer: Layer name (``TopOverlay``, ``BottomOverlay``,
                 ``Mechanical1`` ...).
             use_ttfont: TrueType instead of the stroke font.
+            font_name: A TrueType font ("Consolas"); implies use_ttfont.
+            justification: top_left .. bottom_right, or center: x, y is
+                that point of the text, so ``.Designator`` with "center"
+                sits centred on the origin.
+            frame_width: The text frame's width; empty fits a one-word
+                text (a text with spaces would wrap: give the width).
             mirror: Mirror the text; set it for a BOTTOM layer.
             library_path: .PcbLib to focus first; default the active one.
             component_name: Footprint to switch to first; default the
@@ -4654,6 +4693,12 @@ def register_library_tools(mcp):
             params["use_ttfont"] = "true"
         if mirror:
             params["mirror"] = "true"
+        if font_name.strip():
+            params["font_name"] = font_name.strip()
+        if justification.strip():
+            params["justification"] = justification.strip().lower()
+        if frame_width is not None:
+            params["frame_width"] = format_length(frame_width)
         if library_path:
             params["library_path"] = library_path
         if component_name:
