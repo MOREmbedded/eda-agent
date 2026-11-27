@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The lint rule for a local declared twice in one Var block.
 
 A merge left ``BodyJson : String`` on two lines of PCB_GetComponents'
