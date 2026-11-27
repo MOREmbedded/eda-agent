@@ -550,3 +550,17 @@ def test_a_draft_item_is_made_only_in_a_draft_folder_and_only_on_confirm(
     assert made["ok"] and made["sent"] and made["id"] == "SYM-1"
     change = [v for k, v in fake.sent if k == "change"][0]
     assert change["folderId"] == "F-DRAFT" and change["fileId"] == "FILE-1"
+
+
+def test_auto_leaves_the_name_to_the_folder_naming_scheme(tools, tmp_path, monkeypatch):
+    """Item names are unique across a whole workspace, so a footprint named
+    like its symbol is refused (measured live 2026-11-27); "auto" sends null
+    and the folder's naming scheme picks one."""
+    from eda_agent.tools import altium365 as a365_tools
+    monkeypatch.setattr(a365_tools, "_session", lambda: _DraftSession())
+    lib = tmp_path / "QPA9903.SchLib"
+    lib.write_bytes(b"x")
+    preview = asyncio.run(tools.get("altium365_create_draft_from_file").fn(
+        "symbol", "https://w/", "Models/Symbols/__Draft", str(lib), name="auto"))
+    assert preview["name"] is None and preview["variables"]["name"] is None
+    assert "$name: String)" in altium365.publish_operation("symbol")[1]

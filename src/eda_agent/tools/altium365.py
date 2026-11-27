@@ -415,7 +415,8 @@ def register_altium365_tools(mcp) -> None:
             folder: The folder's path in the library, e.g.
                 "Models/Symbols/__Draft" (case ignored).
             file_path: The .SchLib (symbol) or .PcbLib (footprint) to put in it.
-            name: The item's name; empty takes the file's name.
+            name: The item's name; empty takes the file's name, and "auto"
+                lets the folder's item naming scheme pick one (e.g. PCC-000123).
 
         Returns:
             ``{ok, sent, folder, folder_id, name}`` and, once sent, ``id``.
@@ -434,7 +435,7 @@ def register_altium365_tools(mcp) -> None:
         source = Path(file_path)
         if not source.is_file() or source.suffix.lower() != want:
             return {"ok": False, "reason": f"file_path names an existing {want} file"}
-        item_name = name.strip() or source.stem
+        item_name = None if name.strip().lower() == "auto" else (name.strip() or source.stem)
         field_name, operation = publish_operation(kind)
 
         def create() -> dict:
