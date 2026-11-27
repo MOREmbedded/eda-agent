@@ -355,6 +355,82 @@ def _read_models(explorer: Explorer, folders: list[dict],
     return {"folders": by_folder, "items": list(items.values())}
 
 
+def path_parts(path: str) -> list[str]:
+    """A folder path as its names: "Components/__Draft" or with backslashes."""
+    return [p.strip() for p in str(path or "").replace("\\", "/").split("/") if p.strip()]
+
+
+def is_draft_path(path: str) -> bool:
+    """True when the folder, or a folder above it, is a __Draft folder: the
+    only place new items may be made (Bartek's rule, 2026-11-27)."""
+    return any(p.lower().startswith("__draft") for p in path_parts(path))
+
+
+def _find_row(explorer: Explorer, grid, name: str, below_indent: Optional[int],
+              max_scrolls: int = 40) -> Optional[dict]:
+    """The first folder row named ``name`` deeper than ``below_indent``,
+    looking at the rows on screen first and scrolling only when it is not
+    there. Matches the name without case."""
+    want = name.strip().lower()
+
+    def look() -> Optional[dict]:
+        for row in explorer.visible_folders(grid):
+            if row["name"].strip().lower() == want and (
+                    below_indent is None or row["indent"] > below_indent):
+                return row
+        return None
+
+    hit = look()
+    if hit is not None:
+        return hit
+    percent = 0.0
+    for _ in range(max_scrolls):
+        view = explorer.scroll_to(grid, percent)
+        hit = look()
+        if hit is not None or percent >= 100 or view >= 100:
+            return hit
+        percent += max(view * 0.8, 5.0)
+    return None
+
+
+def goto_folder(explorer: Explorer, path: str, opened: Optional[list] = None,
+                progress: Callable[[str], None] = lambda _m: None) -> dict:
+    """Select the folder at ``path`` in Explorer's tree, expanding only the
+    folders on the path, one level at a time.
+
+    read_all_folders expands every folder under a root to read the tree,
+    which took minutes on a real workspace when all that was wanted was
+    one folder. This touches only the path: each name is looked for among
+    the rows on screen, deeper than the folder above it, and only that row
+    is expanded. ``opened`` collects what was expanded.
+    """
+    grid = explorer.folder_grid()
+    if grid is None:
+        return {"ok": False, "reason": "no Explorer folder tree on screen"}
+    parts = path_parts(path)
+    if not parts:
+        return {"ok": False, "reason": "give the folder path, e.g. Components/__Draft"}
+    indent: Optional[int] = None
+    row: Optional[dict] = None
+    for depth, name in enumerate(parts):
+        row = _find_row(explorer, grid, name, indent)
+        if row is None:
+            seen = [r["name"] for r in explorer.visible_folders(grid)][:40]
+            return {"ok": False, "reason": (
+                f"no folder {name!r} under {'/'.join(parts[:depth]) or 'the workspace'}"),
+                "visible": seen}
+        indent = row["indent"]
+        if depth < len(parts) - 1 and explorer.expand(row["element"]):
+            if opened is not None:
+                opened.append(row["key"])
+        progress(f"{'/'.join(parts[:depth + 1])}")
+    if not explorer.select(row["element"]):
+        return {"ok": False, "reason": f"the folder {path!r} could not be selected"}
+    rect = row["element"].CurrentBoundingRectangle
+    return {"ok": True, "path": "/".join(parts), "row": row,
+            "center": [int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)]}
+
+
 def find_explorer(automation, module) -> Optional[Explorer]:
     """The Explorer panel among Altium's windows, or None."""
     import win32gui
@@ -404,3 +480,22 @@ def scan_models(roots: Iterable[str],
             f"no folder named {', '.join(roots)} in Explorer's folder tree; pass the "
             "folder names your library keeps 3D models in")}
     return {"ok": True, **got}
+
+
+def select_folder(path: str) -> dict[str, Any]:
+    """Select the folder at ``path`` in Explorer, expanding only its path.
+    Needs COM on the calling thread. ``center`` is the row's screen point."""
+    import comtypes.client
+    from .comgen import get_module
+    get_module("UIAutomationCore.dll")
+    from comtypes.gen import UIAutomationClient as U
+
+    automation = comtypes.client.CreateObject(U.CUIAutomation, interface=U.IUIAutomation)
+    explorer = find_explorer(automation, U)
+    if explorer is None:
+        return {"ok": False, "reason": (
+            "Altium's Explorer panel is not on screen: open it (View > Panels > "
+            "Explorer), sign in to the workspace, and leave Altium not minimised")}
+    got = goto_folder(explorer, path)
+    got.pop("row", None)
+    return got
