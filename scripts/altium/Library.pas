@@ -14228,7 +14228,6 @@ Var
     ExpVal, ExpBottom : Double;
     ExpSeparate : Boolean;
     PadCache : TPadCache;
-    PadBR : TCoordRect;
     HoleAligned : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -14350,20 +14349,15 @@ Begin
                 Else LayerStr := 'top';
             Except End;
 
-            { x_mm and y_mm are the pad's ORIGIN. A custom pad's copper     }
-            { need not be centred on it, so the copper centre is reported   }
-            { too, from the bounding rectangle: the mask it includes is the }
-            { same on every side, so its centre is the copper's.            }
+            { x_mm and y_mm are the pad's ORIGIN; copper_x/y_mm repeat it.  }
+            { They were the centre of Pad.BoundingRectangle, but on AD      }
+            { 26.12.2 reading that record's Right halts the script with     }
+            { "Undeclared identifier: Right" (Try does not catch it), which }
+            { ended every footprint build's readback (2026-11-27). A land   }
+            { whose copper is off its origin is drawn as a region, which    }
+            { lib_get_footprint_primitives reports.                         }
             CuX := Pad.X;
             CuY := Pad.Y;
-            Try
-                PadBR := Pad.BoundingRectangle;
-                If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
-                Begin
-                    CuX := (PadBR.Left + PadBR.Right) Div 2;
-                    CuY := (PadBR.Bottom + PadBR.Top) Div 2;
-                End;
-            Except End;
 
             If Count > 0 Then PadsJson := PadsJson + ',';
             PadsJson := PadsJson +
@@ -14988,8 +14982,9 @@ Var
     Pad : IPCB_Pad;
     Cache : TPadCache;
     SeenPads : TStringList;
-    PadAddr : String;
-    Count, Failed, XOrg, YOrg : Integer;
+    Matched : TInterfaceList;
+    PadAddr, PadBase : String;
+    Count, Failed, XOrg, YOrg, PadNth, Hits, HashAt, I : Integer;
     Ok : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -15073,9 +15068,24 @@ Begin
     Failed := 0;
     Notes := '';
     PadsJson := '';
+    { "17#3" is the third pad named 17, in the footprint's own order: an     }
+    { exposed pad drawn as six lands all numbered 17 is edited one at a time. }
+    PadBase := PadWanted;
+    PadNth := 0;
+    HashAt := Pos('#', PadWanted);
+    If HashAt > 1 Then
+    Begin
+        PadNth := StrToIntDef(Copy(PadWanted, HashAt + 1, Length(PadWanted)), 0);
+        If PadNth > 0 Then PadBase := Copy(PadWanted, 1, HashAt - 1);
+    End;
     SeenPads := TStringList.Create;
+    Matched := TInterfaceList.Create;
     PcbBeginEdit(0);
     Try
+        { The pads are COLLECTED first and changed after: changing a pad    }
+        { while the group iterator walks the footprint ended the walk after }
+        { the first, so six selected pads saw one change (2026-11-27).      }
+        Hits := 0;
         GrpIter := Target.GroupIterator_Create;
         Try
             GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
@@ -15084,12 +15094,27 @@ Begin
             Begin
                 PadAddr := '';
                 Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-                If ((PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0))
-                    And ((BySelection And Pad.Selected)
-                         Or ((Not BySelection)
-                             And (UpperCase(Pad.Name) = UpperCase(PadWanted)))) Then
+                If (PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0) Then
                 Begin
                     If PadAddr <> '' Then SeenPads.Add(PadAddr);
+                    If BySelection Then
+                    Begin
+                        If Pad.Selected Then Matched.Add(Pad);
+                    End
+                    Else If UpperCase(Pad.Name) = UpperCase(PadBase) Then
+                    Begin
+                        Inc(Hits);
+                        If (PadNth = 0) Or (Hits = PadNth) Then Matched.Add(Pad);
+                    End;
+                End;
+                Pad := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Target.GroupIterator_Destroy(GrpIter);
+        End;
+        For I := 0 To Matched.Count - 1 Do
+        Begin
+                    Pad := Matched.Items[I];
                     Moving := (XStr <> '') Or (YStr <> '');
                     Ok := ApplyPadEdit(Pad, Params, False, XOrg, YOrg, UnitsStr,
                         Not MovedOne, Notes);
@@ -15111,15 +15136,11 @@ Begin
                     If PadsJson <> '' Then PadsJson := PadsJson + ',';
                     PadsJson := PadsJson + PadEditJson(Pad, XOrg, YOrg, Ok);
                     Inc(Count);
-                End;
-                Pad := GrpIter.NextPCBObject;
-            End;
-        Finally
-            Target.GroupIterator_Destroy(GrpIter);
         End;
     Finally
         PcbEndEdit(0);
         Try SeenPads.Free; Except End;
+        Matched := Nil;
     End;
 
     If Count = 0 Then
