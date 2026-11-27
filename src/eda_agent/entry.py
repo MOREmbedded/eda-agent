@@ -33,6 +33,7 @@ LIGHT_COMMANDS = frozenset({
     "std-list", "std-rules", "std-floors",
     "fab-list", "fab-rules", "fab-compare", "fab-refresh",
     "stackup-vendors", "stackup-show", "stackup-profile", "laminates",
+    "part-fetch-docs",
 })
 
 

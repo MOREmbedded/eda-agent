@@ -2236,6 +2236,42 @@ def cmd_stackup_profile(vendor: str, *, fill: Optional[list] = None,
     return 0
 
 
+def cmd_part_fetch_docs(mpn: str, *, manufacturer: str = "", workspace: str = "",
+                        kinds: str = "", product_url: str = "",
+                        refresh: bool = False, browser: str = "auto",
+                        browser_mode: str = "offscreen",
+                        as_json: bool = False) -> int:
+    """Download a part's official documents into the workspace's .eda."""
+    import json as _json
+
+    from .partdocs import fetch_part_docs
+
+    wanted = [k.strip() for k in kinds.split(",") if k.strip()] or None
+    result = fetch_part_docs(mpn, manufacturer, workspace=workspace or None,
+                             kinds=wanted, product_url=product_url,
+                             refresh=refresh, browser=browser,
+                             browser_mode=browser_mode)
+    if as_json:
+        print(_json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+    if not result.get("files") and not result.get("ok"):
+        print(result.get("reason", "nothing was fetched"), file=sys.stderr)
+        for line in result.get("log") or []:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+    print(f"{result.get('mpn')} ({result.get('manufacturer') or 'manufacturer unknown'})"
+          f"  cache: {result.get('cache')}")
+    if result.get("product_page"):
+        print(f"  page: {result['product_page']}")
+    for f in result.get("files") or []:
+        print(f"  {f['kind']:9} {f['path']}  [{f.get('via', '')}]")
+    for kind, why in (result.get("missing") or {}).items():
+        print(f"  {kind:9} not found: {why}")
+    for note in result.get("notes") or []:
+        print(f"  note: {note}")
+    return 0 if result.get("ok") else 1
+
+
 def cmd_laminates(*, as_json: bool = False) -> int:
     """Print the bundled laminate electrical properties."""
     import json as _json

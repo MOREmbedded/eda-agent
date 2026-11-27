@@ -90,6 +90,9 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_PART_PROVIDERS` | none | Comma-separated part providers to enable for `part_search` and `part_fetch`. See [Part sourcing](PART_SOURCING.md). |
 | `EDA_AGENT_CACHE_DIR` | `%LOCALAPPDATA%\eda-agent\parts-cache` | Where provider indexes and cached datasheets are kept. |
 | `EDA_AGENT_DATASHEET_HOSTS` | none (deny by default) | Comma-separated hosts `part_cache_datasheet` may download from. |
+| `EDA_AGENT_DOCS_ROOT` | the nearest `.eda` folder above the current directory | Design workspace (or its `.eda` folder) that `part_fetch_docs` keeps documents in when no workspace is passed. |
+| `EDA_AGENT_BROWSER_PROFILE` | `<workspace>/.eda/browser-profile` | Profile folder of the browser `part_fetch_docs` opens for sites that refuse plain HTTP. Never the person's own profile. |
+| `EDA_AGENT_BROWSER` | Edge, then Chrome or Chromium on PATH | Browser executable `part_fetch_docs` drives. |
 | `EDA_AGENT_ALTIUM_LIBRARIES` | `%PUBLIC%\Documents\Altium\Library` and the Library and Projects folders under `%USERPROFILE%\Documents\Altium` | Folders the `altium_local` provider searches, separated by `;` on Windows. |
 | `EDA_AGENT_KICAD_SYMBOL_DIR` | `KICAD_SYMBOL_DIR`, then the KiCad install | KiCad symbol libraries for the `kicad_local` provider. |
 | `EDA_AGENT_KICAD_FOOTPRINT_DIR` | `KICAD_FOOTPRINT_DIR`, then the KiCad install | KiCad footprint libraries for the `kicad_local` provider. |
@@ -837,6 +840,24 @@ Write the IPC class floors the fab rules read, from profile values
 | Argument | Takes | What it does |
 |---|---|---|
 | `--json` | switch | Print as JSON. |
+
+### Part documents
+
+#### `eda-agent part-fetch-docs`
+
+Download a part's datasheet, package drawing, app notes and STEP model from its manufacturer
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `mpn` | `MPN` | Manufacturer part number, e.g. QPA9903 |
+| `--manufacturer` | `MANUFACTURER` | Manufacturer name, when the MPN alone is ambiguous. |
+| `--workspace` | `WORKSPACE` | Design workspace (its .eda folder is used). Default: EDA_AGENT_DOCS_ROOT, else the nearest .eda folder above the current directory. |
+| `--kinds` | `KINDS` | Comma-separated: datasheet,package,appnote,model3d (default all). |
+| `--product-url` | `PRODUCT_URL` | The manufacturer's product page, when known. |
+| `--refresh` | switch | Fetch again even when the cache holds the files. |
+| `--browser` | `auto`, `always`, `never` | When to use a real browser. |
+| `--browser-mode` | `offscreen`, `visible`, `headless` | How the browser window is shown. |
+| `--json` | switch | Print the full result as JSON. |
 
 ### Altium 365
 

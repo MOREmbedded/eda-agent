@@ -123,6 +123,14 @@ IPC values are never shipped; they come from your licensed copy, in the profile.
 | `eda-agent std-rules [--category C] [--json]` | IPC rule definitions and which have values in the active profile |
 | `eda-agent std-floors [--json]` | Write `standards/ipc_class_floors.json` (read by `fab-rules --ipc-class`) from the profile's values |
 
+## Part documents
+
+Fetched from the manufacturer's own site, unattended, into the design workspace's `.eda` folder. See the [part-docs skill](../skills/part-docs/SKILL.md).
+
+| Command | Purpose |
+|---|---|
+| `eda-agent part-fetch-docs MPN [--workspace DIR] [--manufacturer M] [--kinds datasheet,package,appnote,model3d] [--product-url URL] [--refresh] [--browser auto\|always\|never] [--browser-mode offscreen\|visible\|headless] [--json]` | Download a part's datasheet, package drawing, app notes and STEP model; a real browser reads sites that refuse plain HTTP |
+
 ## Altium 365
 
 | Command | Purpose |

@@ -1176,6 +1176,9 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         ("IPC standards", (
             "std-list", "std-rules", "std-floors",
         )),
+        ("Part documents", (
+            "part-fetch-docs",
+        )),
         ("Altium 365", (
             "altium365-login", "altium365-logout",
             "altium365-scan-library", "altium365-update-library",
@@ -1862,6 +1865,37 @@ def build_parser() -> argparse.ArgumentParser:
     ).add_argument("--json", dest="json_out", action="store_true",
                    help="Print as JSON.")
 
+    docs_p = subparsers.add_parser(
+        "part-fetch-docs",
+        help="Download a part's datasheet, package drawing, app notes and "
+             "STEP model from its manufacturer",
+        epilog=("Plain HTTP first; a site that refuses it (HTTP 429, a "
+                "JavaScript check) is read by a real Edge or Chrome window "
+                "placed off screen, with no dialog and nothing written to "
+                "Downloads. A captcha or sign-in is never answered. Files "
+                "go under <workspace>/.eda/datasheets and .eda/models."),
+    )
+    docs_p.add_argument("mpn", help="Manufacturer part number, e.g. QPA9903")
+    docs_p.add_argument("--manufacturer", default="",
+                        help="Manufacturer name, when the MPN alone is ambiguous.")
+    docs_p.add_argument("--workspace", default="",
+                        help="Design workspace (its .eda folder is used). "
+                             "Default: EDA_AGENT_DOCS_ROOT, else the nearest "
+                             ".eda folder above the current directory.")
+    docs_p.add_argument("--kinds", default="",
+                        help="Comma-separated: datasheet,package,appnote,model3d "
+                             "(default all).")
+    docs_p.add_argument("--product-url", default="",
+                        help="The manufacturer's product page, when known.")
+    docs_p.add_argument("--refresh", action="store_true",
+                        help="Fetch again even when the cache holds the files.")
+    docs_p.add_argument("--browser", choices=("auto", "always", "never"),
+                        default="auto", help="When to use a real browser.")
+    docs_p.add_argument("--browser-mode", choices=("offscreen", "visible", "headless"),
+                        default="offscreen", help="How the browser window is shown.")
+    docs_p.add_argument("--json", dest="json_out", action="store_true",
+                        help="Print the full result as JSON.")
+
     std_list_p = subparsers.add_parser(
         "std-list",
         help="The IPC standards catalogue: current revisions and scope",
@@ -2457,6 +2491,12 @@ def main() -> int:
         return cli.cmd_stackup_profile(args.vendor, fill=args.fill)
     if args.command == "laminates":
         return cli.cmd_laminates(as_json=args.json_out)
+    if args.command == "part-fetch-docs":
+        return cli.cmd_part_fetch_docs(
+            args.mpn, manufacturer=args.manufacturer, workspace=args.workspace,
+            kinds=args.kinds, product_url=args.product_url, refresh=args.refresh,
+            browser=args.browser, browser_mode=args.browser_mode,
+            as_json=args.json_out)
     if args.command == "std-list":
         return cli.cmd_std_list(domain=args.domain, priority=args.priority,
                                 as_json=args.json_out)

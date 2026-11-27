@@ -23,3 +23,16 @@ call the `design_autonomy_guide` tool, or invoke the `autonomous_design` MCP
 prompt. Both need the design harness, which the Altium and EasyEDA backends
 register and the KiCad backend does not.
 See [../docs/AUTONOMOUS_DESIGN.md](../docs/AUTONOMOUS_DESIGN.md).
+
+## part-docs
+
+Fetches a part's official documents (datasheet, package drawing, app
+notes, STEP model) from the manufacturer's own site, unattended, into the
+design workspace's `.eda` folder, with the `part_fetch_docs` tool or the
+`eda-agent part-fetch-docs` command. See
+[part-docs/SKILL.md](part-docs/SKILL.md).
+
+```bash
+mkdir -p ~/.claude/skills/part-docs
+cp skills/part-docs/SKILL.md ~/.claude/skills/part-docs/SKILL.md
+```

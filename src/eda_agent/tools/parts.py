@@ -9,6 +9,7 @@ single source occupies a privileged name.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 __all__ = ["register_parts_tools"]
@@ -458,3 +459,47 @@ def register_parts_tools(mcp):
         from ..libimport.datasheet_cache import list_cached
         entries = list_cached()
         return {"ok": True, "count": len(entries), "datasheets": entries}
+
+    @mcp.tool()
+    async def part_fetch_docs(mpn: str, manufacturer: str = "",
+                              workspace: str = "",
+                              kinds: list[str] | None = None,
+                              product_url: str = "",
+                              refresh: bool = False,
+                              browser: str = "auto") -> dict[str, Any]:
+        """Download a part's official documents from its manufacturer:
+        datasheet, package drawing / land pattern, app notes, STEP model.
+
+        Use this instead of asking the person to download anything. It
+        finds the manufacturer's product page (known URL patterns, then
+        the Nexar/Digi-Key/Mouser catalogues for the manufacturer and
+        datasheet URL), reads the documents it links, and checks each
+        file by its bytes (%PDF, ISO-10303-21). Sites that refuse plain
+        HTTP (Qorvo, Analog Devices) are read by a real Edge or Chrome
+        window placed off screen: no dialog, nothing in Downloads. A
+        captcha or sign-in is never answered; that site is reported.
+        Takes 5 to 60 s; a repeat call is a cache hit.
+
+        Args:
+            mpn: manufacturer part number, orderable or family.
+            manufacturer: name, when the MPN alone is ambiguous.
+            workspace: the design workspace; files go under its
+                ``.eda/datasheets`` (``<MPN>.pdf``, ``<MPN>/``) and
+                ``.eda/models/<MPN>/``. Default: EDA_AGENT_DOCS_ROOT, else
+                the nearest ``.eda`` above the server's directory.
+            kinds: any of datasheet, package, appnote, model3d (all).
+            product_url: the product page, when known.
+            refresh: fetch again even when cached.
+            browser: auto (HTTP first), always, or never.
+
+        Returns:
+            ``{ok, cache, mpn, manufacturer, product_page, datasheet,
+            files: [{kind, path, url, via, sha256, size, title}],
+            missing: {kind: why}, notes, manifest}``.
+        """
+        from ..partdocs import fetch_part_docs
+
+        return await asyncio.to_thread(
+            fetch_part_docs, mpn, manufacturer, workspace=workspace or None,
+            kinds=kinds, product_url=product_url, refresh=refresh,
+            browser=browser)
