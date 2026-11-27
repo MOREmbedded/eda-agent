@@ -193,6 +193,17 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("EDA_AGENT_DATASHEET_HOSTS", "Parts, libraries and datasheets",
            "none (deny by default)",
            "Comma-separated hosts `part_cache_datasheet` may download from."),
+    EnvVar("EDA_AGENT_DOCS_ROOT", "Parts, libraries and datasheets",
+           "the nearest `.eda` folder above the current directory",
+           "Design workspace (or its `.eda` folder) that `part_fetch_docs` "
+           "keeps documents in when no workspace is passed."),
+    EnvVar("EDA_AGENT_BROWSER_PROFILE", "Parts, libraries and datasheets",
+           "`<workspace>/.eda/browser-profile`",
+           "Profile folder of the browser `part_fetch_docs` opens for sites "
+           "that refuse plain HTTP. Never the person's own profile."),
+    EnvVar("EDA_AGENT_BROWSER", "Parts, libraries and datasheets",
+           "Edge, then Chrome or Chromium on PATH",
+           "Browser executable `part_fetch_docs` drives."),
     EnvVar("EDA_AGENT_ALTIUM_LIBRARIES", "Parts, libraries and datasheets",
            r"`%PUBLIC%\Documents\Altium\Library` and the Library and Projects folders under `%USERPROFILE%\Documents\Altium`",
            "Folders the `altium_local` provider searches, separated by `;` "

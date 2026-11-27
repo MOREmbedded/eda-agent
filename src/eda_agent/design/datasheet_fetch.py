@@ -156,8 +156,9 @@ def fetch_datasheet(url: str, part_number: str = "", *,
     if seen and time.monotonic() - seen[0] < HOST_FAILURE_MEMORY_S:
         return _refuse(
             f"{host} did not answer {int(time.monotonic() - seen[0])} s ago "
-            f"({seen[1]}), so it was not tried again. Download the datasheet "
-            "in a browser and read the local file, or try another source",
+            f"({seen[1]}), so it was not tried again. Call part_fetch_docs "
+            "with the part number: it reads the manufacturer's page in a "
+            "real browser where plain HTTP is refused",
             url=url, host_unreachable=True)
 
     request = urllib.request.Request(url, headers={
@@ -209,8 +210,9 @@ def fetch_datasheet(url: str, part_number: str = "", *,
             else "something that is not a PDF"
         return _refuse(
             f"{url} returned {kind} (Content-Type {content_type or 'not given'}"
-            "), not a PDF; the site may want a login, a cookie or a click "
-            "through. Download it in a browser and read the local file instead",
+            "), not a PDF; the site may want a cookie or a JavaScript check. "
+            "Call part_fetch_docs with the part number: it reads the "
+            "manufacturer's page in a real browser where plain HTTP is refused",
             url=url, content_type=content_type)
 
     pages, method = count_pages(data)
