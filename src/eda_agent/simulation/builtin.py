@@ -8,6 +8,8 @@
   independent second opinion on S-parameter data.
 - ``openems``: openEMS (GPL-3), 3D FDTD, run as its own process exactly
   as ``sim_em_run`` runs it.
+- ``hertzon``: Hertzon (GPL-2.0-or-later), 3D FEM with adaptive meshing,
+  run as its own program through ``hertzon-cli`` (``simulation.hertzon``).
 """
 from __future__ import annotations
 
@@ -383,5 +385,106 @@ class OpenEmsEngine(Engine):
             return False
 
 
+class HertzonEngine(Engine):
+    """A Hertzon project solved by ``hertzon-cli``; S-parameters back as
+    Touchstone, checked like every other engine's."""
+    info = EngineInfo(
+        "hertzon", "Hertzon", "hertzon", "GPL-2.0-or-later (own process)", EXTERNAL,
+        ("hertzon-solve",),
+        summary="3D full-wave FEM with adaptive meshing (EMerge core): antennas, filters, "
+                "waveguides, PCB structures. Solves a Hertzon project through its command "
+                "line; minutes to hours.",
+        strengths=("adaptive mesh with a convergence check", "wave, lumped and Floquet ports",
+                   "parametric: variables set per run"),
+        homepage="https://github.com/c8501024/Hertzon")
+
+    def check(self, kind, spec, inputs):
+        from .hertzon import check_spec
+        problems = check_spec(spec)
+        project = str(inputs.get("project", ""))
+        if project and Path(project).suffix.lower() not in (".hzn", ".zip"):
+            problems.append("the project is a .hzn file or a .zip of the project folder")
+        return problems
+
+    def run(self, job, folder, progress):
+        from .hertzon import HertzonError, prepare_project, start_solve
+        progress("preparing the Hertzon project", 0.02)
+        try:
+            project = prepare_project(job.input_path("project"), folder,
+                                      str(job.spec.get("project_file") or ""),
+                                      str(job.inputs["project"].get("name") or ""))
+            started = start_solve(project, job.spec, folder)
+        except HertzonError as exc:
+            raise EngineError(str(exc)) from exc
+        return {"state": "running", "pid": started["pid"]}
+
+    def poll(self, job, folder):
+        from .hertzon import solve_results, solve_status
+        st = solve_status(folder)
+        if st["state"] == "running":
+            return st
+        if st["state"] != "done":
+            return {"state": "failed", "error": st.get("error", "the Hertzon run failed"),
+                    "log_tail": st.get("log_tail", "")}
+        res = solve_results(folder)
+        if not res.get("ok"):
+            return {"state": "failed", "error": res["error"], "log_tail": res.get("log_tail", "")}
+        from ..emc.touchstone import read_touchstone
+        try:
+            data = read_touchstone(res["touchstone"])
+        except (OSError, ValueError) as exc:
+            return {"state": "failed", "error": f"Hertzon's Touchstone file: {exc}"}
+        freq = np.asarray(data["freq_hz"], dtype=float)
+        s = np.asarray(data["s"], dtype=complex).reshape(len(freq), data["ports"], data["ports"])
+        out = s_quality(freq, s, _tol(job))
+        summ = res["summary"]
+        m = out["metrics"]
+        m["z0_ohms"] = metric(float(data["z0"]), "ohm", "Reference impedance")
+        if _num(summ.get("passes")):
+            m["adaptive_passes"] = metric(int(summ["passes"]), label="Adaptive passes")
+        elif res["passes"]:
+            m["adaptive_passes"] = metric(len(res["passes"]), label="Adaptive passes")
+        if _num(summ.get("tetrahedra")):
+            m["tetrahedra"] = metric(int(summ["tetrahedra"]), label="Mesh tetrahedra")
+        if _num(summ.get("seconds")):
+            m["solve_seconds"] = metric(round(float(summ["seconds"]), 1), "s", "Solve time")
+        converged = summ.get("converged")
+        if res["code"] == 5:
+            converged = False
+        if converged is not None:
+            last = res["passes"][-1] if res["passes"] else {}
+            detail = ("the adaptive mesh converged" if converged else
+                      "the adaptive mesh did NOT converge: the S-parameters may be off; "
+                      "raise the setup's passes or loosen its delta S")
+            if _num(last.get("delta_s")):
+                detail += f" (last delta S {float(last['delta_s']):.3g})"
+            out["verdicts"].append({"check": "convergence", "pass": bool(converged),
+                                    "detail": detail})
+        notes = []
+        if summ.get("hertzon"):
+            notes.append(f"Hertzon {summ['hertzon']}, design {summ.get('design', '?')}, "
+                         f"setup {summ.get('setup', '?')}, solution {summ.get('solution', '?')}")
+        if summ.get("variables"):
+            notes.append("variables: " + ", ".join(f"{k}={v}" for k, v in
+                                                   dict(summ["variables"]).items()))
+        if summ.get("cached"):
+            notes.append("Hertzon answered from a solution it already had")
+        notes += [f"Hertzon warning: {w}" for w in res["warnings"][:10]]
+        files = {"touchstone": Path(res["touchstone"]).name}
+        if (Path(folder) / "summary.json").is_file():
+            files["summary"] = "summary.json"
+        out.update({"state": "done", "files": files, "notes": notes,
+                    "ports": summ.get("ports") or []})
+        return out
+
+    def cancel(self, job, folder):
+        from .hertzon import cancel_solve
+        return cancel_solve(folder)
+
+
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 BUILTIN: tuple[Engine, ...] = (EdaAgentEngine(), ScikitRfEngine(), OpenEmsEngine(),
-                                SpiceEngine())
+                                SpiceEngine(), HertzonEngine())

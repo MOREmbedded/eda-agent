@@ -605,6 +605,8 @@ GAPS: dict[str, str] = {
     "sim_job_status": "as sim_engines",
     "sim_job_compare": "as sim_engines",
     "sim_jobs": "as sim_engines",
+    "sim_hertzon_describe": "runs Hertzon on its own project files; on the Altium suite, not yet on the KiCad surface",
+    "sim_hertzon_solve": "as sim_hertzon_describe",
     "si_line_model": "reads the stackup through the Altium bridge; not yet on the KiCad surface",
     "si_stackup_plan": "as si_line_model",
     "si_board_snapshot": "reads the board through the Altium bridge; not yet on the KiCad surface",

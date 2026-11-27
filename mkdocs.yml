@@ -121,6 +121,7 @@ nav:
       - Thermal analysis: THERMAL.md
       - PDN analysis: PDN.md
       - Simulation engines: SIMULATION.md
+      - Hertzon 3D FEM: HERTZON.md
       - Transmission lines: SI_LINES.md
       - Routed nets and pairs: SI_NETS.md
       - Eyes and SPICE models: SI_TIME.md

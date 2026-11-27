@@ -251,6 +251,16 @@ def _program_openems(deep: bool) -> tuple[str, str]:
     return _which_any("openEMS"), ""
 
 
+def _program_hertzon(deep: bool) -> tuple[str, str]:
+    """hertzon-cli; ``deep`` also asks it its version (it starts Hertzon's
+    own Python, a few seconds)."""
+    from ..simulation.hertzon import cli_version, find_cli
+    found = find_cli()
+    if not found["available"]:
+        return "", ""
+    return found["cli"], (cli_version(found["cli"]) if deep else "")
+
+
 PROGRAMS: dict[str, Callable[[bool], tuple[str, str]]] = {
     "ngspice": _program_ngspice,
     "ltspice": _program_ltspice,
@@ -258,6 +268,7 @@ PROGRAMS: dict[str, Callable[[bool], tuple[str, str]]] = {
     "pcb-toolkit": _program_pcb_toolkit,
     "kicad": _program_kicad,
     "openems": _program_openems,
+    "hertzon": _program_hertzon,
 }
 
 

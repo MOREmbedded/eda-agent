@@ -31,7 +31,7 @@ eda-agent install-deps --all --dry-run   # the plan, changing nothing
 | Built from this repository | The Rust wheels (`eda-agent-compute`, the path tracer) are built with `pip install <folder>` when this is a source checkout and `cargo` is on `PATH`. Without Rust it says how to get it, or to use the wheel the CI builds ([Rust compute](RUST_COMPUTE.md)). |
 | Own environment | Engines under a copyleft license get a virtual environment of their own under `EDA_AGENT_ENGINES_DIR` (default `%USERPROFILE%\EDA Agent\engines`), so their code never loads into the Apache-2.0 eda-agent process. |
 | Built with Rust | pcb-toolkit is a program of its own. With `cargo` on `PATH` it is built from its repository into `<engines folder>\pcb-toolkit`, where eda-agent finds it; without Rust it is a step by hand. |
-| Program | openEMS, LTspice, ngspice, KiCad and FreeCAD are applications, not pip packages. The plan lists each one's steps and download link, and `eda-agent features` finds them once they are installed: on `PATH`, in their usual install folders, or wherever you point it (see [Program locations](#program-locations)). |
+| Program | openEMS, Hertzon, LTspice, ngspice, KiCad and FreeCAD are applications, not pip packages. The plan lists each one's steps and download link, and `eda-agent features` finds them once they are installed: on `PATH`, in their usual install folders, or wherever you point it (see [Program locations](#program-locations)). |
 | Core | The packages every installation has are checked too. When the environment lost one (a broken upgrade, a package removed by hand), `--all` puts it back with the version range `pyproject.toml` gives. |
 
 Every run writes its full output to a log under
@@ -56,7 +56,7 @@ Each card lists the packages it rests on (NumPy, SciPy, PyAMG and so on)
 with their versions and licenses, and the optional features that extend
 it: the thermal and PDN maps are drawn by `render`, the router runs
 faster with `compute`, the SI channels get a second opinion from
-`scikit-rf`, `spice` and `openems`.
+`scikit-rf`, `spice`, `openems` and `hertzon`.
 
 Optional:
 
@@ -71,6 +71,7 @@ Optional:
 | `compute` | Faster autorouting; off until switched on | eda-agent-compute, built from `rust/eda_agent_compute` |
 | `spice` | SPICE runs, the LTspice round trip, simulation engine `spice` (channel eyes) | ngspice or LTspice |
 | `openems` | 3D full-wave S-parameters and antennas; simulation engine `openems` | openEMS |
+| `hertzon` | 3D FEM S-parameters of Hertzon projects; simulation engine `hertzon`, `sim_hertzon_solve` | Hertzon |
 | `scikit-rf` | Simulation engine `scikit-rf` | scikit-rf (`si` extra) |
 | `pcb-toolkit` | `pcb_calc_cross_check`, `calc-cross-check` | pcb-toolkit (built with Rust) |
 | `kicad` | The KiCad backend, the Altium to KiCad conversion | KiCad |
@@ -87,7 +88,7 @@ off** when you turned it off.
 
 ## Switches
 
-Simulation engines (`openems`, `scikit-rf`, `spice`) can be switched off
+Simulation engines (`openems`, `hertzon`, `scikit-rf`, `spice`) can be switched off
 without uninstalling them, and the Rust kernels (`compute`), which are off
 until asked for, can be switched on:
 
@@ -112,6 +113,7 @@ later session uses it:
 eda-agent features --set-path EDA_AGENT_OPENEMS_DIR=F:\openEMS\openEMS
 eda-agent features --set-path EDA_AGENT_OPENEMS_PYTHON=F:\openEMS\pyenv\Scripts\python.exe
 eda-agent features --set-path EDA_AGENT_NGSPICE=C:\Tools\Spice64
+eda-agent features --set-path EDA_AGENT_HERTZON_CLI=D:\Tools\Hertzon
 eda-agent features --clear-path EDA_AGENT_NGSPICE
 ```
 
@@ -119,7 +121,7 @@ The Features page has the same fields under each program's **How to
 install** (or **Location**, once found). The variables are the ones in
 [Options](OPTIONS.md): `EDA_AGENT_OPENEMS_DIR`, `EDA_AGENT_OPENEMS_PYTHON`,
 `EDA_AGENT_NGSPICE`, `EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_KICAD_CLI`,
-`EDA_AGENT_FREECADCMD` and `EDA_AGENT_PCB_TOOLKIT`. A saved location is a
+`EDA_AGENT_FREECADCMD`, `EDA_AGENT_PCB_TOOLKIT` and `EDA_AGENT_HERTZON_CLI`. A saved location is a
 default: the same variable set in the environment wins. A path that does
 not exist is refused, and when a variable names a place where nothing
 usable is found, the report says so instead of only "missing".

@@ -118,6 +118,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_NGSPICE` | `ngspice_con` or `ngspice` on `PATH`, then `C:\Spice64\bin` | The ngspice console program, or the folder it was unzipped to. |
 | `EDA_AGENT_OPENEMS_DIR` | none | The unzipped openEMS folder (Windows build). Added to `PATH` for the solver run, so the bindings find their DLLs. |
 | `EDA_AGENT_OPENEMS_PYTHON` | this Python, then `python` on PATH | A Python that can `import openEMS`, used to run the solver. |
+| `EDA_AGENT_HERTZON_CLI` | `hertzon-cli` on `PATH`, then `%LOCALAPPDATA%\Programs\Hertzon`, then `~/.local/share/hertzon` | Hertzon's command line (`hertzon-cli`), or a Hertzon folder that holds it (directly or in `.venv`), for the `hertzon` simulation engine and `sim_hertzon_solve`. |
 
 ### 3D models and Altium SDK
 
