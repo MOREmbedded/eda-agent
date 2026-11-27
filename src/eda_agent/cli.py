@@ -148,15 +148,56 @@ def get_fallback_scripts_dest() -> Path:
     return Path.home() / "EDA Agent" / "scripts"
 
 
+#: A folder for the script project, ahead of anything else.
+SCRIPTS_DIR_ENV = "EDA_AGENT_SCRIPTS_DIR"
+
+
+def get_override_scripts_dest() -> Optional[Path]:
+    """The folder EDA_AGENT_SCRIPTS_DIR names, or None."""
+    value = os.environ.get(SCRIPTS_DIR_ENV, "").strip().strip('"')
+    return Path(value).expanduser() if value else None
+
+
+def get_checkout_scripts_dest() -> Optional[Path]:
+    """``<checkout>\\.eda-local\\scripts`` of the source checkout this runs
+    from, when the script project is already there, else None.
+
+    A machine where Altium registers no folder used to get the scripts in
+    %USERPROFILE%, beside the checkout's own copy: two Altium_API.PrjScr,
+    the profile one opened by every relaunch, and the checkout one left
+    open with an old compile (2026-11-27). The checkout's folder, when it
+    is in use, is the one place.
+    """
+    root = get_package_root().parent.parent
+    if not (root / "pyproject.toml").is_file():
+        return None
+    folder = root / ".eda-local" / "scripts"
+    return folder if (folder / "Altium_API.PrjScr").is_file() else None
+
+
+def get_install_targets() -> list[Path]:
+    """Every folder install-scripts deploys to: the EDA_AGENT_SCRIPTS_DIR
+    folder alone; else each folder Altium registers; else the checkout's
+    folder in use; else %USERPROFILE%\\EDA Agent\\scripts\\."""
+    override = get_override_scripts_dest()
+    if override is not None:
+        return [override]
+    registered = get_registered_scripts_dirs()
+    if registered:
+        return registered
+    return [get_checkout_scripts_dest() or get_fallback_scripts_dest()]
+
+
 def get_default_scripts_dest() -> Path:
-    """Where the scripts belong: the folder Altium loads them from when one
-    is registered, else %USERPROFILE%\\EDA Agent\\scripts\\.
+    """Where the scripts belong: EDA_AGENT_SCRIPTS_DIR when set; the folder
+    Altium loads them from when one is registered; the source checkout's
+    ``.eda-local\\scripts`` when it holds the project; else
+    %USERPROFILE%\\EDA Agent\\scripts\\.
 
     With several installs registering different folders the first is
     returned; `install-scripts` itself deploys to all of them.
     """
-    registered = get_registered_scripts_dirs()
-    return registered[0] if registered else get_fallback_scripts_dest()
+    return get_install_targets()[0]
 
 
 # --------------------------------------------------------------------------
@@ -931,10 +972,12 @@ def _stamp_deployed_unit(path: Path) -> None:
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project where Altium loads it from.
 
-    Default destination: every folder an Altium install registers the
-    script project in (Global Projects), so each version on the machine
-    compiles the same build; with none registered,
-    %USERPROFILE%\\EDA Agent\\scripts\\. Override with --dest PATH.
+    Default destination: the EDA_AGENT_SCRIPTS_DIR folder when set; else
+    every folder an Altium install registers the script project in
+    (Global Projects), so each version on the machine compiles the same
+    build; with none registered, the source checkout's .eda-local\\scripts
+    when it holds the project, else %USERPROFILE%\\EDA Agent\\scripts\\.
+    Override with --dest PATH.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
@@ -943,7 +986,7 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     if dest:
         targets = [Path(dest).expanduser().resolve()]
     else:
-        targets = get_registered_scripts_dirs() or [get_fallback_scripts_dest()]
+        targets = get_install_targets()
     status = 0
     for target in targets:
         status = max(status, _install_scripts_into(target, force))
