@@ -3289,7 +3289,8 @@ def register_library_tools(mcp):
                 on the land drawing, and ``drawing_dims`` placing each:
                 {from, to, mm, axis, between centres|outer|gap, or
                 from_edge/to_edge centre|near|far}, {pad, mm, axis} (a
-                land's size); ORIGIN is the centre lines; ``outline``
+                land's size), {pad, chamfer} (an outline's cut corner);
+                ORIGIN is the centre lines, a printed 0 needs no entry; ``outline``
                 [[x, y], ...] for a land that is not a rectangle; and
                 ``compared``, the id footprint_compare_drawing returns
                 once the lands are set beside the figure.
@@ -3359,7 +3360,7 @@ def register_library_tools(mcp):
         if why:
             return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
                     "reason": why}
-        dim_rows = check_dims(dims, model.pads) if dims else []
+        dim_rows = check_dims(dims, model.pads, spec.custom_pads) if dims else []
         if checking and any(not r["ok"] for r in dim_rows):
             return {"ok": False, "created": False, "drawing_dims": dim_rows,
                     "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),

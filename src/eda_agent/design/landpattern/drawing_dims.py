@@ -16,7 +16,10 @@ must be placed by a dimension measured on the pads actually built:
 * ``from_edge`` / ``to_edge`` (``centre``, ``near``, ``far``) for a number
   between unlike references (one land's outer edge to another's inner);
 * ``{pad, axis}``: one land's length or width;
-* ``ORIGIN`` as a pad: the drawing's centre lines;
+* ``{pad, chamfer}``: the cut corner of a land given an ``outline`` (the
+  "0.14 x 45°" on an exposed pad's pin-1 corner), measured along one leg;
+* ``ORIGIN`` as a pad: the drawing's centre lines; a printed 0 is the
+  datum an ordinate drawing measures from, and needs no dimension;
 * ``D#2``: the second land numbered D (a pin with several lands).
 """
 from __future__ import annotations
@@ -67,9 +70,16 @@ class DrawingDim:
         if axis not in ("", "x", "y"):
             raise SpecError(f"drawing dimension axis is x, y or empty, not {axis!r}")
         mm, tol = d.get("mm"), float(d.get("tol", DEFAULT_TOL_MM))
+        if mm is None and d.get("chamfer") is not None:
+            mm = d["chamfer"]
         if mm is None:
             raise SpecError(f"a drawing dimension needs mm; got {sorted(d)}")
         cite = str(d.get("cite") or "")
+        if "pad" in d and (d.get("chamfer") is not None
+                           or str(d.get("kind") or "").lower() == "chamfer"):
+            pad = str(d["pad"]).strip().upper()
+            leg = d.get("chamfer") if d.get("chamfer") is not None else mm
+            return cls(pad, pad, float(leg), "", tol, cite, "chamfer")
         if "pad" in d and not (d.get("between") or d.get("kind")):
             if not axis:
                 raise SpecError("a land size {pad, mm, axis} needs axis x or y")
@@ -115,8 +125,9 @@ def unplaced_numbers(numbers: Iterable[float],
                      dims: Iterable[DrawingDim]) -> list[float]:
     """The printed numbers no dimension measures."""
     dims = tuple(dims)
-    return [n for n in numbers
-            if not any(abs(d.mm - n) <= max(d.tol, 1e-6) for d in dims)]
+    # 0 is the datum of an ordinate drawing: it labels, it measures nothing.
+    return [n for n in numbers if abs(n) > 1e-9
+            and not any(abs(d.mm - n) <= max(d.tol, 1e-6) for d in dims)]
 
 
 def _extent(pad: Any) -> tuple[float, float]:
@@ -146,7 +157,22 @@ def _measure(d: DrawingDim, p1: Any, p2: Any) -> float:
     return abs(e2 - e1)
 
 
+def _chamfer_legs(outline: Iterable[Any]) -> list[float]:
+    """The leg of every cut corner of an outline: each edge that runs
+    neither along X nor along Y, as its X run (a 45 degree cut's legs are
+    equal; an unequal cut gives the shorter)."""
+    pts = [(float(x), float(y)) for x, y in outline]
+    legs = []
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        dx, dy = abs(x2 - x1), abs(y2 - y1)
+        if dx > 1e-6 and dy > 1e-6:
+            legs.append(min(dx, dy))
+    return legs
+
+
 def _describe(d: DrawingDim) -> str:
+    if d.kind == "chamfer":
+        return f"the cut corner of {d.start} is"
     if d.kind == "size":
         return f"pad {d.start} is"
     if d.kind == "edges":
@@ -156,10 +182,12 @@ def _describe(d: DrawingDim) -> str:
             "gap": "the facing edges are"}[d.kind]
 
 
-def check_dims(dims: Iterable[DrawingDim],
-               pads: Iterable[Any]) -> list[dict[str, Any]]:
+def check_dims(dims: Iterable[DrawingDim], pads: Iterable[Any],
+               custom_pads: Iterable[Any] = ()) -> list[dict[str, Any]]:
     """One row per dimension: printed, built, ok. A pad named in a
-    dimension and missing from the footprint is a failure, not a skip."""
+    dimension and missing from the footprint is a failure, not a skip.
+    ``custom_pads`` (in the order given) carry the land outlines a chamfer
+    is measured on."""
     at: dict[str, Any] = {ORIGIN: _Origin()}
     count: dict[str, int] = {}
     for p in pads:
@@ -167,6 +195,14 @@ def check_dims(dims: Iterable[DrawingDim],
         count[n] = count.get(n, 0) + 1
         at[f"{n}#{count[n]}"] = p
         at.setdefault(n, p)
+    outlines: dict[str, Any] = {}
+    seen: dict[str, int] = {}
+    for cp in custom_pads or ():
+        n = str(getattr(cp, "number", "")).strip().upper()
+        seen[n] = seen.get(n, 0) + 1
+        shape = tuple(getattr(cp, "outline", ()) or ())
+        outlines[f"{n}#{seen[n]}"] = shape
+        outlines.setdefault(n, shape)
     repeated = {n for n, c in count.items() if c > 1}
     rows: list[dict[str, Any]] = []
     for d in dims:
@@ -188,6 +224,22 @@ def check_dims(dims: Iterable[DrawingDim],
         if missing:
             row.update(ok=False, built_mm=None,
                        why=f"no pad named {', '.join(missing)} in the footprint")
+            rows.append(row)
+            continue
+        if d.kind == "chamfer":
+            row["between"] = "chamfer"
+            legs = _chamfer_legs(outlines.get(d.start, ()))
+            if not legs:
+                row.update(ok=False, built_mm=None, why=(
+                    f"land {d.start} has no cut corner: give it an outline "
+                    f"with the corner cut in custom_pads"))
+                rows.append(row)
+                continue
+            built = min(legs, key=lambda v: abs(v - d.mm))
+            row.update(built_mm=round(built, 4), ok=abs(built - d.mm) <= d.tol)
+            if not row["ok"]:
+                row["why"] = (f"{_describe(d)} {built:.3f} mm along each leg, "
+                              f"the drawing prints {d.mm:g} mm")
             rows.append(row)
             continue
         built = _measure(d, at[d.start], at[d.end])
@@ -223,11 +275,12 @@ def drawing_refusal(custom: bool, dims: tuple[DrawingDim, ...],
                 "drawing_dims placing each one: {from, to, mm, axis, between "
                 "centres|outer|gap} or from_edge/to_edge centre|near|far for "
                 "unlike edges, {pad, mm, axis} for a land's length or width, "
+                "{pad, chamfer} for a land outline's cut corner, "
                 "ORIGIN for the drawing's centre lines")
     left = unplaced_numbers(numbers, dims)
     if left:
         return (f"no drawing_dims entry measures {', '.join(f'{n:g}' for n in left)}"
                 f" printed on the drawing: work out what each spans on the "
                 f"drawing (a land's length, a span, a gap, an edge to a centre "
-                f"line) and add it; lands built without it are not checked")
+                f"line, a cut corner as {{pad, chamfer}}) and add it; lands built without it are not checked")
     return None
