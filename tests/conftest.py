@@ -266,6 +266,17 @@ def _no_live_altium(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _scripts_dest_is_not_this_machines(request, monkeypatch):
+    """Where install-scripts deploys must not depend on this checkout's
+    .eda-local or on EDA_AGENT_SCRIPTS_DIR; a test that wants either sets it."""
+    monkeypatch.delenv("EDA_AGENT_SCRIPTS_DIR", raising=False)
+    if not getattr(request.module, "USES_CHECKOUT_SCRIPTS", False):
+        from eda_agent import cli
+        monkeypatch.setattr(cli, "get_checkout_scripts_dest", lambda: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_saved_user_environment(monkeypatch, tmp_path_factory):
     """Keep this machine's saved Altium 365 settings out of every test.
 
