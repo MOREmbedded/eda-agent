@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.27.3';
+    SCRIPT_VERSION = '2026.11.27.4';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -4669,6 +4669,75 @@ Begin
             Exit;                          { anything else is not a number }
     End;
     Result := Digits > 0;
+End;
+
+{ What, besides its address, tells one primitive from another, for the     }
+{ "seen it already" lists the footprint walks keep: the group iterator can  }
+{ yield one object twice, and the address alone separated the repeats. On  }
+{ AD 26.12.2 every footprint read saw only its FIRST object (1 of 22 pads,  }
+{ 1 of 49 primitives, 2026-11-27), as if every object had the same address. }
+{ Kind, layer, name and place are added, so distinct objects never collapse }
+{ into one and the same object yielded twice still does. Only names the     }
+{ shipped walks already read, each in its own Try.                          }
+Function PrimKeyTail(Prim : IPCB_Primitive) : String;
+{ DelphiScript resolves a member against the DECLARED type, so each kind  }
+{ is read through a local of its own type (see GetPCBProperty).          }
+Var
+    Kind : Integer;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Txt : IPCB_Text;
+    Fill : IPCB_Fill;
+    Region : IPCB_Region;
+Begin
+    Result := '';
+    If Prim = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Prim.ObjectId; Except Kind := -1; End;
+    Result := '|' + IntToStr(Kind);
+    Try Result := Result + '|' + IntToStr(Prim.Layer); Except End;
+    If Kind = ePadObject Then
+    Begin
+        Pad := Prim;
+        Try Result := Result + '|' + Pad.Name; Except End;
+        Try Result := Result + '|' + IntToStr(Pad.X) + ',' + IntToStr(Pad.Y); Except End;
+    End
+    Else If Kind = eViaObject Then
+    Begin
+        Via := Prim;
+        Try Result := Result + '|' + IntToStr(Via.X) + ',' + IntToStr(Via.Y); Except End;
+    End
+    Else If Kind = eTrackObject Then
+    Begin
+        Track := Prim;
+        Try Result := Result + '|' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
+            + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2); Except End;
+    End
+    Else If Kind = eArcObject Then
+    Begin
+        Arc := Prim;
+        Try Result := Result + '|' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
+            + ',' + IntToStr(Arc.Radius) + ',' + FloatToStr(Arc.StartAngle); Except End;
+    End
+    Else If Kind = eTextObject Then
+    Begin
+        Txt := Prim;
+        Try Result := Result + '|' + IntToStr(Txt.XLocation) + ',' + IntToStr(Txt.YLocation); Except End;
+    End
+    Else If Kind = eFillObject Then
+    Begin
+        Fill := Prim;
+        Try Result := Result + '|' + IntToStr(Fill.X1Location) + ',' + IntToStr(Fill.Y1Location)
+            + ',' + IntToStr(Fill.X2Location) + ',' + IntToStr(Fill.Y2Location); Except End;
+    End
+    Else If Kind = eRegionObject Then
+    Begin
+        Region := Prim;
+        Try Result := Result + '|' + FloatToStr(Region.Area); Except End;
+        Try Result := Result + '|' + IntToStr(Region.ShapeSegmentCount); Except End;
+    End;
 End;
 
 Function IsIntStr(S : String) : Boolean;
@@ -22236,6 +22305,35 @@ End;
 { (internal - Off) / Scale. HasArc tells whether any edge is               }
 { an arc. '' when there is no shape or it cannot be read. A segment is read }
 { whole into a local first (MakeRegionShapes.pas reads them the same way).  }
+{ A region's box from its outline vertices, the way RegionShapeJson reads }
+{ them; False and the box untouched when there are none.                  }
+Function RegionVertexBox(Region : IPCB_Region; Var X1 : Integer; Var Y1 : Integer;
+    Var X2 : Integer; Var Y2 : Integer) : Boolean;
+Var
+    Seg : TPolySegment;
+    I, N : Integer;
+Begin
+    Result := False;
+    N := 0;
+    Try N := Region.ShapeSegmentCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Seg := Region.ShapeSegments(I);
+        If Not Result Then
+        Begin
+            X1 := Seg.vx; X2 := Seg.vx; Y1 := Seg.vy; Y2 := Seg.vy;
+            Result := True;
+        End
+        Else
+        Begin
+            If Seg.vx < X1 Then X1 := Seg.vx;
+            If Seg.vx > X2 Then X2 := Seg.vx;
+            If Seg.vy < Y1 Then Y1 := Seg.vy;
+            If Seg.vy > Y2 Then Y2 := Seg.vy;
+        End;
+    End;
+End;
+
 Function RegionShapeJson(Region : IPCB_Region; Scale : Double; OffX : Double; OffY : Double;
     Var HasArc : Boolean) : String;
 Var
@@ -23420,12 +23518,12 @@ Begin
         Begin
             PadAddr := '';
             Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-            If (PadAddr <> '') And (SeenPads.IndexOf(PadAddr) >= 0) Then
+            If (PadAddr <> '') And (SeenPads.IndexOf(PadAddr + PrimKeyTail(Pad)) >= 0) Then
             Begin
                 Pad := GrpIter.NextPCBObject;
                 Continue;
             End;
-            If PadAddr <> '' Then SeenPads.Add(PadAddr);
+            If PadAddr <> '' Then SeenPads.Add(PadAddr + PrimKeyTail(Pad));
             ShapeStr := 'round';
             Try
                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
@@ -32198,12 +32296,12 @@ Begin
         Begin
             PrimAddr := '';
             Try PrimAddr := IntToStr(Prim.I_ObjectAddress); Except End;
-            If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+            If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Prim)) >= 0) Then
             Begin
                 Prim := GrpIter.NextPCBObject;
                 Continue;
             End;
-            If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+            If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Prim));
             Inc(PrimCount);
             TxtVal := '';
             If Prim.ObjectId = eTextObject Then
@@ -32400,9 +32498,9 @@ Begin
         Begin
             Addr := '';
             Try Addr := IntToStr(Prim.I_ObjectAddress); Except End;
-            If (Addr = '') Or (Seen.IndexOf(Addr) < 0) Then
+            If (Addr = '') Or (Seen.IndexOf(Addr + PrimKeyTail(Prim)) < 0) Then
             Begin
-                If Addr <> '' Then Seen.Add(Addr);
+                If Addr <> '' Then Seen.Add(Addr + PrimKeyTail(Prim));
                 Prims.Add(Prim);
             End;
             Prim := Iter.NextPCBObject;
@@ -32844,12 +32942,12 @@ Begin
         Begin
             PadAddr := '';
             Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-            If (PadAddr <> '') And (SeenPads.IndexOf(PadAddr) >= 0) Then
+            If (PadAddr <> '') And (SeenPads.IndexOf(PadAddr + PrimKeyTail(Pad)) >= 0) Then
             Begin
                 Pad := GrpIter.NextPCBObject;
                 Continue;
             End;
-            If PadAddr <> '' Then SeenPads.Add(PadAddr);
+            If PadAddr <> '' Then SeenPads.Add(PadAddr + PrimKeyTail(Pad));
             ShapeStr := 'round';
             Try
                 If Pad.TopShape = eRectangular Then ShapeStr := 'rectangular'
@@ -33624,9 +33722,9 @@ Begin
             Begin
                 PadAddr := '';
                 Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-                If (PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0) Then
+                If (PadAddr = '') Or (SeenPads.IndexOf(PadAddr + PrimKeyTail(Pad)) < 0) Then
                 Begin
-                    If PadAddr <> '' Then SeenPads.Add(PadAddr);
+                    If PadAddr <> '' Then SeenPads.Add(PadAddr + PrimKeyTail(Pad));
                     If BySelection Then
                     Begin
                         If Pad.Selected Then Matched.Add(Pad);
@@ -33837,9 +33935,9 @@ Begin
                 PadAddr := '';
                 Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
                 Idx := Ids.IndexOf(PadAddr);
-                If (Idx >= 0) And (Seen.IndexOf(PadAddr) < 0) Then
+                If (Idx >= 0) And (Seen.IndexOf(PadAddr + PrimKeyTail(Pad)) < 0) Then
                 Begin
-                    Seen.Add(PadAddr);
+                    Seen.Add(PadAddr + PrimKeyTail(Pad));
                     Hits.Strings[Idx] := '1';
                     Op := Rows.Strings[Idx];
                     HaveX := CoordToMM(Pad.X - XOrg);
@@ -33879,11 +33977,11 @@ Begin
                 Begin
                     PadAddr := '';
                     Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-                    If Done.IndexOf(PadAddr) >= 0 Then
+                    If Done.IndexOf(PadAddr + PrimKeyTail(Pad)) >= 0 Then
                         Inc(Repeats)
                     Else
                     Begin
-                        Done.Add(PadAddr);
+                        Done.Add(PadAddr + PrimKeyTail(Pad));
                         Idx := Ids.IndexOf(PadAddr);
                         If Idx >= 0 Then
                         Begin
@@ -34315,7 +34413,7 @@ Var
     Txt : IPCB_Text;
     Via : IPCB_Via;
     Prim : IPCB_Primitive;
-    TRect : TCoordRect;
+    BoxX1, BoxY1, BoxX2, BoxY2 : Integer;
     XOrg, YOrg, LayerId : Integer;
     NTracks, NArcs, NRegions, NFills, NTexts, NBodies, NVias : Integer;
     RegionArcs, SegI : Integer;
@@ -34447,12 +34545,12 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Track.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Track)) >= 0) Then
                     Begin
                         Track := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Track));
                     LayerStr := '';
                     Try LayerStr := ResolveLayerName(PcbLib.Board, Track.Layer); Except End;
                     LayerId := -1;
@@ -34495,12 +34593,12 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Arc.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Arc)) >= 0) Then
                     Begin
                         Arc := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Arc));
                     LayerStr := '';
                     Try LayerStr := ResolveLayerName(PcbLib.Board, Arc.Layer); Except End;
                     LayerId := -1;
@@ -34545,12 +34643,12 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Region.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Region)) >= 0) Then
                     Begin
                         Region := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Region));
                     LayerStr := '';
                     Try LayerStr := ResolveLayerName(PcbLib.Board, Region.Layer); Except End;
                     LayerId := -1;
@@ -34567,14 +34665,17 @@ Begin
                         RegionArcs := 0;
                     End;
                     Rec := '';
+                    { The box from the outline's vertices: a BoundingRectangle }
+                    { field halts the script on AD 26.12.2.                    }
+                    BoxX1 := 0; BoxY1 := 0; BoxX2 := 0; BoxY2 := 0;
+                    RegionVertexBox(Region, BoxX1, BoxY1, BoxX2, BoxY2);
                     Try
-                        TRect := Region.BoundingRectangle;
                         Rec := '{"layer":"' + EscapeJsonString(LayerStr) + '"'
                             + ',"layer_id":' + IntToStr(LayerId)
-                            + ',"x1":' + FloatToJsonStr(CoordToMM(TRect.X1 - XOrg))
-                            + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
-                            + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
-                            + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
+                            + ',"x1":' + FloatToJsonStr(CoordToMM(BoxX1 - XOrg))
+                            + ',"y1":' + FloatToJsonStr(CoordToMM(BoxY1 - YOrg))
+                            + ',"x2":' + FloatToJsonStr(CoordToMM(BoxX2 - XOrg))
+                            + ',"y2":' + FloatToJsonStr(CoordToMM(BoxY2 - YOrg))
                             + ',"area":' + FloatToJsonStr(AreaMM2)
                             + ',"arc_edges":' + IntToStr(RegionArcs)
                             + ',"selected":' + BoolToJsonStr(Region.Selected);
@@ -34609,26 +34710,25 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(FillObj.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(FillObj)) >= 0) Then
                     Begin
                         FillObj := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(FillObj));
                     LayerStr := '';
                     Try LayerStr := ResolveLayerName(PcbLib.Board, FillObj.Layer); Except End;
                     LayerId := -1;
                     Try LayerId := FillObj.Layer; Except End;
                     Rec := '';
                     Try
-                        TRect := FillObj.BoundingRectangle;
                         SelStr := BoolToJsonStr(FillObj.Selected);
                         Rec := '{"layer":"' + EscapeJsonString(LayerStr) + '"'
                             + ',"layer_id":' + IntToStr(LayerId)
-                            + ',"x1":' + FloatToJsonStr(CoordToMM(TRect.X1 - XOrg))
-                            + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
-                            + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
-                            + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
+                            + ',"x1":' + FloatToJsonStr(CoordToMM(FillObj.X1Location - XOrg))
+                            + ',"y1":' + FloatToJsonStr(CoordToMM(FillObj.Y1Location - YOrg))
+                            + ',"x2":' + FloatToJsonStr(CoordToMM(FillObj.X2Location - XOrg))
+                            + ',"y2":' + FloatToJsonStr(CoordToMM(FillObj.Y2Location - YOrg))
                             + ',"selected":' + SelStr
                             + KeepoutFieldsJson(FillObj, LayerId) + '}';
                     Except
@@ -34660,12 +34760,12 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Txt.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Txt)) >= 0) Then
                     Begin
                         Txt := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Txt));
                     TxtStr := '';
                     Try TxtStr := Txt.UnderlyingString; Except End;
                     If TxtStr = '' Then
@@ -34683,13 +34783,11 @@ Begin
                             + ',"y":' + FloatToJsonStr(CoordToMM(Txt.YLocation - YOrg))
                             + ',"size":' + FloatToJsonStr(CoordToMM(Txt.Size))
                             + ',"rotation":' + FloatToJsonStr(Txt.Rotation);
-                        TRect := Txt.BoundingRectangle;
+                        { No box: a BoundingRectangle field halts the script on }
+                        { AD 26.12.2. x, y, size and rotation place the text.   }
                         SelStr := BoolToJsonStr(Txt.Selected);
                         Rec := Rec
-                            + ',"x1":' + FloatToJsonStr(CoordToMM(TRect.X1 - XOrg))
-                            + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
-                            + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
-                            + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg))
+                            + ',"x1":null,"y1":null,"x2":null,"y2":null'
                             + ',"selected":' + SelStr + '}';
                     Except
                         Rec := '';
@@ -34719,12 +34817,12 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Via.I_ObjectAddress); Except End;
-                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr) >= 0) Then
+                    If (PrimAddr <> '') And (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Via)) >= 0) Then
                     Begin
                         Via := GrpIter.NextPCBObject;
                         Continue;
                     End;
-                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                    If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Via));
                     Rec := '';
                     Try
                         Rec := '{"x":' + FloatToJsonStr(CoordToMM(Via.X - XOrg))
@@ -34760,9 +34858,9 @@ Begin
                 Begin
                     PrimAddr := '';
                     Try PrimAddr := IntToStr(Prim.I_ObjectAddress); Except End;
-                    If (PrimAddr = '') Or (SeenPrims.IndexOf(PrimAddr) < 0) Then
+                    If (PrimAddr = '') Or (SeenPrims.IndexOf(PrimAddr + PrimKeyTail(Prim)) < 0) Then
                     Begin
-                        If PrimAddr <> '' Then SeenPrims.Add(PrimAddr);
+                        If PrimAddr <> '' Then SeenPrims.Add(PrimAddr + PrimKeyTail(Prim));
                         Inc(NBodies);
                         If BodyLayersJson <> '' Then BodyLayersJson := BodyLayersJson + ',';
                         BodyLayersJson := BodyLayersJson + '"'
@@ -34788,14 +34886,9 @@ Begin
                         BodyStandoff := 0;
                         { The outline's box: a courtyard or an envelope is built from }
                         { it (issue #109). }
-                        BodyBoxJson := '';
-                        Try
-                            TRect := Prim.BoundingRectangle;
-                            BodyBoxJson := ',"x1":' + FloatToJsonStr(CoordToMM(TRect.X1 - XOrg))
-                                + ',"y1":' + FloatToJsonStr(CoordToMM(TRect.Y1 - YOrg))
-                                + ',"x2":' + FloatToJsonStr(CoordToMM(TRect.X2 - XOrg))
-                                + ',"y2":' + FloatToJsonStr(CoordToMM(TRect.Y2 - YOrg));
-                        Except End;
+                        { No box here: a BoundingRectangle field halts the script }
+                        { on AD 26.12.2.                                          }
+                        BodyBoxJson := ',"x1":null,"y1":null,"x2":null,"y2":null';
                         BodyBoxJson := BodyBoxJson + ',"selected":' + BoolToJsonStr(Prim.Selected);
                         Try BodyTop := CoordToMM(Body.OverallHeight); Except End;
                         Try BodyStandoff := CoordToMM(Body.StandoffHeight); Except End;
